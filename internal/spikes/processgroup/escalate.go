@@ -90,6 +90,8 @@ func Escalate(ctx context.Context, p Plan) (Outcome, error) {
 	if p.ProbeLead <= 0 || p.ProbeLead >= p.Grace {
 		p.ProbeLead = min(ProbeLead, p.Grace/2)
 	}
+	// Stamp before sending: every effect of the TERM is at or after TermSentAt.
+	termAt := p.Clock.Now()
 	if err := p.Sig.Signal(-p.PGID, syscall.SIGTERM); err != nil {
 		if errors.Is(err, syscall.ESRCH) {
 			out.AlreadyExited = true
@@ -97,7 +99,7 @@ func Escalate(ctx context.Context, p Plan) (Outcome, error) {
 		}
 		return out, fmt.Errorf("processgroup: TERM group %d: %w", p.PGID, err)
 	}
-	out.TermSentAt = p.Clock.Now()
+	out.TermSentAt = termAt
 	out.Deadline = out.TermSentAt.Add(p.Grace)
 
 	select {
@@ -134,8 +136,10 @@ func Escalate(ctx context.Context, p Plan) (Outcome, error) {
 }
 
 func kill(out *Outcome, p Plan, cause error) error {
-	err := p.Sig.Signal(-p.PGID, syscall.SIGKILL)
+	// Stamp before sending: the KILL's effects (members dying, the lifetime
+	// pipe closing) can land before a post-send stamp would.
 	out.KillSentAt = p.Clock.Now()
+	err := p.Sig.Signal(-p.PGID, syscall.SIGKILL)
 	if err != nil && !errors.Is(err, syscall.ESRCH) {
 		return errors.Join(cause, fmt.Errorf("processgroup: KILL group %d: %w", p.PGID, err))
 	}

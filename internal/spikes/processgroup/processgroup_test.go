@@ -173,6 +173,49 @@ func TestEscalateResistantKillsAtDeadline(t *testing.T) {
 	}
 }
 
+// effectSignaler models the kernel delivering a signal and its effects (the
+// descendant dying, its lifetime pipe closing) during the syscall itself: each
+// TERM/KILL advances the fake clock, records the time of that effect, and
+// advances it again before returning.
+type effectSignaler struct {
+	fakeSignaler
+	clock  *fakeClock
+	step   time.Duration
+	effect map[syscall.Signal]time.Time
+}
+
+func (e *effectSignaler) Signal(pid int, sig syscall.Signal) error {
+	if sig == syscall.SIGTERM || sig == syscall.SIGKILL {
+		e.clock.mu.Lock()
+		e.clock.now = e.clock.now.Add(e.step)
+		e.effect[sig] = e.clock.now
+		e.clock.now = e.clock.now.Add(e.step) // the syscall returns after its effects
+		e.clock.mu.Unlock()
+	}
+	return e.fakeSignaler.Signal(pid, sig)
+}
+
+// Regression (CI run 36171210173): every effect of a signal must be at or
+// after the recorded send time, or evaluateFor sees the KILL-caused pipe close
+// as preceding the KILL.
+func TestEscalateStampsBeforeSignalEffects(t *testing.T) {
+	clock := &fakeClock{now: time.Unix(1000, 0)}
+	sig := &effectSignaler{clock: clock, step: time.Millisecond, effect: map[syscall.Signal]time.Time{}}
+	out, err := Escalate(context.Background(), Plan{PGID: 4242, Sig: sig, Clock: clock, Done: never()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kill := sig.effect[syscall.SIGKILL]; !out.KillSent || kill.Before(out.KillSentAt) {
+		t.Errorf("KILL effect at %v precedes KillSentAt %v", kill, out.KillSentAt)
+	}
+	if term := sig.effect[syscall.SIGTERM]; term.Before(out.TermSentAt) {
+		t.Errorf("TERM effect at %v precedes TermSentAt %v", term, out.TermSentAt)
+	}
+	if out.KillSentAt.Before(out.Deadline) || out.Deadline.Sub(out.TermSentAt) != Grace {
+		t.Errorf("outcome = %+v", out)
+	}
+}
+
 func TestEscalateCooperativeNoKill(t *testing.T) {
 	for i := 0; i < 20; i++ { // select order is random; exercise both arms
 		sig := &fakeSignaler{}
