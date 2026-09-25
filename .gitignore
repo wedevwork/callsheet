@@ -20,6 +20,14 @@ profile.cov
 # Dependency directories (remove the comment below to include it)
 # vendor/
 
+# Local-only design docs (not published to the remote repo)
+/design/
+
+# Dev-flow working files written at the repo root (code review, defect triage)
+/review.md
+/fix.md
+/rca.md
+
 # Go workspace file
 go.work
 go.work.sum
