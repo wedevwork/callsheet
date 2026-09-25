@@ -351,6 +351,46 @@ func TestEchoContextCancellation(t *testing.T) {
 	}
 }
 
+// TestEchoPreCancelledNeverReturnsReply is the regression test for the Echo
+// cancellation race: a pre-cancelled context must yield context.Canceled
+// every time, never a reply that raced ahead of ctx.Done in the select.
+func TestEchoPreCancelledNeverReturnsReply(t *testing.T) {
+	h := NewHarness(t)
+	sc, err := h.DialSidecar(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for i := 0; i < 500; i++ {
+		if _, err := sc.Echo(ctx, fmt.Sprintf("c%d", i), json.RawMessage(`{}`)); !errors.Is(err, context.Canceled) {
+			t.Fatalf("iteration %d: cancelled echo = %v", i, err)
+		}
+	}
+	// The peer stays usable: a cancelled Echo must not have sent anything
+	// whose reply would be read by a later call.
+	if b, err := sc.Echo(context.Background(), "live", json.RawMessage(`{"k":1}`)); err != nil || string(b) != `{"k":1}` {
+		t.Fatalf("echo after cancelled calls = %s, %v", b, err)
+	}
+}
+
+// TestEchoContextDoneWhileWaiting covers a context that ends after the write,
+// while Echo waits: the reply goes to the real peer's reader, never to this
+// view's frames channel, so only ctx.Done can end the wait.
+func TestEchoContextDoneWhileWaiting(t *testing.T) {
+	h := NewHarness(t)
+	sc, err := h.DialSidecar(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	view := &SidecarConn{h: h, conn: sc.conn, frames: make(chan Frame), readEr: make(chan error, 1)}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if _, err := view.Echo(ctx, "w", json.RawMessage(`{}`)); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("echo past deadline = %v", err)
+	}
+}
+
 func TestJoinTimeoutReported(t *testing.T) {
 	ftb := &fakeTB{TB: t}
 	h, err := newHarness(ftb)

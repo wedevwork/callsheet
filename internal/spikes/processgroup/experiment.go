@@ -460,8 +460,15 @@ func mustGone(sys Signaler, target int, fail func(string, ...any)) bool {
 	return !alive
 }
 
-// evaluate applies the per-case expectations to a finished result.
-func evaluate(r *CaseResult) {
+// evaluate applies the per-case expectations to a finished result on the
+// host platform.
+func evaluate(r *CaseResult) { evaluateFor(r, runtime.GOOS) }
+
+// evaluateFor applies the per-case expectations as they hold on goos. The
+// descendant's own exit status is checked only on linux, where the helper is
+// a child subreaper and reaps it; on darwin launchd reaps orphans, so that
+// status is not observable.
+func evaluateFor(r *CaseResult, goos string) {
 	fail := func(format string, a ...any) { r.Errors = append(r.Errors, fmt.Sprintf(format, a...)) }
 	if r.DescendantPID == 0 {
 		return
@@ -479,7 +486,7 @@ func evaluate(r *CaseResult) {
 		r.ObservedGraceMillis = float64(r.KillSentAt.Sub(r.TermSentAt)) / float64(time.Millisecond)
 	}
 	r.LeaderExitBeforeKill = !r.LeaderExitedAt.IsZero() && (!r.KillSent || r.LeaderExitedAt.Before(r.KillSentAt))
-	adopted := runtime.GOOS == "linux"
+	adopted := goos == "linux"
 	pre, hasPre := r.Observation("pre-deadline")
 	after, hasAfter := r.Observation("after-leader-exit")
 	switch r.Case.Name {

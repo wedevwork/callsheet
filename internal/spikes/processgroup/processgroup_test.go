@@ -376,46 +376,62 @@ func caseNamed(name string) Case {
 }
 
 func TestEvaluateExpectations(t *testing.T) {
-	for _, c := range Cases {
-		r := goodResult(c.Name)
-		evaluate(&r)
-		if len(r.Errors) != 0 {
-			t.Fatalf("%s good result failed: %v", c.Name, r.Errors)
+	for _, goos := range []string{"linux", "darwin"} {
+		for _, c := range Cases {
+			r := goodResult(c.Name)
+			evaluateFor(&r, goos)
+			if len(r.Errors) != 0 {
+				t.Fatalf("%s: %s good result failed: %v", goos, c.Name, r.Errors)
+			}
 		}
 	}
-	mutations := map[string][]func(*CaseResult){
+	// linuxOnly marks mutations of the adopted descendant's own status, which
+	// evaluate checks only where the helper reaps it (linux); on darwin launchd
+	// reaps orphans, so those mutations must not be flagged there.
+	type mutation struct {
+		apply     func(*CaseResult)
+		linuxOnly bool
+	}
+	mutations := map[string][]mutation{
 		"cooperative": {
-			func(r *CaseResult) { r.KillSent = true },
-			func(r *CaseResult) { r.Leader.ExitCode = 1 },
-			func(r *CaseResult) { r.Descendant.Exited = false },
-			func(r *CaseResult) { r.LeaderSignals = nil },
-			func(r *CaseResult) { r.DescendantSignals = nil },
-			func(r *CaseResult) { r.AlreadyExited = true },
+			{apply: func(r *CaseResult) { r.KillSent = true }},
+			{apply: func(r *CaseResult) { r.Leader.ExitCode = 1 }},
+			{apply: func(r *CaseResult) { r.Descendant.Exited = false }, linuxOnly: true},
+			{apply: func(r *CaseResult) { r.LeaderSignals = nil }},
+			{apply: func(r *CaseResult) { r.DescendantSignals = nil }},
+			{apply: func(r *CaseResult) { r.AlreadyExited = true }},
 		},
 		"resistant": {
-			func(r *CaseResult) { r.KillSentAt = r.Deadline.Add(-time.Millisecond) },
-			func(r *CaseResult) { r.Observations = nil },
-			func(r *CaseResult) { r.Observations[0].DescendantAlive = false },
-			func(r *CaseResult) { r.Leader.Signal = "SIGTERM" },
-			func(r *CaseResult) { r.Descendant.Signaled = false },
+			{apply: func(r *CaseResult) { r.KillSentAt = r.Deadline.Add(-time.Millisecond) }},
+			{apply: func(r *CaseResult) { r.Observations = nil }},
+			{apply: func(r *CaseResult) { r.Observations[0].DescendantAlive = false }},
+			{apply: func(r *CaseResult) { r.Leader.Signal = "SIGTERM" }},
+			{apply: func(r *CaseResult) { r.Descendant.Signaled = false }, linuxOnly: true},
 		},
 		"leader-exits-first": {
-			func(r *CaseResult) { r.Observations = r.Observations[1:] },
-			func(r *CaseResult) { r.Observations[1].LeaderExited = false },
-			func(r *CaseResult) { r.Observations[0].At = r.Observations[1].At.Add(time.Millisecond) },
-			func(r *CaseResult) { r.KillSent = false },
-			func(r *CaseResult) { r.LifetimeClosedAt = r.KillSentAt.Add(-time.Millisecond) },
-			func(r *CaseResult) { r.Descendant.ReapedBy = "launchd" },
-			func(r *CaseResult) { r.Leader.Exited = false },
+			{apply: func(r *CaseResult) { r.Observations = r.Observations[1:] }},
+			{apply: func(r *CaseResult) { r.Observations[1].LeaderExited = false }},
+			{apply: func(r *CaseResult) { r.Observations[0].At = r.Observations[1].At.Add(time.Millisecond) }},
+			{apply: func(r *CaseResult) { r.KillSent = false }},
+			{apply: func(r *CaseResult) { r.LifetimeClosedAt = r.KillSentAt.Add(-time.Millisecond) }},
+			{apply: func(r *CaseResult) { r.Descendant.ReapedBy = "launchd" }, linuxOnly: true},
+			{apply: func(r *CaseResult) { r.Leader.Exited = false }},
 		},
 	}
-	for name, ms := range mutations {
-		for i, m := range ms {
-			r := goodResult(name)
-			m(&r)
-			evaluate(&r)
-			if len(r.Errors) == 0 {
-				t.Errorf("%s mutation %d not detected", name, i)
+	for _, goos := range []string{"linux", "darwin"} {
+		for name, ms := range mutations {
+			for i, m := range ms {
+				r := goodResult(name)
+				m.apply(&r)
+				evaluateFor(&r, goos)
+				want := goos == "linux" || !m.linuxOnly
+				if got := len(r.Errors) != 0; got != want {
+					if want {
+						t.Errorf("%s: %s mutation %d not detected", goos, name, i)
+					} else {
+						t.Errorf("%s: %s mutation %d is linux-only but was flagged: %v", goos, name, i, r.Errors)
+					}
+				}
 			}
 		}
 	}

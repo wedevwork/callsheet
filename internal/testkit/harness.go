@@ -499,6 +499,12 @@ func (s *SidecarConn) readLoop() {
 
 // Echo sends a test-only echo frame and returns the correlated body.
 func (s *SidecarConn) Echo(ctx context.Context, requestID string, body json.RawMessage) (json.RawMessage, error) {
+	// A done context must win deterministically: the write can still succeed
+	// with it (and the library then closes the conn), and once a reply or a
+	// read error is ready the select below picks among ready cases at random.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if err := writeFrame(ctx, s.conn, Frame{Version: contract.ProtocolVersion, Type: "echo", RequestID: requestID, Body: body}); err != nil {
 		return nil, err
 	}
