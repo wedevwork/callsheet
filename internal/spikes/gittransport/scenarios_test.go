@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -475,99 +476,114 @@ func scenarioWrongCA(e *scenarioEnv) {
 	}
 }
 
-// passthrough forwards raw TCP from 127.0.0.2 to the harness without
-// terminating TLS; it owns and joins every socket and goroutine.
-type passthrough struct {
-	ln       net.Listener
-	target   string
+// sanMismatchServer is a second TLS endpoint for the spike's git handler on
+// sanMismatchHost. Its leaf is issued by the harness's own fixture CA, so the
+// chain verifies, for names that exclude sanMismatchHost, so the client's
+// hostname check is the only one that can fail. It owns and joins its listener,
+// connections and serve goroutine.
+type sanMismatchServer struct {
+	srv      *http.Server
+	addr     string
 	mu       sync.Mutex
-	conns    []net.Conn
 	accepted int
 	wg       sync.WaitGroup
 }
 
-func startPassthrough(t *testing.T, target string) *passthrough {
+// The SAN-mismatch leaf's names: a reserved DNS name and a TEST-NET-1 address
+// (RFC 5737), neither of which is sanMismatchHost.
+var (
+	sanMismatchDNSNames = []string{"san-mismatch.invalid"}
+	sanMismatchIPs      = []net.IP{net.ParseIP("192.0.2.1")}
+)
+
+func startSANMismatchServer(t *testing.T, ca *testkit.FixtureCA, h http.Handler) *sanMismatchServer {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.2:0")
+	leaf, err := ca.Leaf(sanMismatchDNSNames, sanMismatchIPs)
 	if err != nil {
-		t.Fatalf("ENVIRONMENT BLOCKER: cannot bind 127.0.0.2 for the SAN-mismatch test: %v", err)
+		t.Fatal(err)
 	}
-	p := &passthrough{ln: ln, target: target}
-	p.wg.Add(1)
-	go p.acceptLoop()
+	opts := x509.VerifyOptions{Roots: ca.Pool(), DNSName: sanMismatchDNSNames[0]}
+	if _, err := leaf.Leaf.Verify(opts); err != nil {
+		t.Fatalf("SAN-mismatch leaf does not chain to the harness CA: %v", err)
+	}
+	opts.DNSName = sanMismatchHost
+	var he x509.HostnameError
+	if _, err := leaf.Leaf.Verify(opts); !errors.As(err, &he) {
+		t.Fatalf("SAN-mismatch leaf must fail on hostname alone for %s: %v", sanMismatchHost, err)
+	}
+	ln, err := net.Listen("tcp", net.JoinHostPort(sanMismatchHost, "0"))
+	if err != nil {
+		t.Fatalf("listen on %s for the SAN-mismatch test: %v", sanMismatchHost, err)
+	}
+	mux := http.NewServeMux()
+	mux.Handle(testkit.GitPrefix, h)
+	s := &sanMismatchServer{addr: ln.Addr().String()}
+	tlsConf := &tls.Config{Certificates: []tls.Certificate{leaf}, MinVersion: tls.VersionTLS12, NextProtos: []string{"http/1.1"}}
+	s.srv = &http.Server{
+		Handler:           mux,
+		ErrorLog:          log.New(io.Discard, "", 0),
+		ReadHeaderTimeout: testkit.HandshakeTimeout,
+		ConnState: func(_ net.Conn, st http.ConnState) {
+			if st == http.StateNew {
+				s.mu.Lock()
+				s.accepted++
+				s.mu.Unlock()
+			}
+		},
+	}
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.srv.Serve(tls.NewListener(ln, tlsConf))
+	}()
 	t.Cleanup(func() {
-		if err := p.close(5 * time.Second); err != nil {
+		if err := s.close(testkit.JoinTimeout); err != nil {
 			t.Error(err)
 		}
 	})
-	return p
+	return s
 }
 
-func (p *passthrough) addr() string { return p.ln.Addr().String() }
-
-func (p *passthrough) track(c net.Conn) {
-	p.mu.Lock()
-	p.conns = append(p.conns, c)
-	p.mu.Unlock()
+func (s *sanMismatchServer) acceptedConns() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.accepted
 }
 
-func (p *passthrough) acceptLoop() {
-	defer p.wg.Done()
-	for {
-		c, err := p.ln.Accept()
-		if err != nil {
-			return
-		}
-		p.mu.Lock()
-		p.accepted++
-		p.mu.Unlock()
-		p.track(c)
-		up, err := net.DialTimeout("tcp", p.target, 5*time.Second)
-		if err != nil {
-			c.Close()
-			continue
-		}
-		p.track(up)
-		deadline := time.Now().Add(20 * time.Second)
-		c.SetDeadline(deadline)
-		up.SetDeadline(deadline)
-		p.wg.Add(2)
-		go p.pipe(up, c)
-		go p.pipe(c, up)
+// close shuts the server down, waiting within limit for every connection to
+// end and for the serve goroutine to return.
+func (s *sanMismatchServer) close(limit time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), limit)
+	defer cancel()
+	err := s.srv.Shutdown(ctx)
+	if err != nil {
+		s.srv.Close()
 	}
-}
-
-func (p *passthrough) pipe(dst, src net.Conn) {
-	defer p.wg.Done()
-	io.Copy(dst, src)
-	dst.Close()
-	src.Close()
-}
-
-func (p *passthrough) close(limit time.Duration) error {
-	p.ln.Close()
-	p.mu.Lock()
-	for _, c := range p.conns {
-		c.Close()
+	s.wg.Wait()
+	if err != nil {
+		return fmt.Errorf("SAN-mismatch server did not shut down within limit: %w", err)
 	}
-	p.mu.Unlock()
-	done := make(chan struct{})
-	go func() {
-		p.wg.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-		return nil
-	case <-time.After(limit):
-		return errors.New("passthrough did not join within limit")
+	return nil
+}
+
+// sanMismatchHost is where the SAN-mismatch case listens and dials. It must be
+// 127.0.0.1: macOS lo0 carries no other 127/8 address unless one is aliased.
+const sanMismatchHost = "127.0.0.1"
+
+// requireSANMismatchHost fails unless addr is a listener on sanMismatchHost.
+func requireSANMismatchHost(t *testing.T, addr string) {
+	t.Helper()
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil || host != sanMismatchHost {
+		t.Fatalf("SAN-mismatch listener %q is not on %s, the only loopback address bindable on every supported OS (%v)", addr, sanMismatchHost, err)
 	}
 }
 
 func scenarioSANMismatch(e *scenarioEnv) {
 	t := e.t
-	pt := startPassthrough(t, e.hk.Addr())
-	sanURL := "https://" + pt.addr() + RepoURLPath
+	srv := startSANMismatchServer(t, e.hk.CA(), e.h)
+	requireSANMismatchHost(t, srv.addr)
+	sanURL := "https://" + srv.addr + RepoURLPath
 	calls := e.h.callCount()
 	var err error
 	e.guardUnchanged(func() {
@@ -577,14 +593,11 @@ func scenarioSANMismatch(e *scenarioEnv) {
 	if !errors.As(err, &he) {
 		t.Fatalf("SAN mismatch error does not unwrap to x509.HostnameError: %T %v", err, err)
 	}
-	if he.Host != "127.0.0.2" {
+	if he.Host != sanMismatchHost {
 		t.Fatalf("hostname error host = %q", he.Host)
 	}
-	pt.mu.Lock()
-	accepted := pt.accepted
-	pt.mu.Unlock()
-	if accepted == 0 {
-		t.Fatal("connection never reached the pass-through")
+	if srv.acceptedConns() == 0 {
+		t.Fatal("connection never reached the SAN-mismatch server")
 	}
 	if e.h.callCount() != calls {
 		t.Fatal("handler invoked despite SAN mismatch")

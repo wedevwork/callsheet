@@ -107,7 +107,7 @@ func TestFP5GitRoundTrip(t *testing.T) {
 	if f["final_main"] != f["c0"] || f["final_t1"] != f["c2"] || f["c1"] == f["c0"] || f["c2"] == f["c1"] || f["c0_tree"] == f["c1_tree"] {
 		t.Fatalf("ref preservation facts = %v", f)
 	}
-	if !strings.Contains(f["san_error"], "not 127.0.0.2") || strings.Contains(f["receive_capabilities"], "delete-refs") {
+	if !strings.Contains(f["san_error"], "not 127.0.0.1") || strings.Contains(f["receive_capabilities"], "delete-refs") {
 		t.Fatalf("TLS/capability facts = %v", f)
 	}
 	counts := map[string]int{}
