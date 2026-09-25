@@ -2,6 +2,7 @@ package cicheck
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,6 +27,9 @@ jobs:
       - name: native
         env: {GOSUMDB: "off", GOPROXY: "off"}
         run: go run ./cmd/devcheck native
+      - name: devcheck stress (race, repeat count, varied -cpu)
+        env: {GOSUMDB: "off", GOPROXY: "off"}
+        run: go run ./cmd/devcheck stress
     name: ci-macos
     runs-on: macos-15
     timeout-minutes: 30
@@ -76,6 +80,11 @@ jobs:
         env:
           GOPROXY: "off"
           GOSUMDB: "off"
+      - name: devcheck stress (race, repeat count, varied -cpu)
+        run: go run ./cmd/devcheck stress
+        env:
+          GOPROXY: "off"
+          GOSUMDB: "off"
 name: CI
 on:
   pull_request:
@@ -100,6 +109,32 @@ const coverageStep = `      - name: coverage
           GOPROXY: "off"
           GOSUMDB: "off"
 `
+
+// The stress steps of the two jobs are written differently so each can be
+// mutated independently.
+const (
+	macosStressStep = `      - name: devcheck stress (race, repeat count, varied -cpu)
+        env: {GOSUMDB: "off", GOPROXY: "off"}
+        run: go run ./cmd/devcheck stress
+`
+	linuxStressStep = `      - name: devcheck stress (race, repeat count, varied -cpu)
+        run: go run ./cmd/devcheck stress
+        env:
+          GOPROXY: "off"
+          GOSUMDB: "off"
+`
+	crossStep = `      - name: cross
+        run: |
+          go run ./cmd/devcheck cross
+        env:
+          GOPROXY: "off"
+          GOSUMDB: "off"
+`
+	nativeStep = `      - name: native
+        env: {GOSUMDB: "off", GOPROXY: "off"}
+        run: go run ./cmd/devcheck native
+`
+)
 
 const benchStep = `      - name: bench
         run: go run ./cmd/devcheck bench
@@ -195,7 +230,7 @@ func TestMutationsFailWithPath(t *testing.T) {
 		{"extra step", "  push:\n", "  push:\n", nil}, // placeholder replaced below
 		{"reordered steps", coverageStep + benchStep, benchStep + coverageStep,
 			[]string{`jobs.linux.steps[4].run: must run devcheck stage "coverage", got "bench"`, `jobs.linux.steps[5].run: must run devcheck stage "bench", got "coverage"`}},
-		{"omitted coverage gate", coverageStep, "", []string{"jobs.linux.steps: must have exactly 7 steps", `jobs.linux.steps: missing check step for devcheck stage "coverage"`}},
+		{"omitted coverage gate", coverageStep, "", []string{"jobs.linux.steps: must have exactly 8 steps", `jobs.linux.steps: missing check step for devcheck stage "coverage"`}},
 		{"network env on download", "        run: go mod download\n", "        run: go mod download\n        env: {GOPROXY: \"off\"}\n", []string{"jobs.linux.steps[2].env: unknown field"}},
 		{"network env missing", "        run: go run ./cmd/devcheck test\n        env:\n          GOPROXY: \"off\"\n          GOSUMDB: \"off\"\n", "        run: go run ./cmd/devcheck test\n", []string{"jobs.linux.steps[3].env: missing required field"}},
 		{"network env wrong", "          GOPROXY: \"off\"\n", "          GOPROXY: direct\n", []string{`jobs.linux.steps[3].env.GOPROXY: must be "off", got "direct"`}},
@@ -219,8 +254,8 @@ func TestMutationsFailWithPath(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			data := rep(t, validYAML, c.old, c.new)
 			if c.name == "extra step" {
-				data = rep(t, validYAML, "        run: |\n          go run ./cmd/devcheck cross\n", "        run: go run ./cmd/devcheck cross\n      - run: go run ./cmd/devcheck all\n        env: {GOPROXY: \"off\", GOSUMDB: \"off\"}\n")
-				c.wantErr = []string{"jobs.linux.steps: must have exactly 7 steps", "jobs.linux.steps[7]: unexpected extra step"}
+				data = rep(t, validYAML, linuxStressStep, linuxStressStep+"      - run: go run ./cmd/devcheck all\n        env: {GOPROXY: \"off\", GOSUMDB: \"off\"}\n")
+				c.wantErr = []string{"jobs.linux.steps: must have exactly 8 steps", "jobs.linux.steps[8]: unexpected extra step"}
 			}
 			err := ValidateWorkflow([]byte(data))
 			if err == nil {
@@ -279,13 +314,14 @@ func TestContractAccessors(t *testing.T) {
 	}
 	js := Jobs()
 	if len(js) != 2 || js[0].ID != "linux" || js[0].RunsOn != "ubuntu-24.04" || js[0].TimeoutMinutes != 45 ||
-		strings.Join(js[0].Stages, " ") != "test coverage bench cross" ||
-		js[1].ID != "macos" || js[1].Name != "ci-macos" || js[1].RunsOn != "macos-15" || js[1].TimeoutMinutes != 30 || strings.Join(js[1].Stages, " ") != "native" {
+		strings.Join(js[0].Stages, " ") != "test coverage bench cross stress" ||
+		js[1].ID != "macos" || js[1].Name != "ci-macos" || js[1].RunsOn != "macos-15" || js[1].TimeoutMinutes != 30 || strings.Join(js[1].Stages, " ") != "native stress" {
 		t.Fatalf("jobs = %+v", js)
 	}
 	js[0].Stages[0] = "mutated"
+	js[1].Stages[1] = "mutated"
 	js[1].Name = "mutated"
-	if Jobs()[0].Stages[0] != "test" || RequiredChecks()[1] != "ci-macos" {
+	if Jobs()[0].Stages[0] != "test" || Jobs()[1].Stages[1] != "stress" || RequiredChecks()[1] != "ci-macos" {
 		t.Fatal("Jobs exposes contract state")
 	}
 }
@@ -295,7 +331,7 @@ func TestExtractStages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(got["linux"], " ") != "test coverage bench cross" || strings.Join(got["macos"], " ") != "native" || len(got) != 2 {
+	if strings.Join(got["linux"], " ") != "test coverage bench cross stress" || strings.Join(got["macos"], " ") != "native stress" || len(got) != 2 {
 		t.Fatalf("stages = %v", got)
 	}
 	got, err = ExtractStages([]byte("jobs:\n  a:\n    steps: {}\n  b:\n    steps:\n      - uses: x\n      - run: [x]\n      - run: go run ./cmd/devcheck bogus\n"))
@@ -340,5 +376,60 @@ func TestCheckJobNames(t *testing.T) {
 				t.Fatalf("%s: %v lacks %q", name, err, w)
 			}
 		}
+	}
+}
+
+// FP-6 (01c): the stress step is required, exact and unconditional in both
+// jobs; each mutation is rejected with a path-specific error.
+func TestStressStepMutations(t *testing.T) {
+	for _, j := range []struct {
+		id, step, prev string
+		index, count   int
+	}{
+		{"linux", linuxStressStep, crossStep, 7, 8},
+		{"macos", macosStressStep, nativeStep, 4, 5},
+	} {
+		p := fmt.Sprintf("jobs.%s.steps[%d]", j.id, j.index)
+		prev := fmt.Sprintf("jobs.%s.steps[%d]", j.id, j.index-1)
+		for _, c := range []struct {
+			name string
+			new  string
+			want []string
+		}{
+			{"removed", "", []string{fmt.Sprintf("jobs.%s.steps: must have exactly %d steps", j.id, j.count), fmt.Sprintf(`jobs.%s.steps: missing check step for devcheck stage "stress"`, j.id)}},
+			{"substituted all", strings.Replace(j.step, "./cmd/devcheck stress", "./cmd/devcheck all", 1), []string{p + `.run: must run devcheck stage "stress", got "all"`, `missing check step for devcheck stage "stress"`}},
+			{"substituted test", strings.Replace(j.step, "./cmd/devcheck stress", "./cmd/devcheck test", 1), []string{p + `.run: must run devcheck stage "stress", got "test"`}},
+			{"count flag", strings.Replace(j.step, "devcheck stress\n", "devcheck stress -count=1\n", 1), []string{p + `.run: must be "go run ./cmd/devcheck stress", got "go run ./cmd/devcheck stress -count=1"`}},
+			{"cpu flag", strings.Replace(j.step, "devcheck stress\n", "devcheck stress -cpu=1\n", 1), []string{p + `.run: must be "go run ./cmd/devcheck stress"`}},
+			{"if", j.step + "        if: always()\n", []string{p + ".if: unknown field"}},
+			{"continue-on-error", j.step + "        continue-on-error: true\n", []string{p + ".continue-on-error: unknown field"}},
+			{"timeout", j.step + "        timeout-minutes: 5\n", []string{p + ".timeout-minutes: unknown field"}},
+			{"offline env omitted", strings.Replace(strings.Replace(j.step, "        env: {GOSUMDB: \"off\", GOPROXY: \"off\"}\n", "", 1), "        env:\n          GOPROXY: \"off\"\n          GOSUMDB: \"off\"\n", "", 1), []string{p + ".env: missing required field"}},
+			{"proxy enabled", strings.Replace(j.step, `GOPROXY: "off"`, "GOPROXY: direct", 1), []string{p + `.env.GOPROXY: must be "off", got "direct"`}},
+		} {
+			t.Run(j.id+" "+c.name, func(t *testing.T) {
+				data := rep(t, validYAML, j.step, c.new)
+				err := ValidateWorkflow([]byte(data))
+				if err == nil {
+					t.Fatalf("mutation accepted:\n%s", data)
+				}
+				for _, w := range c.want {
+					if !strings.Contains(err.Error(), w) {
+						t.Fatalf("error lacks %q:\n%v", w, err)
+					}
+				}
+			})
+		}
+		t.Run(j.id+" reordered", func(t *testing.T) {
+			err := ValidateWorkflow([]byte(rep(t, validYAML, j.prev+j.step, j.step+j.prev)))
+			for _, w := range []string{prev + `.run: must run devcheck stage "`, `got "stress"`, p + `.run: must run devcheck stage "stress", got "`} {
+				if err == nil || !strings.Contains(err.Error(), w) {
+					t.Fatalf("reordered: %v lacks %q", err, w)
+				}
+			}
+			if strings.Contains(err.Error(), "missing check step") {
+				t.Fatalf("reordering removes nothing: %v", err)
+			}
+		})
 	}
 }

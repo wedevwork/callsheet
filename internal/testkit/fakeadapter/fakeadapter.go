@@ -69,8 +69,15 @@ func (e *UsageError) Error() string { return e.msg }
 
 func usagef(format string, a ...any) error { return &UsageError{fmt.Sprintf(format, a...)} }
 
-// Parse validates args (without the program name). No side effects.
+// Parse validates args (without the program name). No side effects. It only
+// supplies the host OS and its build-selected signal support to parseFor.
 func Parse(args []string) (Options, error) {
+	return parseFor(args, runtime.GOOS, signalsSupported)
+}
+
+// parseFor is Parse for an explicit goos and signal support: without
+// support, signal and process-group modes are rejected naming goos.
+func parseFor(args []string, goos string, supported bool) (Options, error) {
 	var o Options
 	fs := flag.NewFlagSet("fake-adapter", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -126,8 +133,8 @@ func Parse(args []string) (Options, error) {
 	if o.descendant && o.SpawnGrandchild {
 		return Options{}, usagef("a descendant cannot spawn descendants")
 	}
-	if !signalsSupported && (o.SpawnGrandchild || o.SignalFile != "" || o.TermMode == TermIgnore || o.descendant) {
-		return Options{}, usagef("signal/process-group mode is unsupported on %s", runtime.GOOS)
+	if !supported && (o.SpawnGrandchild || o.SignalFile != "" || o.TermMode == TermIgnore || o.descendant) {
+		return Options{}, usagef("signal/process-group mode is unsupported on %s", goos)
 	}
 	return o, nil
 }

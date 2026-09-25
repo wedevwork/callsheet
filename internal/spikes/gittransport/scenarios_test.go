@@ -570,12 +570,21 @@ func (s *sanMismatchServer) close(limit time.Duration) error {
 // 127.0.0.1: macOS lo0 carries no other 127/8 address unless one is aliased.
 const sanMismatchHost = "127.0.0.1"
 
-// requireSANMismatchHost fails unless addr is a listener on sanMismatchHost.
-func requireSANMismatchHost(t *testing.T, addr string) {
+// fatalHelper is the part of *testing.T the SAN-mismatch oracle uses, so a
+// recording double can observe its failures.
+type fatalHelper interface {
+	Helper()
+	Fatalf(format string, args ...any)
+}
+
+// requireSANMismatchHost fails unless addr is a listener on the literal
+// 127.0.0.1. The expected address is deliberately not sanMismatchHost:
+// changing that constant must not move the oracle.
+func requireSANMismatchHost(t fatalHelper, addr string) {
 	t.Helper()
 	host, _, err := net.SplitHostPort(addr)
-	if err != nil || host != sanMismatchHost {
-		t.Fatalf("SAN-mismatch listener %q is not on %s, the only loopback address bindable on every supported OS (%v)", addr, sanMismatchHost, err)
+	if err != nil || host != "127.0.0.1" {
+		t.Fatalf("SAN-mismatch listener %q is not on 127.0.0.1, the only loopback address bindable on every supported OS (%v)", addr, err)
 	}
 }
 

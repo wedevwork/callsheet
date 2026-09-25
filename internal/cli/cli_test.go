@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"io"
 	"runtime"
 	"strings"
 	"testing"
@@ -257,5 +258,55 @@ func TestMcpStubStdoutClean(t *testing.T) {
 	code, out, errOut := exec(t, "linux", "mcp", "--plane", "https://x", "--ca", "y")
 	if code != 8 || out != "" || !strings.Contains(errOut, "not implemented yet") {
 		t.Fatalf("%d %q %q", code, out, errOut)
+	}
+}
+
+// TestPlatformSeamContract is the FP-2 contract test for the CLI, executed by
+// name from tests/function (TestHardeningPlatformSeams). Its linux and
+// darwin subtests drive runFor, the seam behind Run, on any host. Do not
+// rename or skip.
+func TestPlatformSeamContract(t *testing.T) {
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, goos := range []string{"linux", "darwin"} {
+		t.Run(goos, func(t *testing.T) {
+			for _, c := range []struct {
+				name     string
+				ctx      context.Context
+				args     []string
+				code     int
+				out, err string
+			}{
+				{"help", context.Background(), nil, 0, "Usage: callsheet <command>\n", ""},
+				{"version", context.Background(), []string{"version"}, 0, "callsheet dev protocol=1\n", ""},
+				{"stub", context.Background(), []string{"plane", "init"}, 8, "", "callsheet: not_implemented: \"callsheet plane init\" is not implemented yet\n"},
+				{"usage", context.Background(), []string{"bogus"}, 2, "", "callsheet: invalid_argument: unknown command \"bogus\" for \"callsheet\"\n"},
+				{"cancel", canceled, []string{"version"}, 130, "", "callsheet: interrupted\n"},
+			} {
+				in := strings.NewReader("unread input")
+				var out, errOut bytes.Buffer
+				code := runFor(c.ctx, goos, c.args, in, &out, &errOut)
+				if code != c.code || !strings.HasPrefix(out.String(), c.out) || (c.out == "" && out.Len() != 0) || !strings.HasPrefix(errOut.String(), c.err) || (c.err == "" && errOut.Len() != 0) {
+					t.Fatalf("%s %s = %d %q %q", goos, c.name, code, out.String(), errOut.String())
+				}
+				if in.Len() != len("unread input") {
+					t.Fatalf("%s %s consumed input", goos, c.name)
+				}
+			}
+			// The full tree is selected from goos alone.
+			var out bytes.Buffer
+			if code := runFor(context.Background(), goos, []string{"sidecar"}, nil, &out, io.Discard); code != 0 || !strings.HasPrefix(out.String(), "Usage: callsheet sidecar <command>") {
+				t.Fatalf("%s sidecar = %d %q", goos, code, out.String())
+			}
+		})
+	}
+	for _, goos := range []string{"windows", "freebsd", ""} {
+		var out, errOut bytes.Buffer
+		if code := runFor(context.Background(), goos, []string{"version"}, nil, &out, &errOut); code != 2 || out.Len() != 0 || !strings.Contains(errOut.String(), "unsupported operating system") {
+			t.Fatalf("%q = %d %q", goos, code, errOut.String())
+		}
+		if code := runFor(canceled, goos, nil, nil, &out, &errOut); code != 130 {
+			t.Fatalf("%q canceled = %d", goos, code)
+		}
 	}
 }

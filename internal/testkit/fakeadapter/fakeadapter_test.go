@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -390,4 +391,67 @@ func readSignals(t *testing.T, p string) []SignalRecord {
 		out = append(out, r)
 	}
 	return out
+}
+
+// TestPlatformSeamContract is the FP-2 contract test for fakeadapter,
+// executed by name from tests/function (TestHardeningPlatformSeams). Its
+// linux and darwin subtests drive parseFor on any host: both supported OSes
+// accept the signal flags, and false support rejects exactly the four guarded
+// conditions with the unchanged diagnostic. Do not rename or skip.
+func TestPlatformSeamContract(t *testing.T) {
+	guarded := [][]string{
+		{"--spawn-grandchild"},
+		{"--signal-file=s.jsonl"},
+		{"--term-mode=ignore"},
+		{"--internal-descendant"},
+	}
+	unguarded := [][]string{
+		nil,
+		{"--term-mode=exit", "--grandchild-term-mode=ignore", "--duration=1s", "--ready-file=r.json"},
+	}
+	for _, goos := range []string{"linux", "darwin"} {
+		t.Run(goos, func(t *testing.T) {
+			for _, args := range append(append([][]string{}, guarded...), unguarded...) {
+				if _, err := parseFor(args, goos, true); err != nil {
+					t.Fatalf("%s supported %v: %v", goos, args, err)
+				}
+			}
+			all := []string{"--spawn-grandchild", "--grandchild-term-mode=ignore", "--term-mode=ignore", "--signal-file=s.jsonl", "--ready-file=r.json"}
+			o, err := parseFor(all, goos, true)
+			if err != nil || !o.SpawnGrandchild || o.SignalFile != "s.jsonl" || o.TermMode != TermIgnore || o.GrandchildTermMode != TermIgnore {
+				t.Fatalf("%s signal options = %+v %v", goos, o, err)
+			}
+			for _, name := range []string{goos, "plan9"} {
+				for _, args := range guarded {
+					o, err := parseFor(args, name, false)
+					var ue *UsageError
+					if !errors.As(err, &ue) || err.Error() != "signal/process-group mode is unsupported on "+name || o.SpawnGrandchild || o.SignalFile != "" {
+						t.Fatalf("%s unsupported %v = %+v %v", name, args, o, err)
+					}
+				}
+				for _, args := range unguarded {
+					if _, err := parseFor(args, name, false); err != nil {
+						t.Fatalf("%s unsupported must still accept %v: %v", name, args, err)
+					}
+				}
+			}
+			// Ordinary validation keeps precedence and text on both paths.
+			for _, supported := range []bool{true, false} {
+				if _, err := parseFor([]string{"--exit-code=126"}, goos, supported); err == nil || err.Error() != "--exit-code must be in 0..125" {
+					t.Fatalf("%s supported=%v exit code: %v", goos, supported, err)
+				}
+				if _, err := parseFor([]string{"--internal-descendant", "--spawn-grandchild"}, goos, supported); err == nil || err.Error() != "a descendant cannot spawn descendants" {
+					t.Fatalf("%s supported=%v descendant spawn: %v", goos, supported, err)
+				}
+			}
+		})
+	}
+	// Parse is parseFor with the host's build-selected support.
+	for _, args := range guarded {
+		_, perr := Parse(args)
+		_, ferr := parseFor(args, runtime.GOOS, signalsSupported)
+		if (perr == nil) != (ferr == nil) {
+			t.Fatalf("Parse(%v) = %v, parseFor = %v", args, perr, ferr)
+		}
+	}
 }

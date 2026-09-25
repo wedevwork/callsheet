@@ -58,6 +58,11 @@ jobs:
         env:
           GOPROXY: "off"
           GOSUMDB: "off"
+      - name: devcheck stress (race, repeat count, varied -cpu)
+        run: go run ./cmd/devcheck stress
+        env:
+          GOPROXY: "off"
+          GOSUMDB: "off"
 
   macos:
     name: ci-macos
@@ -85,6 +90,11 @@ jobs:
         run: go mod download
       - name: devcheck native (full suite and Darwin process-group qualification)
         run: go run ./cmd/devcheck native
+        env:
+          GOPROXY: "off"
+          GOSUMDB: "off"
+      - name: devcheck stress (race, repeat count, varied -cpu)
+        run: go run ./cmd/devcheck stress
         env:
           GOPROXY: "off"
           GOSUMDB: "off"

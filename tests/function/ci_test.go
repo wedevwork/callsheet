@@ -306,13 +306,14 @@ func TestCIWorkflowContract(t *testing.T) {
 	mustReject(t, "timeout removed", mutated(t, func(r *yaml.Node) { deleteKey(t, node(t, r, "jobs", "linux"), "timeout-minutes") }), "jobs.linux.timeout-minutes: missing required field")
 }
 
-// FP-2: the Linux job runs devcheck test (then race), coverage, bench, cross.
+// FP-2: the Linux job runs devcheck test (then race), coverage, bench, cross
+// and (01c) stress.
 func TestCILinuxBar(t *testing.T) {
 	stages, err := cicheck.ExtractStages(ciWorkflow(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(stages["linux"], " "); got != "test coverage bench cross" || got != strings.Join(cicheck.Jobs()[0].Stages, " ") {
+	if got := strings.Join(stages["linux"], " "); got != "test coverage bench cross stress" || got != strings.Join(cicheck.Jobs()[0].Stages, " ") {
 		t.Fatalf("linux stages = %q", got)
 	}
 	plan := devcheck.TestSteps("linux")
@@ -356,7 +357,8 @@ func TestCILinuxBar(t *testing.T) {
 	}
 }
 
-// FP-3: the macOS job runs native, which requires all three scenarios.
+// FP-3: the macOS job runs native, which requires all three scenarios, and
+// (01c) then stress.
 func TestCIDarwinQualification(t *testing.T) {
 	data := ciWorkflow(t)
 	var doc yaml.Node
@@ -367,7 +369,7 @@ func TestCIDarwinQualification(t *testing.T) {
 		t.Fatal("macos job identity")
 	}
 	stages, err := cicheck.ExtractStages(data)
-	if err != nil || strings.Join(stages["macos"], " ") != "native" {
+	if err != nil || strings.Join(stages["macos"], " ") != "native stress" || strings.Join(cicheck.Jobs()[1].Stages, " ") != "native stress" {
 		t.Fatalf("macos stages = %v %v", stages, err)
 	}
 	steps, err := devcheck.NativeSteps("darwin")
@@ -586,14 +588,23 @@ func TestCIProtectionHandoff(t *testing.T) {
 	}
 }
 
-// FP-8: PR procedure, bootstrap and first-run evidence.
+// FP-8: PR procedure, bootstrap and first-run evidence. The bootstrap is the
+// settled sequence: iterations 01, 01b and 01c join pull request #1 and merge
+// together once both checks succeed on its current merge revision.
 func TestCIPRProcedure(t *testing.T) {
 	pr := docSection(t, "PR flow")
 	requireTerms(t, "PR flow", pr, "`iter-NN-<slug>`", "`iter-02-plane-trust`", "Bootstrap exception",
-		"may land directly on `main` after code review, before CI exists",
+		"Every iteration lands on `main` through a pull request",
+		"iterations 01, 01b and 01c join pull request #1",
+		"merge together after both checks, `ci-linux` and `ci-macos`, succeed on its current merge revision",
 		"enables branch protection after both contexts are available and successful",
 		"Do not begin merging iteration 02 before that handoff is complete",
 		"No fake first-run evidence", "merge queue")
+	for _, stale := range []string{"land directly on `main`", "before CI exists", "From iteration 02 on"} {
+		if strings.Contains(strings.Join(strings.Fields(pr), " "), stale) {
+			t.Fatalf("PR flow keeps the superseded bootstrap narrative %q", stale)
+		}
+	}
 	steps := numberedSteps(t, pr)
 	if len(steps) < 5 {
 		t.Fatalf("steps = %q", steps)
@@ -614,6 +625,7 @@ func TestCIPRProcedure(t *testing.T) {
 		"git ls-remote https://github.com/actions/checkout.git 'refs/tags/v6.0.2' 'refs/tags/v6.0.2^{}'",
 		"git ls-remote https://github.com/actions/setup-go.git 'refs/tags/v6.3.0' 'refs/tags/v6.3.0^{}'",
 		"peeled commit", "handoff blocker")
+	requireTerms(t, "First remote run", first, "stress evidence from both logs", "`devcheck: stage stress ok`", "elapsed time of each stress step")
 	local := docSection(t, "Local verification")
-	requireTerms(t, "Local verification", local, "go run ./cmd/devcheck all", "actionlint", "not a required dependency")
+	requireTerms(t, "Local verification", local, "go run ./cmd/devcheck all", "go run ./cmd/devcheck stress", "actionlint", "not a required dependency")
 }

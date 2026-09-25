@@ -29,9 +29,11 @@ type Job struct {
 }
 
 // jobs is the fixed two-job contract; order is the documentation order.
+// Both jobs end with the same stress stage: a Linux-only stress pass cannot
+// qualify Darwin.
 var jobs = []Job{
-	{ID: "linux", Name: "ci-linux", RunsOn: "ubuntu-24.04", TimeoutMinutes: 45, Stages: []string{"test", "coverage", "bench", "cross"}},
-	{ID: "macos", Name: "ci-macos", RunsOn: "macos-15", TimeoutMinutes: 30, Stages: []string{"native"}},
+	{ID: "linux", Name: "ci-linux", RunsOn: "ubuntu-24.04", TimeoutMinutes: 45, Stages: []string{"test", "coverage", "bench", "cross", "stress"}},
+	{ID: "macos", Name: "ci-macos", RunsOn: "macos-15", TimeoutMinutes: 30, Stages: []string{"native", "stress"}},
 }
 
 // Jobs returns a fresh copy of the required job contract.

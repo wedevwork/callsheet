@@ -148,9 +148,16 @@ func NewTree(goos string) *Command {
 
 // Run executes args (without the program name) against the tree for the
 // running OS and returns the process exit code. An unsupported OS is
-// rejected with exit 2 before any argument is parsed.
+// rejected with exit 2 before any argument is parsed. Run is the only host
+// OS read; every decision is made by runFor from its goos argument.
 func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer) int {
-	return run(ctx, NewTree(runtime.GOOS), runtime.GOOS, args, out, errOut)
+	return runFor(ctx, runtime.GOOS, args, in, out, errOut)
+}
+
+// runFor is Run for an explicit goos. Input is currently unused: no command
+// reads stdin in this build.
+func runFor(ctx context.Context, goos string, args []string, in io.Reader, out, errOut io.Writer) int {
+	return run(ctx, NewTree(goos), goos, args, out, errOut)
 }
 
 func run(ctx context.Context, root *Command, goos string, args []string, out, errOut io.Writer) int {

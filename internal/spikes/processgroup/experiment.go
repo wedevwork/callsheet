@@ -29,6 +29,9 @@ const (
 	EnvGroups  = "CALLSHEET_PG_GROUPS"
 	// envLifetimeFD mirrors fakeadapter.EnvLifetimeFD (asserted in tests).
 	envLifetimeFD = "CALLSHEET_FAKE_DESCENDANT_LIFETIME_FD"
+	// fakeSignalSuffix mirrors fakeadapter.SignalFileSuffix (asserted in
+	// tests): the descendant's signal log is the leader's plus this suffix.
+	fakeSignalSuffix = ".grandchild"
 	// CaseDeadline bounds one case inside the helper.
 	CaseDeadline = 30 * time.Second
 	// ReapLimit bounds scheduler/reaping after the escalation.
@@ -199,14 +202,35 @@ func signalName(sig syscall.Signal) string {
 	}
 }
 
-func readSignals(path string, pid int) []string {
+// readSignals returns the signals the fake recorded for pid in the signal
+// log at path. A missing log is (nil, nil): the case's acknowledgment
+// assertions then fail. Any other open or read failure is corrupt evidence
+// and is returned, wrapped with the path, together with the signals read
+// before it.
+func readSignals(path string, pid int) ([]string, error) {
 	f, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("signal log %s: %w", path, err)
 	}
 	defer f.Close()
+	out, err := scanSignals(f, pid)
+	if err != nil {
+		return out, fmt.Errorf("signal log %s: %w", path, err)
+	}
+	return out, nil
+}
+
+// scanSignals extracts, in order, the signal names of pid's records from a
+// JSON-lines signal log, ignoring malformed lines and other pids. The
+// default Scanner token limit is kept: an oversized line is corrupt
+// evidence. On a scan failure it returns the signals collected so far and
+// the error.
+func scanSignals(r io.Reader, pid int) ([]string, error) {
 	var out []string
-	sc := bufio.NewScanner(f)
+	sc := bufio.NewScanner(r)
 	for sc.Scan() {
 		var rec struct {
 			PID    int    `json:"pid"`
@@ -216,7 +240,25 @@ func readSignals(path string, pid int) []string {
 			out = append(out, rec.Signal)
 		}
 	}
-	return out
+	return out, sc.Err()
+}
+
+// collectSignals reads the leader's and (when known) the descendant's signal
+// logs in dir into res. Both reads always run; each failure is recorded in
+// res.Errors, so valid lines read before a failure cannot hide it. It is the
+// evidence step of RunCase's deferred cleanup.
+func collectSignals(res *CaseResult, dir string, leader, descendant int) {
+	var err error
+	res.LeaderSignals, err = readSignals(filepath.Join(dir, "signals.jsonl"), leader)
+	if err != nil {
+		res.Errors = append(res.Errors, fmt.Sprintf("leader %d signal evidence: %v", leader, err))
+	}
+	if descendant > 0 {
+		res.DescendantSignals, err = readSignals(filepath.Join(dir, "signals.jsonl"+fakeSignalSuffix), descendant)
+		if err != nil {
+			res.Errors = append(res.Errors, fmt.Sprintf("descendant %d signal evidence: %v", descendant, err))
+		}
+	}
 }
 
 func contains(xs []string, s string) bool {
@@ -349,10 +391,7 @@ func RunCase(ctx context.Context, cfg Config, c Case) (res CaseResult) {
 		if desc > 0 {
 			res.DescendantGoneESRCH = mustGone(sys, desc, fail)
 		}
-		res.LeaderSignals = readSignals(filepath.Join(dir, "signals.jsonl"), pgid)
-		if desc > 0 {
-			res.DescendantSignals = readSignals(filepath.Join(dir, "signals.jsonl.grandchild"), desc)
-		}
+		collectSignals(&res, dir, pgid, desc)
 		evaluate(&res)
 		res.Pass = len(res.Errors) == 0
 	}()
@@ -540,9 +579,17 @@ func evaluateFor(r *CaseResult, goos string) {
 
 // RunHelper is the dedicated helper process's main: it becomes a child
 // subreaper (Linux), runs every case, writes the JSON report and returns 0
-// only if all cases passed.
+// only if all cases passed. It only supplies the host platform to
+// runHelperFor.
 func RunHelper(getenv func(string) string) int {
-	rep := &Report{Platform: runtime.GOOS + "/" + runtime.GOARCH}
+	return runHelperFor(getenv, runtime.GOOS, runtime.GOARCH)
+}
+
+// runHelperFor is RunHelper with the report's platform label given
+// explicitly. goos and goarch only label the report; the experiment itself
+// still uses the build-selected native syscalls and evaluate.
+func runHelperFor(getenv func(string) string, goos, goarch string) int {
+	rep := &Report{Platform: goos + "/" + goarch}
 	fake, work, results, groups := getenv(EnvFake), getenv(EnvWorkDir), getenv(EnvResults), getenv(EnvGroups)
 	write := func() int {
 		b, _ := json.MarshalIndent(rep, "", "  ")

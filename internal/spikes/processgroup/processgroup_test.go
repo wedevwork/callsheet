@@ -418,23 +418,28 @@ func caseNamed(name string) Case {
 	panic(name)
 }
 
-func TestEvaluateExpectations(t *testing.T) {
-	for _, goos := range []string{"linux", "darwin"} {
-		for _, c := range Cases {
-			r := goodResult(c.Name)
-			evaluateFor(&r, goos)
-			if len(r.Errors) != 0 {
-				t.Fatalf("%s: %s good result failed: %v", goos, c.Name, r.Errors)
-			}
+// evaluateMutation is one corruption of a good result. linuxOnly marks
+// mutations of the adopted descendant's own status, which evaluate checks
+// only where the helper reaps it (linux); on darwin launchd reaps orphans, so
+// those mutations must not be flagged there.
+type evaluateMutation struct {
+	apply     func(*CaseResult)
+	linuxOnly bool
+}
+
+// checkEvaluateMatrix runs the full dual-platform evaluate matrix for goos:
+// every good result passes and every mutation is flagged exactly where it
+// applies.
+func checkEvaluateMatrix(t *testing.T, goos string) {
+	t.Helper()
+	for _, c := range Cases {
+		r := goodResult(c.Name)
+		evaluateFor(&r, goos)
+		if len(r.Errors) != 0 {
+			t.Fatalf("%s: %s good result failed: %v", goos, c.Name, r.Errors)
 		}
 	}
-	// linuxOnly marks mutations of the adopted descendant's own status, which
-	// evaluate checks only where the helper reaps it (linux); on darwin launchd
-	// reaps orphans, so those mutations must not be flagged there.
-	type mutation struct {
-		apply     func(*CaseResult)
-		linuxOnly bool
-	}
+	type mutation = evaluateMutation
 	mutations := map[string][]mutation{
 		"cooperative": {
 			{apply: func(r *CaseResult) { r.KillSent = true }},
@@ -461,22 +466,26 @@ func TestEvaluateExpectations(t *testing.T) {
 			{apply: func(r *CaseResult) { r.Leader.Exited = false }},
 		},
 	}
-	for _, goos := range []string{"linux", "darwin"} {
-		for name, ms := range mutations {
-			for i, m := range ms {
-				r := goodResult(name)
-				m.apply(&r)
-				evaluateFor(&r, goos)
-				want := goos == "linux" || !m.linuxOnly
-				if got := len(r.Errors) != 0; got != want {
-					if want {
-						t.Errorf("%s: %s mutation %d not detected", goos, name, i)
-					} else {
-						t.Errorf("%s: %s mutation %d is linux-only but was flagged: %v", goos, name, i, r.Errors)
-					}
+	for name, ms := range mutations {
+		for i, m := range ms {
+			r := goodResult(name)
+			m.apply(&r)
+			evaluateFor(&r, goos)
+			want := goos == "linux" || !m.linuxOnly
+			if got := len(r.Errors) != 0; got != want {
+				if want {
+					t.Errorf("%s: %s mutation %d not detected", goos, name, i)
+				} else {
+					t.Errorf("%s: %s mutation %d is linux-only but was flagged: %v", goos, name, i, r.Errors)
 				}
 			}
 		}
+	}
+}
+
+func TestEvaluateExpectations(t *testing.T) {
+	for _, goos := range []string{"linux", "darwin"} {
+		checkEvaluateMatrix(t, goos)
 	}
 	r := CaseResult{}
 	evaluate(&r)
@@ -514,11 +523,11 @@ func TestHelpersAndStatuses(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "s.jsonl")
 	os.WriteFile(p, []byte(`{"pid":5,"signal":"SIGTERM"}`+"\nbad\n"+`{"pid":6,"signal":"SIGINT"}`+"\n"), 0o600)
-	if got := readSignals(p, 5); len(got) != 1 || got[0] != "SIGTERM" || !contains(got, "SIGTERM") || contains(got, "x") {
-		t.Fatalf("signals = %v", got)
+	if got, err := readSignals(p, 5); err != nil || len(got) != 1 || got[0] != "SIGTERM" || !contains(got, "SIGTERM") || contains(got, "x") {
+		t.Fatalf("signals = %v %v", got, err)
 	}
-	if readSignals(filepath.Join(dir, "missing"), 5) != nil {
-		t.Fatal("missing file")
+	if got, err := readSignals(filepath.Join(dir, "missing"), 5); got != nil || err != nil {
+		t.Fatalf("missing file = %v %v", got, err)
 	}
 	done := make(chan struct{})
 	if _, err := waitReady(filepath.Join(dir, "ready.json"), done, 10*time.Millisecond); err == nil || !strings.Contains(err.Error(), "timeout") {

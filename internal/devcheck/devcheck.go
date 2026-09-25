@@ -1,7 +1,7 @@
 // Package devcheck is the development-only, pure-Go check driver behind
-// cmd/devcheck: test, coverage, bench, cross, all and native. It is not
-// distributed and imports no product services. Child tools run with argv (no
-// shell).
+// cmd/devcheck: test, coverage, bench, cross, all, native and stress. It is
+// not distributed and imports no product services. Child tools run with argv
+// (no shell).
 package devcheck
 
 import (
@@ -311,13 +311,16 @@ func (d *driver) cross() error {
 	return Cross(d.ctx, d.run, out, Matrix)
 }
 
-const usage = "usage: devcheck test | coverage [-o profile] | bench | cross | all | native\n"
+const usage = "usage: devcheck test | coverage [-o profile] | bench | cross | all | native | stress\n"
 
 // stageNames is the single stage definition used by argument dispatch and
 // advertised by Stages.
-var stageNames = [...]string{"test", "coverage", "bench", "cross", "all", "native"}
+var stageNames = [...]string{"test", "coverage", "bench", "cross", "all", "native", "stress"}
 
-// allStages is the stage sequence of "all" ("native" is selected explicitly).
+// allStages is the stage sequence of "all". "native" and "stress" are
+// selected explicitly: stress repeats subprocess builds and process
+// experiments for minutes, so release and review verification run both
+// "all" and "stress".
 var allStages = []string{"test", "coverage", "bench", "cross"}
 
 // Stages returns a fresh copy of the subcommand names accepted by dispatch.
@@ -359,14 +362,19 @@ func runFor(ctx context.Context, goos string, args []string, out, errOut io.Writ
 	if sub == "all" {
 		stages = allStages
 	}
-	// An unsupported native host is rejected before any scratch exists.
-	var nativeSteps []Step
-	if sub == "native" {
-		var err error
-		if nativeSteps, err = NativeSteps(goos); err != nil {
-			fmt.Fprintf(errOut, "devcheck: stage native FAILED: %v\n", err)
-			return 1
-		}
+	// An unsupported native or stress host is rejected before any scratch
+	// exists and before any child runs.
+	var nativeSteps, stressSteps []Step
+	var planErr error
+	switch sub {
+	case "native":
+		nativeSteps, planErr = NativeSteps(goos)
+	case "stress":
+		stressSteps, planErr = StressSteps(goos)
+	}
+	if planErr != nil {
+		fmt.Fprintf(errOut, "devcheck: stage %s FAILED: %v\n", sub, planErr)
+		return 1
 	}
 	scratch, err := os.MkdirTemp("", "callsheet-devcheck-")
 	if err != nil {
@@ -388,6 +396,8 @@ func runFor(ctx context.Context, goos string, args []string, out, errOut io.Writ
 			err = d.cross()
 		case "native":
 			err = d.native(nativeSteps)
+		case "stress":
+			err = d.stress(stressSteps)
 		default:
 			err = fmt.Errorf("devcheck: stage %q is advertised but not implemented", st)
 		}

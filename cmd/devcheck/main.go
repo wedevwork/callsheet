@@ -1,11 +1,15 @@
 // Command devcheck is the development-only check driver (test, coverage,
-// bench, cross, all, native). It is not distributed. Run it from the
+// bench, cross, all, native, stress). It is not distributed. Run it from the
 // repository root:
 //
 //	go run ./cmd/devcheck all
+//	go run ./cmd/devcheck stress
 //
 // native runs the full suite with go test -json on macOS and requires passing
 // evidence for the process-group qualification tests; other hosts reject it.
+// stress repeats the timing- and concurrency-sensitive tests under the race
+// detector (StressCount times at each of -cpu=1,2,4) on Linux and macOS; it is
+// deliberately not part of all.
 package main
 
 import (
