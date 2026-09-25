@@ -4,7 +4,6 @@ import (
 	"context"
 	"debug/elf"
 	"debug/macho"
-	"debug/pe"
 	"os"
 	"path/filepath"
 	"testing"
@@ -14,10 +13,20 @@ import (
 	"github.com/wedevwork/callsheet/internal/testkit"
 )
 
-// TestFP8BuildMatrix invokes devcheck.Cross with ExecRunner and the six-target
-// matrix from the repository root, then inspects (never executes) every
-// artifact's target metadata.
+// TestFP8BuildMatrix invokes devcheck.Cross with ExecRunner and the
+// four-target Linux/macOS matrix from the repository root, then inspects
+// (never executes) every artifact's target metadata.
 func TestFP8BuildMatrix(t *testing.T) {
+	// The supported set is asserted independently of the planner.
+	supported := []devcheck.Target{{GOOS: "linux", GOARCH: "amd64"}, {GOOS: "linux", GOARCH: "arm64"}, {GOOS: "darwin", GOARCH: "amd64"}, {GOOS: "darwin", GOARCH: "arm64"}}
+	if len(devcheck.Matrix) != len(supported) {
+		t.Fatalf("matrix = %v, want %v", devcheck.Matrix, supported)
+	}
+	for i, tg := range supported {
+		if devcheck.Matrix[i] != tg {
+			t.Fatalf("matrix = %v, want %v", devcheck.Matrix, supported)
+		}
+	}
 	root := testkit.MustRepoRoot(t)
 	t.Chdir(root)
 	out := t.TempDir()
@@ -27,25 +36,18 @@ func TestFP8BuildMatrix(t *testing.T) {
 		t.Fatalf("cross: %v", err)
 	}
 	var want []string
-	for _, tg := range devcheck.Matrix {
-		want = append(want, devcheck.CallsheetArtifact(tg))
-		if tg.Unix() {
-			want = append(want, devcheck.FakeArtifact(tg), devcheck.ProcessTestArtifact(tg))
-		}
+	for _, tg := range supported {
+		want = append(want, devcheck.CallsheetArtifact(tg), devcheck.FakeArtifact(tg), devcheck.ProcessTestArtifact(tg))
 	}
-	if len(want) != 14 {
-		t.Fatalf("expected 6+4+4 artifacts, planned %d", len(want))
+	if len(want) != 12 {
+		t.Fatalf("expected 4+4+4 artifacts, planned %d", len(want))
 	}
 	entries, _ := os.ReadDir(out)
 	if len(entries) != len(want) {
 		t.Fatalf("artifacts = %d, want %d", len(entries), len(want))
 	}
-	for _, tg := range devcheck.Matrix {
-		names := []string{devcheck.CallsheetArtifact(tg)}
-		if tg.Unix() {
-			names = append(names, devcheck.FakeArtifact(tg), devcheck.ProcessTestArtifact(tg))
-		}
-		for _, n := range names {
+	for _, tg := range supported {
+		for _, n := range []string{devcheck.CallsheetArtifact(tg), devcheck.FakeArtifact(tg), devcheck.ProcessTestArtifact(tg)} {
 			p := filepath.Join(out, n)
 			st, err := os.Stat(p)
 			if err != nil || st.Size() == 0 {
@@ -77,14 +79,6 @@ func inspect(t *testing.T, p string) (string, string) {
 			t.Fatalf("%s is not an executable Mach-O", p)
 		}
 		return "darwin", arch
-	}
-	if f, err := pe.Open(p); err == nil {
-		defer f.Close()
-		arch := map[uint16]string{pe.IMAGE_FILE_MACHINE_AMD64: "amd64", pe.IMAGE_FILE_MACHINE_ARM64: "arm64"}[f.Machine]
-		if f.Characteristics&pe.IMAGE_FILE_EXECUTABLE_IMAGE == 0 {
-			t.Fatalf("%s is not an executable PE image", p)
-		}
-		return "windows", arch
 	}
 	t.Fatalf("%s: unrecognised executable format", p)
 	return "", ""

@@ -20,7 +20,6 @@ func TestFP2CommandTree(t *testing.T) {
 	env := []string{
 		"PATH=" + os.Getenv("PATH"),
 		"HOME=" + home,
-		"USERPROFILE=" + home,
 		"XDG_CONFIG_HOME=" + home + "/.config",
 		"XDG_STATE_HOME=" + home + "/.local/state",
 		"XDG_CACHE_HOME=" + home + "/.cache",
@@ -31,7 +30,7 @@ func TestFP2CommandTree(t *testing.T) {
 
 	t.Run("leaves", func(t *testing.T) {
 		leaves := tree.Leaves()
-		if runtime.GOOS != "windows" && len(leaves) != 32 {
+		if len(leaves) != 32 {
 			t.Fatalf("leaf count = %d", len(leaves))
 		}
 		for _, leaf := range leaves {
@@ -103,16 +102,14 @@ func TestFP2CommandTree(t *testing.T) {
 	})
 
 	t.Run("platform tree", func(t *testing.T) {
-		r := run("plane")
-		if runtime.GOOS == "windows" {
-			if r.code != 2 || !strings.Contains(r.stderr, "Linux and macOS only") {
-				t.Fatalf("windows plane = %+v", r)
+		for _, g := range []string{"plane", "sidecar"} {
+			r := run(g)
+			if r.code != 0 || r.stderr != "" || !strings.HasPrefix(r.stdout, "Usage: callsheet "+g+" <command>\n") {
+				t.Fatalf("%s = %+v", g, r)
 			}
-			if r := run("dispatch"); r.code != 8 {
-				t.Fatalf("windows dispatch = %+v", r)
+			if h := run("help", g); h.code != 0 || h.stderr != "" || h.stdout != r.stdout {
+				t.Fatalf("help %s = %+v", g, h)
 			}
-		} else if r.code != 0 {
-			t.Fatalf("plane = %+v", r)
 		}
 	})
 

@@ -1,0 +1,90 @@
+# CI for callsheet. Two fixed jobs whose names are the required status check
+# contexts on main: ci-linux and ci-macos (see docs/ci.md). All verification
+# policy lives in ./cmd/devcheck; the contract is checked offline by
+# internal/cicheck and tests/function/ci_test.go.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: ci-linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    env:
+      GOTOOLCHAIN: local
+      GOFLAGS: -mod=readonly
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Set up Go from go.mod
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+          check-latest: false
+      - name: Download modules
+        run: go mod download
+      - name: devcheck test (native suite and race suite)
+        run: go run ./cmd/devcheck test
+        env:
+          GOPROXY: "off"
+          GOSUMDB: "off"
+      - name: devcheck coverage (> 80% gate)
+        run: go run ./cmd/devcheck coverage
+        env:
+          GOPROXY: "off"
+          GOSUMDB: "off"
+      - name: devcheck bench (byte and invariant limits)
+        run: go run ./cmd/devcheck bench
+        env:
+          GOPROXY: "off"
+          GOSUMDB: "off"
+      - name: devcheck cross (Linux/macOS build matrix)
+        run: go run ./cmd/devcheck cross
+        env:
+          GOPROXY: "off"
+          GOSUMDB: "off"
+
+  macos:
+    name: ci-macos
+    runs-on: macos-15
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      GOTOOLCHAIN: local
+      GOFLAGS: -mod=readonly
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Set up Go from go.mod
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+          check-latest: false
+      - name: Download modules
+        run: go mod download
+      - name: devcheck native (full suite and Darwin process-group qualification)
+        run: go run ./cmd/devcheck native
+        env:
+          GOPROXY: "off"
+          GOSUMDB: "off"

@@ -51,17 +51,10 @@ func MustRepoRoot(t testing.TB) string {
 
 // GoTool returns the go command of the running toolchain.
 func GoTool() string {
-	if p := filepath.Join(runtime.GOROOT(), "bin", "go"+exeSuffix()); fileExists(p) {
+	if p := filepath.Join(runtime.GOROOT(), "bin", "go"); fileExists(p) {
 		return p
 	}
 	return "go"
-}
-
-func exeSuffix() string {
-	if runtime.GOOS == "windows" {
-		return ".exe"
-	}
-	return ""
 }
 
 func fileExists(p string) bool {
@@ -73,7 +66,7 @@ func fileExists(p string) bool {
 // for the host into a test-owned temp dir and returns its absolute path.
 func BuildBinary(t testing.TB, pkg, name string) string {
 	t.Helper()
-	out := filepath.Join(t.TempDir(), name+exeSuffix())
+	out := filepath.Join(t.TempDir(), name)
 	runGo(t, "build", "-o", out, pkg)
 	return out
 }
@@ -81,7 +74,7 @@ func BuildBinary(t testing.TB, pkg, name string) string {
 // BuildTestBinary compiles pkg's tests with "go test -c" for the host.
 func BuildTestBinary(t testing.TB, pkg, name string) string {
 	t.Helper()
-	out := filepath.Join(t.TempDir(), name+".test"+exeSuffix())
+	out := filepath.Join(t.TempDir(), name+".test")
 	runGo(t, "test", "-c", "-o", out, pkg)
 	return out
 }

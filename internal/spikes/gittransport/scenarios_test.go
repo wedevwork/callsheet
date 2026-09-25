@@ -14,7 +14,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -234,11 +233,12 @@ func scenarioSeedAndClone(e *scenarioEnv) {
 			t.Fatalf("checkout %s: %v", p, err)
 		}
 	}
-	if runtime.GOOS != "windows" {
-		st, err := os.Stat(filepath.Join(e.workDir, "bin", "run.sh"))
-		if err != nil || st.Mode().Perm()&0o111 == 0 {
-			t.Fatalf("bin/run.sh not executable on disk: %v %v", st.Mode(), err)
-		}
+	st, err := os.Stat(filepath.Join(e.workDir, "bin", "run.sh"))
+	if err != nil {
+		t.Fatalf("stat bin/run.sh: %v", err)
+	}
+	if st.Mode().Perm()&0o111 == 0 {
+		t.Fatalf("bin/run.sh not executable on disk: %v", st.Mode())
 	}
 	xs := e.since(mark)
 	e.requireUploadFetch(xs)

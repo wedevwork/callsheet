@@ -1,6 +1,7 @@
 // Package devcheck is the development-only, pure-Go check driver behind
-// cmd/devcheck: test, coverage, bench, cross and all. It is not distributed
-// and imports no product services. Child tools run with argv (no shell).
+// cmd/devcheck: test, coverage, bench, cross, all and native. It is not
+// distributed and imports no product services. Child tools run with argv (no
+// shell).
 package devcheck
 
 import (
@@ -46,11 +47,11 @@ func (t Target) String() string { return t.GOOS + "/" + t.GOARCH }
 // Unix reports whether t is a plane/sidecar (Linux/macOS) target.
 func (t Target) Unix() bool { return t.GOOS == "linux" || t.GOOS == "darwin" }
 
-// Matrix is exactly the supported six-target cross-build matrix.
+// Matrix is exactly the supported four-target (Linux/macOS) cross-build
+// matrix. v1 supports no other platform.
 var Matrix = []Target{
 	{"linux", "amd64"}, {"linux", "arm64"},
 	{"darwin", "amd64"}, {"darwin", "arm64"},
-	{"windows", "amd64"}, {"windows", "arm64"},
 }
 
 // ValidateTarget rejects any pair outside Matrix.
@@ -63,19 +64,14 @@ func ValidateTarget(t Target) error {
 	return fmt.Errorf("devcheck: unsupported target %s", t)
 }
 
-// Artifact names for a target.
-func CallsheetArtifact(t Target) string {
-	name := "callsheet-" + t.GOOS + "-" + t.GOARCH
-	if t.GOOS == "windows" {
-		name += ".exe"
-	}
-	return name
-}
+// CallsheetArtifact is the callsheet artifact name for a target. Formatting
+// a name grants no target support; CrossPlan validates targets.
+func CallsheetArtifact(t Target) string { return "callsheet-" + t.GOOS + "-" + t.GOARCH }
 
-// FakeArtifact is the fake-adapter artifact name (Unix targets only).
+// FakeArtifact is the fake-adapter artifact name.
 func FakeArtifact(t Target) string { return "fake-adapter-" + t.GOOS + "-" + t.GOARCH }
 
-// ProcessTestArtifact is the compiled process-group test (Unix targets only).
+// ProcessTestArtifact is the compiled process-group test artifact name.
 func ProcessTestArtifact(t Target) string { return "processgroup-" + t.GOOS + "-" + t.GOARCH + ".test" }
 
 // Step is one planned child command; Env holds overrides applied on top of
@@ -86,7 +82,9 @@ type Step struct {
 	Env  []string
 }
 
-// CrossPlan returns the build steps for targets into outDir.
+// CrossPlan returns the build steps for targets into outDir: callsheet,
+// fake-adapter and the process-group test binary for every target. Any
+// target outside Matrix fails the whole plan.
 func CrossPlan(outDir string, targets []Target) ([]Step, error) {
 	if len(targets) == 0 {
 		return nil, errors.New("devcheck: no targets")
@@ -97,16 +95,14 @@ func CrossPlan(outDir string, targets []Target) ([]Step, error) {
 			return nil, err
 		}
 		env := []string{"CGO_ENABLED=0", "GOOS=" + t.GOOS, "GOARCH=" + t.GOARCH}
-		steps = append(steps, Step{Name: "cross " + t.String() + " callsheet", Env: env,
-			Argv: []string{"go", "build", "-o", filepath.Join(outDir, CallsheetArtifact(t)), "./cmd/callsheet"}})
-		if t.Unix() {
-			steps = append(steps,
-				Step{Name: "cross " + t.String() + " fake-adapter", Env: env,
-					Argv: []string{"go", "build", "-o", filepath.Join(outDir, FakeArtifact(t)), "./cmd/fake-adapter"}},
-				Step{Name: "cross " + t.String() + " processgroup test", Env: env,
-					Argv: []string{"go", "test", "-c", "-o", filepath.Join(outDir, ProcessTestArtifact(t)), "./internal/spikes/processgroup"}},
-			)
-		}
+		steps = append(steps,
+			Step{Name: "cross " + t.String() + " callsheet", Env: env,
+				Argv: []string{"go", "build", "-o", filepath.Join(outDir, CallsheetArtifact(t)), "./cmd/callsheet"}},
+			Step{Name: "cross " + t.String() + " fake-adapter", Env: env,
+				Argv: []string{"go", "build", "-o", filepath.Join(outDir, FakeArtifact(t)), "./cmd/fake-adapter"}},
+			Step{Name: "cross " + t.String() + " processgroup test", Env: env,
+				Argv: []string{"go", "test", "-c", "-o", filepath.Join(outDir, ProcessTestArtifact(t)), "./internal/spikes/processgroup"}},
+		)
 	}
 	return steps, nil
 }
@@ -160,8 +156,8 @@ func runStep(ctx context.Context, run Runner, s Step, stdout io.Writer) error {
 	return nil
 }
 
-// Cross builds callsheet for every target and fake-adapter plus the
-// process-group test binary for Linux/macOS targets into outDir, using the
+// Cross builds callsheet, fake-adapter and the process-group test binary for
+// every target into outDir, using the
 // caller's working directory (the repository root). It neither creates nor
 // removes outDir, and never executes the foreign binaries.
 func Cross(ctx context.Context, run Runner, outDir string, targets []Target) error {
@@ -240,6 +236,7 @@ type driver struct {
 	ctx     context.Context
 	run     Runner
 	out     io.Writer
+	errOut  io.Writer
 	scratch string
 	goos    string
 }
@@ -314,7 +311,26 @@ func (d *driver) cross() error {
 	return Cross(d.ctx, d.run, out, Matrix)
 }
 
-const usage = "usage: devcheck test | coverage [-o profile] | bench | cross | all\n"
+const usage = "usage: devcheck test | coverage [-o profile] | bench | cross | all | native\n"
+
+// stageNames is the single stage definition used by argument dispatch and
+// advertised by Stages.
+var stageNames = [...]string{"test", "coverage", "bench", "cross", "all", "native"}
+
+// allStages is the stage sequence of "all" ("native" is selected explicitly).
+var allStages = []string{"test", "coverage", "bench", "cross"}
+
+// Stages returns a fresh copy of the subcommand names accepted by dispatch.
+func Stages() []string { return append([]string(nil), stageNames[:]...) }
+
+func isStage(name string) bool {
+	for _, s := range stageNames {
+		if s == name {
+			return true
+		}
+	}
+	return false
+}
 
 // Run executes a devcheck subcommand and returns the process exit code:
 // 0 success, 1 failed stage, 2 usage error.
@@ -335,15 +351,22 @@ func runFor(ctx context.Context, goos string, args []string, out, errOut io.Writ
 		fmt.Fprintf(errOut, "devcheck: invalid arguments for %s\n%s", sub, usage)
 		return 2
 	}
-	var stages []string
-	switch sub {
-	case "test", "coverage", "bench", "cross":
-		stages = []string{sub}
-	case "all":
-		stages = []string{"test", "coverage", "bench", "cross"}
-	default:
+	if !isStage(sub) {
 		fmt.Fprintf(errOut, "devcheck: unknown subcommand %q\n%s", sub, usage)
 		return 2
+	}
+	stages := []string{sub}
+	if sub == "all" {
+		stages = allStages
+	}
+	// An unsupported native host is rejected before any scratch exists.
+	var nativeSteps []Step
+	if sub == "native" {
+		var err error
+		if nativeSteps, err = NativeSteps(goos); err != nil {
+			fmt.Fprintf(errOut, "devcheck: stage native FAILED: %v\n", err)
+			return 1
+		}
 	}
 	scratch, err := os.MkdirTemp("", "callsheet-devcheck-")
 	if err != nil {
@@ -351,7 +374,7 @@ func runFor(ctx context.Context, goos string, args []string, out, errOut io.Writ
 		return 1
 	}
 	fmt.Fprintf(out, "devcheck: scratch %s\n", scratch)
-	d := &driver{ctx: ctx, run: run, out: out, scratch: scratch, goos: goos}
+	d := &driver{ctx: ctx, run: run, out: out, errOut: errOut, scratch: scratch, goos: goos}
 	for _, st := range stages {
 		var err error
 		switch st {
@@ -363,6 +386,10 @@ func runFor(ctx context.Context, goos string, args []string, out, errOut io.Writ
 			err = d.steps(BenchSteps())
 		case "cross":
 			err = d.cross()
+		case "native":
+			err = d.native(nativeSteps)
+		default:
+			err = fmt.Errorf("devcheck: stage %q is advertised but not implemented", st)
 		}
 		if err != nil {
 			fmt.Fprintf(errOut, "devcheck: stage %s FAILED: %v\ndevcheck: logs retained in %s\n", st, err, scratch)

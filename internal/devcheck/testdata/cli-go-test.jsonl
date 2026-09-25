@@ -1,0 +1,40 @@
+{"Time":"2026-09-25T18:18:55.537311296+02:00","Action":"start","Package":"github.com/wedevwork/callsheet/internal/cli"}
+{"Time":"2026-09-25T18:18:55.538493114+02:00","Action":"run","Package":"github.com/wedevwork/callsheet/internal/cli","Test":"TestNewTreeSelection"}
+{"Time":"2026-09-25T18:18:55.538520857+02:00","Action":"output","Package":"github.com/wedevwork/callsheet/internal/cli","Test":"TestNewTreeSelection","Output":"=== RUN   TestNewTreeSelection\n"}
+{"Time":"2026-09-25T18:18:55.538538298+02:00","Action":"output","Package":"github.com/wedevwork/callsheet/internal/cli","Test":"TestNewTreeSelection","Output":"--- PASS: TestNewTreeSelection (0.00s)\n"}
+{"Time":"2026-09-25T18:18:55.538542991+02:00","Action":"pass","Package":"github.com/wedevwork/callsheet/internal/cli","Test":"TestNewTreeSelection","Elapsed":0}
+{"Time":"2026-09-25T18:18:55.538552058+02:00","Action":"run","Package":"github.com/wedevwork/callsheet/internal/cli","Test":"TestRootHelpForms"}
+{"Time":"2026-09-25T18:18:55.538556314+02:00","Action":"output","Package":"github.com/wedevwork/callsheet/internal/cli","Test":"TestRootHelpForms","Output":"=== RUN   TestRootHelpForms\n"}
+{"Time":"2026-09-25T18:18:55.538591669+02:00","Action":"output","Package":"github.com/wedevwork/callsheet/internal/cli","Test":"TestRootHelpForms","Output":"--- PASS: TestRootHelpForms (0.00s)\n"}
+{"Time":"2026-09-25T18:18:55.538594677+02:00","Action":"pass","Package":"github.com/wedevwork/callsheet/internal/cli","Test":"TestRootHelpForms","Elapsed":0}
+{"Time":"2026-09-25T18:18:55.538600255+02:00","Action":"run","Package":"github.com/wedevwork/callsheet/internal/cli","Test":"TestGroupAndLeafHelp"}
+{"Time":"2026-09-25T18:18:55.538603751+02:00","Action":"output","Package":"github.com/wedevwork/callsheet/internal/cli","Test":"TestGroupAndLeafHelp","Output":"=== RUN   TestGroupAndLeafHelp\n"}
+{"Time":"2026-09-25T18:18:55.538641433+02:00","Action":"output","Package":"github.com/wedevwork/callsheet/internal/cli","Test":"TestGroupAndLeafHelp","Output":"--- PASS: TestGroupAndLeafHelp (0.00s)\n"}
+{"Time":"2026-09-25T18:18:55.538644173+02:00","Action":"pass","Package":"github.com/wedevwork/callsheet/internal/cli","Test":"TestGroupAndLeafHelp","Elapsed":0}
+{"Time":"2026-09-25T18:18:55.538648265+02:00","Action":"run","Package":"github.com/wedevwork/callsheet/internal/cli","Test":"TestStubLeaves"}
+{"Time":"2026-09-25T18:18:55.538651488+02:00","Action":"output","Package":"github.com/wedevwork/callsheet/internal/cli","Test":"TestStubLeaves","Output":"=== RUN   TestStubLeaves\n"}
+{"Time":"2026-09-25T18:18:55.538795048+02:00","Action":"output","Package":"github.com/wedevwork/callsheet/internal/cli","Test":"TestStubLeaves","Output":"--- PASS: TestStubLeaves (0.00s)\n"}
+{"Time":"2026-09-25T18:18:55.538799306+02:00","Action":"pass","Package":"github.com/wedevwork/callsheet/internal/cli","Test":"TestStubLeaves","Elapsed":0}
+{"Time":"2026-09-25T18:18:55.538803471+02:00","Action":"run","Package":"github.com/wedevwork/callsheet/internal/cli","Test":"TestVersion"}
+{"Time":"2026-09-25T18:18:55.538806632+02:00","Action":"output","Package":"github.com/wedevwork/callsheet/internal/cli","Test":"TestVersion","Output":"=== RUN   TestVersion\n"}
+{"Time":"2026-09-25T18:18:55.538829239+02:00","Action":"output","Package":"github.com/wedevwork/callsheet/internal/cli","Test":"TestVersion","Output":"--- PASS: TestVersion (0.00s)\n"}
+{"Time":"2026-09-25T18:18:55.538832274+02:00","Action":"pass","Package":"github.com/wedevwork/callsheet/internal/cli","Test":"TestVersion","Elapsed":0}
+{"Time":"2026-09-25T18:18:55.538835632+02:00","Action":"run","Package":"github.com/wedevwork/callsheet/internal/cli","Test":"TestInvalidCommands"}
+{"Time":"2026-09-25T18:18:55.53883886+02:00","Action":"output","Package":"github.com/wedevwork/callsheet/internal/cli","Test":"TestInvalidCommands","Output":"=== RUN   TestInvalidCommands\n"}
+{"Time":"2026-09-25T18:18:55.538880243+02:00","Action":"output","Package":"github.com/wedevwork/callsheet/internal/cli","Test":"TestInvalidCommands","Output":"--- PASS: TestInvalidCommands (0.00s)\n"}
+{"Time":"2026-09-25T18:18:55.538883227+02:00","Action":"pass","Package":"github.com/wedevwork/callsheet/internal/cli","Test":"TestInvalidCommands","Elapsed":0}
+{"Time":"2026-09-25T18:18:55.538892769+02:00","Action":"run","Package":"github.com/wedevwork/callsheet/internal/cli","Test":"TestUnsupportedOS"}
+{"Time":"2026-09-25T18:18:55.538896533+02:00","Action":"output","Package":"github.com/wedevwork/callsheet/internal/cli","Test":"TestUnsupportedOS","Output":"=== RUN   TestUnsupportedOS\n"}
+{"Time":"2026-09-25T18:18:55.538939235+02:00","Action":"output","Package":"github.com/wedevwork/callsheet/internal/cli","Test":"TestUnsupportedOS","Output":"--- PASS: TestUnsupportedOS (0.00s)\n"}
+{"Time":"2026-09-25T18:18:55.538942259+02:00","Action":"pass","Package":"github.com/wedevwork/callsheet/internal/cli","Test":"TestUnsupportedOS","Elapsed":0}
+{"Time":"2026-09-25T18:18:55.538947024+02:00","Action":"run","Package":"github.com/wedevwork/callsheet/internal/cli","Test":"TestInterruptedAndPublicRun"}
+{"Time":"2026-09-25T18:18:55.538950156+02:00","Action":"output","Package":"github.com/wedevwork/callsheet/internal/cli","Test":"TestInterruptedAndPublicRun","Output":"=== RUN   TestInterruptedAndPublicRun\n"}
+{"Time":"2026-09-25T18:18:55.538956367+02:00","Action":"output","Package":"github.com/wedevwork/callsheet/internal/cli","Test":"TestInterruptedAndPublicRun","Output":"--- PASS: TestInterruptedAndPublicRun (0.00s)\n"}
+{"Time":"2026-09-25T18:18:55.538960968+02:00","Action":"pass","Package":"github.com/wedevwork/callsheet/internal/cli","Test":"TestInterruptedAndPublicRun","Elapsed":0}
+{"Time":"2026-09-25T18:18:55.538966528+02:00","Action":"run","Package":"github.com/wedevwork/callsheet/internal/cli","Test":"TestMcpStubStdoutClean"}
+{"Time":"2026-09-25T18:18:55.538969976+02:00","Action":"output","Package":"github.com/wedevwork/callsheet/internal/cli","Test":"TestMcpStubStdoutClean","Output":"=== RUN   TestMcpStubStdoutClean\n"}
+{"Time":"2026-09-25T18:18:55.538973913+02:00","Action":"output","Package":"github.com/wedevwork/callsheet/internal/cli","Test":"TestMcpStubStdoutClean","Output":"--- PASS: TestMcpStubStdoutClean (0.00s)\n"}
+{"Time":"2026-09-25T18:18:55.538978313+02:00","Action":"pass","Package":"github.com/wedevwork/callsheet/internal/cli","Test":"TestMcpStubStdoutClean","Elapsed":0}
+{"Time":"2026-09-25T18:18:55.538982061+02:00","Action":"output","Package":"github.com/wedevwork/callsheet/internal/cli","Output":"PASS\n"}
+{"Time":"2026-09-25T18:18:55.539140201+02:00","Action":"output","Package":"github.com/wedevwork/callsheet/internal/cli","Output":"ok  \tgithub.com/wedevwork/callsheet/internal/cli\t0.002s\n"}
+{"Time":"2026-09-25T18:18:55.539152592+02:00","Action":"pass","Package":"github.com/wedevwork/callsheet/internal/cli","Elapsed":0.002}

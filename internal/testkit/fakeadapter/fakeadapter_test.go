@@ -332,8 +332,8 @@ func TestInheritedFileParsing(t *testing.T) {
 	if strings.Join(f, ",") != "X=1,Y=2" {
 		t.Fatalf("filtered = %v", f)
 	}
-	if runtime.GOOS != "windows" && !signalsSupported {
-		t.Fatal("signals must be supported on unix")
+	if (runtime.GOOS == "linux" || runtime.GOOS == "darwin") && !signalsSupported {
+		t.Fatal("signals must be supported on linux and darwin")
 	}
 }
 

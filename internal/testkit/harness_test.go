@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -425,4 +426,24 @@ func TestRepoHelpers(t *testing.T) {
 		t.Fatal("go tool")
 	}
 	_ = net.IPv4len
+}
+
+// UT-5: host helper paths carry no platform suffix on the supported hosts.
+func TestHostHelperPathsSuffixFree(t *testing.T) {
+	if g := GoTool(); g != "go" && !strings.HasSuffix(g, string(filepath.Separator)+filepath.Join("bin", "go")) {
+		t.Fatalf("GoTool = %q", g)
+	}
+	bin := BuildBinary(t, "./cmd/fake-adapter", "fake-adapter")
+	if filepath.Base(bin) != "fake-adapter" {
+		t.Fatalf("BuildBinary = %q", bin)
+	}
+	test := BuildTestBinary(t, "./internal/contract", "contract")
+	if filepath.Base(test) != "contract.test" {
+		t.Fatalf("BuildTestBinary = %q", test)
+	}
+	for _, p := range []string{bin, test} {
+		if st, err := os.Stat(p); err != nil || st.Mode().Perm()&0o111 == 0 {
+			t.Fatalf("%s not an executable file: %v", p, err)
+		}
+	}
 }

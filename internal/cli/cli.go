@@ -83,12 +83,16 @@ func node(name, summary string, children ...*Command) *Command {
 	return c
 }
 
-// unixOnly lists root commands that exist only on Linux and macOS.
-var unixOnly = map[string]bool{"plane": true, "sidecar": true}
+// supportedOS reports whether goos is a supported v1 platform (Linux, macOS).
+func supportedOS(goos string) bool { return goos == "linux" || goos == "darwin" }
 
 // NewTree builds the command tree for goos without reading host state.
-// Windows omits the plane and sidecar groups.
+// Linux and macOS get the identical full tree; every other goos (including
+// "windows" and "") is unsupported and yields nil.
 func NewTree(goos string) *Command {
+	if !supportedOS(goos) {
+		return nil
+	}
 	children := []*Command{
 		{Name: "version", Summary: "Print the callsheet and protocol version", builtin: true},
 		node("plane", "Plane service commands (Linux/macOS)",
@@ -139,18 +143,12 @@ func NewTree(goos string) *Command {
 		),
 		node("mcp", "Run the local MCP server (stdio)"),
 	}
-	var kept []*Command
-	for _, c := range children {
-		if goos == "windows" && unixOnly[c.Name] {
-			continue
-		}
-		kept = append(kept, c)
-	}
-	return node("callsheet", "Callsheet coordinates AI coding agents across machines", kept...)
+	return node("callsheet", "Callsheet coordinates AI coding agents across machines", children...)
 }
 
 // Run executes args (without the program name) against the tree for the
-// running OS and returns the process exit code.
+// running OS and returns the process exit code. An unsupported OS is
+// rejected with exit 2 before any argument is parsed.
 func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer) int {
 	return run(ctx, NewTree(runtime.GOOS), runtime.GOOS, args, out, errOut)
 }
@@ -160,83 +158,85 @@ func run(ctx context.Context, root *Command, goos string, args []string, out, er
 		fmt.Fprintf(errOut, "callsheet: interrupted\n")
 		return contract.ExitInterrupted
 	}
+	if root == nil || !supportedOS(goos) {
+		e := contract.New(contract.CodeInvalidArgument,
+			fmt.Sprintf("unsupported operating system %q; supported: linux, darwin", goos))
+		diag(errOut, e)
+		return contract.ExitCode(e)
+	}
 	cur := root
 	for i := 0; i < len(args); i++ {
 		tok := args[i]
 		switch {
 		case cur == root && tok == "help":
-			return helpPath(root, goos, args[i+1:], out, errOut)
+			return helpPath(root, args[i+1:], out, errOut)
 		case tok == "--help" || tok == "-h":
-			writeHelp(out, cur, goos)
+			writeHelp(out, cur)
 			return 0
 		case cur == root && tok == "--version":
-			return runVersion(root.Child("version"), args[i+1:], out, errOut, goos)
+			return runVersion(root.Child("version"), args[i+1:], out, errOut)
 		case strings.HasPrefix(tok, "-"):
-			return usageError(errOut, cur, goos, fmt.Sprintf("unknown flag %q for %q", tok, cur.Path()))
+			return usageError(errOut, cur, fmt.Sprintf("unknown flag %q for %q", tok, cur.Path()))
 		}
 		next := cur.Child(tok)
 		if next == nil {
-			return unknownChild(errOut, cur, goos, tok)
+			return unknownChild(errOut, cur, tok)
 		}
 		cur = next
 		if cur.IsLeaf() {
-			return runLeaf(cur, args[i+1:], out, errOut, goos)
+			return runLeaf(cur, args[i+1:], out, errOut)
 		}
 	}
-	writeHelp(out, cur, goos)
+	writeHelp(out, cur)
 	return 0
 }
 
-func unknownChild(errOut io.Writer, cur *Command, goos, tok string) int {
-	if goos == "windows" && cur.parent == nil && unixOnly[tok] {
-		return usageError(errOut, cur, goos,
-			fmt.Sprintf("%q is available on Linux and macOS only; Windows supports coordinator commands", tok))
-	}
-	return usageError(errOut, cur, goos, fmt.Sprintf("unknown command %q for %q", tok, cur.Path()))
+func unknownChild(errOut io.Writer, cur *Command, tok string) int {
+	return usageError(errOut, cur, fmt.Sprintf("unknown command %q for %q", tok, cur.Path()))
 }
 
-func helpPath(root *Command, goos string, path []string, out, errOut io.Writer) int {
+func helpPath(root *Command, path []string, out, errOut io.Writer) int {
 	cur := root
 	for _, tok := range path {
 		if strings.HasPrefix(tok, "-") {
-			return usageError(errOut, cur, goos, fmt.Sprintf("unknown flag %q for help", tok))
+			return usageError(errOut, cur, fmt.Sprintf("unknown flag %q for help", tok))
 		}
 		next := cur.Child(tok)
 		if next == nil {
-			return unknownChild(errOut, cur, goos, tok)
+			return unknownChild(errOut, cur, tok)
 		}
 		cur = next
 	}
-	writeHelp(out, cur, goos)
+	writeHelp(out, cur)
 	return 0
 }
 
-func runLeaf(c *Command, rest []string, out, errOut io.Writer, goos string) int {
+func runLeaf(c *Command, rest []string, out, errOut io.Writer) int {
 	for _, tok := range rest {
 		if tok == "--" {
 			break
 		}
 		if tok == "--help" || tok == "-h" {
-			writeHelp(out, c, goos)
+			writeHelp(out, c)
 			return 0
 		}
 	}
 	if c.builtin {
-		return runVersion(c, rest, out, errOut, goos)
+		return runVersion(c, rest, out, errOut)
 	}
 	diag(errOut, contract.New(contract.CodeNotImplemented, fmt.Sprintf("%q is not implemented yet", c.Path())))
 	return contract.ExitCode(contract.New(contract.CodeNotImplemented, ""))
 }
 
-func runVersion(c *Command, rest []string, out, errOut io.Writer, goos string) int {
+func runVersion(c *Command, rest []string, out, errOut io.Writer) int {
 	for _, tok := range rest {
 		if tok == "--help" || tok == "-h" {
-			writeHelp(out, c, goos)
+			writeHelp(out, c)
 			return 0
 		}
 	}
 	if len(rest) > 0 {
-		return usageError(errOut, c, goos, "version takes no arguments")
+		return usageError(errOut, c, "version takes no arguments")
 	}
 	fmt.Fprintf(out, "callsheet %s protocol=%d\n", Version, contract.ProtocolVersion)
 	return 0
@@ -246,14 +246,14 @@ func diag(errOut io.Writer, e *contract.Error) {
 	fmt.Fprintf(errOut, "callsheet: %s: %s\n", e.Code, e.Message)
 }
 
-func usageError(errOut io.Writer, c *Command, goos, msg string) int {
+func usageError(errOut io.Writer, c *Command, msg string) int {
 	e := contract.New(contract.CodeInvalidArgument, msg)
 	diag(errOut, e)
-	writeHelp(errOut, c, goos)
+	writeHelp(errOut, c)
 	return contract.ExitCode(e)
 }
 
-func writeHelp(w io.Writer, c *Command, goos string) {
+func writeHelp(w io.Writer, c *Command) {
 	var b strings.Builder
 	if c.IsLeaf() {
 		fmt.Fprintf(&b, "Usage: %s\n\n%s\n", c.Path(), c.Summary)
@@ -282,9 +282,6 @@ func writeHelp(w io.Writer, c *Command, goos string) {
 	if c.parent == nil {
 		b.WriteString("\nUse \"callsheet help [command path]\" or --help for details. " +
 			"All commands except version are future stubs in this build.\n")
-		if goos == "windows" {
-			b.WriteString("The plane and sidecar commands are available on Linux and macOS only.\n")
-		}
 	}
 	io.WriteString(w, b.String())
 }

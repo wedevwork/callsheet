@@ -30,10 +30,6 @@ func TestNewTreeSelection(t *testing.T) {
 			t.Fatalf("%s root = %q", goos, got)
 		}
 	}
-	win := strings.Join(names(NewTree("windows").Children), " ")
-	if win != "version role node dispatch task ws mcp" {
-		t.Fatalf("windows root = %q", win)
-	}
 	var paths []string
 	for _, l := range NewTree("linux").Leaves() {
 		paths = append(paths, l.Path())
@@ -55,6 +51,21 @@ func TestNewTreeSelection(t *testing.T) {
 	}
 	if NewTree("linux").Child("nope") != nil {
 		t.Fatal("unexpected child")
+	}
+	// Linux and macOS build the identical full tree.
+	var darwin []string
+	for _, l := range NewTree("darwin").Leaves() {
+		darwin = append(darwin, l.Path())
+	}
+	if strings.Join(darwin, "|") != strings.Join(paths, "|") {
+		t.Fatalf("darwin leaves differ from linux: %v", darwin)
+	}
+	for _, g := range []string{"plane", "sidecar"} {
+		for _, goos := range []string{"linux", "darwin"} {
+			if code, out, errOut := exec(t, goos, g); code != 0 || errOut != "" || !strings.HasPrefix(out, "Usage: callsheet "+g+" <command>") {
+				t.Fatalf("%s %s = %d %q %q", goos, g, code, out, errOut)
+			}
+		}
 	}
 }
 
@@ -187,27 +198,37 @@ func TestInvalidCommands(t *testing.T) {
 	}
 }
 
-func TestWindowsRejectsUnixOnly(t *testing.T) {
-	for _, g := range []string{"plane", "sidecar"} {
-		for _, args := range [][]string{{g}, {g, "run"}, {"help", g}} {
-			code, out, errOut := exec(t, "windows", args...)
-			if code != 2 || out != "" || !strings.Contains(errOut, "Linux and macOS only") {
-				t.Fatalf("%v: %d %q %q", args, code, out, errOut)
+func TestUnsupportedOS(t *testing.T) {
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	argSets := [][]string{nil, {"help"}, {"--help"}, {"-h"}, {"version"}, {"--version"}, {"plane"}, {"sidecar", "run"}, {"help", "plane"}, {"dispatch"}, {"bogus"}}
+	for _, goos := range []string{"windows", "freebsd", ""} {
+		if tree := NewTree(goos); tree != nil {
+			t.Fatalf("NewTree(%q) = %v, want nil", goos, tree.Children)
+		}
+		want := "callsheet: invalid_argument: unsupported operating system \"" + goos + "\"; supported: linux, darwin\n"
+		for _, args := range argSets {
+			code, out, errOut := exec(t, goos, args...)
+			if code != 2 || out != "" || errOut != want {
+				t.Fatalf("%q %v = %d %q %q", goos, args, code, out, errOut)
 			}
 		}
+		// A supported tree does not rescue an unsupported goos.
+		var out, errOut bytes.Buffer
+		if code := run(context.Background(), NewTree("linux"), goos, []string{"version"}, &out, &errOut); code != 2 || out.Len() != 0 || errOut.String() != want {
+			t.Fatalf("%q with linux tree = %d %q %q", goos, code, out.String(), errOut.String())
+		}
+		// Cancellation keeps precedence over the platform rejection.
+		out.Reset()
+		errOut.Reset()
+		if code := run(canceled, NewTree(goos), goos, []string{"version"}, &out, &errOut); code != 130 || out.Len() != 0 || errOut.String() != "callsheet: interrupted\n" {
+			t.Fatalf("%q canceled = %d %q %q", goos, code, out.String(), errOut.String())
+		}
 	}
-	code, out, _ := exec(t, "windows")
-	if code != 0 || strings.Contains(out, "\n  plane") || !strings.Contains(out, "Linux and macOS only") {
-		t.Fatalf("windows help: %q", out)
-	}
-	code, _, _ = exec(t, "windows", "dispatch")
-	if code != 8 {
-		t.Fatalf("windows dispatch = %d", code)
-	}
-	// On Linux, sidecar is a group, not an error.
-	code, _, _ = exec(t, "linux", "sidecar")
-	if code != 0 {
-		t.Fatalf("linux sidecar = %d", code)
+	// A nil root is rejected before it is dereferenced.
+	var out, errOut bytes.Buffer
+	if code := run(context.Background(), nil, "linux", []string{"plane"}, &out, &errOut); code != 2 || out.Len() != 0 || !strings.Contains(errOut.String(), "unsupported operating system") {
+		t.Fatalf("nil root = %d %q %q", code, out.String(), errOut.String())
 	}
 }
 
@@ -223,10 +244,12 @@ func TestInterruptedAndPublicRun(t *testing.T) {
 	if code := Run(context.Background(), []string{"version"}, strings.NewReader(""), &out, &errOut); code != 0 || out.String() != "callsheet dev protocol=1\n" {
 		t.Fatalf("Run = %d %q", code, out.String())
 	}
-	// Run uses the host tree.
+	// Run uses the host tree; the supported test hosts have the plane group.
+	out.Reset()
+	errOut.Reset()
 	code := Run(context.Background(), []string{"plane"}, nil, &out, &errOut)
-	if runtime.GOOS == "windows" && code != 2 || runtime.GOOS != "windows" && code != 0 {
-		t.Fatalf("host plane = %d", code)
+	if code != 0 || errOut.Len() != 0 || !strings.HasPrefix(out.String(), "Usage: callsheet plane <command>") {
+		t.Fatalf("host %s plane = %d %q %q", runtime.GOOS, code, out.String(), errOut.String())
 	}
 }
 

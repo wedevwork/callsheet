@@ -26,6 +26,9 @@ type fakeRunner struct {
 	coverTotal string
 	cmdList    string
 	profile    string
+	// native is written to stdout and nativeErr to stderr for go test -json.
+	native    string
+	nativeErr string
 }
 
 func (f *fakeRunner) run(_ context.Context, argv, env []string, dir string, stdout, stderr io.Writer) error {
@@ -41,6 +44,9 @@ func (f *fakeRunner) run(_ context.Context, argv, env []string, dir string, stdo
 		}
 	}
 	switch {
+	case strings.HasPrefix(joined, "go test -json"):
+		io.WriteString(stdout, f.native)
+		io.WriteString(stderr, f.nativeErr)
 	case strings.HasPrefix(joined, "go tool cover"):
 		fmt.Fprintf(stdout, "github.com/wedevwork/callsheet/internal/cli/cli.go:10:\tRun\t100.0%%\ntotal:\t\t\t(statements)\t%s\n", f.coverTotal)
 	case strings.HasPrefix(joined, "go list"):
@@ -65,10 +71,10 @@ const goodProfile = "mode: atomic\n" +
 const cmdList = "github.com/wedevwork/callsheet/cmd/callsheet|1\ngithub.com/wedevwork/callsheet/cmd/devcheck|1\ngithub.com/wedevwork/callsheet/cmd/fake-adapter|1\n"
 
 func TestMatrixAndValidation(t *testing.T) {
-	if len(Matrix) != 6 {
+	if len(Matrix) != 4 {
 		t.Fatalf("matrix = %v", Matrix)
 	}
-	want := "linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64"
+	want := "linux/amd64 linux/arm64 darwin/amd64 darwin/arm64"
 	var got []string
 	for _, m := range Matrix {
 		got = append(got, m.String())
@@ -79,10 +85,27 @@ func TestMatrixAndValidation(t *testing.T) {
 	if strings.Join(got, " ") != want {
 		t.Fatalf("matrix = %v", got)
 	}
-	for _, bad := range []Target{{"windows", "386"}, {"plan9", "amd64"}, {"linux", "riscv64"}, {"", ""}} {
+	for _, bad := range []Target{{"windows", "amd64"}, {"windows", "arm64"}, {"windows", "386"}, {"plan9", "amd64"}, {"linux", "riscv64"}, {"", ""}} {
 		if ValidateTarget(bad) == nil {
 			t.Fatalf("%v accepted", bad)
 		}
+	}
+	// Former Windows targets are rejected by the planner and by Cross before
+	// any child runs, alone or mixed with supported targets.
+	for _, bad := range [][]Target{{{"windows", "amd64"}}, {{"windows", "arm64"}}, append(append([]Target{}, Matrix...), Target{"windows", "amd64"})} {
+		if _, err := CrossPlan("/o", bad); err == nil || !strings.Contains(err.Error(), "unsupported target windows/") {
+			t.Fatalf("CrossPlan(%v) = %v", bad, err)
+		}
+		f := &fakeRunner{}
+		if err := Cross(context.Background(), f.run, "/o", bad); err == nil || len(f.calls) != 0 {
+			t.Fatalf("Cross(%v) = %v with %d calls", bad, err, len(f.calls))
+		}
+	}
+	if !(Target{"linux", "arm64"}).Unix() || !(Target{"darwin", "amd64"}).Unix() || (Target{"windows", "amd64"}).Unix() {
+		t.Fatal("Unix classification")
+	}
+	if got := CallsheetArtifact(Target{"windows", "amd64"}); got != "callsheet-windows-amd64" {
+		t.Fatalf("artifact formatting = %q", got)
 	}
 	if _, err := CrossPlan("/o", []Target{{"freebsd", "amd64"}}); err == nil {
 		t.Fatal("unsupported pair planned")
@@ -97,7 +120,7 @@ func TestCrossPlanArgvAndArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(steps) != 6+4+4 {
+	if len(steps) != 4+4+4 {
 		t.Fatalf("steps = %d", len(steps))
 	}
 	outputs := map[string]bool{}
@@ -117,12 +140,19 @@ func TestCrossPlanArgvAndArtifacts(t *testing.T) {
 	}
 	for _, name := range []string{
 		"callsheet-linux-amd64", "callsheet-linux-arm64", "callsheet-darwin-amd64", "callsheet-darwin-arm64",
-		"callsheet-windows-amd64.exe", "callsheet-windows-arm64.exe",
 		"fake-adapter-linux-amd64", "fake-adapter-linux-arm64", "fake-adapter-darwin-amd64", "fake-adapter-darwin-arm64",
 		"processgroup-linux-amd64.test", "processgroup-linux-arm64.test", "processgroup-darwin-amd64.test", "processgroup-darwin-arm64.test",
 	} {
 		if !outputs[filepath.Join("/out", name)] {
 			t.Fatalf("missing artifact %s in %v", name, outputs)
+		}
+	}
+	if len(outputs) != 12 {
+		t.Fatalf("outputs = %v", outputs)
+	}
+	for o := range outputs {
+		if strings.Contains(o, "windows") || strings.HasSuffix(o, ".exe") {
+			t.Fatalf("windows artifact planned: %s", o)
 		}
 	}
 	first := strings.Join(steps[0].Argv, " ")
@@ -139,7 +169,7 @@ func TestCrossRunsInCallerDirAndPropagatesFailure(t *testing.T) {
 	if err := Cross(context.Background(), f.run, "/out", Matrix); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.calls) != 14 {
+	if len(f.calls) != 12 {
 		t.Fatalf("calls = %d", len(f.calls))
 	}
 	for _, c := range f.calls {
@@ -258,7 +288,7 @@ func TestStagePlanning(t *testing.T) {
 	}
 	f = &fakeRunner{}
 	code, _, errOut := runDriver(t, "linux", f, "cross")
-	if code != 0 || len(f.calls) != 14 {
+	if code != 0 || len(f.calls) != 12 {
 		t.Fatalf("cross = %d %v %s", code, len(f.calls), errOut)
 	}
 }
@@ -338,9 +368,9 @@ func TestAllStopsAtFirstFailure(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("all = %d %s", code, errOut)
 	}
-	// test(2) + coverage(3) + bench(1) + cross(14), in that order.
+	// test(2) + coverage(3) + bench(1) + cross(12), in that order.
 	a := f.argvs()
-	if len(a) != 20 || !strings.Contains(a[0], "go test -count=1") || !strings.Contains(a[2], "-coverprofile") || !strings.Contains(a[5], "-bench") || !strings.Contains(a[6], "go build") {
+	if len(a) != 18 || !strings.Contains(a[0], "go test -count=1") || !strings.Contains(a[2], "-coverprofile") || !strings.Contains(a[5], "-bench") || !strings.Contains(a[6], "go build") {
 		t.Fatalf("all order = %v", a)
 	}
 	f = &fakeRunner{fail: "-bench", coverTotal: "81%", cmdList: cmdList, profile: goodProfile}
