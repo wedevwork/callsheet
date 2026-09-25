@@ -1,0 +1,454 @@
+[
+  {
+    "id": "claude",
+    "version": "2.1.282 (Claude Code)",
+    "platform": "linux/amd64",
+    "facts": {
+      "headless": {
+        "status": "VERIFIED",
+        "value": "`claude -p <prompt>` is noninteractive print mode; `--output-format text|json|stream-json` is supported. Candidate worker use: `--output-format json`.",
+        "evidence": [
+          "tests/testdata/cli-help/claude-help.txt"
+        ],
+        "verification_iteration": "08"
+      },
+      "model": {
+        "status": "UNVERIFIED",
+        "value": "Verified subset: `--model <model>` flag (help); Callsheet supplies the model explicitly. Model availability/compatibility is unverified; iteration 08 must qualify explicit model values.",
+        "evidence": [
+          "tests/testdata/cli-help/claude-help.txt"
+        ],
+        "verification_iteration": "08"
+      },
+      "effort": {
+        "status": "UNVERIFIED",
+        "value": "Verified subset: `--effort <level>`; help lists low, medium, high, xhigh, max. Which models accept each value is unverified; iteration 08 must qualify per-model effort and reject unknown combinations rather than dropping effort.",
+        "evidence": [
+          "tests/testdata/cli-help/claude-help.txt"
+        ],
+        "verification_iteration": "08"
+      },
+      "approval": {
+        "status": "VERIFIED",
+        "value": "`--permission-prompts none` in print mode denies anything that would prompt, while the configured permission mode still decides other calls (help). Preferred narrow candidate; it can refuse work requiring approval and has no fallback to permission bypass.",
+        "evidence": [
+          "tests/testdata/cli-help/claude-help.txt"
+        ],
+        "verification_iteration": "08"
+      },
+      "sandbox_linux": {
+        "status": "UNVERIFIED",
+        "value": "Help does not prove Linux OS containment or whether configured hooks affect it. Do not pass sandbox overrides or `--dangerously-skip-permissions` (help: bypasses all permission checks). Iteration 08 must confirm the vendor settings.json sandbox keys, availability and Linux enforcement.",
+        "evidence": [
+          "tests/testdata/cli-help/claude-help.txt"
+        ],
+        "verification_iteration": "08"
+      },
+      "sandbox_macos": {
+        "status": "UNVERIFIED",
+        "value": "Help does not prove macOS OS containment. Do not pass sandbox overrides or `--dangerously-skip-permissions`. Iteration 08 must confirm the vendor settings.json sandbox keys, availability and macOS enforcement on a native Mac.",
+        "evidence": [
+          "tests/testdata/cli-help/claude-help.txt"
+        ],
+        "verification_iteration": "08"
+      },
+      "final_message": {
+        "status": "UNVERIFIED",
+        "value": "Verified subset: help promises JSON single-result output with `--output-format json`. The exact JSON schema, result/error fields and failure behaviour are unverified; iteration 08 must capture success/error fixtures before choosing a parser, never returning concatenated tool output as the answer.",
+        "evidence": [
+          "tests/testdata/cli-help/claude-help.txt"
+        ],
+        "verification_iteration": "08"
+      },
+      "exit_codes": {
+        "status": "UNVERIFIED",
+        "value": "Offline help/version exited 0 only. Model-success, model-failure, authentication, denial and cancellation exit codes are unverified; iteration 08 verifies the actual mapping.",
+        "evidence": [
+          "tests/testdata/cli-help/claude-version.txt"
+        ],
+        "verification_iteration": "08"
+      },
+      "mcp_config": {
+        "status": "UNVERIFIED",
+        "value": "Verified subset: `claude mcp add --transport stdio --scope user callsheet -- callsheet mcp --plane <plane-url> --ca <ca-path>`; help supports scoped configuration and `--mcp-config` JSON files/strings. Candidate file {\"mcpServers\":{\"callsheet\":{\"command\":\"callsheet\",\"args\":[\"mcp\",\"--plane\",\"<plane-url>\",\"--ca\",\"<ca-path>\"]}}} has an unverified schema/location; iteration 08 validates it.",
+        "evidence": [
+          "tests/testdata/cli-help/claude-mcp-add.txt",
+          "tests/testdata/cli-help/claude-help.txt"
+        ],
+        "verification_iteration": "08"
+      },
+      "mcp_timeout": {
+        "status": "UNVERIFIED",
+        "value": "MCP tool-call timeout is unknown (distinct from startup timeout); iteration 08 must measure it with a local deterministic MCP test server.",
+        "evidence": [
+          "tests/testdata/cli-help/claude-help.txt"
+        ],
+        "verification_iteration": "08"
+      },
+      "mcp_timeout_override": {
+        "status": "UNVERIFIED",
+        "value": "How to raise the tool-call timeout is unknown; `MCP_TOOL_TIMEOUT` is a candidate to investigate, not an endorsed setting or value. Iteration 08 must verify syntax and effect.",
+        "evidence": [
+          "tests/testdata/cli-help/claude-help.txt"
+        ],
+        "verification_iteration": "08"
+      },
+      "mcp_progress_extension": {
+        "status": "UNVERIFIED",
+        "value": "Whether progress notifications extend a call is unknown; iteration 08 must test a delayed tool with progress on and off and check for a hard deadline.",
+        "evidence": [
+          "tests/testdata/cli-help/claude-help.txt"
+        ],
+        "verification_iteration": "08"
+      },
+      "runbook": {
+        "status": "UNVERIFIED",
+        "value": "Verified subset: `--append-system-prompt <text>` exists; a coordinator launcher may read the owned UTF-8 runbook and pass its text. Automatic CLAUDE.md discovery precedence and loading scope are unverified; iteration 08 confirms them.",
+        "evidence": [
+          "tests/testdata/cli-help/claude-help.txt"
+        ],
+        "verification_iteration": "08"
+      }
+    }
+  },
+  {
+    "id": "codex",
+    "version": "codex-cli 0.156.1",
+    "platform": "linux/amd64",
+    "facts": {
+      "headless": {
+        "status": "VERIFIED",
+        "value": "`codex exec` runs noninteractively; the initial prompt is an argument or stdin (`-`); `--json` emits JSONL events.",
+        "evidence": [
+          "tests/testdata/cli-help/codex-exec.txt"
+        ],
+        "verification_iteration": "08"
+      },
+      "model": {
+        "status": "VERIFIED",
+        "value": "`-m/--model <model>` flag (exec help); Callsheet supplies the model explicitly.",
+        "evidence": [
+          "tests/testdata/cli-help/codex-exec.txt"
+        ],
+        "verification_iteration": "08"
+      },
+      "effort": {
+        "status": "UNVERIFIED",
+        "value": "Verified subset: generic `-c key=value` TOML overrides. The effort key and allowed values are not in these help pages; `-c model_reasoning_effort=\"<effort>\"` is only the candidate mapping. Iteration 08 must verify the key is recognised and its values.",
+        "evidence": [
+          "tests/testdata/cli-help/codex-exec.txt",
+          "tests/testdata/cli-help/codex-help.txt"
+        ],
+        "verification_iteration": "08"
+      },
+      "approval": {
+        "status": "UNVERIFIED",
+        "value": "Verified subset: root flag `-a/--ask-for-approval never` never asks and returns execution failures to the model. Candidate argv places it before exec (`codex -a never exec ...`); runtime acceptance of that global/subcommand combination is unverified until iteration 08.",
+        "evidence": [
+          "tests/testdata/cli-help/codex-help.txt"
+        ],
+        "verification_iteration": "08"
+      },
+      "sandbox_linux": {
+        "status": "UNVERIFIED",
+        "value": "Verified subset: help distinguishes approval policy from `--sandbox`; `--dangerously-bypass-approvals-and-sandbox` disables sandboxing; `~/.codex/config.toml` is a config source. Candidate omits both flags. Effective default, managed-profile precedence and Linux enforcement are unverified; iteration 08 must qualify them. `--approve-for-me` is not a sandbox-preserving substitute.",
+        "evidence": [
+          "tests/testdata/cli-help/codex-help.txt",
+          "tests/testdata/cli-help/codex-exec.txt"
+        ],
+        "verification_iteration": "08"
+      },
+      "sandbox_macos": {
+        "status": "UNVERIFIED",
+        "value": "Verified subset as on Linux (help-level flags and config source only). macOS enforcement, effective default and per-OS keys are unverified; iteration 08 must qualify them on a native Mac.",
+        "evidence": [
+          "tests/testdata/cli-help/codex-help.txt",
+          "tests/testdata/cli-help/codex-exec.txt"
+        ],
+        "verification_iteration": "08"
+      },
+      "final_message": {
+        "status": "UNVERIFIED",
+        "value": "Verified subset: `-o/--output-last-message <file>` writes the last agent message; use a per-task file read after exit, where a missing/unreadable file is an extraction failure. Whether every vendor error writes that file is unverified; iteration 08 must test. `--json` is event logging, not a final-answer schema.",
+        "evidence": [
+          "tests/testdata/cli-help/codex-exec.txt"
+        ],
+        "verification_iteration": "08"
+      },
+      "exit_codes": {
+        "status": "UNVERIFIED",
+        "value": "Help/version exited 0 only. Model success/error, authentication and cancellation exit codes are unverified; iteration 08 verifies them.",
+        "evidence": [
+          "tests/testdata/cli-help/codex-version.txt"
+        ],
+        "verification_iteration": "08"
+      },
+      "mcp_config": {
+        "status": "UNVERIFIED",
+        "value": "Verified subset: `codex mcp add callsheet -- callsheet mcp --plane <plane-url> --ca <ca-path>`. The manual TOML `[mcp_servers.callsheet]` command/args shape is an unverified candidate; iteration 08 validates it.",
+        "evidence": [
+          "tests/testdata/cli-help/codex-mcp-add.txt"
+        ],
+        "verification_iteration": "08"
+      },
+      "mcp_timeout": {
+        "status": "UNVERIFIED",
+        "value": "MCP tool-call timeout is unknown; iteration 08 must measure it with a local deterministic MCP test server.",
+        "evidence": [
+          "tests/testdata/cli-help/codex-help.txt"
+        ],
+        "verification_iteration": "08"
+      },
+      "mcp_timeout_override": {
+        "status": "UNVERIFIED",
+        "value": "Candidate `mcp_servers.callsheet.tool_timeout_sec` lacks schema/runtime evidence; iteration 08 must verify it before any value ships.",
+        "evidence": [
+          "tests/testdata/cli-help/codex-help.txt"
+        ],
+        "verification_iteration": "08"
+      },
+      "mcp_progress_extension": {
+        "status": "UNVERIFIED",
+        "value": "Whether progress extends calls is unknown; iteration 08 must test idle timeout and absolute timeout separately.",
+        "evidence": [
+          "tests/testdata/cli-help/codex-help.txt"
+        ],
+        "verification_iteration": "08"
+      },
+      "runbook": {
+        "status": "UNVERIFIED",
+        "value": "Verified subset: the root command accepts an initial prompt argument, so a launcher can pass the runbook text. Automatic project AGENTS.md loading and precedence are unverified; iteration 08 confirms them.",
+        "evidence": [
+          "tests/testdata/cli-help/codex-help.txt"
+        ],
+        "verification_iteration": "08"
+      }
+    }
+  },
+  {
+    "id": "grok",
+    "version": "grok 1.0.41 (4220f3b224a6) [stable]",
+    "platform": "linux/amd64",
+    "facts": {
+      "headless": {
+        "status": "VERIFIED",
+        "value": "`grok -p/--single <prompt>` prints the response to stdout and exits; `--prompt-file <path>` is another single-turn input. Use this, not `grok agent serve/headless`.",
+        "evidence": [
+          "tests/testdata/cli-help/grok-help.txt",
+          "tests/testdata/cli-help/grok-agent.txt"
+        ],
+        "verification_iteration": "11"
+      },
+      "model": {
+        "status": "VERIFIED",
+        "value": "`--model <model>` flag (help); Callsheet supplies the model explicitly.",
+        "evidence": [
+          "tests/testdata/cli-help/grok-help.txt"
+        ],
+        "verification_iteration": "11"
+      },
+      "effort": {
+        "status": "UNVERIFIED",
+        "value": "Verified subset: `--reasoning-effort <effort>` (alias `--effort`). The allowed effort set and per-model mapping are unverified; iteration 11 must qualify them.",
+        "evidence": [
+          "tests/testdata/cli-help/grok-help.txt"
+        ],
+        "verification_iteration": "11"
+      },
+      "approval": {
+        "status": "UNVERIFIED",
+        "value": "Verified subset: `--permission-mode dontAsk` is a supported mode; `--always-approve` auto-approves all tools. The exact dontAsk no-prompt/denial behaviour is unverified; iteration 11 qualifies dontAsk first and must not assume always-approve preserves containment.",
+        "evidence": [
+          "tests/testdata/cli-help/grok-help.txt"
+        ],
+        "verification_iteration": "11"
+      },
+      "sandbox_linux": {
+        "status": "UNVERIFIED",
+        "value": "Verified subset: `--sandbox <profile>` / `GROK_SANDBOX` select a filesystem/network profile; the candidate leaves both unchanged. Default/profile discovery, approval-flag interaction and Linux/TTY requirements are unverified; iteration 11 must document enforcement from vendor evidence.",
+        "evidence": [
+          "tests/testdata/cli-help/grok-help.txt"
+        ],
+        "verification_iteration": "11"
+      },
+      "sandbox_macos": {
+        "status": "UNVERIFIED",
+        "value": "Verified subset as on Linux (help-level flags only). macOS enforcement and profile format are unverified; iteration 11 must document them from vendor evidence on a native Mac.",
+        "evidence": [
+          "tests/testdata/cli-help/grok-help.txt"
+        ],
+        "verification_iteration": "11"
+      },
+      "final_message": {
+        "status": "UNVERIFIED",
+        "value": "Verified subset: `--output-format plain|json|streaming-json|streaming-messages-json`; `-p` prints the response. The JSON final-record schema and error extraction are unverified; iteration 11 needs saved success/failure transcripts.",
+        "evidence": [
+          "tests/testdata/cli-help/grok-help.txt"
+        ],
+        "verification_iteration": "11"
+      },
+      "exit_codes": {
+        "status": "UNVERIFIED",
+        "value": "Help/version exited 0 only. Runtime success, authentication, tool failure and cancellation exit codes are unverified; iteration 11 verifies them.",
+        "evidence": [
+          "tests/testdata/cli-help/grok-version.txt"
+        ],
+        "verification_iteration": "11"
+      },
+      "mcp_config": {
+        "status": "UNVERIFIED",
+        "value": "Verified subset: `grok mcp add --transport stdio --scope user callsheet -- callsheet mcp --plane <plane-url> --ca <ca-path>`; help names `~/.grok/config.toml` and `./.grok/config.toml`. The exact TOML table schema is unverified; iteration 11 uses the vendor registration command rather than inventing tables.",
+        "evidence": [
+          "tests/testdata/cli-help/grok-mcp-add.txt",
+          "tests/testdata/cli-help/grok-mcp.txt"
+        ],
+        "verification_iteration": "11"
+      },
+      "mcp_timeout": {
+        "status": "UNVERIFIED",
+        "value": "MCP tool-call timeout is unknown; iteration 11 must measure it with a local deterministic MCP test server.",
+        "evidence": [
+          "tests/testdata/cli-help/grok-help.txt"
+        ],
+        "verification_iteration": "11"
+      },
+      "mcp_timeout_override": {
+        "status": "UNVERIFIED",
+        "value": "No candidate key is established in local help; iteration 11 must find and verify one.",
+        "evidence": [
+          "tests/testdata/cli-help/grok-help.txt"
+        ],
+        "verification_iteration": "11"
+      },
+      "mcp_progress_extension": {
+        "status": "UNVERIFIED",
+        "value": "Whether progress extends calls is unknown; iteration 11 must test it.",
+        "evidence": [
+          "tests/testdata/cli-help/grok-help.txt"
+        ],
+        "verification_iteration": "11"
+      },
+      "runbook": {
+        "status": "UNVERIFIED",
+        "value": "Verified subset: `--rules <text>` appends rules to the system prompt, so a launcher can supply the owned runbook. Automatic manual filenames and loading precedence are unverified; iteration 11 confirms them. `--system-prompt-override` is not the preferred way to append a runbook.",
+        "evidence": [
+          "tests/testdata/cli-help/grok-help.txt"
+        ],
+        "verification_iteration": "11"
+      }
+    }
+  },
+  {
+    "id": "cursor",
+    "version": "2026.09.23-86fc751",
+    "platform": "linux/amd64",
+    "facts": {
+      "headless": {
+        "status": "VERIFIED",
+        "value": "`cursor-agent -p/--print <prompt>` has write/shell tools; `--output-format text|json|stream-json`.",
+        "evidence": [
+          "tests/testdata/cli-help/cursor-help.txt"
+        ],
+        "verification_iteration": "11"
+      },
+      "model": {
+        "status": "VERIFIED",
+        "value": "`--model <model>`; help documents bracket parameterization (e.g. a quoted model with effort=high) as syntax only.",
+        "evidence": [
+          "tests/testdata/cli-help/cursor-help.txt"
+        ],
+        "verification_iteration": "11"
+      },
+      "effort": {
+        "status": "UNVERIFIED",
+        "value": "No standalone effort flag in captured help; bracket override syntax is verified but the Q12 suffix mapping and allowed model/effort sets are unverified. Iteration 11 must establish a mapping table, not blindly concatenate models and efforts.",
+        "evidence": [
+          "tests/testdata/cli-help/cursor-help.txt"
+        ],
+        "verification_iteration": "11"
+      },
+      "approval": {
+        "status": "VERIFIED",
+        "value": "`--force`/`-f` force-allows commands unless explicitly denied (`--yolo` alias); `--auto-review` may still prompt; `--trust` suppresses the workspace trust prompt; `--approve-mcps` approves all MCP servers and is a distinct, wider permission.",
+        "evidence": [
+          "tests/testdata/cli-help/cursor-help.txt"
+        ],
+        "verification_iteration": "11"
+      },
+      "sandbox_linux": {
+        "status": "UNVERIFIED",
+        "value": "Verified subset: `--sandbox enabled|disabled` overrides configuration; the candidate omits it and uses `--force --trust`. The interaction of force with the configured sandbox, shell versus file-tool sandboxing and Linux boundaries are unverified; iteration 11 must qualify them behaviourally.",
+        "evidence": [
+          "tests/testdata/cli-help/cursor-help.txt"
+        ],
+        "verification_iteration": "11"
+      },
+      "sandbox_macos": {
+        "status": "UNVERIFIED",
+        "value": "Verified subset as on Linux (help-level flag only). macOS boundaries and config keys are unverified; iteration 11 must qualify them on a native Mac.",
+        "evidence": [
+          "tests/testdata/cli-help/cursor-help.txt"
+        ],
+        "verification_iteration": "11"
+      },
+      "final_message": {
+        "status": "UNVERIFIED",
+        "value": "Verified subset: print output formats. The final JSON field/event, error text and distinction from tool/status output are unverified; iteration 11 must capture fixtures before parser design.",
+        "evidence": [
+          "tests/testdata/cli-help/cursor-help.txt"
+        ],
+        "verification_iteration": "11"
+      },
+      "exit_codes": {
+        "status": "UNVERIFIED",
+        "value": "Help/version exited 0 only. Worker success, error, authentication, denial and cancellation exit codes are unverified; iteration 11 verifies them.",
+        "evidence": [
+          "tests/testdata/cli-help/cursor-version.txt"
+        ],
+        "verification_iteration": "11"
+      },
+      "mcp_config": {
+        "status": "UNVERIFIED",
+        "value": "Verified subset: help names `.cursor/mcp.json` and `~/.cursor/mcp.json`; there is no `mcp add` in captured help. The entry schema is unverified (bundle symbols do not prove the file shape); iteration 11 validates it.",
+        "evidence": [
+          "tests/testdata/cli-help/cursor-mcp.txt",
+          "tests/testdata/cli-help/cursor-installed-excerpts.json"
+        ],
+        "verification_iteration": "11"
+      },
+      "mcp_timeout": {
+        "status": "UNVERIFIED",
+        "value": "MCP tool-call timeout is unknown; iteration 11 must measure it with a local deterministic MCP test server.",
+        "evidence": [
+          "tests/testdata/cli-help/cursor-mcp.txt"
+        ],
+        "verification_iteration": "11"
+      },
+      "mcp_timeout_override": {
+        "status": "UNVERIFIED",
+        "value": "How to raise the timeout is unknown; iteration 11 must find and verify a setting.",
+        "evidence": [
+          "tests/testdata/cli-help/cursor-mcp.txt"
+        ],
+        "verification_iteration": "11"
+      },
+      "mcp_progress_extension": {
+        "status": "UNVERIFIED",
+        "value": "The installed bundle contains `resetTimeoutOnProgress` in protocol code, which does not establish the option used at the call site or any maximum timeout; iteration 11 must test progress behaviour.",
+        "evidence": [
+          "tests/testdata/cli-help/cursor-installed-excerpts.json"
+        ],
+        "verification_iteration": "11"
+      },
+      "runbook": {
+        "status": "UNVERIFIED",
+        "value": "Verified subset: an initial prompt argument, so a launcher can pass the runbook text. The bundle mentions AGENTS.md but automatic loading/priority is unverified; iteration 11 confirms rule loading.",
+        "evidence": [
+          "tests/testdata/cli-help/cursor-help.txt",
+          "tests/testdata/cli-help/cursor-installed-excerpts.json"
+        ],
+        "verification_iteration": "11"
+      }
+    }
+  }
+]

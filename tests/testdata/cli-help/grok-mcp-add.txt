@@ -1,0 +1,67 @@
+$ grok mcp add --help
+exit=0
+Add or update an MCP server
+
+Usage: grok mcp add [OPTIONS] <NAME> [COMMAND_OR_URL] [ARGS]...
+
+Arguments:
+  <NAME>
+          Server name
+
+  [COMMAND_OR_URL]
+          Command to launch (stdio) or URL to connect to (http, sse)
+
+  [ARGS]...
+          Arguments passed to the server command. Place them after `--` so flags such as `-y` are passed to the server instead of grok
+
+Options:
+  -t, --transport <TRANSPORT>
+          Transport type. Defaults to stdio, or to http when the positional argument is an http(s):// URL
+
+          Possible values:
+          - stdio: Launch a local process and communicate over stdin/stdout
+          - http:  Connect to a remote server over streamable HTTP
+          - sse:   Connect to a remote server over Server-Sent Events
+
+  -s, --scope <SCOPE>
+          Config to write to: user (~/.grok/config.toml) or project (./.grok/config.toml)
+
+          Possible values:
+          - user:    `~/.grok/config.toml`, available in all your projects
+          - project: `./.grok/config.toml`, shared with everyone working in this directory
+          
+          [default: user]
+
+  -e, --env <KEY=value>
+          Environment variable for the server process (repeatable)
+
+  -H, --header <NAME: VALUE>
+          HTTP header for remote servers (repeatable)
+
+      --debug
+          Enable debug logging
+
+      --debug-file <FILE>
+          Write debug logs to FILE
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+      --leader-socket <PATH>
+          Use a custom leader socket path instead of the default `~/.grok/leader.sock`. A local/branch build can thus run an isolated leader without colliding with the default one already running on the machine Name it `~/.grok/leader-*.sock` to keep `grok leader list/kill` able to find it; any other location works but won't be auto-discovered
+
+Examples:
+  # Add a stdio server (everything after -- is the server command)
+  grok mcp add xcode -- xcrun mcpbridge
+
+  # Add a stdio server with environment variables
+  grok mcp add postgres -e DATABASE_URL=postgres://localhost/mydb -- npx -y @modelcontextprotocol/server-postgres
+
+  # Add a remote HTTP server
+  grok mcp add --transport http sentry https://mcp.sentry.dev/mcp
+
+  # Add a remote server with an authentication header
+  grok mcp add --transport http api https://mcp.example.com/mcp --header "Authorization: Bearer YOUR_TOKEN"
+
+  # Add to the project config (./.grok/config.toml) instead of ~/.grok/config.toml
+  grok mcp add --scope project github -- npx -y @modelcontextprotocol/server-github

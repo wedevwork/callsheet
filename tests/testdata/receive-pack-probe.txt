@@ -1,0 +1,260 @@
+Receive-pack probe evidence (unguarded go-git v5.16.3 server session)
+======================================================================
+
+Attribution: implementer's probe, run 2026-09-25 on Linux amd64 with Go 1.26.4, during the
+iteration 01 FP-5 selection gate (native coder). Preserved verbatim; it records the raw library
+behaviour that motivates the handler guards and is NOT a result of the guarded implementation.
+
+Scratch module: probe (go.mod = this repository's go.mod with the module path renamed to 'probe')
+Command: GOFLAGS=-mod=mod GOPROXY=off go run .
+Exit status: 0 (output identical across two runs)
+Pinned source: github.com/go-git/go-git/v5 v5.16.3 (origin ad9a3a542e845d368853848ef5a2de9ec1f79b1a),
+  plumbing/transport/server/server.go sha256 d36d9f87f5dc2a35a7ea674583c670ba78a3bd33fdf1211a4cad4793cebe124f;
+  anchors: ReceivePack :238, writePackfile/UpdateObjectStorage :311, updateReferences Update branch :293.
+
+Outcome summary:
+  clone_push_fetch_reopen = passed
+  stale_old               = accepted_and_ref_changed
+  missing_object          = accepted_and_ref_published
+  truncated_pack          = rejected_without_ref_publication
+
+----- actual output -----
+PATH=/tmp/claude-1000/emptypath753937170 LookPath(git) err=exec: "git": executable file not found in $PATH
+C0 c12d64e5e62e1f7ae147f8181da52b33c69204d1
+clone HEAD c12d64e5e62e1f7ae147f8181da52b33c69204d1 == C0: true
+push C1 -> refs/callsheet/tasks/t1 err: <nil> C1 4b2e6a8f31f2e3e490baeaf4c37f03724db8b3b8
+observer fetched t1 4b2e6a8f31f2e3e490baeaf4c37f03724db8b3b8 == C1: true
+reopened bare: main c12d64e5e62e1f7ae147f8181da52b33c69204d1 t1 4b2e6a8f31f2e3e490baeaf4c37f03724db8b3b8
+[stale-old] HTTP 200, server session err=<nil>, report="000eunpack ok\n001fok refs/callsheet/tasks/t1\n0000"
+  after stale-old: t1 = c12d64e5e62e1f7ae147f8181da52b33c69204d1 (C1 = 4b2e6a8f31f2e3e490baeaf4c37f03724db8b3b8 , C0 = c12d64e5e62e1f7ae147f8181da52b33c69204d1 )
+[missing-object] HTTP 200, server session err=<nil>, report="000eunpack ok\n0022ok refs/callsheet/tasks/ghost\n0000"
+  after missing-object: ghost = 1234567890123456789012345678901234567890
+[truncated] HTTP 200, server session err=unexpected EOF, report="001aunpack unexpected EOF\n0000"
+  after truncated: t2 = absent(reference not found)
+main after all probes: c12d64e5e62e1f7ae147f8181da52b33c69204d1 == C0: true
+----- source (main.go) -----
+// Probe for the FP-5 selection gate (risk-spikes.md "Selection gate").
+// Scratch-only; not part of the repository. Uses go-git v5.16.3 server sessions
+// and packp codecs behind a minimal smart-HTTP wrapper over TLS; no git executable.
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/pem"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"time"
+
+	"github.com/go-git/go-billy/v5/memfs"
+	"github.com/go-git/go-billy/v5/osfs"
+	git "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/config"
+	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/cache"
+	"github.com/go-git/go-git/v5/plumbing/format/packfile"
+	"github.com/go-git/go-git/v5/plumbing/format/pktline"
+	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v5/plumbing/protocol/packp"
+	"github.com/go-git/go-git/v5/plumbing/protocol/packp/capability"
+	"github.com/go-git/go-git/v5/plumbing/revlist"
+	"github.com/go-git/go-git/v5/plumbing/transport"
+	"github.com/go-git/go-git/v5/plumbing/transport/server"
+	"github.com/go-git/go-git/v5/storage/filesystem"
+	"github.com/go-git/go-git/v5/storage/memory"
+)
+
+func must(err error, what string) {
+	if err != nil {
+		fmt.Printf("FATAL %s: %v\n", what, err)
+		os.Exit(1)
+	}
+}
+
+func main() {
+	empty, _ := os.MkdirTemp("", "emptypath")
+	os.Setenv("PATH", empty)
+	_, lerr := exec.LookPath("git")
+	fmt.Printf("PATH=%s LookPath(git) err=%v\n", empty, lerr)
+
+	root, _ := os.MkdirTemp("", "gitprobe")
+	defer os.RemoveAll(root)
+	bare := filepath.Join(root, "srv", "repo.git")
+	_, err := git.PlainInitWithOptions(bare, &git.PlainInitOptions{
+		Bare:        true,
+		InitOptions: git.InitOptions{DefaultBranch: plumbing.NewBranchReferenceName("main")},
+	})
+	must(err, "init bare")
+	seedSto := filesystem.NewStorage(osfs.New(bare), cache.NewObjectLRUDefault())
+	seed, err := git.Open(seedSto, memfs.New())
+	must(err, "open seed")
+	wt, _ := seed.Worktree()
+	f, _ := wt.Filesystem.Create("a.txt")
+	f.Write([]byte("hello\n"))
+	f.Close()
+	wt.Add("a.txt")
+	sig := &object.Signature{Name: "t", Email: "t@example.invalid", When: time.Unix(1700000000, 0).UTC()}
+	c0, err := wt.Commit("C0", &git.CommitOptions{Author: sig, Committer: sig})
+	must(err, "seed commit")
+	fmt.Println("C0", c0)
+
+	srv := server.NewServer(server.NewFilesystemLoader(osfs.New(filepath.Join(root, "srv"))))
+	ep, _ := transport.NewEndpoint("/repo.git")
+	var lastRPErr error
+	mux := http.NewServeMux()
+	mux.HandleFunc("/test/git/repo.git/info/refs", func(w http.ResponseWriter, r *http.Request) {
+		svc := r.URL.Query().Get("service")
+		var ar *packp.AdvRefs
+		var err error
+		switch svc {
+		case "git-upload-pack":
+			s, e := srv.NewUploadPackSession(ep, nil)
+			must(e, "up session")
+			ar, err = s.AdvertisedReferencesContext(r.Context())
+			s.Close()
+		case "git-receive-pack":
+			s, e := srv.NewReceivePackSession(ep, nil)
+			must(e, "rp session")
+			ar, err = s.AdvertisedReferencesContext(r.Context())
+			s.Close()
+		default:
+			http.Error(w, "bad service", 400)
+			return
+		}
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		ar.Prefix = [][]byte{[]byte("# service=" + svc), pktline.Flush}
+		w.Header().Set("Content-Type", "application/x-"+svc+"-advertisement")
+		ar.Encode(w)
+	})
+	mux.HandleFunc("/test/git/repo.git/git-upload-pack", func(w http.ResponseWriter, r *http.Request) {
+		s, _ := srv.NewUploadPackSession(ep, nil)
+		defer s.Close()
+		req := packp.NewUploadPackRequest()
+		if err := req.Decode(r.Body); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		resp, err := s.UploadPack(r.Context(), req)
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		defer resp.Close()
+		w.Header().Set("Content-Type", "application/x-git-upload-pack-result")
+		resp.Encode(w)
+	})
+	mux.HandleFunc("/test/git/repo.git/git-receive-pack", func(w http.ResponseWriter, r *http.Request) {
+		s, _ := srv.NewReceivePackSession(ep, nil)
+		defer s.Close()
+		req := packp.NewReferenceUpdateRequest()
+		if err := req.Decode(r.Body); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		rs, err := s.ReceivePack(r.Context(), req)
+		lastRPErr = err
+		w.Header().Set("Content-Type", "application/x-git-receive-pack-result")
+		if rs != nil {
+			rs.Encode(w)
+		}
+	})
+	ts := httptest.NewUnstartedServer(mux)
+	ts.StartTLS()
+	defer ts.Close()
+	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ts.Certificate().Raw})
+	url := ts.URL + "/test/git/repo.git"
+
+	// Clone (worker)
+	worker, err := git.Clone(memory.NewStorage(), memfs.New(), &git.CloneOptions{URL: url, CABundle: caPEM})
+	must(err, "clone")
+	h, _ := worker.Head()
+	fmt.Println("clone HEAD", h.Hash(), "== C0:", h.Hash() == c0)
+	wwt, _ := worker.Worktree()
+	f, _ = wwt.Filesystem.Create("b.txt")
+	f.Write([]byte("task\n"))
+	f.Close()
+	wwt.Add("b.txt")
+	c1, err := wwt.Commit("C1", &git.CommitOptions{Author: sig, Committer: sig})
+	must(err, "commit C1")
+	err = worker.Push(&git.PushOptions{RefSpecs: []config.RefSpec{"refs/heads/main:refs/callsheet/tasks/t1"}, CABundle: caPEM})
+	fmt.Println("push C1 -> refs/callsheet/tasks/t1 err:", err, "C1", c1)
+
+	// Observer fetch
+	obs, _ := git.Init(memory.NewStorage(), nil)
+	obs.CreateRemote(&config.RemoteConfig{Name: "origin", URLs: []string{url}})
+	err = obs.Fetch(&git.FetchOptions{RefSpecs: []config.RefSpec{"refs/callsheet/tasks/t1:refs/remotes/origin/t1"}, CABundle: caPEM})
+	must(err, "observer fetch")
+	or, _ := obs.Reference("refs/remotes/origin/t1", true)
+	fmt.Println("observer fetched t1", or.Hash(), "== C1:", or.Hash() == c1)
+
+	reopen := func() *git.Repository {
+		r, err := git.PlainOpen(bare)
+		must(err, "reopen")
+		return r
+	}
+	refOf := func(name string) string {
+		ref, err := reopen().Reference(plumbing.ReferenceName(name), false)
+		if err != nil {
+			return "absent(" + err.Error() + ")"
+		}
+		return ref.Hash().String()
+	}
+	fmt.Println("reopened bare: main", refOf("refs/heads/main"), "t1", refOf("refs/callsheet/tasks/t1"))
+
+	emptyPack := func() io.ReadCloser {
+		var b bytes.Buffer
+		_, err := packfile.NewEncoder(&b, memory.NewStorage(), false).Encode(nil, 10)
+		must(err, "empty pack")
+		return io.NopCloser(&b)
+	}
+	rawPush := func(label string, cmd *packp.Command, pack io.ReadCloser) {
+		req := packp.NewReferenceUpdateRequest()
+		req.Capabilities.Set(capability.ReportStatus)
+		req.Commands = []*packp.Command{cmd}
+		req.Packfile = pack
+		var body bytes.Buffer
+		must(req.Encode(&body), "encode req")
+		cl := ts.Client()
+		resp, err := cl.Post(url+"/git-receive-pack", "application/x-git-receive-pack-request", &body)
+		must(err, "post")
+		out, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		fmt.Printf("[%s] HTTP %d, server session err=%v, report=%q\n", label, resp.StatusCode, lastRPErr, string(out))
+	}
+
+	// Probe A: stale old-ref. Current t1 == C1; claim old == C0 (stale), new == C0 (objects present).
+	rawPush("stale-old", &packp.Command{Name: "refs/callsheet/tasks/t1", Old: c0, New: c0}, emptyPack())
+	fmt.Println("  after stale-old: t1 =", refOf("refs/callsheet/tasks/t1"), "(C1 =", c1, ", C0 =", c0, ")")
+
+	// Probe B: ref to object absent from store (closure/existence check).
+	ghost := plumbing.NewHash("1234567890123456789012345678901234567890")
+	rawPush("missing-object", &packp.Command{Name: "refs/callsheet/tasks/ghost", Old: plumbing.ZeroHash, New: ghost}, emptyPack())
+	fmt.Println("  after missing-object: ghost =", refOf("refs/callsheet/tasks/ghost"))
+
+	// Probe C: truncated pack.
+	wf, _ := wwt.Filesystem.Create("c.txt")
+	wf.Write(bytes.Repeat([]byte("x"), 5000))
+	wf.Close()
+	wwt.Add("c.txt")
+	c2, _ := wwt.Commit("C2", &git.CommitOptions{Author: sig, Committer: sig})
+	have, _ := revlist.Objects(worker.Storer, []plumbing.Hash{c1}, nil)
+	objs, _ := revlist.Objects(worker.Storer, []plumbing.Hash{c2}, have)
+	var pb bytes.Buffer
+	_, err = packfile.NewEncoder(&pb, worker.Storer, false).Encode(objs, 10)
+	must(err, "pack C2")
+	trunc := pb.Bytes()[:pb.Len()/2]
+	rawPush("truncated", &packp.Command{Name: "refs/callsheet/tasks/t2", Old: plumbing.ZeroHash, New: c2}, io.NopCloser(bytes.NewReader(trunc)))
+	fmt.Println("  after truncated: t2 =", refOf("refs/callsheet/tasks/t2"))
+
+	// Probe D: task-ref push must not touch main.
+	fmt.Println("main after all probes:", refOf("refs/heads/main"), "== C0:", refOf("refs/heads/main") == c0.String())
+	_ = context.Background
+}

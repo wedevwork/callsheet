@@ -1,0 +1,22 @@
+{
+  "source": "~/.local/share/cursor-agent/versions/2026.09.23-86fc751/index.js",
+  "sha256": "9b8e04abfd3925a2772b7d3ac4e7cb936c83e2ccd4e8b5f48b0ae38a6aabcec8",
+  "note": "Symbol presence only; does not establish active runtime settings or behavior.",
+  "excerpts": [
+    {
+      "term": "resetTimeoutOnProgress",
+      "offset": 5325040,
+      "excerpt": "this._timeoutInfo.set(e,{timeoutId:setTimeout(n,t),startTime:Date.now(),timeout:t,maxTotalTimeout:r,resetTimeoutOnProgress:s,onTimeout:n})}_resetTimeout(e){const t=this._timeoutInfo.get(e);if(!t)return!1;const r=Date.now()-t.startTime;if(t.maxTotalTimeout&&r>=t.maxTotalTimeout)throw this._timeoutInfo.delete(e),X.Nh.fromError(X.O4.RequestTimeout,\"Ma"
+    },
+    {
+      "term": "AGENTS.md",
+      "offset": 4868689,
+      "excerpt": "quiresThirdParty:!1},{pattern:/[/\\\\]\\.claude[/\\\\]agents[/\\\\]/i,requiresThirdParty:!0}],ns=new Set([\"AGENTS.md\",\"CLAUDE.md\",\"CLAUDE.local.md\"]);function ss(e,t){const r=e.replace(/\\\\/g,\"/\"),n=(0,s.basename)(r);if(ns.has(n))return\"AGENTS.md\"===n||t&&(\"CLAUDE.md\"===n||\"CLAUDE.local.md\"===n)?\"markdown\":void 0;if(ts.test(r)&&n.endsWith(\".mdc\"))return\"ru"
+    },
+    {
+      "term": "mcp.json",
+      "offset": 1737925,
+      "excerpt": "Pe.command(\"login <identifier>\").description(\"Authenticate with an MCP server configured in .cursor/mcp.json or ~/.cursor/mcp.json\").action((e=>ce(this,void 0,void 0,(function*(){const{handleMcpLogin:t}=yield r.e(2103).then(r.bind(r,\"./src/commands/mcp-login.ts\")),n=Re(),s=(0,$.z)(we,n.endpoint,le),i=yield xe(n),{projectRoot:o,projectDir:a,disabled"
+    }
+  ]
+}

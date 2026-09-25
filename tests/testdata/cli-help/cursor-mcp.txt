@@ -1,0 +1,18 @@
+$ cursor-agent mcp --help
+exit=0
+Usage: agent mcp [options] [command]
+
+Manage MCP servers
+
+Options:
+  -h, --help               Display help for command
+
+Commands:
+  login <identifier>       Authenticate with an MCP server configured in
+                           .cursor/mcp.json or ~/.cursor/mcp.json
+  list                     List configured MCP servers and their status
+  list-tools <identifier>  List available tools and their argument names for a
+                           specific MCP
+  enable <identifier>      Add an MCP server to the local approved list
+  disable <identifier>     Disable an MCP server (it will not be loaded or
+                           prompted for approval)
