@@ -429,6 +429,117 @@ func TestExistenceAndWaitGone(t *testing.T) {
 	}
 }
 
+// scriptedSignaler answers existence probes (signal 0) from a per-target
+// script: each probe takes the next entry and the last entry repeats. A
+// target with no script is ESRCH; every other signal succeeds.
+type scriptedSignaler struct {
+	mu     sync.Mutex
+	probes map[int][]error
+	calls  []call
+}
+
+func (s *scriptedSignaler) Signal(pid int, sig syscall.Signal) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, call{pid, sig})
+	if sig != 0 {
+		return nil
+	}
+	script, ok := s.probes[pid]
+	if !ok || len(script) == 0 {
+		return syscall.ESRCH
+	}
+	err := script[0]
+	if len(script) > 1 {
+		s.probes[pid] = script[1:]
+	}
+	return err
+}
+
+func (s *scriptedSignaler) count(pid int, sig syscall.Signal) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, c := range s.calls {
+		if c.pid == pid && c.sig == sig {
+			n++
+		}
+	}
+	return n
+}
+
+// TestWaitGoneGroupEPERMIsNotGoneYet: Darwin's kill(-pgid, 0) is EPERM while
+// the group still exists but every member is an unreaped zombie (XNU killpg1,
+// posix=1). WaitGone keeps polling such a group until ESRCH, and returns the
+// EPERM (never success, never "still present") if the deadline hits first. A
+// positive pid's EPERM stays an immediate error.
+func TestWaitGoneGroupEPERMIsNotGoneYet(t *testing.T) {
+	// Zombie-only group, then reaped: the teardown's {pgid, -pgid} probe.
+	sig := &scriptedSignaler{probes: map[int][]error{-5: {syscall.EPERM, syscall.ESRCH}}}
+	if err := WaitGone(sig, &fakeClock{}, time.Second, time.Millisecond, 5, -5); err != nil {
+		t.Fatalf("WaitGone on a group that went EPERM -> ESRCH = %v, want nil", err)
+	}
+	if n := sig.count(-5, 0); n != 2 {
+		t.Fatalf("group probed %d times, want 2", n)
+	}
+	// EPERM, then a signalable member, then gone: still polled to ESRCH.
+	sig = &scriptedSignaler{probes: map[int][]error{-5: {syscall.EPERM, nil, syscall.ESRCH}}}
+	if err := WaitGone(sig, &fakeClock{}, time.Second, time.Millisecond, -5); err != nil {
+		t.Fatalf("WaitGone EPERM -> alive -> ESRCH = %v, want nil", err)
+	}
+	// Sticky group EPERM: polled until the deadline, then the EPERM itself.
+	sig = &scriptedSignaler{probes: map[int][]error{-5: {syscall.EPERM}}}
+	err := WaitGone(sig, &fakeClock{}, 10*time.Millisecond, time.Millisecond, 5, -5)
+	if err == nil || !errors.Is(err, syscall.EPERM) || strings.Contains(err.Error(), "still present") {
+		t.Fatalf("sticky group EPERM = %v, want an EPERM error that is not still present", err)
+	}
+	if n := sig.count(-5, 0); n < 2 {
+		t.Fatalf("sticky group EPERM probed %d times: not polled to the deadline", n)
+	}
+	// Sticky group EPERM beside a live pid: both are reported.
+	sig = &scriptedSignaler{probes: map[int][]error{5: {nil}, -5: {syscall.EPERM}}}
+	err = WaitGone(sig, &fakeClock{}, 10*time.Millisecond, time.Millisecond, 5, -5)
+	if !errors.Is(err, syscall.EPERM) || err == nil || !strings.Contains(err.Error(), "still present") || !strings.Contains(err.Error(), "[5]") {
+		t.Fatalf("live pid + sticky group EPERM = %v", err)
+	}
+	// Positive-pid EPERM is immediate, even if the next probe would be ESRCH.
+	sig = &scriptedSignaler{probes: map[int][]error{10: {syscall.EPERM, syscall.ESRCH}}}
+	if err := WaitGone(sig, &fakeClock{}, time.Second, time.Millisecond, 10); !errors.Is(err, syscall.EPERM) {
+		t.Fatalf("positive EPERM = %v, want EPERM", err)
+	}
+	if n := sig.count(10, 0); n != 1 {
+		t.Fatalf("positive EPERM probed %d times, want 1", n)
+	}
+	// Existence stays one call: group EPERM is an error, not absence.
+	sig = &scriptedSignaler{probes: map[int][]error{-5: {syscall.EPERM, syscall.ESRCH}}}
+	if alive, err := Existence(sig, -5); alive || !errors.Is(err, syscall.EPERM) || sig.count(-5, 0) != 1 {
+		t.Fatalf("Existence(-5) = %v, %v after %d probes", alive, err, sig.count(-5, 0))
+	}
+}
+
+// TestEmergencyCleanupPollsGroupEPERM: a recorded group whose probe is EPERM
+// until it reaches ESRCH within ReapLimit is gone, not a probe error and not
+// a survivor. A group that stays EPERM is still reported and KILLed.
+func TestEmergencyCleanupPollsGroupEPERM(t *testing.T) {
+	groups := filepath.Join(t.TempDir(), "groups.txt")
+	os.WriteFile(groups, []byte("300\n"), 0o600)
+	sig := &scriptedSignaler{probes: map[int][]error{-300: {syscall.EPERM, syscall.EPERM, syscall.ESRCH}}}
+	if err := EmergencyCleanup(sig, &fakeClock{}, groups); err != nil {
+		t.Fatalf("group EPERM -> ESRCH = %v, want nil", err)
+	}
+	if n := sig.count(-300, syscall.SIGKILL); n != 0 {
+		t.Fatalf("KILLed a group that reached ESRCH (%d KILLs)", n)
+	}
+	sig = &scriptedSignaler{probes: map[int][]error{-300: {syscall.EPERM}}}
+	err := EmergencyCleanup(sig, &fakeClock{}, groups)
+	if err == nil || !errors.Is(err, syscall.EPERM) || !strings.Contains(err.Error(), "probe group 300") || !strings.Contains(err.Error(), "group 300 survived") || strings.Contains(err.Error(), "still present") {
+		t.Fatalf("sticky group EPERM cleanup = %v", err)
+	}
+	if n := sig.count(-300, syscall.SIGKILL); n != 1 {
+		t.Fatalf("sticky EPERM group KILLs = %d, want 1", n)
+	}
+}
+
 func TestEmergencyCleanupFromRecordedGroups(t *testing.T) {
 	dir := t.TempDir()
 	groups := filepath.Join(dir, "groups.txt")

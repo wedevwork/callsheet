@@ -705,6 +705,13 @@ func EmergencyCleanup(sys Signaler, clock Clock, groupsFile string) error {
 			continue
 		}
 		alive, err := Existence(sys, -pgid)
+		if errors.Is(err, syscall.EPERM) {
+			// A group with no signalable member (e.g. only unreaped
+			// zombies) probes EPERM until it is reaped: poll it for ESRCH.
+			if err = WaitGone(sys, clock, ReapLimit, 5*time.Millisecond, -pgid); err == nil {
+				continue
+			}
+		}
 		if err != nil {
 			errs = append(errs, fmt.Errorf("probe group %d: %w", pgid, err))
 		}
