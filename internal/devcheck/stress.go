@@ -28,19 +28,28 @@ var (
 		"./internal/spikes/gittransport",
 		"./internal/plane",
 	}
-	// stressFunctionPackage and stressFunctionTests select only the FP-4/5/6
+	// stressFunctionPackage and stressFunctionTests select only the FP-4/5
 	// function tests, deliberately excluding unrelated ones such as the
-	// twelve-artifact cross-build test.
+	// twelve-artifact cross-build test. TestFP6ProcessGroups is not
+	// repeated here (iteration 02b): its RunExperiment is the experiment
+	// ./internal/spikes/processgroup's TestExperiment already repeats in
+	// the packages step; it still runs once in the ordinary suites.
 	stressFunctionPackage = "./tests/function"
-	stressFunctionTests   = []string{"TestFP4TransportHarness", "TestFP5GitRoundTrip", "TestFP6ProcessGroups"}
+	stressFunctionTests   = []string{"TestFP4TransportHarness", "TestFP5GitRoundTrip"}
 	// stressPlaneFunctionTests select the listener- and lock-bearing plane
 	// trust function tests (iteration 02). They run in their own step: the
 	// combined function binary measured 322.7 s on Linux (2026-09-26),
 	// reaching design 02's 5-minute split trigger, so the pre-authorized
 	// static split applies on both platforms. The union with
-	// stressFunctionTests is disjoint and every test still runs
+	// stressFunctionTests is disjoint and every selected test still runs
 	// StressCount times per CPU setting.
 	stressPlaneFunctionTests = []string{"TestPlaneState", "TestPlaneTLS", "TestPlaneReissue"}
+	// stressPlaneSubtests are the second-level names selected under
+	// stressPlaneFunctionTests (iteration 02b): the process-boundary CLI
+	// scenarios only. Each parent's "contracts" subtest, which delegates to
+	// internal/plane contracts already repeated in the packages step, is
+	// excluded.
+	stressPlaneSubtests = []string{"paths", "persistence", "locking", "validation", "https-only", "prelisten-validation", "bounded-shutdown", "process"}
 )
 
 const (
@@ -63,15 +72,26 @@ func stressSelector(tests []string) string {
 	return "^(" + strings.Join(tests, "|") + ")$"
 }
 
+// stressPlaneSelector is the two-level -run expression of the plane
+// function step: two independently anchored alternations joined by "/".
+// go test splits a -run pattern into per-level patterns only at a "/"
+// outside parentheses and brackets, so this selects the parents at the top
+// level and only the named subtests below them; it is not a flat
+// alternation.
+func stressPlaneSelector() string {
+	return stressSelector(stressPlaneFunctionTests) + "/" + stressSelector(stressPlaneSubtests)
+}
+
 func stressFlags() []string {
 	return []string{"go", "test", "-race", "-count=" + strconv.Itoa(StressCount), "-cpu=" + stressCPUList(), "-timeout=" + stressTestTimeout}
 }
 
 // StressSteps returns the stress plan for goos: three sequential race-built
 // go test commands, the complete timing-sensitive packages, the selected
-// iteration 01 function tests and the selected plane trust function tests,
-// each repeated StressCount times at every CPU setting. Only linux and darwin are supported; every other goos is rejected
-// before any child runs. Each call returns fresh slices.
+// iteration 01 function tests and the selected process-boundary subtests of
+// the plane trust function tests, each repeated StressCount times at every
+// CPU setting. Only linux and darwin are supported; every other goos is
+// rejected before any child runs. Each call returns fresh slices.
 func StressSteps(goos string) ([]Step, error) {
 	if goos != "linux" && goos != "darwin" {
 		return nil, fmt.Errorf("devcheck: stress stage is unsupported on %q: supported: linux, darwin", goos)
@@ -82,7 +102,7 @@ func StressSteps(goos string) ([]Step, error) {
 		{Name: "stress function", Env: []string{"CGO_ENABLED=1"},
 			Argv: append(stressFlags(), "-run="+stressSelector(stressFunctionTests), stressFunctionPackage)},
 		{Name: "stress plane function", Env: []string{"CGO_ENABLED=1"},
-			Argv: append(stressFlags(), "-run="+stressSelector(stressPlaneFunctionTests), stressFunctionPackage)},
+			Argv: append(stressFlags(), "-run="+stressPlaneSelector(), stressFunctionPackage)},
 	}, nil
 }
 

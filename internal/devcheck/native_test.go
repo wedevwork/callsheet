@@ -52,17 +52,18 @@ const fp6 = "TestFP6ProcessGroups"
 var scenarios = []string{"cooperative", "resistant", "leader-exits-first"}
 
 // planeRequired are the iteration 02 plane trust tests and mandatory
-// compound-FP subtests (design 02, CI plan), in FP order.
+// compound-FP subtests (design 02, CI plan), with the iteration 02b
+// process/contracts boundaries, in FP order.
 var planeRequired = []struct {
 	test string
 	subs []string
 }{
 	{"TestPlaneCommands", nil},
-	{"TestPlaneState", []string{"paths", "persistence", "locking", "validation"}},
+	{"TestPlaneState", []string{"paths", "persistence", "locking", "validation", "contracts"}},
 	{"TestPlaneBind", nil},
 	{"TestPlaneInit", []string{"issuance", "fingerprint", "restart-invariance"}},
-	{"TestPlaneTLS", []string{"https-only", "prelisten-validation", "bounded-shutdown"}},
-	{"TestPlaneReissue", nil},
+	{"TestPlaneTLS", []string{"https-only", "prelisten-validation", "bounded-shutdown", "contracts"}},
+	{"TestPlaneReissue", []string{"process", "contracts"}},
 	{"TestPlaneStatus", []string{"inspection", "expiry-warnings"}},
 	{"TestPlanePlatform", nil},
 }
@@ -161,15 +162,39 @@ func TestNativeStepsAndUnsupportedOS(t *testing.T) {
 	}
 	req := NativeRequiredTests()
 	if strings.Join(req, ",") != "TestFP6ProcessGroups,TestFP6ProcessGroups/cooperative,TestFP6ProcessGroups/resistant,TestFP6ProcessGroups/leader-exits-first,"+
-		"TestPlaneCommands,TestPlaneState,TestPlaneState/paths,TestPlaneState/persistence,TestPlaneState/locking,TestPlaneState/validation,"+
+		"TestPlaneCommands,TestPlaneState,TestPlaneState/paths,TestPlaneState/persistence,TestPlaneState/locking,TestPlaneState/validation,TestPlaneState/contracts,"+
 		"TestPlaneBind,TestPlaneInit,TestPlaneInit/issuance,TestPlaneInit/fingerprint,TestPlaneInit/restart-invariance,"+
-		"TestPlaneTLS,TestPlaneTLS/https-only,TestPlaneTLS/prelisten-validation,TestPlaneTLS/bounded-shutdown,"+
-		"TestPlaneReissue,TestPlaneStatus,TestPlaneStatus/inspection,TestPlaneStatus/expiry-warnings,TestPlanePlatform" {
+		"TestPlaneTLS,TestPlaneTLS/https-only,TestPlaneTLS/prelisten-validation,TestPlaneTLS/bounded-shutdown,TestPlaneTLS/contracts,"+
+		"TestPlaneReissue,TestPlaneReissue/process,TestPlaneReissue/contracts,TestPlaneStatus,TestPlaneStatus/inspection,TestPlaneStatus/expiry-warnings,TestPlanePlatform" || len(req) != 28 {
 		t.Fatalf("required = %v", req)
 	}
 	req[0] = "mutated"
 	if NativeRequiredTests()[0] != fp6 {
 		t.Fatal("NativeRequiredTests exposes internal state")
+	}
+}
+
+// TestNativeNewBoundaries (UT-3, iteration 02b): each boundary added to
+// separate process-boundary scenarios from delegated contracts is required
+// independently. Complete evidence qualifies; a missing run, a missing
+// pass, a skip or a failure of any one of them does not, while the other
+// 27 names remain present.
+func TestNativeNewBoundaries(t *testing.T) {
+	if err := check(stream(qualification()...)); err != nil {
+		t.Fatalf("complete evidence: %v", err)
+	}
+	for _, name := range []string{"TestPlaneState/contracts", "TestPlaneTLS/contracts", "TestPlaneReissue/process", "TestPlaneReissue/contracts"} {
+		q := qualification()
+		mustFail(t, "missing "+name, stream(without(without(q, "run", name), "pass", name)...), name+" has no run event", unobserved)
+		mustFail(t, "no run "+name, stream(without(q, "run", name)...), name+" has no run event", unobserved)
+		mustFail(t, "no pass "+name, stream(without(q, "pass", name)...), name+" has no pass event", unobserved)
+		mustFail(t, "skipped "+name, stream(replacing(q, "pass", name, ev("skip", NativePackage, name))...), "test "+name+" in "+NativePackage+" skipped: "+unobserved)
+		mustFail(t, "failed "+name, stream(replacing(q, "pass", name, ev("fail", NativePackage, name))...), "test "+name+" in "+NativePackage+" failed")
+		// Only that name is reported missing.
+		err := check(stream(without(without(q, "run", name), "pass", name)...))
+		if strings.Count(err.Error(), " has no ") != 1 {
+			t.Fatalf("missing %s: %v", name, err)
+		}
 	}
 }
 

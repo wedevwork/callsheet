@@ -28,12 +28,18 @@ type Job struct {
 	Stages         []string // devcheck stages, one check step each, in order
 }
 
-// jobs is the fixed two-job contract; order is the documentation order.
-// Both jobs end with the same stress stage: a Linux-only stress pass cannot
-// qualify Darwin.
+// jobs is the fixed four-job contract; order is the documentation order.
+// The main jobs keep their verification stages; stress runs in two
+// independent jobs of its own (iteration 02b), one per platform, at the
+// same count: a Linux-only stress pass cannot qualify Darwin. The stress
+// jobs' 20 minutes allow five minutes of setup beyond the 15-minute stress
+// watchdog. Jobs never depend on each other: the strict field grammar
+// rejects needs, conditions, matrices and continue-on-error.
 var jobs = []Job{
-	{ID: "linux", Name: "ci-linux", RunsOn: "ubuntu-24.04", TimeoutMinutes: 45, Stages: []string{"test", "coverage", "bench", "cross", "stress"}},
-	{ID: "macos", Name: "ci-macos", RunsOn: "macos-15", TimeoutMinutes: 30, Stages: []string{"native", "stress"}},
+	{ID: "linux", Name: "ci-linux", RunsOn: "ubuntu-24.04", TimeoutMinutes: 45, Stages: []string{"test", "coverage", "bench", "cross"}},
+	{ID: "macos", Name: "ci-macos", RunsOn: "macos-15", TimeoutMinutes: 30, Stages: []string{"native"}},
+	{ID: "linux-stress", Name: "ci-linux-stress", RunsOn: "ubuntu-24.04", TimeoutMinutes: 20, Stages: []string{"stress"}},
+	{ID: "macos-stress", Name: "ci-macos-stress", RunsOn: "macos-15", TimeoutMinutes: 20, Stages: []string{"stress"}},
 }
 
 // Jobs returns a fresh copy of the required job contract.

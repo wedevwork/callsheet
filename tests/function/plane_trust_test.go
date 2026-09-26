@@ -431,10 +431,12 @@ func TestPlaneCommands(t *testing.T) {
 	mustCode(t, p.run(t, "plane", "run", "--state-dir", root), 6, "callsheet: trust_failed: ")
 }
 
-// FP-2: private persistent state, locking and validation.
+// FP-2: private persistent state, locking and validation. The direct CLI
+// subtests are the process-boundary scenarios devcheck stress repeats; the
+// delegated package contracts run in "contracts" only (iteration 02b), since
+// the stress packages step already repeats them in internal/plane.
 func TestPlaneState(t *testing.T) {
 	p := newPlaneCLI(t)
-	contracts := testkit.BuildTestBinary(t, "./internal/plane", "plane-contract")
 	t.Run("paths", func(t *testing.T) {
 		want := map[string]string{"linux": ".local/state/callsheet/plane", "darwin": "Library/Application Support/callsheet/plane"}[runtime.GOOS]
 		if want == "" {
@@ -496,7 +498,6 @@ func TestPlaneState(t *testing.T) {
 			t.Fatalf("restored backup = %+v", b)
 		}
 		sameFiles(t, stateFiles(t, root), stateFiles(t, backup))
-		planeContract(t, contracts, "./internal/plane", "TestNativeStateContract", "modes", "no-replace", "rename", "flock")
 	})
 	t.Run("locking", func(t *testing.T) {
 		root := filepath.Join(t.TempDir(), "state")
@@ -553,6 +554,10 @@ func TestPlaneState(t *testing.T) {
 		if got := listTree(t, occupied); !slices.Equal(got, []string{"unrelated.txt"}) {
 			t.Fatalf("occupied root now holds %v", got)
 		}
+	})
+	t.Run("contracts", func(t *testing.T) {
+		contracts := testkit.BuildTestBinary(t, "./internal/plane", "plane-contract")
+		planeContract(t, contracts, "./internal/plane", "TestNativeStateContract", "modes", "no-replace", "rename", "flock")
 		planeContract(t, contracts, "./internal/plane", "TestStateFailureContract", "create", "write", "sync", "close", "publish", "partial", "corrupt")
 	})
 }
@@ -735,7 +740,8 @@ func TestPlaneInit(t *testing.T) {
 	})
 }
 
-// FP-5: HTTPS only, pre-listen validation and bounded shutdown.
+// FP-5: HTTPS only, pre-listen validation and bounded shutdown. The
+// delegated failure contract runs in "contracts" only (iteration 02b).
 func TestPlaneTLS(t *testing.T) {
 	p := newPlaneCLI(t)
 	root := filepath.Join(t.TempDir(), "state")
@@ -844,60 +850,69 @@ func TestPlaneTLS(t *testing.T) {
 				t.Fatalf("%v: lock not released: %+v", sig, r)
 			}
 		}
+	})
+	t.Run("contracts", func(t *testing.T) {
 		bin := testkit.BuildTestBinary(t, "./internal/plane", "plane-contract")
 		planeContract(t, bin, "./internal/plane", "TestServerFailureContract", "listen", "serve", "shutdown-deadline")
 	})
 }
 
 // FP-6: same-CA reissue keeps clients that retain the original CA working.
+// "process" is the real CLI scenario devcheck stress repeats; the delegated
+// failure contract runs in "contracts" only (iteration 02b). The parent
+// builds the CLI for "process"; "contracts" needs only the contract binary.
 func TestPlaneReissue(t *testing.T) {
 	p := newPlaneCLI(t)
-	root := filepath.Join(t.TempDir(), "state")
-	if r := p.run(t, "plane", "init", "--state-dir", root, "--bind", "127.0.0.1:0", "--san", "localhost", "--san", "127.0.0.1"); r.code != 0 {
-		t.Fatalf("init = %+v", r)
-	}
-	ca, _ := pemCert(t, filepath.Join(root, "pki", "ca.crt")) // retained by the client throughout
-	client := trustClient(t, ca)
-	pp := p.start(t, "--state-dir", root)
-	if err := health(client, pp.addr); err != nil {
-		t.Fatal(err)
-	}
-	before := stateFiles(t, root)
-	mustCode(t, p.run(t, "plane", "cert", "reissue", "--state-dir", root, "--san", "plane.example", "--san", "127.0.0.1"), 4, "callsheet: conflict: ")
-	sameFiles(t, before, stateFiles(t, root))
-	if code := pp.stop(t, syscall.SIGTERM); code != 130 {
-		t.Fatalf("exit %d", code)
-	}
-	r := p.run(t, "plane", "cert", "reissue", "--state-dir", root, "--san", "plane.example", "--san", "127.0.0.1")
-	if r.code != 0 || r.stderr != "" || r.stdout != wantReport(t, root) || !strings.Contains(r.stdout, "\ndns_names: plane.example\nip_addresses: 127.0.0.1\n") {
-		t.Fatalf("reissue = %+v", r)
-	}
-	after := stateFiles(t, root)
-	sameFiles(t, before, after, "pki/server.crt")
-	if bytes.Equal(before["pki/server.crt"], after["pki/server.crt"]) {
-		t.Fatal("server.crt unchanged")
-	}
-	srv, _ := pemCert(t, filepath.Join(root, "pki", "server.crt"))
-	if _, err := srv.Verify(x509.VerifyOptions{Roots: (&testkit.FixtureCA{Cert: ca}).Pool(), DNSName: "plane.example"}); err != nil {
-		t.Fatalf("new certificate does not verify against the unchanged CA: %v", err)
-	}
-	// Restart; rediscover the new ephemeral address. The retained CA still
-	// works for the retained and new names; the removed name fails.
-	pp = p.start(t, "--state-dir", root)
-	if err := health(client, pp.addr); err != nil {
-		t.Fatalf("retained IP SAN: %v", err)
-	}
-	if err := health(namedClient(t, ca, "plane.example"), pp.addr); err != nil {
-		t.Fatalf("new SAN: %v", err)
-	}
-	if err := health(namedClient(t, ca, "localhost"), pp.addr); err == nil || !strings.Contains(err.Error(), "certificate") {
-		t.Fatalf("removed SAN: %v", err)
-	}
-	if code := pp.stop(t, syscall.SIGTERM); code != 130 {
-		t.Fatalf("exit %d", code)
-	}
-	bin := testkit.BuildTestBinary(t, "./internal/plane", "plane-contract")
-	planeContract(t, bin, "./internal/plane", "TestReissueFailureContract", "expired-leaf", "ca-horizon", "before-rename", "after-rename")
+	t.Run("process", func(t *testing.T) {
+		root := filepath.Join(t.TempDir(), "state")
+		if r := p.run(t, "plane", "init", "--state-dir", root, "--bind", "127.0.0.1:0", "--san", "localhost", "--san", "127.0.0.1"); r.code != 0 {
+			t.Fatalf("init = %+v", r)
+		}
+		ca, _ := pemCert(t, filepath.Join(root, "pki", "ca.crt")) // retained by the client throughout
+		client := trustClient(t, ca)
+		pp := p.start(t, "--state-dir", root)
+		if err := health(client, pp.addr); err != nil {
+			t.Fatal(err)
+		}
+		before := stateFiles(t, root)
+		mustCode(t, p.run(t, "plane", "cert", "reissue", "--state-dir", root, "--san", "plane.example", "--san", "127.0.0.1"), 4, "callsheet: conflict: ")
+		sameFiles(t, before, stateFiles(t, root))
+		if code := pp.stop(t, syscall.SIGTERM); code != 130 {
+			t.Fatalf("exit %d", code)
+		}
+		r := p.run(t, "plane", "cert", "reissue", "--state-dir", root, "--san", "plane.example", "--san", "127.0.0.1")
+		if r.code != 0 || r.stderr != "" || r.stdout != wantReport(t, root) || !strings.Contains(r.stdout, "\ndns_names: plane.example\nip_addresses: 127.0.0.1\n") {
+			t.Fatalf("reissue = %+v", r)
+		}
+		after := stateFiles(t, root)
+		sameFiles(t, before, after, "pki/server.crt")
+		if bytes.Equal(before["pki/server.crt"], after["pki/server.crt"]) {
+			t.Fatal("server.crt unchanged")
+		}
+		srv, _ := pemCert(t, filepath.Join(root, "pki", "server.crt"))
+		if _, err := srv.Verify(x509.VerifyOptions{Roots: (&testkit.FixtureCA{Cert: ca}).Pool(), DNSName: "plane.example"}); err != nil {
+			t.Fatalf("new certificate does not verify against the unchanged CA: %v", err)
+		}
+		// Restart; rediscover the new ephemeral address. The retained CA still
+		// works for the retained and new names; the removed name fails.
+		pp = p.start(t, "--state-dir", root)
+		if err := health(client, pp.addr); err != nil {
+			t.Fatalf("retained IP SAN: %v", err)
+		}
+		if err := health(namedClient(t, ca, "plane.example"), pp.addr); err != nil {
+			t.Fatalf("new SAN: %v", err)
+		}
+		if err := health(namedClient(t, ca, "localhost"), pp.addr); err == nil || !strings.Contains(err.Error(), "certificate") {
+			t.Fatalf("removed SAN: %v", err)
+		}
+		if code := pp.stop(t, syscall.SIGTERM); code != 130 {
+			t.Fatalf("exit %d", code)
+		}
+	})
+	t.Run("contracts", func(t *testing.T) {
+		bin := testkit.BuildTestBinary(t, "./internal/plane", "plane-contract")
+		planeContract(t, bin, "./internal/plane", "TestReissueFailureContract", "expired-leaf", "ca-horizon", "before-rename", "after-rename")
+	})
 }
 
 // FP-7: offline inspection and expiry warnings.
@@ -952,10 +967,12 @@ func TestPlaneStatus(t *testing.T) {
 }
 
 // FP-8: the devcheck plans, native required names, fixtures and docs name
-// the plane package and tests for both platforms.
+// the plane package and tests for both platforms. Iteration 02b narrowed
+// the plane stress step to the process-boundary subtests and added the
+// "process" and "contracts" boundaries to the native required names.
 func TestPlanePlatform(t *testing.T) {
-	const stressFn = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestFP4TransportHarness|TestFP5GitRoundTrip|TestFP6ProcessGroups)$ ./tests/function"
-	const stressPlaneFn = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestPlaneState|TestPlaneTLS|TestPlaneReissue)$ ./tests/function"
+	const stressFn = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestFP4TransportHarness|TestFP5GitRoundTrip)$ ./tests/function"
+	const stressPlaneFn = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestPlaneState|TestPlaneTLS|TestPlaneReissue)$/^(paths|persistence|locking|validation|https-only|prelisten-validation|bounded-shutdown|process)$ ./tests/function"
 	const stressPkgs = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/processgroup ./internal/spikes/gittransport ./internal/plane"
 	const benchPlane = "go test ./internal/plane -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s"
 	for _, goos := range []string{"linux", "darwin"} {
@@ -973,11 +990,11 @@ func TestPlanePlatform(t *testing.T) {
 		t.Fatal("linux native plan accepted")
 	}
 	required := []string{"TestFP6ProcessGroups", "TestFP6ProcessGroups/cooperative", "TestFP6ProcessGroups/resistant", "TestFP6ProcessGroups/leader-exits-first",
-		"TestPlaneCommands", "TestPlaneState", "TestPlaneState/paths", "TestPlaneState/persistence", "TestPlaneState/locking", "TestPlaneState/validation",
+		"TestPlaneCommands", "TestPlaneState", "TestPlaneState/paths", "TestPlaneState/persistence", "TestPlaneState/locking", "TestPlaneState/validation", "TestPlaneState/contracts",
 		"TestPlaneBind", "TestPlaneInit", "TestPlaneInit/issuance", "TestPlaneInit/fingerprint", "TestPlaneInit/restart-invariance",
-		"TestPlaneTLS", "TestPlaneTLS/https-only", "TestPlaneTLS/prelisten-validation", "TestPlaneTLS/bounded-shutdown",
-		"TestPlaneReissue", "TestPlaneStatus", "TestPlaneStatus/inspection", "TestPlaneStatus/expiry-warnings", "TestPlanePlatform"}
-	if got := devcheck.NativeRequiredTests(); !slices.Equal(got, required) {
+		"TestPlaneTLS", "TestPlaneTLS/https-only", "TestPlaneTLS/prelisten-validation", "TestPlaneTLS/bounded-shutdown", "TestPlaneTLS/contracts",
+		"TestPlaneReissue", "TestPlaneReissue/process", "TestPlaneReissue/contracts", "TestPlaneStatus", "TestPlaneStatus/inspection", "TestPlaneStatus/expiry-warnings", "TestPlanePlatform"}
+	if got := devcheck.NativeRequiredTests(); len(got) != 28 || !slices.Equal(got, required) {
 		t.Fatalf("native required = %v", got)
 	}
 	// Every required plane name exists as a top-level test or mandatory
@@ -1002,7 +1019,7 @@ func TestPlanePlatform(t *testing.T) {
 			t.Fatalf("Stress checks lacks %q", cmd)
 		}
 	}
-	requireTerms(t, "Stress checks", stress, "`internal/plane`", "`TestPlaneState`", "`TestPlaneTLS`", "`TestPlaneReissue`")
+	requireTerms(t, "Stress checks", stress, "`internal/plane`", "`TestPlaneState`", "`TestPlaneTLS`", "`TestPlaneReissue`", "`contracts`", "`process`")
 	checks := docSection(t, "Checks")
 	for _, name := range required {
 		requireTerms(t, "Checks", checks, "`"+strings.TrimPrefix(name[strings.LastIndex(name, "/")+1:], "")+"`")

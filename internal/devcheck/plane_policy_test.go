@@ -72,7 +72,7 @@ func TestPlaneVerificationPolicyContract(t *testing.T) {
 		}
 		req := NativeRequiredTests()
 		want := append([]string{fp6, fp6 + "/cooperative", fp6 + "/resistant", fp6 + "/leader-exits-first"}, planeNames()...)
-		if strings.Join(req, ",") != strings.Join(want, ",") || len(req) != 24 {
+		if strings.Join(req, ",") != strings.Join(want, ",") || len(req) != 28 {
 			t.Fatalf("required = %v", req)
 		}
 		if err := check(stream(qualification()...)); err != nil {

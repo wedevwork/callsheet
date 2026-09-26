@@ -18,7 +18,9 @@ const NativePackage = "github.com/wedevwork/callsheet/tests/function"
 // nativeRequired are the tests in NativePackage that must both run and
 // pass: the process-group scenarios (iteration 01) and every plane trust
 // function test with the mandatory subtests of its compound FPs
-// (iteration 02).
+// (iteration 02), including the "process" and "contracts" boundaries that
+// separate process-boundary scenarios from delegated contracts
+// (iteration 02b).
 var nativeRequired = []string{
 	"TestFP6ProcessGroups",
 	"TestFP6ProcessGroups/cooperative",
@@ -30,6 +32,7 @@ var nativeRequired = []string{
 	"TestPlaneState/persistence",
 	"TestPlaneState/locking",
 	"TestPlaneState/validation",
+	"TestPlaneState/contracts",
 	"TestPlaneBind",
 	"TestPlaneInit",
 	"TestPlaneInit/issuance",
@@ -39,7 +42,10 @@ var nativeRequired = []string{
 	"TestPlaneTLS/https-only",
 	"TestPlaneTLS/prelisten-validation",
 	"TestPlaneTLS/bounded-shutdown",
+	"TestPlaneTLS/contracts",
 	"TestPlaneReissue",
+	"TestPlaneReissue/process",
+	"TestPlaneReissue/contracts",
 	"TestPlaneStatus",
 	"TestPlaneStatus/inspection",
 	"TestPlaneStatus/expiry-warnings",

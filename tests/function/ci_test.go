@@ -264,7 +264,8 @@ func requireTerms(t *testing.T, where, text string, terms ...string) {
 	}
 }
 
-// FP-1: triggers, two stable checks, pinned setup, budget and permissions.
+// FP-1: triggers, the stable checks (four since iteration 02b), pinned
+// setup, budget and permissions.
 func TestCIWorkflowContract(t *testing.T) {
 	data := ciWorkflow(t)
 	if err := cicheck.ValidateWorkflow(data); err != nil {
@@ -299,7 +300,8 @@ func TestCIWorkflowContract(t *testing.T) {
 			t.Fatalf("%s download step", j.ID)
 		}
 	}
-	if strings.Join(names, ",") != "ci-linux,ci-macos" || strings.Join(cicheck.RequiredChecks(), ",") != "ci-linux,ci-macos" {
+	const four = "ci-linux,ci-macos,ci-linux-stress,ci-macos-stress"
+	if strings.Join(names, ",") != four || strings.Join(cicheck.RequiredChecks(), ",") != four {
 		t.Fatalf("check names = %v", names)
 	}
 	if strings.Contains(string(data), "pull_request_target") {
@@ -313,14 +315,14 @@ func TestCIWorkflowContract(t *testing.T) {
 	mustReject(t, "timeout removed", mutated(t, func(r *yaml.Node) { deleteKey(t, node(t, r, "jobs", "linux"), "timeout-minutes") }), "jobs.linux.timeout-minutes: missing required field")
 }
 
-// FP-2: the Linux job runs devcheck test (then race), coverage, bench, cross
-// and (01c) stress.
+// FP-2: the Linux job runs devcheck test (then race), coverage, bench and
+// cross; its stress moved to ci-linux-stress (iteration 02b).
 func TestCILinuxBar(t *testing.T) {
 	stages, err := cicheck.ExtractStages(ciWorkflow(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(stages["linux"], " "); got != "test coverage bench cross stress" || got != strings.Join(cicheck.Jobs()[0].Stages, " ") {
+	if got := strings.Join(stages["linux"], " "); got != "test coverage bench cross" || got != strings.Join(cicheck.Jobs()[0].Stages, " ") {
 		t.Fatalf("linux stages = %q", got)
 	}
 	plan := devcheck.TestSteps("linux")
@@ -364,8 +366,8 @@ func TestCILinuxBar(t *testing.T) {
 	}
 }
 
-// FP-3: the macOS job runs native, which requires all three scenarios, and
-// (01c) then stress.
+// FP-3: the macOS job runs native, which requires all three scenarios; its
+// stress moved to ci-macos-stress (iteration 02b).
 func TestCIDarwinQualification(t *testing.T) {
 	data := ciWorkflow(t)
 	var doc yaml.Node
@@ -376,7 +378,7 @@ func TestCIDarwinQualification(t *testing.T) {
 		t.Fatal("macos job identity")
 	}
 	stages, err := cicheck.ExtractStages(data)
-	if err != nil || strings.Join(stages["macos"], " ") != "native stress" || strings.Join(cicheck.Jobs()[1].Stages, " ") != "native stress" {
+	if err != nil || strings.Join(stages["macos"], " ") != "native" || strings.Join(cicheck.Jobs()[1].Stages, " ") != "native" {
 		t.Fatalf("macos stages = %v %v", stages, err)
 	}
 	steps, err := devcheck.NativeSteps("darwin")
@@ -556,6 +558,15 @@ func TestCIWorkflowDrift(t *testing.T) {
 	}), "jobs.macos.continue-on-error: unknown field")
 }
 
+// ownerAddContexts is the only repository mutation docs/ci.md may contain:
+// the owner-only additive request adding the two stress contexts
+// (iteration 02b). Nothing executes it.
+const ownerAddContexts = "gh api --method POST \\\n" +
+	"  -H 'Accept: application/vnd.github+json' \\\n" +
+	"  repos/wedevwork/callsheet/branches/main/protection/required_status_checks/contexts \\\n" +
+	"  -f 'contexts[]=ci-linux-stress' \\\n" +
+	"  -f 'contexts[]=ci-macos-stress'\n"
+
 // FP-7: the owner-applied branch protection handoff.
 func TestCIProtectionHandoff(t *testing.T) {
 	checks := docSection(t, "Checks")
@@ -575,20 +586,26 @@ func TestCIProtectionHandoff(t *testing.T) {
 	requireTerms(t, "Branch protection", bp,
 		"wedevwork/callsheet", "branch name pattern `main`",
 		"Require a pull request before merging",
-		"Require status checks to pass before merging: `ci-linux`, `ci-macos`",
+		"Require status checks to pass before merging: `ci-linux`, `ci-macos`, `ci-linux-stress`, `ci-macos-stress`",
 		"Require branches to be up to date before merging",
 		"Do not allow bypassing the above settings", "include administrators",
 		"no force pushes", "no branch deletion",
 		"gh api repos/wedevwork/callsheet/branches/main/protection",
 		"required_status_checks.strict", "enforce_admins", "rulesets")
+	// The documented owner handoff is the only mutating request: exactly one
+	// POST, inside the exact additive command in Branch protection, and no
+	// other method that could replace or remove protection.
 	doc := string(repoFile(t, "docs/ci.md"))
-	for _, forbidden := range []string{"ci-windows", "-X PUT", "--method PUT", "-X POST", "--method POST"} {
+	if strings.Count(doc, "--method POST") != 1 || strings.Count(doc, ownerAddContexts) != 1 || !strings.Contains(bp, "\n"+ownerAddContexts) {
+		t.Fatalf("docs/ci.md must contain exactly one POST, the owner handoff in Branch protection:\n%s", ownerAddContexts)
+	}
+	for _, forbidden := range []string{"ci-windows", "-X PUT", "--method PUT", "-X POST", "-X PATCH", "--method PATCH", "-X DELETE", "--method DELETE", "curl "} {
 		if strings.Contains(doc, forbidden) {
 			t.Fatalf("docs/ci.md contains %q", forbidden)
 		}
 	}
 	wf := string(ciWorkflow(t))
-	for _, forbidden := range []string{"gh ", "protection", "api.github.com", "secrets.", "administration"} {
+	for _, forbidden := range []string{"gh ", "protection", "api.github.com", "secrets.", "administration", "--method", "POST", "curl"} {
 		if strings.Contains(wf, forbidden) {
 			t.Fatalf("workflow contains %q", forbidden)
 		}
@@ -606,6 +623,7 @@ func TestCIPRProcedure(t *testing.T) {
 		"merge together after both checks, `ci-linux` and `ci-macos`, succeed on its current merge revision",
 		"enables branch protection after both contexts are available and successful",
 		"Do not begin merging iteration 02 before that handoff is complete",
+		"iterations 02 and 02b join pull request #2", "Adding the stress contexts",
 		"No fake first-run evidence", "merge queue")
 	for _, stale := range []string{"land directly on `main`", "before CI exists", "From iteration 02 on"} {
 		if strings.Contains(strings.Join(strings.Fields(pr), " "), stale) {
@@ -619,20 +637,20 @@ func TestCIPRProcedure(t *testing.T) {
 	review := stepIndex(t, steps, "code review", "REVIEW_APPROVED")
 	commit := stepIndex(t, steps, "Commit the reviewed code")
 	open := stepIndex(t, steps, "open a pull request targeting `main`")
-	green := stepIndex(t, steps, "both checks", "succeed on the current PR merge revision")
-	merge := stepIndex(t, steps, "Merge only after both checks are green")
+	green := stepIndex(t, steps, "all four checks", "`ci-linux-stress`", "`ci-macos-stress`", "succeed on the current PR merge revision")
+	merge := stepIndex(t, steps, "Merge only after all four checks are green")
 	if !(review < commit && commit < open && open < green && green < merge) {
 		t.Fatalf("procedure order review=%d commit=%d open=%d green=%d merge=%d", review, commit, open, green, merge)
 	}
 	requireTerms(t, "green step", steps[green], "skipped, canceled, pending or unobserved check is not acceptable")
 	first := docSection(t, "First remote run")
 	requireTerms(t, "First remote run", first, "pending until observed", "run URL", "commit",
-		"conclusions of both `ci-linux` and `ci-macos`", "native evidence", "native qualification passed on darwin",
+		"conclusions of all four checks, `ci-linux`, `ci-macos`, `ci-linux-stress` and `ci-macos-stress`", "native evidence", "native qualification passed on darwin",
 		"branch protection verification",
 		"git ls-remote https://github.com/actions/checkout.git 'refs/tags/v6.0.2' 'refs/tags/v6.0.2^{}'",
 		"git ls-remote https://github.com/actions/setup-go.git 'refs/tags/v6.3.0' 'refs/tags/v6.3.0^{}'",
 		"peeled commit", "handoff blocker")
-	requireTerms(t, "First remote run", first, "stress evidence from both logs", "`devcheck: stage stress ok`", "elapsed time of each stress step")
+	requireTerms(t, "First remote run", first, "stress evidence from the `ci-linux-stress` and `ci-macos-stress` logs", "`devcheck: stage stress ok`", "elapsed time of each stress step")
 	local := docSection(t, "Local verification")
 	requireTerms(t, "Local verification", local, "go run ./cmd/devcheck all", "go run ./cmd/devcheck stress", "actionlint", "not a required dependency")
 }

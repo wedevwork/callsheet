@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -16,12 +17,13 @@ import (
 // The literal stress plan is the specification oracle (design 01c, Stress
 // execution, extended by design 02's CI plan with ./internal/plane and,
 // through its pre-authorized function-binary split, a separate plane
-// function step); it is compared against StressSteps, never derived from
-// it.
+// function step, then deduplicated by design 02b: no TestFP6ProcessGroups
+// and only the process-boundary plane subtests); it is compared against
+// StressSteps, never derived from it.
 const (
 	wantStressPackages      = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/processgroup ./internal/spikes/gittransport ./internal/plane"
-	wantStressFunction      = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestFP4TransportHarness|TestFP5GitRoundTrip|TestFP6ProcessGroups)$ ./tests/function"
-	wantStressPlaneFunction = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestPlaneState|TestPlaneTLS|TestPlaneReissue)$ ./tests/function"
+	wantStressFunction      = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestFP4TransportHarness|TestFP5GitRoundTrip)$ ./tests/function"
+	wantStressPlaneFunction = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestPlaneState|TestPlaneTLS|TestPlaneReissue)$/^(paths|persistence|locking|validation|https-only|prelisten-validation|bounded-shutdown|process)$ ./tests/function"
 	wantStressPlan          = wantStressPackages + "|" + wantStressFunction + "|" + wantStressPlaneFunction
 )
 
@@ -64,9 +66,12 @@ func TestStressPlan(t *testing.T) {
 	a[0].Env[0] = "CGO_ENABLED=0"
 	a[1].Argv = append(a[1].Argv[:2], "mutated")
 	a[0].Name = "mutated"
+	a[2].Argv[6] = "-run=^(TestPlaneState)$"
+	a[2].Env[0] = "CGO_ENABLED=0"
 	b, _ := StressSteps("linux")
 	if strings.Join(b[0].Argv, " ") != wantStressPackages || b[0].Env[0] != "CGO_ENABLED=1" ||
-		strings.Join(b[1].Argv, " ") != wantStressFunction || b[0].Name != "stress packages" {
+		strings.Join(b[1].Argv, " ") != wantStressFunction || b[0].Name != "stress packages" ||
+		strings.Join(b[2].Argv, " ") != wantStressPlaneFunction || b[2].Env[0] != "CGO_ENABLED=1" {
 		t.Fatalf("plan state leaked: %+v", b)
 	}
 	for _, goos := range []string{"windows", "freebsd", "plan9", "", "Linux"} {
@@ -74,6 +79,116 @@ func TestStressPlan(t *testing.T) {
 		if err == nil || steps != nil || !strings.Contains(err.Error(), "stress stage is unsupported on") {
 			t.Fatalf("StressSteps(%q) = %v %v", goos, steps, err)
 		}
+	}
+}
+
+// splitRun mirrors the testing package's -run splitting: a pattern splits
+// into per-level patterns only at a "/" outside parentheses and brackets.
+// It is written independently of StressSteps.
+func splitRun(pattern string) []string {
+	var levels []string
+	var cs, cp int
+	start := 0
+	for i := 0; i < len(pattern); i++ {
+		switch pattern[i] {
+		case '[':
+			cs++
+		case ']':
+			if cs--; cs < 0 {
+				cs = 0
+			}
+		case '(':
+			if cs == 0 {
+				cp++
+			}
+		case ')':
+			if cs == 0 {
+				cp--
+			}
+		case '\\':
+			i++
+		case '/':
+			if cs == 0 && cp == 0 {
+				levels = append(levels, pattern[start:i])
+				start = i + 1
+			}
+		}
+	}
+	return append(levels, pattern[start:])
+}
+
+// runValue returns the -run value of a planned step ("" if none).
+func runValue(s Step) string {
+	for _, a := range s.Argv {
+		if v, ok := strings.CutPrefix(a, "-run="); ok {
+			return v
+		}
+	}
+	return ""
+}
+
+// TestStressSelectorComponents (UT-1) checks the selectors' per-level
+// semantics: every selected name matches its level, and every excluded
+// name, near-prefix and near-suffix negatives and the contracts boundaries
+// included, does not.
+func TestStressSelectorComponents(t *testing.T) {
+	for _, goos := range []string{"linux", "darwin"} {
+		steps, err := StressSteps(goos)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if runValue(steps[0]) != "" {
+			t.Fatalf("%s: packages step has a selector: %v", goos, steps[0].Argv)
+		}
+		fn, plane := splitRun(runValue(steps[1])), splitRun(runValue(steps[2]))
+		if len(fn) != 1 || len(plane) != 2 {
+			t.Fatalf("%s: levels function=%q plane=%q", goos, fn, plane)
+		}
+		for _, c := range []struct {
+			level    string
+			pattern  string
+			selected []string
+			excluded []string
+		}{
+			{"function", fn[0],
+				[]string{"TestFP4TransportHarness", "TestFP5GitRoundTrip"},
+				[]string{"TestFP6ProcessGroups", "TestFP4TransportHarnessX", "XTestFP5GitRoundTrip", "TestFP4", "TestFP1Cli", "TestPlaneState", "TestCIWorkflowContract", ""}},
+			{"plane parents", plane[0],
+				[]string{"TestPlaneState", "TestPlaneTLS", "TestPlaneReissue"},
+				[]string{"TestPlaneStatus", "TestPlaneStateX", "TestPlaneTLSX", "XTestPlaneTLS", "TestPlaneReissueFailure", "TestPlaneInit", "TestPlaneBind",
+					"TestPlaneCommands", "TestPlanePlatform", "TestFP6ProcessGroups", "TestPlane", ""}},
+			{"plane subtests", plane[1],
+				[]string{"paths", "persistence", "locking", "validation", "https-only", "prelisten-validation", "bounded-shutdown", "process"},
+				[]string{"contracts", "processes", "subprocess", "path", "pathsx", "lock", "https", "https-only-x", "prelisten", "bounded-shutdown#01", "validation2",
+					"issuance", "fingerprint", "restart-invariance", "inspection", "expiry-warnings", "cooperative", "resistant", "leader-exits-first", ""}},
+		} {
+			re, err := regexp.Compile(c.pattern)
+			if err != nil {
+				t.Fatalf("%s %s: %v", goos, c.level, err)
+			}
+			for _, n := range c.selected {
+				if !re.MatchString(n) {
+					t.Errorf("%s %s %q does not select %q", goos, c.level, c.pattern, n)
+				}
+			}
+			for _, n := range c.excluded {
+				if re.MatchString(n) {
+					t.Errorf("%s %s %q selects excluded %q", goos, c.level, c.pattern, n)
+				}
+			}
+		}
+	}
+	// The splitter itself: an unparenthesized slash separates levels, so the
+	// plane selector is one two-level pattern, never a flat alternation; a
+	// slash inside a group or class, or escaped, does not split.
+	if got := splitRun("^(A|B)$/^(x|y)$"); len(got) != 2 || got[0] != "^(A|B)$" || got[1] != "^(x|y)$" {
+		t.Fatalf("splitRun = %q", got)
+	}
+	if got := splitRun("^(a/b|[/])$"); len(got) != 1 {
+		t.Fatalf("slash inside groups split: %q", got)
+	}
+	if got := splitRun(`^a\/b$`); len(got) != 1 {
+		t.Fatalf("escaped slash split: %q", got)
 	}
 }
 
