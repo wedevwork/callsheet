@@ -846,6 +846,28 @@ func (s stallReader) Read([]byte) (int, error) {
 	return 0, s.ctx.Err()
 }
 
+// rpcOutcome is what postReceive returned for one request.
+type rpcOutcome struct {
+	res rpcResult
+	err error
+}
+
+// stalledTransferSucceeded reports whether a cancelled stalled-body transfer
+// came back as a successful push. A transport error (context.Canceled) is not
+// one, and neither is a completed response carrying the handler's failing
+// report: net/http returns an already-queued response when the request context
+// ends, so a nil error alone does not mean the push was accepted.
+func stalledTransferSucceeded(res rpcResult, err error) bool {
+	return err == nil && res.ok()
+}
+
+// writeStalledEvidence records, outside the test log, a cancelled stalled-body
+// transfer that completed with a nil transport error: the report it carried
+// and whether the stalled ref exists once the handler has finished.
+func writeStalledEvidence(w io.Writer, res rpcResult, refPresent bool) {
+	fmt.Fprintf(w, "CALLSHEET-EVIDENCE cancel-stalled-body: nil transport error; result=%s; stalled_ref_present=%t\n", res, refPresent)
+}
+
 func scenarioStalledBody(e *scenarioEnv) {
 	t := e.t
 	c, pack := newCommitPack(t, e.c0, "stalled")
@@ -871,10 +893,10 @@ func scenarioStalledBody(e *scenarioEnv) {
 		cctx, ccancel := context.WithCancel(e.ctx)
 		defer ccancel()
 		body := io.MultiReader(bytes.NewReader(header), bytes.NewReader(pack[:12]), stallReader{cctx})
-		errCh := make(chan error, 1)
+		outCh := make(chan rpcOutcome, 1)
 		go func() {
-			_, err := postReceive(cctx, e.hk.Client, e.url, body)
-			errCh <- err
+			res, err := postReceive(cctx, e.hk.Client, e.url, body)
+			outCh <- rpcOutcome{res, err}
 		}()
 		select {
 		case <-entered:
@@ -882,17 +904,97 @@ func scenarioStalledBody(e *scenarioEnv) {
 			t.Fatal("handler never entered the pack read")
 		}
 		ccancel()
-		if err := <-errCh; err == nil {
-			t.Fatal("cancelled transfer returned success")
+		out := <-outCh
+		if out.err == nil {
+			t.Logf("cancelled transfer completed with %s", out.res)
+		}
+		if stalledTransferSucceeded(out.res, out.err) {
+			t.Fatalf("cancelled transfer returned success: %s", out.res)
 		}
 		select {
 		case <-finished:
 		case <-time.After(10 * time.Second):
 			t.Fatal("handler did not finish after cancellation")
 		}
+		if out.err == nil {
+			_, present := refSnapshot(t, e.bare)["refs/callsheet/tasks/stalled"]
+			writeStalledEvidence(os.Stderr, out.res, present)
+		}
 	})
 	if _, ok := refSnapshot(t, e.bare)["refs/callsheet/tasks/stalled"]; ok {
 		t.Fatal("stalled transfer published a ref")
+	}
+}
+
+// cannedTransport answers every request with one fixed response, so a test can
+// feed postReceive exact wire bytes without a server.
+type cannedTransport struct {
+	status int
+	body   string
+}
+
+func (c cannedTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: c.status,
+		Header:     http.Header{"Content-Type": {fmt.Sprintf(contentTypeRPC, serviceReceive)}},
+		Body:       io.NopCloser(strings.NewReader(c.body)),
+		Request:    r,
+	}, nil
+}
+
+// TestStalledBodyOutcome pins the cancel-stalled-body success predicate. When
+// the client context ends, net/http may return a response already queued by
+// the handler, so a cancelled transfer can complete with a nil transport error
+// and the handler's failing report. Only an ok report is a success.
+func TestStalledBodyOutcome(t *testing.T) {
+	const stalled = plumbing.ReferenceName("refs/callsheet/tasks/stalled")
+	okReport := packp.NewReportStatus()
+	okReport.UnpackStatus = "ok"
+	okReport.CommandStatuses = []*packp.CommandStatus{{ReferenceName: stalled, Status: "ok"}}
+	var okBody bytes.Buffer
+	if err := okReport.Encode(&okBody); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name       string
+		err        error  // transport error, used instead of a response
+		body       string // HTTP 200 body served through postReceive
+		wantUnpack string // if set, the decoded unpack and command status
+		wantStatus string
+		success    bool
+	}{
+		// Captured from the handler on this path (raw/repro-captured-report.txt).
+		{name: "captured-ng-report", body: "001cunpack context canceled\n0033ng refs/callsheet/tasks/stalled receive failed\n0000",
+			wantUnpack: "context canceled", wantStatus: "receive failed"},
+		{name: "context-canceled", err: context.Canceled},
+		{name: "ok-report", body: okBody.String(), success: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res, err := rpcResult{}, tc.err
+			if err == nil {
+				client := &http.Client{Transport: cannedTransport{status: http.StatusOK, body: tc.body}}
+				res, err = postReceive(context.Background(), client, "https://example.invalid"+RepoURLPath, strings.NewReader(""))
+				if err != nil || res.Report == nil {
+					t.Fatalf("postReceive = %s, %v; want a decoded report and nil error", res, err)
+				}
+			}
+			if tc.wantUnpack != "" {
+				cs := res.Report.CommandStatuses
+				if res.Report.UnpackStatus != tc.wantUnpack || len(cs) != 1 || cs[0].ReferenceName != stalled || cs[0].Status != tc.wantStatus {
+					t.Fatalf("decoded report = %s; want unpack %q and %s %q", res, tc.wantUnpack, stalled, tc.wantStatus)
+				}
+				var ev bytes.Buffer
+				writeStalledEvidence(&ev, res, false)
+				want := "CALLSHEET-EVIDENCE cancel-stalled-body: nil transport error; result=HTTP 200: unpack context canceled; refs/callsheet/tasks/stalled receive failed; stalled_ref_present=false\n"
+				if ev.String() != want {
+					t.Fatalf("evidence line = %q, want %q", ev.String(), want)
+				}
+			}
+			if got := stalledTransferSucceeded(res, err); got != tc.success {
+				t.Fatalf("stalledTransferSucceeded(%s, %v) = %v, want %v", res, err, got, tc.success)
+			}
+		})
 	}
 }
 
