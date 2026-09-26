@@ -8,15 +8,17 @@ import (
 	"io"
 	"log"
 	"log/slog"
+	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/wedevwork/callsheet/internal/contract"
 )
 
-// HealthPath is the only route: it proves the real TLS listener and
-// exposes no state.
+// HealthPath proves the real TLS listener and exposes no state. Since
+// iteration 03 the service also serves the node API (nodeService).
 const HealthPath = "/api/v1/health"
 
 // healthBody is the exact health response.
@@ -57,10 +59,15 @@ func (d *deps) run(ctx context.Context, o RunOptions) error {
 	if err := d.checkPresent(m.bind); err != nil {
 		return err
 	}
+	reg, err := loadNodeRegistry(layout{root: o.StateDir}, d.nodeClock)
+	if err != nil {
+		return err
+	}
+	reg.d = d
 	if err := canceled(ctx); err != nil {
 		return err
 	}
-	return d.serve(ctx, logger, m, fp)
+	return d.serve(ctx, logger, m, fp, reg)
 }
 
 // logWarning emits the structured FP-7 warning record.
@@ -73,22 +80,32 @@ func logWarning(logger *slog.Logger, w Warning) {
 }
 
 // serve creates the single TCP listener wrapped in TLS and serves until ctx
-// ends (graceful Shutdown bounded by shutdownTimeout, then Close) or Serve
-// fails. It joins Serve and every in-flight handler before returning.
-func (d *deps) serve(ctx context.Context, logger *slog.Logger, m *material, fp string) error {
+// ends or Serve fails. Either way it first shuts the node service down
+// (no new streams, every upgraded socket closed and its handler joined,
+// the sweep joined), then shuts the HTTP server down (graceful Shutdown
+// bounded by what remains of shutdownTimeout, then Close), and joins Serve
+// and every in-flight handler before returning. The caller keeps the state
+// lock until then.
+func (d *deps) serve(ctx context.Context, logger *slog.Logger, m *material, fp string, reg *nodeRegistry) error {
 	ln, err := d.listen("tcp", m.bind.String())
 	if err != nil {
 		return wrapf(contract.CodeUnavailable, err, "cannot listen on %s: %v", m.bind, err)
 	}
-	cert := tls.Certificate{Certificate: [][]byte{m.serverCert.Raw}, PrivateKey: m.serverKey, Leaf: m.serverCert}
+	// The chain is leaf then CA, so a pinned bootstrap can find the CA in
+	// the handshake; the files on disk are unchanged.
+	cert := tls.Certificate{Certificate: [][]byte{m.serverCert.Raw, m.caCert.Raw}, PrivateKey: m.serverKey, Leaf: m.serverCert}
 	tlsLn := tls.NewListener(ln, &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert}})
-	var h http.Handler = serviceHandler()
+	svc := newNodeService(reg, d.nodeClock, logger, certPEM(m.caCert.Raw), d.streamCloseGrace)
+	svc.events = d.streamEvents
+	svc.helloRead = d.streamHelloRead
+	var h http.Handler = newServiceHandler(svc)
 	if d.wrap != nil {
 		h = d.wrap(h)
 	}
 	tr := newTracker()
 	srv := &http.Server{
 		Handler:           tr.wrap(h),
+		ConnContext:       func(ctx context.Context, c net.Conn) context.Context { return context.WithValue(ctx, connKey{}, c) },
 		ReadHeaderTimeout: readHeaderTimeout,
 		ReadTimeout:       readTimeout,
 		WriteTimeout:      writeTimeout,
@@ -102,18 +119,22 @@ func (d *deps) serve(ctx context.Context, logger *slog.Logger, m *material, fp s
 	if d.ready != nil {
 		d.ready(ln.Addr())
 	}
+	svc.startSweep()
 	done := make(chan error, 1)
 	go func() { done <- srv.Serve(tlsLn) }()
 	var serveErr error
 	select {
 	case <-ctx.Done():
-		sctx, cancel := context.WithTimeout(context.Background(), d.shutdownTimeout)
+		deadline := time.Now().Add(d.shutdownTimeout)
+		svc.shutdown(deadline)
+		sctx, cancel := context.WithDeadline(context.Background(), deadline)
 		if err := srv.Shutdown(sctx); err != nil {
 			srv.Close()
 		}
 		cancel()
 		serveErr = <-done
 	case serveErr = <-done:
+		svc.shutdown(time.Now().Add(d.shutdownTimeout))
 		srv.Close()
 	}
 	tr.closeAndWait()
@@ -125,19 +146,34 @@ func (d *deps) serve(ctx context.Context, logger *slog.Logger, m *material, fp s
 	return wrapf(contract.CodeUnavailable, serveErr, "the plane listener stopped unexpectedly: %v", serveErr)
 }
 
-// serviceHandler serves GET /api/v1/health and contract JSON errors for
-// everything else. It never reads or echoes a request body.
-func serviceHandler() http.Handler {
+// serviceHandler is the health-only service (no node service).
+func serviceHandler() http.Handler { return newServiceHandler(nil) }
+
+// newServiceHandler serves GET /api/v1/health, the node API when svc is
+// non-nil, and contract JSON errors for everything else. The health route
+// never reads or echoes a request body.
+func newServiceHandler(svc *nodeService) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.Path
 		switch {
-		case r.URL.Path != HealthPath:
-			writeError(w, contract.New(contract.CodeNotFound, "no such endpoint"))
-		case r.Method != http.MethodGet:
-			writeError(w, contract.New(contract.CodeInvalidArgument, "method not allowed; use GET"))
-		default:
+		case p == HealthPath:
+			if r.Method != http.MethodGet {
+				writeError(w, contract.New(contract.CodeInvalidArgument, "method not allowed; use GET"))
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			io.WriteString(w, healthBody)
+		case svc == nil:
+			writeError(w, contract.New(contract.CodeNotFound, "no such endpoint"))
+		case p == contract.PathCA:
+			svc.handleCA(w, r)
+		case p == contract.PathNodeStream:
+			svc.handleStream(w, r)
+		case p == contract.PathNodes || strings.HasPrefix(p, contract.PathNodes+"/"):
+			svc.handleNodes(w, r)
+		default:
+			writeError(w, contract.New(contract.CodeNotFound, "no such endpoint"))
 		}
 	})
 }
@@ -163,6 +199,8 @@ func newTracker() *tracker { return &tracker{idle: make(chan struct{})} }
 func (t *tracker) wrap(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !t.enter() {
+			// Node clients require the protocol header on every response.
+			w.Header().Set(contract.ProtocolHeader, fmt.Sprint(contract.ProtocolVersion))
 			writeError(w, contract.New(contract.CodeUnavailable, "the plane is shutting down"))
 			return
 		}

@@ -102,6 +102,9 @@ func (d *deps) open(ctx context.Context, now time.Time, stateDir, bind string, b
 	if m, err = r.l.load(true); err != nil {
 		return lk, nil, false, err
 	}
+	if _, err = r.l.loadNodeRecords(); err != nil {
+		return lk, nil, false, err
+	}
 	if r.bindSet && r.bind != m.bind {
 		return lk, nil, false, errf(contract.CodeConflict, "--bind %s differs from the configured bind %s; init never edits existing configuration: stop the plane and edit %s to change it", r.bind, m.bind, r.l.path(configName))
 	}
@@ -159,6 +162,9 @@ func (d *deps) reissue(ctx context.Context, o ReissueOptions) (Status, error) {
 	}
 	m, err := l.load(true)
 	if err != nil {
+		return Status{}, err
+	}
+	if _, err := l.loadNodeRecords(); err != nil {
 		return Status{}, err
 	}
 	now := d.clock()

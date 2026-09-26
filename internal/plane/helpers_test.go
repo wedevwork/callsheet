@@ -33,7 +33,40 @@ func TestMain(m *testing.M) {
 	if root := os.Getenv(lockHelperEnv); root != "" {
 		os.Exit(lockHelper(root))
 	}
-	os.Exit(m.Run())
+	code := m.Run()
+	if templateDir != "" {
+		os.RemoveAll(templateDir)
+	}
+	os.Exit(code)
+}
+
+// The node tests' template root (iteration 03): complete initialized state
+// (SANs 127.0.0.1 and localhost) created once per test process and copied
+// for each test, so repeated runs do not regenerate keys and fsync a new
+// root every time. Tests that need distinct trust still initialize.
+var (
+	templateOnce sync.Once
+	templateDir  string
+	templateRoot string
+	templateErr  error
+)
+
+// freshRoot returns a new root holding a copy of the template state.
+func freshRoot(t testing.TB) string {
+	t.Helper()
+	templateOnce.Do(func() {
+		templateDir, templateErr = os.MkdirTemp("", "callsheet-plane-template-")
+		if templateErr == nil {
+			templateRoot = filepath.Join(templateDir, "state")
+			_, templateErr = defaultDeps().init(bg, InitOptions{StateDir: templateRoot, Bind: "127.0.0.1:0", BindSet: true, SANs: []string{"127.0.0.1", "localhost"}, SANsSet: true})
+		}
+	})
+	if templateErr != nil {
+		t.Fatalf("template state: %v", templateErr)
+	}
+	root := newRoot(t)
+	copyTree(t, templateRoot, root)
+	return root
 }
 
 func lockHelper(root string) int {
@@ -64,7 +97,11 @@ func startLockHolder(t *testing.T, root string) *lockHolder {
 		t.Fatal(err)
 	}
 	cmd := exec.Command(exe, "-test.run=^$")
-	cmd.Env = append(os.Environ(), lockHelperEnv+"="+root)
+	// Under -race the helper is race-built; without atexit_sleep_ms=0 its
+	// race runtime sleeps a second before exiting, which only slows the
+	// release path of every repetition (iteration 03 fixture cost; the lock
+	// semantics and assertions are unchanged).
+	cmd.Env = append(os.Environ(), lockHelperEnv+"="+root, "GORACE=atexit_sleep_ms=0")
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatal(err)

@@ -20,8 +20,8 @@ required contexts:
 
 | Check context | Runner | Timeout | Kind | Steps after setup |
 |---|---|---|---|---|
-| `ci-linux` | `ubuntu-24.04` | 45 min | required | `devcheck test` (native suite, then the same suite with `-race`), `devcheck coverage` (unit coverage must be greater than 80.0%), `devcheck bench` (git transport payload byte limits and commit/tree invariants, then the plane trust benchmarks: issuance, initialization and verified TLS health, each checking its invariants; timings are reported, never gated), `devcheck cross` (linux/amd64, linux/arm64, darwin/amd64, darwin/arm64: 12 artifacts) |
-| `ci-macos` | `macos-15` | 30 min | required | `devcheck native`: the complete suite as `go test -json`, which must show passing run and pass events in `github.com/wedevwork/callsheet/tests/function` for `TestFP6ProcessGroups` and its `cooperative`, `resistant` and `leader-exits-first` scenarios, and for the plane trust tests (see below) |
+| `ci-linux` | `ubuntu-24.04` | 45 min | required | `devcheck test` (native suite, then the same suite with `-race`), `devcheck coverage` (unit coverage must be greater than 80.0%), `devcheck bench` (git transport payload byte limits and commit/tree invariants, then the plane trust benchmarks: issuance, initialization and verified TLS health, and the plane node benchmarks: heartbeat, snapshot of 100 nodes and durable enrollment, then the node frame encode/decode benchmark in `internal/contract`, each checking its invariants; timings are reported, never gated), `devcheck cross` (linux/amd64, linux/arm64, darwin/amd64, darwin/arm64: 12 artifacts) |
+| `ci-macos` | `macos-15` | 30 min | required | `devcheck native`: the complete suite as `go test -json`, which must show passing run and pass events in `github.com/wedevwork/callsheet/tests/function` for `TestFP6ProcessGroups` and its `cooperative`, `resistant` and `leader-exits-first` scenarios, for the plane trust tests and for the node tests (see below) |
 | `ci-linux-stress-packages` | `ubuntu-24.04` | 20 min | worker | `devcheck stress-packages` on Linux (see Stress checks) |
 | `ci-linux-stress-processgroup` | `ubuntu-24.04` | 20 min | worker | `devcheck stress-processgroup` on Linux |
 | `ci-linux-stress-functions` | `ubuntu-24.04` | 20 min | worker | `devcheck stress-functions` on Linux |
@@ -88,6 +88,22 @@ and signal cleanup on the runner itself; neither cross-compilation nor a
 Linux pass qualifies macOS. The plane trust benchmarks and coverage remain
 Linux reference gates, not Darwin claims.
 
+The node tests required on `ci-macos` (iteration 03) are one function test
+per node FP, each with its mandatory subtests: `TestNodeTrust` `ca`, `pin`
+and `rejections`; `TestNodeEnrollment` `identity`, `recovery` and
+`locking`; `TestNodeProtocol` `hello` and `limits`; `TestNodeReconnect`
+`restart`, `disconnect` and `shutdown`; `TestNodeLease` `expiry` and
+`return`; `TestNodeRegistry` `restore` and `validation`;
+`TestNodeDiscovery` `text`, `json` and `errors`; `TestNodePlatform`
+`paths`, `native-state`, `policy` and `sticky-write`. That is 30 more
+names, 58 in all, with the 28 earlier names unchanged and first. The
+subtests that delegate to package contracts (`recovery`, `restart`,
+`disconnect`, `expiry`, `return`, `paths`, `native-state`, `policy` and
+`sticky-write`) require run and pass evidence for the named contract and
+subtest, and they prove on the runner itself the sidecar's native state
+modes, kernel `flock` between processes, atomic enrollment replacement,
+verified TLS trust, stream reconnect and signal cleanup.
+
 The main jobs and all six workers check out the event's revision without
 persisted credentials, take the Go version from `go.mod` with module
 caching, run `go mod download`, and then run their check steps with
@@ -124,25 +140,26 @@ coordinator's own `TestStressConcurrencyContract` (see Local verification).
 The count, CPU list, shards, package groups, selectors and time budgets are
 declared once, in `internal/devcheck/stress.go` (`StressCount`,
 `StressShards`, and `StressSteps`, the flattened inspection view). The
-three shards run six commands (argv, never a shell), each with
+three shards run seven commands (argv, never a shell), each with
 `CGO_ENABLED=1`, named `stress packages`, `stress processgroup cpu1`,
-`stress processgroup cpu2`, `stress processgroup cpu4`, `stress function`
-and `stress plane function`:
+`stress processgroup cpu2`, `stress processgroup cpu4`, `stress function`,
+`stress plane function` and `stress node function` (iteration 03):
 
 ```
-go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/plane
+go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/plane ./internal/client ./internal/sidecar ./internal/contract
 go test -race -count=20 -cpu=1 -timeout=6m ./internal/spikes/processgroup
 go test -race -count=20 -cpu=2 -timeout=6m ./internal/spikes/processgroup
 go test -race -count=20 -cpu=4 -timeout=6m ./internal/spikes/processgroup
 go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestFP4TransportHarness|TestFP5GitRoundTrip)$ ./tests/function
 go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestPlaneState|TestPlaneTLS|TestPlaneReissue)$/^(paths|persistence|locking|validation|https-only|prelisten-validation|bounded-shutdown|process)$ ./tests/function
+go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestNodeEnrollment|TestNodeReconnect)$/^(locking|shutdown)$ ./tests/function
 ```
 
 | Shard | Stage | Commands | Execution |
 |---|---|---|---|
 | `packages` | `devcheck stress-packages` | `stress packages` | one invocation |
 | `processgroup` | `devcheck stress-processgroup` | `stress processgroup cpu1`, `cpu2`, `cpu4` | three concurrent invocations, one per CPU setting |
-| `functions` | `devcheck stress-functions` | `stress function`, then `stress plane function` | sequential |
+| `functions` | `devcheck stress-functions` | `stress function`, then `stress plane function`, then `stress node function` | sequential |
 
 These are argv displays, not shell-ready commands: quote the entire `-run`
 argument when running one through a shell. The plane selector is one
@@ -150,16 +167,23 @@ two-level pattern: `go test` splits a `-run` pattern into per-level patterns
 only at a `/` outside parentheses and brackets, so it selects the three
 parents at the top level and only the eight named subtests below them. It
 must not be "simplified" into a flat alternation, which would select
-different tests.
+different tests. The node selector (iteration 03) is built the same way:
+`TestNodeEnrollment` and `TestNodeReconnect` at the top level, and only
+their `locking` and `shutdown` subtests below them.
 
 - Selected packages: `internal/testkit`, `internal/testkit/fakeadapter`,
-  `internal/spikes/gittransport` and `internal/plane` in the packages
-  shard, and `internal/spikes/processgroup` in the processgroup shard,
-  complete package tests (not benchmarks). The fake adapter is included
-  because its signal handling and descendant lifecycle are timing-sensitive
-  too; the plane package (iteration 02) because its listener, shutdown,
-  lock-holder helper process and contracts are, and they run there directly
-  under the race detector.
+  `internal/spikes/gittransport`, `internal/plane`, `internal/client`,
+  `internal/sidecar` and `internal/contract` in the packages shard, and
+  `internal/spikes/processgroup` in the processgroup shard, complete
+  package tests (not benchmarks). The fake adapter is included because its
+  signal handling and descendant lifecycle are timing-sensitive too; the
+  plane package (iteration 02) because its listener, shutdown, lock-holder
+  helper process and contracts are, and they run there directly under the
+  race detector. Iteration 03 added the node packages completely: the
+  plane's lease, registry and stream tests (`TestNodeLeaseContract` among
+  them) already run there, and `internal/client`, `internal/sidecar` (whose
+  `TestNodeReconnectContract` starts real plane subprocesses and drives an
+  injected retry clock) and `internal/contract` join the same invocation.
 - Selected function tests: only `TestFP4TransportHarness` and
   `TestFP5GitRoundTrip` (`stress function`), and the process-boundary
   subtests of the listener- and lock-bearing plane trust tests
@@ -167,16 +191,24 @@ different tests.
   `locking` and `validation`; `TestPlaneTLS` `https-only`,
   `prelisten-validation` and `bounded-shutdown`; `TestPlaneReissue`
   `process`. All are in `tests/function`; unrelated function tests such as
-  the twelve-artifact cross-build test are deliberately excluded. The two
-  selectors are disjoint, and each plane parent's `contracts` subtest is not
-  selected. The other plane trust tests (`TestPlaneCommands`,
+  the twelve-artifact cross-build test are deliberately excluded. The
+  node step (`stress node function`, iteration 03) selects only the two
+  unique process-boundary node scenarios, `TestNodeEnrollment` `locking`
+  (real competing sidecar processes) and `TestNodeReconnect` `shutdown`
+  (a real CLI sidecar's SIGTERM cleanup). The delegated clock contracts
+  behind `TestNodeReconnect` `restart` and `disconnect` and behind
+  `TestNodeLease` are repeated directly in the packages shard, so their
+  function wrappers are excluded here, exactly as the plane `contracts`
+  subtests are. The three selectors are disjoint, and each plane parent's
+  `contracts` subtest is not selected. The other plane trust tests (`TestPlaneCommands`,
   `TestPlaneBind`, `TestPlaneInit`, `TestPlaneStatus`, `TestPlanePlatform`)
   run in the normal native suites only; their listener mechanisms are
   repeated by the plane package tests and by `TestPlaneTLS` and
   `TestPlaneReissue`. Each function command also fails when `go test`
   reports `no tests to run` for its selector (`[no tests to run]` or
   `testing: warning: no tests to run`): an empty selection is never a pass.
-- The shards' union is exactly the iteration 02b selection: every
+- The shards' union is exactly the iteration 02b selection plus iteration
+  03's additions (the three node packages and the node selector): every
   (package, selector, CPU setting, count) combination appears exactly once.
   Only processgroup's single `-cpu=1,2,4` invocation became three
   invocations of one CPU setting each; the per-test repetitions (60), the
@@ -312,9 +344,49 @@ Budgets:
   hosted jobs requires a design revision.
 - Estimated local cost with a warm build cache: 3–10 minutes (a planning
   estimate, not a hardware-independent limit).
+- Iteration 03 allocation (design 03, CI plan; planning estimates from the
+  hosted run 36236333755, not measurements): the node packages add about
+  8 s to the packages shard's critical path on Linux and 21 s on macOS
+  (plane's 185 s / 239 s binary becomes about 193 s / 260 s; the new
+  `internal/client`, `internal/sidecar` and `internal/contract` binaries
+  run concurrently in the same invocation and must stay below the plane
+  binary), and `stress node function` adds about 15 s on Linux and 39 s on
+  macOS to the functions shard (about 138 s and 308 s including setup). The
+  normal `devcheck test` and `devcheck native` function package keeps its
+  shared `-timeout=180s` for all `tests/function` cases together. If hosted
+  measurements exceed these allocations, repeated helper compilation and
+  fixture setup are removed first, keeping every case and count; a shard or
+  budget change requires a design revision.
 
 Measurements, newest first. Hosted and local figures come from different
 machines and are never combined into one number.
+
+- Measured with iteration 03 (nodes): Linux, go1.26.4 linux/amd64 on the
+  same 16-thread Intel i7-11800H developer workstation (kernel 6.8), warm
+  build cache, 2026-09-26, each shard stage run alone on the host:
+  - `devcheck stress-packages` 201.2 s: `stress packages` 201.2 s, slowest
+    binary `internal/plane` 200.6 s (`internal/sidecar` 99.1 s,
+    `internal/testkit/fakeadapter` 53.2 s, `internal/testkit` 34.6 s,
+    `internal/client` 27.3 s, `internal/spikes/gittransport` 26.5 s,
+    `internal/contract` 1.6 s). That is 17 s below 02c's 218.4 s although
+    the plane binary gained the node registry, lease and stream tests
+    (about 0.46 s per repetition, 28 s for 60): the node tests copy one
+    initialized template state instead of generating keys per test, and
+    the race-built lock-holder helper processes of the plane and sidecar
+    `flock` subtests now exit without the race runtime's default
+    one-second exit sleep (`GORACE=atexit_sleep_ms=0`), which had cost the
+    plane binary about 60 s per shard. Every case and count is unchanged.
+    The new `internal/sidecar`, `internal/client` and `internal/contract`
+    binaries run concurrently in the same invocation, below the plane
+    binary.
+  - `devcheck stress-functions` 101.8 s: `stress function` 30.4 s (binary
+    28.9 s), `stress plane function` 64.1 s (binary 63.7 s) and
+    `stress node function` 7.4 s (binary 7.0 s; design estimate 15 s on a
+    hosted Linux worker).
+  - Hosted iteration 03 worker times: pending until the first worker runs
+    of the iteration 03 pull request, recorded in the flow handoff (see
+    First remote run), and compared with the iteration 03 allocation in
+    Budgets.
 
 - Measured with iteration 02c: Linux, go1.26.4 linux/amd64 on the same
   16-thread Intel i7-11800H developer workstation (kernel 6.8), warm build
@@ -495,6 +567,20 @@ errors that the CLI's platform rejection keeps unreachable). They make no
 host decision and need no exemption: the guard does not list them, and
 they would fail it if they read `runtime.GOOS`.
 
+The sidecar (iteration 03) mirrors this exactly: it resolves its state
+directory in the pure `sidecar.ResolveStateDir(goos, ...)`, fed by the same
+`cli.Run` wrapper, and keeps its advisory state lock and directory-sync
+fallback in the build-selected files `internal/sidecar/lock_unix.go`
+(`linux || darwin`) and `internal/sidecar/lock_other.go`
+(`!linux && !darwin`). Like the plane's, they need no exemption and the
+guard's exception list is unchanged. The node client and sidecar never
+listen; the only production TLS configuration that replaces Go's verifier
+is the pinned bootstrap's mandatory `VerifyConnection` (guarded by
+`TestInsecureSkipVerifyGuard` in `internal/client`), and the test-only
+variable `CALLSHEET_TEST_CLI_BINARY` is read only in `_test.go` files
+(guarded by `TestNodeVerificationPolicyContract` `test-only-env` in
+`internal/devcheck`).
+
 Native evidence limits: these files cannot be simulated by an OS parameter.
 Linux behavior is proven by the native process experiments of `ci-linux`
 (test) and the Linux stress workers (the process-group experiments in
@@ -648,7 +734,8 @@ handoff:
 - native evidence from the `ci-macos` log: the line `devcheck: native qualification passed on darwin/<arch>` naming `TestFP6ProcessGroups` and its three scenarios;
 - stress evidence from the six worker logs (the summaries hold none): the lines `devcheck: stage stress-packages ok`, `devcheck: stage stress-processgroup ok` and `devcheck: stage stress-functions ok` on each platform, the `-count=20` commands, every CPU invocation's outcome, and the elapsed time of each stress command with the runner's OS, architecture and cache state;
 - the actual job and step times of all ten jobs, setup, queue and summary wait time included, and the overall workflow critical path; compare each worker with the expected per-job wall-clock in Stress checks, and diagnose any miss of the 4–5 minute goal and the remaining bottleneck without weakening tests or reducing counts;
-- the branch protection verification described above (finishing the conditional 02b prerequisite first if it is needed).
+- the branch protection verification described above (finishing the conditional 02b prerequisite first if it is needed);
+- for iteration 03, native evidence for the 30 node names (see Checks) on `ci-macos`, the `stress node function` step and the enlarged `stress packages` step on both platforms with their times, compared with the iteration 03 allocation in Budgets.
 
 The local validator checks action identity and full-SHA format only, not that
 a SHA exists or matches its release comment. Confirm each pin against its
@@ -676,6 +763,7 @@ go run ./cmd/devcheck stress
 go test -count=1 -run '^(TestCI|TestHardening|TestStressShard)' ./tests/function
 go test -race -count=20 -cpu=1,2,4 -run '^TestStressConcurrencyContract$' ./internal/devcheck
 go test -json -count=1 -run '^(TestPlaneState|TestPlaneTLS|TestPlaneReissue)$/^(paths|persistence|locking|validation|https-only|prelisten-validation|bounded-shutdown|process)$' ./tests/function
+go test -json -count=1 -run '^(TestNodeEnrollment|TestNodeReconnect)$/^(locking|shutdown)$' ./tests/function
 ```
 
 A single shard, as one CI worker runs it, is also available on its own:
@@ -692,7 +780,9 @@ command repeats the concurrent coordinator's timing-dependent contract at
 the declared count; it is not part of any stress stage or of CI. The last
 command of the first block is the focused evidence for the plane stress
 selector: its events must show run and pass for exactly the eight selected
-subtests and none for a `contracts` subtest.
+subtests and none for a `contracts` subtest; the next one is the same
+evidence for the node selector, exactly `locking` and `shutdown` and none
+of the delegated `restart` or `disconnect` wrappers.
 
 `all` runs test (with race on Linux), coverage, bench and cross; `stress` is
 explicit (see Stress checks), and release and review verification run both.

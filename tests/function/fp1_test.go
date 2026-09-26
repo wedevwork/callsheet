@@ -59,13 +59,24 @@ func TestFP1Foundation(t *testing.T) {
 	})
 
 	t.Run("dependency boundaries", func(t *testing.T) {
-		forbidden := []string{module + "/internal/testkit", module + "/internal/spikes", module + "/internal/devcheck", "github.com/go-git/", "github.com/coder/websocket"}
+		forbidden := []string{module + "/internal/testkit", module + "/internal/spikes", module + "/internal/devcheck", "github.com/go-git/"}
 		for _, pkg := range []string{"./cmd/callsheet", "./internal/cli", "./internal/contract", "./internal/logging"} {
 			for _, dep := range strings.Fields(goList(t, root, "-deps", "-f", "{{.ImportPath}}", pkg)) {
 				for _, f := range forbidden {
 					if strings.HasPrefix(dep, f) {
 						t.Errorf("production package %s depends on %s", pkg, dep)
 					}
+				}
+			}
+		}
+		// Since iteration 03 the pinned WebSocket library is the production
+		// node transport; only the node stream's owners import it directly.
+		wsOwners := map[string]bool{module + "/internal/client": true, module + "/internal/plane": true, module + "/internal/sidecar": true}
+		for _, line := range strings.Split(strings.TrimSpace(goList(t, root, "-f", `{{.ImportPath}} {{join .Imports " "}}`, "./cmd/...", "./internal/cli/...", "./internal/client/...", "./internal/plane/...", "./internal/sidecar/...", "./internal/contract/...", "./internal/logging/...")), "\n") {
+			f := strings.Fields(line)
+			for _, imp := range f[1:] {
+				if strings.HasPrefix(imp, "github.com/coder/websocket") && !wsOwners[f[0]] {
+					t.Errorf("production package %s imports %s directly", f[0], imp)
 				}
 			}
 		}

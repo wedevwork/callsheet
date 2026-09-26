@@ -33,19 +33,21 @@ import (
 // processgroup into its own shard of three single-CPU invocations.
 const (
 	hardeningStressCount    = 20
-	hardeningStressPackages = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/plane"
+	hardeningStressPackages = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/plane ./internal/client ./internal/sidecar ./internal/contract"
 	hardeningStressPG1      = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/spikes/processgroup"
 	hardeningStressPG2      = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/spikes/processgroup"
 	hardeningStressPG4      = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/spikes/processgroup"
 	hardeningStressFunction = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestFP4TransportHarness|TestFP5GitRoundTrip)$ ./tests/function"
 	hardeningStressPlaneFn  = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestPlaneState|TestPlaneTLS|TestPlaneReissue)$/^(paths|persistence|locking|validation|https-only|prelisten-validation|bounded-shutdown|process)$ ./tests/function"
+	// Iteration 03 appended the node packages and the node function step.
+	hardeningStressNodeFn = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestNodeEnrollment|TestNodeReconnect)$/^(locking|shutdown)$ ./tests/function"
 )
 
 // hardeningPlan is the flattened stress plan in shard/CPU order.
 var hardeningPlan = []struct{ name, argv string }{
 	{"stress packages", hardeningStressPackages},
 	{"stress processgroup cpu1", hardeningStressPG1}, {"stress processgroup cpu2", hardeningStressPG2}, {"stress processgroup cpu4", hardeningStressPG4},
-	{"stress function", hardeningStressFunction}, {"stress plane function", hardeningStressPlaneFn},
+	{"stress function", hardeningStressFunction}, {"stress plane function", hardeningStressPlaneFn}, {"stress node function", hardeningStressNodeFn},
 }
 
 // hardeningSelectors are the exact -run values of the stress plan with the
@@ -56,6 +58,7 @@ var hardeningSelectors = map[string][]string{
 	"^(TestPlaneState|TestPlaneTLS|TestPlaneReissue)$/^(paths|persistence|locking|validation|https-only|prelisten-validation|bounded-shutdown|process)$": {
 		"TestPlaneState", "TestPlaneTLS", "TestPlaneReissue",
 		"paths", "persistence", "locking", "validation", "https-only", "prelisten-validation", "bounded-shutdown", "process"},
+	"^(TestNodeEnrollment|TestNodeReconnect)$/^(locking|shutdown)$": {"TestNodeEnrollment", "TestNodeReconnect", "locking", "shutdown"},
 }
 
 // contractRun runs only the tests matching run in bin, pkg's compiled test
@@ -123,7 +126,7 @@ func TestHardeningStress(t *testing.T) {
 	r := &ciRunner{}
 	code, out, errOut := devcheckRun(t, r, "stress")
 	if code != 0 || !strings.Contains(out, "stage stress ok") ||
-		!sameGroups(r.calls, [][]string{{hardeningStressPackages}, {hardeningStressPG1, hardeningStressPG2, hardeningStressPG4}, {hardeningStressFunction}, {hardeningStressPlaneFn}}) {
+		!sameGroups(r.calls, [][]string{{hardeningStressPackages}, {hardeningStressPG1, hardeningStressPG2, hardeningStressPG4}, {hardeningStressFunction}, {hardeningStressPlaneFn}, {hardeningStressNodeFn}}) {
 		t.Fatalf("%s stress = %d %v %s", runtime.GOOS, code, r.calls, errOut)
 	}
 	for i, env := range r.envs {
@@ -136,7 +139,7 @@ func TestHardeningStress(t *testing.T) {
 	for _, c := range []struct {
 		failOn, step string
 		calls        int
-	}{{"./internal/spikes/gittransport", "stress packages", 1}, {"-cpu=4 ", "stress processgroup cpu4", 4}, {"TestFP5GitRoundTrip", "stress function", 5}, {"TestPlaneTLS", "stress plane function", 6}} {
+	}{{"./internal/spikes/gittransport", "stress packages", 1}, {"-cpu=4 ", "stress processgroup cpu4", 4}, {"TestFP5GitRoundTrip", "stress function", 5}, {"TestPlaneTLS", "stress plane function", 6}, {"TestNodeReconnect", "stress node function", 7}} {
 		r := &ciRunner{failOn: c.failOn}
 		code, out, errOut := devcheckRun(t, r, "stress")
 		if code != 1 || len(r.calls) != c.calls || !strings.Contains(errOut, "stage stress FAILED: "+c.step+" failed") ||
@@ -339,7 +342,7 @@ func TestHardeningCIStress(t *testing.T) {
 			t.Fatalf("main job %s stages = %v", j.ID, j.Stages)
 		}
 	}
-	for stage, calls := range map[string]int{"stress": 6, "stress-packages": 1, "stress-processgroup": 3, "stress-functions": 2} {
+	for stage, calls := range map[string]int{"stress": 7, "stress-packages": 1, "stress-processgroup": 3, "stress-functions": 3} {
 		r := &ciRunner{}
 		if code, _, errOut := devcheckRun(t, r, stage); code != 0 || len(r.calls) != calls {
 			t.Fatalf("%s dispatch = %d with %d calls %s", stage, code, len(r.calls), errOut)

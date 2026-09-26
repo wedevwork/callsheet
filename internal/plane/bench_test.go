@@ -5,15 +5,19 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/wedevwork/callsheet/internal/contract"
 )
 
 // BenchmarkPlaneIssue measures P-256 CA and server generation, signing and
@@ -112,6 +116,122 @@ func BenchmarkPlaneTLSHealth(b *testing.B) {
 		resp.Body.Close()
 		if err != nil || resp.StatusCode != http.StatusOK || string(body) != healthBody || resp.TLS == nil || !resp.TLS.HandshakeComplete || resp.TLS.DidResume {
 			b.Fatalf("health = %d %q %v", resp.StatusCode, body, err)
+		}
+	}
+}
+
+// BenchmarkNodeHeartbeat measures the plane's heartbeat path: decoding a
+// heartbeat message, the registry update and encoding the acknowledgement.
+// Every iteration checks the lease and the acknowledgement.
+func BenchmarkNodeHeartbeat(b *testing.B) {
+	root := filepath.Join(b.TempDir(), "state")
+	os.MkdirAll(root, 0o700)
+	r, err := loadNodeRegistry(layout{root: root}, realClock{})
+	if err != nil {
+		b.Fatal(err)
+	}
+	r.d = defaultDeps()
+	if _, _, err := r.Enroll(bg, idA); err != nil {
+		b.Fatal(err)
+	}
+	gen, err := r.Attach(idA, "bench", contract.ProtocolVersion, nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	n := 0
+	for b.Loop() {
+		n++
+		rid := "b" + strconv.Itoa(n)
+		msg, err := contract.EncodeFrame(contract.ProtocolVersion, contract.FrameHeartbeat, rid, contract.HeartbeatBody{})
+		if err != nil {
+			b.Fatal(err)
+		}
+		f, err := contract.DecodeFrame(msg, contract.FromSidecar)
+		if err != nil || f.RequestID != rid {
+			b.Fatalf("decode: %v", err)
+		}
+		hb, err := contract.DecodeHeartbeat(f.Body)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if err := r.Heartbeat(idA, gen, hb.Roles); err != nil {
+			b.Fatal(err)
+		}
+		ack, err := contract.EncodeFrame(contract.ProtocolVersion, contract.FrameHeartbeatAck, f.RequestID, nil)
+		if err != nil {
+			b.Fatal(err)
+		}
+		af, err := contract.DecodeFrame(ack, contract.FromPlane)
+		if err != nil || af.Type != contract.FrameHeartbeatAck || af.RequestID != rid || contract.DecodeAck(af.Body) != nil {
+			b.Fatalf("ack %s: %v", ack, err)
+		}
+		if st := r.nodes[idA]; !st.online || !st.deadline.After(time.Now()) {
+			b.Fatal("lease not refreshed")
+		}
+	}
+}
+
+// BenchmarkNodeSnapshot measures one roster snapshot of 100 known nodes
+// (one clock sample, expiry, copies, sorting) and checks it is complete,
+// sorted and stable.
+func BenchmarkNodeSnapshot(b *testing.B) {
+	root := filepath.Join(b.TempDir(), "state")
+	os.MkdirAll(filepath.Join(root, nodesName), 0o700)
+	var ids []string
+	for i := range 100 {
+		id := fmt.Sprintf("n_%032x", 1000-i)
+		ids = append(ids, id)
+		os.WriteFile(filepath.Join(root, nodesName, id+".json"), encodeNodeRecord(id, t0), 0o600)
+	}
+	sort.Strings(ids)
+	r, err := loadNodeRegistry(layout{root: root}, realClock{})
+	if err != nil {
+		b.Fatal(err)
+	}
+	for _, id := range ids[:50] {
+		g, _ := r.Attach(id, "bench", 1, nil)
+		r.Heartbeat(id, g, nil)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		nodes := r.Snapshot()
+		if len(nodes) != 100 {
+			b.Fatalf("%d nodes", len(nodes))
+		}
+		for i, n := range nodes {
+			if n.ID != ids[i] || (i < 50) != (n.Liveness == contract.LivenessOnline) {
+				b.Fatalf("node %d = %+v", i, n)
+			}
+		}
+	}
+}
+
+// BenchmarkNodeEnrollment measures a new node's durable enrollment (write,
+// fsync, no-replace link, directory syncs) plus an idempotent repeat, and
+// checks the published record.
+func BenchmarkNodeEnrollment(b *testing.B) {
+	root := filepath.Join(b.TempDir(), "state")
+	os.MkdirAll(root, 0o700)
+	r, err := loadNodeRegistry(layout{root: root}, realClock{})
+	if err != nil {
+		b.Fatal(err)
+	}
+	r.d = defaultDeps()
+	b.ReportAllocs()
+	i := 0
+	for b.Loop() {
+		i++
+		id := fmt.Sprintf("n_%032x", i)
+		n, created, err := r.Enroll(bg, id)
+		if err != nil || !created || n.ID != id {
+			b.Fatalf("enroll = %v %v", created, err)
+		}
+		if _, created, err := r.Enroll(bg, id); err != nil || created {
+			b.Fatalf("repeat = %v %v", created, err)
+		}
+		if _, err := r.l.readNodeRecord(id); err != nil {
+			b.Fatal(err)
 		}
 	}
 }

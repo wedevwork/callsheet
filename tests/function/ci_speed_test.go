@@ -34,13 +34,15 @@ import (
 // sharded by design 02c: processgroup left the packages command for three
 // single-CPU invocations; the function commands are unchanged.
 const (
-	speedPackages      = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/plane"
+	speedPackages      = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/plane ./internal/client ./internal/sidecar ./internal/contract"
 	speedPG1           = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/spikes/processgroup"
 	speedPG2           = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/spikes/processgroup"
 	speedPG4           = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/spikes/processgroup"
 	speedFunction      = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestFP4TransportHarness|TestFP5GitRoundTrip)$ ./tests/function"
 	speedPlaneSelector = "^(TestPlaneState|TestPlaneTLS|TestPlaneReissue)$/^(paths|persistence|locking|validation|https-only|prelisten-validation|bounded-shutdown|process)$"
 	speedPlaneFunction = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=" + speedPlaneSelector + " ./tests/function"
+	// speedNodeFunction is iteration 03's node process-boundary step.
+	speedNodeFunction = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestNodeEnrollment|TestNodeReconnect)$/^(locking|shutdown)$ ./tests/function"
 )
 
 // speedSubtests are the direct subtests of the three stressed plane
@@ -68,7 +70,8 @@ var speedSelected = []string{
 }
 
 // speedNative is the 28-name native qualification list (design 02b, Policy
-// consistency), written out independently of devcheck.
+// consistency), written out independently of devcheck; iteration 03
+// appends speedNodeNative after it.
 var speedNative = []string{
 	"TestFP6ProcessGroups", "TestFP6ProcessGroups/cooperative", "TestFP6ProcessGroups/resistant", "TestFP6ProcessGroups/leader-exits-first",
 	"TestPlaneCommands",
@@ -79,6 +82,18 @@ var speedNative = []string{
 	"TestPlaneReissue", "TestPlaneReissue/process", "TestPlaneReissue/contracts",
 	"TestPlaneStatus", "TestPlaneStatus/inspection", "TestPlaneStatus/expiry-warnings",
 	"TestPlanePlatform",
+}
+
+// speedNodeNative are iteration 03's 30 required node names.
+var speedNodeNative = []string{
+	"TestNodeTrust", "TestNodeTrust/ca", "TestNodeTrust/pin", "TestNodeTrust/rejections",
+	"TestNodeEnrollment", "TestNodeEnrollment/identity", "TestNodeEnrollment/recovery", "TestNodeEnrollment/locking",
+	"TestNodeProtocol", "TestNodeProtocol/hello", "TestNodeProtocol/limits",
+	"TestNodeReconnect", "TestNodeReconnect/restart", "TestNodeReconnect/disconnect", "TestNodeReconnect/shutdown",
+	"TestNodeLease", "TestNodeLease/expiry", "TestNodeLease/return",
+	"TestNodeRegistry", "TestNodeRegistry/restore", "TestNodeRegistry/validation",
+	"TestNodeDiscovery", "TestNodeDiscovery/text", "TestNodeDiscovery/json", "TestNodeDiscovery/errors",
+	"TestNodePlatform", "TestNodePlatform/paths", "TestNodePlatform/native-state", "TestNodePlatform/policy", "TestNodePlatform/sticky-write",
 }
 
 // speedJobs is the table of ordinary jobs: the two main jobs (design 02b,
@@ -155,11 +170,12 @@ func delegatedCall(call *ast.CallExpr) (kind, contract string) {
 func TestCISpeedSelection(t *testing.T) {
 	for _, goos := range []string{"linux", "darwin"} {
 		steps, err := devcheck.StressSteps(goos)
-		if err != nil || len(steps) != 6 {
+		if err != nil || len(steps) != 7 {
 			t.Fatalf("%s: %+v %v", goos, steps, err)
 		}
 		for i, want := range []struct{ name, argv string }{{"stress packages", speedPackages}, {"stress processgroup cpu1", speedPG1},
-			{"stress processgroup cpu2", speedPG2}, {"stress processgroup cpu4", speedPG4}, {"stress function", speedFunction}, {"stress plane function", speedPlaneFunction}} {
+			{"stress processgroup cpu2", speedPG2}, {"stress processgroup cpu4", speedPG4}, {"stress function", speedFunction}, {"stress plane function", speedPlaneFunction},
+			{"stress node function", speedNodeFunction}} {
 			if steps[i].Name != want.name || strings.Join(steps[i].Argv, " ") != want.argv || strings.Join(steps[i].Env, " ") != "CGO_ENABLED=1" {
 				t.Fatalf("%s step %d = %+v, want %s: %s", goos, i, steps[i], want.name, want.argv)
 			}
@@ -485,7 +501,7 @@ func TestCISpeedJobs(t *testing.T) {
 func qualifyingStream(drop string) string {
 	pkg := devcheck.NativePackage
 	evs := []map[string]any{synth("start", pkg, "")}
-	for _, name := range speedNative {
+	for _, name := range append(slices.Clone(speedNative), speedNodeNative...) {
 		if name != drop {
 			evs = append(evs, synth("run", pkg, name), synth("pass", pkg, name))
 		}
@@ -496,7 +512,7 @@ func qualifyingStream(drop string) string {
 // FP-3: validator, plans, native evidence and documentation agree.
 func TestCISpeedPolicy(t *testing.T) {
 	t.Run("native", func(t *testing.T) {
-		if got := devcheck.NativeRequiredTests(); len(got) != 28 || !slices.Equal(got, speedNative) {
+		if got := devcheck.NativeRequiredTests(); len(got) != 58 || !slices.Equal(got[:28], speedNative) || !slices.Equal(got[28:], speedNodeNative) {
 			t.Fatalf("native required = %v", got)
 		}
 		if err := devcheck.CheckNativeResults("darwin", strings.NewReader(qualifyingStream(""))); err != nil {
@@ -541,7 +557,7 @@ func TestCISpeedPolicy(t *testing.T) {
 		// processgroup's three invocations concurrent (compared as a set).
 		r := &ciRunner{}
 		if code, out, errOut := devcheckRun(t, r, "stress"); code != 0 || !strings.Contains(out, "stage stress ok") ||
-			!sameGroups(r.calls, [][]string{{speedPackages}, {speedPG1, speedPG2, speedPG4}, {speedFunction}, {speedPlaneFunction}}) {
+			!sameGroups(r.calls, [][]string{{speedPackages}, {speedPG1, speedPG2, speedPG4}, {speedFunction}, {speedPlaneFunction}, {speedNodeFunction}}) {
 			t.Fatalf("stress dispatch = %d %v %s", code, r.calls, errOut)
 		}
 		// Drift: stress back in a main job is rejected.

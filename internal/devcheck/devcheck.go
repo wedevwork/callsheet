@@ -225,12 +225,15 @@ func TestSteps(goos string) []Step {
 }
 
 // BenchSteps runs the git transport (iteration 01 FP-5) benchmarks, then
-// the plane trust benchmarks (iteration 02): issuance, initialization and
-// verified TLS health. Timings are reported, never gated.
+// the plane benchmarks (iteration 02 trust: issuance, initialization and
+// verified TLS health; iteration 03 nodes: heartbeat, snapshot and
+// enrollment), then the node wire-contract frame benchmark (iteration 03).
+// Timings are reported, never gated.
 func BenchSteps() []Step {
 	return []Step{
 		{Name: "bench", Argv: []string{"go", "test", "./internal/spikes/gittransport", "-run", "^$", "-bench", ".", "-benchmem", "-benchtime=3x", "-count=1", "-timeout=180s"}},
 		{Name: "bench plane", Argv: []string{"go", "test", "./internal/plane", "-run=^$", "-bench=.", "-benchmem", "-benchtime=3x", "-count=1", "-timeout=180s"}},
+		{Name: "bench contract", Argv: []string{"go", "test", "./internal/contract", "-run=^$", "-bench=.", "-benchmem", "-benchtime=3x", "-count=1", "-timeout=180s"}},
 	}
 }
 
