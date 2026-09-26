@@ -42,7 +42,7 @@ var shardPlan = []struct {
 	parallel bool
 	steps    [][2]string
 }{
-	{"packages", false, [][2]string{{"stress packages", "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/plane"}}},
+	{"packages", false, [][2]string{{"stress packages", "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/plane ./internal/client ./internal/sidecar ./internal/contract"}}},
 	{"processgroup", true, [][2]string{
 		{"stress processgroup cpu1", "go test -race -count=20 -cpu=1 -timeout=6m ./internal/spikes/processgroup"},
 		{"stress processgroup cpu2", "go test -race -count=20 -cpu=2 -timeout=6m ./internal/spikes/processgroup"},
@@ -51,7 +51,15 @@ var shardPlan = []struct {
 	{"functions", false, [][2]string{
 		{"stress function", "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestFP4TransportHarness|TestFP5GitRoundTrip)$ ./tests/function"},
 		{"stress plane function", "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=" + speedPlaneSelector + " ./tests/function"},
+		{"stress node function", "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestNodeEnrollment|TestNodeReconnect)$/^(locking|shutdown)$ ./tests/function"},
 	}},
+}
+
+// shard03 is iteration 03's literal addition to the 02b selection: the
+// three node packages and the node process-boundary selector.
+var shard03 = []string{
+	"go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/client ./internal/sidecar ./internal/contract",
+	"go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestNodeEnrollment|TestNodeReconnect)$/^(locking|shutdown)$ ./tests/function",
 }
 
 // shardArgv returns the literal commands of the named shards, in order.
@@ -138,7 +146,8 @@ func tuples(t *testing.T, argv string) []tuple {
 }
 
 // FP-1: both OS plans are exactly the three literal shards, and their
-// normalized union is the 02b multiset, with nothing duplicated or lost.
+// normalized union is the 02b multiset plus iteration 03's literal
+// additions, with nothing duplicated or lost.
 func TestStressShardSelection(t *testing.T) {
 	want := map[tuple]int{}
 	for _, argv := range shard02b {
@@ -148,6 +157,17 @@ func TestStressShardSelection(t *testing.T) {
 	}
 	if len(want) != 21 {
 		t.Fatalf("02b baseline = %d tuples, want 5 packages and 2 selectors at 3 CPU settings", len(want))
+	}
+	for _, argv := range shard03 {
+		for _, tp := range tuples(t, argv) {
+			if want[tp] != 0 {
+				t.Fatalf("03 addition %+v overlaps 02b", tp)
+			}
+			want[tp]++
+		}
+	}
+	if len(want) != 33 {
+		t.Fatalf("03 selection = %d tuples, want 02b plus 3 packages and 1 selector at 3 CPU settings", len(want))
 	}
 	for _, goos := range []string{"linux", "darwin"} {
 		shards, err := devcheck.StressShards(goos)
@@ -182,7 +202,7 @@ func TestStressShardSelection(t *testing.T) {
 		}
 		for tp, n := range got {
 			if want[tp] != n {
-				t.Errorf("%s: %+v selected %d times, 02b selected it %d times", goos, tp, n, want[tp])
+				t.Errorf("%s: %+v selected %d times, 02b and 03 selected it %d times", goos, tp, n, want[tp])
 			}
 		}
 		steps, err := devcheck.StressSteps(goos)

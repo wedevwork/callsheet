@@ -25,15 +25,25 @@ import (
 // design 02c with processgroup's CPU settings as separate invocations); it
 // is compared against StressShards and StressSteps, never derived from them.
 const (
-	wantStressPackages      = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/plane"
+	wantStressPackages      = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/plane ./internal/client ./internal/sidecar ./internal/contract"
 	wantStressPG1           = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/spikes/processgroup"
 	wantStressPG2           = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/spikes/processgroup"
 	wantStressPG4           = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/spikes/processgroup"
 	wantStressFunction      = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestFP4TransportHarness|TestFP5GitRoundTrip)$ ./tests/function"
 	wantStressPlaneFunction = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestPlaneState|TestPlaneTLS|TestPlaneReissue)$/^(paths|persistence|locking|validation|https-only|prelisten-validation|bounded-shutdown|process)$ ./tests/function"
+	// wantStressNodeFunction is iteration 03's node process-boundary step.
+	wantStressNodeFunction = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestNodeEnrollment|TestNodeReconnect)$/^(locking|shutdown)$ ./tests/function"
 	// wantStressPlan is the flattened StressSteps view in shard/CPU order.
-	wantStressPlan = wantStressPackages + "|" + wantStressPG1 + "|" + wantStressPG2 + "|" + wantStressPG4 + "|" + wantStressFunction + "|" + wantStressPlaneFunction
+	wantStressPlan = wantStressPackages + "|" + wantStressPG1 + "|" + wantStressPG2 + "|" + wantStressPG4 + "|" + wantStressFunction + "|" + wantStressPlaneFunction + "|" + wantStressNodeFunction
 )
+
+// want03Additions is iteration 03's literal addition to the 02b selection
+// (design 03, CI plan): the three node packages completely and the two
+// node process-boundary subtests.
+var want03Additions = []string{
+	"go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/client ./internal/sidecar ./internal/contract",
+	wantStressNodeFunction,
+}
 
 // want02bSelection is iteration 02b's literal stress selection, the
 // baseline the shards' union must preserve exactly.
@@ -52,7 +62,7 @@ var wantStressShards = []struct {
 }{
 	{"packages", false, [][2]string{{"stress packages", wantStressPackages}}},
 	{"processgroup", true, [][2]string{{"stress processgroup cpu1", wantStressPG1}, {"stress processgroup cpu2", wantStressPG2}, {"stress processgroup cpu4", wantStressPG4}}},
-	{"functions", false, [][2]string{{"stress function", wantStressFunction}, {"stress plane function", wantStressPlaneFunction}}},
+	{"functions", false, [][2]string{{"stress function", wantStressFunction}, {"stress plane function", wantStressPlaneFunction}, {"stress node function", wantStressNodeFunction}}},
 }
 
 // Sequential call groups of each stress stage: calls within a group are
@@ -62,11 +72,12 @@ var (
 	groupProcessGroup = []string{wantStressPG1, wantStressPG2, wantStressPG4}
 	groupFunctions1   = []string{wantStressFunction}
 	groupFunctions2   = []string{wantStressPlaneFunction}
+	groupFunctions3   = []string{wantStressNodeFunction}
 	wantStageGroups   = map[string][][]string{
-		"stress":              {groupPackages, groupProcessGroup, groupFunctions1, groupFunctions2},
+		"stress":              {groupPackages, groupProcessGroup, groupFunctions1, groupFunctions2, groupFunctions3},
 		"stress-packages":     {groupPackages},
 		"stress-processgroup": {groupProcessGroup},
-		"stress-functions":    {groupFunctions1, groupFunctions2},
+		"stress-functions":    {groupFunctions1, groupFunctions2, groupFunctions3},
 	}
 )
 
@@ -118,10 +129,10 @@ func TestStressPlan(t *testing.T) {
 			}
 		}
 		steps, err := StressSteps(goos)
-		if err != nil || len(steps) != 6 || strings.Join(argvOf(steps), "|") != wantStressPlan || strings.Join(flat, "|") != wantStressPlan {
+		if err != nil || len(steps) != 7 || strings.Join(argvOf(steps), "|") != wantStressPlan || strings.Join(flat, "|") != wantStressPlan {
 			t.Fatalf("%s flattened = %v %v", goos, argvOf(steps), err)
 		}
-		for i, name := range []string{"stress packages", "stress processgroup cpu1", "stress processgroup cpu2", "stress processgroup cpu4", "stress function", "stress plane function"} {
+		for i, name := range []string{"stress packages", "stress processgroup cpu1", "stress processgroup cpu2", "stress processgroup cpu4", "stress function", "stress plane function", "stress node function"} {
 			if steps[i].Name != name || strings.Join(steps[i].Env, " ") != "CGO_ENABLED=1" {
 				t.Fatalf("%s flattened step %d = %+v", goos, i, steps[i])
 			}
@@ -142,7 +153,7 @@ func TestStressPlan(t *testing.T) {
 	f[5].Env[0] = "CGO_ENABLED=0"
 	b, _ := StressShards("linux")
 	c, _ := StressSteps("linux")
-	if b[0].Name != "packages" || !b[1].Parallel || len(b[2].Steps) != 2 || b[0].Steps[0].Name != "stress packages" ||
+	if b[0].Name != "packages" || !b[1].Parallel || len(b[2].Steps) != 3 || b[0].Steps[0].Name != "stress packages" ||
 		strings.Join(b[1].Steps[0].Argv, " ") != wantStressPG1 || b[1].Steps[2].Env[0] != "CGO_ENABLED=1" ||
 		strings.Join(b[2].Steps[1].Argv, " ") != wantStressPlaneFunction || strings.Join(argvOf(c), "|") != wantStressPlan || c[5].Env[0] != "CGO_ENABLED=1" {
 		t.Fatalf("plan state leaked: %+v", b)
@@ -201,8 +212,9 @@ func normalize(t *testing.T, argv string) []selection {
 }
 
 // TestStressShardUnion (UT-1) proves the shards' union is exactly the 02b
-// selection: every (package, selector, CPU, count) tuple appears exactly
-// once, the shards are disjoint and nothing is added or lost.
+// selection plus iteration 03's literal additions: every (package,
+// selector, CPU, count) tuple appears exactly once, the shards are
+// disjoint and nothing of 02b is lost.
 func TestStressShardUnion(t *testing.T) {
 	want := map[selection]int{}
 	for _, argv := range want02bSelection {
@@ -212,6 +224,17 @@ func TestStressShardUnion(t *testing.T) {
 	}
 	if len(want) != (5+2)*3 {
 		t.Fatalf("02b baseline has %d tuples", len(want))
+	}
+	for _, argv := range want03Additions {
+		for _, s := range normalize(t, argv) {
+			if want[s] != 0 {
+				t.Fatalf("03 addition %v overlaps 02b", s)
+			}
+			want[s]++
+		}
+	}
+	if len(want) != (5+2+3+1)*3 {
+		t.Fatalf("03 selection has %d tuples", len(want))
 	}
 	for _, goos := range []string{"linux", "darwin"} {
 		shards, err := StressShards(goos)
@@ -238,7 +261,7 @@ func TestStressShardUnion(t *testing.T) {
 		}
 		for s := range got {
 			if want[s] == 0 {
-				t.Errorf("%s: %v is not in the 02b selection", goos, s)
+				t.Errorf("%s: %v is not in the 02b or 03 selection", goos, s)
 			}
 		}
 		for s, sh := range owner {
@@ -309,9 +332,9 @@ func TestStressSelectorComponents(t *testing.T) {
 				t.Fatalf("%s: %s has a selector: %v", goos, s.Name, s.Argv)
 			}
 		}
-		fn, plane := splitRun(runValue(steps[4])), splitRun(runValue(steps[5]))
-		if len(fn) != 1 || len(plane) != 2 {
-			t.Fatalf("%s: levels function=%q plane=%q", goos, fn, plane)
+		fn, plane, nodes := splitRun(runValue(steps[4])), splitRun(runValue(steps[5])), splitRun(runValue(steps[6]))
+		if len(fn) != 1 || len(plane) != 2 || len(nodes) != 2 {
+			t.Fatalf("%s: levels function=%q plane=%q node=%q", goos, fn, plane, nodes)
 		}
 		for _, c := range []struct {
 			level    string
@@ -330,6 +353,12 @@ func TestStressSelectorComponents(t *testing.T) {
 				[]string{"paths", "persistence", "locking", "validation", "https-only", "prelisten-validation", "bounded-shutdown", "process"},
 				[]string{"contracts", "processes", "subprocess", "path", "pathsx", "lock", "https", "https-only-x", "prelisten", "bounded-shutdown#01", "validation2",
 					"issuance", "fingerprint", "restart-invariance", "inspection", "expiry-warnings", "cooperative", "resistant", "leader-exits-first", ""}},
+			{"node parents", nodes[0],
+				[]string{"TestNodeEnrollment", "TestNodeReconnect"},
+				[]string{"TestNodeTrust", "TestNodeProtocol", "TestNodeLease", "TestNodeRegistry", "TestNodeDiscovery", "TestNodePlatform", "TestNodeEnrollmentX", "XTestNodeReconnect", "TestNode", "TestPlaneState", ""}},
+			{"node subtests", nodes[1],
+				[]string{"locking", "shutdown"},
+				[]string{"restart", "disconnect", "identity", "recovery", "lock", "shutdown2", "locking#01", "expiry", "return", "contracts", ""}},
 		} {
 			re, err := regexp.Compile(c.pattern)
 			if err != nil {
@@ -394,7 +423,7 @@ func TestStressStageDispatch(t *testing.T) {
 	}
 	// all stays test, coverage, bench, cross: stress is explicit.
 	f := &fakeRunner{coverTotal: "81%", cmdList: cmdList, profile: goodProfile}
-	if code, _, errOut := runDriver(t, "linux", f, "all"); code != 0 || len(f.calls) != 19 {
+	if code, _, errOut := runDriver(t, "linux", f, "all"); code != 0 || len(f.calls) != 20 {
 		t.Fatalf("all = %d with %d calls %s", code, len(f.calls), errOut)
 	}
 	for _, c := range f.argvs() {
@@ -432,6 +461,8 @@ func TestStressFailFastRetainsLogs(t *testing.T) {
 		{"stress-processgroup", "-cpu=4 ", "stress processgroup cpu4", 3},
 		{"stress-functions", "TestFP5GitRoundTrip", "stress function", 1},
 		{"stress-functions", "TestPlaneTLS", "stress plane function", 2},
+		{"stress", "TestNodeEnrollment", "stress node function", 7},
+		{"stress-functions", "TestNodeReconnect", "stress node function", 3},
 	} {
 		f := &fakeRunner{fail: c.fail}
 		code, out, errOut := runDriver(t, "linux", f, c.stage)
@@ -551,14 +582,14 @@ func TestStressWatchdog(t *testing.T) {
 	shards, _ := StressShards("linux")
 	// Every child runs under a watchdog deadline stressWatchdog from now,
 	// and the watchdog context is canceled once the stage returns. "stress"
-	// shares one watchdog across its shards (DS2): one context for all six.
+	// shares one watchdog across its shards (DS2): one context for all seven.
 	r := &ctxRecorder{}
 	before := time.Now()
 	if err := stressDriver(t, context.Background(), r.run).stress(shards); err != nil {
 		t.Fatal(err)
 	}
 	after := time.Now()
-	if len(r.ctxs) != 6 {
+	if len(r.ctxs) != 7 {
 		t.Fatalf("calls = %d", len(r.ctxs))
 	}
 	for i, ctx := range r.ctxs {
@@ -888,6 +919,27 @@ func processgroupSteps(t *testing.T) []Step {
 	return shards[1].Steps
 }
 
+// writeResult is one recorded Write outcome.
+type writeResult struct {
+	n   int
+	err error
+}
+
+// requireSecondWrites requires exactly the recorded second-write results:
+// the byte count, and the error (by errors.Is, or nil).
+func requireSecondWrites(t *testing.T, name string, got, want map[string]writeResult) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("%s: second writes %v, want %v", name, got, want)
+	}
+	for cmd, w := range want {
+		g, ok := got[cmd]
+		if !ok || g.n != w.n || (w.err == nil) != (g.err == nil) || (w.err != nil && !errors.Is(g.err, w.err)) {
+			t.Fatalf("%s: second write of %s = (%d, %v), want (%d, %v)", name, cmd, g.n, g.err, w.n, w.err)
+		}
+	}
+}
+
 // TestStressConcurrencyContract is the FP-2 (iteration 02c) contract of the
 // concurrent coordinator runConcurrentCPU, executed by name from
 // tests/function (TestStressShardExecution). Its subtests overlap, failure,
@@ -954,9 +1006,10 @@ func TestStressConcurrencyContract(t *testing.T) {
 		if code := runFor(context.Background(), "darwin", []string{"stress"}, &dout, &derr, rec); code != 0 {
 			t.Fatalf("stress = %d %s", code, derr.String())
 		}
-		if len(events) != 12 || events[0] != "start "+wantStressPackages || events[1] != "end "+wantStressPackages ||
+		if len(events) != 14 || events[0] != "start "+wantStressPackages || events[1] != "end "+wantStressPackages ||
 			events[8] != "start "+wantStressFunction || events[9] != "end "+wantStressFunction ||
-			events[10] != "start "+wantStressPlaneFunction || events[11] != "end "+wantStressPlaneFunction {
+			events[10] != "start "+wantStressPlaneFunction || events[11] != "end "+wantStressPlaneFunction ||
+			events[12] != "start "+wantStressNodeFunction || events[13] != "end "+wantStressNodeFunction {
 			t.Fatalf("boundaries: %q", events)
 		}
 		var starts, ends []string
@@ -1261,7 +1314,9 @@ func TestStressConcurrencyContract(t *testing.T) {
 		} {
 			var mu sync.Mutex
 			calls := 0
-			second := map[string]error{}
+			// second records (n, err) of every invocation's second write
+			// (iteration 03, S1'), keyed by its command.
+			second := map[string]writeResult{}
 			run := func(_ context.Context, argv, _ []string, _ string, stdout, _ io.Writer) error {
 				n := strings.Join(argv, " ")
 				mu.Lock()
@@ -1270,9 +1325,7 @@ func TestStressConcurrencyContract(t *testing.T) {
 				io.WriteString(stdout, "first\n")
 				k, err := io.WriteString(stdout, "second\n")
 				mu.Lock()
-				if err != nil || k != len("second\n") {
-					second[n] = err
-				}
+				second[n] = writeResult{k, err}
 				mu.Unlock()
 				return nil // every child exits zero
 			}
@@ -1297,29 +1350,34 @@ func TestStressConcurrencyContract(t *testing.T) {
 			case "sticky write error":
 				// The log would accept the second write, yet it returned
 				// the first error with no bytes: syncLog remembered it, and
-				// that output never reached the log.
-				if len(second) != 2 || !errors.Is(second[wantStressPG1], diskFull) || !errors.Is(second[wantStressPG4], diskFull) || second[wantStressPG2] != nil {
-					t.Fatalf("second writes = %v", second)
-				}
+				// that output never reached the log. The unaffected
+				// invocation's second write succeeded in full.
+				requireSecondWrites(t, c.name, second, map[string]writeResult{
+					wantStressPG1: {0, diskFull}, wantStressPG2: {len("second\n"), nil}, wantStressPG4: {0, diskFull}})
 				for _, n := range []string{cpu1, cpu4} {
 					if b := c.logs.files["mem:"+n].buf.String(); b != "" {
 						t.Fatalf("%s log after a failed first write = %q", n, b)
 					}
 				}
+				if b := c.logs.files["mem:"+cpu2].buf.String(); b != "first\nsecond\n" {
+					t.Fatalf("%s log = %q", cpu2, b)
+				}
 			case "short write":
 				// Likewise, the second write would succeed; the short first
-				// write is remembered and nothing more is written.
-				if !errors.Is(second[wantStressPG2], io.ErrShortWrite) || len(second) != 1 {
-					t.Fatalf("second writes = %v", second)
-				}
+				// write is remembered, the second returns zero bytes and
+				// io.ErrShortWrite, and nothing more is written.
+				requireSecondWrites(t, c.name, second, map[string]writeResult{
+					wantStressPG1: {len("second\n"), nil}, wantStressPG2: {0, io.ErrShortWrite}, wantStressPG4: {len("second\n"), nil}})
 				if b := c.logs.files["mem:"+cpu2].buf.String(); b != "first" {
 					t.Fatalf("%s log after a short first write = %q", cpu2, b)
 				}
 			case "close after failed preparation":
-				if out.Len() != 0 {
-					t.Fatalf("announced or replayed without children:\n%s", out.String())
+				if out.Len() != 0 || len(second) != 0 {
+					t.Fatalf("announced, replayed or wrote without children:\n%s %v", out.String(), second)
 				}
 			case "replay close":
+				requireSecondWrites(t, c.name, second, map[string]writeResult{
+					wantStressPG1: {len("second\n"), nil}, wantStressPG2: {len("second\n"), nil}, wantStressPG4: {len("second\n"), nil}})
 				// The replay itself completed before the Close failure.
 				if !strings.Contains(out.String(), "devcheck: ---- "+cpu4+" log (mem:"+cpu4+") ----\nfirst\nsecond\ndevcheck: "+cpu4+": FAILED after ") {
 					t.Fatalf("replay:\n%s", out.String())
@@ -1369,10 +1427,10 @@ func TestPlatformSeamContract(t *testing.T) {
 			}
 			stress, serr := StressSteps(goos)
 			shards, sherr := StressShards(goos)
-			if serr != nil || len(stress) != 6 || sherr != nil || len(shards) != 3 {
+			if serr != nil || len(stress) != 7 || sherr != nil || len(shards) != 3 {
 				t.Fatalf("StressSteps(%s) = %v %v, shards %v %v", goos, stress, serr, shards, sherr)
 			}
-			for stage, want := range map[string]int{"test": wantTest, "stress": 6, "stress-packages": 1, "stress-processgroup": 3, "stress-functions": 2, "native": len(native)} {
+			for stage, want := range map[string]int{"test": wantTest, "stress": 7, "stress-packages": 1, "stress-processgroup": 3, "stress-functions": 3, "native": len(native)} {
 				f := &fakeRunner{native: stream(qualification()...)}
 				code, out, errOut := runDriver(t, goos, f, stage)
 				wantCode := 0

@@ -84,5 +84,8 @@ func (d *deps) inspect(ctx context.Context, stateDir string) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
+	if _, err := l.loadNodeRecords(); err != nil {
+		return Status{}, err
+	}
 	return l.status(m, d.clock()), nil
 }

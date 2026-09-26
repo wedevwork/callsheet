@@ -68,10 +68,34 @@ var planeRequired = []struct {
 	{"TestPlanePlatform", nil},
 }
 
+// nodeRequired are the iteration 03 node function tests and their
+// mandatory subtests (design 03, Function tests), in FP order.
+var nodeRequired = []struct {
+	test string
+	subs []string
+}{
+	{"TestNodeTrust", []string{"ca", "pin", "rejections"}},
+	{"TestNodeEnrollment", []string{"identity", "recovery", "locking"}},
+	{"TestNodeProtocol", []string{"hello", "limits"}},
+	{"TestNodeReconnect", []string{"restart", "disconnect", "shutdown"}},
+	{"TestNodeLease", []string{"expiry", "return"}},
+	{"TestNodeRegistry", []string{"restore", "validation"}},
+	{"TestNodeDiscovery", []string{"text", "json", "errors"}},
+	{"TestNodePlatform", []string{"paths", "native-state", "policy", "sticky-write"}},
+}
+
 // planeNames lists every required plane name, parents before subtests.
-func planeNames() []string {
+func planeNames() []string { return requiredNames(planeRequired) }
+
+// nodeNames lists every required node name, parents before subtests.
+func nodeNames() []string { return requiredNames(nodeRequired) }
+
+func requiredNames(tests []struct {
+	test string
+	subs []string
+}) []string {
 	var out []string
-	for _, p := range planeRequired {
+	for _, p := range tests {
 		out = append(out, p.test)
 		for _, s := range p.subs {
 			out = append(out, p.test+"/"+s)
@@ -80,8 +104,8 @@ func planeNames() []string {
 	return out
 }
 
-// qualification is a complete synthetic tests/function stream for FP-6
-// and the plane trust tests.
+// qualification is a complete synthetic tests/function stream for FP-6,
+// the plane trust tests and the node tests.
 func qualification() []evt {
 	evs := []evt{ev("start", NativePackage, ""), ev("run", NativePackage, fp6),
 		ev("output", NativePackage, fp6).with("Output", "=== RUN   TestFP6ProcessGroups\n")}
@@ -92,7 +116,7 @@ func qualification() []evt {
 		evs = append(evs, ev("pass", NativePackage, fp6+"/"+s))
 	}
 	evs = append(evs, ev("pass", NativePackage, fp6))
-	for _, p := range planeRequired {
+	for _, p := range append(append(planeRequired[:0:0], planeRequired...), nodeRequired...) {
 		evs = append(evs, ev("run", NativePackage, p.test))
 		for _, s := range p.subs {
 			evs = append(evs, ev("run", NativePackage, p.test+"/"+s), ev("pass", NativePackage, p.test+"/"+s))
@@ -165,7 +189,12 @@ func TestNativeStepsAndUnsupportedOS(t *testing.T) {
 		"TestPlaneCommands,TestPlaneState,TestPlaneState/paths,TestPlaneState/persistence,TestPlaneState/locking,TestPlaneState/validation,TestPlaneState/contracts,"+
 		"TestPlaneBind,TestPlaneInit,TestPlaneInit/issuance,TestPlaneInit/fingerprint,TestPlaneInit/restart-invariance,"+
 		"TestPlaneTLS,TestPlaneTLS/https-only,TestPlaneTLS/prelisten-validation,TestPlaneTLS/bounded-shutdown,TestPlaneTLS/contracts,"+
-		"TestPlaneReissue,TestPlaneReissue/process,TestPlaneReissue/contracts,TestPlaneStatus,TestPlaneStatus/inspection,TestPlaneStatus/expiry-warnings,TestPlanePlatform" || len(req) != 28 {
+		"TestPlaneReissue,TestPlaneReissue/process,TestPlaneReissue/contracts,TestPlaneStatus,TestPlaneStatus/inspection,TestPlaneStatus/expiry-warnings,TestPlanePlatform,"+
+		"TestNodeTrust,TestNodeTrust/ca,TestNodeTrust/pin,TestNodeTrust/rejections,TestNodeEnrollment,TestNodeEnrollment/identity,TestNodeEnrollment/recovery,TestNodeEnrollment/locking,"+
+		"TestNodeProtocol,TestNodeProtocol/hello,TestNodeProtocol/limits,TestNodeReconnect,TestNodeReconnect/restart,TestNodeReconnect/disconnect,TestNodeReconnect/shutdown,"+
+		"TestNodeLease,TestNodeLease/expiry,TestNodeLease/return,TestNodeRegistry,TestNodeRegistry/restore,TestNodeRegistry/validation,"+
+		"TestNodeDiscovery,TestNodeDiscovery/text,TestNodeDiscovery/json,TestNodeDiscovery/errors,"+
+		"TestNodePlatform,TestNodePlatform/paths,TestNodePlatform/native-state,TestNodePlatform/policy,TestNodePlatform/sticky-write" || len(req) != 58 {
 		t.Fatalf("required = %v", req)
 	}
 	req[0] = "mutated"

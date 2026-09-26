@@ -145,8 +145,9 @@ func TestStubLeaves(t *testing.T) {
 			t.Fatalf("%v: stderr=%q want %q", args, errOut, want)
 		}
 	}
-	// version and the four plane leaves are implemented; 27 stubs remain.
-	if stubs != 27 {
+	// version, the four plane leaves (iteration 02), sidecar enroll and run
+	// and node ls and show (iteration 03) are implemented; 23 stubs remain.
+	if stubs != 23 {
 		t.Fatalf("stubs = %d", stubs)
 	}
 	// Help after "--" is opaque and not honoured.

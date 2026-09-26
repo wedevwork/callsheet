@@ -1,6 +1,8 @@
 // Package plane implements the plane's local trust foundation: the private
 // state directory, the internal certificate authority and server
-// certificate, the private HTTPS listener and offline status inspection.
+// certificate, the private HTTPS listener and offline status inspection;
+// since iteration 03 also the node registry, leases, the node stream and
+// the read-only roster API.
 //
 // The four public operations (Init, Run, Reissue, Inspect) use the real
 // clock, entropy, interface enumeration, filesystem and listener. Tests use
@@ -114,6 +116,17 @@ type deps struct {
 	// rawFsync as the fallback for ENOTSUP, ENOTTY and EINVAL.
 	fileSync func(*os.File) error
 	rawFsync func(*os.File) error
+	// nodeClock drives leases, the sweep and node stream timeouts
+	// (iteration 03).
+	nodeClock nodeClock
+	// streamCloseGrace bounds a graceful node stream close.
+	streamCloseGrace time.Duration
+	// streamEvents, when non-nil, observes node stream lifecycles (tests
+	// only).
+	streamEvents func(string)
+	// streamHelloRead, when non-nil, runs after a hello read returned a
+	// frame, before its deadline is released (tests only).
+	streamHelloRead func(context.Context)
 }
 
 // shutdownTimeout is the production graceful-shutdown bound.
@@ -121,13 +134,15 @@ const shutdownTimeout = 5 * time.Second
 
 func defaultDeps() *deps {
 	return &deps{
-		now:             time.Now,
-		rand:            rand.Reader,
-		addrs:           interfaceAddrs,
-		listen:          net.Listen,
-		shutdownTimeout: shutdownTimeout,
-		fileSync:        (*os.File).Sync,
-		rawFsync:        rawFsync,
+		now:              time.Now,
+		rand:             rand.Reader,
+		addrs:            interfaceAddrs,
+		listen:           net.Listen,
+		shutdownTimeout:  shutdownTimeout,
+		fileSync:         (*os.File).Sync,
+		rawFsync:         rawFsync,
+		nodeClock:        realClock{},
+		streamCloseGrace: streamCloseGrace,
 	}
 }
 

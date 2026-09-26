@@ -123,6 +123,9 @@ func (f *planeFlags) resolve(goos string) (string, error) {
 // planeFail reports err: cancellation exits 130, contract errors use their
 // code, anything else is internal.
 func planeFail(errOut io.Writer, err error) int {
+	if err == nil {
+		return 0
+	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		fmt.Fprintf(errOut, "callsheet: interrupted\n")
 		return contract.ExitInterrupted

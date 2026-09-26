@@ -685,7 +685,7 @@ func TestStoppedBackupRestore(t *testing.T) {
 	sameSnapshot(t, snapshot(t, root), snapshot(t, backup))
 }
 
-func copyTree(t *testing.T, src, dst string) {
+func copyTree(t testing.TB, src, dst string) {
 	t.Helper()
 	err := filepath.WalkDir(src, func(p string, e fs.DirEntry, err error) error {
 		if err != nil {

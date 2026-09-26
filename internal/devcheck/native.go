@@ -11,16 +11,17 @@ import (
 	"strings"
 )
 
-// NativePackage is the package whose process-group and plane trust tests
-// qualify a native macOS run.
+// NativePackage is the package whose process-group, plane trust and node
+// tests qualify a native macOS run.
 const NativePackage = "github.com/wedevwork/callsheet/tests/function"
 
 // nativeRequired are the tests in NativePackage that must both run and
-// pass: the process-group scenarios (iteration 01) and every plane trust
+// pass: the process-group scenarios (iteration 01), every plane trust
 // function test with the mandatory subtests of its compound FPs
 // (iteration 02), including the "process" and "contracts" boundaries that
 // separate process-boundary scenarios from delegated contracts
-// (iteration 02b).
+// (iteration 02b), and every node function test with its mandatory
+// subtests (iteration 03).
 var nativeRequired = []string{
 	"TestFP6ProcessGroups",
 	"TestFP6ProcessGroups/cooperative",
@@ -50,6 +51,38 @@ var nativeRequired = []string{
 	"TestPlaneStatus/inspection",
 	"TestPlaneStatus/expiry-warnings",
 	"TestPlanePlatform",
+	// Iteration 03 (nodes): one function test per FP with its mandatory
+	// subtests, delegated clock contracts included.
+	"TestNodeTrust",
+	"TestNodeTrust/ca",
+	"TestNodeTrust/pin",
+	"TestNodeTrust/rejections",
+	"TestNodeEnrollment",
+	"TestNodeEnrollment/identity",
+	"TestNodeEnrollment/recovery",
+	"TestNodeEnrollment/locking",
+	"TestNodeProtocol",
+	"TestNodeProtocol/hello",
+	"TestNodeProtocol/limits",
+	"TestNodeReconnect",
+	"TestNodeReconnect/restart",
+	"TestNodeReconnect/disconnect",
+	"TestNodeReconnect/shutdown",
+	"TestNodeLease",
+	"TestNodeLease/expiry",
+	"TestNodeLease/return",
+	"TestNodeRegistry",
+	"TestNodeRegistry/restore",
+	"TestNodeRegistry/validation",
+	"TestNodeDiscovery",
+	"TestNodeDiscovery/text",
+	"TestNodeDiscovery/json",
+	"TestNodeDiscovery/errors",
+	"TestNodePlatform",
+	"TestNodePlatform/paths",
+	"TestNodePlatform/native-state",
+	"TestNodePlatform/policy",
+	"TestNodePlatform/sticky-write",
 }
 
 // NativeRequiredTests returns a fresh copy of the test names in NativePackage

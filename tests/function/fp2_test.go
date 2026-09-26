@@ -13,8 +13,9 @@ import (
 // TestFP2CommandTree drives the built callsheet binary through every leaf,
 // group and help form plus invalid commands, in a fresh cwd and home, and
 // confirms no files are created. The four plane leaves implemented in
-// iteration 02 get help-only checks here (their behavior is FP-1 of
-// iteration 02, TestPlaneCommands); every other leaf is a stub.
+// iteration 02 and the four sidecar and node leaves of iteration 03 get
+// help-only checks here (their behavior is tested by TestPlaneCommands and
+// the TestNode* function tests); every other leaf is a stub.
 func TestFP2CommandTree(t *testing.T) {
 	bin := testkit.BuildBinary(t, "./cmd/callsheet", "callsheet")
 	home := t.TempDir()
@@ -35,12 +36,13 @@ func TestFP2CommandTree(t *testing.T) {
 		if len(leaves) != 32 {
 			t.Fatalf("leaf count = %d", len(leaves))
 		}
-		implemented := map[string]bool{"callsheet plane init": true, "callsheet plane run": true, "callsheet plane status": true, "callsheet plane cert reissue": true}
+		implemented := map[string]bool{"callsheet plane init": true, "callsheet plane run": true, "callsheet plane status": true, "callsheet plane cert reissue": true,
+			"callsheet sidecar enroll": true, "callsheet sidecar run": true, "callsheet node ls": true, "callsheet node show": true}
 		for _, leaf := range leaves {
 			args := argsOf(leaf)
 			if implemented[leaf.Path()] {
 				help := run(append(args, "--help")...)
-				if help.code != 0 || help.stderr != "" || !strings.HasPrefix(help.stdout, "Usage: "+leaf.Path()+" [--state-dir PATH]") ||
+				if help.code != 0 || help.stderr != "" || !strings.HasPrefix(help.stdout, "Usage: "+leaf.Path()+" ") ||
 					!strings.Contains(help.stdout, "Status: implemented.") || strings.Contains(help.stdout, "future stub") {
 					t.Fatalf("%v --help = %+v", args, help)
 				}

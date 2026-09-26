@@ -33,6 +33,11 @@ var (
 		"./internal/testkit/fakeadapter",
 		"./internal/spikes/gittransport",
 		"./internal/plane",
+		// Iteration 03: the node client, sidecar (whose reconnect contracts
+		// run real plane subprocesses) and wire contract, complete.
+		"./internal/client",
+		"./internal/sidecar",
+		"./internal/contract",
 	}
 	// stressProcessGroupPackage is the processgroup shard's package
 	// (iteration 02c). Its stress time is dominated by the 1 s TERM grace
@@ -63,6 +68,14 @@ var (
 	// internal/plane contracts already repeated in the packages shard, is
 	// excluded.
 	stressPlaneSubtests = []string{"paths", "persistence", "locking", "validation", "https-only", "prelisten-validation", "bounded-shutdown", "process"}
+	// stressNodeFunctionTests and stressNodeSubtests select the two
+	// process-boundary node scenarios (iteration 03): real competing
+	// sidecar processes and a real sidecar CLI's SIGTERM shutdown. The
+	// delegated clock contracts behind TestNodeReconnect's restart and
+	// disconnect and TestNodeLease are repeated directly in the packages
+	// shard, so their wrappers are not repeated here.
+	stressNodeFunctionTests = []string{"TestNodeEnrollment", "TestNodeReconnect"}
+	stressNodeSubtests      = []string{"locking", "shutdown"}
 )
 
 const (
@@ -111,6 +124,12 @@ func stressPlaneSelector() string {
 	return stressSelector(stressPlaneFunctionTests) + "/" + stressSelector(stressPlaneSubtests)
 }
 
+// stressNodeSelector is the two-level -run expression of the node function
+// step, built like stressPlaneSelector.
+func stressNodeSelector() string {
+	return stressSelector(stressNodeFunctionTests) + "/" + stressSelector(stressNodeSubtests)
+}
+
 // stressFlags returns the fixed go test prefix for one CPU list.
 func stressFlags(cpus string) []string {
 	return []string{"go", "test", "-race", "-count=" + strconv.Itoa(StressCount), "-cpu=" + cpus, "-timeout=" + stressTestTimeout}
@@ -126,8 +145,9 @@ func stressSupported(goos string) error {
 // StressShards returns the stress plan for goos as its three fixed shards,
 // in order: packages (sequential), processgroup (Parallel: one invocation
 // per CPU setting) and functions (sequential). Their disjoint union is
-// exactly the iteration 02b selection: every selected test runs StressCount
-// times at each CPU setting under the race detector. Only linux and darwin
+// exactly the iteration 02b selection plus iteration 03's node packages
+// and node function selector: every selected test runs StressCount times at
+// each CPU setting under the race detector. Only linux and darwin
 // are supported; every other goos is rejected before any child runs. Each
 // call returns fresh slices, nested ones included.
 func StressShards(goos string) ([]StressShard, error) {
@@ -150,12 +170,14 @@ func StressShards(goos string) ([]StressShard, error) {
 				Argv: append(stressFlags(stressCPUList()), "-run="+stressSelector(stressFunctionTests), stressFunctionPackage)},
 			{Name: "stress plane function", Env: env(),
 				Argv: append(stressFlags(stressCPUList()), "-run="+stressPlaneSelector(), stressFunctionPackage)},
+			{Name: "stress node function", Env: env(),
+				Argv: append(stressFlags(stressCPUList()), "-run="+stressNodeSelector(), stressFunctionPackage)},
 		}},
 	}, nil
 }
 
 // StressSteps returns the stress plan for goos flattened in shard and CPU
-// order: six race-built go test commands. It is an inspection view only;
+// order: seven race-built go test commands. It is an inspection view only;
 // execution uses StressShards and never infers concurrency from this list.
 // Unsupported goos values are rejected like StressShards. Each call returns
 // fresh slices.

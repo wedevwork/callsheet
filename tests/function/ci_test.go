@@ -189,14 +189,14 @@ func events(evs ...map[string]any) string {
 	return b.String()
 }
 
-// qualifyingEvents is a complete synthetic FP-6 and plane trust stream;
+// qualifyingEvents is a complete synthetic FP-6, plane trust and node stream;
 // drop names a scenario whose events are deleted and skip one that is
 // skipped instead.
 func qualifyingEvents(drop, skip string) string {
 	pkg := devcheck.NativePackage
 	evs := []map[string]any{synth("start", pkg, "")}
 	for _, name := range devcheck.NativeRequiredTests() {
-		if strings.HasPrefix(name, "TestPlane") {
+		if strings.HasPrefix(name, "TestPlane") || strings.HasPrefix(name, "TestNode") {
 			evs = append(evs, synth("run", pkg, name), synth("pass", pkg, name))
 		}
 	}

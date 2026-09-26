@@ -81,15 +81,40 @@ func BuildTestBinary(t testing.TB, pkg, name string) string {
 
 func runGo(t testing.TB, args ...string) {
 	t.Helper()
-	root := MustRepoRoot(t)
+	if err := goCommand(args...); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func goCommand(args ...string) error {
+	root, err := RepoRoot()
+	if err != nil {
+		return err
+	}
 	cmd := exec.Command(GoTool(), args...)
 	cmd.Dir = root
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		t.Fatalf("go %s: %v\n%s", strings.Join(args, " "), err, stderr.String())
+		return fmt.Errorf("go %s: %v\n%s", strings.Join(args, " "), err, stderr.String())
 	}
+	return nil
+}
+
+// BuildBinaryAt builds pkg into dir/name without a testing.TB, for
+// process-lifetime fixtures that a TestMain creates once and removes at
+// teardown (iteration 03), so repeated tests never rebuild it.
+func BuildBinaryAt(dir, pkg, name string) (string, error) {
+	out := filepath.Join(dir, name)
+	return out, goCommand("build", "-o", out, pkg)
+}
+
+// BuildTestBinaryAt compiles pkg's tests into dir/name.test, like
+// BuildBinaryAt.
+func BuildTestBinaryAt(dir, pkg, name string) (string, error) {
+	out := filepath.Join(dir, name+".test")
+	return out, goCommand("test", "-c", "-o", out, pkg)
 }
 
 // EnvWithout returns environ minus the named variables (case-sensitive),
