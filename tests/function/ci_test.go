@@ -11,7 +11,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -113,7 +115,11 @@ func mustReject(t *testing.T, name string, data []byte, want string) {
 
 // --- devcheck driver helpers (injected runners; no real child tools) ---
 
+// ciRunner records calls under mu, which it never holds while a call writes
+// output, so the concurrent processgroup shard can use it; read calls only
+// after devcheck has returned.
 type ciRunner struct {
+	mu         sync.Mutex
 	calls      [][]string
 	envs       [][]string
 	failOn     string
@@ -122,8 +128,10 @@ type ciRunner struct {
 }
 
 func (r *ciRunner) run(_ context.Context, argv, env []string, _ string, stdout, stderr io.Writer) error {
+	r.mu.Lock()
 	r.calls = append(r.calls, argv)
 	r.envs = append(r.envs, env)
+	r.mu.Unlock()
 	joined := strings.Join(argv, " ")
 	if r.failOn != "" && strings.Contains(joined, r.failOn) {
 		io.WriteString(stderr, "injected child failure\n")
@@ -264,8 +272,8 @@ func requireTerms(t *testing.T, where, text string, terms ...string) {
 	}
 }
 
-// FP-1: triggers, the stable checks (four since iteration 02b), pinned
-// setup, budget and permissions.
+// FP-1: triggers, the stable required checks (four since iteration 02b,
+// two of them summaries since 02c), pinned setup, budget and permissions.
 func TestCIWorkflowContract(t *testing.T) {
 	data := ciWorkflow(t)
 	if err := cicheck.ValidateWorkflow(data); err != nil {
@@ -285,9 +293,18 @@ func TestCIWorkflowContract(t *testing.T) {
 	}
 	var names []string
 	for _, j := range cicheck.Jobs() {
-		names = append(names, node(t, &doc, "jobs", j.ID, "name").Value)
+		if j.Required {
+			names = append(names, node(t, &doc, "jobs", j.ID, "name").Value)
+		}
 		if node(t, &doc, "jobs", j.ID, "timeout-minutes").Value != fmt.Sprint(j.TimeoutMinutes) {
 			t.Fatalf("%s timeout", j.ID)
+		}
+		if len(j.Needs) > 0 {
+			// A summary has no setup: its one step evaluates results.
+			if len(node(t, &doc, "jobs", j.ID, "steps").Content) != 1 {
+				t.Fatalf("%s is not a one-step summary", j.ID)
+			}
+			continue
 		}
 		co, sg := node(t, &doc, "jobs", j.ID, "steps", 0, "uses"), node(t, &doc, "jobs", j.ID, "steps", 1, "uses")
 		if co.Value != checkoutPin || co.LineComment != "# v6.0.2" || sg.Value != setupGoPin || sg.LineComment != "# v6.3.0" {
@@ -569,6 +586,8 @@ const ownerAddContexts = "gh api --method POST \\\n" +
 
 // FP-7: the owner-applied branch protection handoff.
 func TestCIProtectionHandoff(t *testing.T) {
+	// Checks names the four required contexts first, then only the six
+	// stress workers (iteration 02c): no other check name.
 	checks := docSection(t, "Checks")
 	contexts := regexp.MustCompile("`(ci-[a-z0-9-]+)`").FindAllStringSubmatch(checks, -1)
 	var listed []string
@@ -579,8 +598,15 @@ func TestCIProtectionHandoff(t *testing.T) {
 			listed = append(listed, m[1])
 		}
 	}
-	if strings.Join(listed, ",") != strings.Join(cicheck.RequiredChecks(), ",") {
-		t.Fatalf("Checks lists %v, want exactly %v", listed, cicheck.RequiredChecks())
+	var all []string
+	for _, j := range cicheck.Jobs() {
+		all = append(all, j.Name)
+	}
+	sortedListed, sortedAll := slices.Clone(listed), slices.Clone(all)
+	slices.Sort(sortedListed)
+	slices.Sort(sortedAll)
+	if len(listed) < 4 || strings.Join(listed[:4], ",") != strings.Join(cicheck.RequiredChecks(), ",") || !slices.Equal(sortedListed, sortedAll) {
+		t.Fatalf("Checks lists %v, want the required %v first and then only the other jobs of %v", listed, cicheck.RequiredChecks(), all)
 	}
 	bp := docSection(t, "Branch protection")
 	requireTerms(t, "Branch protection", bp,
@@ -623,7 +649,7 @@ func TestCIPRProcedure(t *testing.T) {
 		"merge together after both checks, `ci-linux` and `ci-macos`, succeed on its current merge revision",
 		"enables branch protection after both contexts are available and successful",
 		"Do not begin merging iteration 02 before that handoff is complete",
-		"iterations 02 and 02b join pull request #2", "Adding the stress contexts",
+		"iterations 02, 02b and 02c join pull request #2", "Adding the stress contexts",
 		"No fake first-run evidence", "merge queue")
 	for _, stale := range []string{"land directly on `main`", "before CI exists", "From iteration 02 on"} {
 		if strings.Contains(strings.Join(strings.Fields(pr), " "), stale) {
@@ -645,12 +671,13 @@ func TestCIPRProcedure(t *testing.T) {
 	requireTerms(t, "green step", steps[green], "skipped, canceled, pending or unobserved check is not acceptable")
 	first := docSection(t, "First remote run")
 	requireTerms(t, "First remote run", first, "pending until observed", "run URL", "commit",
-		"conclusions of all four checks, `ci-linux`, `ci-macos`, `ci-linux-stress` and `ci-macos-stress`", "native evidence", "native qualification passed on darwin",
+		"conclusions of all ten jobs: all four checks, `ci-linux`, `ci-macos`, `ci-linux-stress` and `ci-macos-stress`", "native evidence", "native qualification passed on darwin",
 		"branch protection verification",
 		"git ls-remote https://github.com/actions/checkout.git 'refs/tags/v6.0.2' 'refs/tags/v6.0.2^{}'",
 		"git ls-remote https://github.com/actions/setup-go.git 'refs/tags/v6.3.0' 'refs/tags/v6.3.0^{}'",
 		"peeled commit", "handoff blocker")
-	requireTerms(t, "First remote run", first, "stress evidence from the `ci-linux-stress` and `ci-macos-stress` logs", "`devcheck: stage stress ok`", "elapsed time of each stress step")
+	requireTerms(t, "First remote run", first, "stress evidence from the six worker logs", "`devcheck: stage stress-packages ok`",
+		"`devcheck: stage stress-functions ok`", "elapsed time of each stress command")
 	local := docSection(t, "Local verification")
 	requireTerms(t, "Local verification", local, "go run ./cmd/devcheck all", "go run ./cmd/devcheck stress", "actionlint", "not a required dependency")
 }

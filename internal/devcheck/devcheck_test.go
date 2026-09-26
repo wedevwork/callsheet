@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -19,8 +20,12 @@ type recorded struct {
 }
 
 // fakeRunner records calls and scripts results: fail matches a substring of
-// the joined argv; coverTotal feeds "go tool cover -func" output.
+// the joined argv; coverTotal feeds "go tool cover -func" output. It is safe
+// for the concurrent calls of the processgroup stress shard: mu guards
+// calls only and is never held while writing child output. Read calls only
+// after the driver has returned.
 type fakeRunner struct {
+	mu         sync.Mutex
 	calls      []recorded
 	fail       string
 	coverTotal string
@@ -32,7 +37,9 @@ type fakeRunner struct {
 }
 
 func (f *fakeRunner) run(_ context.Context, argv, env []string, dir string, stdout, stderr io.Writer) error {
+	f.mu.Lock()
 	f.calls = append(f.calls, recorded{argv, env, dir})
+	f.mu.Unlock()
 	joined := strings.Join(argv, " ")
 	if f.fail != "" && strings.Contains(joined, f.fail) {
 		fmt.Fprint(stderr, "boom from child")

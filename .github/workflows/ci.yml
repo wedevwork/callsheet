@@ -1,8 +1,11 @@
-# CI for callsheet. Four fixed, independent jobs whose names are the required
-# status check contexts on main: ci-linux, ci-macos, ci-linux-stress and
-# ci-macos-stress (see docs/ci.md). All verification policy lives in
+# CI for callsheet. Ten fixed jobs (see docs/ci.md). The four required status
+# check contexts on main are ci-linux, ci-macos, ci-linux-stress and
+# ci-macos-stress. The main jobs and the six stress workers (three shards per
+# platform, iteration 02c) are independent; the two stress summaries keep the
+# required stress contexts and pass only if all three of their platform's
+# workers concluded success. All verification policy lives in
 # ./cmd/devcheck; the contract is checked offline by internal/cicheck and
-# tests/function/ci_test.go.
+# tests/function.
 name: CI
 
 on:
@@ -90,8 +93,8 @@ jobs:
           GOPROXY: "off"
           GOSUMDB: "off"
 
-  linux-stress:
-    name: ci-linux-stress
+  linux-stress-packages:
+    name: ci-linux-stress-packages
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     defaults:
@@ -114,14 +117,74 @@ jobs:
           check-latest: false
       - name: Download modules
         run: go mod download
-      - name: devcheck stress (race, repeat count, varied -cpu)
-        run: go run ./cmd/devcheck stress
+      - name: devcheck stress-packages
+        run: go run ./cmd/devcheck stress-packages
         env:
           GOPROXY: "off"
           GOSUMDB: "off"
 
-  macos-stress:
-    name: ci-macos-stress
+  linux-stress-processgroup:
+    name: ci-linux-stress-processgroup
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    env:
+      GOTOOLCHAIN: local
+      GOFLAGS: -mod=readonly
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Set up Go from go.mod
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+          check-latest: false
+      - name: Download modules
+        run: go mod download
+      - name: devcheck stress-processgroup
+        run: go run ./cmd/devcheck stress-processgroup
+        env:
+          GOPROXY: "off"
+          GOSUMDB: "off"
+
+  linux-stress-functions:
+    name: ci-linux-stress-functions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    env:
+      GOTOOLCHAIN: local
+      GOFLAGS: -mod=readonly
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Set up Go from go.mod
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+          check-latest: false
+      - name: Download modules
+        run: go mod download
+      - name: devcheck stress-functions
+        run: go run ./cmd/devcheck stress-functions
+        env:
+          GOPROXY: "off"
+          GOSUMDB: "off"
+
+  macos-stress-packages:
+    name: ci-macos-stress-packages
     runs-on: macos-15
     timeout-minutes: 20
     defaults:
@@ -144,8 +207,102 @@ jobs:
           check-latest: false
       - name: Download modules
         run: go mod download
-      - name: devcheck stress (race, repeat count, varied -cpu)
-        run: go run ./cmd/devcheck stress
+      - name: devcheck stress-packages
+        run: go run ./cmd/devcheck stress-packages
         env:
           GOPROXY: "off"
           GOSUMDB: "off"
+
+  macos-stress-processgroup:
+    name: ci-macos-stress-processgroup
+    runs-on: macos-15
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    env:
+      GOTOOLCHAIN: local
+      GOFLAGS: -mod=readonly
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Set up Go from go.mod
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+          check-latest: false
+      - name: Download modules
+        run: go mod download
+      - name: devcheck stress-processgroup
+        run: go run ./cmd/devcheck stress-processgroup
+        env:
+          GOPROXY: "off"
+          GOSUMDB: "off"
+
+  macos-stress-functions:
+    name: ci-macos-stress-functions
+    runs-on: macos-15
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    env:
+      GOTOOLCHAIN: local
+      GOFLAGS: -mod=readonly
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Set up Go from go.mod
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+          check-latest: false
+      - name: Download modules
+        run: go mod download
+      - name: devcheck stress-functions
+        run: go run ./cmd/devcheck stress-functions
+        env:
+          GOPROXY: "off"
+          GOSUMDB: "off"
+
+  linux-stress:
+    name: ci-linux-stress
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    needs: [linux-stress-packages, linux-stress-processgroup, linux-stress-functions]
+    if: ${{ always() }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Require every stress shard
+        env:
+          PACKAGES_RESULT: ${{ needs['linux-stress-packages'].result }}
+          PROCESSGROUP_RESULT: ${{ needs['linux-stress-processgroup'].result }}
+          FUNCTIONS_RESULT: ${{ needs['linux-stress-functions'].result }}
+        run: test "$PACKAGES_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success
+
+  macos-stress:
+    name: ci-macos-stress
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    needs: [macos-stress-packages, macos-stress-processgroup, macos-stress-functions]
+    if: ${{ always() }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Require every stress shard
+        env:
+          PACKAGES_RESULT: ${{ needs['macos-stress-packages'].result }}
+          PROCESSGROUP_RESULT: ${{ needs['macos-stress-processgroup'].result }}
+          FUNCTIONS_RESULT: ${{ needs['macos-stress-functions'].result }}
+        run: test "$PACKAGES_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success

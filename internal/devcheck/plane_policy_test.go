@@ -45,14 +45,17 @@ func TestPlaneVerificationPolicyContract(t *testing.T) {
 		if _, err := NativeSteps("linux"); err == nil {
 			t.Fatal("linux native plan accepted")
 		}
-		for stage, want := range map[string]string{
-			"bench":  wantBenchGit + "|" + wantBenchPlane,
-			"stress": wantStressPlan,
-			"test":   wantTestNative + "|" + wantTestRace,
+		for stage, want := range map[string][][]string{
+			"bench":               {{wantBenchGit}, {wantBenchPlane}},
+			"stress":              wantStageGroups["stress"],
+			"stress-packages":     wantStageGroups["stress-packages"],
+			"stress-processgroup": wantStageGroups["stress-processgroup"],
+			"stress-functions":    wantStageGroups["stress-functions"],
+			"test":                {{wantTestNative}, {wantTestRace}},
 		} {
 			f := &fakeRunner{}
 			code, out, errOut := runDriver(t, "linux", f, stage)
-			if code != 0 || strings.Join(f.argvs(), "|") != want {
+			if code != 0 || !callsMatch(f.argvs(), want) {
 				t.Fatalf("linux %s = %d %v %s", stage, code, f.argvs(), errOut)
 			}
 			os.RemoveAll(scratchFrom(out))

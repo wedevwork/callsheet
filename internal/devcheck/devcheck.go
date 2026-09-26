@@ -1,5 +1,7 @@
 // Package devcheck is the development-only, pure-Go check driver behind
-// cmd/devcheck: test, coverage, bench, cross, all, native and stress. It is
+// cmd/devcheck: test, coverage, bench, cross, all, native, stress and the
+// three stress shards stress-packages, stress-processgroup and
+// stress-functions. It is
 // not distributed and imports no product services. Child tools run with argv
 // (no shell).
 package devcheck
@@ -22,6 +24,9 @@ import (
 
 // Runner runs argv (argv[0] is the executable) with the complete child
 // environment env in directory dir ("" = the caller's working directory).
+// A Runner must be safe for concurrent calls: the processgroup stress shard
+// (iteration 02c) calls it from up to three goroutines at once, each with
+// its own writers.
 type Runner func(ctx context.Context, argv []string, env []string, dir string, stdout, stderr io.Writer) error
 
 // ExecRunner implements Runner with exec.CommandContext.
@@ -256,11 +261,15 @@ func (d *driver) steps(steps []Step) error {
 	return nil
 }
 
+// stepLogName is the scratch log file name of a step.
+func stepLogName(name string) string {
+	return strings.NewReplacer(" ", "-", "/", "-").Replace(name) + ".log"
+}
+
 // logged runs s, teeing output to out and a scratch log; capture (if non-nil)
 // also receives stdout.
 func (d *driver) logged(s Step, capture io.Writer) error {
-	name := strings.NewReplacer(" ", "-", "/", "-").Replace(s.Name) + ".log"
-	f, err := os.Create(filepath.Join(d.scratch, name))
+	f, err := os.Create(filepath.Join(d.scratch, stepLogName(s.Name)))
 	if err != nil {
 		return err
 	}
@@ -316,14 +325,15 @@ func (d *driver) cross() error {
 	return Cross(d.ctx, d.run, out, Matrix)
 }
 
-const usage = "usage: devcheck test | coverage [-o profile] | bench | cross | all | native | stress\n"
+const usage = "usage: devcheck test | coverage [-o profile] | bench | cross | all | native | stress | stress-packages | stress-processgroup | stress-functions\n"
 
 // stageNames is the single stage definition used by argument dispatch and
-// advertised by Stages.
-var stageNames = [...]string{"test", "coverage", "bench", "cross", "all", "native", "stress"}
+// advertised by Stages. The three stress-* stages each run one stress shard
+// (iteration 02c, one CI worker job each); "stress" runs all three.
+var stageNames = [...]string{"test", "coverage", "bench", "cross", "all", "native", "stress", "stress-packages", "stress-processgroup", "stress-functions"}
 
-// allStages is the stage sequence of "all". "native" and "stress" are
-// selected explicitly: stress repeats subprocess builds and process
+// allStages is the stage sequence of "all". "native" and the stress stages
+// are selected explicitly: stress repeats subprocess builds and process
 // experiments for minutes, so release and review verification run both
 // "all" and "stress".
 var allStages = []string{"test", "coverage", "bench", "cross"}
@@ -369,13 +379,14 @@ func runFor(ctx context.Context, goos string, args []string, out, errOut io.Writ
 	}
 	// An unsupported native or stress host is rejected before any scratch
 	// exists and before any child runs.
-	var nativeSteps, stressSteps []Step
+	var nativeSteps []Step
+	var stressShards []StressShard
 	var planErr error
-	switch sub {
-	case "native":
+	switch {
+	case sub == "native":
 		nativeSteps, planErr = NativeSteps(goos)
-	case "stress":
-		stressSteps, planErr = StressSteps(goos)
+	case isStressStage(sub):
+		stressShards, planErr = stressPlan(goos, sub)
 	}
 	if planErr != nil {
 		fmt.Fprintf(errOut, "devcheck: stage %s FAILED: %v\n", sub, planErr)
@@ -401,8 +412,8 @@ func runFor(ctx context.Context, goos string, args []string, out, errOut io.Writ
 			err = d.cross()
 		case "native":
 			err = d.native(nativeSteps)
-		case "stress":
-			err = d.stress(stressSteps)
+		case "stress", "stress-packages", "stress-processgroup", "stress-functions":
+			err = d.stress(stressShards)
 		default:
 			err = fmt.Errorf("devcheck: stage %q is advertised but not implemented", st)
 		}

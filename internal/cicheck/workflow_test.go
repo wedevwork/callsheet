@@ -11,9 +11,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// validYAML satisfies the four-job contract with job order, formatting, key
-// order and comments that differ from the checked-in workflow; only
-// semantics are fixed.
+// validYAML satisfies the ten-job contract (iteration 02c) with job order,
+// formatting, key order, step names and comments that differ from the
+// checked-in workflow; only semantics are fixed.
 const validYAML = `permissions: {contents: read}
 jobs:
   macos:
@@ -82,6 +82,23 @@ jobs:
           GOSUMDB: "off"
   macos-stress:
     name: ci-macos-stress
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    needs:
+      - macos-stress-packages
+      - macos-stress-processgroup
+      - macos-stress-functions
+    if: ${{ always() }}
+    defaults: {run: {shell: bash}}
+    steps:
+      - env:
+          FUNCTIONS_RESULT: ${{ needs['macos-stress-functions'].result }}
+          PACKAGES_RESULT: ${{ needs['macos-stress-packages'].result }}
+          PROCESSGROUP_RESULT: ${{ needs['macos-stress-processgroup'].result }}
+        run: |
+          test "$PACKAGES_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success
+  macos-stress-functions:
+    name: ci-macos-stress-functions
     runs-on: macos-15
     timeout-minutes: 20
     defaults: {run: {shell: bash}}
@@ -91,13 +108,45 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
       - with: {go-version-file: go.mod, cache: true, cache-dependency-path: go.sum, check-latest: false}
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417
-      - name: Download (macos-stress)
+      - name: Download (macos-stress-functions)
         run: go mod download
-      - name: devcheck stress (race, repeat count, varied -cpu)
+      - name: devcheck stress-functions (macos)
         env: {GOSUMDB: "off", GOPROXY: "off"}
-        run: go run ./cmd/devcheck stress
-  linux-stress:
-    name: ci-linux-stress
+        run: go run ./cmd/devcheck stress-functions
+  macos-stress-processgroup:
+    name: ci-macos-stress-processgroup
+    runs-on: macos-15
+    timeout-minutes: 20
+    defaults: {run: {shell: bash}}
+    env: {GOFLAGS: -mod=readonly, GOTOOLCHAIN: local}
+    steps:
+      - with: {persist-credentials: false}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - with: {go-version-file: go.mod, cache: true, cache-dependency-path: go.sum, check-latest: false}
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417
+      - name: Download (macos-stress-processgroup)
+        run: go mod download
+      - name: devcheck stress-processgroup (macos)
+        env: {GOSUMDB: "off", GOPROXY: "off"}
+        run: go run ./cmd/devcheck stress-processgroup
+  macos-stress-packages:
+    name: ci-macos-stress-packages
+    runs-on: macos-15
+    timeout-minutes: 20
+    defaults: {run: {shell: bash}}
+    env: {GOFLAGS: -mod=readonly, GOTOOLCHAIN: local}
+    steps:
+      - with: {persist-credentials: false}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - with: {go-version-file: go.mod, cache: true, cache-dependency-path: go.sum, check-latest: false}
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417
+      - name: Download (macos-stress-packages)
+        run: go mod download
+      - name: devcheck stress-packages (macos)
+        env: {GOSUMDB: "off", GOPROXY: "off"}
+        run: go run ./cmd/devcheck stress-packages
+  linux-stress-packages:
+    name: ci-linux-stress-packages
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     defaults:
@@ -118,13 +167,87 @@ jobs:
           cache: true
           cache-dependency-path: go.sum
           check-latest: false
-      - name: Download (linux-stress)
+      - name: Download (linux-stress-packages)
         run: go mod download
-      - name: devcheck stress (race, repeat count, varied -cpu)
-        run: go run ./cmd/devcheck stress
+      - name: devcheck stress-packages (linux)
+        run: go run ./cmd/devcheck stress-packages
         env:
           GOPROXY: "off"
           GOSUMDB: "off"
+  linux-stress-processgroup:
+    name: ci-linux-stress-processgroup
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    env:
+      GOTOOLCHAIN: local
+      GOFLAGS: -mod=readonly
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Setup
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+          check-latest: false
+      - name: Download (linux-stress-processgroup)
+        run: go mod download
+      - name: devcheck stress-processgroup (linux)
+        run: go run ./cmd/devcheck stress-processgroup
+        env:
+          GOPROXY: "off"
+          GOSUMDB: "off"
+  linux-stress-functions:
+    name: ci-linux-stress-functions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    env:
+      GOTOOLCHAIN: local
+      GOFLAGS: -mod=readonly
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Setup
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+          check-latest: false
+      - name: Download (linux-stress-functions)
+        run: go mod download
+      - name: devcheck stress-functions (linux)
+        run: go run ./cmd/devcheck stress-functions
+        env:
+          GOPROXY: "off"
+          GOSUMDB: "off"
+  linux-stress:
+    steps:
+      - name: All linux shards succeeded
+        run: test "$PACKAGES_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success
+        env:
+          PACKAGES_RESULT: ${{ needs['linux-stress-packages'].result }}
+          PROCESSGROUP_RESULT: ${{ needs['linux-stress-processgroup'].result }}
+          FUNCTIONS_RESULT: ${{ needs['linux-stress-functions'].result }}
+    defaults:
+      run:
+        shell: bash
+    if: ${{ always() }}
+    needs: [linux-stress-packages, linux-stress-processgroup, linux-stress-functions]
+    timeout-minutes: 5
+    runs-on: ubuntu-24.04
+    name: ci-linux-stress
 name: CI
 on:
   pull_request:
@@ -150,21 +273,22 @@ const coverageStep = `      - name: coverage
           GOSUMDB: "off"
 `
 
-// The stress steps and download steps of the two stress jobs are written
-// differently so each can be mutated independently.
+// The download and check steps of two stress workers, one block-style on
+// Linux and one flow-style on macOS, are written differently from every
+// other job's so each can be mutated independently.
 const (
-	macosStressDownload = `      - name: Download (macos-stress)
+	macosWorkerDownload = `      - name: Download (macos-stress-functions)
         run: go mod download
 `
-	linuxStressDownload = `      - name: Download (linux-stress)
+	linuxWorkerDownload = `      - name: Download (linux-stress-processgroup)
         run: go mod download
 `
-	macosStressStep = `      - name: devcheck stress (race, repeat count, varied -cpu)
+	macosWorkerStep = `      - name: devcheck stress-functions (macos)
         env: {GOSUMDB: "off", GOPROXY: "off"}
-        run: go run ./cmd/devcheck stress
+        run: go run ./cmd/devcheck stress-functions
 `
-	linuxStressStep = `      - name: devcheck stress (race, repeat count, varied -cpu)
-        run: go run ./cmd/devcheck stress
+	linuxWorkerStep = `      - name: devcheck stress-processgroup (linux)
+        run: go run ./cmd/devcheck stress-processgroup
         env:
           GOPROXY: "off"
           GOSUMDB: "off"
@@ -354,6 +478,21 @@ func TestDocumentLevelRejections(t *testing.T) {
 	}
 }
 
+// contractTable is the independent literal ten-job table (design 02c,
+// Workflow topology): id|name|runner|timeout|stages|needs|required.
+var contractTable = []string{
+	"linux|ci-linux|ubuntu-24.04|45|test coverage bench cross||true",
+	"macos|ci-macos|macos-15|30|native||true",
+	"linux-stress-packages|ci-linux-stress-packages|ubuntu-24.04|20|stress-packages||false",
+	"linux-stress-processgroup|ci-linux-stress-processgroup|ubuntu-24.04|20|stress-processgroup||false",
+	"linux-stress-functions|ci-linux-stress-functions|ubuntu-24.04|20|stress-functions||false",
+	"macos-stress-packages|ci-macos-stress-packages|macos-15|20|stress-packages||false",
+	"macos-stress-processgroup|ci-macos-stress-processgroup|macos-15|20|stress-processgroup||false",
+	"macos-stress-functions|ci-macos-stress-functions|macos-15|20|stress-functions||false",
+	"linux-stress|ci-linux-stress|ubuntu-24.04|5||linux-stress-packages linux-stress-processgroup linux-stress-functions|true",
+	"macos-stress|ci-macos-stress|ubuntu-24.04|5||macos-stress-packages macos-stress-processgroup macos-stress-functions|true",
+}
+
 func TestContractAccessors(t *testing.T) {
 	if got := strings.Join(RequiredChecks(), ","); got != "ci-linux,ci-macos,ci-linux-stress,ci-macos-stress" {
 		t.Fatalf("required = %s", got)
@@ -361,22 +500,24 @@ func TestContractAccessors(t *testing.T) {
 	js := Jobs()
 	var got []string
 	for _, j := range js {
-		got = append(got, fmt.Sprintf("%s|%s|%s|%d|%s", j.ID, j.Name, j.RunsOn, j.TimeoutMinutes, strings.Join(j.Stages, " ")))
+		got = append(got, fmt.Sprintf("%s|%s|%s|%d|%s|%s|%v", j.ID, j.Name, j.RunsOn, j.TimeoutMinutes, strings.Join(j.Stages, " "), strings.Join(j.Needs, " "), j.Required))
+		if (len(j.Needs) > 0) == (len(j.Stages) > 0) {
+			t.Fatalf("%s must have either stages or needs", j.ID)
+		}
 	}
-	if want := []string{
-		"linux|ci-linux|ubuntu-24.04|45|test coverage bench cross",
-		"macos|ci-macos|macos-15|30|native",
-		"linux-stress|ci-linux-stress|ubuntu-24.04|20|stress",
-		"macos-stress|ci-macos-stress|macos-15|20|stress",
-	}; strings.Join(got, "\n") != strings.Join(want, "\n") {
+	if strings.Join(got, "\n") != strings.Join(contractTable, "\n") {
 		t.Fatalf("jobs = %q", got)
 	}
 	js[0].Stages[0] = "mutated"
 	js[1].Stages[0] = "mutated"
-	js[3].Stages[0] = "mutated"
+	js[4].Stages[0] = "mutated"
+	js[8].Needs[0] = "mutated"
+	js[9].Needs = js[9].Needs[:1]
 	js[1].Name = "mutated"
-	js[2].Name = "mutated"
-	if Jobs()[0].Stages[0] != "test" || Jobs()[1].Stages[0] != "native" || Jobs()[3].Stages[0] != "stress" ||
+	js[8].Required = false
+	fresh := Jobs()
+	if fresh[0].Stages[0] != "test" || fresh[1].Stages[0] != "native" || fresh[4].Stages[0] != "stress-functions" ||
+		fresh[8].Needs[0] != "linux-stress-packages" || len(fresh[9].Needs) != 3 || !fresh[8].Required ||
 		RequiredChecks()[1] != "ci-macos" || RequiredChecks()[2] != "ci-linux-stress" {
 		t.Fatal("Jobs exposes contract state")
 	}
@@ -388,15 +529,24 @@ func TestContractAccessors(t *testing.T) {
 }
 
 func TestExtractStages(t *testing.T) {
-	got, err := ExtractStages([]byte(validYAML))
-	if err != nil {
-		t.Fatal(err)
+	for name, data := range map[string][]byte{"fixture": []byte(validYAML)} {
+		got, err := ExtractStages(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 10 {
+			t.Fatalf("%s: %d jobs: %v", name, len(got), got)
+		}
+		for _, j := range Jobs() {
+			if s, ok := got[j.ID]; !ok || strings.Join(s, " ") != strings.Join(j.Stages, " ") || s == nil {
+				t.Fatalf("%s: %s stages = %#v, want %v", name, j.ID, s, j.Stages)
+			}
+		}
+		if len(got["linux-stress"]) != 0 || len(got["macos-stress"]) != 0 {
+			t.Fatalf("summaries have stages: %v", got)
+		}
 	}
-	if strings.Join(got["linux"], " ") != "test coverage bench cross" || strings.Join(got["macos"], " ") != "native" ||
-		strings.Join(got["linux-stress"], " ") != "stress" || strings.Join(got["macos-stress"], " ") != "stress" || len(got) != 4 {
-		t.Fatalf("stages = %v", got)
-	}
-	got, err = ExtractStages([]byte("jobs:\n  a:\n    steps: {}\n  b:\n    steps:\n      - uses: x\n      - run: [x]\n      - run: go run ./cmd/devcheck bogus\n"))
+	got, err := ExtractStages([]byte("jobs:\n  a:\n    steps: {}\n  b:\n    steps:\n      - uses: x\n      - run: [x]\n      - run: go run ./cmd/devcheck bogus\n"))
 	if err != nil || len(got["a"]) != 0 || strings.Join(got["b"], " ") != "bogus" {
 		t.Fatalf("loose stages = %v %v", got, err)
 	}
@@ -415,6 +565,12 @@ func TestCheckJobNames(t *testing.T) {
 	if err := CheckJobNames(map[string][]byte{"ci.yml": ci, "lint.yml": []byte("jobs:\n  lint:\n    runs-on: x\n")}); err != nil {
 		t.Fatalf("unrelated workflow: %v", err)
 	}
+	// Worker contexts are diagnostic, not required: the four required
+	// contexts alone satisfy the required-check scan.
+	four := []byte("jobs:\n  a:\n    name: ci-linux\n  b:\n    name: ci-macos\n  c:\n    name: ci-linux-stress\n  d:\n    name: ci-macos-stress\n")
+	if err := CheckJobNames(map[string][]byte{"ci.yml": four}); err != nil {
+		t.Fatalf("four required contexts: %v", err)
+	}
 	for name, c := range map[string]struct {
 		files map[string][]byte
 		want  []string
@@ -425,10 +581,12 @@ func TestCheckJobNames(t *testing.T) {
 			[]string{`job name "ci-macos" is used by both`}},
 		"required check missing": {map[string][]byte{"ci.yml": []byte("jobs:\n  linux:\n    name: ci-linux\n")},
 			[]string{`required check "ci-macos" is not defined by any workflow`, `required check "ci-linux-stress" is not defined by any workflow`, `required check "ci-macos-stress" is not defined by any workflow`}},
-		"stress contexts missing": {map[string][]byte{"ci.yml": []byte("jobs:\n  linux:\n    name: ci-linux\n  macos:\n    name: ci-macos\n")},
+		"stress contexts missing": {map[string][]byte{"ci.yml": []byte("jobs:\n  linux:\n    name: ci-linux\n  macos:\n    name: ci-macos\n  w:\n    name: ci-linux-stress-packages\n")},
 			[]string{`required check "ci-linux-stress" is not defined by any workflow`, `required check "ci-macos-stress" is not defined by any workflow`}},
 		"duplicate stress context": {map[string][]byte{"ci.yml": ci, "other.yml": []byte("jobs:\n  x:\n    name: ci-macos-stress\n")},
 			[]string{`job name "ci-macos-stress" is used by both ci.yml jobs.macos-stress and other.yml jobs.x`}},
+		"duplicate worker name": {map[string][]byte{"ci.yml": ci, "other.yml": []byte("jobs:\n  x:\n    name: ci-linux-stress-processgroup\n")},
+			[]string{`job name "ci-linux-stress-processgroup" is used by both ci.yml jobs.linux-stress-processgroup and other.yml jobs.x`}},
 		"no workflows": {map[string][]byte{}, []string{`required check "ci-linux"`, `required check "ci-macos"`, `required check "ci-linux-stress"`, `required check "ci-macos-stress"`}},
 		"malformed":    {map[string][]byte{"ci.yml": ci, "bad.yml": []byte("jobs: [\n")}, []string{"bad.yml: cicheck: malformed YAML"}},
 		"no jobs":      {map[string][]byte{"ci.yml": ci, "x.yml": []byte("name: x\n")}, []string{"x.yml: no jobs mapping"}},
@@ -445,34 +603,38 @@ func TestCheckJobNames(t *testing.T) {
 	}
 }
 
-// FP-6 (01c), moved by 02b: the stress step is required, exact and
-// unconditional as step 3 of both stress jobs; each mutation is rejected
-// with a path-specific error.
-func TestStressStepMutations(t *testing.T) {
+// FP-6 (01c), moved by 02b and sharded by 02c: each worker's shard step is
+// required, exact and unconditional as its step 3; each mutation is
+// rejected with a path-specific error, and no extra verification step
+// (such as a raw go test repeat) is admitted.
+func TestStressWorkerStepMutations(t *testing.T) {
 	for _, j := range []struct {
-		id, step, prev string
-		index, count   int
+		id, stage, other, step, prev string
 	}{
-		{"linux-stress", linuxStressStep, linuxStressDownload, 3, 4},
-		{"macos-stress", macosStressStep, macosStressDownload, 3, 4},
+		{"linux-stress-processgroup", "stress-processgroup", "stress-packages", linuxWorkerStep, linuxWorkerDownload},
+		{"macos-stress-functions", "stress-functions", "stress-processgroup", macosWorkerStep, macosWorkerDownload},
 	} {
-		p := fmt.Sprintf("jobs.%s.steps[%d]", j.id, j.index)
-		prev := fmt.Sprintf("jobs.%s.steps[%d]", j.id, j.index-1)
+		p := fmt.Sprintf("jobs.%s.steps[3]", j.id)
+		prev := fmt.Sprintf("jobs.%s.steps[2]", j.id)
+		cmd := "./cmd/devcheck " + j.stage
 		for _, c := range []struct {
 			name string
 			new  string
 			want []string
 		}{
-			{"removed", "", []string{fmt.Sprintf("jobs.%s.steps: must have exactly %d steps", j.id, j.count), fmt.Sprintf(`jobs.%s.steps: missing check step for devcheck stage "stress"`, j.id)}},
-			{"substituted all", strings.Replace(j.step, "./cmd/devcheck stress", "./cmd/devcheck all", 1), []string{p + `.run: must run devcheck stage "stress", got "all"`, `missing check step for devcheck stage "stress"`}},
-			{"substituted test", strings.Replace(j.step, "./cmd/devcheck stress", "./cmd/devcheck test", 1), []string{p + `.run: must run devcheck stage "stress", got "test"`}},
-			{"count flag", strings.Replace(j.step, "devcheck stress\n", "devcheck stress -count=1\n", 1), []string{p + `.run: must be "go run ./cmd/devcheck stress", got "go run ./cmd/devcheck stress -count=1"`}},
-			{"cpu flag", strings.Replace(j.step, "devcheck stress\n", "devcheck stress -cpu=1\n", 1), []string{p + `.run: must be "go run ./cmd/devcheck stress"`}},
+			{"removed", "", []string{fmt.Sprintf("jobs.%s.steps: must have exactly 4 steps", j.id), fmt.Sprintf(`jobs.%s.steps: missing check step for devcheck stage %q`, j.id, j.stage)}},
+			{"substituted all", strings.Replace(j.step, cmd+"\n", "./cmd/devcheck all\n", 1), []string{fmt.Sprintf(`%s.run: must run devcheck stage %q, got "all"`, p, j.stage), fmt.Sprintf(`missing check step for devcheck stage %q`, j.stage)}},
+			{"substituted full stress", strings.Replace(j.step, cmd+"\n", "./cmd/devcheck stress\n", 1), []string{fmt.Sprintf(`%s.run: must run devcheck stage %q, got "stress"`, p, j.stage)}},
+			{"substituted other shard", strings.Replace(j.step, cmd+"\n", "./cmd/devcheck "+j.other+"\n", 1), []string{fmt.Sprintf(`%s.run: must run devcheck stage %q, got %q`, p, j.stage, j.other)}},
+			{"count flag", strings.Replace(j.step, cmd+"\n", cmd+" -count=1\n", 1), []string{fmt.Sprintf(`%s.run: must be "go run ./cmd/devcheck %s", got "go run ./cmd/devcheck %s -count=1"`, p, j.stage, j.stage)}},
+			{"cpu flag", strings.Replace(j.step, cmd+"\n", cmd+" -cpu=1\n", 1), []string{fmt.Sprintf(`%s.run: must be "go run ./cmd/devcheck %s"`, p, j.stage)}},
 			{"if", j.step + "        if: always()\n", []string{p + ".if: unknown field"}},
 			{"continue-on-error", j.step + "        continue-on-error: true\n", []string{p + ".continue-on-error: unknown field"}},
 			{"timeout", j.step + "        timeout-minutes: 5\n", []string{p + ".timeout-minutes: unknown field"}},
 			{"offline env omitted", strings.Replace(strings.Replace(j.step, "        env: {GOSUMDB: \"off\", GOPROXY: \"off\"}\n", "", 1), "        env:\n          GOPROXY: \"off\"\n          GOSUMDB: \"off\"\n", "", 1), []string{p + ".env: missing required field"}},
 			{"proxy enabled", strings.Replace(j.step, `GOPROXY: "off"`, "GOPROXY: direct", 1), []string{p + `.env.GOPROXY: must be "off", got "direct"`}},
+			{"repeat step added", j.step + "      - name: Repeat stress concurrency contract\n        run: go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^TestStressConcurrencyContract$ ./internal/devcheck\n        env: {CGO_ENABLED: \"1\", GOPROXY: \"off\", GOSUMDB: \"off\"}\n",
+				[]string{fmt.Sprintf("jobs.%s.steps: must have exactly 4 steps", j.id), fmt.Sprintf("jobs.%s.steps[4]: unexpected extra step", j.id)}},
 		} {
 			t.Run(j.id+" "+c.name, func(t *testing.T) {
 				data := rep(t, validYAML, j.step, c.new)
@@ -487,16 +649,16 @@ func TestStressStepMutations(t *testing.T) {
 				}
 			})
 		}
-		// Swapping the stress step with the download step before it puts
+		// Swapping the shard step with the download step before it puts
 		// the check where the download belongs and vice versa.
 		t.Run(j.id+" reordered with download", func(t *testing.T) {
 			err := ValidateWorkflow([]byte(rep(t, validYAML, j.prev+j.step, j.step+j.prev)))
 			for _, w := range []string{
 				prev + ".env: unknown field",
-				prev + `.run: must be "go mod download", got "go run ./cmd/devcheck stress"`,
+				fmt.Sprintf(`%s.run: must be "go mod download", got "go run ./cmd/devcheck %s"`, prev, j.stage),
 				p + ".env: missing required field",
-				p + `.run: must be "go run ./cmd/devcheck stress", got "go mod download"`,
-				fmt.Sprintf(`jobs.%s.steps: missing check step for devcheck stage "stress"`, j.id),
+				fmt.Sprintf(`%s.run: must be "go run ./cmd/devcheck %s", got "go mod download"`, p, j.stage),
+				fmt.Sprintf(`jobs.%s.steps: missing check step for devcheck stage %q`, j.id, j.stage),
 			} {
 				if err == nil || !strings.Contains(err.Error(), w) {
 					t.Fatalf("reordered: %v lacks %q", err, w)
@@ -565,10 +727,41 @@ func removeKey(t *testing.T, m *yaml.Node, key string) {
 	t.Fatalf("no key %q", key)
 }
 
-// TestFourJobContract (UT-2, iteration 02b): every job of the four-job
-// contract, main and stress alike, keeps its identity, budget, stages,
-// setup and restrictions; each drift is rejected with the job's path.
-func TestFourJobContract(t *testing.T) {
+func mapping(kv ...string) *yaml.Node {
+	n := &yaml.Node{Kind: yaml.MappingNode}
+	for i := 0; i+1 < len(kv); i += 2 {
+		n.Content = append(n.Content, str(kv[i]), str(kv[i+1]))
+	}
+	return n
+}
+
+func seq(vs ...string) *yaml.Node {
+	n := &yaml.Node{Kind: yaml.SequenceNode}
+	for _, v := range vs {
+		n.Content = append(n.Content, str(v))
+	}
+	return n
+}
+
+// mustRejectJobs applies mutate to the fixture and requires every want.
+func mustRejectJobs(t *testing.T, mutate func(jobs map[string]*yaml.Node), want []string) {
+	t.Helper()
+	data := fixtureJobs(t, mutate)
+	err := ValidateWorkflow(data)
+	if err == nil {
+		t.Fatalf("mutation accepted:\n%s", data)
+	}
+	for _, w := range want {
+		if !strings.Contains(err.Error(), w) {
+			t.Fatalf("error lacks %q:\n%v", w, err)
+		}
+	}
+}
+
+// TestOrdinaryJobContract (UT-3, iterations 02b and 02c): every main and
+// worker job keeps its identity, budget, stages, setup and restrictions;
+// each drift is rejected with the job's path.
+func TestOrdinaryJobContract(t *testing.T) {
 	if err := ValidateWorkflow(fixtureJobs(t, func(map[string]*yaml.Node) {})); err != nil {
 		t.Fatalf("re-encoded fixture: %v", err)
 	}
@@ -579,8 +772,12 @@ func TestFourJobContract(t *testing.T) {
 	}{
 		{"linux", "ci-linux", "ubuntu-24.04", 45, 6, []string{"test", "coverage", "bench", "cross"}},
 		{"macos", "ci-macos", "macos-15", 30, 3, []string{"native"}},
-		{"linux-stress", "ci-linux-stress", "ubuntu-24.04", 20, 3, []string{"stress"}},
-		{"macos-stress", "ci-macos-stress", "macos-15", 20, 3, []string{"stress"}},
+		{"linux-stress-packages", "ci-linux-stress-packages", "ubuntu-24.04", 20, 3, []string{"stress-packages"}},
+		{"linux-stress-processgroup", "ci-linux-stress-processgroup", "ubuntu-24.04", 20, 3, []string{"stress-processgroup"}},
+		{"linux-stress-functions", "ci-linux-stress-functions", "ubuntu-24.04", 20, 3, []string{"stress-functions"}},
+		{"macos-stress-packages", "ci-macos-stress-packages", "macos-15", 20, 3, []string{"stress-packages"}},
+		{"macos-stress-processgroup", "ci-macos-stress-processgroup", "macos-15", 20, 3, []string{"stress-processgroup"}},
+		{"macos-stress-functions", "ci-macos-stress-functions", "macos-15", 20, 3, []string{"stress-functions"}},
 	} {
 		p := "jobs." + j.id
 		last := fmt.Sprintf("%s.steps[%d]", p, j.last)
@@ -601,7 +798,10 @@ func TestFourJobContract(t *testing.T) {
 			{"budget omitted", func(js map[string]*yaml.Node) { removeKey(t, js[j.id], "timeout-minutes") },
 				[]string{p + ".timeout-minutes: missing required field"}},
 			{"needs", func(js map[string]*yaml.Node) { addKey(js[j.id], "needs", str("linux")) }, []string{p + ".needs: unknown field"}},
+			{"needs a worker", func(js map[string]*yaml.Node) { addKey(js[j.id], "needs", seq("macos-stress-packages")) }, []string{p + ".needs: unknown field"}},
 			{"job condition", func(js map[string]*yaml.Node) { addKey(js[j.id], "if", str("github.event_name == 'push'")) }, []string{p + ".if: unknown field"}},
+			{"always condition", func(js map[string]*yaml.Node) { addKey(js[j.id], "if", str("${{ always() }}")) },
+				[]string{p + ".if: unknown field", p + `.if: expressions are not allowed: "${{ always() }}"`}},
 			{"error bypass", func(js map[string]*yaml.Node) { addKey(js[j.id], "continue-on-error", str("true")) }, []string{p + ".continue-on-error: unknown field"}},
 			{"matrix", func(js map[string]*yaml.Node) { addKey(js[j.id], "strategy", str("x")) }, []string{p + ".strategy: unknown field"}},
 			{"concurrency", func(js map[string]*yaml.Node) { addKey(js[j.id], "concurrency", str("ci")) }, []string{p + ".concurrency: unknown field"}},
@@ -624,7 +824,7 @@ func TestFourJobContract(t *testing.T) {
 			{"setup cache", func(js map[string]*yaml.Node) { at(t, js[j.id], "steps", 1, "with", "cache").Value = "false" },
 				[]string{p + `.steps[1].with.cache: must be "true", got "false"`}},
 			{"download online override", func(js map[string]*yaml.Node) {
-				addKey(at(t, js[j.id], "steps", 2), "env", &yaml.Node{Kind: yaml.MappingNode, Content: []*yaml.Node{str("GOPROXY"), str("off")}})
+				addKey(at(t, js[j.id], "steps", 2), "env", mapping("GOPROXY", "off"))
 			}, []string{p + ".steps[2].env: unknown field"}},
 			{"download replaced", func(js map[string]*yaml.Node) { at(t, js[j.id], "steps", 2, "run").Value = "go mod tidy" },
 				[]string{p + `.steps[2].run: must be "go mod download", got "go mod tidy"`}},
@@ -638,6 +838,9 @@ func TestFourJobContract(t *testing.T) {
 				[]string{last + ".continue-on-error: unknown field"}},
 			{"step condition", func(js map[string]*yaml.Node) { addKey(at(t, js[j.id], "steps", j.last), "if", str("always()")) },
 				[]string{last + ".if: unknown field"}},
+			{"step expression", func(js map[string]*yaml.Node) {
+				at(t, js[j.id], "steps", j.last, "run").Value = "go run ./cmd/devcheck ${{ matrix.stage }}"
+			}, []string{last + `.run: expressions are not allowed`}},
 			{"last stage", func(js map[string]*yaml.Node) {
 				at(t, js[j.id], "steps", j.last, "run").Value = "go run ./cmd/devcheck all"
 			},
@@ -646,52 +849,176 @@ func TestFourJobContract(t *testing.T) {
 			{"extra stress", func(js map[string]*yaml.Node) {
 				steps := at(t, js[j.id], "steps")
 				steps.Content = append(steps.Content, &yaml.Node{Kind: yaml.MappingNode, Content: []*yaml.Node{
-					str("run"), str("go run ./cmd/devcheck stress"),
-					str("env"), {Kind: yaml.MappingNode, Content: []*yaml.Node{str("GOPROXY"), str("off"), str("GOSUMDB"), str("off")}}}})
+					str("run"), str("go run ./cmd/devcheck stress"), str("env"), mapping("GOPROXY", "off", "GOSUMDB", "off")}})
 			}, []string{fmt.Sprintf("%s.steps: must have exactly %d steps", p, 3+len(j.stages)), fmt.Sprintf("%s.steps[%d]: unexpected extra step", p, j.last+1)}},
 		}
 		for _, c := range cases {
-			t.Run(j.id+" "+c.name, func(t *testing.T) {
-				data := fixtureJobs(t, c.mutate)
-				err := ValidateWorkflow(data)
-				if err == nil {
-					t.Fatalf("mutation accepted:\n%s", data)
+			t.Run(j.id+" "+c.name, func(t *testing.T) { mustRejectJobs(t, c.mutate, c.want) })
+		}
+	}
+}
+
+// TestJobRemovedOrRenamed: each of the ten jobs removed or renamed is named
+// at the jobs level.
+func TestJobRemovedOrRenamed(t *testing.T) {
+	for _, j := range Jobs() {
+		p := "jobs." + j.ID
+		var doc yaml.Node
+		if err := yaml.Unmarshal([]byte(validYAML), &doc); err != nil {
+			t.Fatal(err)
+		}
+		removeKey(t, child(doc.Content[0], "jobs"), j.ID)
+		data, _ := yaml.Marshal(&doc)
+		if err := ValidateWorkflow(data); err == nil || !strings.Contains(err.Error(), p+": missing required field") {
+			t.Fatalf("removed %s: %v", j.ID, err)
+		}
+		if err := yaml.Unmarshal([]byte(validYAML), &doc); err != nil {
+			t.Fatal(err)
+		}
+		js := child(doc.Content[0], "jobs")
+		for i := 0; i+1 < len(js.Content); i += 2 {
+			if js.Content[i].Value == j.ID {
+				js.Content[i].Value = j.ID + "-old"
+			}
+		}
+		data, _ = yaml.Marshal(&doc)
+		err := ValidateWorkflow(data)
+		if err == nil || !strings.Contains(err.Error(), p+"-old: unknown field") || !strings.Contains(err.Error(), p+": missing required field") {
+			t.Fatalf("renamed %s: %v", j.ID, err)
+		}
+	}
+}
+
+// TestSummaryContract (UT-3, iteration 02c): each summary accepts only the
+// exact template for its own platform; every weakening, bypass or extra
+// field fails with its path, and expressions stay forbidden everywhere
+// except the template's condition and result environment.
+func TestSummaryContract(t *testing.T) {
+	for _, s := range []struct{ id, name, plat, other string }{
+		{"linux-stress", "ci-linux-stress", "linux", "macos"},
+		{"macos-stress", "ci-macos-stress", "macos", "linux"},
+	} {
+		p := "jobs." + s.id
+		step := p + ".steps[0]"
+		w := func(shard string) string { return s.plat + "-stress-" + shard }
+		res := func(id, field string) string { return "${{ needs['" + id + "']." + field + " }}" }
+		exact := `test "$PACKAGES_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success`
+		setRun := func(v string) func(js map[string]*yaml.Node) {
+			return func(js map[string]*yaml.Node) { at(t, js[s.id], "steps", 0, "run").Value = v }
+		}
+		runErr := step + ".run: must be exactly"
+		for _, c := range []struct {
+			name   string
+			mutate func(js map[string]*yaml.Node)
+			want   []string
+		}{
+			{"job emptied", func(js map[string]*yaml.Node) {
+				*js[s.id] = yaml.Node{Kind: yaml.ScalarNode, Tag: "!!null", Value: "~"}
+			}, []string{p + ": must be a mapping"}},
+			{"context renamed", func(js map[string]*yaml.Node) { at(t, js[s.id], "name").Value = s.name + "-summary" },
+				[]string{fmt.Sprintf(`%s.name: must be %q, got %q`, p, s.name, s.name+"-summary")}},
+			{"runner", func(js map[string]*yaml.Node) { at(t, js[s.id], "runs-on").Value = "macos-15" }, []string{p + `.runs-on: must be "ubuntu-24.04", got "macos-15"`}},
+			{"budget", func(js map[string]*yaml.Node) { at(t, js[s.id], "timeout-minutes").Value = "20" }, []string{p + `.timeout-minutes: must be "5", got "20"`}},
+			{"needs missing", func(js map[string]*yaml.Node) { removeKey(t, js[s.id], "needs") }, []string{p + ".needs: missing required field"}},
+			{"needs extra", func(js map[string]*yaml.Node) {
+				at(t, js[s.id], "needs").Content = append(at(t, js[s.id], "needs").Content, str("linux"))
+			},
+				[]string{p + ".needs: must be exactly [" + w("packages") + ", " + w("processgroup") + ", " + w("functions") + "]"}},
+			{"needs short", func(js map[string]*yaml.Node) { n := at(t, js[s.id], "needs"); n.Content = n.Content[:2] }, []string{p + ".needs: must be exactly"}},
+			{"needs duplicate", func(js map[string]*yaml.Node) { at(t, js[s.id], "needs", 2).Value = w("packages") },
+				[]string{fmt.Sprintf(`%s.needs[2]: must be %q, got %q`, p, w("functions"), w("packages"))}},
+			{"needs cross-platform", func(js map[string]*yaml.Node) { at(t, js[s.id], "needs", 0).Value = s.other + "-stress-packages" },
+				[]string{fmt.Sprintf(`%s.needs[0]: must be %q, got %q`, p, w("packages"), s.other+"-stress-packages")}},
+			{"needs main job", func(js map[string]*yaml.Node) { at(t, js[s.id], "needs", 1).Value = s.plat },
+				[]string{fmt.Sprintf(`%s.needs[1]: must be %q, got %q`, p, w("processgroup"), s.plat)}},
+			{"needs scalar", func(js map[string]*yaml.Node) { *at(t, js[s.id], "needs") = *str(w("packages")) }, []string{p + ".needs: must be exactly"}},
+			{"always removed", func(js map[string]*yaml.Node) { removeKey(t, js[s.id], "if") }, []string{p + ".if: missing required field"}},
+			{"success condition", func(js map[string]*yaml.Node) { at(t, js[s.id], "if").Value = "${{ success() }}" },
+				[]string{p + `.if: expressions are not allowed: "${{ success() }}"`, p + `.if: must be "${{ always() }}"`}},
+			{"predicate on job if", func(js map[string]*yaml.Node) {
+				at(t, js[s.id], "if").Value = "${{ always() && needs['" + w("packages") + "'].result == 'success' }}"
+			}, []string{p + ".if: expressions are not allowed", p + `.if: must be "${{ always() }}"`}},
+			{"bare always", func(js map[string]*yaml.Node) { at(t, js[s.id], "if").Value = "always()" }, []string{p + `.if: must be "${{ always() }}", got "always()"`}},
+			{"cancelled condition", func(js map[string]*yaml.Node) { at(t, js[s.id], "if").Value = "${{ !cancelled() }}" }, []string{p + ".if: expressions are not allowed"}},
+			{"swapped result", func(js map[string]*yaml.Node) {
+				at(t, js[s.id], "steps", 0, "env", "PACKAGES_RESULT").Value = res(w("processgroup"), "result")
+			}, []string{step + ".env.PACKAGES_RESULT: expressions are not allowed", step + ".env.PACKAGES_RESULT: must be"}},
+			{"outcome not result", func(js map[string]*yaml.Node) {
+				at(t, js[s.id], "steps", 0, "env", "FUNCTIONS_RESULT").Value = res(w("functions"), "outcome")
+			}, []string{step + ".env.FUNCTIONS_RESULT: expressions are not allowed"}},
+			{"cross-platform result", func(js map[string]*yaml.Node) {
+				at(t, js[s.id], "steps", 0, "env", "PROCESSGROUP_RESULT").Value = res(s.other+"-stress-processgroup", "result")
+			}, []string{step + ".env.PROCESSGROUP_RESULT: expressions are not allowed"}},
+			{"literal success", func(js map[string]*yaml.Node) {
+				at(t, js[s.id], "steps", 0, "env", "FUNCTIONS_RESULT").Value = "success"
+			},
+				[]string{step + `.env.FUNCTIONS_RESULT: must be "` + res(w("functions"), "result") + `", got "success"`}},
+			{"result env missing", func(js map[string]*yaml.Node) {
+				removeKey(t, at(t, js[s.id], "steps", 0, "env"), "PROCESSGROUP_RESULT")
+			},
+				[]string{step + ".env.PROCESSGROUP_RESULT: missing required field"}},
+			{"extra env expression", func(js map[string]*yaml.Node) {
+				addKey(at(t, js[s.id], "steps", 0, "env"), "EXTRA", str("${{ github.token }}"))
+			}, []string{step + ".env.EXTRA: unknown field", step + ".env.EXTRA: expressions are not allowed"}},
+			{"weakened or", setRun(exact + " || true"), []string{runErr}},
+			{"weakened comparison", setRun(`test "$PACKAGES_RESULT" != failure && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success`), []string{runErr}},
+			{"missing comparison", setRun(`test "$PACKAGES_RESULT" = success && test "$PROCESSGROUP_RESULT" = success`), []string{runErr}},
+			{"altered operator", setRun(`test "$PACKAGES_RESULT" = success || test "$PROCESSGROUP_RESULT" = success || test "$FUNCTIONS_RESULT" = success`), []string{runErr}},
+			{"true", setRun("true"), []string{runErr}},
+			{"extra line", setRun(exact + "\nexit 0\n"), []string{runErr}},
+			{"two trailing newlines", setRun(exact + "\n\n"), []string{runErr}},
+			{"run expression", setRun(`test "${{ needs['` + w("packages") + `'].result }}" = success`), []string{step + ".run: expressions are not allowed", runErr}},
+			{"run as list", func(js map[string]*yaml.Node) { *at(t, js[s.id], "steps", 0, "run") = *seq("true") }, []string{runErr}},
+			{"extra step", func(js map[string]*yaml.Node) {
+				st := at(t, js[s.id], "steps")
+				st.Content = append(st.Content, mapping("run", "echo ok"))
+			}, []string{p + ".steps: must have exactly 1 step", p + ".steps[1]: unexpected extra step"}},
+			{"setup step", func(js map[string]*yaml.Node) {
+				st := at(t, js[s.id], "steps")
+				st.Content = append([]*yaml.Node{mapping("uses", "actions/checkout@"+strings.Repeat("a", 40))}, st.Content...)
+			}, []string{p + ".steps: must have exactly 1 step", step + ".uses: unknown field", step + ".run: missing required field"}},
+			{"no steps", func(js map[string]*yaml.Node) { at(t, js[s.id], "steps").Content = nil }, []string{p + ".steps: must have exactly 1 step (the all-success check), got 0"}},
+			{"steps mapping", func(js map[string]*yaml.Node) { *at(t, js[s.id], "steps") = *mapping("run", "true") }, []string{p + ".steps: must be a sequence"}},
+			{"step not mapping", func(js map[string]*yaml.Node) { at(t, js[s.id], "steps").Content[0] = str("true") }, []string{step + ": must be a mapping"}},
+			{"step bypass", func(js map[string]*yaml.Node) { addKey(at(t, js[s.id], "steps", 0), "continue-on-error", str("true")) },
+				[]string{step + ".continue-on-error: unknown field"}},
+			{"step condition", func(js map[string]*yaml.Node) { addKey(at(t, js[s.id], "steps", 0), "if", str("always()")) }, []string{step + ".if: unknown field"}},
+			{"step shell", func(js map[string]*yaml.Node) { addKey(at(t, js[s.id], "steps", 0), "shell", str("sh")) }, []string{step + ".shell: unknown field"}},
+			{"step name empty", func(js map[string]*yaml.Node) {
+				st := at(t, js[s.id], "steps", 0)
+				if n := child(st, "name"); n != nil {
+					n.Value = " "
+				} else {
+					addKey(st, "name", str(" "))
 				}
-				for _, w := range c.want {
-					if !strings.Contains(err.Error(), w) {
-						t.Fatalf("error lacks %q:\n%v", w, err)
-					}
+			}, []string{step + ".name: must be a nonempty string"}},
+			{"job env", func(js map[string]*yaml.Node) { addKey(js[s.id], "env", mapping("GOTOOLCHAIN", "local")) }, []string{p + ".env: unknown field"}},
+			{"job bypass", func(js map[string]*yaml.Node) { addKey(js[s.id], "continue-on-error", str("true")) }, []string{p + ".continue-on-error: unknown field"}},
+			{"job matrix", func(js map[string]*yaml.Node) { addKey(js[s.id], "strategy", mapping("fail-fast", "false")) }, []string{p + ".strategy: unknown field"}},
+			{"job concurrency expression", func(js map[string]*yaml.Node) { addKey(js[s.id], "concurrency", str("${{ github.ref }}")) },
+				[]string{p + ".concurrency: unknown field", p + ".concurrency: expressions are not allowed"}},
+			{"shell", func(js map[string]*yaml.Node) { at(t, js[s.id], "defaults", "run", "shell").Value = "sh" }, []string{p + `.defaults.run.shell: must be "bash", got "sh"`}},
+			{"defaults omitted", func(js map[string]*yaml.Node) { removeKey(t, js[s.id], "defaults") }, []string{p + ".defaults: missing required field"}},
+			{"steps omitted", func(js map[string]*yaml.Node) { removeKey(t, js[s.id], "steps") }, []string{p + ".steps: missing required field"}},
+			{"template on a worker", func(js map[string]*yaml.Node) {
+				addKey(js[w("packages")], "if", str("${{ always() }}"))
+			}, []string{"jobs." + w("packages") + ".if: unknown field", "jobs." + w("packages") + `.if: expressions are not allowed`}},
+		} {
+			t.Run(s.id+" "+c.name, func(t *testing.T) { mustRejectJobs(t, c.mutate, c.want) })
+		}
+		// Optional human step names may vary.
+		for _, name := range []string{"Require every stress shard", "gate"} {
+			data := fixtureJobs(t, func(js map[string]*yaml.Node) {
+				st := at(t, js[s.id], "steps", 0)
+				if n := child(st, "name"); n != nil {
+					n.Value = name
+				} else {
+					addKey(st, "name", str(name))
 				}
 			})
+			if err := ValidateWorkflow(data); err != nil {
+				t.Fatalf("%s step name %q: %v", s.id, name, err)
+			}
 		}
-		// Removing or renaming the job is named at the jobs level.
-		t.Run(j.id+" removed", func(t *testing.T) {
-			var doc yaml.Node
-			if err := yaml.Unmarshal([]byte(validYAML), &doc); err != nil {
-				t.Fatal(err)
-			}
-			removeKey(t, child(doc.Content[0], "jobs"), j.id)
-			data, _ := yaml.Marshal(&doc)
-			if err := ValidateWorkflow(data); err == nil || !strings.Contains(err.Error(), p+": missing required field") {
-				t.Fatalf("removed %s: %v", j.id, err)
-			}
-		})
-		t.Run(j.id+" renamed", func(t *testing.T) {
-			var doc yaml.Node
-			if err := yaml.Unmarshal([]byte(validYAML), &doc); err != nil {
-				t.Fatal(err)
-			}
-			js := child(doc.Content[0], "jobs")
-			for i := 0; i+1 < len(js.Content); i += 2 {
-				if js.Content[i].Value == j.id {
-					js.Content[i].Value = j.id + "-old"
-				}
-			}
-			data, _ := yaml.Marshal(&doc)
-			err := ValidateWorkflow(data)
-			if err == nil || !strings.Contains(err.Error(), p+"-old: unknown field") || !strings.Contains(err.Error(), p+": missing required field") {
-				t.Fatalf("renamed %s: %v", j.id, err)
-			}
-		})
 	}
 }

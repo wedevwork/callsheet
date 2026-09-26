@@ -969,17 +969,23 @@ func TestPlaneStatus(t *testing.T) {
 // FP-8: the devcheck plans, native required names, fixtures and docs name
 // the plane package and tests for both platforms. Iteration 02b narrowed
 // the plane stress step to the process-boundary subtests and added the
-// "process" and "contracts" boundaries to the native required names.
+// "process" and "contracts" boundaries to the native required names;
+// iteration 02c moved processgroup out of the packages command (plane
+// stays there, sequential) into its own shard.
 func TestPlanePlatform(t *testing.T) {
 	const stressFn = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestFP4TransportHarness|TestFP5GitRoundTrip)$ ./tests/function"
 	const stressPlaneFn = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestPlaneState|TestPlaneTLS|TestPlaneReissue)$/^(paths|persistence|locking|validation|https-only|prelisten-validation|bounded-shutdown|process)$ ./tests/function"
-	const stressPkgs = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/processgroup ./internal/spikes/gittransport ./internal/plane"
+	const stressPkgs = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/plane"
 	const benchPlane = "go test ./internal/plane -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s"
 	for _, goos := range []string{"linux", "darwin"} {
 		steps, err := devcheck.StressSteps(goos)
-		if err != nil || len(steps) != 3 || strings.Join(steps[0].Argv, " ") != stressPkgs || strings.Join(steps[1].Argv, " ") != stressFn ||
-			steps[2].Name != "stress plane function" || strings.Join(steps[2].Argv, " ") != stressPlaneFn {
+		if err != nil || len(steps) != 6 || strings.Join(steps[0].Argv, " ") != stressPkgs || strings.Join(steps[4].Argv, " ") != stressFn ||
+			steps[5].Name != "stress plane function" || strings.Join(steps[5].Argv, " ") != stressPlaneFn {
 			t.Fatalf("%s stress plan = %+v %v", goos, steps, err)
+		}
+		shards, err := devcheck.StressShards(goos)
+		if err != nil || shards[0].Parallel || shards[2].Parallel || !slices.Contains(shards[0].Steps[0].Argv, "./internal/plane") {
+			t.Fatalf("%s: plane must stay in the sequential packages shard: %+v %v", goos, shards, err)
 		}
 	}
 	bench := devcheck.BenchSteps()

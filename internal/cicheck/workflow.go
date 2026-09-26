@@ -19,34 +19,49 @@ import (
 	"github.com/wedevwork/callsheet/internal/devcheck"
 )
 
-// Job is the contract for one required CI job.
+// Job is the contract for one CI job. An ordinary job (main or stress
+// worker) has Stages and no Needs; a summary job has Needs and no Stages.
 type Job struct {
 	ID             string
-	Name           string // display name and required check context
+	Name           string // display name, and the check context if Required
 	RunsOn         string
 	TimeoutMinutes int
 	Stages         []string // devcheck stages, one check step each, in order
+	Needs          []string // a summary's worker job IDs, in order
+	Required       bool     // Name is a required status check context
 }
 
-// jobs is the fixed four-job contract; order is the documentation order.
-// The main jobs keep their verification stages; stress runs in two
-// independent jobs of its own (iteration 02b), one per platform, at the
-// same count: a Linux-only stress pass cannot qualify Darwin. The stress
-// jobs' 20 minutes allow five minutes of setup beyond the 15-minute stress
-// watchdog. Jobs never depend on each other: the strict field grammar
-// rejects needs, conditions, matrices and continue-on-error.
+// jobs is the fixed ten-job contract (iteration 02c); order is the
+// documentation order. The main jobs keep their verification stages.
+// Stress runs in six independent worker jobs, three shards per platform at
+// the same count: a Linux-only stress pass cannot qualify Darwin. Each
+// worker's 20 minutes allow five minutes of setup beyond its own 15-minute
+// stress watchdog. Main and worker jobs never depend on each other: the
+// strict field grammar rejects needs, conditions, matrices and
+// continue-on-error. Only the two summaries, which keep the required
+// stress contexts, need their own platform's three workers and pass only
+// if all three concluded success; both evaluate on Ubuntu.
 var jobs = []Job{
-	{ID: "linux", Name: "ci-linux", RunsOn: "ubuntu-24.04", TimeoutMinutes: 45, Stages: []string{"test", "coverage", "bench", "cross"}},
-	{ID: "macos", Name: "ci-macos", RunsOn: "macos-15", TimeoutMinutes: 30, Stages: []string{"native"}},
-	{ID: "linux-stress", Name: "ci-linux-stress", RunsOn: "ubuntu-24.04", TimeoutMinutes: 20, Stages: []string{"stress"}},
-	{ID: "macos-stress", Name: "ci-macos-stress", RunsOn: "macos-15", TimeoutMinutes: 20, Stages: []string{"stress"}},
+	{ID: "linux", Name: "ci-linux", RunsOn: "ubuntu-24.04", TimeoutMinutes: 45, Stages: []string{"test", "coverage", "bench", "cross"}, Required: true},
+	{ID: "macos", Name: "ci-macos", RunsOn: "macos-15", TimeoutMinutes: 30, Stages: []string{"native"}, Required: true},
+	{ID: "linux-stress-packages", Name: "ci-linux-stress-packages", RunsOn: "ubuntu-24.04", TimeoutMinutes: 20, Stages: []string{"stress-packages"}},
+	{ID: "linux-stress-processgroup", Name: "ci-linux-stress-processgroup", RunsOn: "ubuntu-24.04", TimeoutMinutes: 20, Stages: []string{"stress-processgroup"}},
+	{ID: "linux-stress-functions", Name: "ci-linux-stress-functions", RunsOn: "ubuntu-24.04", TimeoutMinutes: 20, Stages: []string{"stress-functions"}},
+	{ID: "macos-stress-packages", Name: "ci-macos-stress-packages", RunsOn: "macos-15", TimeoutMinutes: 20, Stages: []string{"stress-packages"}},
+	{ID: "macos-stress-processgroup", Name: "ci-macos-stress-processgroup", RunsOn: "macos-15", TimeoutMinutes: 20, Stages: []string{"stress-processgroup"}},
+	{ID: "macos-stress-functions", Name: "ci-macos-stress-functions", RunsOn: "macos-15", TimeoutMinutes: 20, Stages: []string{"stress-functions"}},
+	{ID: "linux-stress", Name: "ci-linux-stress", RunsOn: "ubuntu-24.04", TimeoutMinutes: 5,
+		Needs: []string{"linux-stress-packages", "linux-stress-processgroup", "linux-stress-functions"}, Required: true},
+	{ID: "macos-stress", Name: "ci-macos-stress", RunsOn: "ubuntu-24.04", TimeoutMinutes: 5,
+		Needs: []string{"macos-stress-packages", "macos-stress-processgroup", "macos-stress-functions"}, Required: true},
 }
 
-// Jobs returns a fresh copy of the required job contract.
+// Jobs returns a fresh copy of the job contract, nested slices included.
 func Jobs() []Job {
 	out := make([]Job, len(jobs))
 	for i, j := range jobs {
 		j.Stages = append([]string(nil), j.Stages...)
+		j.Needs = append([]string(nil), j.Needs...)
 		out[i] = j
 	}
 	return out
@@ -56,7 +71,47 @@ func Jobs() []Job {
 func RequiredChecks() []string {
 	var out []string
 	for _, j := range jobs {
-		out = append(out, j.Name)
+		if j.Required {
+			out = append(out, j.Name)
+		}
+	}
+	return out
+}
+
+// The summary job template (iteration 02c): the exact job condition, the
+// step environment keys and result expressions, and the one command line.
+// Only these expressions, at exactly these paths, pass the hygiene check.
+const (
+	summaryIf  = "${{ always() }}"
+	summaryRun = `test "$PACKAGES_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success`
+)
+
+// summaryEnvKeys are the summary step's environment keys, one per needed
+// worker, in Needs order.
+var summaryEnvKeys = []string{"PACKAGES_RESULT", "PROCESSGROUP_RESULT", "FUNCTIONS_RESULT"}
+
+// summaryEnv returns the exact step environment of summary j.
+func summaryEnv(j Job) map[string]string {
+	env := map[string]string{}
+	for i, k := range summaryEnvKeys {
+		env[k] = "${{ needs['" + j.Needs[i] + "'].result }}"
+	}
+	return env
+}
+
+// allowedExpressions maps each path where an expression may appear to the
+// only value allowed there.
+func allowedExpressions() map[string]string {
+	out := map[string]string{}
+	for _, j := range jobs {
+		if len(j.Needs) == 0 {
+			continue
+		}
+		p := "jobs." + j.ID
+		out[p+".if"] = summaryIf
+		for k, v := range summaryEnv(j) {
+			out[p+".steps[0].env."+k] = v
+		}
 	}
 	return out
 }
@@ -86,6 +141,7 @@ func (e *ValidationError) Error() string {
 type validator struct {
 	problems []string
 	stages   map[string]bool
+	exprs    map[string]string
 }
 
 func (v *validator) addf(path, format string, args ...any) {
@@ -129,15 +185,17 @@ func parse(data []byte) (*yaml.Node, error) {
 // ValidateWorkflow checks data against the full CI workflow contract:
 // triggers, names, runners, timeouts, permissions, setup steps and inputs,
 // pinned action identities, shells, environments and the exact devcheck
-// command sequence of each job, whose stages must exist in devcheck's
-// dispatch. It rejects duplicate keys, anchors, aliases, merge keys,
-// expressions, extra documents and every field outside the contract.
+// command sequence of each ordinary job, whose stages must exist in
+// devcheck's dispatch, and the exact template of each summary job. It
+// rejects duplicate keys, anchors, aliases, merge keys, extra documents,
+// every field outside the contract and every expression except the
+// summaries' exact condition and result environment.
 func ValidateWorkflow(data []byte) error {
 	root, err := parse(data)
 	if err != nil {
 		return err
 	}
-	v := &validator{stages: map[string]bool{}}
+	v := &validator{stages: map[string]bool{}, exprs: allowedExpressions()}
 	for _, s := range devcheck.Stages() {
 		v.stages[s] = true
 	}
@@ -158,7 +216,7 @@ func (v *validator) hygiene(n *yaml.Node, path string) {
 	case yaml.AliasNode:
 		v.addf(path, "YAML aliases are not allowed")
 	case yaml.ScalarNode:
-		if strings.Contains(n.Value, "${{") {
+		if want, ok := v.exprs[path]; strings.Contains(n.Value, "${{") && (!ok || n.Value != want) {
 			v.addf(path, "expressions are not allowed: %q", n.Value)
 		}
 	case yaml.SequenceNode:
@@ -272,7 +330,12 @@ func (v *validator) workflow(root *yaml.Node) {
 		}
 		got := v.fields(js, "jobs", ids, nil)
 		for _, j := range jobs {
-			if n := got[j.ID]; n != nil {
+			n := got[j.ID]
+			switch {
+			case n == nil:
+			case len(j.Needs) > 0:
+				v.summary(n, "jobs."+j.ID, j)
+			default:
 				v.job(n, "jobs."+j.ID, j)
 			}
 		}
@@ -343,6 +406,67 @@ func (v *validator) job(n *yaml.Node, path string, j Job) {
 			continue
 		}
 		v.addf(sp, "missing check step for devcheck stage %q", stage)
+	}
+}
+
+// summary checks a summary job against the exact template: its identity
+// and budget, needs exactly its own platform's three workers in order, the
+// unconditional always() condition, the bash default and one step running
+// the literal all-success command with the three exact result expressions.
+// Its command is compared literally, never parsed as shell.
+func (v *validator) summary(n *yaml.Node, path string, j Job) {
+	f := v.fields(n, path, []string{"name", "runs-on", "timeout-minutes", "needs", "if", "defaults", "steps"}, nil)
+	if f == nil {
+		return
+	}
+	v.scalar(f["name"], join(path, "name"), j.Name, "")
+	v.scalar(f["runs-on"], join(path, "runs-on"), j.RunsOn, "")
+	v.scalar(f["timeout-minutes"], join(path, "timeout-minutes"), fmt.Sprint(j.TimeoutMinutes), "!!int")
+	if needs := f["needs"]; needs != nil {
+		np := join(path, "needs")
+		if needs.Kind != yaml.SequenceNode || len(needs.Content) != len(j.Needs) {
+			v.addf(np, "must be exactly [%s]", strings.Join(j.Needs, ", "))
+		} else {
+			for i, want := range j.Needs {
+				v.scalar(needs.Content[i], index(np, i), want, "")
+			}
+		}
+	}
+	v.scalar(f["if"], join(path, "if"), summaryIf, "")
+	if d := f["defaults"]; d != nil {
+		df := v.fields(d, join(path, "defaults"), []string{"run"}, nil)
+		v.exactMap(df["run"], join(path, "defaults.run"), map[string]string{"shell": "bash"}, nil)
+	}
+	steps := f["steps"]
+	if steps == nil {
+		return
+	}
+	sp := join(path, "steps")
+	if steps.Kind != yaml.SequenceNode {
+		v.addf(sp, "must be a sequence")
+		return
+	}
+	if len(steps.Content) != 1 {
+		v.addf(sp, "must have exactly 1 step (the all-success check), got %d", len(steps.Content))
+	}
+	for i, st := range steps.Content {
+		p := index(sp, i)
+		if i > 0 {
+			v.addf(p, "unexpected extra step")
+			continue
+		}
+		sf := v.fields(st, p, []string{"run", "env"}, []string{"name"})
+		if sf == nil {
+			continue
+		}
+		v.stepName(sf, p)
+		v.exactMap(sf["env"], join(p, "env"), summaryEnv(j), nil)
+		if run := sf["run"]; run != nil {
+			rp := join(p, "run")
+			if run.Kind != yaml.ScalarNode || strings.TrimSuffix(run.Value, "\n") != summaryRun {
+				v.addf(rp, "must be exactly %q, got %q", summaryRun, run.Value)
+			}
+		}
 	}
 }
 

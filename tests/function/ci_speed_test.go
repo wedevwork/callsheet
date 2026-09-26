@@ -30,9 +30,14 @@ import (
 // suite, stress or devcheck recursively; the one child go test runs a
 // standard-library-only fixture module in a temporary directory.
 
-// The literal deduplicated stress plan (design 02b, Stress selection).
+// The literal deduplicated stress plan (design 02b, Stress selection), as
+// sharded by design 02c: processgroup left the packages command for three
+// single-CPU invocations; the function commands are unchanged.
 const (
-	speedPackages      = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/processgroup ./internal/spikes/gittransport ./internal/plane"
+	speedPackages      = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/plane"
+	speedPG1           = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/spikes/processgroup"
+	speedPG2           = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/spikes/processgroup"
+	speedPG4           = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/spikes/processgroup"
 	speedFunction      = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestFP4TransportHarness|TestFP5GitRoundTrip)$ ./tests/function"
 	speedPlaneSelector = "^(TestPlaneState|TestPlaneTLS|TestPlaneReissue)$/^(paths|persistence|locking|validation|https-only|prelisten-validation|bounded-shutdown|process)$"
 	speedPlaneFunction = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=" + speedPlaneSelector + " ./tests/function"
@@ -76,15 +81,22 @@ var speedNative = []string{
 	"TestPlanePlatform",
 }
 
-// speedJobs is the four-job table (design 02b, Workflow topology).
+// speedJobs is the table of ordinary jobs: the two main jobs (design 02b,
+// Workflow topology) and the six stress workers that replaced its two
+// stress jobs (design 02c). The two summaries that keep the stress
+// contexts are checked by TestStressShardSummaries.
 var speedJobs = []struct {
 	id, name, runner, timeout string
 	checks                    []string
 }{
 	{"linux", "ci-linux", "ubuntu-24.04", "45", []string{"go run ./cmd/devcheck test", "go run ./cmd/devcheck coverage", "go run ./cmd/devcheck bench", "go run ./cmd/devcheck cross"}},
 	{"macos", "ci-macos", "macos-15", "30", []string{"go run ./cmd/devcheck native"}},
-	{"linux-stress", "ci-linux-stress", "ubuntu-24.04", "20", []string{"go run ./cmd/devcheck stress"}},
-	{"macos-stress", "ci-macos-stress", "macos-15", "20", []string{"go run ./cmd/devcheck stress"}},
+	{"linux-stress-packages", "ci-linux-stress-packages", "ubuntu-24.04", "20", []string{"go run ./cmd/devcheck stress-packages"}},
+	{"linux-stress-processgroup", "ci-linux-stress-processgroup", "ubuntu-24.04", "20", []string{"go run ./cmd/devcheck stress-processgroup"}},
+	{"linux-stress-functions", "ci-linux-stress-functions", "ubuntu-24.04", "20", []string{"go run ./cmd/devcheck stress-functions"}},
+	{"macos-stress-packages", "ci-macos-stress-packages", "macos-15", "20", []string{"go run ./cmd/devcheck stress-packages"}},
+	{"macos-stress-processgroup", "ci-macos-stress-processgroup", "macos-15", "20", []string{"go run ./cmd/devcheck stress-processgroup"}},
+	{"macos-stress-functions", "ci-macos-stress-functions", "macos-15", "20", []string{"go run ./cmd/devcheck stress-functions"}},
 }
 
 // tRunName returns the literal name and body of a t.Run("name", func...)
@@ -143,23 +155,29 @@ func delegatedCall(call *ast.CallExpr) (kind, contract string) {
 func TestCISpeedSelection(t *testing.T) {
 	for _, goos := range []string{"linux", "darwin"} {
 		steps, err := devcheck.StressSteps(goos)
-		if err != nil || len(steps) != 3 {
+		if err != nil || len(steps) != 6 {
 			t.Fatalf("%s: %+v %v", goos, steps, err)
 		}
-		for i, want := range []struct{ name, argv string }{{"stress packages", speedPackages}, {"stress function", speedFunction}, {"stress plane function", speedPlaneFunction}} {
+		for i, want := range []struct{ name, argv string }{{"stress packages", speedPackages}, {"stress processgroup cpu1", speedPG1},
+			{"stress processgroup cpu2", speedPG2}, {"stress processgroup cpu4", speedPG4}, {"stress function", speedFunction}, {"stress plane function", speedPlaneFunction}} {
 			if steps[i].Name != want.name || strings.Join(steps[i].Argv, " ") != want.argv || strings.Join(steps[i].Env, " ") != "CGO_ENABLED=1" {
 				t.Fatalf("%s step %d = %+v, want %s: %s", goos, i, steps[i], want.name, want.argv)
 			}
 		}
 		// FP-6 is no longer repeated by a function step; its experiment
 		// stays repeated through the complete processgroup package.
-		for _, s := range steps[1:] {
+		for _, s := range steps[4:] {
 			if strings.Contains(strings.Join(s.Argv, " "), "TestFP6ProcessGroups") {
 				t.Fatalf("%s: %s still selects TestFP6ProcessGroups", goos, s.Name)
 			}
 		}
-		if !slices.Contains(steps[0].Argv, "./internal/spikes/processgroup") || !slices.Contains(steps[0].Argv, "./internal/plane") {
-			t.Fatalf("%s packages step lost processgroup or plane: %v", goos, steps[0].Argv)
+		for _, s := range steps[1:4] {
+			if !slices.Contains(s.Argv, "./internal/spikes/processgroup") || len(s.Argv) != 7 {
+				t.Fatalf("%s %s lost the complete processgroup package: %v", goos, s.Name, s.Argv)
+			}
+		}
+		if !slices.Contains(steps[0].Argv, "./internal/plane") {
+			t.Fatalf("%s packages step lost plane: %v", goos, steps[0].Argv)
 		}
 	}
 
@@ -223,7 +241,7 @@ func TestCISpeedSelection(t *testing.T) {
 	// fixture with the same names, near-prefix neighbours and FP-6.
 	var selector string
 	steps, _ := devcheck.StressSteps(runtime.GOOS)
-	for _, a := range steps[2].Argv {
+	for _, a := range steps[5].Argv {
 		if v, ok := strings.CutPrefix(a, "-run="); ok {
 			selector = v
 		}
@@ -366,8 +384,9 @@ func runSelectorFixture(t *testing.T, selector string) (passed, logged []string)
 	return passed, strings.Split(strings.TrimSuffix(string(b), "\n"), "\n")
 }
 
-// FP-2: the actual workflow has exactly the four independent jobs with
-// identical pinned setup and exact check commands.
+// FP-2: the actual workflow's main jobs and, since iteration 02c, its six
+// stress workers are independent, with identical pinned setup and exact
+// check commands; the two summaries follow them.
 func TestCISpeedJobs(t *testing.T) {
 	data := ciWorkflow(t)
 	if err := cicheck.ValidateWorkflow(data); err != nil {
@@ -382,7 +401,8 @@ func TestCISpeedJobs(t *testing.T) {
 	for i := 0; i+1 < len(jobs.Content); i += 2 {
 		ids = append(ids, jobs.Content[i].Value)
 	}
-	if strings.Join(ids, " ") != "linux macos linux-stress macos-stress" {
+	if strings.Join(ids, " ") != "linux macos linux-stress-packages linux-stress-processgroup linux-stress-functions "+
+		"macos-stress-packages macos-stress-processgroup macos-stress-functions linux-stress macos-stress" {
 		t.Fatalf("job ids = %v", ids)
 	}
 	var names []string
@@ -431,7 +451,7 @@ func TestCISpeedJobs(t *testing.T) {
 			}
 		}
 	}
-	if strings.Join(names, ",") != strings.Join(cicheck.RequiredChecks(), ",") {
+	if strings.Join(names[:2], ",") != strings.Join(cicheck.RequiredChecks()[:2], ",") || len(names) != 8 {
 		t.Fatalf("contexts %v, contract %v", names, cicheck.RequiredChecks())
 	}
 	for _, top := range []string{"concurrency", "env", "defaults"} {
@@ -447,10 +467,11 @@ func TestCISpeedJobs(t *testing.T) {
 			t.Fatalf("workflow has top-level %s", top)
 		}
 	}
-	// Each new job removed, or made dependent, is rejected.
+	// Each stress job removed, or a worker made dependent, is rejected; a
+	// removed summary also loses its required context.
 	for _, id := range []string{"linux-stress", "macos-stress"} {
 		mustReject(t, id+" removed", mutated(t, func(r *yaml.Node) { deleteKey(t, node(t, r, "jobs"), id) }), "jobs."+id+": missing required field")
-		mustReject(t, id+" needs", mutated(t, func(r *yaml.Node) { setKey(node(t, r, "jobs", id), "needs", "linux") }), "jobs."+id+".needs: unknown field")
+		mustReject(t, id+" needs", mutated(t, func(r *yaml.Node) { setKey(node(t, r, "jobs", id+"-packages"), "needs", "linux") }), "jobs."+id+"-packages.needs: unknown field")
 		removed := mutated(t, func(r *yaml.Node) { deleteKey(t, node(t, r, "jobs"), id) })
 		if err := cicheck.CheckJobNames(map[string][]byte{"ci.yml": removed}); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("required check %q is not defined", "ci-"+id)) {
 			t.Fatalf("%s removed: job names %v", id, err)
@@ -502,8 +523,8 @@ func TestCISpeedPolicy(t *testing.T) {
 			t.Fatal(err)
 		}
 		contract := cicheck.Jobs()
-		if len(contract) != len(speedJobs) || len(stages) != len(speedJobs) {
-			t.Fatalf("contract %d jobs, workflow %d, table %d", len(contract), len(stages), len(speedJobs))
+		if len(contract) != len(speedJobs)+2 || len(stages) != len(speedJobs)+2 {
+			t.Fatalf("contract %d jobs, workflow %d, table %d plus two summaries", len(contract), len(stages), len(speedJobs))
 		}
 		for i, j := range speedJobs {
 			var want []string
@@ -516,16 +537,17 @@ func TestCISpeedPolicy(t *testing.T) {
 				t.Fatalf("%s: contract %+v, workflow %v, want %v", j.id, c, stages[j.id], want)
 			}
 		}
-		// Both stress jobs run the same stage, which dispatches the plan.
+		// The complete local stress stage dispatches the whole plan, with
+		// processgroup's three invocations concurrent (compared as a set).
 		r := &ciRunner{}
-		if code, out, errOut := devcheckRun(t, r, "stress"); code != 0 || !strings.Contains(out, "stage stress ok") || len(r.calls) != 3 ||
-			strings.Join(r.calls[0], " ") != speedPackages || strings.Join(r.calls[1], " ") != speedFunction || strings.Join(r.calls[2], " ") != speedPlaneFunction {
+		if code, out, errOut := devcheckRun(t, r, "stress"); code != 0 || !strings.Contains(out, "stage stress ok") ||
+			!sameGroups(r.calls, [][]string{{speedPackages}, {speedPG1, speedPG2, speedPG4}, {speedFunction}, {speedPlaneFunction}}) {
 			t.Fatalf("stress dispatch = %d %v %s", code, r.calls, errOut)
 		}
 		// Drift: stress back in a main job is rejected.
 		mustReject(t, "stress in ci-macos", mutated(t, func(r *yaml.Node) {
 			steps := node(t, r, "jobs", "macos", "steps")
-			steps.Content = append(steps.Content, node(t, r, "jobs", "macos-stress", "steps", 3))
+			steps.Content = append(steps.Content, node(t, r, "jobs", "macos-stress-packages", "steps", 3))
 		}), "jobs.macos.steps[4]: unexpected extra step")
 	})
 	t.Run("docs", func(t *testing.T) {
@@ -541,13 +563,16 @@ func TestCISpeedPolicy(t *testing.T) {
 				t.Fatalf("Stress checks lacks the command %q", l)
 			}
 		}
-		requireTerms(t, "Stress checks", stress, "`stress packages`", "`stress function`", "`stress plane function`",
+		requireTerms(t, "Stress checks", stress, "`stress packages`", "`stress processgroup cpu1`", "`stress function`", "`stress plane function`",
 			"`TestFP6ProcessGroups`", "`TestExperiment`", "`TestNativeStateContract`", "`TestStateFailureContract`",
 			"`TestServerFailureContract`", "`TestReissueFailureContract`", "`contracts`", "`process`",
 			"quote the entire `-run` argument")
 		checks := docSection(t, "Checks")
 		for _, j := range speedJobs {
 			requireTerms(t, "Checks", checks, fmt.Sprintf("| `%s` | `%s` | %s min |", j.name, j.runner, j.timeout))
+		}
+		for _, name := range []string{"ci-linux-stress", "ci-macos-stress"} {
+			requireTerms(t, "Checks", checks, fmt.Sprintf("| `%s` | `ubuntu-24.04` | 5 min |", name))
 		}
 		for _, name := range speedNative {
 			requireTerms(t, "Checks", checks, "`"+name[strings.LastIndex(name, "/")+1:]+"`")
@@ -585,29 +610,33 @@ func TestCISpeedHandoff(t *testing.T) {
 	steps := numberedSteps(t, handoff)
 	review := stepIndex(t, steps, "REVIEW_APPROVED", "commit the reviewed code")
 	push := stepIndex(t, steps, "Push `iter-02-plane-trust`")
-	green := stepIndex(t, steps, "all four jobs", "`ci-linux-stress`", "`ci-macos-stress`", "current PR merge revision")
+	green := stepIndex(t, steps, "all ten jobs", "`ci-linux-stress`", "`ci-macos-stress`", "current PR merge revision")
 	add := stepIndex(t, steps, "owner adds", "`ci-linux-stress`", "`ci-macos-stress`", "after they have reported")
 	verify := stepIndex(t, steps, "owner verifies", "read-only")
-	merge := stepIndex(t, steps, "Merge iterations 02 and 02b together", "all four checks green")
+	merge := stepIndex(t, steps, "Merge iterations 02, 02b and 02c together", "all four checks green")
 	if !(review < push && push < green && green < add && add < verify && verify < merge) {
 		t.Fatalf("handoff order review=%d push=%d green=%d add=%d verify=%d merge=%d", review, push, green, add, verify, merge)
 	}
 	requireTerms(t, "handoff", handoff, "skipped, canceled, pending or unobserved result qualifies",
 		"later push requires fresh current-revision evidence", "pull request #1 protection handoff remains a prerequisite")
-	requireTerms(t, "PR flow", docSection(t, "PR flow"), "iterations 02 and 02b join pull request #2")
+	requireTerms(t, "PR flow", docSection(t, "PR flow"), "iterations 02, 02b and 02c join pull request #2")
 
-	// Timing provenance: hosted baseline, local measurement, estimates and
-	// the target are distinguished; hosted results are pending.
+	// Timing provenance: the 02b-era hosted baseline, local measurement,
+	// estimate and target stay as history; iteration 02c's measured hosted
+	// baseline (run 36236333755) supersedes 02b's pending language.
 	stress := docSection(t, "Stress checks")
 	requireTerms(t, "Stress checks", stress,
 		"`ci-linux` 685 s", "stress 576 s", "`ci-macos` 889 s", "stress 806 s",
 		"5–6 minutes", "an optimization target, not a measurement",
 		"Measured with iteration 02b (deduplicated)", "go1.26.4 linux/amd64",
-		"Expected per-job wall-clock", "estimate", "806 s of the 900 s watchdog",
-		"pending until the first `ci-macos-stress` run of pull request #2")
+		"Expected per-job wall-clock after iteration 02b", "estimate", "806 s of the 900 s watchdog",
+		"since measured by run 36236333755")
+	if strings.Contains(stress, "pending until the first `ci-macos-stress` run of pull request #2") {
+		t.Fatal("Stress checks keeps 02b's superseded pending first-run language")
+	}
 	first := docSection(t, "First remote run")
 	requireTerms(t, "First remote run", first, "critical path", "actual job and step times",
-		"compare the `ci-macos-stress` stress time with the expected")
+		"compare each worker with the expected per-job wall-clock")
 	// Nothing in the workflow can change repository settings.
 	wf := string(ciWorkflow(t))
 	for _, forbidden := range []string{"gh ", "--method", "POST", "curl", "protection", "contents: write", "secrets."} {
