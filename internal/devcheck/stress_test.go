@@ -14,10 +14,15 @@ import (
 )
 
 // The literal stress plan is the specification oracle (design 01c, Stress
-// execution); it is compared against StressSteps, never derived from it.
+// execution, extended by design 02's CI plan with ./internal/plane and,
+// through its pre-authorized function-binary split, a separate plane
+// function step); it is compared against StressSteps, never derived from
+// it.
 const (
-	wantStressPackages = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/processgroup ./internal/spikes/gittransport"
-	wantStressFunction = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestFP4TransportHarness|TestFP5GitRoundTrip|TestFP6ProcessGroups)$ ./tests/function"
+	wantStressPackages      = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/processgroup ./internal/spikes/gittransport ./internal/plane"
+	wantStressFunction      = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestFP4TransportHarness|TestFP5GitRoundTrip|TestFP6ProcessGroups)$ ./tests/function"
+	wantStressPlaneFunction = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestPlaneState|TestPlaneTLS|TestPlaneReissue)$ ./tests/function"
+	wantStressPlan          = wantStressPackages + "|" + wantStressFunction + "|" + wantStressPlaneFunction
 )
 
 func TestStressPlan(t *testing.T) {
@@ -26,11 +31,14 @@ func TestStressPlan(t *testing.T) {
 	}
 	for _, goos := range []string{"linux", "darwin"} {
 		steps, err := StressSteps(goos)
-		if err != nil || len(steps) != 2 {
+		if err != nil || len(steps) != 3 {
 			t.Fatalf("%s: %+v %v", goos, steps, err)
 		}
-		if steps[0].Name != "stress packages" || steps[1].Name != "stress function" {
-			t.Fatalf("%s names = %q %q", goos, steps[0].Name, steps[1].Name)
+		if steps[0].Name != "stress packages" || steps[1].Name != "stress function" || steps[2].Name != "stress plane function" {
+			t.Fatalf("%s names = %q %q %q", goos, steps[0].Name, steps[1].Name, steps[2].Name)
+		}
+		if got := strings.Join(steps[2].Argv, " "); got != wantStressPlaneFunction {
+			t.Fatalf("%s plane function step = %s", goos, got)
 		}
 		if got := strings.Join(steps[0].Argv, " "); got != wantStressPackages {
 			t.Fatalf("%s packages step = %s", goos, got)
@@ -76,7 +84,7 @@ func TestStressStageDispatch(t *testing.T) {
 		if code != 0 || !strings.Contains(out, "stage stress ok") {
 			t.Fatalf("%s stress = %d %s", goos, code, errOut)
 		}
-		if got := strings.Join(f.argvs(), "|"); got != wantStressPackages+"|"+wantStressFunction {
+		if got := strings.Join(f.argvs(), "|"); got != wantStressPlan {
 			t.Fatalf("%s calls = %s", goos, got)
 		}
 		for _, c := range f.calls {
@@ -87,7 +95,8 @@ func TestStressStageDispatch(t *testing.T) {
 				t.Fatalf("%s: CGO_ENABLED=1 must override the parent environment", goos)
 			}
 		}
-		if !strings.Contains(out, "devcheck: stress packages: "+wantStressPackages) || !strings.Contains(out, "devcheck: stress function: "+wantStressFunction) {
+		if !strings.Contains(out, "devcheck: stress packages: "+wantStressPackages) || !strings.Contains(out, "devcheck: stress function: "+wantStressFunction) ||
+			!strings.Contains(out, "devcheck: stress plane function: "+wantStressPlaneFunction) {
 			t.Fatalf("%s commands not logged: %s", goos, out)
 		}
 		if _, err := os.Stat(scratchFrom(out)); !os.IsNotExist(err) {
@@ -96,7 +105,7 @@ func TestStressStageDispatch(t *testing.T) {
 	}
 	// all stays test, coverage, bench, cross: stress is explicit.
 	f := &fakeRunner{coverTotal: "81%", cmdList: cmdList, profile: goodProfile}
-	if code, _, errOut := runDriver(t, "linux", f, "all"); code != 0 || len(f.calls) != 18 {
+	if code, _, errOut := runDriver(t, "linux", f, "all"); code != 0 || len(f.calls) != 19 {
 		t.Fatalf("all = %d with %d calls %s", code, len(f.calls), errOut)
 	}
 	for _, c := range f.argvs() {
@@ -116,7 +125,7 @@ func TestStressFailFastRetainsLogs(t *testing.T) {
 	for _, c := range []struct {
 		fail, failed string
 		calls        int
-	}{{"./internal/testkit", "stress packages", 1}, {"./tests/function", "stress function", 2}} {
+	}{{"./internal/testkit", "stress packages", 1}, {"TestFP4TransportHarness", "stress function", 2}, {"TestPlaneState", "stress plane function", 3}} {
 		f := &fakeRunner{fail: c.fail}
 		code, out, errOut := runDriver(t, "linux", f, "stress")
 		scratch := scratchFrom(out)
@@ -181,7 +190,7 @@ func TestStressWatchdog(t *testing.T) {
 		t.Fatal(err)
 	}
 	after := time.Now()
-	if len(r.ctxs) != 2 {
+	if len(r.ctxs) != 3 {
 		t.Fatalf("calls = %d", len(r.ctxs))
 	}
 	for i, ctx := range r.ctxs {
@@ -313,10 +322,10 @@ func TestPlatformSeamContract(t *testing.T) {
 				t.Fatalf("NativeSteps(%s) = %v %v", goos, native, nerr)
 			}
 			stress, serr := StressSteps(goos)
-			if serr != nil || len(stress) != 2 {
+			if serr != nil || len(stress) != 3 {
 				t.Fatalf("StressSteps(%s) = %v %v", goos, stress, serr)
 			}
-			for stage, want := range map[string]int{"test": wantTest, "stress": 2, "native": len(native)} {
+			for stage, want := range map[string]int{"test": wantTest, "stress": 3, "native": len(native)} {
 				f := &fakeRunner{native: stream(qualification()...)}
 				code, out, errOut := runDriver(t, goos, f, stage)
 				wantCode := 0

@@ -26,10 +26,13 @@ import (
 // stress or devcheck recursively with ExecRunner.
 
 // The literal stress plan and repeat count are the specification oracle.
+// Iteration 02 appended ./internal/plane and, by design 02's
+// pre-authorized function-binary split, the separate plane function step.
 const (
 	hardeningStressCount    = 20
-	hardeningStressPackages = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/processgroup ./internal/spikes/gittransport"
+	hardeningStressPackages = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/processgroup ./internal/spikes/gittransport ./internal/plane"
 	hardeningStressFunction = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestFP4TransportHarness|TestFP5GitRoundTrip|TestFP6ProcessGroups)$ ./tests/function"
+	hardeningStressPlaneFn  = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestPlaneState|TestPlaneTLS|TestPlaneReissue)$ ./tests/function"
 	stressStepName          = "devcheck stress (race, repeat count, varied -cpu)"
 )
 
@@ -75,10 +78,10 @@ func TestHardeningStress(t *testing.T) {
 	}
 	for _, goos := range []string{"linux", "darwin"} {
 		steps, err := devcheck.StressSteps(goos)
-		if err != nil || len(steps) != 2 {
+		if err != nil || len(steps) != 3 {
 			t.Fatalf("%s plan = %+v %v", goos, steps, err)
 		}
-		for i, want := range []struct{ name, argv string }{{"stress packages", hardeningStressPackages}, {"stress function", hardeningStressFunction}} {
+		for i, want := range []struct{ name, argv string }{{"stress packages", hardeningStressPackages}, {"stress function", hardeningStressFunction}, {"stress plane function", hardeningStressPlaneFn}} {
 			if steps[i].Name != want.name || strings.Join(steps[i].Argv, " ") != want.argv || strings.Join(steps[i].Env, " ") != "CGO_ENABLED=1" {
 				t.Fatalf("%s step %d = %+v", goos, i, steps[i])
 			}
@@ -94,8 +97,9 @@ func TestHardeningStress(t *testing.T) {
 	// environment plus CGO_ENABLED=1.
 	r := &ciRunner{}
 	code, out, errOut := devcheckRun(t, r, "stress")
-	if code != 0 || !strings.Contains(out, "stage stress ok") || len(r.calls) != 2 ||
-		strings.Join(r.calls[0], " ") != hardeningStressPackages || strings.Join(r.calls[1], " ") != hardeningStressFunction {
+	if code != 0 || !strings.Contains(out, "stage stress ok") || len(r.calls) != 3 ||
+		strings.Join(r.calls[0], " ") != hardeningStressPackages || strings.Join(r.calls[1], " ") != hardeningStressFunction ||
+		strings.Join(r.calls[2], " ") != hardeningStressPlaneFn {
 		t.Fatalf("%s stress = %d %v %s", runtime.GOOS, code, r.calls, errOut)
 	}
 	for i, env := range r.envs {
@@ -108,7 +112,7 @@ func TestHardeningStress(t *testing.T) {
 	for _, c := range []struct {
 		failOn, step string
 		calls        int
-	}{{"./internal/spikes/gittransport", "stress packages", 1}, {"./tests/function", "stress function", 2}} {
+	}{{"./internal/spikes/gittransport", "stress packages", 1}, {"TestFP5GitRoundTrip", "stress function", 2}, {"TestPlaneTLS", "stress plane function", 3}} {
 		r := &ciRunner{failOn: c.failOn}
 		code, out, errOut := devcheckRun(t, r, "stress")
 		if code != 1 || len(r.calls) != c.calls || !strings.Contains(errOut, "stage stress FAILED: "+c.step+" failed") ||
@@ -284,7 +288,7 @@ func TestHardeningCIStress(t *testing.T) {
 		}
 	}
 	r := &ciRunner{}
-	if code, _, errOut := devcheckRun(t, r, "stress"); code != 0 || len(r.calls) != 2 {
+	if code, _, errOut := devcheckRun(t, r, "stress"); code != 0 || len(r.calls) != 3 {
 		t.Fatalf("stress dispatch = %d %s", code, errOut)
 	}
 }

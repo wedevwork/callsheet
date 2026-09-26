@@ -181,11 +181,18 @@ func events(evs ...map[string]any) string {
 	return b.String()
 }
 
-// qualifyingEvents is a complete synthetic FP-6 stream; drop names a
-// scenario whose events are deleted and skip one that is skipped instead.
+// qualifyingEvents is a complete synthetic FP-6 and plane trust stream;
+// drop names a scenario whose events are deleted and skip one that is
+// skipped instead.
 func qualifyingEvents(drop, skip string) string {
 	pkg := devcheck.NativePackage
-	evs := []map[string]any{synth("start", pkg, ""), synth("run", pkg, "TestFP6ProcessGroups")}
+	evs := []map[string]any{synth("start", pkg, "")}
+	for _, name := range devcheck.NativeRequiredTests() {
+		if strings.HasPrefix(name, "TestPlane") {
+			evs = append(evs, synth("run", pkg, name), synth("pass", pkg, name))
+		}
+	}
+	evs = append(evs, synth("run", pkg, "TestFP6ProcessGroups"))
 	for _, s := range []string{"cooperative", "resistant", "leader-exits-first"} {
 		name := "TestFP6ProcessGroups/" + s
 		switch s {
@@ -376,7 +383,7 @@ func TestCIDarwinQualification(t *testing.T) {
 	if err != nil || len(steps) != 1 || strings.Join(steps[0].Argv, " ") != "go test -json -count=1 -timeout=180s ./..." {
 		t.Fatalf("native plan = %+v %v", steps, err)
 	}
-	if got := strings.Join(devcheck.NativeRequiredTests(), ","); got != "TestFP6ProcessGroups,TestFP6ProcessGroups/cooperative,TestFP6ProcessGroups/resistant,TestFP6ProcessGroups/leader-exits-first" {
+	if got := strings.Join(devcheck.NativeRequiredTests()[:4], ","); got != "TestFP6ProcessGroups,TestFP6ProcessGroups/cooperative,TestFP6ProcessGroups/resistant,TestFP6ProcessGroups/leader-exits-first" {
 		t.Fatalf("required = %s", got)
 	}
 	if err := devcheck.CheckNativeResults("darwin", strings.NewReader(qualifyingEvents("", ""))); err != nil {

@@ -219,9 +219,14 @@ func TestSteps(goos string) []Step {
 	return steps
 }
 
-// BenchSteps runs the FP-5 benchmarks.
+// BenchSteps runs the git transport (iteration 01 FP-5) benchmarks, then
+// the plane trust benchmarks (iteration 02): issuance, initialization and
+// verified TLS health. Timings are reported, never gated.
 func BenchSteps() []Step {
-	return []Step{{Name: "bench", Argv: []string{"go", "test", "./internal/spikes/gittransport", "-run", "^$", "-bench", ".", "-benchmem", "-benchtime=3x", "-count=1", "-timeout=180s"}}}
+	return []Step{
+		{Name: "bench", Argv: []string{"go", "test", "./internal/spikes/gittransport", "-run", "^$", "-bench", ".", "-benchmem", "-benchtime=3x", "-count=1", "-timeout=180s"}},
+		{Name: "bench plane", Argv: []string{"go", "test", "./internal/plane", "-run=^$", "-bench=.", "-benchmem", "-benchtime=3x", "-count=1", "-timeout=180s"}},
+	}
 }
 
 // CoverageSteps returns the profile run, the func report and the cmd listing.

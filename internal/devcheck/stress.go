@@ -26,12 +26,21 @@ var (
 		"./internal/testkit/fakeadapter",
 		"./internal/spikes/processgroup",
 		"./internal/spikes/gittransport",
+		"./internal/plane",
 	}
 	// stressFunctionPackage and stressFunctionTests select only the FP-4/5/6
 	// function tests, deliberately excluding unrelated ones such as the
 	// twelve-artifact cross-build test.
 	stressFunctionPackage = "./tests/function"
 	stressFunctionTests   = []string{"TestFP4TransportHarness", "TestFP5GitRoundTrip", "TestFP6ProcessGroups"}
+	// stressPlaneFunctionTests select the listener- and lock-bearing plane
+	// trust function tests (iteration 02). They run in their own step: the
+	// combined function binary measured 322.7 s on Linux (2026-09-26),
+	// reaching design 02's 5-minute split trigger, so the pre-authorized
+	// static split applies on both platforms. The union with
+	// stressFunctionTests is disjoint and every test still runs
+	// StressCount times per CPU setting.
+	stressPlaneFunctionTests = []string{"TestPlaneState", "TestPlaneTLS", "TestPlaneReissue"}
 )
 
 const (
@@ -49,19 +58,19 @@ func stressCPUList() string {
 	return strings.Join(parts, ",")
 }
 
-// stressSelector is the -run expression for the function-test step.
-func stressSelector() string {
-	return "^(" + strings.Join(stressFunctionTests, "|") + ")$"
+// stressSelector is the anchored -run expression selecting tests.
+func stressSelector(tests []string) string {
+	return "^(" + strings.Join(tests, "|") + ")$"
 }
 
 func stressFlags() []string {
 	return []string{"go", "test", "-race", "-count=" + strconv.Itoa(StressCount), "-cpu=" + stressCPUList(), "-timeout=" + stressTestTimeout}
 }
 
-// StressSteps returns the stress plan for goos: two sequential race-built
-// go test commands, the complete timing-sensitive packages and then the
-// selected function tests, each repeated StressCount times at every CPU
-// setting. Only linux and darwin are supported; every other goos is rejected
+// StressSteps returns the stress plan for goos: three sequential race-built
+// go test commands, the complete timing-sensitive packages, the selected
+// iteration 01 function tests and the selected plane trust function tests,
+// each repeated StressCount times at every CPU setting. Only linux and darwin are supported; every other goos is rejected
 // before any child runs. Each call returns fresh slices.
 func StressSteps(goos string) ([]Step, error) {
 	if goos != "linux" && goos != "darwin" {
@@ -71,7 +80,9 @@ func StressSteps(goos string) ([]Step, error) {
 		{Name: "stress packages", Env: []string{"CGO_ENABLED=1"},
 			Argv: append(stressFlags(), stressPackages...)},
 		{Name: "stress function", Env: []string{"CGO_ENABLED=1"},
-			Argv: append(stressFlags(), "-run="+stressSelector(), stressFunctionPackage)},
+			Argv: append(stressFlags(), "-run="+stressSelector(stressFunctionTests), stressFunctionPackage)},
+		{Name: "stress plane function", Env: []string{"CGO_ENABLED=1"},
+			Argv: append(stressFlags(), "-run="+stressSelector(stressPlaneFunctionTests), stressFunctionPackage)},
 	}, nil
 }
 

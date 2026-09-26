@@ -23,7 +23,8 @@ func TestRunWrapper(t *testing.T) {
 	if code := run([]string{"bench"}, &out, &errOut, fake); code != 0 {
 		t.Fatalf("bench = %d %s", code, errOut.String())
 	}
-	if len(calls) != 1 || calls[0][0] != "go" || calls[0][1] != "test" {
+	// Two bench commands: git transport, then plane trust (iteration 02).
+	if len(calls) != 2 || calls[0][0] != "go" || calls[0][1] != "test" || calls[1][2] != "./internal/plane" {
 		t.Fatalf("calls = %v", calls)
 	}
 }

@@ -16,8 +16,21 @@ Exactly two jobs, each its own required status check context:
 
 | Check context | Runner | Timeout | Steps after setup |
 |---|---|---|---|
-| `ci-linux` | `ubuntu-24.04` | 45 min | `devcheck test` (native suite, then the same suite with `-race`), `devcheck coverage` (unit coverage must be greater than 80.0%), `devcheck bench` (git transport payload byte limits and commit/tree invariants; timings are reported, never gated), `devcheck cross` (linux/amd64, linux/arm64, darwin/amd64, darwin/arm64: 12 artifacts), then `devcheck stress` (see Stress checks) |
-| `ci-macos` | `macos-15` | 30 min | `devcheck native`: the complete suite as `go test -json`, which must show passing run and pass events for `TestFP6ProcessGroups` and its `cooperative`, `resistant` and `leader-exits-first` scenarios in `github.com/wedevwork/callsheet/tests/function`; then `devcheck stress` at the same repeat count as Linux |
+| `ci-linux` | `ubuntu-24.04` | 45 min | `devcheck test` (native suite, then the same suite with `-race`), `devcheck coverage` (unit coverage must be greater than 80.0%), `devcheck bench` (git transport payload byte limits and commit/tree invariants, then the plane trust benchmarks: issuance, initialization and verified TLS health, each checking its invariants; timings are reported, never gated), `devcheck cross` (linux/amd64, linux/arm64, darwin/amd64, darwin/arm64: 12 artifacts), then `devcheck stress` (see Stress checks) |
+| `ci-macos` | `macos-15` | 30 min | `devcheck native`: the complete suite as `go test -json`, which must show passing run and pass events in `github.com/wedevwork/callsheet/tests/function` for `TestFP6ProcessGroups` and its `cooperative`, `resistant` and `leader-exits-first` scenarios, and for the plane trust tests (see below); then `devcheck stress` at the same repeat count as Linux |
+
+The plane trust tests required on `ci-macos` (iteration 02) are the eight
+function tests `TestPlaneCommands`, `TestPlaneState`, `TestPlaneBind`,
+`TestPlaneInit`, `TestPlaneTLS`, `TestPlaneReissue`, `TestPlaneStatus` and
+`TestPlanePlatform`, plus the mandatory subtests of the compound ones:
+`TestPlaneState` `paths`, `persistence`, `locking` and `validation`;
+`TestPlaneInit` `issuance`, `fingerprint` and `restart-invariance`;
+`TestPlaneTLS` `https-only`, `prelisten-validation` and `bounded-shutdown`;
+`TestPlaneStatus` `inspection` and `expiry-warnings`. They prove the
+native state modes, no-replace publication, atomic rename, kernel `flock`
+between processes, loopback TLS and signal cleanup on the runner itself;
+neither cross-compilation nor a Linux pass qualifies macOS. The plane trust
+benchmarks and coverage remain Linux reference gates, not Darwin claims.
 
 Both jobs check out the event's revision without persisted credentials, take
 the Go version from `go.mod` with module caching, run `go mod download`, and
@@ -45,22 +58,33 @@ and the equivalent `go test -race -count=20 -cpu=1,2,4 -run '<tests>'
 
 The count, CPU list, package groups, selector and time budgets are declared
 once, in `internal/devcheck/stress.go` (`StressCount`, `StressSteps`). The
-stage runs two sequential commands (argv, never a shell), each with
+stage runs three sequential commands (argv, never a shell), `stress
+packages`, `stress function` and `stress plane function`, each with
 `CGO_ENABLED=1`:
 
 ```
-go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/processgroup ./internal/spikes/gittransport
+go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/processgroup ./internal/spikes/gittransport ./internal/plane
 go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestFP4TransportHarness|TestFP5GitRoundTrip|TestFP6ProcessGroups)$ ./tests/function
+go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestPlaneState|TestPlaneTLS|TestPlaneReissue)$ ./tests/function
 ```
 
 - Selected packages: `internal/testkit`, `internal/testkit/fakeadapter`,
-  `internal/spikes/processgroup` and `internal/spikes/gittransport`, complete
-  package tests (not benchmarks). The fake adapter is included because its
-  signal handling and descendant lifecycle are timing-sensitive too.
+  `internal/spikes/processgroup`, `internal/spikes/gittransport` and
+  `internal/plane`, complete package tests (not benchmarks). The fake
+  adapter is included because its signal handling and descendant lifecycle
+  are timing-sensitive too; the plane package (iteration 02) because its
+  listener, shutdown, lock-holder helper process and delegated contracts
+  are, and they run there directly under the race detector.
 - Selected function tests: only `TestFP4TransportHarness`,
-  `TestFP5GitRoundTrip` and `TestFP6ProcessGroups` in `tests/function`,
-  deliberately excluding unrelated function tests such as the twelve-artifact
-  cross-build test.
+  `TestFP5GitRoundTrip` and `TestFP6ProcessGroups` (`stress function`), and
+  the listener- and lock-bearing plane trust tests `TestPlaneState`,
+  `TestPlaneTLS` and `TestPlaneReissue` (`stress plane function`), in
+  `tests/function`, deliberately excluding unrelated function tests such as
+  the twelve-artifact cross-build test. The two selectors are disjoint. The other
+  plane trust tests (`TestPlaneCommands`, `TestPlaneBind`, `TestPlaneInit`,
+  `TestPlaneStatus`, `TestPlanePlatform`) run in the normal native suites
+  only; their listener mechanisms are repeated by the plane package tests
+  and by `TestPlaneTLS` and `TestPlaneReissue`.
 - `-count=20` applies at each CPU setting: every selected top-level test runs
   60 times per invocation. This is repeated testing, never retry-until-green:
   any failure fails the stage. There is no count override, no lighter macOS
@@ -89,6 +113,16 @@ Budgets:
   moves into its own stress step with its own 6-minute timeout; the repeat
   count, the CPU list and the package set never change, and no test is
   weakened.
+- Function-binary remedy (pre-authorized by design 02): if a function
+  step, measured from its `ok  ./tests/function <N>s` line, reaches 5
+  minutes on either supported host or hits its 6-minute timeout, it splits
+  statically for both platforms with identical flags. The first stage of
+  the remedy is applied: the combined six-test function step measured
+  322.7 s on Linux (below), so it became `stress function` (the three
+  iteration 01 tests) and `stress plane function` (the three plane tests).
+  A group that still reaches 5 minutes splits into one
+  `stress function <TestName>` step per test. Counts, the CPU list and the
+  watchdog never change, and nothing is retried or split dynamically.
 - Estimated local cost with a warm build cache: 3–10 minutes (a planning
   estimate, not a hardware-independent limit).
 - Measured: Linux, go1.26.4 linux/amd64 on a 16-thread Intel i7-11800H
@@ -106,6 +140,18 @@ Budgets:
   expected to be slower; their times are recorded from the CI logs.
   macOS: pending until the next `ci-macos` run of pull request #1, recorded
   from its log in the flow handoff (see First remote run).
+- Measured with iteration 02 (plane trust): Linux, the same workstation,
+  go1.26.4 linux/amd64, warm build cache, 2026-09-26. The combined six-test
+  function step took 322.7 s (`ok  ./tests/function 322.742s`), reaching
+  the 5-minute split trigger, so the static split above was applied and the
+  full stage rerun: 546 s (9 min 6 s) in total, of which `stress packages`
+  about 221 s (slowest binary `internal/plane` 220 s,
+  `internal/spikes/processgroup` 200 s, `internal/testkit/fakeadapter`
+  53 s, `internal/testkit` 31 s, `internal/spikes/gittransport` 24 s),
+  `stress function` 170 s and `stress plane function` 154 s. Every binary
+  stays within its 6-minute timeout and the stage within the 10-minute
+  target. macOS: pending until the first `ci-macos` run of pull request #2,
+  recorded from its log in the flow handoff.
 
 Race and CPU scope: the top-level test packages are race-built, so the
 process-group package's self-executed helper (its own test binary) is
@@ -158,6 +204,18 @@ Exempt files are not scanned for `runtime.GOOS`, so
 `internal/testkit/fakeadapter/signals_unix.go` must not grow a host branch:
 it is compiled for both `linux` and `darwin`, and such a branch would be an
 untested decision the guard cannot see.
+
+The plane package (iteration 02) resolves its default state directory in
+the pure `plane.ResolveStateDir(goos, ...)`, fed by `cli.Run`'s existing
+wrapper, and adds no `runtime.GOOS` read. Its advisory state lock
+(`syscall.Flock`) and its directory-sync fallback (a plain `syscall.Fsync`
+on the directory descriptor when `File.Sync` reports `ENOTSUP`, `ENOTTY`
+or `EINVAL`, the same policy on both systems) live in the build-selected
+files `internal/plane/lock_unix.go` (`linux || darwin`) and
+`internal/plane/lock_other.go` (`!linux && !darwin`, unsupported-system
+errors that the CLI's platform rejection keeps unreachable). They make no
+host decision and need no exemption: the guard does not list them, and
+they would fail it if they read `runtime.GOOS`.
 
 Native evidence limits: these files cannot be simulated by an OS parameter.
 Linux behavior is proven by the native process experiments of `ci-linux`
