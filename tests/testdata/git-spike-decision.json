@@ -1,0 +1,17 @@
+{
+  "route": "smart-http",
+  "integrity_mode": "handler-guards",
+  "reason": "go-git v5.16.3 persists smart-HTTP pushes but does not enforce old-ref CAS or new-commit closure; Callsheet guards a quarantined session and publishes one validated ref.",
+  "module": "github.com/go-git/go-git/v5",
+  "version": "v5.16.3",
+  "module_origin_hash": "ad9a3a542e845d368853848ef5a2de9ec1f79b1a",
+  "source_file": "plumbing/transport/server/server.go",
+  "source_sha256": "d36d9f87f5dc2a35a7ea674583c670ba78a3bd33fdf1211a4cad4793cebe124f",
+  "unguarded_probe": {
+    "clone_push_fetch_reopen": "passed",
+    "stale_old": "accepted_and_ref_changed",
+    "missing_object": "accepted_and_ref_published",
+    "truncated_pack": "rejected_without_ref_publication"
+  },
+  "evidence": ["tests/testdata/receive-pack-probe.txt"]
+}

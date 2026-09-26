@@ -1,0 +1,19 @@
+Provenance of cli-go-test.jsonl (UT-3 parser-compatibility fixture)
+
+The fixture is the verbatim stdout of a real host run; it was not manufactured
+or edited, and no test regenerates it.
+
+Command (repository root, after dependency setup with `go mod download`):
+  go test -json -count=1 ./internal/cli > internal/devcheck/testdata/cli-go-test.jsonl
+Exit status: 0
+Stderr: captured separately; empty (0 bytes)
+Go version: go version go1.26.4 linux/amd64
+GOOS/GOARCH: linux/amd64
+Captured: 2026-09-25T16:18:55Z
+Parent commit at capture time: 89377cc006c5977bfcc6e020d0c48b128cebce31
+  (branch iter-01b-ci; the working tree held the uncommitted iteration 01b
+  changes, including the FP-4 internal/cli migration whose tests it records)
+Events: 40 lines; Actions present: start, run, output, pass
+
+This is parser compatibility evidence from the Linux host, not native Darwin
+qualification.
