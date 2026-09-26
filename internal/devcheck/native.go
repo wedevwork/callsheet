@@ -11,16 +11,45 @@ import (
 	"strings"
 )
 
-// NativePackage is the package whose process-group tests qualify a native
-// macOS run.
+// NativePackage is the package whose process-group and plane trust tests
+// qualify a native macOS run.
 const NativePackage = "github.com/wedevwork/callsheet/tests/function"
 
-// nativeRequired are the tests in NativePackage that must both run and pass.
+// nativeRequired are the tests in NativePackage that must both run and
+// pass: the process-group scenarios (iteration 01) and every plane trust
+// function test with the mandatory subtests of its compound FPs
+// (iteration 02), including the "process" and "contracts" boundaries that
+// separate process-boundary scenarios from delegated contracts
+// (iteration 02b).
 var nativeRequired = []string{
 	"TestFP6ProcessGroups",
 	"TestFP6ProcessGroups/cooperative",
 	"TestFP6ProcessGroups/resistant",
 	"TestFP6ProcessGroups/leader-exits-first",
+	"TestPlaneCommands",
+	"TestPlaneState",
+	"TestPlaneState/paths",
+	"TestPlaneState/persistence",
+	"TestPlaneState/locking",
+	"TestPlaneState/validation",
+	"TestPlaneState/contracts",
+	"TestPlaneBind",
+	"TestPlaneInit",
+	"TestPlaneInit/issuance",
+	"TestPlaneInit/fingerprint",
+	"TestPlaneInit/restart-invariance",
+	"TestPlaneTLS",
+	"TestPlaneTLS/https-only",
+	"TestPlaneTLS/prelisten-validation",
+	"TestPlaneTLS/bounded-shutdown",
+	"TestPlaneTLS/contracts",
+	"TestPlaneReissue",
+	"TestPlaneReissue/process",
+	"TestPlaneReissue/contracts",
+	"TestPlaneStatus",
+	"TestPlaneStatus/inspection",
+	"TestPlaneStatus/expiry-warnings",
+	"TestPlanePlatform",
 }
 
 // NativeRequiredTests returns a fresh copy of the test names in NativePackage
@@ -258,7 +287,7 @@ func (c *nativeChecker) finish() error {
 // Action, any fail or build-fail, any test skip, a package skip other than
 // a nonrequired no-test-files package, a started package that never
 // finishes, and missing run/pass evidence for NativePackage and its
-// required process-group tests.
+// required process-group and plane trust tests.
 func CheckNativeResults(goos string, r io.Reader) error {
 	if goos != "darwin" {
 		return unsupportedNative(goos)

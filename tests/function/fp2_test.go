@@ -12,7 +12,9 @@ import (
 
 // TestFP2CommandTree drives the built callsheet binary through every leaf,
 // group and help form plus invalid commands, in a fresh cwd and home, and
-// confirms no files are created.
+// confirms no files are created. The four plane leaves implemented in
+// iteration 02 get help-only checks here (their behavior is FP-1 of
+// iteration 02, TestPlaneCommands); every other leaf is a stub.
 func TestFP2CommandTree(t *testing.T) {
 	bin := testkit.BuildBinary(t, "./cmd/callsheet", "callsheet")
 	home := t.TempDir()
@@ -33,8 +35,22 @@ func TestFP2CommandTree(t *testing.T) {
 		if len(leaves) != 32 {
 			t.Fatalf("leaf count = %d", len(leaves))
 		}
+		implemented := map[string]bool{"callsheet plane init": true, "callsheet plane run": true, "callsheet plane status": true, "callsheet plane cert reissue": true}
 		for _, leaf := range leaves {
 			args := argsOf(leaf)
+			if implemented[leaf.Path()] {
+				help := run(append(args, "--help")...)
+				if help.code != 0 || help.stderr != "" || !strings.HasPrefix(help.stdout, "Usage: "+leaf.Path()+" [--state-dir PATH]") ||
+					!strings.Contains(help.stdout, "Status: implemented.") || strings.Contains(help.stdout, "future stub") {
+					t.Fatalf("%v --help = %+v", args, help)
+				}
+				for _, other := range [][]string{append(args, "-h"), append([]string{"help"}, args...)} {
+					if r := run(other...); r.code != 0 || r.stdout != help.stdout || r.stderr != "" {
+						t.Fatalf("%v = %+v", other, r)
+					}
+				}
+				continue
+			}
 			r := run(args...)
 			if leaf.Name == "version" {
 				if r.code != 0 || r.stdout != "callsheet dev protocol=1\n" || r.stderr != "" {

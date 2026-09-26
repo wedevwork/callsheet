@@ -1,8 +1,8 @@
-// Package cli implements the callsheet command tree: parsing, help and the
-// deterministic outcomes of reserved (not yet implemented) commands.
-//
-// Iteration 01 reserves names only. No command contacts a plane, creates
-// state or invokes a vendor CLI.
+// Package cli implements the callsheet command tree: parsing, help, the
+// implemented leaves (version and, since iteration 02, the four plane
+// commands) and the deterministic outcomes of reserved (not yet
+// implemented) commands. Reserved commands never contact a plane, create
+// state or invoke a vendor CLI.
 package cli
 
 import (
@@ -26,9 +26,20 @@ type Command struct {
 	Children []*Command
 
 	parent *Command
-	// builtin marks leaves that are implemented now (only "version").
+	// builtin marks the built-in version leaf.
 	builtin bool
+	// run implements an implemented leaf other than version; usage and
+	// details extend its help.
+	run     leafFunc
+	usage   string
+	details string
 }
+
+// leafFunc executes an implemented leaf with the arguments after its name.
+type leafFunc func(ctx context.Context, goos string, c *Command, args []string, out, errOut io.Writer) int
+
+// implemented reports whether c is an implemented leaf.
+func (c *Command) implemented() bool { return c.builtin || c.run != nil }
 
 // Path returns the space-separated command path, e.g. "callsheet task ls".
 func (c *Command) Path() string {
@@ -96,11 +107,11 @@ func NewTree(goos string) *Command {
 	children := []*Command{
 		{Name: "version", Summary: "Print the callsheet and protocol version", builtin: true},
 		node("plane", "Plane service commands (Linux/macOS)",
-			node("init", "Initialize plane state"),
-			node("run", "Run the plane service"),
-			node("status", "Show plane status"),
+			planeLeaf("init", "Initialize plane state", initUsage, initDetails, planeInit),
+			planeLeaf("run", "Run the plane service", runUsage, runDetails, planeRun),
+			planeLeaf("status", "Show plane status", statusUsage, statusDetails, planeStatus),
 			node("cert", "Plane certificate commands",
-				node("reissue", "Reissue the plane server certificate"),
+				planeLeaf("reissue", "Reissue the plane server certificate", reissueUsage, reissueDetails, planeReissue),
 			),
 		),
 		node("sidecar", "Node sidecar commands (Linux/macOS)",
@@ -191,7 +202,7 @@ func run(ctx context.Context, root *Command, goos string, args []string, out, er
 		}
 		cur = next
 		if cur.IsLeaf() {
-			return runLeaf(cur, args[i+1:], out, errOut)
+			return runLeaf(ctx, goos, cur, args[i+1:], out, errOut)
 		}
 	}
 	writeHelp(out, cur)
@@ -218,7 +229,7 @@ func helpPath(root *Command, path []string, out, errOut io.Writer) int {
 	return 0
 }
 
-func runLeaf(c *Command, rest []string, out, errOut io.Writer) int {
+func runLeaf(ctx context.Context, goos string, c *Command, rest []string, out, errOut io.Writer) int {
 	for _, tok := range rest {
 		if tok == "--" {
 			break
@@ -230,6 +241,9 @@ func runLeaf(c *Command, rest []string, out, errOut io.Writer) int {
 	}
 	if c.builtin {
 		return runVersion(c, rest, out, errOut)
+	}
+	if c.run != nil {
+		return c.run(ctx, goos, c, rest, out, errOut)
 	}
 	diag(errOut, contract.New(contract.CodeNotImplemented, fmt.Sprintf("%q is not implemented yet", c.Path())))
 	return contract.ExitCode(contract.New(contract.CodeNotImplemented, ""))
@@ -263,8 +277,15 @@ func usageError(errOut io.Writer, c *Command, msg string) int {
 func writeHelp(w io.Writer, c *Command) {
 	var b strings.Builder
 	if c.IsLeaf() {
-		fmt.Fprintf(&b, "Usage: %s\n\n%s\n", c.Path(), c.Summary)
-		if c.builtin {
+		usage := c.Path()
+		if c.usage != "" {
+			usage += " " + c.usage
+		}
+		fmt.Fprintf(&b, "Usage: %s\n\n%s\n", usage, c.Summary)
+		if c.details != "" {
+			b.WriteString("\n" + c.details)
+		}
+		if c.implemented() {
 			b.WriteString("\nStatus: implemented.\n")
 		} else {
 			b.WriteString("\nStatus: future stub; not implemented yet (exits 8).\n")
@@ -279,7 +300,7 @@ func writeHelp(w io.Writer, c *Command) {
 	}
 	for _, ch := range c.Children {
 		status := "future stub"
-		if ch.builtin {
+		if ch.implemented() {
 			status = "implemented"
 		} else if !ch.IsLeaf() {
 			status = "group"
@@ -288,7 +309,7 @@ func writeHelp(w io.Writer, c *Command) {
 	}
 	if c.parent == nil {
 		b.WriteString("\nUse \"callsheet help [command path]\" or --help for details. " +
-			"All commands except version are future stubs in this build.\n")
+			"Commands marked [implemented] work in this build; [future stub] commands are reserved and exit 8.\n")
 	}
 	io.WriteString(w, b.String())
 }

@@ -26,12 +26,37 @@ import (
 // stress or devcheck recursively with ExecRunner.
 
 // The literal stress plan and repeat count are the specification oracle.
+// Iteration 02 appended ./internal/plane and, by design 02's
+// pre-authorized function-binary split, the separate plane function step;
+// iteration 02b removed the duplicated FP-6 experiment and the delegated
+// plane contracts from the function steps; iteration 02c moved
+// processgroup into its own shard of three single-CPU invocations.
 const (
 	hardeningStressCount    = 20
-	hardeningStressPackages = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/processgroup ./internal/spikes/gittransport"
-	hardeningStressFunction = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestFP4TransportHarness|TestFP5GitRoundTrip|TestFP6ProcessGroups)$ ./tests/function"
-	stressStepName          = "devcheck stress (race, repeat count, varied -cpu)"
+	hardeningStressPackages = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/plane"
+	hardeningStressPG1      = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/spikes/processgroup"
+	hardeningStressPG2      = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/spikes/processgroup"
+	hardeningStressPG4      = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/spikes/processgroup"
+	hardeningStressFunction = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestFP4TransportHarness|TestFP5GitRoundTrip)$ ./tests/function"
+	hardeningStressPlaneFn  = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestPlaneState|TestPlaneTLS|TestPlaneReissue)$/^(paths|persistence|locking|validation|https-only|prelisten-validation|bounded-shutdown|process)$ ./tests/function"
 )
+
+// hardeningPlan is the flattened stress plan in shard/CPU order.
+var hardeningPlan = []struct{ name, argv string }{
+	{"stress packages", hardeningStressPackages},
+	{"stress processgroup cpu1", hardeningStressPG1}, {"stress processgroup cpu2", hardeningStressPG2}, {"stress processgroup cpu4", hardeningStressPG4},
+	{"stress function", hardeningStressFunction}, {"stress plane function", hardeningStressPlaneFn},
+}
+
+// hardeningSelectors are the exact -run values of the stress plan with the
+// test names each one selects, written out explicitly: the plane selector
+// is two levels (parents, then subtests), not a flat alternation.
+var hardeningSelectors = map[string][]string{
+	"^(TestFP4TransportHarness|TestFP5GitRoundTrip)$": {"TestFP4TransportHarness", "TestFP5GitRoundTrip"},
+	"^(TestPlaneState|TestPlaneTLS|TestPlaneReissue)$/^(paths|persistence|locking|validation|https-only|prelisten-validation|bounded-shutdown|process)$": {
+		"TestPlaneState", "TestPlaneTLS", "TestPlaneReissue",
+		"paths", "persistence", "locking", "validation", "https-only", "prelisten-validation", "bounded-shutdown", "process"},
+}
 
 // contractRun runs only the tests matching run in bin, pkg's compiled test
 // binary (testkit.BuildTestBinary), in the package directory. It requires
@@ -75,10 +100,10 @@ func TestHardeningStress(t *testing.T) {
 	}
 	for _, goos := range []string{"linux", "darwin"} {
 		steps, err := devcheck.StressSteps(goos)
-		if err != nil || len(steps) != 2 {
+		if err != nil || len(steps) != len(hardeningPlan) {
 			t.Fatalf("%s plan = %+v %v", goos, steps, err)
 		}
-		for i, want := range []struct{ name, argv string }{{"stress packages", hardeningStressPackages}, {"stress function", hardeningStressFunction}} {
+		for i, want := range hardeningPlan {
 			if steps[i].Name != want.name || strings.Join(steps[i].Argv, " ") != want.argv || strings.Join(steps[i].Env, " ") != "CGO_ENABLED=1" {
 				t.Fatalf("%s step %d = %+v", goos, i, steps[i])
 			}
@@ -87,15 +112,18 @@ func TestHardeningStress(t *testing.T) {
 	if _, err := devcheck.StressSteps("windows"); err == nil {
 		t.Fatal("windows stress plan accepted")
 	}
-	if !strings.Contains(" "+strings.Join(devcheck.Stages(), " ")+" ", " stress ") {
-		t.Fatalf("stress not advertised: %v", devcheck.Stages())
+	for _, st := range []string{"stress", "stress-packages", "stress-processgroup", "stress-functions"} {
+		if !strings.Contains(" "+strings.Join(devcheck.Stages(), " ")+" ", " "+st+" ") {
+			t.Fatalf("%s not advertised: %v", st, devcheck.Stages())
+		}
 	}
-	// The native host dispatches both commands in order, with the parent
-	// environment plus CGO_ENABLED=1.
+	// The native host dispatches every command, shards in order and
+	// processgroup's three concurrently, with the parent environment plus
+	// CGO_ENABLED=1.
 	r := &ciRunner{}
 	code, out, errOut := devcheckRun(t, r, "stress")
-	if code != 0 || !strings.Contains(out, "stage stress ok") || len(r.calls) != 2 ||
-		strings.Join(r.calls[0], " ") != hardeningStressPackages || strings.Join(r.calls[1], " ") != hardeningStressFunction {
+	if code != 0 || !strings.Contains(out, "stage stress ok") ||
+		!sameGroups(r.calls, [][]string{{hardeningStressPackages}, {hardeningStressPG1, hardeningStressPG2, hardeningStressPG4}, {hardeningStressFunction}, {hardeningStressPlaneFn}}) {
 		t.Fatalf("%s stress = %d %v %s", runtime.GOOS, code, r.calls, errOut)
 	}
 	for i, env := range r.envs {
@@ -103,12 +131,12 @@ func TestHardeningStress(t *testing.T) {
 			t.Fatalf("call %d env = %v", i, env)
 		}
 	}
-	// Fail fast: a failing first command never starts the second, and a
-	// failing second command fails the stage.
+	// Fail fast: a failing command or shard never starts the next, and a
+	// failing last command fails the stage.
 	for _, c := range []struct {
 		failOn, step string
 		calls        int
-	}{{"./internal/spikes/gittransport", "stress packages", 1}, {"./tests/function", "stress function", 2}} {
+	}{{"./internal/spikes/gittransport", "stress packages", 1}, {"-cpu=4 ", "stress processgroup cpu4", 4}, {"TestFP5GitRoundTrip", "stress function", 5}, {"TestPlaneTLS", "stress plane function", 6}} {
 		r := &ciRunner{failOn: c.failOn}
 		code, out, errOut := devcheckRun(t, r, "stress")
 		if code != 1 || len(r.calls) != c.calls || !strings.Contains(errOut, "stage stress FAILED: "+c.step+" failed") ||
@@ -117,7 +145,7 @@ func TestHardeningStress(t *testing.T) {
 		}
 	}
 	// Usage errors and all's unchanged sequence.
-	for _, args := range [][]string{{"stress", "extra"}, {"stress", "-o", "x"}} {
+	for _, args := range [][]string{{"stress", "extra"}, {"stress", "-o", "x"}, {"stress-processgroup", "-cpu=1"}, {"stress-functions", "-count=1"}} {
 		r := &ciRunner{}
 		if code, _, _ := devcheckRun(t, r, args...); code != 2 || len(r.calls) != 0 {
 			t.Fatalf("%v = %d", args, code)
@@ -239,8 +267,11 @@ func TestHardeningSignalEvidence(t *testing.T) {
 		append([]string{"TestSignalEvidenceContract"}, names...)...)
 }
 
-// FP-6: both jobs end with the exact stress step, removing any check step
-// fails validation, and the advertised stage dispatches.
+// FP-6: since iteration 02c the six stress workers run their exact shard
+// step as their step 3 (the summaries ci-linux-stress and ci-macos-stress
+// keep the contexts), the main jobs keep their stages without stress,
+// removing any check step fails validation, and the advertised stages
+// dispatch.
 func TestHardeningCIStress(t *testing.T) {
 	data := ciWorkflow(t)
 	if err := cicheck.ValidateWorkflow(data); err != nil {
@@ -254,18 +285,19 @@ func TestHardeningCIStress(t *testing.T) {
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		t.Fatal(err)
 	}
-	for _, j := range []struct{ id, want string }{{"linux", "test coverage bench cross stress"}, {"macos", "native stress"}} {
+	for _, j := range []struct{ id, want string }{
+		{"linux", "test coverage bench cross"}, {"macos", "native"},
+		{"linux-stress-packages", "stress-packages"}, {"linux-stress-processgroup", "stress-processgroup"}, {"linux-stress-functions", "stress-functions"},
+		{"macos-stress-packages", "stress-packages"}, {"macos-stress-processgroup", "stress-processgroup"}, {"macos-stress-functions", "stress-functions"},
+	} {
 		got := stages[j.id]
-		if strings.Join(got, " ") != j.want || got[len(got)-1] != "stress" {
-			t.Fatalf("%s stages = %v", j.id, got)
+		if strings.Join(got, " ") != j.want {
+			t.Fatalf("%s stages = %v, want %s", j.id, got, j.want)
 		}
 		steps := node(t, &doc, "jobs", j.id, "steps")
 		last := len(steps.Content) - 1
-		if node(t, &doc, "jobs", j.id, "steps", last, "name").Value != stressStepName ||
-			node(t, &doc, "jobs", j.id, "steps", last, "run").Value != "go run ./cmd/devcheck stress" ||
-			node(t, &doc, "jobs", j.id, "steps", last, "env", "GOPROXY").Value != "off" ||
-			node(t, &doc, "jobs", j.id, "steps", last, "env", "GOSUMDB").Value != "off" {
-			t.Fatalf("%s stress step differs", j.id)
+		if last != 2+len(got) {
+			t.Fatalf("%s has %d steps", j.id, last+1)
 		}
 		for i := 3; i <= last; i++ {
 			stage := got[i-3]
@@ -274,19 +306,57 @@ func TestHardeningCIStress(t *testing.T) {
 				s.Content = append(s.Content[:i], s.Content[i+1:]...)
 			}), fmt.Sprintf("jobs.%s.steps: missing check step for devcheck stage %q", j.id, stage))
 		}
-		mustReject(t, j.id+" conditional stress", mutated(t, func(r *yaml.Node) {
+		mustReject(t, j.id+" conditional last step", mutated(t, func(r *yaml.Node) {
 			setKey(node(t, r, "jobs", j.id, "steps", last), "continue-on-error", "true")
 		}), fmt.Sprintf("jobs.%s.steps[%d].continue-on-error: unknown field", j.id, last))
-	}
-	for _, j := range cicheck.Jobs() {
-		if j.Stages[len(j.Stages)-1] != "stress" {
-			t.Fatalf("contract %s does not end with stress: %v", j.ID, j.Stages)
+		if strings.HasPrefix(j.want, "stress-") {
+			// DW3: the step identity is asserted literally here; the
+			// validator checks only job id, context, runner, timeout and stage.
+			if last != 3 || node(t, &doc, "jobs", j.id, "steps", 3, "name").Value != "devcheck "+j.want ||
+				node(t, &doc, "jobs", j.id, "steps", 3, "run").Value != "go run ./cmd/devcheck "+j.want ||
+				node(t, &doc, "jobs", j.id, "steps", 3, "env", "GOPROXY").Value != "off" ||
+				node(t, &doc, "jobs", j.id, "steps", 3, "env", "GOSUMDB").Value != "off" ||
+				len(node(t, &doc, "jobs", j.id, "steps", 3, "env").Content) != 4 {
+				t.Fatalf("%s step 3 differs from the stress step", j.id)
+			}
+			continue
+		}
+		for i := range steps.Content {
+			if n := steps.Content[i]; strings.Contains(fmt.Sprint(yamlScalars(n)), "stress") {
+				t.Fatalf("main job %s still runs stress at step %d", j.id, i)
+			}
 		}
 	}
-	r := &ciRunner{}
-	if code, _, errOut := devcheckRun(t, r, "stress"); code != 0 || len(r.calls) != 2 {
-		t.Fatalf("stress dispatch = %d %s", code, errOut)
+	for _, j := range cicheck.Jobs() {
+		worker := strings.Contains(j.ID, "-stress-")
+		summary := strings.HasSuffix(j.ID, "-stress")
+		switch {
+		case worker && (len(j.Stages) != 1 || j.Stages[0] != "stress-"+j.ID[strings.LastIndex(j.ID, "-")+1:]):
+			t.Fatalf("worker %s stages = %v", j.ID, j.Stages)
+		case summary && (len(j.Stages) != 0 || len(j.Needs) != 3 || len(node(t, &doc, "jobs", j.ID, "steps").Content) != 1):
+			t.Fatalf("summary %s = %+v", j.ID, j)
+		case !worker && !summary && strings.Contains(" "+strings.Join(j.Stages, " ")+" ", " stress"):
+			t.Fatalf("main job %s stages = %v", j.ID, j.Stages)
+		}
 	}
+	for stage, calls := range map[string]int{"stress": 6, "stress-packages": 1, "stress-processgroup": 3, "stress-functions": 2} {
+		r := &ciRunner{}
+		if code, _, errOut := devcheckRun(t, r, stage); code != 0 || len(r.calls) != calls {
+			t.Fatalf("%s dispatch = %d with %d calls %s", stage, code, len(r.calls), errOut)
+		}
+	}
+}
+
+// yamlScalars returns every scalar value below n.
+func yamlScalars(n *yaml.Node) []string {
+	if n.Kind == yaml.ScalarNode {
+		return []string{n.Value}
+	}
+	var out []string
+	for _, c := range n.Content {
+		out = append(out, yamlScalars(c)...)
+	}
+	return out
 }
 
 var repeatCountRE = regexp.MustCompile(`The project's declared repeat count is (\d+) per CPU setting \((\d+(?:, \d+)*)\)\.`)
@@ -307,12 +377,26 @@ func TestHardeningDeveloperContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Every command runs the documented count at the documented CPU list,
+	// except processgroup's, which run one documented setting each and
+	// together cover the whole list.
 	cpu := "-cpu=" + strings.ReplaceAll(m[2], ", ", ",")
 	var pkgs []string
+	selectors := map[string]bool{}
+	pgCPUs := map[string]bool{}
 	for _, s := range steps {
 		argv := strings.Join(s.Argv, " ")
-		if !strings.Contains(argv, " "+cpu+" ") || !strings.Contains(argv, " -count="+m[1]+" ") {
-			t.Fatalf("documented %s/-count=%s differ from %s", cpu, m[1], argv)
+		if strings.HasSuffix(argv, " ./internal/spikes/processgroup") {
+			for _, c := range strings.Split(m[2], ", ") {
+				if strings.Contains(argv, " -cpu="+c+" ") {
+					pgCPUs[c] = true
+				}
+			}
+		} else if !strings.Contains(argv, " "+cpu+" ") {
+			t.Fatalf("documented %s differs from %s", cpu, argv)
+		}
+		if !strings.Contains(argv, " -count="+m[1]+" ") {
+			t.Fatalf("documented -count=%s differs from %s", m[1], argv)
 		}
 		// The documented commands are the plan's argv.
 		if !strings.Contains(stress, "\n"+argv+"\n") {
@@ -323,11 +407,22 @@ func TestHardeningDeveloperContract(t *testing.T) {
 				pkgs = append(pkgs, a)
 			}
 			if sel, ok := strings.CutPrefix(a, "-run="); ok {
-				for _, name := range strings.Split(strings.Trim(sel, "^()$"), "|") {
+				names, known := hardeningSelectors[sel]
+				if !known {
+					t.Fatalf("unexpected stress selector %q", sel)
+				}
+				selectors[sel] = true
+				for _, name := range names {
 					requireTerms(t, "Stress checks", stress, "`"+name+"`")
 				}
 			}
 		}
+	}
+	if len(pgCPUs) != len(strings.Split(m[2], ", ")) {
+		t.Fatalf("processgroup runs CPU settings %v, documented %s", pgCPUs, m[2])
+	}
+	if len(selectors) != len(hardeningSelectors) {
+		t.Fatalf("plan selectors %v, want every one of %v", selectors, hardeningSelectors)
 	}
 	for _, p := range pkgs {
 		requireTerms(t, "Stress checks", stress, "`"+strings.TrimPrefix(p, "./")+"`")
@@ -338,10 +433,17 @@ func TestHardeningDeveloperContract(t *testing.T) {
 		"`all` does not include stress", "runs both `all` and `stress`",
 		"`-timeout=6m`", "15-minute watchdog", "under 10 minutes", "3–10 minutes",
 		"moves into its own stress step with its own 6-minute timeout",
-		"Measured: Linux", "macOS: pending until the next `ci-macos` run of pull request #1",
+		"Measured: Linux", "macOS 02c worker times: pending until the first macOS worker runs of pull request #2",
 		"not race-built", "`-cpu` varies the top-level tests' GOMAXPROCS", "native C compiler")
 	if strings.Contains(stress, "PLACEHOLDER") {
 		t.Fatal("Stress checks still has a placeholder")
+	}
+	// Obsolete pending instructions of pull request #1 and the old two-job
+	// layout are not current policy any more (iteration 02b).
+	for _, stale := range []string{"pending until the next `ci-macos` run of pull request #1", "Both CI jobs run stress as their last step", "30-minute `ci-macos` job for setup and native tests"} {
+		if strings.Contains(strings.Join(strings.Fields(stress), " "), stale) {
+			t.Fatalf("Stress checks keeps the obsolete %q", stale)
+		}
 	}
 	platform := docSection(t, "Platform code")
 	requireTerms(t, "Platform code", platform, "explicit `goos` argument",

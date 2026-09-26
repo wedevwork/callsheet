@@ -129,10 +129,12 @@ func TestGroupAndLeafHelp(t *testing.T) {
 }
 
 func TestStubLeaves(t *testing.T) {
+	stubs := 0
 	for _, leaf := range NewTree("linux").Leaves() {
-		if leaf.Name == "version" {
+		if leaf.implemented() {
 			continue
 		}
+		stubs++
 		args := strings.Fields(strings.TrimPrefix(leaf.Path(), "callsheet "))
 		code, out, errOut := exec(t, "linux", append(args, "opaque", "--future-flag", "x")...)
 		if code != 8 || out != "" {
@@ -142,6 +144,10 @@ func TestStubLeaves(t *testing.T) {
 		if errOut != want {
 			t.Fatalf("%v: stderr=%q want %q", args, errOut, want)
 		}
+	}
+	// version and the four plane leaves are implemented; 27 stubs remain.
+	if stubs != 27 {
+		t.Fatalf("stubs = %d", stubs)
 	}
 	// Help after "--" is opaque and not honoured.
 	code, _, _ := exec(t, "linux", "task", "ls", "--", "--help")
@@ -279,7 +285,7 @@ func TestPlatformSeamContract(t *testing.T) {
 			}{
 				{"help", context.Background(), nil, 0, "Usage: callsheet <command>\n", ""},
 				{"version", context.Background(), []string{"version"}, 0, "callsheet dev protocol=1\n", ""},
-				{"stub", context.Background(), []string{"plane", "init"}, 8, "", "callsheet: not_implemented: \"callsheet plane init\" is not implemented yet\n"},
+				{"stub", context.Background(), []string{"task", "ls"}, 8, "", "callsheet: not_implemented: \"callsheet task ls\" is not implemented yet\n"},
 				{"usage", context.Background(), []string{"bogus"}, 2, "", "callsheet: invalid_argument: unknown command \"bogus\" for \"callsheet\"\n"},
 				{"cancel", canceled, []string{"version"}, 130, "", "callsheet: interrupted\n"},
 			} {

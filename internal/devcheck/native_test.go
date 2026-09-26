@@ -51,7 +51,37 @@ const fp6 = "TestFP6ProcessGroups"
 
 var scenarios = []string{"cooperative", "resistant", "leader-exits-first"}
 
-// qualification is a complete synthetic tests/function stream for FP-6.
+// planeRequired are the iteration 02 plane trust tests and mandatory
+// compound-FP subtests (design 02, CI plan), with the iteration 02b
+// process/contracts boundaries, in FP order.
+var planeRequired = []struct {
+	test string
+	subs []string
+}{
+	{"TestPlaneCommands", nil},
+	{"TestPlaneState", []string{"paths", "persistence", "locking", "validation", "contracts"}},
+	{"TestPlaneBind", nil},
+	{"TestPlaneInit", []string{"issuance", "fingerprint", "restart-invariance"}},
+	{"TestPlaneTLS", []string{"https-only", "prelisten-validation", "bounded-shutdown", "contracts"}},
+	{"TestPlaneReissue", []string{"process", "contracts"}},
+	{"TestPlaneStatus", []string{"inspection", "expiry-warnings"}},
+	{"TestPlanePlatform", nil},
+}
+
+// planeNames lists every required plane name, parents before subtests.
+func planeNames() []string {
+	var out []string
+	for _, p := range planeRequired {
+		out = append(out, p.test)
+		for _, s := range p.subs {
+			out = append(out, p.test+"/"+s)
+		}
+	}
+	return out
+}
+
+// qualification is a complete synthetic tests/function stream for FP-6
+// and the plane trust tests.
 func qualification() []evt {
 	evs := []evt{ev("start", NativePackage, ""), ev("run", NativePackage, fp6),
 		ev("output", NativePackage, fp6).with("Output", "=== RUN   TestFP6ProcessGroups\n")}
@@ -61,7 +91,15 @@ func qualification() []evt {
 	for _, s := range scenarios {
 		evs = append(evs, ev("pass", NativePackage, fp6+"/"+s))
 	}
-	return append(evs, ev("pass", NativePackage, fp6), ev("output", NativePackage, "").with("Output", "ok\n"), ev("pass", NativePackage, ""))
+	evs = append(evs, ev("pass", NativePackage, fp6))
+	for _, p := range planeRequired {
+		evs = append(evs, ev("run", NativePackage, p.test))
+		for _, s := range p.subs {
+			evs = append(evs, ev("run", NativePackage, p.test+"/"+s), ev("pass", NativePackage, p.test+"/"+s))
+		}
+		evs = append(evs, ev("pass", NativePackage, p.test))
+	}
+	return append(evs, ev("output", NativePackage, "").with("Output", "ok\n"), ev("pass", NativePackage, ""))
 }
 
 // without drops events matching action and test.
@@ -123,12 +161,40 @@ func TestNativeStepsAndUnsupportedOS(t *testing.T) {
 		}
 	}
 	req := NativeRequiredTests()
-	if strings.Join(req, ",") != "TestFP6ProcessGroups,TestFP6ProcessGroups/cooperative,TestFP6ProcessGroups/resistant,TestFP6ProcessGroups/leader-exits-first" {
+	if strings.Join(req, ",") != "TestFP6ProcessGroups,TestFP6ProcessGroups/cooperative,TestFP6ProcessGroups/resistant,TestFP6ProcessGroups/leader-exits-first,"+
+		"TestPlaneCommands,TestPlaneState,TestPlaneState/paths,TestPlaneState/persistence,TestPlaneState/locking,TestPlaneState/validation,TestPlaneState/contracts,"+
+		"TestPlaneBind,TestPlaneInit,TestPlaneInit/issuance,TestPlaneInit/fingerprint,TestPlaneInit/restart-invariance,"+
+		"TestPlaneTLS,TestPlaneTLS/https-only,TestPlaneTLS/prelisten-validation,TestPlaneTLS/bounded-shutdown,TestPlaneTLS/contracts,"+
+		"TestPlaneReissue,TestPlaneReissue/process,TestPlaneReissue/contracts,TestPlaneStatus,TestPlaneStatus/inspection,TestPlaneStatus/expiry-warnings,TestPlanePlatform" || len(req) != 28 {
 		t.Fatalf("required = %v", req)
 	}
 	req[0] = "mutated"
 	if NativeRequiredTests()[0] != fp6 {
 		t.Fatal("NativeRequiredTests exposes internal state")
+	}
+}
+
+// TestNativeNewBoundaries (UT-3, iteration 02b): each boundary added to
+// separate process-boundary scenarios from delegated contracts is required
+// independently. Complete evidence qualifies; a missing run, a missing
+// pass, a skip or a failure of any one of them does not, while the other
+// 27 names remain present.
+func TestNativeNewBoundaries(t *testing.T) {
+	if err := check(stream(qualification()...)); err != nil {
+		t.Fatalf("complete evidence: %v", err)
+	}
+	for _, name := range []string{"TestPlaneState/contracts", "TestPlaneTLS/contracts", "TestPlaneReissue/process", "TestPlaneReissue/contracts"} {
+		q := qualification()
+		mustFail(t, "missing "+name, stream(without(without(q, "run", name), "pass", name)...), name+" has no run event", unobserved)
+		mustFail(t, "no run "+name, stream(without(q, "run", name)...), name+" has no run event", unobserved)
+		mustFail(t, "no pass "+name, stream(without(q, "pass", name)...), name+" has no pass event", unobserved)
+		mustFail(t, "skipped "+name, stream(replacing(q, "pass", name, ev("skip", NativePackage, name))...), "test "+name+" in "+NativePackage+" skipped: "+unobserved)
+		mustFail(t, "failed "+name, stream(replacing(q, "pass", name, ev("fail", NativePackage, name))...), "test "+name+" in "+NativePackage+" failed")
+		// Only that name is reported missing.
+		err := check(stream(without(without(q, "run", name), "pass", name)...))
+		if strings.Count(err.Error(), " has no ") != 1 {
+			t.Fatalf("missing %s: %v", name, err)
+		}
 	}
 }
 
@@ -302,7 +368,7 @@ func TestTailBuffer(t *testing.T) {
 // --- driver (UT-2 stage dispatch, UT-4 native execution) ---
 
 func TestStagesMatchDispatch(t *testing.T) {
-	want := "test coverage bench cross all native stress"
+	want := "test coverage bench cross all native stress stress-packages stress-processgroup stress-functions"
 	got := Stages()
 	if strings.Join(got, " ") != want {
 		t.Fatalf("Stages = %v", got)
@@ -334,7 +400,7 @@ func TestStagesMatchDispatch(t *testing.T) {
 			os.RemoveAll(scratchFrom(out))
 		}
 	}
-	if code, _, errOut := runDriver(t, "linux", &fakeRunner{}, "natives"); code != 2 || !strings.Contains(errOut, "usage: devcheck test | coverage [-o profile] | bench | cross | all | native | stress") {
+	if code, _, errOut := runDriver(t, "linux", &fakeRunner{}, "natives"); code != 2 || !strings.Contains(errOut, "usage: devcheck test | coverage [-o profile] | bench | cross | all | native | stress | stress-packages | stress-processgroup | stress-functions") {
 		t.Fatalf("unknown stage = %d %s", code, errOut)
 	}
 }

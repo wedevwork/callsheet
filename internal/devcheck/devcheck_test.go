@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -19,8 +20,12 @@ type recorded struct {
 }
 
 // fakeRunner records calls and scripts results: fail matches a substring of
-// the joined argv; coverTotal feeds "go tool cover -func" output.
+// the joined argv; coverTotal feeds "go tool cover -func" output. It is safe
+// for the concurrent calls of the processgroup stress shard: mu guards
+// calls only and is never held while writing child output. Read calls only
+// after the driver has returned.
 type fakeRunner struct {
+	mu         sync.Mutex
 	calls      []recorded
 	fail       string
 	coverTotal string
@@ -32,7 +37,9 @@ type fakeRunner struct {
 }
 
 func (f *fakeRunner) run(_ context.Context, argv, env []string, dir string, stdout, stderr io.Writer) error {
+	f.mu.Lock()
 	f.calls = append(f.calls, recorded{argv, env, dir})
+	f.mu.Unlock()
 	joined := strings.Join(argv, " ")
 	if f.fail != "" && strings.Contains(joined, f.fail) {
 		fmt.Fprint(stderr, "boom from child")
@@ -283,7 +290,8 @@ func TestStagePlanning(t *testing.T) {
 	}
 	f = &fakeRunner{}
 	runDriver(t, "linux", f, "bench")
-	if got := f.argvs()[0]; got != "go test ./internal/spikes/gittransport -run ^$ -bench . -benchmem -benchtime=3x -count=1 -timeout=180s" {
+	if got := strings.Join(f.argvs(), "|"); got != "go test ./internal/spikes/gittransport -run ^$ -bench . -benchmem -benchtime=3x -count=1 -timeout=180s|"+
+		"go test ./internal/plane -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s" {
 		t.Fatalf("bench = %s", got)
 	}
 	f = &fakeRunner{}
@@ -368,9 +376,10 @@ func TestAllStopsAtFirstFailure(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("all = %d %s", code, errOut)
 	}
-	// test(2) + coverage(3) + bench(1) + cross(12), in that order.
+	// test(2) + coverage(3) + bench(2) + cross(12), in that order.
 	a := f.argvs()
-	if len(a) != 18 || !strings.Contains(a[0], "go test -count=1") || !strings.Contains(a[2], "-coverprofile") || !strings.Contains(a[5], "-bench") || !strings.Contains(a[6], "go build") {
+	if len(a) != 19 || !strings.Contains(a[0], "go test -count=1") || !strings.Contains(a[2], "-coverprofile") || !strings.Contains(a[5], "-bench") ||
+		!strings.Contains(a[6], "./internal/plane -run=^$ -bench=.") || !strings.Contains(a[7], "go build") {
 		t.Fatalf("all order = %v", a)
 	}
 	f = &fakeRunner{fail: "-bench", coverTotal: "81%", cmdList: cmdList, profile: goodProfile}

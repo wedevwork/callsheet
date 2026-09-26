@@ -164,25 +164,39 @@ func Existence(sig Signaler, target int) (bool, error) {
 	}
 }
 
-// WaitGone polls until every target reports ESRCH or the limit passes.
+// WaitGone polls until every target reports ESRCH or the limit passes. A
+// probe error on a pid is returned at once. EPERM on a group (negative
+// target) is not proof of absence and not final either: kill(-pgid, 0) can
+// return it while the group exists but has no signalable member, as when
+// every member is an unreaped zombie (XNU killpg1 with posix=1). Such a group
+// is polled until ESRCH, and its EPERM is returned if the limit passes first.
 func WaitGone(sig Signaler, clock Clock, limit, every time.Duration, targets ...int) error {
 	deadline := clock.Now().Add(limit)
 	for {
 		var alive []int
+		var denied []error
 		for _, t := range targets {
 			ok, err := Existence(sig, t)
 			if err != nil {
-				return fmt.Errorf("processgroup: probe %d: %w", t, err)
+				err = fmt.Errorf("processgroup: probe %d: %w", t, err)
+				if t < 0 && errors.Is(err, syscall.EPERM) {
+					denied = append(denied, err)
+					continue
+				}
+				return err
 			}
 			if ok {
 				alive = append(alive, t)
 			}
 		}
-		if len(alive) == 0 {
+		if len(alive) == 0 && len(denied) == 0 {
 			return nil
 		}
 		if !clock.Now().Before(deadline) {
-			return fmt.Errorf("processgroup: still present after %v: %v", limit, alive)
+			if len(alive) > 0 {
+				denied = append(denied, fmt.Errorf("processgroup: still present after %v: %v", limit, alive))
+			}
+			return errors.Join(denied...)
 		}
 		<-clock.After(every)
 	}
