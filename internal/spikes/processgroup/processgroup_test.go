@@ -216,6 +216,88 @@ func TestEscalateStampsBeforeSignalEffects(t *testing.T) {
 	}
 }
 
+// Regression (CI run 36211726098): on a loaded runner a TERM-honouring leader
+// took 380 ms to exit, past the old 200 ms grace. The product owner fixed the
+// spike's grace at 1 s; it must not silently shrink below that, and the probe
+// must stay well inside it.
+func TestGraceIsAtLeastOneSecond(t *testing.T) {
+	if Grace < time.Second {
+		t.Fatalf("Grace = %v, want >= 1s (CI run 36211726098: a cooperative leader needed 380ms)", Grace)
+	}
+	if ProbeLead >= Grace/2 {
+		t.Fatalf("ProbeLead %v must stay below Grace/2 (%v)", ProbeLead, Grace/2)
+	}
+}
+
+// ciObservedTermLatency is how long the cooperative leader took to exit on
+// TERM under whole-suite race load in CI run 36211726098.
+const ciObservedTermLatency = 380 * time.Millisecond
+
+// lateExitClock is a fakeClock whose group "exits" exitAfter virtual time
+// after the clock's start (TERM is stamped at the start). A wait that would
+// reach the exit closes done and never fires, so Done is the only ready case;
+// a wait that ends before the exit advances time and fires with done still
+// open. No select ever sees both cases ready.
+type lateExitClock struct {
+	fakeClock
+	exitAt time.Time
+	done   chan struct{}
+	exited bool
+}
+
+func newLateExitClock(exitAfter time.Duration) *lateExitClock {
+	start := time.Unix(1000, 0)
+	return &lateExitClock{fakeClock: fakeClock{now: start}, exitAt: start.Add(exitAfter), done: make(chan struct{})}
+}
+
+func (c *lateExitClock) After(d time.Duration) <-chan time.Time {
+	c.mu.Lock()
+	if !c.exited && !c.now.Add(d).Before(c.exitAt) {
+		c.now = c.exitAt
+		c.exited = true
+		close(c.done)
+		c.mu.Unlock()
+		return make(chan time.Time)
+	}
+	c.mu.Unlock()
+	return c.fakeClock.After(d)
+}
+
+// escalateLateLeader escalates against a group that exits
+// ciObservedTermLatency after TERM, with the given grace (0: the default).
+func escalateLateLeader(t *testing.T, grace time.Duration) (Outcome, *fakeSignaler, *lateExitClock) {
+	t.Helper()
+	clock := newLateExitClock(ciObservedTermLatency)
+	sig := &fakeSignaler{}
+	out, err := Escalate(context.Background(), Plan{PGID: 4242, Grace: grace, Sig: sig, Clock: clock, Done: clock.done, BeforeDeadline: func() error {
+		return nil
+	}})
+	if err != nil {
+		t.Fatalf("grace %v: %v", grace, err)
+	}
+	return out, sig, clock
+}
+
+// Regression (CI run 36211726098): a leader that honours TERM but is
+// scheduled 380 ms late is cooperative under the configured grace: no KILL,
+// no pre-deadline probe, exit before the deadline. The old 200 ms grace KILLs
+// the same group, which is the CI failure.
+func TestEscalateLateCooperativeLeaderWithinGrace(t *testing.T) {
+	out, sig, clock := escalateLateLeader(t, 0)
+	if out.KillSent || sig.sent(syscall.SIGKILL) != 0 || sig.sent(syscall.SIGTERM) != 1 || out.Probed {
+		t.Fatalf("leader exiting %v after TERM was not treated as cooperative: %+v calls=%v", ciObservedTermLatency, out, sig.calls)
+	}
+	if out.Deadline.Sub(out.TermSentAt) != Grace || !clock.exitAt.Before(out.Deadline) {
+		t.Fatalf("exit at %v, deadline %v (grace %v)", clock.exitAt, out.Deadline, Grace)
+	}
+	// The scenario discriminates: with the pre-fix 200 ms grace the same
+	// late leader is KILLed at the deadline, before it exits.
+	old, oldSig, oldClock := escalateLateLeader(t, 200*time.Millisecond)
+	if !old.KillSent || oldSig.sent(syscall.SIGKILL) != 1 || !old.KillSentAt.Before(oldClock.exitAt) {
+		t.Fatalf("200ms grace should KILL a leader exiting after %v: %+v", ciObservedTermLatency, old)
+	}
+}
+
 func TestEscalateCooperativeNoKill(t *testing.T) {
 	for i := 0; i < 20; i++ { // select order is random; exercise both arms
 		sig := &fakeSignaler{}
@@ -395,7 +477,7 @@ func goodResult(name string) CaseResult {
 		r.KillSent, r.KillSentAt = true, t0.Add(Grace)
 		r.Leader = ProcStatus{Signaled: true, Signal: "SIGKILL"}
 		r.Descendant = ProcStatus{Signaled: true, Signal: "SIGKILL", ReapedBy: "subreaper"}
-		r.Observations = []Observation{{Label: "pre-deadline", At: t0.Add(175 * time.Millisecond), LeaderAlive: true, DescendantAlive: true, LifetimeOpen: true}}
+		r.Observations = []Observation{{Label: "pre-deadline", At: t0.Add(Grace - ProbeLead), LeaderAlive: true, DescendantAlive: true, LifetimeOpen: true}}
 	case "leader-exits-first":
 		r.KillSent, r.KillSentAt = true, t0.Add(Grace)
 		r.LeaderExitedAt = t0.Add(time.Millisecond)
@@ -403,7 +485,7 @@ func goodResult(name string) CaseResult {
 		r.Descendant = ProcStatus{Signaled: true, Signal: "SIGKILL", ReapedBy: "subreaper"}
 		r.Observations = []Observation{
 			{Label: "after-leader-exit", At: t0.Add(2 * time.Millisecond), LeaderExited: true, DescendantAlive: true, LifetimeOpen: true},
-			{Label: "pre-deadline", At: t0.Add(175 * time.Millisecond), LeaderExited: true, DescendantAlive: true, LifetimeOpen: true},
+			{Label: "pre-deadline", At: t0.Add(Grace - ProbeLead), LeaderExited: true, DescendantAlive: true, LifetimeOpen: true},
 		}
 	}
 	return r

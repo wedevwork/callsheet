@@ -92,12 +92,17 @@ Budgets:
 - Estimated local cost with a warm build cache: 3–10 minutes (a planning
   estimate, not a hardware-independent limit).
 - Measured: Linux, go1.26.4 linux/amd64 on a 16-thread Intel i7-11800H
-  developer workstation (kernel 6.8), warm build cache, 2026-09-25: the whole
-  stage took 180 s (3 min 0 s), of which `stress packages` 105 s (slowest
-  binary `internal/spikes/processgroup` 105 s; `internal/testkit/fakeadapter`
-  54 s, `internal/testkit` 31 s, `internal/spikes/gittransport` 24 s) and
-  `stress function` 74 s. The first run with a cold race build cache took
-  182 s. No test binary came near its 6-minute timeout. Hosted runners are
+  developer workstation (kernel 6.8), warm build cache, 2026-09-26, with the
+  process-group spike's 1 s TERM-to-KILL grace: the whole stage took 372 s
+  (6 min 12 s), of which `stress packages` about 201 s (slowest binary
+  `internal/spikes/processgroup` 201 s; `internal/testkit/fakeadapter` 55 s,
+  `internal/testkit` 31 s, `internal/spikes/gittransport` 24 s) and
+  `stress function` 170 s. The resistant and leader-exits-first cases of the
+  process-group experiment (`TestExperiment` and `TestFP6ProcessGroups`) wait
+  out the full grace on every repetition, which dominates both steps. The
+  slowest binary used 201 s of its 6-minute timeout, so no package was split
+  into its own step. With the earlier 200 ms grace (2026-09-25) the stage took
+  180 s: processgroup 105 s, `stress function` 74 s. Hosted runners are
   expected to be slower; their times are recorded from the CI logs.
   macOS: pending until the next `ci-macos` run of pull request #1, recorded
   from its log in the flow handoff (see First remote run).

@@ -50,6 +50,11 @@ func TestFP6ProcessGroups(t *testing.T) {
 			if !c.LeaderGoneESRCH || !c.DescendantGoneESRCH || !c.GroupGoneESRCH || c.EmergencyKill {
 				t.Fatalf("teardown: %+v", c)
 			}
+			// Every case runs with the spike's configured grace (1 s since CI
+			// run 36211726098), measured from the TERM send.
+			if c.TermSentAt.IsZero() || c.Deadline.Sub(c.TermSentAt) != processgroup.Grace {
+				t.Fatalf("deadline %v is not TERM %v + grace %v", c.Deadline, c.TermSentAt, processgroup.Grace)
+			}
 			pre, hasPre := c.Observation("pre-deadline")
 			after, hasAfter := c.Observation("after-leader-exit")
 			switch c.Case.Name {

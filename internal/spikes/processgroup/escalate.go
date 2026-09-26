@@ -12,8 +12,10 @@ import (
 
 const (
 	// Grace is this spike's TERM-to-KILL grace period. It is not the
-	// production cancel default (iteration 06).
-	Grace = 200 * time.Millisecond
+	// production cancel default (iteration 06). It was 200 ms until CI run
+	// 36211726098, where a TERM-honouring leader on a loaded runner took
+	// 380 ms to exit; 1 s leaves room for that scheduling latency.
+	Grace = 1 * time.Second
 	// ProbeLead is how long before the deadline liveness is observed.
 	ProbeLead = 25 * time.Millisecond
 )
