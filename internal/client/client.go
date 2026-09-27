@@ -325,10 +325,10 @@ func (c *Client) request(ctx context.Context, method, path string, body []byte, 
 		return 0, nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		b, _ := readLimited(resp.Body, maxErrorBody)
+		b, _ := readLimited(resp.Body, maxErrorBody, resp.ContentLength)
 		return resp.StatusCode, nil, responseError(c.ep, resp.StatusCode, b)
 	}
-	b, err := readLimited(resp.Body, limit)
+	b, err := readLimited(resp.Body, limit, resp.ContentLength)
 	if err != nil {
 		if errors.Is(err, errTooLarge) {
 			return 0, nil, contract.New(contract.CodeInvalidArgument, fmt.Sprintf("the plane's response is larger than %d bytes", limit))
@@ -377,14 +377,22 @@ func responseError(ep endpoint, status int, body []byte) error {
 var errTooLarge = errors.New("response too large")
 
 // readLimited reads at most limit bytes and fails beyond it, so a response
-// is never truncated into a partial result.
-func readLimited(r io.Reader, limit int64) ([]byte, error) {
-	b, err := io.ReadAll(io.LimitReader(r, limit+1))
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(b)) > limit {
+// is never truncated into a partial result. A declared length (-1 when
+// unknown) over the limit fails before reading, and a declared length
+// within it sizes the buffer once instead of growing it by copies.
+func readLimited(r io.Reader, limit, declared int64) ([]byte, error) {
+	if declared > limit {
 		return nil, errTooLarge
 	}
-	return b, nil
+	var buf bytes.Buffer
+	if declared > 0 {
+		buf.Grow(int(declared) + bytes.MinRead)
+	}
+	if _, err := buf.ReadFrom(io.LimitReader(r, limit+1)); err != nil {
+		return nil, err
+	}
+	if int64(buf.Len()) > limit {
+		return nil, errTooLarge
+	}
+	return buf.Bytes(), nil
 }

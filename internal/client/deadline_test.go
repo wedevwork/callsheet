@@ -125,7 +125,7 @@ func TestRequestLateResponse(t *testing.T) {
 		body string
 	}{
 		"implicit 200": {implicit200, ""},
-		"well-formed":  {http.Header{contract.ProtocolHeader: {"2"}, "Content-Type": {"application/json"}}, `{"version":2,"nodes":[]}`},
+		"well-formed":  {http.Header{contract.ProtocolHeader: {"3"}, "Content-Type": {"application/json"}}, `{"version":3,"nodes":[]}`},
 	} {
 		var closed atomic.Bool
 		lt := &lateTransport{respond: lateResponse(200, r.h, r.body, &closed)}

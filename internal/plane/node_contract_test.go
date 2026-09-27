@@ -445,7 +445,7 @@ func (p *peer) heartbeat(i int) {
 	var skipped []contract.NodeFrame
 	for {
 		f := p.recv()
-		if f.Type == contract.FrameRolesReplace || f.Type == contract.FrameRoleValidate {
+		if f.Type == contract.FrameRolesReplace || f.Type == contract.FrameRoleValidate || f.Type == contract.FrameTaskStart {
 			skipped = append(skipped, f)
 			continue
 		}
@@ -494,7 +494,7 @@ func TestNodeLeaseContract(t *testing.T) {
 		hbAt := np.clk.Now()
 		p.heartbeat(1)
 		n := np.show(t, idA)
-		if n.Liveness != contract.LivenessOnline || !n.LastSeen.Equal(hbAt) || *n.ProtocolVersion != 2 || *n.SoftwareVersion != "test-1" {
+		if n.Liveness != contract.LivenessOnline || !n.LastSeen.Equal(hbAt) || *n.ProtocolVersion != 3 || *n.SoftwareVersion != "test-1" {
 			t.Fatalf("after heartbeat = %+v", n)
 		}
 		// A closed socket keeps the lease until its deadline.
@@ -600,22 +600,22 @@ func TestNodeAPI(t *testing.T) {
 	}{
 		{"GET", contract.PathNodes, "", nil, "", 400, contract.CodeInvalidArgument},
 		{"GET", contract.PathNodes, "x", nil, "", 400, contract.CodeInvalidArgument},
-		{"GET", contract.PathNodes, "2", map[string]string{contract.ProtocolHeader: "2"}, "", 400, contract.CodeInvalidArgument},
-		{"GET", contract.PathNodes, "3", nil, "", 409, contract.CodeProtocolMismatch},
-		{"GET", contract.PathNodes + "?all=SECRET-QUERY", "2", nil, "", 400, contract.CodeInvalidArgument},
-		{"GET", contract.PathNodes + "?", "2", nil, "", 400, contract.CodeInvalidArgument},
-		{"POST", contract.PathNodes, "2", nil, "SECRET-BODY", 400, contract.CodeInvalidArgument},
-		{"DELETE", contract.PathNodes + "/" + idA, "2", nil, "", 400, contract.CodeInvalidArgument},
-		{"GET", contract.PathNodes + "/SECRET-ID", "2", nil, "", 400, contract.CodeInvalidArgument},
-		{"GET", contract.PathNodes + "/", "2", nil, "", 400, contract.CodeInvalidArgument},
-		{"GET", contract.PathNodes + "/" + idA + "/x", "2", nil, "", 400, contract.CodeInvalidArgument},
-		{"GET", contract.PathNodes + "/n_ffffffffffffffffffffffffffffffff", "2", nil, "", 404, contract.CodeNotFound},
-		{"GET", contract.PathEnroll, "2", nil, "", 400, contract.CodeInvalidArgument},
-		{"POST", contract.PathEnroll, "2", nil, "SECRET-BODY", 400, contract.CodeInvalidArgument},
-		{"POST", contract.PathEnroll, "2", nil, `{"node_id":"` + idA + `","software_version":"v","x":"SECRET-BODY"}`, 400, contract.CodeInvalidArgument},
-		{"POST", contract.PathEnroll, "3", nil, `{}`, 409, contract.CodeProtocolMismatch},
+		{"GET", contract.PathNodes, "3", map[string]string{contract.ProtocolHeader: "3"}, "", 400, contract.CodeInvalidArgument},
+		{"GET", contract.PathNodes, "4", nil, "", 409, contract.CodeProtocolMismatch},
+		{"GET", contract.PathNodes + "?all=SECRET-QUERY", "3", nil, "", 400, contract.CodeInvalidArgument},
+		{"GET", contract.PathNodes + "?", "3", nil, "", 400, contract.CodeInvalidArgument},
+		{"POST", contract.PathNodes, "3", nil, "SECRET-BODY", 400, contract.CodeInvalidArgument},
+		{"DELETE", contract.PathNodes + "/" + idA, "3", nil, "", 400, contract.CodeInvalidArgument},
+		{"GET", contract.PathNodes + "/SECRET-ID", "3", nil, "", 400, contract.CodeInvalidArgument},
+		{"GET", contract.PathNodes + "/", "3", nil, "", 400, contract.CodeInvalidArgument},
+		{"GET", contract.PathNodes + "/" + idA + "/x", "3", nil, "", 400, contract.CodeInvalidArgument},
+		{"GET", contract.PathNodes + "/n_ffffffffffffffffffffffffffffffff", "3", nil, "", 404, contract.CodeNotFound},
+		{"GET", contract.PathEnroll, "3", nil, "", 400, contract.CodeInvalidArgument},
+		{"POST", contract.PathEnroll, "3", nil, "SECRET-BODY", 400, contract.CodeInvalidArgument},
+		{"POST", contract.PathEnroll, "3", nil, `{"node_id":"` + idA + `","software_version":"v","x":"SECRET-BODY"}`, 400, contract.CodeInvalidArgument},
+		{"POST", contract.PathEnroll, "4", nil, `{}`, 409, contract.CodeProtocolMismatch},
 		{"POST", contract.PathCA, "", nil, "", 400, contract.CodeInvalidArgument},
-		{"GET", "/api/v1/nodez", "2", nil, "", 404, contract.CodeNotFound},
+		{"GET", "/api/v1/nodez", "3", nil, "", 404, contract.CodeNotFound},
 		{"GET", contract.PathNodeStream, "", map[string]string{"Origin": "https://evil.example"}, "", 400, contract.CodeInvalidArgument},
 		{"POST", contract.PathNodeStream, "", nil, "", 400, contract.CodeInvalidArgument},
 		{"GET", contract.PathNodeStream + "?x=1", "", nil, "", 400, contract.CodeInvalidArgument},
@@ -625,19 +625,19 @@ func TestNodeAPI(t *testing.T) {
 		if status != c.status || err != nil || e.Code != c.code || bytes.Contains([]byte(body), []byte("SECRET")) {
 			t.Fatalf("%s %s v=%q = %d %q (%v)", c.method, c.path, c.version, status, body, err)
 		}
-		if c.path != contract.PathCA && c.path != "/api/v1/nodez" && hdr != "2" {
+		if c.path != contract.PathCA && c.path != "/api/v1/nodez" && hdr != "3" {
 			t.Fatalf("%s %s: response protocol header %q", c.method, c.path, hdr)
 		}
 		if c.code == contract.CodeProtocolMismatch {
-			if e.Message != "protocol version mismatch: local=2 remote=3" {
+			if e.Message != "protocol version mismatch: local=3 remote=4" {
 				t.Fatalf("mismatch message %q", e.Message)
 			}
-			if l, _ := e.DetailInt("local_version"); l != 2 {
+			if l, _ := e.DetailInt("local_version"); l != 3 {
 				t.Fatal("details")
 			}
 		}
 	}
-	if !bytes.Contains([]byte(np.logs.String()), []byte(`"local_version":2,"remote_version":3`)) {
+	if !bytes.Contains([]byte(np.logs.String()), []byte(`"local_version":3,"remote_version":4`)) {
 		t.Fatalf("mismatch not logged: %s", np.logs.String())
 	}
 	// An oversized enrollment body is refused by the bounded reader (checked
@@ -645,7 +645,7 @@ func TestNodeAPI(t *testing.T) {
 	// connection before closing it).
 	svc := newNodeService(np.srvReg(t), np.clk, discardLogger(), nil, time.Second)
 	req, _ := newRequest("POST", contract.PathEnroll, `{"node_id":"`+idA+`","software_version":"`+strings.Repeat("v", 5000)+`"}`)
-	req.Header.Set(contract.ProtocolHeader, "2")
+	req.Header.Set(contract.ProtocolHeader, "3")
 	rec := httptest.NewRecorder()
 	svc.handleNodes(rec, req)
 	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "larger than 4096 bytes") {
@@ -662,17 +662,17 @@ func TestNodeAPI(t *testing.T) {
 		t.Fatalf("health = %d %q", status, body)
 	}
 	// Enrollment status codes: 201 new, 200 existing.
-	status, _, body = do("POST", contract.PathEnroll, "2", nil, `{"node_id":"n_dddddddddddddddddddddddddddddddd","software_version":"v"}`)
+	status, _, body = do("POST", contract.PathEnroll, "3", nil, `{"node_id":"n_dddddddddddddddddddddddddddddddd","software_version":"v"}`)
 	if status != 201 {
 		t.Fatalf("new enroll = %d %s", status, body)
 	}
-	status, _, _ = do("POST", contract.PathEnroll, "2", nil, `{"node_id":"n_dddddddddddddddddddddddddddddddd","software_version":"v"}`)
+	status, _, _ = do("POST", contract.PathEnroll, "3", nil, `{"node_id":"n_dddddddddddddddddddddddddddddddd","software_version":"v"}`)
 	if status != 200 {
 		t.Fatalf("repeat enroll = %d", status)
 	}
 	// The response JSON is exactly the envelope with a final LF.
-	status, _, body = do("GET", contract.PathNodes+"/"+idA, "2", nil, "")
-	if status != 200 || body != `{"version":2,"node":{"id":"`+idA+`","liveness":"offline","last_seen":null,"protocol_version":null,"software_version":null,"roles":[]}}`+"\n" {
+	status, _, body = do("GET", contract.PathNodes+"/"+idA, "3", nil, "")
+	if status != 200 || body != `{"version":3,"node":{"id":"`+idA+`","liveness":"offline","last_seen":null,"protocol_version":null,"software_version":null,"roles":[]}}`+"\n" {
 		t.Fatalf("show body %q", body)
 	}
 }
@@ -738,8 +738,8 @@ func TestNodeStreamProtocol(t *testing.T) {
 		p.send(1, contract.FrameHello, "h9", map[string]any{"node_id": idA, "future": true})
 		f := p.recv()
 		e, err := contract.ParseErrorBody(f.Body)
-		if f.Version != 2 || f.Type != contract.FrameError || f.RequestID != "h9" || err != nil || e.Code != contract.CodeProtocolMismatch ||
-			e.Message != "protocol version mismatch: local=2 remote=1" {
+		if f.Version != 3 || f.Type != contract.FrameError || f.RequestID != "h9" || err != nil || e.Code != contract.CodeProtocolMismatch ||
+			e.Message != "protocol version mismatch: local=3 remote=1" {
 			t.Fatalf("mismatch = %+v %v %v", f, e, err)
 		}
 		if r, _ := e.DetailInt("remote_version"); r != 1 {
@@ -751,7 +751,7 @@ func TestNodeStreamProtocol(t *testing.T) {
 		if n := np.show(t, idA); n.Liveness != contract.LivenessOffline || n.SoftwareVersion != nil {
 			t.Fatalf("mismatch mutated the registry: %+v", n)
 		}
-		if !strings.Contains(np.logs.String(), `"msg":"protocol version mismatch","component":"plane","local_version":2,"remote_version":1,"path":"/api/v1/node-stream"`) {
+		if !strings.Contains(np.logs.String(), `"msg":"protocol version mismatch","component":"plane","local_version":3,"remote_version":1,"path":"/api/v1/node-stream"`) {
 			t.Fatalf("mismatch not logged with both versions: %s", np.logs.String())
 		}
 		// Nothing was attached: a correct hello succeeds at once.
@@ -770,7 +770,7 @@ func TestNodeStreamProtocol(t *testing.T) {
 		{"heartbeat-first", mustFrame(t, contract.FrameHeartbeat, "b1", contract.HeartbeatBody{}), "b1", contract.CodeInvalidArgument},
 		{"unknown-node", mustFrame(t, contract.FrameHello, "h1", contract.HelloBody{NodeID: idC, SoftwareVersion: "v"}), "h1", contract.CodeNotFound},
 		{"bad-hello", mustFrame(t, contract.FrameHello, "h1", map[string]any{"node_id": idA}), "h1", contract.CodeInvalidArgument},
-		{"malformed", []byte(`{"version":2,`), invalidRequestID, contract.CodeInvalidArgument},
+		{"malformed", []byte(`{"version":3,`), invalidRequestID, contract.CodeInvalidArgument},
 		{"wrong-direction", mustFrame(t, contract.FrameHelloOK, "h1", contract.HelloOKBody{HeartbeatIntervalMS: 5000, LeaseMS: 15000}), "h1", contract.CodeInvalidArgument},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -788,20 +788,20 @@ func TestNodeStreamProtocol(t *testing.T) {
 			send func(p *peer)
 			rid  string
 		}{
-			{"skip", func(p *peer) { p.send(2, contract.FrameHeartbeat, "b2", contract.HeartbeatBody{}) }, "b2"},
+			{"skip", func(p *peer) { p.send(3, contract.FrameHeartbeat, "b2", contract.HeartbeatBody{}) }, "b2"},
 			{"duplicate", func(p *peer) {
 				p.heartbeat(1)
-				p.send(2, contract.FrameHeartbeat, "b1", contract.HeartbeatBody{})
+				p.send(3, contract.FrameHeartbeat, "b1", contract.HeartbeatBody{})
 			}, "b1"},
 			{"hello-again", func(p *peer) { p.hello(idA) }, "h1"},
 			{"roles", func(p *peer) {
-				p.sendRaw([]byte(`{"version":2,"type":"heartbeat","request_id":"b1","body":{"roles_revision":0,"roles":[{"role_id":"r","inflight":0,"concurrency":1,"can_accept":true}]}}`))
+				p.sendRaw([]byte(`{"version":3,"type":"heartbeat","request_id":"b1","body":{"roles_revision":0,"roles":[{"role_id":"r","inflight":0,"concurrency":1,"can_accept":true}]}}`))
 			}, "b1"},
 			{"revision", func(p *peer) {
-				p.send(2, contract.FrameHeartbeat, "b1", contract.HeartbeatBody{RolesRevision: 7})
+				p.send(3, contract.FrameHeartbeat, "b1", contract.HeartbeatBody{RolesRevision: 7})
 			}, "b1"},
 			{"unsolicited-ack", func(p *peer) {
-				p.send(2, contract.FrameRolesReplaceAck, "p1", contract.RolesReplaceAckBody{})
+				p.send(3, contract.FrameRolesReplaceAck, "p1", contract.RolesReplaceAckBody{})
 			}, "p1"},
 		} {
 			p := np.dial(t)
@@ -819,7 +819,7 @@ func TestNodeStreamProtocol(t *testing.T) {
 	t.Run("peer-error", func(t *testing.T) {
 		p := np.dial(t)
 		p.connect(idB, 1)
-		p.send(2, contract.FrameError, "b2", contract.New(contract.CodeInternal, "sidecar trouble"))
+		p.send(3, contract.FrameError, "b2", contract.New(contract.CodeInternal, "sidecar trouble"))
 		if st := p.closed(); st != websocket.StatusPolicyViolation {
 			t.Fatalf("close = %v", st)
 		}
@@ -948,7 +948,7 @@ func TestNodeStreamLifecycle(t *testing.T) {
 		p.connect(idA, 1)
 		conn := np.lis.all()[0]
 		conn.blocking.Store(true)
-		p.send(2, contract.FrameHeartbeat, "b2", contract.HeartbeatBody{})
+		p.send(3, contract.FrameHeartbeat, "b2", contract.HeartbeatBody{})
 		// Only once b2's ack write starts is the one 5 s timer its write
 		// bound (b1's ack write, and its timer, ended before b2 was read).
 		np.awaitEvent(t, "acking "+idA+" b2")
@@ -1008,7 +1008,7 @@ func TestNodeStreamLifecycle(t *testing.T) {
 		svc.shutdown(time.Now().Add(time.Second))
 		rec := &respRecorder{h: map[string][]string{}}
 		svc.handleStream(rec, newGet(t, contract.PathNodeStream))
-		if rec.code != 503 || rec.h.Get(contract.ProtocolHeader) != "2" {
+		if rec.code != 503 || rec.h.Get(contract.ProtocolHeader) != "3" {
 			t.Fatalf("stream after shutdown = %d, protocol header %q", rec.code, rec.h.Get(contract.ProtocolHeader))
 		}
 		if svc.admit(&nodeStream{}) {

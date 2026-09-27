@@ -21,8 +21,9 @@ const NativePackage = "github.com/wedevwork/callsheet/tests/function"
 // (iteration 02), including the "process" and "contracts" boundaries that
 // separate process-boundary scenarios from delegated contracts
 // (iteration 02b), every node function test with its mandatory subtests
-// (iteration 03), and every role function test with its mandatory subtests
-// (iteration 04).
+// (iteration 03), every role function test with its mandatory subtests
+// (iteration 04), and every task function test with its mandatory
+// subtests (iteration 05).
 var nativeRequired = []string{
 	"TestFP6ProcessGroups",
 	"TestFP6ProcessGroups/cooperative",
@@ -115,7 +116,60 @@ var nativeRequired = []string{
 	"TestRolePlatform/manuals",
 	"TestRolePlatform/executable",
 	"TestRolePlatform/policy",
+	// Iteration 05 (tasks): one function test per FP with its mandatory
+	// subtests, delegated package contracts included.
+	"TestTaskModel",
+	"TestTaskModel/envelope",
+	"TestTaskModel/states",
+	"TestTaskDispatch",
+	"TestTaskDispatch/selection",
+	"TestTaskDispatch/gate-race",
+	"TestTaskDispatch/reserved-slot",
+	"TestTaskProtocol",
+	"TestTaskProtocol/duplex",
+	"TestTaskProtocol/bounds",
+	"TestTaskProtocol/result-receipt",
+	"TestTaskProtocol/result-ack-loss",
+	"TestTaskExecution",
+	"TestTaskExecution/compose",
+	"TestTaskExecution/invoke",
+	"TestTaskExecution/exit",
+	"TestTaskExecution/process",
+	"TestTaskExecution/platform",
+	"TestTaskExecution/policy",
+	"TestTaskLogs",
+	"TestTaskLogs/retention",
+	"TestTaskLogs/backpressure",
+	"TestTaskLogs/final",
+	"TestTaskPersistence",
+	"TestTaskPersistence/durability",
+	"TestTaskPersistence/restore",
+	"TestTaskCommands",
+	"TestTaskCommands/dispatch",
+	"TestTaskCommands/ls",
+	"TestTaskCommands/show",
+	"TestTaskCommands/logs",
+	"TestTaskCommands/trust",
+	"TestTaskRoles",
+	"TestTaskRoles/counts",
+	"TestTaskRoles/mutation",
+	"TestTaskRoles/remaining-capacity",
+	"TestTaskRoles/recovery-remove",
+	"TestTaskRecoveryBoundary",
+	"TestTaskRecoveryBoundary/disconnect",
+	"TestTaskRecoveryBoundary/remaining-capacity",
+	"TestTaskRecoveryBoundary/recovery-remove",
 }
+
+// NativeTaskProcessPackage and nativeTaskProcess are the separate native
+// tuple (iteration 05): the real task-process qualification must run and
+// pass in the sidecar's own package within the same full-suite stream.
+const NativeTaskProcessPackage = "github.com/wedevwork/callsheet/internal/sidecar"
+
+var nativeTaskProcess = []string{"TestTaskExecutionContract", "TestTaskExecutionContract/process"}
+
+// NativeTaskProcessTests returns a fresh copy of the sidecar tuple.
+func NativeTaskProcessTests() []string { return append([]string(nil), nativeTaskProcess...) }
 
 // NativeRequiredTests returns a fresh copy of the test names in NativePackage
 // that a native run must execute and pass.
@@ -338,6 +392,15 @@ func (c *nativeChecker) finish() error {
 			missing = append(missing, name+" has no run event")
 		case !st.passed:
 			missing = append(missing, name+" has no pass event")
+		}
+	}
+	for _, name := range nativeTaskProcess {
+		st := c.tests[testKey(NativeTaskProcessPackage, name)]
+		switch {
+		case st == nil || !st.ran:
+			missing = append(missing, name+" in "+NativeTaskProcessPackage+" has no run event")
+		case !st.passed:
+			missing = append(missing, name+" in "+NativeTaskProcessPackage+" has no pass event")
 		}
 	}
 	if len(missing) > 0 {

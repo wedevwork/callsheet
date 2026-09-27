@@ -12,14 +12,16 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/wedevwork/callsheet/internal/contract"
 )
 
 // HealthPath proves the real TLS listener and exposes no state. Since
-// iteration 03 the service also serves the node API (nodeService), and
-// since iteration 04 the role API (roleService).
+// iteration 03 the service also serves the node API (nodeService), since
+// iteration 04 the role API (roleService) and since iteration 05 the task
+// API (taskService).
 const HealthPath = "/api/v1/health"
 
 // healthBody is the exact health response.
@@ -71,6 +73,22 @@ func (d *deps) run(ctx context.Context, o RunOptions) error {
 	}
 	reg.roles = newRoleRegistry(layout{root: o.StateDir}, d, roleLookup, doc)
 	reg.roles.adopt = reg.adoptRoles
+	// Tasks (iteration 05): every document is validated and nonterminal
+	// reservations are rebuilt under their historical instances before
+	// listening; no start is replayed.
+	loaded, err := layout{root: o.StateDir}.loadTasks(roleLookup, doc, reg.ids())
+	if err != nil {
+		return err
+	}
+	ts, err := newTaskService(&taskStore{l: layout{root: o.StateDir}, d: d}, reg, reg.roles, &atomic.Bool{}, d, logger, loaded)
+	if err != nil {
+		return err
+	}
+	ts.events, ts.hook = d.streamEvents, d.taskHook
+	reg.tasks = ts
+	if d.onTasks != nil {
+		d.onTasks(ts)
+	}
 	if err := canceled(ctx); err != nil {
 		return err
 	}
@@ -109,6 +127,12 @@ func (d *deps) serve(ctx context.Context, logger *slog.Logger, m *material, fp s
 		svc.roles = newRoleService(reg.roles, reg, d.nodeClock, logger)
 		svc.roles.events = d.streamEvents
 		svc.roles.hook = d.roleHook
+	}
+	if reg.tasks != nil {
+		svc.tasks = reg.tasks
+		if svc.roles != nil {
+			svc.roles.gate, svc.roles.tasks = reg.tasks.gate, reg.tasks
+		}
 	}
 	var h http.Handler = newServiceHandler(svc)
 	if d.wrap != nil {
@@ -186,6 +210,8 @@ func newServiceHandler(svc *nodeService) http.Handler {
 			svc.handleNodes(w, r)
 		case svc.roles != nil && (p == contract.PathRoles || strings.HasPrefix(p, contract.PathRoles+"/")):
 			svc.handleRoles(w, r)
+		case svc.tasks != nil && (p == contract.PathTasks || strings.HasPrefix(p, contract.PathTasks+"/")):
+			svc.handleTasks(w, r)
 		default:
 			writeError(w, contract.New(contract.CodeNotFound, "no such endpoint"))
 		}

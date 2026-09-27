@@ -106,6 +106,13 @@ func (d *deps) run(ctx context.Context, o RunOptions) error {
 	// Workers are joined before Run returns: probe children are killed by
 	// cancellation and completed filesystem checks return.
 	defer w.wg.Wait()
+	// Task workers belong to Run (iteration 05): at shutdown every running
+	// child's group is torn down and every worker joined.
+	w.tasks = d.newSupervisor(env, o.GOOS, logger)
+	if d.onSupervisor != nil {
+		d.onSupervisor(w.tasks)
+	}
+	defer w.tasks.shutdown()
 	return d.loop(ctx, c, id, o.SoftwareVersion, env, w, logger)
 }
 

@@ -89,6 +89,8 @@ func EncodeFrame(version int, typ, requestID string, b any) ([]byte, error) {
 	switch v := b.(type) {
 	case *Error:
 		body, err = v.MarshalJSON()
+	case TaskStartResult:
+		body, err = v.MarshalJSON()
 	case HeartbeatBody:
 		if v.Roles == nil {
 			v.Roles = []RoleStatus{}
@@ -116,8 +118,10 @@ func EncodeFrame(version int, typ, requestID string, b any) ([]byte, error) {
 }
 
 var frameTypes = map[Direction]map[string]bool{
-	FromSidecar: {FrameHello: true, FrameHeartbeat: true, FrameError: true, FrameRoleValidateResult: true, FrameRolesReplaceAck: true},
-	FromPlane:   {FrameHelloOK: true, FrameHeartbeatAck: true, FrameError: true, FrameRoleValidate: true, FrameRolesReplace: true},
+	FromSidecar: {FrameHello: true, FrameHeartbeat: true, FrameError: true, FrameRoleValidateResult: true, FrameRolesReplaceAck: true,
+		FrameTaskStartResult: true, FrameTaskLog: true, FrameTaskResult: true},
+	FromPlane: {FrameHelloOK: true, FrameHeartbeatAck: true, FrameError: true, FrameRoleValidate: true, FrameRolesReplace: true,
+		FrameTaskStart: true, FrameTaskLogAck: true, FrameTaskResultAck: true},
 }
 
 // DecodeFrame decodes one message sent by from. It reads the bounded

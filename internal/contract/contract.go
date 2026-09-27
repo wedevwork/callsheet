@@ -12,10 +12,13 @@ import (
 
 // ProtocolVersion is the plane/sidecar/client wire protocol version.
 // Iteration 04 raised it to 2: roles on the node stream (role validation,
-// role snapshots, per-role heartbeat statuses) and the role API. There is
-// no negotiation or fallback; plane, sidecars and coordinators upgrade
-// together.
-const ProtocolVersion = 2
+// role snapshots, per-role heartbeat statuses) and the role API.
+// Iteration 05 raised it to 3: task frames on the node stream (task_start,
+// task_log, task_result and their replies), real nonzero inflight counts
+// and the task API. Protocol 2 peers reject both, so this is a deliberate
+// incompatibility: there is no negotiation or fallback; plane, sidecars
+// and coordinators upgrade together.
+const ProtocolVersion = 3
 
 // Code is a stable, machine-readable error code.
 type Code string

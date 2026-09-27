@@ -32,9 +32,17 @@ import (
 
 // The literal deduplicated stress plan (design 02b, Stress selection), as
 // sharded by design 02c: processgroup left the packages command for three
-// single-CPU invocations; the function commands are unchanged.
+// single-CPU invocations, and so did ./internal/plane by design 05b and
+// ./internal/sidecar by its sidecar follow-up; the function commands are
+// unchanged.
 const (
-	speedPackages      = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/plane ./internal/client ./internal/sidecar ./internal/contract ./internal/adapter"
+	speedPackages      = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/contract ./internal/adapter"
+	speedPlane1        = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/plane"
+	speedPlane2        = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/plane"
+	speedPlane4        = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/plane"
+	speedSidecar1      = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/sidecar"
+	speedSidecar2      = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/sidecar"
+	speedSidecar4      = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/sidecar"
 	speedPG1           = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/spikes/processgroup"
 	speedPG2           = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/spikes/processgroup"
 	speedPG4           = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/spikes/processgroup"
@@ -109,10 +117,46 @@ var speedRoleNative = []string{
 	"TestRolePlatform", "TestRolePlatform/manuals", "TestRolePlatform/executable", "TestRolePlatform/policy",
 }
 
+// speedTaskNative are iteration 05's 41 required task names.
+var speedTaskNative = []string{
+	"TestTaskModel", "TestTaskModel/envelope", "TestTaskModel/states",
+	"TestTaskDispatch", "TestTaskDispatch/selection", "TestTaskDispatch/gate-race", "TestTaskDispatch/reserved-slot",
+	"TestTaskProtocol", "TestTaskProtocol/duplex", "TestTaskProtocol/bounds", "TestTaskProtocol/result-receipt", "TestTaskProtocol/result-ack-loss",
+	"TestTaskExecution", "TestTaskExecution/compose", "TestTaskExecution/invoke", "TestTaskExecution/exit", "TestTaskExecution/process", "TestTaskExecution/platform", "TestTaskExecution/policy",
+	"TestTaskLogs", "TestTaskLogs/retention", "TestTaskLogs/backpressure", "TestTaskLogs/final",
+	"TestTaskPersistence", "TestTaskPersistence/durability", "TestTaskPersistence/restore",
+	"TestTaskCommands", "TestTaskCommands/dispatch", "TestTaskCommands/ls", "TestTaskCommands/show", "TestTaskCommands/logs", "TestTaskCommands/trust",
+	"TestTaskRoles", "TestTaskRoles/counts", "TestTaskRoles/mutation", "TestTaskRoles/remaining-capacity", "TestTaskRoles/recovery-remove",
+	"TestTaskRecoveryBoundary", "TestTaskRecoveryBoundary/disconnect", "TestTaskRecoveryBoundary/remaining-capacity", "TestTaskRecoveryBoundary/recovery-remove",
+}
+
+// speedTaskProcess is the sidecar package's native tuple (iteration 05).
+var speedTaskProcess = []string{"TestTaskExecutionContract", "TestTaskExecutionContract/process"}
+
+// taskProcessEvents is a passing sidecar-package stream for the tuple
+// except drop.
+func taskProcessEvents(drop string) []map[string]any {
+	pkg := devcheck.NativeTaskProcessPackage
+	evs := []map[string]any{synth("start", pkg, "")}
+	for _, name := range speedTaskProcess {
+		if name != drop {
+			evs = append(evs, synth("run", pkg, name))
+		}
+	}
+	for i := len(speedTaskProcess) - 1; i >= 0; i-- {
+		if speedTaskProcess[i] != drop {
+			evs = append(evs, synth("pass", pkg, speedTaskProcess[i]))
+		}
+	}
+	return append(evs, synth("pass", pkg, ""))
+}
+
 // speedJobs is the table of ordinary jobs: the two main jobs (design 02b,
-// Workflow topology) and the six stress workers that replaced its two
-// stress jobs (design 02c). The two summaries that keep the stress
-// contexts are checked by TestStressShardSummaries.
+// Workflow topology) and the ten stress workers that replaced its two
+// stress jobs (design 02c, with design 05b's plane workers and its sidecar
+// follow-up's sidecar workers). The two
+// summaries that keep the stress contexts are checked by
+// TestStressShardSummaries.
 var speedJobs = []struct {
 	id, name, runner, timeout string
 	checks                    []string
@@ -120,9 +164,13 @@ var speedJobs = []struct {
 	{"linux", "ci-linux", "ubuntu-24.04", "45", []string{"go run ./cmd/devcheck test", "go run ./cmd/devcheck coverage", "go run ./cmd/devcheck bench", "go run ./cmd/devcheck cross"}},
 	{"macos", "ci-macos", "macos-15", "30", []string{"go run ./cmd/devcheck native"}},
 	{"linux-stress-packages", "ci-linux-stress-packages", "ubuntu-24.04", "20", []string{"go run ./cmd/devcheck stress-packages"}},
+	{"linux-stress-plane", "ci-linux-stress-plane", "ubuntu-24.04", "20", []string{"go run ./cmd/devcheck stress-plane"}},
+	{"linux-stress-sidecar", "ci-linux-stress-sidecar", "ubuntu-24.04", "20", []string{"go run ./cmd/devcheck stress-sidecar"}},
 	{"linux-stress-processgroup", "ci-linux-stress-processgroup", "ubuntu-24.04", "20", []string{"go run ./cmd/devcheck stress-processgroup"}},
 	{"linux-stress-functions", "ci-linux-stress-functions", "ubuntu-24.04", "20", []string{"go run ./cmd/devcheck stress-functions"}},
 	{"macos-stress-packages", "ci-macos-stress-packages", "macos-15", "20", []string{"go run ./cmd/devcheck stress-packages"}},
+	{"macos-stress-plane", "ci-macos-stress-plane", "macos-15", "20", []string{"go run ./cmd/devcheck stress-plane"}},
+	{"macos-stress-sidecar", "ci-macos-stress-sidecar", "macos-15", "20", []string{"go run ./cmd/devcheck stress-sidecar"}},
 	{"macos-stress-processgroup", "ci-macos-stress-processgroup", "macos-15", "20", []string{"go run ./cmd/devcheck stress-processgroup"}},
 	{"macos-stress-functions", "ci-macos-stress-functions", "macos-15", "20", []string{"go run ./cmd/devcheck stress-functions"}},
 }
@@ -183,10 +231,12 @@ func delegatedCall(call *ast.CallExpr) (kind, contract string) {
 func TestCISpeedSelection(t *testing.T) {
 	for _, goos := range []string{"linux", "darwin"} {
 		steps, err := devcheck.StressSteps(goos)
-		if err != nil || len(steps) != 7 {
+		if err != nil || len(steps) != 13 {
 			t.Fatalf("%s: %+v %v", goos, steps, err)
 		}
-		for i, want := range []struct{ name, argv string }{{"stress packages", speedPackages}, {"stress processgroup cpu1", speedPG1},
+		for i, want := range []struct{ name, argv string }{{"stress packages", speedPackages},
+			{"stress plane cpu1", speedPlane1}, {"stress plane cpu2", speedPlane2}, {"stress plane cpu4", speedPlane4},
+			{"stress sidecar cpu1", speedSidecar1}, {"stress sidecar cpu2", speedSidecar2}, {"stress sidecar cpu4", speedSidecar4}, {"stress processgroup cpu1", speedPG1},
 			{"stress processgroup cpu2", speedPG2}, {"stress processgroup cpu4", speedPG4}, {"stress function", speedFunction}, {"stress plane function", speedPlaneFunction},
 			{"stress node function", speedNodeFunction}} {
 			if steps[i].Name != want.name || strings.Join(steps[i].Argv, " ") != want.argv || strings.Join(steps[i].Env, " ") != "CGO_ENABLED=1" {
@@ -195,18 +245,36 @@ func TestCISpeedSelection(t *testing.T) {
 		}
 		// FP-6 is no longer repeated by a function step; its experiment
 		// stays repeated through the complete processgroup package.
-		for _, s := range steps[4:] {
+		for _, s := range steps[10:] {
 			if strings.Contains(strings.Join(s.Argv, " "), "TestFP6ProcessGroups") {
 				t.Fatalf("%s: %s still selects TestFP6ProcessGroups", goos, s.Name)
 			}
 		}
-		for _, s := range steps[1:4] {
+		for _, s := range steps[7:10] {
 			if !slices.Contains(s.Argv, "./internal/spikes/processgroup") || len(s.Argv) != 7 {
 				t.Fatalf("%s %s lost the complete processgroup package: %v", goos, s.Name, s.Argv)
 			}
 		}
-		if !slices.Contains(steps[0].Argv, "./internal/plane") {
-			t.Fatalf("%s packages step lost plane: %v", goos, steps[0].Argv)
+		// The plane package (its delegated contracts included) is repeated
+		// completely in its own shard (design 05b), never in packages.
+		for _, s := range steps[1:4] {
+			if !slices.Contains(s.Argv, "./internal/plane") || len(s.Argv) != 7 {
+				t.Fatalf("%s %s lost the complete plane package: %v", goos, s.Name, s.Argv)
+			}
+		}
+		if slices.Contains(steps[0].Argv, "./internal/plane") {
+			t.Fatalf("%s packages step still repeats plane: %v", goos, steps[0].Argv)
+		}
+		// Likewise the sidecar package (its task children and reconnect
+		// contracts included), in its own shard since the 05b sidecar
+		// follow-up.
+		for _, s := range steps[4:7] {
+			if !slices.Contains(s.Argv, "./internal/sidecar") || len(s.Argv) != 7 {
+				t.Fatalf("%s %s lost the complete sidecar package: %v", goos, s.Name, s.Argv)
+			}
+		}
+		if slices.Contains(steps[0].Argv, "./internal/sidecar") {
+			t.Fatalf("%s packages step still repeats sidecar: %v", goos, steps[0].Argv)
 		}
 	}
 
@@ -270,7 +338,7 @@ func TestCISpeedSelection(t *testing.T) {
 	// fixture with the same names, near-prefix neighbours and FP-6.
 	var selector string
 	steps, _ := devcheck.StressSteps(runtime.GOOS)
-	for _, a := range steps[5].Argv {
+	for _, a := range steps[11].Argv {
 		if v, ok := strings.CutPrefix(a, "-run="); ok {
 			selector = v
 		}
@@ -413,9 +481,11 @@ func runSelectorFixture(t *testing.T, selector string) (passed, logged []string)
 	return passed, strings.Split(strings.TrimSuffix(string(b), "\n"), "\n")
 }
 
-// FP-2: the actual workflow's main jobs and, since iteration 02c, its six
-// stress workers are independent, with identical pinned setup and exact
-// check commands; the two summaries follow them.
+// FP-2: the actual workflow's main jobs and, since iteration 02c, its
+// stress workers (ten since iteration 05b's sidecar follow-up) are
+// independent, with
+// identical pinned setup and exact check commands; the two summaries
+// follow them.
 func TestCISpeedJobs(t *testing.T) {
 	data := ciWorkflow(t)
 	if err := cicheck.ValidateWorkflow(data); err != nil {
@@ -430,8 +500,8 @@ func TestCISpeedJobs(t *testing.T) {
 	for i := 0; i+1 < len(jobs.Content); i += 2 {
 		ids = append(ids, jobs.Content[i].Value)
 	}
-	if strings.Join(ids, " ") != "linux macos linux-stress-packages linux-stress-processgroup linux-stress-functions "+
-		"macos-stress-packages macos-stress-processgroup macos-stress-functions linux-stress macos-stress" {
+	if strings.Join(ids, " ") != "linux macos linux-stress-packages linux-stress-plane linux-stress-sidecar linux-stress-processgroup linux-stress-functions "+
+		"macos-stress-packages macos-stress-plane macos-stress-sidecar macos-stress-processgroup macos-stress-functions linux-stress macos-stress" {
 		t.Fatalf("job ids = %v", ids)
 	}
 	var names []string
@@ -480,7 +550,7 @@ func TestCISpeedJobs(t *testing.T) {
 			}
 		}
 	}
-	if strings.Join(names[:2], ",") != strings.Join(cicheck.RequiredChecks()[:2], ",") || len(names) != 8 {
+	if strings.Join(names[:2], ",") != strings.Join(cicheck.RequiredChecks()[:2], ",") || len(names) != 12 {
 		t.Fatalf("contexts %v, contract %v", names, cicheck.RequiredChecks())
 	}
 	for _, top := range []string{"concurrency", "env", "defaults"} {
@@ -514,18 +584,19 @@ func TestCISpeedJobs(t *testing.T) {
 func qualifyingStream(drop string) string {
 	pkg := devcheck.NativePackage
 	evs := []map[string]any{synth("start", pkg, "")}
-	for _, name := range append(append(slices.Clone(speedNative), speedNodeNative...), speedRoleNative...) {
+	for _, name := range append(append(append(slices.Clone(speedNative), speedNodeNative...), speedRoleNative...), speedTaskNative...) {
 		if name != drop {
 			evs = append(evs, synth("run", pkg, name), synth("pass", pkg, name))
 		}
 	}
-	return events(append(evs, synth("pass", pkg, ""))...)
+	evs = append(evs, synth("pass", pkg, ""))
+	return events(append(evs, taskProcessEvents(drop)...)...)
 }
 
 // FP-3: validator, plans, native evidence and documentation agree.
 func TestCISpeedPolicy(t *testing.T) {
 	t.Run("native", func(t *testing.T) {
-		if got := devcheck.NativeRequiredTests(); len(got) != 87 || !slices.Equal(got[:28], speedNative) || !slices.Equal(got[28:58], speedNodeNative) || !slices.Equal(got[58:], speedRoleNative) {
+		if got := devcheck.NativeRequiredTests(); len(got) != 128 || !slices.Equal(got[:28], speedNative) || !slices.Equal(got[28:58], speedNodeNative) || !slices.Equal(got[58:87], speedRoleNative) || !slices.Equal(got[87:], speedTaskNative) {
 			t.Fatalf("native required = %v", got)
 		}
 		if err := devcheck.CheckNativeResults("darwin", strings.NewReader(qualifyingStream(""))); err != nil {
@@ -536,6 +607,20 @@ func TestCISpeedPolicy(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), name+" has no run event") || !strings.Contains(err.Error(), "native qualification unobserved") {
 				t.Fatalf("missing %s: %v", name, err)
 			}
+		}
+		for _, name := range []string{"TestTaskCommands/trust", "TestTaskExecution/process"} {
+			err := devcheck.CheckNativeResults("darwin", strings.NewReader(qualifyingStream(name)))
+			if err == nil || !strings.Contains(err.Error(), name+" has no run event") || !strings.Contains(err.Error(), "native qualification unobserved") {
+				t.Fatalf("missing %s: %v", name, err)
+			}
+		}
+		// The sidecar tuple is its own package's evidence.
+		if !slices.Equal(devcheck.NativeTaskProcessTests(), speedTaskProcess) {
+			t.Fatalf("sidecar tuple = %v", devcheck.NativeTaskProcessTests())
+		}
+		err := devcheck.CheckNativeResults("darwin", strings.NewReader(qualifyingStream("TestTaskExecutionContract/process")))
+		if err == nil || !strings.Contains(err.Error(), "TestTaskExecutionContract/process in "+devcheck.NativeTaskProcessPackage+" has no run event") {
+			t.Fatalf("missing sidecar tuple: %v", err)
 		}
 		fixture := string(repoFile(t, "internal/devcheck/testdata/cli-go-test.jsonl"))
 		if err := devcheck.CheckNativeResults("darwin", strings.NewReader(fixture)); err == nil || !strings.Contains(err.Error(), "TestPlaneReissue/contracts has no run event") {
@@ -567,10 +652,12 @@ func TestCISpeedPolicy(t *testing.T) {
 			}
 		}
 		// The complete local stress stage dispatches the whole plan, with
-		// processgroup's three invocations concurrent (compared as a set).
+		// plane's, sidecar's and processgroup's three invocations concurrent
+		// (each compared as a set).
 		r := &ciRunner{}
 		if code, out, errOut := devcheckRun(t, r, "stress"); code != 0 || !strings.Contains(out, "stage stress ok") ||
-			!sameGroups(r.calls, [][]string{{speedPackages}, {speedPG1, speedPG2, speedPG4}, {speedFunction}, {speedPlaneFunction}, {speedNodeFunction}}) {
+			!sameGroups(r.calls, [][]string{{speedPackages}, {speedPlane1, speedPlane2, speedPlane4}, {speedSidecar1, speedSidecar2, speedSidecar4},
+				{speedPG1, speedPG2, speedPG4}, {speedFunction}, {speedPlaneFunction}, {speedNodeFunction}}) {
 			t.Fatalf("stress dispatch = %d %v %s", code, r.calls, errOut)
 		}
 		// Drift: stress back in a main job is rejected.
@@ -592,7 +679,7 @@ func TestCISpeedPolicy(t *testing.T) {
 				t.Fatalf("Stress checks lacks the command %q", l)
 			}
 		}
-		requireTerms(t, "Stress checks", stress, "`stress packages`", "`stress processgroup cpu1`", "`stress function`", "`stress plane function`",
+		requireTerms(t, "Stress checks", stress, "`stress packages`", "`stress plane cpu1`", "`stress sidecar cpu1`", "`stress processgroup cpu1`", "`stress function`", "`stress plane function`",
 			"`TestFP6ProcessGroups`", "`TestExperiment`", "`TestNativeStateContract`", "`TestStateFailureContract`",
 			"`TestServerFailureContract`", "`TestReissueFailureContract`", "`contracts`", "`process`",
 			"quote the entire `-run` argument")

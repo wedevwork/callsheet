@@ -22,10 +22,19 @@ import (
 // through its pre-authorized function-binary split, a separate plane
 // function step, deduplicated by design 02b: no TestFP6ProcessGroups and
 // only the process-boundary plane subtests, then split into three shards by
-// design 02c with processgroup's CPU settings as separate invocations); it
-// is compared against StressShards and StressSteps, never derived from them.
+// design 02c with processgroup's CPU settings as separate invocations, and
+// into four by design 05b with ./internal/plane's CPU settings as separate
+// invocations of its own shard, and into five by design 05b's sidecar
+// follow-up with ./internal/sidecar's CPU settings likewise); it is
+// compared against StressShards and StressSteps, never derived from them.
 const (
-	wantStressPackages      = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/plane ./internal/client ./internal/sidecar ./internal/contract ./internal/adapter"
+	wantStressPackages      = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/contract ./internal/adapter"
+	wantStressPlane1        = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/plane"
+	wantStressPlane2        = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/plane"
+	wantStressPlane4        = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/plane"
+	wantStressSidecar1      = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/sidecar"
+	wantStressSidecar2      = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/sidecar"
+	wantStressSidecar4      = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/sidecar"
 	wantStressPG1           = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/spikes/processgroup"
 	wantStressPG2           = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/spikes/processgroup"
 	wantStressPG4           = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/spikes/processgroup"
@@ -34,7 +43,9 @@ const (
 	// wantStressNodeFunction is iteration 03's node process-boundary step.
 	wantStressNodeFunction = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestNodeEnrollment|TestNodeReconnect)$/^(locking|shutdown)$ ./tests/function"
 	// wantStressPlan is the flattened StressSteps view in shard/CPU order.
-	wantStressPlan = wantStressPackages + "|" + wantStressPG1 + "|" + wantStressPG2 + "|" + wantStressPG4 + "|" + wantStressFunction + "|" + wantStressPlaneFunction + "|" + wantStressNodeFunction
+	wantStressPlan = wantStressPackages + "|" + wantStressPlane1 + "|" + wantStressPlane2 + "|" + wantStressPlane4 + "|" +
+		wantStressSidecar1 + "|" + wantStressSidecar2 + "|" + wantStressSidecar4 + "|" +
+		wantStressPG1 + "|" + wantStressPG2 + "|" + wantStressPG4 + "|" + wantStressFunction + "|" + wantStressPlaneFunction + "|" + wantStressNodeFunction
 )
 
 // want03Additions is iteration 03's literal addition to the 02b selection
@@ -67,6 +78,8 @@ var wantStressShards = []struct {
 	steps    [][2]string
 }{
 	{"packages", false, [][2]string{{"stress packages", wantStressPackages}}},
+	{"plane", true, [][2]string{{"stress plane cpu1", wantStressPlane1}, {"stress plane cpu2", wantStressPlane2}, {"stress plane cpu4", wantStressPlane4}}},
+	{"sidecar", true, [][2]string{{"stress sidecar cpu1", wantStressSidecar1}, {"stress sidecar cpu2", wantStressSidecar2}, {"stress sidecar cpu4", wantStressSidecar4}}},
 	{"processgroup", true, [][2]string{{"stress processgroup cpu1", wantStressPG1}, {"stress processgroup cpu2", wantStressPG2}, {"stress processgroup cpu4", wantStressPG4}}},
 	{"functions", false, [][2]string{{"stress function", wantStressFunction}, {"stress plane function", wantStressPlaneFunction}, {"stress node function", wantStressNodeFunction}}},
 }
@@ -75,13 +88,17 @@ var wantStressShards = []struct {
 // concurrent and compared as a set; the groups are ordered boundaries.
 var (
 	groupPackages     = []string{wantStressPackages}
+	groupPlane        = []string{wantStressPlane1, wantStressPlane2, wantStressPlane4}
+	groupSidecar      = []string{wantStressSidecar1, wantStressSidecar2, wantStressSidecar4}
 	groupProcessGroup = []string{wantStressPG1, wantStressPG2, wantStressPG4}
 	groupFunctions1   = []string{wantStressFunction}
 	groupFunctions2   = []string{wantStressPlaneFunction}
 	groupFunctions3   = []string{wantStressNodeFunction}
 	wantStageGroups   = map[string][][]string{
-		"stress":              {groupPackages, groupProcessGroup, groupFunctions1, groupFunctions2, groupFunctions3},
+		"stress":              {groupPackages, groupPlane, groupSidecar, groupProcessGroup, groupFunctions1, groupFunctions2, groupFunctions3},
 		"stress-packages":     {groupPackages},
+		"stress-plane":        {groupPlane},
+		"stress-sidecar":      {groupSidecar},
 		"stress-processgroup": {groupProcessGroup},
 		"stress-functions":    {groupFunctions1, groupFunctions2, groupFunctions3},
 	}
@@ -135,13 +152,40 @@ func TestStressPlan(t *testing.T) {
 			}
 		}
 		steps, err := StressSteps(goos)
-		if err != nil || len(steps) != 7 || strings.Join(argvOf(steps), "|") != wantStressPlan || strings.Join(flat, "|") != wantStressPlan {
+		if err != nil || len(steps) != 13 || strings.Join(argvOf(steps), "|") != wantStressPlan || strings.Join(flat, "|") != wantStressPlan {
 			t.Fatalf("%s flattened = %v %v", goos, argvOf(steps), err)
 		}
-		for i, name := range []string{"stress packages", "stress processgroup cpu1", "stress processgroup cpu2", "stress processgroup cpu4", "stress function", "stress plane function", "stress node function"} {
+		for i, name := range []string{"stress packages", "stress plane cpu1", "stress plane cpu2", "stress plane cpu4", "stress sidecar cpu1", "stress sidecar cpu2",
+			"stress sidecar cpu4", "stress processgroup cpu1", "stress processgroup cpu2", "stress processgroup cpu4", "stress function", "stress plane function",
+			"stress node function"} {
 			if steps[i].Name != name || strings.Join(steps[i].Env, " ") != "CGO_ENABLED=1" {
 				t.Fatalf("%s flattened step %d = %+v", goos, i, steps[i])
 			}
+		}
+	}
+	// The plane package (iteration 05b) and the sidecar package (design
+	// 05b's sidecar follow-up) are their own shards' packages and are
+	// absent from the packages shard; the wave schedule is the inactive
+	// default (DW4): no shard is split into waves, so plane, sidecar and
+	// processgroup each run their three CPU settings as one concurrent
+	// wave. Design 05b's pre-authorised plane fallback would set exactly
+	// "plane": {{4}, {1, 2}} here, and only through the light flow.
+	if stressPlanePackage != "./internal/plane" || slices.Contains(stressPackages, "./internal/plane") {
+		t.Fatalf("plane package %q, packages shard %v", stressPlanePackage, stressPackages)
+	}
+	if stressSidecarPackage != "./internal/sidecar" || slices.Contains(stressPackages, "./internal/sidecar") {
+		t.Fatalf("sidecar package %q, packages shard %v", stressSidecarPackage, stressPackages)
+	}
+	if len(stressWaves) != 0 {
+		t.Fatalf("stressWaves = %v, want the empty default (one concurrent wave per Parallel shard)", stressWaves)
+	}
+	for _, sh := range []string{"stress-plane", "stress-sidecar", "stress-processgroup"} {
+		plan, err := stressPlan("linux", sh)
+		if err != nil || len(plan) != 1 || !plan[0].Parallel {
+			t.Fatalf("%s plan = %+v %v", sh, plan, err)
+		}
+		if g, err := stressGroups(plan[0], stressWaves[plan[0].Name]); err != nil || len(g) != 1 || len(g[0]) != 3 {
+			t.Fatalf("%s groups = %v %v", sh, g, err)
 		}
 	}
 	// Returned plans are independent: mutating one never changes the next,
@@ -151,17 +195,22 @@ func TestStressPlan(t *testing.T) {
 	a[1].Parallel = false
 	a[1].Steps[0].Argv[3] = "-count=1"
 	a[1].Steps[2].Env[0] = "CGO_ENABLED=0"
-	a[2].Steps[1].Argv[6] = "-run=^(TestPlaneState)$"
-	a[2].Steps = a[2].Steps[:1]
+	a[2].Parallel = false
+	a[2].Steps[0].Argv[3] = "-count=1"
+	a[3].Steps[1].Argv[4] = "-cpu=1"
+	a[4].Steps[1].Argv[6] = "-run=^(TestPlaneState)$"
+	a[4].Steps = a[4].Steps[:1]
 	a[0].Steps[0].Name = "mutated"
 	f, _ := StressSteps("linux")
 	f[0].Argv[4] = "-cpu=1"
-	f[5].Env[0] = "CGO_ENABLED=0"
+	f[5].Argv[4] = "-cpu=4"
+	f[11].Env[0] = "CGO_ENABLED=0"
 	b, _ := StressShards("linux")
 	c, _ := StressSteps("linux")
-	if b[0].Name != "packages" || !b[1].Parallel || len(b[2].Steps) != 3 || b[0].Steps[0].Name != "stress packages" ||
-		strings.Join(b[1].Steps[0].Argv, " ") != wantStressPG1 || b[1].Steps[2].Env[0] != "CGO_ENABLED=1" ||
-		strings.Join(b[2].Steps[1].Argv, " ") != wantStressPlaneFunction || strings.Join(argvOf(c), "|") != wantStressPlan || c[5].Env[0] != "CGO_ENABLED=1" {
+	if b[0].Name != "packages" || !b[1].Parallel || !b[2].Parallel || len(b[4].Steps) != 3 || b[0].Steps[0].Name != "stress packages" ||
+		strings.Join(b[1].Steps[0].Argv, " ") != wantStressPlane1 || b[1].Steps[2].Env[0] != "CGO_ENABLED=1" ||
+		strings.Join(b[2].Steps[0].Argv, " ") != wantStressSidecar1 || strings.Join(b[3].Steps[1].Argv, " ") != wantStressPG2 ||
+		strings.Join(b[4].Steps[1].Argv, " ") != wantStressPlaneFunction || strings.Join(argvOf(c), "|") != wantStressPlan || c[11].Env[0] != "CGO_ENABLED=1" {
 		t.Fatalf("plan state leaked: %+v", b)
 	}
 	for _, goos := range []string{"windows", "freebsd", "plan9", "", "Linux"} {
@@ -218,9 +267,11 @@ func normalize(t *testing.T, argv string) []selection {
 }
 
 // TestStressShardUnion (UT-1) proves the shards' union is exactly the 02b
-// selection plus iteration 03's literal additions: every (package,
-// selector, CPU, count) tuple appears exactly once, the shards are
-// disjoint and nothing of 02b is lost.
+// selection plus the literal additions of iterations 03 and 04: every
+// (package, selector, CPU, count) tuple appears exactly once, the shards
+// are disjoint, nothing of 02b is lost, and each tuple is in its shard
+// (design 05b: ./internal/plane only in the plane shard; its sidecar
+// follow-up: ./internal/sidecar only in the sidecar shard).
 func TestStressShardUnion(t *testing.T) {
 	want := map[selection]int{}
 	for _, argv := range want02bSelection {
@@ -282,8 +333,27 @@ func TestStressShardUnion(t *testing.T) {
 			}
 		}
 		for s, sh := range owner {
-			if (s.pkg == "./internal/spikes/processgroup") != (sh == "processgroup") || (s.selector != "") != (sh == "functions") {
-				t.Errorf("%s: %v placed in shard %s", goos, s, sh)
+			want := "packages"
+			switch {
+			case s.selector != "":
+				want = "functions"
+			case s.pkg == "./internal/spikes/processgroup":
+				want = "processgroup"
+			case s.pkg == "./internal/plane":
+				want = "plane"
+			case s.pkg == "./internal/sidecar":
+				want = "sidecar"
+			}
+			if sh != want {
+				t.Errorf("%s: %v placed in shard %s, want %s", goos, s, sh, want)
+			}
+		}
+		for _, cpu := range []string{"1", "2", "4"} {
+			if s := (selection{"./internal/plane", "", cpu, "20"}); got[s] != 1 || owner[s] != "plane" {
+				t.Errorf("%s: plane at -cpu=%s selected %d times in %q", goos, cpu, got[s], owner[s])
+			}
+			if s := (selection{"./internal/sidecar", "", cpu, "20"}); got[s] != 1 || owner[s] != "sidecar" {
+				t.Errorf("%s: sidecar at -cpu=%s selected %d times in %q", goos, cpu, got[s], owner[s])
 			}
 		}
 	}
@@ -344,12 +414,12 @@ func TestStressSelectorComponents(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, s := range steps[:4] {
+		for _, s := range steps[:10] {
 			if runValue(s) != "" {
 				t.Fatalf("%s: %s has a selector: %v", goos, s.Name, s.Argv)
 			}
 		}
-		fn, plane, nodes := splitRun(runValue(steps[4])), splitRun(runValue(steps[5])), splitRun(runValue(steps[6]))
+		fn, plane, nodes := splitRun(runValue(steps[10])), splitRun(runValue(steps[11])), splitRun(runValue(steps[12]))
 		if len(fn) != 1 || len(plane) != 2 || len(nodes) != 2 {
 			t.Fatalf("%s: levels function=%q plane=%q node=%q", goos, fn, plane, nodes)
 		}
@@ -409,7 +479,7 @@ func TestStressSelectorComponents(t *testing.T) {
 
 func TestStressStageDispatch(t *testing.T) {
 	for _, goos := range []string{"linux", "darwin"} {
-		for _, stage := range []string{"stress", "stress-packages", "stress-processgroup", "stress-functions"} {
+		for _, stage := range []string{"stress", "stress-packages", "stress-plane", "stress-sidecar", "stress-processgroup", "stress-functions"} {
 			f := &fakeRunner{}
 			code, out, errOut := runDriver(t, goos, f, stage)
 			if code != 0 || !strings.Contains(out, "stage "+stage+" ok") {
@@ -450,7 +520,7 @@ func TestStressStageDispatch(t *testing.T) {
 		}
 	}
 	// No operands, count, CPU or output flags, for every stress stage.
-	for _, stage := range []string{"stress", "stress-packages", "stress-processgroup", "stress-functions"} {
+	for _, stage := range []string{"stress", "stress-packages", "stress-plane", "stress-sidecar", "stress-processgroup", "stress-functions"} {
 		for _, extra := range [][]string{{"extra"}, {"-o", "x"}, {"-count=1"}, {"-cpu=1"}, {"-race"}, {"packages"}} {
 			f := &fakeRunner{}
 			args := append([]string{stage}, extra...)
@@ -459,7 +529,9 @@ func TestStressStageDispatch(t *testing.T) {
 			}
 		}
 	}
-	for _, bogus := range []string{"stress-plane", "stress-package", "stress-", "stress-functions2"} {
+	// Genuinely unknown stages, stress-plane's and stress-sidecar's near
+	// neighbours included.
+	for _, bogus := range []string{"stress-planes", "stress-plane-cpu1", "stress-sidecars", "stress-sidecar-cpu1", "stress-package", "stress-", "stress-functions2"} {
 		if code, _, errOut := runDriver(t, "linux", &fakeRunner{}, bogus); code != 2 || !strings.Contains(errOut, "unknown subcommand") {
 			t.Fatalf("%s = %d %s", bogus, code, errOut)
 		}
@@ -472,14 +544,18 @@ func TestStressFailFastRetainsLogs(t *testing.T) {
 		calls               int
 	}{
 		{"stress", "./internal/testkit", "stress packages", 1},
-		{"stress", "-cpu=2 ", "stress processgroup cpu2", 4},
-		{"stress", "TestFP4TransportHarness", "stress function", 5},
-		{"stress", "TestPlaneState", "stress plane function", 6},
-		{"stress-packages", "./internal/plane", "stress packages", 1},
+		{"stress", "-cpu=2 -timeout=6m ./internal/plane", "stress plane cpu2", 4},
+		{"stress", "-cpu=2 -timeout=6m ./internal/sidecar", "stress sidecar cpu2", 7},
+		{"stress", "-cpu=2 -timeout=6m ./internal/spikes/processgroup", "stress processgroup cpu2", 10},
+		{"stress", "TestFP4TransportHarness", "stress function", 11},
+		{"stress", "TestPlaneState", "stress plane function", 12},
+		{"stress-packages", "./internal/contract", "stress packages", 1},
+		{"stress-plane", "-cpu=4 ", "stress plane cpu4", 3},
+		{"stress-sidecar", "-cpu=4 ", "stress sidecar cpu4", 3},
 		{"stress-processgroup", "-cpu=4 ", "stress processgroup cpu4", 3},
 		{"stress-functions", "TestFP5GitRoundTrip", "stress function", 1},
 		{"stress-functions", "TestPlaneTLS", "stress plane function", 2},
-		{"stress", "TestNodeEnrollment", "stress node function", 7},
+		{"stress", "TestNodeEnrollment", "stress node function", 13},
 		{"stress-functions", "TestNodeReconnect", "stress node function", 3},
 	} {
 		f := &fakeRunner{fail: c.fail}
@@ -500,7 +576,7 @@ func TestStressFailFastRetainsLogs(t *testing.T) {
 func TestUnsupportedStressCreatesNoScratch(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("TMPDIR", tmp)
-	for _, stage := range []string{"stress", "stress-packages", "stress-processgroup", "stress-functions"} {
+	for _, stage := range []string{"stress", "stress-packages", "stress-plane", "stress-sidecar", "stress-processgroup", "stress-functions"} {
 		for _, goos := range []string{"windows", "freebsd", ""} {
 			f := &fakeRunner{}
 			code, out, errOut := runDriver(t, goos, f, stage)
@@ -600,14 +676,15 @@ func TestStressWatchdog(t *testing.T) {
 	shards, _ := StressShards("linux")
 	// Every child runs under a watchdog deadline stressWatchdog from now,
 	// and the watchdog context is canceled once the stage returns. "stress"
-	// shares one watchdog across its shards (DS2): one context for all seven.
+	// shares one watchdog across its shards (DS2): one context for all
+	// thirteen.
 	r := &ctxRecorder{}
 	before := time.Now()
 	if err := stressDriver(t, context.Background(), r.run).stress(shards); err != nil {
 		t.Fatal(err)
 	}
 	after := time.Now()
-	if len(r.ctxs) != 7 {
+	if len(r.ctxs) != 13 {
 		t.Fatalf("calls = %d", len(r.ctxs))
 	}
 	for i, ctx := range r.ctxs {
@@ -670,7 +747,7 @@ func TestStressCancellationAndExpiry(t *testing.T) {
 	for _, c := range []struct {
 		shards []StressShard
 		first  string
-	}{{shards, "stress packages"}, {shards[1:2], "stress processgroup"}, {shards[2:], "stress function"}} {
+	}{{shards, "stress packages"}, {shards[1:2], "stress plane"}, {shards[2:3], "stress sidecar"}, {shards[3:4], "stress processgroup"}, {shards[4:], "stress function"}} {
 		r := &ctxRecorder{}
 		err := stressDriver(t, canceled, r.run).stress(c.shards)
 		if !errors.Is(err, context.Canceled) || len(r.ctxs) != 0 || !strings.Contains(err.Error(), "ended before "+c.first) {
@@ -704,25 +781,33 @@ func TestStressCancellationAndExpiry(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) || len(r.ctxs) != 1 || !strings.Contains(err.Error(), "ended during stress packages") {
 		t.Fatalf("expired = %v after %d calls", err, len(r.ctxs))
 	}
-	// Expiry during the concurrent shard: all three have started (a
+	// Expiry during a concurrent shard: all three have started (a
 	// barrier), every Runner returns nil after expiry, the shard still
-	// fails and the functions shard never starts.
-	expiring = newExpiringCtx()
-	arrived := make(chan struct{}, 3)
-	r = &ctxRecorder{next: func(ctx context.Context, argv []string) error {
-		if !strings.Contains(strings.Join(argv, " "), "processgroup") {
-			return nil
-		}
-		arrived <- struct{}{}
-		if len(arrived) == 3 {
+	// fails and the next shard never starts. Plane follows packages in the
+	// whole plan, sidecar follows plane, and processgroup precedes
+	// functions.
+	for _, c := range []struct {
+		name, pkg string
+		shards    []StressShard
+		calls     int
+	}{{"plane", " ./internal/plane", shards, 4}, {"sidecar", " ./internal/sidecar", shards[1:], 6}, {"processgroup", " ./internal/spikes/processgroup", shards[3:], 3}} {
+		expiring := newExpiringCtx()
+		b := newBarrier(3)
+		r := &ctxRecorder{next: func(ctx context.Context, argv []string) error {
+			if !strings.HasSuffix(strings.Join(argv, " "), c.pkg) {
+				return nil
+			}
+			if err := b.wait(); err != nil {
+				return err
+			}
 			expiring.expire()
+			<-ctx.Done()
+			return nil
+		}}
+		err := stressDriver(t, expiring, r.run).stress(c.shards)
+		if !errors.Is(err, context.DeadlineExceeded) || r.count() != c.calls || !strings.Contains(err.Error(), "stress watchdog (15m0s) ended during stress "+c.name+":") {
+			t.Fatalf("expired %s = %v after %d calls", c.name, err, r.count())
 		}
-		<-ctx.Done()
-		return nil
-	}}
-	err = stressDriver(t, expiring, r.run).stress(shards)
-	if !errors.Is(err, context.DeadlineExceeded) || len(r.ctxs) != 4 || !strings.Contains(err.Error(), "stress watchdog (15m0s) ended during stress processgroup") {
-		t.Fatalf("expired processgroup = %v after %d calls", err, len(r.ctxs))
 	}
 	// Through dispatch: no success message after an expired watchdog.
 	expiring = newExpiringCtx()
@@ -928,14 +1013,45 @@ func (w *failingWriter) Write(p []byte) (int, error) {
 	return w.buf.Write(p)
 }
 
-func processgroupSteps(t *testing.T) []Step {
+// parallelShard is one Parallel shard for the coordinator contract: its
+// name, its steps from StressShards and its literal call group.
+type parallelShard struct {
+	name  string
+	steps []Step
+	group []string
+}
+
+// parallelShards returns the three Parallel shards, plane (iteration 05b),
+// sidecar (design 05b's sidecar follow-up) and processgroup (iteration 02c),
+// with their literal call groups.
+func parallelShards(t *testing.T) []parallelShard {
 	t.Helper()
 	shards, err := StressShards("linux")
-	if err != nil || !shards[1].Parallel {
+	if err != nil || len(shards) != 5 || shards[1].Name != "plane" || !shards[1].Parallel || shards[2].Name != "sidecar" || !shards[2].Parallel ||
+		shards[3].Name != "processgroup" || !shards[3].Parallel {
 		t.Fatalf("shards = %+v %v", shards, err)
 	}
-	return shards[1].Steps
+	return []parallelShard{{"plane", shards[1].Steps, groupPlane}, {"sidecar", shards[2].Steps, groupSidecar}, {"processgroup", shards[3].Steps, groupProcessGroup}}
 }
+
+func processgroupSteps(t *testing.T) []Step {
+	t.Helper()
+	return parallelShards(t)[2].steps
+}
+
+// setStressWaves replaces the package's wave schedule for one test and
+// restores it afterwards. Tests in this package never run in parallel, so
+// the driver reads the schedule only while the test that set it runs.
+func setStressWaves(t *testing.T, waves map[string][][]int) {
+	t.Helper()
+	prev := stressWaves
+	stressWaves = waves
+	t.Cleanup(func() { stressWaves = prev })
+}
+
+// planeFallbackWaves is design 05b's pre-authorised two-wave plane
+// schedule, written out literally: CPU 4 alone, then CPU 1 and 2 together.
+var planeFallbackWaves = map[string][][]int{"plane": {{4}, {1, 2}}}
 
 // writeResult is one recorded Write outcome.
 type writeResult struct {
@@ -958,37 +1074,55 @@ func requireSecondWrites(t *testing.T, name string, got, want map[string]writeRe
 	}
 }
 
-// TestStressConcurrencyContract is the FP-2 (iteration 02c) contract of the
-// concurrent coordinator runConcurrentCPU, executed by name from
-// tests/function (TestStressShardExecution). Its subtests overlap, failure,
-// watchdog and logs use channel barriers, never sleeps, as their
-// correctness oracle. Do not rename or skip them.
+// requireOrder requires every needle in s, in the given order.
+func requireOrder(t *testing.T, what, s string, needles ...string) {
+	t.Helper()
+	pos := -1
+	for _, n := range needles {
+		i := strings.Index(s, n)
+		if i < 0 || i < pos {
+			t.Fatalf("%s: %q missing or out of order in:\n%s", what, n, s)
+		}
+		pos = i
+	}
+}
+
+// TestStressConcurrencyContract is the FP-2 (iterations 02c and 05b)
+// contract of the concurrent coordinator runConcurrentCPU for the three
+// Parallel shards, plane, sidecar and processgroup, and of the static wave
+// schedule
+// (stressWaves), executed by name from tests/function
+// (TestStressShardExecution). Its subtests overlap, failure, watchdog, logs
+// and waves use channel barriers, never sleeps, as their correctness
+// oracle. Do not rename or skip them.
 func TestStressConcurrencyContract(t *testing.T) {
 	t.Run("overlap", func(t *testing.T) {
-		steps := processgroupSteps(t)
 		var mu sync.Mutex
-		active, peak := 0, 0
-		var argvs []string
-		b := newBarrier(3)
-		run := func(_ context.Context, argv, _ []string, _ string, _, _ io.Writer) error {
-			mu.Lock()
-			active++
-			peak = max(peak, active)
-			argvs = append(argvs, strings.Join(argv, " "))
-			mu.Unlock()
-			err := b.wait()
-			mu.Lock()
-			active--
-			mu.Unlock()
-			return err
+		for _, pc := range parallelShards(t) {
+			active, peak := 0, 0
+			var argvs []string
+			b := newBarrier(3)
+			run := func(_ context.Context, argv, _ []string, _ string, _, _ io.Writer) error {
+				mu.Lock()
+				active++
+				peak = max(peak, active)
+				argvs = append(argvs, strings.Join(argv, " "))
+				mu.Unlock()
+				err := b.wait()
+				mu.Lock()
+				active--
+				mu.Unlock()
+				return err
+			}
+			var out bytes.Buffer
+			if err := runConcurrentCPU(context.Background(), run, pc.steps, &memLogs{}, &out); err != nil {
+				t.Fatalf("%s: three overlapping invocations: %v", pc.name, err)
+			}
+			if peak != 3 || active != 0 || !callsMatch(argvs, [][]string{pc.group}) {
+				t.Fatalf("%s: peak %d, active %d, calls %q", pc.name, peak, active, argvs)
+			}
 		}
-		var out bytes.Buffer
-		if err := runConcurrentCPU(context.Background(), run, steps, &memLogs{}, &out); err != nil {
-			t.Fatalf("three overlapping invocations: %v", err)
-		}
-		if peak != 3 || active != 0 || !callsMatch(argvs, [][]string{groupProcessGroup}) {
-			t.Fatalf("peak %d, active %d, calls %q", peak, active, argvs)
-		}
+		steps := processgroupSteps(t)
 		// The bound: more than three, or none, is rejected before any call.
 		calls := 0
 		counting := func(context.Context, []string, []string, string, io.Writer, io.Writer) error { calls++; return nil }
@@ -1001,18 +1135,29 @@ func TestStressConcurrencyContract(t *testing.T) {
 		if calls != 0 || len(logs.files) != 0 {
 			t.Fatalf("rejected plan made %d calls, %d logs", calls, len(logs.files))
 		}
-		// Sequential boundaries through dispatch: packages ends before any
-		// processgroup call starts, all three processgroup calls overlap and
-		// end before the functions shard starts, which runs in order.
+		// Sequential boundaries through dispatch (design 05b with its
+		// sidecar follow-up, 26 events): packages (events 0-1) ends before
+		// any plane call starts; all three plane calls overlap (their own
+		// barrier) and end (2-7) before any sidecar call starts; all three
+		// sidecar calls overlap (a separate barrier) and end (8-13) before
+		// any processgroup call starts; all three processgroup calls overlap
+		// (a third barrier, never a released one) and end (14-19) before the
+		// functions shard starts, which runs in order (20-25). The three
+		// Parallel shards never overlap.
 		var events []string
-		pg := newBarrier(3)
+		pl, sc, pg := newBarrier(3), newBarrier(3), newBarrier(3)
 		rec := func(_ context.Context, argv, _ []string, _ string, _, _ io.Writer) error {
 			a := strings.Join(argv, " ")
 			mu.Lock()
 			events = append(events, "start "+a)
 			mu.Unlock()
 			var err error
-			if strings.Contains(a, "processgroup") {
+			switch {
+			case strings.HasSuffix(a, " ./internal/plane"):
+				err = pl.wait()
+			case strings.HasSuffix(a, " ./internal/sidecar"):
+				err = sc.wait()
+			case strings.HasSuffix(a, " ./internal/spikes/processgroup"):
 				err = pg.wait()
 			}
 			mu.Lock()
@@ -1024,249 +1169,275 @@ func TestStressConcurrencyContract(t *testing.T) {
 		if code := runFor(context.Background(), "darwin", []string{"stress"}, &dout, &derr, rec); code != 0 {
 			t.Fatalf("stress = %d %s", code, derr.String())
 		}
-		if len(events) != 14 || events[0] != "start "+wantStressPackages || events[1] != "end "+wantStressPackages ||
-			events[8] != "start "+wantStressFunction || events[9] != "end "+wantStressFunction ||
-			events[10] != "start "+wantStressPlaneFunction || events[11] != "end "+wantStressPlaneFunction ||
-			events[12] != "start "+wantStressNodeFunction || events[13] != "end "+wantStressNodeFunction {
+		if len(events) != 26 || events[0] != "start "+wantStressPackages || events[1] != "end "+wantStressPackages ||
+			events[20] != "start "+wantStressFunction || events[21] != "end "+wantStressFunction ||
+			events[22] != "start "+wantStressPlaneFunction || events[23] != "end "+wantStressPlaneFunction ||
+			events[24] != "start "+wantStressNodeFunction || events[25] != "end "+wantStressNodeFunction {
 			t.Fatalf("boundaries: %q", events)
 		}
-		var starts, ends []string
-		for _, e := range events[2:5] {
-			starts = append(starts, strings.TrimPrefix(e, "start "))
+		for _, g := range []struct {
+			name  string
+			from  int
+			group []string
+		}{{"plane", 2, groupPlane}, {"sidecar", 8, groupSidecar}, {"processgroup", 14, groupProcessGroup}} {
+			var starts, ends []string
+			for _, e := range events[g.from : g.from+3] {
+				starts = append(starts, strings.TrimPrefix(e, "start "))
+			}
+			for _, e := range events[g.from+3 : g.from+6] {
+				ends = append(ends, strings.TrimPrefix(e, "end "))
+			}
+			if !callsMatch(starts, [][]string{g.group}) || !callsMatch(ends, [][]string{g.group}) {
+				t.Fatalf("%s calls did not all start before any ended: %q", g.name, events)
+			}
 		}
-		for _, e := range events[5:8] {
-			ends = append(ends, strings.TrimPrefix(e, "end "))
-		}
-		if !callsMatch(starts, [][]string{groupProcessGroup}) || !callsMatch(ends, [][]string{groupProcessGroup}) {
-			t.Fatalf("processgroup calls did not all start before any ended: %q", events)
-		}
+		os.RemoveAll(scratchFrom(dout.String()))
 	})
 
 	t.Run("failure", func(t *testing.T) {
-		steps := processgroupSteps(t)
-		for _, failing := range [][]int{{0}, {1}, {2}, {0, 2}, {0, 1, 2}} {
-			fails := map[string]bool{}
-			for _, i := range failing {
-				fails[steps[i].Name] = true
-			}
-			b := newBarrier(3)
-			failedDone := make(chan struct{})
-			var once sync.Once
-			var remaining atomic.Int32
-			remaining.Store(int32(len(failing)))
-			var mu sync.Mutex
-			ctxs := map[string]context.Context{}
-			run := func(ctx context.Context, argv, _ []string, _ string, stdout, _ io.Writer) error {
-				name := ""
+		for _, pc := range parallelShards(t) {
+			steps := pc.steps
+			for _, failing := range [][]int{{0}, {1}, {2}, {0, 2}, {0, 1, 2}} {
+				fails := map[string]bool{}
+				for _, i := range failing {
+					fails[steps[i].Name] = true
+				}
+				b := newBarrier(3)
+				failedDone := make(chan struct{})
+				var once sync.Once
+				var remaining atomic.Int32
+				remaining.Store(int32(len(failing)))
+				var mu sync.Mutex
+				ctxs := map[string]context.Context{}
+				run := func(ctx context.Context, argv, _ []string, _ string, stdout, _ io.Writer) error {
+					name := ""
+					for _, s := range steps {
+						if strings.Join(s.Argv, " ") == strings.Join(argv, " ") {
+							name = s.Name
+						}
+					}
+					mu.Lock()
+					ctxs[name] = ctx
+					mu.Unlock()
+					if err := b.wait(); err != nil {
+						return err
+					}
+					if fails[name] {
+						fmt.Fprintf(stdout, "boom from %s\n", name)
+						if remaining.Add(-1) == 0 {
+							defer once.Do(func() { close(failedDone) })
+						}
+						return errors.New("exit status 1")
+					}
+					// A sibling finishes after every failure returned, and its
+					// context is still live: failure cancels nothing.
+					<-failedDone
+					if ctx.Err() != nil {
+						return fmt.Errorf("%s canceled by a sibling failure", name)
+					}
+					fmt.Fprintf(stdout, "ok from %s\n", name)
+					return nil
+				}
+				var out bytes.Buffer
+				err := runConcurrentCPU(context.Background(), run, steps, &memLogs{}, &out)
+				if err == nil || len(ctxs) != 3 {
+					t.Fatalf("%s failing %v: %v with %d calls", pc.name, failing, err, len(ctxs))
+				}
+				msg := err.Error()
+				last := -1
 				for _, s := range steps {
-					if strings.Join(s.Argv, " ") == strings.Join(argv, " ") {
-						name = s.Name
+					i := strings.Index(msg, s.Name+" failed: "+strings.Join(s.Argv, " ")+": exit status 1\nboom from "+s.Name)
+					if fails[s.Name] != (i >= 0) {
+						t.Fatalf("%s failing %v: %s reported=%v:\n%s", pc.name, failing, s.Name, i >= 0, msg)
+					}
+					if i >= 0 {
+						if i < last {
+							t.Fatalf("failures not in plan order:\n%s", msg)
+						}
+						last = i
+					}
+					if !fails[s.Name] && !strings.Contains(out.String(), "ok from "+s.Name) {
+						t.Fatalf("sibling %s did not finish:\n%s", s.Name, out.String())
 					}
 				}
-				mu.Lock()
-				ctxs[name] = ctx
-				mu.Unlock()
-				if err := b.wait(); err != nil {
-					return err
-				}
-				if fails[name] {
-					fmt.Fprintf(stdout, "boom from %s\n", name)
-					if remaining.Add(-1) == 0 {
-						defer once.Do(func() { close(failedDone) })
+				for name, ctx := range ctxs {
+					if ctx.Err() != nil {
+						t.Fatalf("%s's context was canceled", name)
 					}
-					return errors.New("exit status 1")
-				}
-				// A sibling finishes after every failure returned, and its
-				// context is still live: failure cancels nothing.
-				<-failedDone
-				if ctx.Err() != nil {
-					return fmt.Errorf("%s canceled by a sibling failure", name)
-				}
-				fmt.Fprintf(stdout, "ok from %s\n", name)
-				return nil
-			}
-			var out bytes.Buffer
-			err := runConcurrentCPU(context.Background(), run, steps, &memLogs{}, &out)
-			if err == nil || len(ctxs) != 3 {
-				t.Fatalf("failing %v: %v with %d calls", failing, err, len(ctxs))
-			}
-			msg := err.Error()
-			last := -1
-			for _, s := range steps {
-				i := strings.Index(msg, s.Name+" failed: "+strings.Join(s.Argv, " ")+": exit status 1\nboom from "+s.Name)
-				if fails[s.Name] != (i >= 0) {
-					t.Fatalf("failing %v: %s reported=%v:\n%s", failing, s.Name, i >= 0, msg)
-				}
-				if i >= 0 {
-					if i < last {
-						t.Fatalf("failures not in plan order:\n%s", msg)
-					}
-					last = i
-				}
-				if !fails[s.Name] && !strings.Contains(out.String(), "ok from "+s.Name) {
-					t.Fatalf("sibling %s did not finish:\n%s", s.Name, out.String())
-				}
-			}
-			for name, ctx := range ctxs {
-				if ctx.Err() != nil {
-					t.Fatalf("%s's context was canceled", name)
 				}
 			}
 		}
-		// Through dispatch, a failed processgroup invocation fails the
-		// shard after all three ran, and the next shard never starts.
-		f := &fakeRunner{fail: "-cpu=1 "}
-		code, out, errOut := runDriver(t, "linux", f, "stress")
-		if code != 1 || !callsMatch(f.argvs(), [][]string{groupPackages, groupProcessGroup}) || !strings.Contains(errOut, "stage stress FAILED: stress processgroup cpu1 failed") ||
-			strings.Contains(errOut, "cpu2 failed") || !strings.Contains(out, "devcheck: stress processgroup cpu4: ok in ") {
-			t.Fatalf("dispatch = %d %q %s", code, f.argvs(), errOut)
+		// Through dispatch, a failed plane, sidecar or processgroup
+		// invocation fails its shard after all three ran, and the next shard
+		// never starts.
+		for _, c := range []struct {
+			fail, failed, ok string
+			groups           [][]string
+		}{
+			{"-cpu=1 -timeout=6m ./internal/plane", "stress plane cpu1", "stress plane cpu4", [][]string{groupPackages, groupPlane}},
+			{"-cpu=1 -timeout=6m ./internal/sidecar", "stress sidecar cpu1", "stress sidecar cpu4", [][]string{groupPackages, groupPlane, groupSidecar}},
+			{"-cpu=1 -timeout=6m ./internal/spikes/processgroup", "stress processgroup cpu1", "stress processgroup cpu4", [][]string{groupPackages, groupPlane, groupSidecar, groupProcessGroup}},
+		} {
+			f := &fakeRunner{fail: c.fail}
+			code, out, errOut := runDriver(t, "linux", f, "stress")
+			if code != 1 || !callsMatch(f.argvs(), c.groups) || !strings.Contains(errOut, "stage stress FAILED: "+c.failed+" failed") ||
+				strings.Contains(errOut, "cpu2 failed") || !strings.Contains(out, "devcheck: "+c.ok+": ok in ") {
+				t.Fatalf("dispatch %s = %d %q %s", c.fail, code, f.argvs(), errOut)
+			}
+			os.RemoveAll(scratchFrom(out))
 		}
-		os.RemoveAll(scratchFrom(out))
 	})
 
 	t.Run("watchdog", func(t *testing.T) {
-		steps := processgroupSteps(t)
-		// A context already done starts nothing and creates no log.
-		canceled, cancel := context.WithCancel(context.Background())
-		cancel()
-		calls := 0
-		logs := &memLogs{}
-		err := runConcurrentCPU(canceled, func(context.Context, []string, []string, string, io.Writer, io.Writer) error { calls++; return nil }, steps, logs, io.Discard)
-		if !errors.Is(err, context.Canceled) || calls != 0 || len(logs.files) != 0 || !strings.Contains(err.Error(), "ended before stress processgroup cpu1") {
-			t.Fatalf("pre-canceled = %v, %d calls, %d logs", err, calls, len(logs.files))
-		}
-		// Cancellation after all three started reaches every call; the
-		// coordinator joins all three before returning, and fails even
-		// though two Runners return nil after the cancellation.
-		parent, cancelParent := context.WithCancel(context.Background())
-		defer cancelParent()
-		b := newBarrier(3)
-		var returned atomic.Int32
-		run := func(ctx context.Context, argv, _ []string, _ string, _, _ io.Writer) error {
-			defer returned.Add(1)
-			if err := b.wait(); err != nil {
-				return err
+		for _, pc := range parallelShards(t) {
+			steps := pc.steps
+			// A context already done starts nothing and creates no log.
+			canceled, cancel := context.WithCancel(context.Background())
+			cancel()
+			calls := 0
+			logs := &memLogs{}
+			err := runConcurrentCPU(canceled, func(context.Context, []string, []string, string, io.Writer, io.Writer) error { calls++; return nil }, steps, logs, io.Discard)
+			if !errors.Is(err, context.Canceled) || calls != 0 || len(logs.files) != 0 || !strings.Contains(err.Error(), "ended before "+steps[0].Name) {
+				t.Fatalf("%s pre-canceled = %v, %d calls, %d logs", pc.name, err, calls, len(logs.files))
 			}
+			// Cancellation after all three started reaches every call; the
+			// coordinator joins all three before returning, and fails even
+			// though two Runners return nil after the cancellation.
+			parent, cancelParent := context.WithCancel(context.Background())
+			b := newBarrier(3)
+			var returned atomic.Int32
+			run := func(ctx context.Context, argv, _ []string, _ string, _, _ io.Writer) error {
+				defer returned.Add(1)
+				if err := b.wait(); err != nil {
+					return err
+				}
+				cancelParent()
+				<-ctx.Done()
+				if strings.Contains(strings.Join(argv, " "), "-cpu=2 ") {
+					return ctx.Err()
+				}
+				return nil
+			}
+			logs = &memLogs{}
+			err = runConcurrentCPU(parent, run, steps, logs, io.Discard)
 			cancelParent()
-			<-ctx.Done()
-			if strings.Contains(strings.Join(argv, " "), "-cpu=2 ") {
-				return ctx.Err()
+			if n := returned.Load(); n != 3 {
+				t.Fatalf("%s: coordinator returned with %d of 3 calls joined", pc.name, n)
 			}
-			return nil
-		}
-		logs = &memLogs{}
-		err = runConcurrentCPU(parent, run, steps, logs, io.Discard)
-		if n := returned.Load(); n != 3 {
-			t.Fatalf("coordinator returned with %d of 3 calls joined", n)
-		}
-		if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "context ended while the concurrent invocations ran") ||
-			!strings.Contains(err.Error(), "stress processgroup cpu2 failed") || strings.Contains(err.Error(), "cpu1 failed") || !logs.allClosed() {
-			t.Fatalf("canceled during run = %v", err)
-		}
-		// Expiry between launches: cpu1 starts, then the deadline passes;
-		// cpu2 and cpu4 never start, and cpu1's nil result does not pass.
-		var started []string
-		var mu sync.Mutex
-		ctx := newCountdownCtx(2)
-		logs = &memLogs{}
-		err = runConcurrentCPU(ctx, func(ctx context.Context, argv, _ []string, _ string, _, _ io.Writer) error {
-			mu.Lock()
-			started = append(started, strings.Join(argv, " "))
-			mu.Unlock()
-			<-ctx.Done()
-			return nil
-		}, steps, logs, io.Discard)
-		if !errors.Is(err, context.DeadlineExceeded) || len(started) != 1 || started[0] != wantStressPG1 ||
-			!strings.Contains(err.Error(), "stress processgroup cpu2 failed: "+wantStressPG2+": not started: context deadline exceeded") ||
-			!strings.Contains(err.Error(), "stress processgroup cpu4 failed: "+wantStressPG4+": not started") || strings.Contains(err.Error(), "cpu1 failed") || !logs.allClosed() {
-			t.Fatalf("expiry during launch = %v, started %q", err, started)
-		}
-		// Expiry after every Runner returned nil still fails.
-		ctx = newCountdownCtx(4)
-		err = runConcurrentCPU(ctx, func(context.Context, []string, []string, string, io.Writer, io.Writer) error { return nil }, steps, &memLogs{}, io.Discard)
-		if !errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "failed:") {
-			t.Fatalf("expiry despite nil results = %v", err)
+			if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "context ended while the concurrent invocations ran") ||
+				!strings.Contains(err.Error(), steps[1].Name+" failed") || strings.Contains(err.Error(), "cpu1 failed") || !logs.allClosed() {
+				t.Fatalf("%s canceled during run = %v", pc.name, err)
+			}
+			// Expiry between launches: cpu1 starts, then the deadline passes;
+			// cpu2 and cpu4 never start, and cpu1's nil result does not pass.
+			var started []string
+			var mu sync.Mutex
+			ctx := newCountdownCtx(2)
+			logs = &memLogs{}
+			err = runConcurrentCPU(ctx, func(ctx context.Context, argv, _ []string, _ string, _, _ io.Writer) error {
+				mu.Lock()
+				started = append(started, strings.Join(argv, " "))
+				mu.Unlock()
+				<-ctx.Done()
+				return nil
+			}, steps, logs, io.Discard)
+			if !errors.Is(err, context.DeadlineExceeded) || len(started) != 1 || started[0] != pc.group[0] ||
+				!strings.Contains(err.Error(), steps[1].Name+" failed: "+pc.group[1]+": not started: context deadline exceeded") ||
+				!strings.Contains(err.Error(), steps[2].Name+" failed: "+pc.group[2]+": not started") || strings.Contains(err.Error(), "cpu1 failed") || !logs.allClosed() {
+				t.Fatalf("%s expiry during launch = %v, started %q", pc.name, err, started)
+			}
+			// Expiry after every Runner returned nil still fails.
+			ctx = newCountdownCtx(4)
+			err = runConcurrentCPU(ctx, func(context.Context, []string, []string, string, io.Writer, io.Writer) error { return nil }, steps, &memLogs{}, io.Discard)
+			if !errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "failed:") {
+				t.Fatalf("%s expiry despite nil results = %v", pc.name, err)
+			}
 		}
 	})
 
 	t.Run("logs", func(t *testing.T) {
-		steps := processgroupSteps(t)
-		// Completion order is the reverse of plan order (cpu4, cpu2, cpu1);
-		// replay is still in plan order and each log holds only its own
-		// output, written through both stdout and stderr.
-		b := newBarrier(3)
-		done := map[string]chan struct{}{}
-		for _, s := range steps {
-			done[s.Name] = make(chan struct{})
-		}
-		after := map[string]string{"stress processgroup cpu1": "stress processgroup cpu2", "stress processgroup cpu2": "stress processgroup cpu4"}
-		name := func(argv []string) string {
+		for _, pc := range parallelShards(t) {
+			steps := pc.steps
+			// Completion order is the reverse of plan order (cpu4, cpu2,
+			// cpu1); replay is still in plan order and each log holds only
+			// its own output, written through both stdout and stderr.
+			b := newBarrier(3)
+			done := map[string]chan struct{}{}
 			for _, s := range steps {
-				if strings.Join(s.Argv, " ") == strings.Join(argv, " ") {
-					return s.Name
+				done[s.Name] = make(chan struct{})
+			}
+			after := map[string]string{steps[0].Name: steps[1].Name, steps[1].Name: steps[2].Name}
+			name := func(argv []string) string {
+				for _, s := range steps {
+					if strings.Join(s.Argv, " ") == strings.Join(argv, " ") {
+						return s.Name
+					}
 				}
+				return "?"
 			}
-			return "?"
-		}
-		run := func(_ context.Context, argv, _ []string, _ string, stdout, stderr io.Writer) error {
-			n := name(argv)
-			defer close(done[n])
-			if err := b.wait(); err != nil {
-				return err
+			run := func(_ context.Context, argv, _ []string, _ string, stdout, stderr io.Writer) error {
+				n := name(argv)
+				defer close(done[n])
+				if err := b.wait(); err != nil {
+					return err
+				}
+				if prev, ok := after[n]; ok {
+					<-done[prev]
+				}
+				for i := 0; i < 50; i++ {
+					fmt.Fprintf(stdout, "%s out %d\n", n, i)
+					fmt.Fprintf(stderr, "%s err %d\n", n, i)
+				}
+				return nil
 			}
-			if prev, ok := after[n]; ok {
-				<-done[prev]
-			}
-			for i := 0; i < 50; i++ {
-				fmt.Fprintf(stdout, "%s out %d\n", n, i)
-				fmt.Fprintf(stderr, "%s err %d\n", n, i)
-			}
-			return nil
-		}
-		scratch := t.TempDir()
-		var out bytes.Buffer
-		if err := runConcurrentCPU(context.Background(), run, steps, dirLogs(scratch), &out); err != nil {
-			t.Fatal(err)
-		}
-		o := out.String()
-		pos := -1
-		for _, s := range steps {
-			path := filepath.Join(scratch, strings.ReplaceAll(s.Name, " ", "-")+".log")
-			i := strings.Index(o, "devcheck: "+s.Name+": "+strings.Join(s.Argv, " ")+" (concurrent, log "+path+")\n")
-			if i < 0 || i < pos {
-				t.Fatalf("announcement of %s missing or out of order:\n%s", s.Name, o)
-			}
-			pos = i
-		}
-		for _, s := range steps {
-			path := filepath.Join(scratch, strings.ReplaceAll(s.Name, " ", "-")+".log")
-			b, err := os.ReadFile(path)
-			if err != nil {
+			scratch := t.TempDir()
+			var out bytes.Buffer
+			if err := runConcurrentCPU(context.Background(), run, steps, dirLogs(scratch), &out); err != nil {
 				t.Fatal(err)
 			}
-			log := string(b)
-			for i := 0; i < 50; i++ {
-				if !strings.Contains(log, fmt.Sprintf("%s out %d\n", s.Name, i)) || !strings.Contains(log, fmt.Sprintf("%s err %d\n", s.Name, i)) {
-					t.Fatalf("%s log lacks line %d", s.Name, i)
+			o := out.String()
+			pos := -1
+			for _, s := range steps {
+				path := filepath.Join(scratch, strings.ReplaceAll(s.Name, " ", "-")+".log")
+				i := strings.Index(o, "devcheck: "+s.Name+": "+strings.Join(s.Argv, " ")+" (concurrent, log "+path+")\n")
+				if i < 0 || i < pos {
+					t.Fatalf("announcement of %s missing or out of order:\n%s", s.Name, o)
 				}
+				pos = i
 			}
-			if strings.Count(log, "\n") != 100 {
-				t.Fatalf("%s log holds foreign output:\n%s", s.Name, log)
+			for _, s := range steps {
+				path := filepath.Join(scratch, strings.ReplaceAll(s.Name, " ", "-")+".log")
+				b, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				log := string(b)
+				for i := 0; i < 50; i++ {
+					if !strings.Contains(log, fmt.Sprintf("%s out %d\n", s.Name, i)) || !strings.Contains(log, fmt.Sprintf("%s err %d\n", s.Name, i)) {
+						t.Fatalf("%s log lacks line %d", s.Name, i)
+					}
+				}
+				if strings.Count(log, "\n") != 100 {
+					t.Fatalf("%s log holds foreign output:\n%s", s.Name, log)
+				}
+				heading := strings.Index(o, "devcheck: ---- "+s.Name+" log ("+path+") ----\n")
+				if heading < pos {
+					t.Fatalf("replay of %s missing or out of plan order:\n%s", s.Name, o)
+				}
+				body := o[heading:]
+				outcome := strings.Index(body, "devcheck: "+s.Name+": ok in ")
+				if outcome < 0 || !strings.Contains(body[:outcome], log) {
+					t.Fatalf("%s replay is not its log followed by its outcome:\n%s", s.Name, o)
+				}
+				pos = heading + outcome
 			}
-			heading := strings.Index(o, "devcheck: ---- "+s.Name+" log ("+path+") ----\n")
-			if heading < pos {
-				t.Fatalf("replay of %s missing or out of plan order:\n%s", s.Name, o)
-			}
-			body := o[heading:]
-			outcome := strings.Index(body, "devcheck: "+s.Name+": ok in ")
-			if outcome < 0 || !strings.Contains(body[:outcome], log) {
-				t.Fatalf("%s replay is not its log followed by its outcome:\n%s", s.Name, o)
-			}
-			pos = heading + outcome
 		}
+		steps := processgroupSteps(t)
 		// Injected log failures fail the shard even though every child
 		// exited zero, naming the command; a failed preparation starts
-		// nothing and closes the logs already created.
+		// nothing and closes the logs already created. The coordinator is
+		// shared by the three Parallel shards, so its fault coverage runs
+		// once.
 		ok := func(_ context.Context, _, _ []string, _ string, stdout, _ io.Writer) error {
 			_, err := io.WriteString(stdout, "output\n")
 			return err
@@ -1402,27 +1573,273 @@ func TestStressConcurrencyContract(t *testing.T) {
 				}
 			}
 		}
-		// Scratch: kept with its path on failure, removed after success.
-		f := &fakeRunner{fail: "-cpu=2 "}
-		code, dout, errOut := runDriver(t, "linux", f, "stress-processgroup")
-		scratch = scratchFrom(dout)
-		if code != 1 || !strings.Contains(errOut, "logs retained in "+scratch) {
-			t.Fatalf("failure = %d %s", code, errOut)
-		}
-		if b, err := os.ReadFile(filepath.Join(scratch, "stress-processgroup-cpu2.log")); err != nil || !strings.Contains(string(b), "boom from child") {
-			t.Fatalf("failed log: %q %v", b, err)
-		}
-		os.RemoveAll(scratch)
-		code, dout, errOut = runDriver(t, "linux", &fakeRunner{}, "stress-processgroup")
-		if _, err := os.Stat(scratchFrom(dout)); code != 0 || !os.IsNotExist(err) {
-			t.Fatalf("success = %d %s, scratch %v", code, errOut, err)
+		// Scratch: kept with its path on failure, removed after success, for
+		// every Parallel shard stage.
+		for _, stage := range []string{"stress-plane", "stress-sidecar", "stress-processgroup"} {
+			f := &fakeRunner{fail: "-cpu=2 "}
+			code, dout, errOut := runDriver(t, "linux", f, stage)
+			scratch := scratchFrom(dout)
+			if code != 1 || !strings.Contains(errOut, "logs retained in "+scratch) {
+				t.Fatalf("%s failure = %d %s", stage, code, errOut)
+			}
+			if b, err := os.ReadFile(filepath.Join(scratch, stage+"-cpu2.log")); err != nil || !strings.Contains(string(b), "boom from child") {
+				t.Fatalf("%s failed log: %q %v", stage, b, err)
+			}
+			os.RemoveAll(scratch)
+			code, dout, errOut = runDriver(t, "linux", &fakeRunner{}, stage)
+			if _, err := os.Stat(scratchFrom(dout)); code != 0 || !os.IsNotExist(err) {
+				t.Fatalf("%s success = %d %s, scratch %v", stage, code, errOut, err)
+			}
 		}
 		// A scratch that cannot hold the logs starts nothing.
-		f = &fakeRunner{}
-		d := &driver{ctx: context.Background(), run: f.run, out: io.Discard, errOut: io.Discard, scratch: filepath.Join(t.TempDir(), "missing"), goos: "linux"}
 		shards, _ := StressShards("linux")
-		if err := d.stress(shards[1:2]); err == nil || len(f.calls) != 0 || !strings.Contains(err.Error(), "create log") {
-			t.Fatalf("missing scratch = %v after %d calls", err, len(f.calls))
+		for _, sh := range shards[1:4] {
+			f := &fakeRunner{}
+			d := &driver{ctx: context.Background(), run: f.run, out: io.Discard, errOut: io.Discard, scratch: filepath.Join(t.TempDir(), "missing"), goos: "linux"}
+			if err := d.stress([]StressShard{sh}); err == nil || len(f.calls) != 0 || !strings.Contains(err.Error(), "create log") {
+				t.Fatalf("%s missing scratch = %v after %d calls", sh.Name, err, len(f.calls))
+			}
+		}
+	})
+
+	// waves is the static wave schedule of design 05b's pre-authorised
+	// plane fallback (DW4). The schedule is inactive (stressWaves is empty,
+	// pinned by TestStressPlan); this subtest activates the literal
+	// fallback for itself only and proves the mechanism: CPU 4 runs alone
+	// and ends before either smaller invocation starts, CPU 1 and 2 overlap
+	// with their own barrier, a first-wave failure, log error or
+	// cancellation prevents the second wave, cancellation joins started
+	// calls, logs replay by wave, and sidecar and processgroup keep their
+	// three-way barriers.
+	t.Run("waves", func(t *testing.T) {
+		shards, _ := StressShards("linux")
+		plane, pgShard := shards[1], shards[3]
+		// Default: one group of every step, in plan order.
+		g, err := stressGroups(plane, nil)
+		if err != nil || len(g) != 1 || strings.Join(argvOf(g[0]), "|") != strings.Join(groupPlane, "|") {
+			t.Fatalf("default groups = %v %v", g, err)
+		}
+		// The fallback partitions exactly plane's steps: CPU 4, then 1 and 2.
+		g, err = stressGroups(plane, planeFallbackWaves["plane"])
+		if err != nil || len(g) != 2 || strings.Join(argvOf(g[0]), "|") != wantStressPlane4 ||
+			strings.Join(argvOf(g[1]), "|") != wantStressPlane1+"|"+wantStressPlane2 || g[0][0].Name != "stress plane cpu4" {
+			t.Fatalf("fallback groups = %v %v", g, err)
+		}
+		// Invalid schedules are rejected before anything runs.
+		for _, c := range []struct {
+			sh    StressShard
+			waves [][]int
+			want  string
+		}{
+			{plane, [][]int{{4}, {1}}, "CPU setting 2 is not scheduled"},
+			{plane, [][]int{{4, 4}, {1, 2}}, "CPU setting 4 appears twice"},
+			{plane, [][]int{{3}, {1, 2, 4}}, "CPU setting 3 is not in [1 2 4]"},
+			{plane, [][]int{{}, {1, 2, 4}}, "a wave runs 1 to 3 invocations, got 0"},
+			{plane, [][]int{{1, 2, 4, 1}}, "a wave runs 1 to 3 invocations, got 4"},
+			{shards[0], [][]int{{1}, {2}, {4}}, "not a Parallel shard of one step per CPU setting"},
+			{StressShard{Name: "plane", Parallel: true, Steps: plane.Steps[:2]}, [][]int{{1}, {2}}, "not a Parallel shard of one step per CPU setting"},
+		} {
+			if g, err := stressGroups(c.sh, c.waves); err == nil || g != nil || !strings.Contains(err.Error(), "invalid stress waves") || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("%s %v = %v %v", c.sh.Name, c.waves, g, err)
+			}
+		}
+		for _, stage := range []string{"stress", "stress-plane"} {
+			setStressWaves(t, map[string][][]int{"plane": {{4}, {1}}})
+			tmp := t.TempDir()
+			t.Setenv("TMPDIR", tmp)
+			f := &fakeRunner{}
+			code, out, errOut := runDriver(t, "linux", f, stage)
+			if entries, _ := os.ReadDir(tmp); code != 1 || len(f.calls) != 0 || out != "" || len(entries) != 0 || !strings.Contains(errOut, "stage "+stage+" FAILED: devcheck: invalid stress waves") {
+				t.Fatalf("invalid waves %s = %d, %d calls, %d entries: %s", stage, code, len(f.calls), len(entries), errOut)
+			}
+		}
+		// A schedule for plane never affects another stage, and the driver
+		// rejects an invalid schedule before its first child too.
+		f := &fakeRunner{}
+		code, out, errOut := runDriver(t, "linux", f, "stress-processgroup")
+		if code != 0 || !callsMatch(f.argvs(), [][]string{groupProcessGroup}) {
+			t.Fatalf("processgroup with plane waves = %d %q %s", code, f.argvs(), errOut)
+		}
+		os.RemoveAll(scratchFrom(out))
+		f = &fakeRunner{}
+		if err := stressDriver(t, context.Background(), f.run).stress(shards); err == nil || len(f.calls) != 0 || !strings.Contains(err.Error(), "invalid stress waves") {
+			t.Fatalf("driver with invalid waves = %v after %d calls", err, len(f.calls))
+		}
+
+		setStressWaves(t, planeFallbackWaves)
+		// The flattened inspection view is unchanged by the schedule.
+		if steps, err := StressSteps("darwin"); err != nil || strings.Join(argvOf(steps), "|") != wantStressPlan {
+			t.Fatalf("flattened plan under waves = %v %v", argvOf(steps), err)
+		}
+		// Full local dispatch: still 26 start/end events; plane occupies
+		// 2-7 as CPU 4's start and end, then the pair's starts and ends;
+		// sidecar 8-13 and processgroup 14-19 keep their own three-way
+		// barriers; functions 20-25.
+		var mu sync.Mutex
+		var events []string
+		pair, sc, pg := newBarrier(2), newBarrier(3), newBarrier(3)
+		rec := func(_ context.Context, argv, _ []string, _ string, stdout, _ io.Writer) error {
+			a := strings.Join(argv, " ")
+			mu.Lock()
+			events = append(events, "start "+a)
+			mu.Unlock()
+			fmt.Fprintf(stdout, "output of %s\n", a)
+			var err error
+			switch {
+			case a == wantStressPlane1 || a == wantStressPlane2:
+				err = pair.wait()
+			case strings.HasSuffix(a, " ./internal/sidecar"):
+				err = sc.wait()
+			case strings.HasSuffix(a, " ./internal/spikes/processgroup"):
+				err = pg.wait()
+			}
+			mu.Lock()
+			events = append(events, "end "+a)
+			mu.Unlock()
+			return err
+		}
+		var dout, derr bytes.Buffer
+		if code := runFor(context.Background(), "darwin", []string{"stress"}, &dout, &derr, rec); code != 0 {
+			t.Fatalf("stress with plane waves = %d %s", code, derr.String())
+		}
+		if len(events) != 26 || events[0] != "start "+wantStressPackages || events[1] != "end "+wantStressPackages ||
+			events[2] != "start "+wantStressPlane4 || events[3] != "end "+wantStressPlane4 ||
+			events[20] != "start "+wantStressFunction || events[25] != "end "+wantStressNodeFunction {
+			t.Fatalf("wave boundaries: %q", events)
+		}
+		for _, w := range []struct {
+			from, n int
+			group   []string
+		}{{4, 2, []string{wantStressPlane1, wantStressPlane2}}, {8, 3, groupSidecar}, {14, 3, groupProcessGroup}} {
+			var starts, ends []string
+			for _, e := range events[w.from : w.from+w.n] {
+				starts = append(starts, strings.TrimPrefix(e, "start "))
+			}
+			for _, e := range events[w.from+w.n : w.from+2*w.n] {
+				ends = append(ends, strings.TrimPrefix(e, "end "))
+			}
+			if !callsMatch(starts, [][]string{w.group}) || !callsMatch(ends, [][]string{w.group}) {
+				t.Fatalf("group at %d did not all start before any ended: %q", w.from, events)
+			}
+		}
+		// Logs replay by wave: CPU 4's announcement, replay and outcome,
+		// then the pair's announcements, then their replays in CPU order.
+		o := dout.String()
+		scratch := scratchFrom(o)
+		log := func(n int) string { return filepath.Join(scratch, fmt.Sprintf("stress-plane-cpu%d.log", n)) }
+		requireOrder(t, "wave log order", o,
+			"devcheck: stress plane cpu4: "+wantStressPlane4+" (concurrent, log "+log(4)+")\n",
+			"devcheck: ---- stress plane cpu4 log ("+log(4)+") ----\noutput of "+wantStressPlane4+"\n",
+			"devcheck: stress plane cpu4: ok in ",
+			"devcheck: stress plane cpu1: "+wantStressPlane1+" (concurrent, log "+log(1)+")\n",
+			"devcheck: stress plane cpu2: "+wantStressPlane2+" (concurrent, log "+log(2)+")\n",
+			"devcheck: ---- stress plane cpu1 log ("+log(1)+") ----\noutput of "+wantStressPlane1+"\n",
+			"devcheck: stress plane cpu1: ok in ",
+			"devcheck: ---- stress plane cpu2 log ("+log(2)+") ----\noutput of "+wantStressPlane2+"\n",
+			"devcheck: stress plane cpu2: ok in ",
+			"devcheck: stress sidecar cpu1: ",
+			"devcheck: stress processgroup cpu1: ",
+			"devcheck: stage stress ok")
+		// The shard stage runs exactly its two waves.
+		f = &fakeRunner{}
+		code, out, errOut = runDriver(t, "linux", f, "stress-plane")
+		if code != 0 || !callsMatch(f.argvs(), [][]string{{wantStressPlane4}, {wantStressPlane1, wantStressPlane2}}) {
+			t.Fatalf("stress-plane with waves = %d %q %s", code, f.argvs(), errOut)
+		}
+		os.RemoveAll(scratchFrom(out))
+		// A first-wave failure suppresses the second wave and every later
+		// shard; a second-wave failure still collects its sibling.
+		for _, c := range []struct {
+			stage, fail, failed string
+			groups              [][]string
+			ok                  []string
+		}{
+			{"stress-plane", "-cpu=4 -timeout=6m ./internal/plane", "stress plane cpu4", [][]string{{wantStressPlane4}}, nil},
+			{"stress", "-cpu=4 -timeout=6m ./internal/plane", "stress plane cpu4", [][]string{groupPackages, {wantStressPlane4}}, nil},
+			{"stress", "-cpu=1 -timeout=6m ./internal/plane", "stress plane cpu1", [][]string{groupPackages, {wantStressPlane4}, {wantStressPlane1, wantStressPlane2}},
+				[]string{"stress plane cpu4", "stress plane cpu2"}},
+		} {
+			f := &fakeRunner{fail: c.fail}
+			code, out, errOut := runDriver(t, "linux", f, c.stage)
+			if code != 1 || !callsMatch(f.argvs(), c.groups) || !strings.Contains(errOut, "stage "+c.stage+" FAILED: "+c.failed+" failed") ||
+				strings.Count(errOut, " failed: ") != 1 || !strings.Contains(errOut, "logs retained in ") {
+				t.Fatalf("%s failing %s = %d %q %s", c.stage, c.fail, code, f.argvs(), errOut)
+			}
+			for _, n := range c.ok {
+				if !strings.Contains(out, "devcheck: "+n+": ok in ") {
+					t.Fatalf("%s did not finish:\n%s", n, out)
+				}
+			}
+			if len(c.ok) == 0 && strings.Contains(out, "stress plane cpu1") {
+				t.Fatalf("second wave announced after a first-wave failure:\n%s", out)
+			}
+			os.RemoveAll(scratchFrom(out))
+		}
+		// A log that cannot be created fails its wave: in the first wave
+		// nothing starts at all; in the second, only the first wave ran.
+		for _, c := range []struct {
+			blocked string
+			calls   []string
+		}{{"stress-plane-cpu4.log", nil}, {"stress-plane-cpu2.log", []string{wantStressPlane4}}} {
+			scratch := t.TempDir()
+			if err := os.Mkdir(filepath.Join(scratch, c.blocked), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			f := &fakeRunner{}
+			d := &driver{ctx: context.Background(), run: f.run, out: io.Discard, errOut: io.Discard, scratch: scratch, goos: "linux"}
+			if err := d.stress([]StressShard{plane}); err == nil || !strings.Contains(err.Error(), "create log") || !slices.Equal(f.argvs(), c.calls) {
+				t.Fatalf("blocked %s = %v, calls %q", c.blocked, err, f.argvs())
+			}
+		}
+		// A replay failure in the first wave fails it although its child
+		// exited zero, and the second wave never starts.
+		f = &fakeRunner{}
+		d := &driver{ctx: context.Background(), run: f.run, out: &failingWriter{ok: 1}, errOut: io.Discard, scratch: t.TempDir(), goos: "linux"}
+		if err := d.stress([]StressShard{plane}); err == nil || !strings.Contains(err.Error(), "stress plane cpu4 failed: "+wantStressPlane4+": replay log") ||
+			!slices.Equal(f.argvs(), []string{wantStressPlane4}) {
+			t.Fatalf("first-wave replay failure = %v, calls %q", err, f.argvs())
+		}
+		// Cancellation during the first wave joins it and starts no second
+		// wave; during the second it reaches both calls, joins both and
+		// fails although they return nil.
+		for _, c := range []struct {
+			cancelOn string
+			wave     string
+			calls    int
+		}{{wantStressPlane4, "wave 1", 1}, {wantStressPlane2, "wave 2", 3}} {
+			parent, cancelParent := context.WithCancel(context.Background())
+			b := newBarrier(2)
+			var returned atomic.Int32
+			r := &ctxRecorder{next: func(ctx context.Context, argv []string) error {
+				defer returned.Add(1)
+				a := strings.Join(argv, " ")
+				if a == wantStressPlane1 || a == wantStressPlane2 {
+					if err := b.wait(); err != nil {
+						return err
+					}
+				}
+				if a == c.cancelOn {
+					cancelParent()
+				}
+				if a == c.cancelOn || (c.wave == "wave 2" && a == wantStressPlane1) {
+					<-ctx.Done()
+				}
+				return nil
+			}}
+			err := stressDriver(t, parent, r.run).stress([]StressShard{plane, pgShard})
+			cancelParent()
+			if !errors.Is(err, context.Canceled) || r.count() != c.calls || returned.Load() != int32(c.calls) ||
+				!strings.Contains(err.Error(), "stress watchdog (15m0s) ended during stress plane "+c.wave) || strings.Contains(err.Error(), "processgroup") {
+				t.Fatalf("canceled in %s = %v after %d calls, %d returned", c.wave, err, r.count(), returned.Load())
+			}
+		}
+		// A context already done starts no wave.
+		canceled, cancel := context.WithCancel(context.Background())
+		cancel()
+		r := &ctxRecorder{}
+		if err := stressDriver(t, canceled, r.run).stress([]StressShard{plane}); !errors.Is(err, context.Canceled) || r.count() != 0 ||
+			!strings.Contains(err.Error(), "ended before stress plane wave 1") {
+			t.Fatalf("pre-canceled waves = %v after %d calls", err, r.count())
 		}
 	})
 }
@@ -1445,10 +1862,11 @@ func TestPlatformSeamContract(t *testing.T) {
 			}
 			stress, serr := StressSteps(goos)
 			shards, sherr := StressShards(goos)
-			if serr != nil || len(stress) != 7 || sherr != nil || len(shards) != 3 {
+			if serr != nil || len(stress) != 13 || sherr != nil || len(shards) != 5 {
 				t.Fatalf("StressSteps(%s) = %v %v, shards %v %v", goos, stress, serr, shards, sherr)
 			}
-			for stage, want := range map[string]int{"test": wantTest, "stress": 7, "stress-packages": 1, "stress-processgroup": 3, "stress-functions": 3, "native": len(native)} {
+			for stage, want := range map[string]int{"test": wantTest, "stress": 13, "stress-packages": 1, "stress-plane": 3, "stress-sidecar": 3, "stress-processgroup": 3,
+				"stress-functions": 3, "native": len(native)} {
 				f := &fakeRunner{native: stream(qualification()...)}
 				code, out, errOut := runDriver(t, goos, f, stage)
 				wantCode := 0

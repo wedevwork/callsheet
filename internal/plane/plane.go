@@ -134,6 +134,12 @@ type deps struct {
 	// roleHook, when non-nil, runs at named role mutation stages with the
 	// mutation's context (tests only; iteration 04).
 	roleHook func(stage string, ctx context.Context)
+	// taskHook, when non-nil, runs at named task stages with a key (a
+	// dispatch's goal or a task ID) (tests only; iteration 05).
+	taskHook func(stage, key string, ctx context.Context)
+	// onTasks, when non-nil, receives the served task service (tests
+	// only).
+	onTasks func(*taskService)
 }
 
 // shutdownTimeout is the production graceful-shutdown bound.

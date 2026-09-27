@@ -66,6 +66,9 @@ type Options struct {
 	Rest               []string
 	// Probe is the exclusive --callsheet-probe mode.
 	Probe bool
+	// Task is the --callsheet-task mode (iteration 05): explicit --model
+	// and --effort, no operands and no fixture behavior flags.
+	Task bool
 
 	descendant bool
 }
@@ -105,10 +108,12 @@ func parseFor(args []string, goos string, supported bool) (Options, error) {
 	fs.StringVar(&o.SignalFile, "signal-file", "", "cwd-relative signal log")
 	fs.BoolVar(&o.descendant, "internal-descendant", false, "internal")
 	fs.BoolVar(&o.Probe, "callsheet-probe", false, "exclusive invocability probe")
+	fs.BoolVar(&o.Task, "callsheet-task", false, "task mode: prompt on stdin")
 	if err := fs.Parse(args); err != nil {
 		return Options{}, usagef("%v", err)
 	}
 	visited := 0
+	visitedTask := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) {
 		visited++
 		switch f.Name {
@@ -117,10 +122,19 @@ func parseFor(args []string, goos string, supported bool) (Options, error) {
 		case "stderr":
 			o.stderrSet = true
 		}
+		visitedTask[f.Name] = true
 	})
 	o.Rest = fs.Args()
 	if o.Probe && (len(args) != 1 || args[0] != ProbeFlag || visited != 1 || len(o.Rest) != 0) {
 		return Options{}, usagef("%s takes no other flags or operands", ProbeFlag)
+	}
+	if o.Task {
+		if !visitedTask["model"] || !visitedTask["effort"] || o.Model == "" || o.Effort == "" {
+			return Options{}, usagef("%s requires explicit --model and --effort", TaskFlag)
+		}
+		if visited != 3 || len(o.Rest) != 0 {
+			return Options{}, usagef("%s takes only --model and --effort, and no operands", TaskFlag)
+		}
 	}
 	if o.Duration < 0 {
 		return Options{}, usagef("--duration must be nonnegative")
@@ -188,6 +202,8 @@ type Env struct {
 	After      func(time.Duration) <-chan time.Time
 	NewFile    func(fd uintptr, name string) *os.File
 	PID        int
+	// Stdin is the task mode's prompt source (default os.Stdin).
+	Stdin io.Reader
 }
 
 func (e Env) withDefaults() (Env, error) {
@@ -258,6 +274,9 @@ func Run(ctx context.Context, env Env) int {
 			io.WriteString(env.Stdout, ProbeOutput)
 		}
 		return 0
+	}
+	if opts.Task {
+		return runTask(env, opts)
 	}
 	env, err = env.withDefaults()
 	if err != nil {

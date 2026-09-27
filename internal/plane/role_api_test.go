@@ -98,64 +98,64 @@ func TestRoleAPIContract(t *testing.T) {
 		}{
 			{"GET", contract.PathRoles, "", "", "", nil, 400, contract.CodeInvalidArgument},
 			{"GET", contract.PathRoles, "x", "", "", nil, 400, contract.CodeInvalidArgument},
-			{"GET", contract.PathRoles, "3", "", "", nil, 409, contract.CodeProtocolMismatch},
+			{"GET", contract.PathRoles, "4", "", "", nil, 409, contract.CodeProtocolMismatch},
 			{"POST", contract.PathRoles, "1", js, `SECRET-BODY`, nil, 409, contract.CodeProtocolMismatch},
-			{"GET", contract.PathRoles, "2", "", "", map[string]string{contract.ProtocolHeader: "2"}, 400, contract.CodeInvalidArgument},
-			{"GET", contract.PathRoles + "?all=SECRET-QUERY", "2", "", "", nil, 400, contract.CodeInvalidArgument},
-			{"GET", contract.PathRoles + "?", "2", "", "", nil, 400, contract.CodeInvalidArgument},
-			{"GET", contract.PathRoles + "/worker-a?x", "2", "", "", nil, 400, contract.CodeInvalidArgument},
-			{"GET", contract.PathRoles, "2", "", "SECRET-BODY", nil, 400, contract.CodeInvalidArgument},
-			{"GET", contract.PathRoles + "/worker-a", "2", "", "SECRET-BODY", nil, 400, contract.CodeInvalidArgument},
-			{"PUT", contract.PathRoles, "2", js, `{}`, nil, 400, contract.CodeInvalidArgument},
-			{"PATCH", contract.PathRoles, "2", js, `{}`, nil, 400, contract.CodeInvalidArgument},
-			{"DELETE", contract.PathRoles, "2", js, `{"force":true}`, nil, 400, contract.CodeInvalidArgument},
-			{"POST", contract.PathRoles + "/worker-a", "2", js, addBody, nil, 400, contract.CodeInvalidArgument},
-			{"PUT", contract.PathRoles + "/worker-a", "2", js, `{}`, nil, 400, contract.CodeInvalidArgument},
-			{"GET", contract.PathRoles + "/SECRET-ID", "2", "", "", nil, 400, contract.CodeInvalidArgument},
-			{"GET", contract.PathRoles + "/", "2", "", "", nil, 400, contract.CodeInvalidArgument},
-			{"GET", contract.PathRoles + "/worker-a/x", "2", "", "", nil, 400, contract.CodeInvalidArgument},
-			{"GET", contract.PathRoles + "/zz", "2", "", "", nil, 404, contract.CodeNotFound},
-			{"POST", contract.PathRoles, "2", "", addBody, nil, 400, contract.CodeInvalidArgument},
-			{"POST", contract.PathRoles, "2", "text/plain", addBody, nil, 400, contract.CodeInvalidArgument},
-			{"POST", contract.PathRoles, "2", js, addBody, map[string]string{"Content-Type": js}, 400, contract.CodeInvalidArgument},
-			{"POST", contract.PathRoles, "2", "application/json; charset=utf-8", strings.Replace(addBody, `"low"`, `"SECRET-EFFORT"`, 1), nil, 400, contract.CodeInvalidArgument},
-			{"POST", contract.PathRoles, "2", js, `{"id":"x","extra":"SECRET-VALUE"}`, nil, 400, contract.CodeInvalidArgument},
-			{"POST", contract.PathRoles, "2", js, strings.Replace(addBody, `"name":"coder"`, `"name":"coder","name":"SECRET-DUP"`, 1), nil, 400, contract.CodeInvalidArgument},
-			{"POST", contract.PathRoles, "2", js, strings.Replace(addBody, `"model":"m"`, `"model":null`, 1), nil, 400, contract.CodeInvalidArgument},
-			{"POST", contract.PathRoles, "2", js, addBody + ` {"SECRET":1}`, nil, 400, contract.CodeInvalidArgument},
-			{"POST", contract.PathRoles, "2", js, strings.Replace(addBody, idB, "n_ffffffffffffffffffffffffffffffff", 1), nil, 404, contract.CodeNotFound},
-			{"POST", contract.PathRoles, "2", js, addBody, nil, 503, contract.CodeUnavailable},
-			{"POST", contract.PathRoles, "2", js, strings.Replace(addBody, `"id":"x"`, `"id":"worker-a"`, 1), nil, 409, contract.CodeConflict},
-			{"PATCH", contract.PathRoles + "/worker-a", "2", js, `{}`, nil, 400, contract.CodeInvalidArgument},
-			{"PATCH", contract.PathRoles + "/worker-a", "2", js, `{"node":"` + idA + `"}`, nil, 400, contract.CodeInvalidArgument},
-			{"PATCH", contract.PathRoles + "/zz", "2", js, `{"name":"x"}`, nil, 404, contract.CodeNotFound},
-			{"PATCH", contract.PathRoles + "/worker-a", "2", "", `{"name":"x"}`, nil, 400, contract.CodeInvalidArgument},
-			{"DELETE", contract.PathRoles + "/worker-a", "2", js, ``, nil, 400, contract.CodeInvalidArgument},
-			{"DELETE", contract.PathRoles + "/worker-a", "2", js, `{}`, nil, 400, contract.CodeInvalidArgument},
-			{"DELETE", contract.PathRoles + "/worker-a", "2", js, `{"force":"yes"}`, nil, 400, contract.CodeInvalidArgument},
-			{"DELETE", contract.PathRoles + "/zz", "2", js, `{"force":false}`, nil, 404, contract.CodeNotFound},
+			{"GET", contract.PathRoles, "3", "", "", map[string]string{contract.ProtocolHeader: "3"}, 400, contract.CodeInvalidArgument},
+			{"GET", contract.PathRoles + "?all=SECRET-QUERY", "3", "", "", nil, 400, contract.CodeInvalidArgument},
+			{"GET", contract.PathRoles + "?", "3", "", "", nil, 400, contract.CodeInvalidArgument},
+			{"GET", contract.PathRoles + "/worker-a?x", "3", "", "", nil, 400, contract.CodeInvalidArgument},
+			{"GET", contract.PathRoles, "3", "", "SECRET-BODY", nil, 400, contract.CodeInvalidArgument},
+			{"GET", contract.PathRoles + "/worker-a", "3", "", "SECRET-BODY", nil, 400, contract.CodeInvalidArgument},
+			{"PUT", contract.PathRoles, "3", js, `{}`, nil, 400, contract.CodeInvalidArgument},
+			{"PATCH", contract.PathRoles, "3", js, `{}`, nil, 400, contract.CodeInvalidArgument},
+			{"DELETE", contract.PathRoles, "3", js, `{"force":true}`, nil, 400, contract.CodeInvalidArgument},
+			{"POST", contract.PathRoles + "/worker-a", "3", js, addBody, nil, 400, contract.CodeInvalidArgument},
+			{"PUT", contract.PathRoles + "/worker-a", "3", js, `{}`, nil, 400, contract.CodeInvalidArgument},
+			{"GET", contract.PathRoles + "/SECRET-ID", "3", "", "", nil, 400, contract.CodeInvalidArgument},
+			{"GET", contract.PathRoles + "/", "3", "", "", nil, 400, contract.CodeInvalidArgument},
+			{"GET", contract.PathRoles + "/worker-a/x", "3", "", "", nil, 400, contract.CodeInvalidArgument},
+			{"GET", contract.PathRoles + "/zz", "3", "", "", nil, 404, contract.CodeNotFound},
+			{"POST", contract.PathRoles, "3", "", addBody, nil, 400, contract.CodeInvalidArgument},
+			{"POST", contract.PathRoles, "3", "text/plain", addBody, nil, 400, contract.CodeInvalidArgument},
+			{"POST", contract.PathRoles, "3", js, addBody, map[string]string{"Content-Type": js}, 400, contract.CodeInvalidArgument},
+			{"POST", contract.PathRoles, "3", "application/json; charset=utf-8", strings.Replace(addBody, `"low"`, `"SECRET-EFFORT"`, 1), nil, 400, contract.CodeInvalidArgument},
+			{"POST", contract.PathRoles, "3", js, `{"id":"x","extra":"SECRET-VALUE"}`, nil, 400, contract.CodeInvalidArgument},
+			{"POST", contract.PathRoles, "3", js, strings.Replace(addBody, `"name":"coder"`, `"name":"coder","name":"SECRET-DUP"`, 1), nil, 400, contract.CodeInvalidArgument},
+			{"POST", contract.PathRoles, "3", js, strings.Replace(addBody, `"model":"m"`, `"model":null`, 1), nil, 400, contract.CodeInvalidArgument},
+			{"POST", contract.PathRoles, "3", js, addBody + ` {"SECRET":1}`, nil, 400, contract.CodeInvalidArgument},
+			{"POST", contract.PathRoles, "3", js, strings.Replace(addBody, idB, "n_ffffffffffffffffffffffffffffffff", 1), nil, 404, contract.CodeNotFound},
+			{"POST", contract.PathRoles, "3", js, addBody, nil, 503, contract.CodeUnavailable},
+			{"POST", contract.PathRoles, "3", js, strings.Replace(addBody, `"id":"x"`, `"id":"worker-a"`, 1), nil, 409, contract.CodeConflict},
+			{"PATCH", contract.PathRoles + "/worker-a", "3", js, `{}`, nil, 400, contract.CodeInvalidArgument},
+			{"PATCH", contract.PathRoles + "/worker-a", "3", js, `{"node":"` + idA + `"}`, nil, 400, contract.CodeInvalidArgument},
+			{"PATCH", contract.PathRoles + "/zz", "3", js, `{"name":"x"}`, nil, 404, contract.CodeNotFound},
+			{"PATCH", contract.PathRoles + "/worker-a", "3", "", `{"name":"x"}`, nil, 400, contract.CodeInvalidArgument},
+			{"DELETE", contract.PathRoles + "/worker-a", "3", js, ``, nil, 400, contract.CodeInvalidArgument},
+			{"DELETE", contract.PathRoles + "/worker-a", "3", js, `{}`, nil, 400, contract.CodeInvalidArgument},
+			{"DELETE", contract.PathRoles + "/worker-a", "3", js, `{"force":"yes"}`, nil, 400, contract.CodeInvalidArgument},
+			{"DELETE", contract.PathRoles + "/zz", "3", js, `{"force":false}`, nil, 404, contract.CodeNotFound},
 		} {
 			status, hdr, body := do(c.method, c.path, c.version, c.ctype, c.body, c.extra)
 			e, err := contract.ParseErrorBody(bytes.TrimSpace([]byte(body)))
-			if status != c.status || err != nil || e.Code != c.code || strings.Contains(body, "SECRET") || hdr != "2" {
+			if status != c.status || err != nil || e.Code != c.code || strings.Contains(body, "SECRET") || hdr != "3" {
 				t.Fatalf("%s %s v=%q = %d %q (%v) header %q", c.method, c.path, c.version, status, body, err, hdr)
 			}
-			if c.code == contract.CodeProtocolMismatch && !strings.Contains(e.Message, "local=2 remote=") {
+			if c.code == contract.CodeProtocolMismatch && !strings.Contains(e.Message, "local=3 remote=") {
 				t.Fatalf("mismatch message %q", e.Message)
 			}
 		}
 		// The success envelopes are compact with one final LF.
-		status, _, body := do("GET", contract.PathRoles+"/worker-a", "2", "", "", nil)
+		status, _, body := do("GET", contract.PathRoles+"/worker-a", "3", "", "", nil)
 		v := rp.view(t, "worker-a")
-		if want, _ := contract.Encode(contract.RoleResponse{Version: 2, Role: v}); status != 200 || body != string(want)+"\n" {
+		if want, _ := contract.Encode(contract.RoleResponse{Version: 3, Role: v}); status != 200 || body != string(want)+"\n" {
 			t.Fatalf("show body %q", body)
 		}
-		status, _, body = do("GET", contract.PathRoles, "2", "", "", nil)
-		if status != 200 || !strings.HasPrefix(body, `{"version":2,"roles":[{"id":"worker-a",`) || !strings.HasSuffix(body, "}]}\n") {
+		status, _, body = do("GET", contract.PathRoles, "3", "", "", nil)
+		if status != 200 || !strings.HasPrefix(body, `{"version":3,"roles":[{"id":"worker-a",`) || !strings.HasSuffix(body, "}]}\n") {
 			t.Fatalf("list body %q", body)
 		}
-		status, _, body = do("DELETE", contract.PathRoles+"/worker-a", "2", "application/json", `{"force":false}`, nil)
-		if status != 200 || body != `{"version":2,"removed":"worker-a"}`+"\n" {
+		status, _, body = do("DELETE", contract.PathRoles+"/worker-a", "3", "application/json", `{"force":false}`, nil)
+		if status != 200 || body != `{"version":3,"removed":"worker-a"}`+"\n" {
 			t.Fatalf("rm body %d %q", status, body)
 		}
 		p.ackReplace("p11")
@@ -166,7 +166,7 @@ func TestRoleAPIContract(t *testing.T) {
 		// the network net/http lingers on such a connection).
 		big := `{"id":"x","name":"` + strings.Repeat("n", contract.MaxRoleRequestBytes) + `"}`
 		req := httptest.NewRequest("POST", contract.PathRoles, strings.NewReader(big))
-		req.Header.Set(contract.ProtocolHeader, "2")
+		req.Header.Set(contract.ProtocolHeader, "3")
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
 		rp.srv(t).handleRoles(rec, req)

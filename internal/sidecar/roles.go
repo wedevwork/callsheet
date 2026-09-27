@@ -181,6 +181,8 @@ type workers struct {
 	cycleBusy bool
 	freed     chan struct{}
 	wg        sync.WaitGroup
+	// tasks is the Run's task supervisor (iteration 05).
+	tasks *taskSupervisor
 }
 
 func newWorkers() *workers { return &workers{freed: make(chan struct{}, 1)} }

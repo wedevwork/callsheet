@@ -46,13 +46,55 @@ func (t *timerSlot) ch() <-chan time.Time {
 // fired marks the timer consumed.
 func (t *timerSlot) fired() { t.on, t.c = false, nil }
 
-// outstanding is the one heartbeat awaiting its acknowledgement.
+// reqKind is the kind of a sidecar request (iteration 05: heartbeats,
+// task_log and task_result share one b1, b2, ... sequence and one
+// in-flight slot).
+type reqKind int
+
+const (
+	reqHeartbeat reqKind = iota
+	reqLog
+	reqResult
+)
+
+// outstanding is the one sidecar request awaiting its reply.
 type outstanding struct {
 	id       string
 	k        int
 	deadline time.Time
 	timer    timerSlot
 	expired  bool
+	kind     reqKind
+	// w and end are a task_log's worker and chunk end, or a task_result's
+	// worker.
+	w   *taskWorker
+	end int
+}
+
+// startEntry is one start of this attachment's deduplication table: the
+// canonical body digest and the start's outcome. While the outcome is
+// unknown it references the worker; once known it is a compact immutable
+// value (started, or the refusal) and the worker, its request, result and
+// output ring are no longer reachable from it. Entries live for the
+// attachment's lifetime.
+type startEntry struct {
+	digest  [32]byte
+	w       *taskWorker
+	started bool
+	refusal *contract.Error
+}
+
+// settle replaces the entry's worker with its outcome.
+func (e *startEntry) settle(refusal *contract.Error) {
+	e.w, e.started, e.refusal = nil, refusal == nil, refusal
+}
+
+// pendingStart is the open task_start awaiting its outcome.
+type pendingStart struct {
+	id    string
+	w     *taskWorker
+	e     *startEntry
+	timer timerSlot
 }
 
 // reply is the one pending reply to a plane request.
@@ -62,6 +104,9 @@ type reply struct {
 	// rev is set for a roles_replace_ack.
 	ack bool
 	rev int
+	// started is a task start's worker whose ok:true this reply carries:
+	// its output may flow once the write completes.
+	started *taskWorker
 }
 
 // snapshot is the installed role configuration of this session.
@@ -134,6 +179,18 @@ type roleSession struct {
 	cadence   timerSlot
 	last      *cycleResult
 	ready     map[string]bool
+
+	// Iteration 05 tasks: the Run's supervisor, this attachment's tag,
+	// its execution token (set by the first start), the deduplication
+	// table, the open start and the round-robin cursors.
+	tasks      *taskSupervisor
+	tag        *attachTag
+	token      *contract.ExecutionToken
+	starts     map[string]*startEntry
+	pend       *pendingStart
+	lastLog    string
+	lastResult string
+	resultTurn bool
 }
 
 // cleanup stops every timer and cancels the session's worker jobs; the
@@ -142,6 +199,11 @@ func (rs *roleSession) cleanup(cancelJobs context.CancelFunc) {
 	if rs.out != nil {
 		rs.out.timer.clear()
 	}
+	if rs.pend != nil {
+		rs.pend.timer.clear()
+	}
+	// Task workers survive the session, but never send on another one.
+	rs.tasks.fence(rs.tag)
 	rs.due.clear()
 	if rs.val != nil {
 		rs.val.timer.clear()
@@ -171,11 +233,17 @@ func (rs *roleSession) run() error {
 			continue
 		}
 		if rs.out != nil && rs.out.expired {
+			if rs.out.kind != reqHeartbeat {
+				return contract.New(contract.CodeUnavailable, "no task output acknowledgement within "+outputExchange.String())
+			}
 			return contract.New(contract.CodeUnavailable, "no heartbeat acknowledgement within "+stepTimeout.String())
 		}
 		rs.pollValidation()
 		rs.pollCycle()
 		rs.startCycle()
+		if err := rs.pollStart(); err != nil {
+			return err
+		}
 		if rs.reply != nil {
 			if err := rs.writeReply(); err != nil {
 				return err
@@ -190,14 +258,25 @@ func (rs *roleSession) run() error {
 			continue
 		}
 		if !rs.fenced && rs.out == nil {
+			if w, kind := rs.nextOutput(); w != nil {
+				if err := rs.writeOutput(w, kind); err != nil {
+					return err
+				}
+				continue
+			}
+		}
+		if !rs.fenced && rs.out == nil {
 			rs.due.set(rs.d.clock, rs.nextDue)
 		} else {
 			rs.due.clear()
 		}
-		var outC, valTimer, budget <-chan time.Time
+		var outC, valTimer, budget, startTimer <-chan time.Time
 		var valDone, cycDone <-chan struct{}
 		if rs.out != nil {
 			outC = rs.out.timer.ch()
+		}
+		if rs.pend != nil {
+			startTimer = rs.pend.timer.ch()
 		}
 		if rs.val != nil {
 			valDone = rs.val.job.ready
@@ -226,6 +305,9 @@ func (rs *roleSession) run() error {
 			rs.cadence.fired()
 			rs.cycleDue = true
 		case <-rs.w.freed:
+		case <-startTimer:
+			rs.pend.timer.fired()
+		case <-rs.tasks.notify:
 		case <-rs.ctx.Done():
 		}
 	}
@@ -238,9 +320,9 @@ func (rs *roleSession) handle(r readResult) error {
 		return err
 	}
 	switch f.Type {
-	case contract.FrameHeartbeatAck:
+	case contract.FrameHeartbeatAck, contract.FrameTaskLogAck, contract.FrameTaskResultAck:
 		return rs.onAck(f, r.at)
-	case contract.FrameRoleValidate, contract.FrameRolesReplace:
+	case contract.FrameRoleValidate, contract.FrameRolesReplace, contract.FrameTaskStart:
 		if rs.lastP >= contract.MaxSafeInteger {
 			return invalid(f.RequestID, "the plane request counter is exhausted")
 		}
@@ -252,8 +334,11 @@ func (rs *roleSession) handle(r readResult) error {
 		}
 		rs.lastP++
 		rs.open = true
-		if f.Type == contract.FrameRoleValidate {
+		switch f.Type {
+		case contract.FrameRoleValidate:
 			return rs.onValidate(f, r.at)
+		case contract.FrameTaskStart:
+			return rs.onTaskStart(f, r.at)
 		}
 		return rs.onReplace(f)
 	}
@@ -266,6 +351,13 @@ func (rs *roleSession) onAck(f contract.NodeFrame, at time.Time) error {
 	}
 	if f.RequestID != rs.out.id {
 		return invalid(f.RequestID, "unknown or stale acknowledgement "+f.RequestID+" (want "+rs.out.id+")")
+	}
+	want := map[reqKind]string{reqHeartbeat: contract.FrameHeartbeatAck, reqLog: contract.FrameTaskLogAck, reqResult: contract.FrameTaskResultAck}[rs.out.kind]
+	if f.Type != want {
+		return invalid(f.RequestID, "the plane answered "+f.RequestID+" with "+f.Type+" (want "+want+")")
+	}
+	if rs.out.kind != reqHeartbeat {
+		return rs.onOutputAck(f, at)
 	}
 	if err := contract.DecodeAck(f.Body); err != nil {
 		return &protocolError{requestID: f.RequestID, err: err.(*contract.Error)}
@@ -406,6 +498,19 @@ func (rs *roleSession) writeReply() error {
 		return err
 	}
 	rs.reply, rs.open = nil, false
+	if r.typ == contract.FrameTaskStartResult {
+		if w := r.started; w != nil {
+			// Output and the result flow only after the start reply was
+			// written on this attachment.
+			w.mu.Lock()
+			if !w.fenced {
+				w.replied = true
+			}
+			w.mu.Unlock()
+		}
+		rs.emit(event{kind: evStartReplied, id: r.body.(contract.TaskStartResult).TaskID})
+		return nil
+	}
 	if r.ack {
 		rs.fenced = false
 		if len(rs.inst.roles) > 0 {
@@ -418,15 +523,18 @@ func (rs *roleSession) writeReply() error {
 	return nil
 }
 
-// statuses computes every installed role's readiness now: inflight 0 is
-// below the concurrency, the last complete cycle for this revision passed
-// it and started less than freshness ago.
+// statuses computes every installed role's readiness now: the instance's
+// local occupied slots (run-lifetime starts and children, matched by
+// registration order) are below the concurrency, no earlier child's group
+// cleanup is unconfirmed, and the last complete cycle for this revision
+// passed it and started less than freshness ago.
 func (rs *roleSession) statuses(now time.Time) []contract.RoleStatus {
 	out := make([]contract.RoleStatus, len(rs.inst.roles))
 	for i, r := range rs.inst.roles {
+		n, blocked := rs.tasks.local(keyOf(r))
 		ok := rs.last != nil && rs.last.rev == rs.inst.rev && i < len(rs.last.passed) && rs.last.passed[i] &&
-			now.Before(rs.last.start.Add(freshness)) && 0 < r.Concurrency
-		out[i] = contract.RoleStatus{RoleID: r.ID, Inflight: 0, Concurrency: r.Concurrency, CanAccept: ok}
+			now.Before(rs.last.start.Add(freshness)) && n < r.Concurrency && !blocked
+		out[i] = contract.RoleStatus{RoleID: r.ID, Inflight: min(n, contract.MaxConcurrency), Concurrency: r.Concurrency, CanAccept: ok}
 	}
 	return out
 }
@@ -466,7 +574,9 @@ func (rs *roleSession) startCycle() {
 	rs.cyc = &cycleState{job: j, rev: rs.inst.rev, start: start}
 	rs.cyc.budget.set(rs.d.clock, start.Add(cycleBudget))
 	rs.nextCycle = start.Add(cycleInterval)
-	rs.cadence.set(rs.d.clock, rs.nextCycle)
+	if !rs.d.noCadence {
+		rs.cadence.set(rs.d.clock, rs.nextCycle)
+	}
 	rs.emit(event{kind: evCycleStarted, rev: rs.inst.rev})
 }
 

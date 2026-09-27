@@ -21,7 +21,10 @@ import (
 type nodeService struct {
 	reg *nodeRegistry
 	// roles serves the role API (iteration 04); nil serves none.
-	roles  *roleService
+	roles *roleService
+	// tasks serves the task API and the stream's task frames (iteration
+	// 05); nil serves none.
+	tasks  *taskService
 	clock  nodeClock
 	logger *slog.Logger
 	caPEM  []byte
@@ -61,6 +64,7 @@ func (s *nodeService) startSweep() {
 				return
 			case <-tick:
 				s.reg.Expire()
+				s.tasks.tick()
 			}
 		}
 	}()
@@ -86,6 +90,10 @@ func (s *nodeService) shutdown(deadline time.Time) {
 	if s.sweepStop != nil {
 		close(s.sweepStop)
 		<-s.sweepDone
+	}
+	if s.tasks != nil {
+		// Persistence writers stop after their current write.
+		defer s.tasks.close()
 	}
 	joined := make(chan struct{})
 	go func() { s.wg.Wait(); close(joined) }()

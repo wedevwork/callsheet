@@ -253,6 +253,10 @@ type nodeRegistry struct {
 	// its state pointer while mu is held; the role registry swaps it only
 	// through adoptRoles, under mu (lock order: mu, then nothing).
 	roles *roleRegistry
+	// tasks, when set (iteration 05), supplies the plane-owned held
+	// reservations of role views and statuses. Its lock is taken before
+	// mu, never while mu is held.
+	tasks *taskService
 
 	regMu sync.Mutex
 	// parentSynced (regMu) records a successful sync of the state root
@@ -568,9 +572,9 @@ func checkHeartbeat(acked roleSnap, hb contract.HeartbeatBody) error {
 		if rs.Concurrency != want.Concurrency {
 			return errf(contract.CodeInvalidArgument, "heartbeat role %s reports concurrency %d; configured %d", rs.RoleID, rs.Concurrency, want.Concurrency)
 		}
-		if rs.Inflight != 0 {
-			return errf(contract.CodeInvalidArgument, "heartbeat role %s reports inflight %d; it must be 0 in protocol %d", rs.RoleID, rs.Inflight, contract.ProtocolVersion)
-		}
+		// Inflight (iteration 05) is the worker's own occupied count, an
+		// observation only: it may exceed a lowered concurrency and never
+		// frees or books a plane reservation.
 	}
 	return nil
 }
@@ -688,51 +692,140 @@ func (r *nodeRegistry) ids() map[string]bool {
 // configuration and order, and the last heartbeat at that revision
 // reporting it ready. Callers expire leases first.
 func (r *nodeRegistry) canAcceptLocked(rs *roleState, rec contract.RoleRecord) bool {
+	return r.readinessLocked(rs, rec) == contract.ReasonAvailable
+}
+
+// readinessLocked is canAcceptLocked's reason, in the candidate
+// precedence (iteration 05): storage_unconfirmed, node_offline,
+// node_detached, role_unsynced, worker_unready, else available.
+func (r *nodeRegistry) readinessLocked(rs *roleState, rec contract.RoleRecord) string {
 	if rs == nil || rs.blocked {
-		return false
+		return contract.ReasonStorageUnconfirmed
 	}
 	st := r.nodes[rec.Node]
-	if st == nil || !st.online || st.att == nil {
-		return false
+	switch {
+	case st == nil || !st.online:
+		return contract.ReasonNodeOffline
+	case st.att == nil:
+		return contract.ReasonNodeDetached
 	}
 	a := st.att
-	if a.acked.rev != a.desired.rev || a.status == nil {
-		return false
+	if a.acked.rev != a.desired.rev {
+		return contract.ReasonRoleUnsynced
 	}
 	for i, ar := range a.acked.roles {
 		if ar.ID == rec.ID {
-			return i < len(a.status) && a.status[i] && ar.RegistrationOrder == rec.RegistrationOrder && contract.SameRoleConfig(ar.RoleConfig, rec.RoleConfig)
+			if ar.RegistrationOrder != rec.RegistrationOrder || !contract.SameRoleConfig(ar.RoleConfig, rec.RoleConfig) {
+				return contract.ReasonRoleUnsynced
+			}
+			if a.status == nil || i >= len(a.status) || !a.status[i] {
+				return contract.ReasonWorkerUnready
+			}
+			return contract.ReasonAvailable
 		}
 	}
-	return false
+	return contract.ReasonRoleUnsynced
+}
+
+// candidateLocked samples one dispatch candidate (iteration 05): its
+// liveness, the plane's held and recovery counts, and the first failing
+// eligibility condition; an available candidate also returns the current
+// attachment's stream and generation. Eligibility is conservative when a
+// heartbeat lags and never optimistic from a heartbeat's zero.
+func (r *nodeRegistry) candidateLocked(rs *roleState, rec contract.RoleRecord, held heldCount, storageBlocked bool) (contract.TaskCandidate, *nodeStream, uint64) {
+	c := contract.TaskCandidate{RoleID: rec.ID, NodeID: rec.Node, RegistrationOrder: rec.RegistrationOrder, NodeLiveness: contract.LivenessOffline,
+		Inflight: held.held, RecoveryInflight: held.recovery, Concurrency: rec.Concurrency}
+	st := r.nodes[rec.Node]
+	if st != nil && st.online {
+		c.NodeLiveness = contract.LivenessOnline
+	}
+	c.Reason = r.readinessLocked(rs, rec)
+	switch {
+	case storageBlocked:
+		c.Reason = contract.ReasonStorageUnconfirmed
+	case c.Reason == contract.ReasonAvailable && held.held >= rec.Concurrency:
+		c.Reason = contract.ReasonFull
+	}
+	c.CanAccept = c.Reason == contract.ReasonAvailable
+	if !c.CanAccept {
+		return c, nil, 0
+	}
+	return c, st.att.stream, st.att.gen
+}
+
+// currentAttachment reports whether gen is node's current attachment with
+// a live stream, leases expired first so the answer is exact at this
+// instant. Task receipt calls it under the task observation lock, in the
+// same critical section as acceptance (lock order: task, then node).
+func (r *nodeRegistry) currentAttachment(node string, gen uint64) bool {
+	r.mu.Lock()
+	closers := r.expireLocked(r.clock.Now(), 0)
+	st := r.nodes[node]
+	ok := st != nil && st.att != nil && st.att.gen == gen && st.att.stream != nil
+	r.mu.Unlock()
+	runAll(closers)
+	return ok
+}
+
+// enqueueStart queues a committed task's start on node's attachment gen
+// when it is still current with a live stream; false proves the start was
+// never sent.
+func (r *nodeRegistry) enqueueStart(node string, gen uint64, it *startItem) bool {
+	r.mu.Lock()
+	st := r.nodes[node]
+	var s *nodeStream
+	if st != nil && st.att != nil && st.att.gen == gen {
+		s = st.att.stream
+	}
+	r.mu.Unlock()
+	return s != nil && s.enqueueStart(it)
+}
+
+// lockTasks takes the task observation lock (before mu) when a task
+// service is attached, and returns the held count lookup valid until the
+// returned unlock.
+func (r *nodeRegistry) lockTasks() (func(contract.RoleRecord) heldCount, func()) {
+	ts := r.tasks
+	if ts == nil {
+		return func(contract.RoleRecord) heldCount { return heldCount{} }, func() {}
+	}
+	ts.mu.Lock()
+	return func(rec contract.RoleRecord) heldCount { return ts.heldLocked(keyOf(rec)) }, ts.mu.Unlock
 }
 
 // roleStatusesLocked returns the node's configured roles (visible
-// registry, registration order) as statuses with derived readiness.
-func (r *nodeRegistry) roleStatusesLocked(id string) []contract.RoleStatus {
+// registry, registration order) as statuses with the plane's held
+// reservations and derived readiness (false while held reaches the
+// concurrency).
+func (r *nodeRegistry) roleStatusesLocked(id string, held func(contract.RoleRecord) heldCount) []contract.RoleStatus {
 	out := []contract.RoleStatus{}
 	if r.roles == nil {
 		return out
 	}
 	rs := r.roles.load()
 	for _, rec := range rs.visible.forNode(id) {
-		out = append(out, contract.RoleStatus{RoleID: rec.ID, Inflight: 0, Concurrency: rec.Concurrency, CanAccept: r.canAcceptLocked(rs, rec)})
+		n := held(rec).held
+		out = append(out, contract.RoleStatus{RoleID: rec.ID, Inflight: min(n, contract.MaxConcurrency), Concurrency: rec.Concurrency,
+			CanAccept: r.canAcceptLocked(rs, rec) && n < rec.Concurrency})
 	}
 	return out
 }
 
 // roleViews derives the views of the records sel picks from the role
 // registry state, loaded under the same lock (so a state and its
-// readiness invalidation are always seen together) and clock sample: zero
-// inflight, node liveness under the lease rule and can_accept.
+// readiness invalidation are always seen together) and clock sample: the
+// plane's held reservations as inflight (under the task lock, taken
+// first), node liveness under the lease rule and can_accept.
 func (r *nodeRegistry) roleViews(sel func(*roleState) []contract.RoleRecord, lookup contract.AdapterLookup) []contract.RoleView {
+	held, unlock := r.lockTasks()
 	r.mu.Lock()
 	closers := r.expireLocked(r.clock.Now(), 0)
 	rs := r.roles.load()
 	recs := sel(rs)
 	out := make([]contract.RoleView, 0, len(recs))
 	for _, rec := range recs {
-		v := contract.RoleView{RoleRecord: rec, NodeLiveness: contract.LivenessOffline, CanAccept: r.canAcceptLocked(rs, rec)}
+		n := held(rec).held
+		v := contract.RoleView{RoleRecord: rec, Inflight: n, NodeLiveness: contract.LivenessOffline, CanAccept: r.canAcceptLocked(rs, rec) && n < rec.Concurrency}
 		if st := r.nodes[rec.Node]; st != nil && st.online {
 			v.NodeLiveness = contract.LivenessOnline
 		}
@@ -742,6 +835,7 @@ func (r *nodeRegistry) roleViews(sel func(*roleState) []contract.RoleRecord, loo
 		out = append(out, v)
 	}
 	r.mu.Unlock()
+	unlock()
 	runAll(closers)
 	return out
 }
@@ -779,13 +873,15 @@ func (st *nodeState) snapshot(roles []contract.RoleStatus) contract.Node {
 // Snapshot samples the clock once, expires under mu and returns copies of
 // every node sorted by ID.
 func (r *nodeRegistry) Snapshot() []contract.Node {
+	held, unlock := r.lockTasks()
 	r.mu.Lock()
 	closers := r.expireLocked(r.clock.Now(), 0)
 	out := make([]contract.Node, 0, len(r.nodes))
 	for _, st := range r.nodes {
-		out = append(out, st.snapshot(r.roleStatusesLocked(st.id)))
+		out = append(out, st.snapshot(r.roleStatusesLocked(st.id, held)))
 	}
 	r.mu.Unlock()
+	unlock()
 	runAll(closers)
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
@@ -793,14 +889,16 @@ func (r *nodeRegistry) Snapshot() []contract.Node {
 
 // Show is Snapshot for one node; an unknown ID is not_found.
 func (r *nodeRegistry) Show(id string) (contract.Node, error) {
+	held, unlock := r.lockTasks()
 	r.mu.Lock()
 	closers := r.expireLocked(r.clock.Now(), 0)
 	st := r.nodes[id]
 	var n contract.Node
 	if st != nil {
-		n = st.snapshot(r.roleStatusesLocked(id))
+		n = st.snapshot(r.roleStatusesLocked(id, held))
 	}
 	r.mu.Unlock()
+	unlock()
 	runAll(closers)
 	if st == nil {
 		return contract.Node{}, errf(contract.CodeNotFound, "node %s is not known to this plane", id)

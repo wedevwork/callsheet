@@ -11,7 +11,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// validYAML satisfies the ten-job contract (iteration 02c) with job order,
+// validYAML satisfies the fourteen-job contract (iteration 02c, plane
+// workers since 05b, sidecar workers since its sidecar follow-up) with job
+// order,
 // formatting, key order, step names and comments that differ from the
 // checked-in workflow; only semantics are fixed.
 const validYAML = `permissions: {contents: read}
@@ -86,6 +88,8 @@ jobs:
     timeout-minutes: 5
     needs:
       - macos-stress-packages
+      - macos-stress-plane
+      - macos-stress-sidecar
       - macos-stress-processgroup
       - macos-stress-functions
     if: ${{ always() }}
@@ -93,10 +97,12 @@ jobs:
     steps:
       - env:
           FUNCTIONS_RESULT: ${{ needs['macos-stress-functions'].result }}
+          SIDECAR_RESULT: ${{ needs['macos-stress-sidecar'].result }}
+          PLANE_RESULT: ${{ needs['macos-stress-plane'].result }}
           PACKAGES_RESULT: ${{ needs['macos-stress-packages'].result }}
           PROCESSGROUP_RESULT: ${{ needs['macos-stress-processgroup'].result }}
         run: |
-          test "$PACKAGES_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success
+          test "$PACKAGES_RESULT" = success && test "$PLANE_RESULT" = success && test "$SIDECAR_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success
   macos-stress-functions:
     name: ci-macos-stress-functions
     runs-on: macos-15
@@ -129,6 +135,38 @@ jobs:
       - name: devcheck stress-processgroup (macos)
         env: {GOSUMDB: "off", GOPROXY: "off"}
         run: go run ./cmd/devcheck stress-processgroup
+  macos-stress-sidecar:
+    name: ci-macos-stress-sidecar
+    runs-on: macos-15
+    timeout-minutes: 20
+    defaults: {run: {shell: bash}}
+    env: {GOTOOLCHAIN: local, GOFLAGS: -mod=readonly}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with: {persist-credentials: false}
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417
+        with: {cache-dependency-path: go.sum, go-version-file: go.mod, check-latest: false, cache: true}
+      - name: Download (macos-stress-sidecar)
+        run: go mod download
+      - name: devcheck stress-sidecar (macos)
+        run: go run ./cmd/devcheck stress-sidecar
+        env: {GOSUMDB: "off", GOPROXY: "off"}
+  macos-stress-plane:
+    name: ci-macos-stress-plane
+    runs-on: macos-15
+    timeout-minutes: 20
+    defaults: {run: {shell: bash}}
+    env: {GOFLAGS: -mod=readonly, GOTOOLCHAIN: local}
+    steps:
+      - with: {persist-credentials: false}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - with: {go-version-file: go.mod, cache: true, cache-dependency-path: go.sum, check-latest: false}
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417
+      - name: Download (macos-stress-plane)
+        run: go mod download
+      - name: devcheck stress-plane (macos)
+        env: {GOSUMDB: "off", GOPROXY: "off"}
+        run: go run ./cmd/devcheck stress-plane
   macos-stress-packages:
     name: ci-macos-stress-packages
     runs-on: macos-15
@@ -174,6 +212,64 @@ jobs:
         env:
           GOPROXY: "off"
           GOSUMDB: "off"
+  linux-stress-plane:
+    name: ci-linux-stress-plane
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    env:
+      GOTOOLCHAIN: local
+      GOFLAGS: -mod=readonly
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Setup
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+          check-latest: false
+      - name: Download (linux-stress-plane)
+        run: go mod download
+      - name: devcheck stress-plane (linux)
+        run: go run ./cmd/devcheck stress-plane
+        env:
+          GOPROXY: "off"
+          GOSUMDB: "off"
+  linux-stress-sidecar:
+    name: ci-linux-stress-sidecar
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GOFLAGS: -mod=readonly
+      GOTOOLCHAIN: local
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Setup
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+          check-latest: false
+      - name: Download (linux-stress-sidecar)
+        run: go mod download
+      - name: devcheck stress-sidecar (linux)
+        env:
+          GOPROXY: "off"
+          GOSUMDB: "off"
+        run: go run ./cmd/devcheck stress-sidecar
   linux-stress-processgroup:
     name: ci-linux-stress-processgroup
     runs-on: ubuntu-24.04
@@ -235,16 +331,18 @@ jobs:
   linux-stress:
     steps:
       - name: All linux shards succeeded
-        run: test "$PACKAGES_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success
+        run: test "$PACKAGES_RESULT" = success && test "$PLANE_RESULT" = success && test "$SIDECAR_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success
         env:
           PACKAGES_RESULT: ${{ needs['linux-stress-packages'].result }}
+          PLANE_RESULT: ${{ needs['linux-stress-plane'].result }}
+          SIDECAR_RESULT: ${{ needs['linux-stress-sidecar'].result }}
           PROCESSGROUP_RESULT: ${{ needs['linux-stress-processgroup'].result }}
           FUNCTIONS_RESULT: ${{ needs['linux-stress-functions'].result }}
     defaults:
       run:
         shell: bash
     if: ${{ always() }}
-    needs: [linux-stress-packages, linux-stress-processgroup, linux-stress-functions]
+    needs: [linux-stress-packages, linux-stress-plane, linux-stress-sidecar, linux-stress-processgroup, linux-stress-functions]
     timeout-minutes: 5
     runs-on: ubuntu-24.04
     name: ci-linux-stress
@@ -273,10 +371,43 @@ const coverageStep = `      - name: coverage
           GOSUMDB: "off"
 `
 
-// The download and check steps of two stress workers, one block-style on
-// Linux and one flow-style on macOS, are written differently from every
-// other job's so each can be mutated independently.
+// The download and check steps of six stress workers, block-style on
+// Linux and flow-style on macOS, are written differently from every other
+// job's so each can be mutated independently (the plane workers since
+// iteration 05b, the sidecar workers since its sidecar follow-up).
 const (
+	linuxSidecarDownload = `      - name: Download (linux-stress-sidecar)
+        run: go mod download
+`
+	linuxSidecarStep = `      - name: devcheck stress-sidecar (linux)
+        env:
+          GOPROXY: "off"
+          GOSUMDB: "off"
+        run: go run ./cmd/devcheck stress-sidecar
+`
+	macosSidecarDownload = `      - name: Download (macos-stress-sidecar)
+        run: go mod download
+`
+	macosSidecarStep = `      - name: devcheck stress-sidecar (macos)
+        run: go run ./cmd/devcheck stress-sidecar
+        env: {GOSUMDB: "off", GOPROXY: "off"}
+`
+	linuxPlaneDownload = `      - name: Download (linux-stress-plane)
+        run: go mod download
+`
+	linuxPlaneStep = `      - name: devcheck stress-plane (linux)
+        run: go run ./cmd/devcheck stress-plane
+        env:
+          GOPROXY: "off"
+          GOSUMDB: "off"
+`
+	macosPlaneDownload = `      - name: Download (macos-stress-plane)
+        run: go mod download
+`
+	macosPlaneStep = `      - name: devcheck stress-plane (macos)
+        env: {GOSUMDB: "off", GOPROXY: "off"}
+        run: go run ./cmd/devcheck stress-plane
+`
 	macosWorkerDownload = `      - name: Download (macos-stress-functions)
         run: go mod download
 `
@@ -478,19 +609,25 @@ func TestDocumentLevelRejections(t *testing.T) {
 	}
 }
 
-// contractTable is the independent literal ten-job table (design 02c,
-// Workflow topology): id|name|runner|timeout|stages|needs|required.
+// contractTable is the independent literal fourteen-job table (design 02c,
+// Workflow topology, with design 05b's plane workers and its sidecar
+// follow-up's sidecar workers in CI-plan order):
+// id|name|runner|timeout|stages|needs|required.
 var contractTable = []string{
 	"linux|ci-linux|ubuntu-24.04|45|test coverage bench cross||true",
 	"macos|ci-macos|macos-15|30|native||true",
 	"linux-stress-packages|ci-linux-stress-packages|ubuntu-24.04|20|stress-packages||false",
+	"linux-stress-plane|ci-linux-stress-plane|ubuntu-24.04|20|stress-plane||false",
+	"linux-stress-sidecar|ci-linux-stress-sidecar|ubuntu-24.04|20|stress-sidecar||false",
 	"linux-stress-processgroup|ci-linux-stress-processgroup|ubuntu-24.04|20|stress-processgroup||false",
 	"linux-stress-functions|ci-linux-stress-functions|ubuntu-24.04|20|stress-functions||false",
 	"macos-stress-packages|ci-macos-stress-packages|macos-15|20|stress-packages||false",
+	"macos-stress-plane|ci-macos-stress-plane|macos-15|20|stress-plane||false",
+	"macos-stress-sidecar|ci-macos-stress-sidecar|macos-15|20|stress-sidecar||false",
 	"macos-stress-processgroup|ci-macos-stress-processgroup|macos-15|20|stress-processgroup||false",
 	"macos-stress-functions|ci-macos-stress-functions|macos-15|20|stress-functions||false",
-	"linux-stress|ci-linux-stress|ubuntu-24.04|5||linux-stress-packages linux-stress-processgroup linux-stress-functions|true",
-	"macos-stress|ci-macos-stress|ubuntu-24.04|5||macos-stress-packages macos-stress-processgroup macos-stress-functions|true",
+	"linux-stress|ci-linux-stress|ubuntu-24.04|5||linux-stress-packages linux-stress-plane linux-stress-sidecar linux-stress-processgroup linux-stress-functions|true",
+	"macos-stress|ci-macos-stress|ubuntu-24.04|5||macos-stress-packages macos-stress-plane macos-stress-sidecar macos-stress-processgroup macos-stress-functions|true",
 }
 
 func TestContractAccessors(t *testing.T) {
@@ -510,14 +647,18 @@ func TestContractAccessors(t *testing.T) {
 	}
 	js[0].Stages[0] = "mutated"
 	js[1].Stages[0] = "mutated"
+	js[3].Stages[0] = "mutated"
 	js[4].Stages[0] = "mutated"
-	js[8].Needs[0] = "mutated"
-	js[9].Needs = js[9].Needs[:1]
+	js[6].Stages[0] = "mutated"
+	js[12].Needs[1] = "mutated"
+	js[12].Needs[2] = "mutated"
+	js[13].Needs = js[13].Needs[:1]
 	js[1].Name = "mutated"
-	js[8].Required = false
+	js[12].Required = false
 	fresh := Jobs()
-	if fresh[0].Stages[0] != "test" || fresh[1].Stages[0] != "native" || fresh[4].Stages[0] != "stress-functions" ||
-		fresh[8].Needs[0] != "linux-stress-packages" || len(fresh[9].Needs) != 3 || !fresh[8].Required ||
+	if fresh[0].Stages[0] != "test" || fresh[1].Stages[0] != "native" || fresh[3].Stages[0] != "stress-plane" || fresh[4].Stages[0] != "stress-sidecar" ||
+		fresh[6].Stages[0] != "stress-functions" || fresh[12].Needs[1] != "linux-stress-plane" || fresh[12].Needs[2] != "linux-stress-sidecar" ||
+		len(fresh[13].Needs) != 5 || !fresh[12].Required ||
 		RequiredChecks()[1] != "ci-macos" || RequiredChecks()[2] != "ci-linux-stress" {
 		t.Fatal("Jobs exposes contract state")
 	}
@@ -534,7 +675,7 @@ func TestExtractStages(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(got) != 10 {
+		if len(got) != 14 {
 			t.Fatalf("%s: %d jobs: %v", name, len(got), got)
 		}
 		for _, j := range Jobs() {
@@ -587,6 +728,10 @@ func TestCheckJobNames(t *testing.T) {
 			[]string{`job name "ci-macos-stress" is used by both ci.yml jobs.macos-stress and other.yml jobs.x`}},
 		"duplicate worker name": {map[string][]byte{"ci.yml": ci, "other.yml": []byte("jobs:\n  x:\n    name: ci-linux-stress-processgroup\n")},
 			[]string{`job name "ci-linux-stress-processgroup" is used by both ci.yml jobs.linux-stress-processgroup and other.yml jobs.x`}},
+		"duplicate plane worker name": {map[string][]byte{"ci.yml": ci, "other.yml": []byte("jobs:\n  x:\n    name: ci-macos-stress-plane\n")},
+			[]string{`job name "ci-macos-stress-plane" is used by both ci.yml jobs.macos-stress-plane and other.yml jobs.x`}},
+		"duplicate sidecar worker name": {map[string][]byte{"ci.yml": ci, "other.yml": []byte("jobs:\n  x:\n    name: ci-linux-stress-sidecar\n")},
+			[]string{`job name "ci-linux-stress-sidecar" is used by both ci.yml jobs.linux-stress-sidecar and other.yml jobs.x`}},
 		"no workflows": {map[string][]byte{}, []string{`required check "ci-linux"`, `required check "ci-macos"`, `required check "ci-linux-stress"`, `required check "ci-macos-stress"`}},
 		"malformed":    {map[string][]byte{"ci.yml": ci, "bad.yml": []byte("jobs: [\n")}, []string{"bad.yml: cicheck: malformed YAML"}},
 		"no jobs":      {map[string][]byte{"ci.yml": ci, "x.yml": []byte("name: x\n")}, []string{"x.yml: no jobs mapping"}},
@@ -603,7 +748,9 @@ func TestCheckJobNames(t *testing.T) {
 	}
 }
 
-// FP-6 (01c), moved by 02b and sharded by 02c: each worker's shard step is
+// FP-6 (01c), moved by 02b and sharded by 02c (the plane workers since
+// 05b, the sidecar workers since its sidecar follow-up): each worker's
+// shard step is
 // required, exact and unconditional as its step 3; each mutation is
 // rejected with a path-specific error, and no extra verification step
 // (such as a raw go test repeat) is admitted.
@@ -613,6 +760,10 @@ func TestStressWorkerStepMutations(t *testing.T) {
 	}{
 		{"linux-stress-processgroup", "stress-processgroup", "stress-packages", linuxWorkerStep, linuxWorkerDownload},
 		{"macos-stress-functions", "stress-functions", "stress-processgroup", macosWorkerStep, macosWorkerDownload},
+		{"linux-stress-plane", "stress-plane", "stress-packages", linuxPlaneStep, linuxPlaneDownload},
+		{"macos-stress-plane", "stress-plane", "stress-processgroup", macosPlaneStep, macosPlaneDownload},
+		{"linux-stress-sidecar", "stress-sidecar", "stress-plane", linuxSidecarStep, linuxSidecarDownload},
+		{"macos-stress-sidecar", "stress-sidecar", "stress-packages", macosSidecarStep, macosSidecarDownload},
 	} {
 		p := fmt.Sprintf("jobs.%s.steps[3]", j.id)
 		prev := fmt.Sprintf("jobs.%s.steps[2]", j.id)
@@ -628,6 +779,8 @@ func TestStressWorkerStepMutations(t *testing.T) {
 			{"substituted other shard", strings.Replace(j.step, cmd+"\n", "./cmd/devcheck "+j.other+"\n", 1), []string{fmt.Sprintf(`%s.run: must run devcheck stage %q, got %q`, p, j.stage, j.other)}},
 			{"count flag", strings.Replace(j.step, cmd+"\n", cmd+" -count=1\n", 1), []string{fmt.Sprintf(`%s.run: must be "go run ./cmd/devcheck %s", got "go run ./cmd/devcheck %s -count=1"`, p, j.stage, j.stage)}},
 			{"cpu flag", strings.Replace(j.step, cmd+"\n", cmd+" -cpu=1\n", 1), []string{fmt.Sprintf(`%s.run: must be "go run ./cmd/devcheck %s"`, p, j.stage)}},
+			{"raw go test", strings.Replace(j.step, "go run "+cmd+"\n", "go test -race -count=20 -cpu=1 -timeout=6m ./internal/plane\n", 1),
+				[]string{fmt.Sprintf(`%s.run: must be "go run ./cmd/devcheck %s", got "go test -race -count=20 -cpu=1 -timeout=6m ./internal/plane"`, p, j.stage)}},
 			{"if", j.step + "        if: always()\n", []string{p + ".if: unknown field"}},
 			{"continue-on-error", j.step + "        continue-on-error: true\n", []string{p + ".continue-on-error: unknown field"}},
 			{"timeout", j.step + "        timeout-minutes: 5\n", []string{p + ".timeout-minutes: unknown field"}},
@@ -773,9 +926,13 @@ func TestOrdinaryJobContract(t *testing.T) {
 		{"linux", "ci-linux", "ubuntu-24.04", 45, 6, []string{"test", "coverage", "bench", "cross"}},
 		{"macos", "ci-macos", "macos-15", 30, 3, []string{"native"}},
 		{"linux-stress-packages", "ci-linux-stress-packages", "ubuntu-24.04", 20, 3, []string{"stress-packages"}},
+		{"linux-stress-plane", "ci-linux-stress-plane", "ubuntu-24.04", 20, 3, []string{"stress-plane"}},
+		{"linux-stress-sidecar", "ci-linux-stress-sidecar", "ubuntu-24.04", 20, 3, []string{"stress-sidecar"}},
 		{"linux-stress-processgroup", "ci-linux-stress-processgroup", "ubuntu-24.04", 20, 3, []string{"stress-processgroup"}},
 		{"linux-stress-functions", "ci-linux-stress-functions", "ubuntu-24.04", 20, 3, []string{"stress-functions"}},
 		{"macos-stress-packages", "ci-macos-stress-packages", "macos-15", 20, 3, []string{"stress-packages"}},
+		{"macos-stress-plane", "ci-macos-stress-plane", "macos-15", 20, 3, []string{"stress-plane"}},
+		{"macos-stress-sidecar", "ci-macos-stress-sidecar", "macos-15", 20, 3, []string{"stress-sidecar"}},
 		{"macos-stress-processgroup", "ci-macos-stress-processgroup", "macos-15", 20, 3, []string{"stress-processgroup"}},
 		{"macos-stress-functions", "ci-macos-stress-functions", "macos-15", 20, 3, []string{"stress-functions"}},
 	} {
@@ -858,7 +1015,7 @@ func TestOrdinaryJobContract(t *testing.T) {
 	}
 }
 
-// TestJobRemovedOrRenamed: each of the ten jobs removed or renamed is named
+// TestJobRemovedOrRenamed: each of the fourteen jobs removed or renamed is named
 // at the jobs level.
 func TestJobRemovedOrRenamed(t *testing.T) {
 	for _, j := range Jobs() {
@@ -902,7 +1059,8 @@ func TestSummaryContract(t *testing.T) {
 		step := p + ".steps[0]"
 		w := func(shard string) string { return s.plat + "-stress-" + shard }
 		res := func(id, field string) string { return "${{ needs['" + id + "']." + field + " }}" }
-		exact := `test "$PACKAGES_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success`
+		exact := `test "$PACKAGES_RESULT" = success && test "$PLANE_RESULT" = success && test "$SIDECAR_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success`
+		needsExactly := p + ".needs: must be exactly [" + w("packages") + ", " + w("plane") + ", " + w("sidecar") + ", " + w("processgroup") + ", " + w("functions") + "]"
 		setRun := func(v string) func(js map[string]*yaml.Node) {
 			return func(js map[string]*yaml.Node) { at(t, js[s.id], "steps", 0, "run").Value = v }
 		}
@@ -923,14 +1081,47 @@ func TestSummaryContract(t *testing.T) {
 			{"needs extra", func(js map[string]*yaml.Node) {
 				at(t, js[s.id], "needs").Content = append(at(t, js[s.id], "needs").Content, str("linux"))
 			},
-				[]string{p + ".needs: must be exactly [" + w("packages") + ", " + w("processgroup") + ", " + w("functions") + "]"}},
+				[]string{needsExactly}},
 			{"needs short", func(js map[string]*yaml.Node) { n := at(t, js[s.id], "needs"); n.Content = n.Content[:2] }, []string{p + ".needs: must be exactly"}},
-			{"needs duplicate", func(js map[string]*yaml.Node) { at(t, js[s.id], "needs", 2).Value = w("packages") },
-				[]string{fmt.Sprintf(`%s.needs[2]: must be %q, got %q`, p, w("functions"), w("packages"))}},
+			{"needs duplicate", func(js map[string]*yaml.Node) { at(t, js[s.id], "needs", 4).Value = w("packages") },
+				[]string{fmt.Sprintf(`%s.needs[4]: must be %q, got %q`, p, w("functions"), w("packages"))}},
 			{"needs cross-platform", func(js map[string]*yaml.Node) { at(t, js[s.id], "needs", 0).Value = s.other + "-stress-packages" },
 				[]string{fmt.Sprintf(`%s.needs[0]: must be %q, got %q`, p, w("packages"), s.other+"-stress-packages")}},
-			{"needs main job", func(js map[string]*yaml.Node) { at(t, js[s.id], "needs", 1).Value = s.plat },
-				[]string{fmt.Sprintf(`%s.needs[1]: must be %q, got %q`, p, w("processgroup"), s.plat)}},
+			{"needs main job", func(js map[string]*yaml.Node) { at(t, js[s.id], "needs", 3).Value = s.plat },
+				[]string{fmt.Sprintf(`%s.needs[3]: must be %q, got %q`, p, w("processgroup"), s.plat)}},
+			// Design 05b: the plane worker is required in its own position.
+			{"plane worker dropped", func(js map[string]*yaml.Node) {
+				n := at(t, js[s.id], "needs")
+				n.Content = append(n.Content[:1:1], n.Content[2:]...)
+			}, []string{needsExactly}},
+			{"plane worker reordered", func(js map[string]*yaml.Node) {
+				n := at(t, js[s.id], "needs")
+				n.Content[0], n.Content[1] = n.Content[1], n.Content[0]
+			}, []string{fmt.Sprintf(`%s.needs[0]: must be %q, got %q`, p, w("packages"), w("plane")), fmt.Sprintf(`%s.needs[1]: must be %q, got %q`, p, w("plane"), w("packages"))}},
+			{"plane worker cross-platform", func(js map[string]*yaml.Node) { at(t, js[s.id], "needs", 1).Value = s.other + "-stress-plane" },
+				[]string{fmt.Sprintf(`%s.needs[1]: must be %q, got %q`, p, w("plane"), s.other+"-stress-plane")}},
+			{"plane worker extra", func(js map[string]*yaml.Node) {
+				n := at(t, js[s.id], "needs")
+				n.Content = append(n.Content, str(w("plane")))
+			}, []string{p + ".needs: must be exactly"}},
+			// Design 05b's sidecar follow-up: the sidecar worker is required
+			// in its own position, after plane.
+			{"sidecar worker dropped", func(js map[string]*yaml.Node) {
+				n := at(t, js[s.id], "needs")
+				n.Content = append(n.Content[:2:2], n.Content[3:]...)
+			}, []string{needsExactly}},
+			{"sidecar worker reordered", func(js map[string]*yaml.Node) {
+				n := at(t, js[s.id], "needs")
+				n.Content[1], n.Content[2] = n.Content[2], n.Content[1]
+			}, []string{fmt.Sprintf(`%s.needs[1]: must be %q, got %q`, p, w("plane"), w("sidecar")), fmt.Sprintf(`%s.needs[2]: must be %q, got %q`, p, w("sidecar"), w("plane"))}},
+			{"sidecar worker cross-platform", func(js map[string]*yaml.Node) { at(t, js[s.id], "needs", 2).Value = s.other + "-stress-sidecar" },
+				[]string{fmt.Sprintf(`%s.needs[2]: must be %q, got %q`, p, w("sidecar"), s.other+"-stress-sidecar")}},
+			{"sidecar worker replaced by packages", func(js map[string]*yaml.Node) { at(t, js[s.id], "needs", 2).Value = w("packages") },
+				[]string{fmt.Sprintf(`%s.needs[2]: must be %q, got %q`, p, w("sidecar"), w("packages"))}},
+			{"sidecar worker extra", func(js map[string]*yaml.Node) {
+				n := at(t, js[s.id], "needs")
+				n.Content = append(n.Content, str(w("sidecar")))
+			}, []string{p + ".needs: must be exactly"}},
 			{"needs scalar", func(js map[string]*yaml.Node) { *at(t, js[s.id], "needs") = *str(w("packages")) }, []string{p + ".needs: must be exactly"}},
 			{"always removed", func(js map[string]*yaml.Node) { removeKey(t, js[s.id], "if") }, []string{p + ".if: missing required field"}},
 			{"success condition", func(js map[string]*yaml.Node) { at(t, js[s.id], "if").Value = "${{ success() }}" },
@@ -949,6 +1140,45 @@ func TestSummaryContract(t *testing.T) {
 			{"cross-platform result", func(js map[string]*yaml.Node) {
 				at(t, js[s.id], "steps", 0, "env", "PROCESSGROUP_RESULT").Value = res(s.other+"-stress-processgroup", "result")
 			}, []string{step + ".env.PROCESSGROUP_RESULT: expressions are not allowed"}},
+			{"plane result miswired", func(js map[string]*yaml.Node) {
+				at(t, js[s.id], "steps", 0, "env", "PLANE_RESULT").Value = res(w("packages"), "result")
+			}, []string{step + ".env.PLANE_RESULT: expressions are not allowed", step + `.env.PLANE_RESULT: must be "` + res(w("plane"), "result") + `"`}},
+			{"plane result cross-platform", func(js map[string]*yaml.Node) {
+				at(t, js[s.id], "steps", 0, "env", "PLANE_RESULT").Value = res(s.other+"-stress-plane", "result")
+			}, []string{step + ".env.PLANE_RESULT: expressions are not allowed"}},
+			{"plane result outcome", func(js map[string]*yaml.Node) {
+				at(t, js[s.id], "steps", 0, "env", "PLANE_RESULT").Value = res(w("plane"), "outcome")
+			}, []string{step + ".env.PLANE_RESULT: expressions are not allowed"}},
+			{"plane result literal", func(js map[string]*yaml.Node) { at(t, js[s.id], "steps", 0, "env", "PLANE_RESULT").Value = "success" },
+				[]string{step + `.env.PLANE_RESULT: must be "` + res(w("plane"), "result") + `", got "success"`}},
+			{"plane result env missing", func(js map[string]*yaml.Node) {
+				removeKey(t, at(t, js[s.id], "steps", 0, "env"), "PLANE_RESULT")
+			}, []string{step + ".env.PLANE_RESULT: missing required field"}},
+			{"plane result renamed", func(js map[string]*yaml.Node) {
+				removeKey(t, at(t, js[s.id], "steps", 0, "env"), "PLANE_RESULT")
+				addKey(at(t, js[s.id], "steps", 0, "env"), "PLANE_STATUS", str(res(w("plane"), "result")))
+			}, []string{step + ".env.PLANE_RESULT: missing required field", step + ".env.PLANE_STATUS: unknown field", step + ".env.PLANE_STATUS: expressions are not allowed"}},
+			{"sidecar result miswired", func(js map[string]*yaml.Node) {
+				at(t, js[s.id], "steps", 0, "env", "SIDECAR_RESULT").Value = res(w("packages"), "result")
+			}, []string{step + ".env.SIDECAR_RESULT: expressions are not allowed", step + `.env.SIDECAR_RESULT: must be "` + res(w("sidecar"), "result") + `"`}},
+			{"sidecar result from plane", func(js map[string]*yaml.Node) {
+				at(t, js[s.id], "steps", 0, "env", "SIDECAR_RESULT").Value = res(w("plane"), "result")
+			}, []string{step + ".env.SIDECAR_RESULT: expressions are not allowed", step + `.env.SIDECAR_RESULT: must be "` + res(w("sidecar"), "result") + `"`}},
+			{"sidecar result cross-platform", func(js map[string]*yaml.Node) {
+				at(t, js[s.id], "steps", 0, "env", "SIDECAR_RESULT").Value = res(s.other+"-stress-sidecar", "result")
+			}, []string{step + ".env.SIDECAR_RESULT: expressions are not allowed"}},
+			{"sidecar result outcome", func(js map[string]*yaml.Node) {
+				at(t, js[s.id], "steps", 0, "env", "SIDECAR_RESULT").Value = res(w("sidecar"), "outcome")
+			}, []string{step + ".env.SIDECAR_RESULT: expressions are not allowed"}},
+			{"sidecar result literal", func(js map[string]*yaml.Node) { at(t, js[s.id], "steps", 0, "env", "SIDECAR_RESULT").Value = "success" },
+				[]string{step + `.env.SIDECAR_RESULT: must be "` + res(w("sidecar"), "result") + `", got "success"`}},
+			{"sidecar result env missing", func(js map[string]*yaml.Node) {
+				removeKey(t, at(t, js[s.id], "steps", 0, "env"), "SIDECAR_RESULT")
+			}, []string{step + ".env.SIDECAR_RESULT: missing required field"}},
+			{"sidecar result renamed", func(js map[string]*yaml.Node) {
+				removeKey(t, at(t, js[s.id], "steps", 0, "env"), "SIDECAR_RESULT")
+				addKey(at(t, js[s.id], "steps", 0, "env"), "SIDECAR_STATUS", str(res(w("sidecar"), "result")))
+			}, []string{step + ".env.SIDECAR_RESULT: missing required field", step + ".env.SIDECAR_STATUS: unknown field", step + ".env.SIDECAR_STATUS: expressions are not allowed"}},
 			{"literal success", func(js map[string]*yaml.Node) {
 				at(t, js[s.id], "steps", 0, "env", "FUNCTIONS_RESULT").Value = "success"
 			},
@@ -961,9 +1191,18 @@ func TestSummaryContract(t *testing.T) {
 				addKey(at(t, js[s.id], "steps", 0, "env"), "EXTRA", str("${{ github.token }}"))
 			}, []string{step + ".env.EXTRA: unknown field", step + ".env.EXTRA: expressions are not allowed"}},
 			{"weakened or", setRun(exact + " || true"), []string{runErr}},
-			{"weakened comparison", setRun(`test "$PACKAGES_RESULT" != failure && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success`), []string{runErr}},
-			{"missing comparison", setRun(`test "$PACKAGES_RESULT" = success && test "$PROCESSGROUP_RESULT" = success`), []string{runErr}},
-			{"altered operator", setRun(`test "$PACKAGES_RESULT" = success || test "$PROCESSGROUP_RESULT" = success || test "$FUNCTIONS_RESULT" = success`), []string{runErr}},
+			{"weakened comparison", setRun(`test "$PACKAGES_RESULT" != failure && test "$PLANE_RESULT" = success && test "$SIDECAR_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success`), []string{runErr}},
+			{"missing comparison", setRun(`test "$PACKAGES_RESULT" = success && test "$PLANE_RESULT" = success && test "$SIDECAR_RESULT" = success && test "$PROCESSGROUP_RESULT" = success`), []string{runErr}},
+			{"omitted plane comparison", setRun(`test "$PACKAGES_RESULT" = success && test "$SIDECAR_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success`), []string{runErr}},
+			{"weakened plane comparison", setRun(`test "$PACKAGES_RESULT" = success && test "$PLANE_RESULT" != failure && test "$SIDECAR_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success`), []string{runErr}},
+			{"plane comparison bypassed", setRun(`test "$PACKAGES_RESULT" = success && { test "$PLANE_RESULT" = success || true; } && test "$SIDECAR_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success`), []string{runErr}},
+			{"four-result predicate", setRun(`test "$PACKAGES_RESULT" = success && test "$PLANE_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success`), []string{runErr}},
+			{"weakened sidecar comparison", setRun(`test "$PACKAGES_RESULT" = success && test "$PLANE_RESULT" = success && test "$SIDECAR_RESULT" != failure && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success`), []string{runErr}},
+			{"sidecar comparison bypassed", setRun(`test "$PACKAGES_RESULT" = success && test "$PLANE_RESULT" = success && { test "$SIDECAR_RESULT" = success || true; } && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success`), []string{runErr}},
+			{"sidecar compared twice for plane", setRun(`test "$PACKAGES_RESULT" = success && test "$SIDECAR_RESULT" = success && test "$SIDECAR_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success`), []string{runErr}},
+			{"reordered comparisons", setRun(`test "$PLANE_RESULT" = success && test "$PACKAGES_RESULT" = success && test "$SIDECAR_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success`), []string{runErr}},
+			{"sidecar comparison reordered", setRun(`test "$PACKAGES_RESULT" = success && test "$SIDECAR_RESULT" = success && test "$PLANE_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success`), []string{runErr}},
+			{"altered operator", setRun(`test "$PACKAGES_RESULT" = success || test "$PLANE_RESULT" = success || test "$SIDECAR_RESULT" = success || test "$PROCESSGROUP_RESULT" = success || test "$FUNCTIONS_RESULT" = success`), []string{runErr}},
 			{"true", setRun("true"), []string{runErr}},
 			{"extra line", setRun(exact + "\nexit 0\n"), []string{runErr}},
 			{"two trailing newlines", setRun(exact + "\n\n"), []string{runErr}},
@@ -1003,6 +1242,12 @@ func TestSummaryContract(t *testing.T) {
 			{"template on a worker", func(js map[string]*yaml.Node) {
 				addKey(js[w("packages")], "if", str("${{ always() }}"))
 			}, []string{"jobs." + w("packages") + ".if: unknown field", "jobs." + w("packages") + `.if: expressions are not allowed`}},
+			{"plane worker depends on packages", func(js map[string]*yaml.Node) {
+				addKey(js[w("plane")], "needs", seq(w("packages")))
+			}, []string{"jobs." + w("plane") + ".needs: unknown field"}},
+			{"sidecar worker depends on plane", func(js map[string]*yaml.Node) {
+				addKey(js[w("sidecar")], "needs", seq(w("plane")))
+			}, []string{"jobs." + w("sidecar") + ".needs: unknown field"}},
 		} {
 			t.Run(s.id+" "+c.name, func(t *testing.T) { mustRejectJobs(t, c.mutate, c.want) })
 		}

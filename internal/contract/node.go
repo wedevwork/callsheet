@@ -57,7 +57,8 @@ const (
 	FrameRolesReplaceAck    = "roles_replace_ack"
 )
 
-// Per-type body limits (protocol 2). JSON whitespace counts toward them.
+// Per-type body limits (protocol 2; the task frames of protocol 3 are in
+// task.go). JSON whitespace counts toward them.
 const (
 	MaxRolesReplaceBody = 1 << 20
 	MaxHeartbeatBody    = 32 << 10
@@ -74,6 +75,12 @@ func BodyLimit(typ string) int {
 		return MaxHeartbeatBody
 	case FrameRoleValidate:
 		return MaxRoleValidateBody
+	case FrameTaskStart:
+		return MaxTaskStartBody
+	case FrameTaskLog:
+		return MaxTaskLogBody
+	case FrameTaskResult:
+		return MaxTaskResultBody
 	}
 	return MaxOtherBody
 }
@@ -177,13 +184,13 @@ func (n Node) MarshalJSON() ([]byte, error) {
 	return compact(w)
 }
 
-// NodeResponse is {"version":2,"node":<Node>}.
+// NodeResponse is {"version":3,"node":<Node>}.
 type NodeResponse struct {
 	Version int  `json:"version"`
 	Node    Node `json:"node"`
 }
 
-// NodeListResponse is {"version":2,"nodes":[<Node>,...]}.
+// NodeListResponse is {"version":3,"nodes":[<Node>,...]}.
 type NodeListResponse struct {
 	Version int    `json:"version"`
 	Nodes   []Node `json:"nodes"`
@@ -210,7 +217,16 @@ type EnrollRequest struct {
 
 // Encode renders v as compact JSON without HTML escaping and without a
 // trailing newline.
-func Encode(v any) ([]byte, error) { return compact(v) }
+func Encode(v any) ([]byte, error) {
+	if d, ok := v.(directEncoder); ok {
+		return d.encodeDirect()
+	}
+	return compact(v)
+}
+
+// directEncoder is implemented by large responses whose MarshalJSON
+// already renders Encode's exact form.
+type directEncoder interface{ encodeDirect() ([]byte, error) }
 
 func compact(v any) ([]byte, error) {
 	var buf bytes.Buffer
@@ -484,7 +500,7 @@ func envelopeVersion(o object, what string) error {
 	return nil
 }
 
-// ParseNodeResponse strictly decodes {"version":2,"node":{...}}.
+// ParseNodeResponse strictly decodes {"version":3,"node":{...}}.
 func ParseNodeResponse(data []byte) (Node, error) {
 	const what = "node response"
 	o, err := decodeObject(data, what)
@@ -500,7 +516,7 @@ func ParseNodeResponse(data []byte) (Node, error) {
 	return ParseNode(o.raw["node"])
 }
 
-// ParseNodeListResponse strictly decodes {"version":2,"nodes":[...]} and
+// ParseNodeListResponse strictly decodes {"version":3,"nodes":[...]} and
 // requires IDs in strictly ascending order (sorted and unique).
 func ParseNodeListResponse(data []byte) ([]Node, error) {
 	const what = "node list response"

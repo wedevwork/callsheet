@@ -39,7 +39,8 @@ func TestFP2CommandTree(t *testing.T) {
 		}
 		implemented := map[string]bool{"callsheet plane init": true, "callsheet plane run": true, "callsheet plane status": true, "callsheet plane cert reissue": true,
 			"callsheet sidecar enroll": true, "callsheet sidecar run": true, "callsheet node ls": true, "callsheet node show": true,
-			"callsheet role add": true, "callsheet role set": true, "callsheet role ls": true, "callsheet role show": true, "callsheet role rm": true}
+			"callsheet role add": true, "callsheet role set": true, "callsheet role ls": true, "callsheet role show": true, "callsheet role rm": true,
+			"callsheet dispatch": true, "callsheet task ls": true, "callsheet task show": true, "callsheet task logs": true}
 		for _, leaf := range leaves {
 			args := argsOf(leaf)
 			if implemented[leaf.Path()] {
@@ -57,7 +58,7 @@ func TestFP2CommandTree(t *testing.T) {
 			}
 			r := run(args...)
 			if leaf.Name == "version" {
-				if r.code != 0 || r.stdout != "callsheet dev protocol=2\n" || r.stderr != "" {
+				if r.code != 0 || r.stdout != "callsheet dev protocol=3\n" || r.stderr != "" {
 					t.Fatalf("version = %+v", r)
 				}
 			} else {
@@ -104,7 +105,7 @@ func TestFP2CommandTree(t *testing.T) {
 				}
 			}
 		}
-		if r := run("--version"); r.code != 0 || r.stdout != "callsheet dev protocol=2\n" {
+		if r := run("--version"); r.code != 0 || r.stdout != "callsheet dev protocol=3\n" {
 			t.Fatalf("--version = %+v", r)
 		}
 	})

@@ -31,12 +31,16 @@ func TestRunWrapper(t *testing.T) {
 		calls[3][2] != "./internal/sidecar" || calls[4][2] != "./internal/adapter" {
 		t.Fatalf("calls = %v", calls)
 	}
-	// The stress shard stages (iteration 02c) take no operands or flags:
-	// rejected with exit 2 before any child runs.
+	// The stress shard stages (iteration 02c, stress-plane since 05b,
+	// stress-sidecar since its sidecar follow-up) take no operands or flags:
+	// rejected with exit 2 before any child runs, and the usage names every
+	// shard stage.
 	calls = nil
-	for _, args := range [][]string{{"stress-packages", "x"}, {"stress-processgroup", "-cpu=1"}, {"stress-functions", "-count=1"}, {"stress", "-o", "p"}} {
+	for _, args := range [][]string{{"stress-packages", "x"}, {"stress-plane", "-cpu=1"}, {"stress-plane", "extra"}, {"stress-sidecar", "-cpu=1"}, {"stress-sidecar", "extra"},
+		{"stress-processgroup", "-cpu=1"}, {"stress-functions", "-count=1"}, {"stress", "-o", "p"}} {
 		errOut.Reset()
-		if code := run(args, &out, &errOut, fake); code != 2 || len(calls) != 0 || !strings.Contains(errOut.String(), "stress-processgroup") {
+		if code := run(args, &out, &errOut, fake); code != 2 || len(calls) != 0 ||
+			!strings.Contains(errOut.String(), "stress | stress-packages | stress-plane | stress-sidecar | stress-processgroup | stress-functions") {
 			t.Fatalf("%v = %d, %d calls, %q", args, code, len(calls), errOut.String())
 		}
 	}

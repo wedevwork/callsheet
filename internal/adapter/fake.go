@@ -220,3 +220,8 @@ func (p *prober) run(ctx context.Context, executable string) error {
 	}
 	return nil
 }
+
+// ChildEnv returns env without the fixture file-descriptor variables
+// (every exact occurrence), the filter probes use; task children get the
+// same (iteration 05).
+func ChildEnv(env []string) []string { return filterEnv(env) }

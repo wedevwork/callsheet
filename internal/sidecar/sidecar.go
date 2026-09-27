@@ -47,15 +47,20 @@ type Enrollment struct {
 }
 
 // RunOptions configures Run: the resolved state root, the build version
-// sent in hello, the logger for connection diagnostics (nil discards) and,
-// optionally, the fake adapter's absolute executable path (iteration 04):
-// empty disables the fake adapter. It is local process configuration,
-// never persisted and never sent to the plane.
+// sent in hello, the logger for connection diagnostics (nil discards),
+// optionally the fake adapter's absolute executable path (iteration 04):
+// empty disables the fake adapter; it is local process configuration,
+// never persisted and never sent to the plane; and the host OS for task
+// execution (iteration 05).
 type RunOptions struct {
 	StateDir        string
 	SoftwareVersion string
 	Logger          *slog.Logger
 	FakeAdapterPath string
+	// GOOS is the host OS the CLI's runtime entrypoint supplies
+	// (iteration 05): task execution decisions take it explicitly; an
+	// empty or unsupported value refuses every task start.
+	GOOS string
 }
 
 // planeClient is the verified client surface the sidecar uses.
@@ -97,6 +102,29 @@ const (
 	// returned (its slot released and its result published).
 	evValidated eventKind = "validated"
 	evChecked   eventKind = "checked"
+	// Iteration 05 task events (id is the task ID, or a request ID for
+	// the write-completion events).
+	evTaskPreparing  eventKind = "task-preparing"
+	evTaskAuthorized eventKind = "task-authorized"
+	evChildStarted   eventKind = "child-started"
+	evTaskRefused    eventKind = "task-refused"
+	evChildExited    eventKind = "child-exited"
+	evTaskExited     eventKind = "task-exited"
+	evTaskFenced     eventKind = "task-fenced"
+	// evTaskCollected: the supervisor forgot a finished worker (its
+	// goroutine completed and its result can no longer be sent).
+	evTaskCollected eventKind = "task-collected"
+	// evSupervisorClosing: Run's supervisor shutdown finished its scan of
+	// the workers (no launch is authorized after it) and now waits.
+	evSupervisorClosing eventKind = "supervisor-closing"
+	// evStartReplied: a task_start_result write completed (id = task ID).
+	evStartReplied eventKind = "start-replied"
+	// evOutputWritten: a task_log or task_result write completed (id =
+	// request ID); evLogAcked and evResultAcked: its receipt was
+	// acknowledged (id = task ID).
+	evOutputWritten eventKind = "output-written"
+	evLogAcked      eventKind = "log-acked"
+	evResultAcked   eventKind = "result-acked"
 )
 
 // event is one observed transition: the session number (1-based), the
@@ -143,6 +171,27 @@ type deps struct {
 	adapters     func(dir string) adapter.Registry
 	openManual   func(p string) (*os.File, error)
 	observeCheck func(kind, name string)
+	// Iteration 05 task seams (nil: production): the child process
+	// factory, the process-group cleaner, the child environment source
+	// and the scratch temp root; noCadence disables the periodic
+	// ready-check cadence (a snapshot's first cycle still runs).
+	taskProcs   procFactory
+	taskGroups  groupCleaner
+	taskEnviron func() []string
+	taskTempDir func() string
+	noCadence   bool
+	// taskRingCap, when positive, replaces the 10 MiB retained-output
+	// cap (tests exercising eviction through a session).
+	taskRingCap int
+	// onSupervisor, when non-nil, receives Run's task supervisor (tests
+	// only).
+	onSupervisor func(*taskSupervisor)
+	// taskAuthHook, when non-nil, runs at a worker's launch authorization
+	// point with the worker's lock held; taskGCHook runs where worker
+	// collection is about to inspect workers (tests only: lock-order
+	// barriers).
+	taskAuthHook func(id string)
+	taskGCHook   func()
 }
 
 // closeGrace is the production bound of a graceful stream close.

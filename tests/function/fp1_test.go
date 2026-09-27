@@ -60,10 +60,14 @@ func TestFP1Foundation(t *testing.T) {
 
 	t.Run("dependency boundaries", func(t *testing.T) {
 		forbidden := []string{module + "/internal/testkit", module + "/internal/spikes", module + "/internal/devcheck", "github.com/go-git/"}
+		// Since iteration 05 the sidecar reuses the process-group spike's
+		// exported teardown mechanics (execution.md); that one package is
+		// the only spike the product graph may reach.
+		const groupSpike = module + "/internal/spikes/processgroup"
 		for _, pkg := range []string{"./cmd/callsheet", "./internal/cli", "./internal/contract", "./internal/logging"} {
 			for _, dep := range strings.Fields(goList(t, root, "-deps", "-f", "{{.ImportPath}}", pkg)) {
 				for _, f := range forbidden {
-					if strings.HasPrefix(dep, f) {
+					if strings.HasPrefix(dep, f) && dep != groupSpike {
 						t.Errorf("production package %s depends on %s", pkg, dep)
 					}
 				}
@@ -86,8 +90,9 @@ func TestFP1Foundation(t *testing.T) {
 				t.Errorf("internal/contract imports non-stdlib %s", imp)
 			}
 		}
-		// Across the module: only test tooling may import testkit or spikes,
-		// and spikes are never imported by cmd/callsheet's graph.
+		// Across the module: only test tooling may import testkit or spikes;
+		// the sidecar's import of the process-group spike is the one
+		// production exception.
 		allowed := func(p string) bool {
 			for _, pre := range []string{module + "/internal/testkit", module + "/internal/spikes", module + "/internal/devcheck", module + "/cmd/fake-adapter", module + "/cmd/devcheck", module + "/tests/"} {
 				if strings.HasPrefix(p, pre) {
@@ -102,6 +107,9 @@ func TestFP1Foundation(t *testing.T) {
 				continue
 			}
 			for _, imp := range f[1:] {
+				if f[0] == module+"/internal/sidecar" && imp == groupSpike {
+					continue
+				}
 				if strings.HasPrefix(imp, module+"/internal/testkit") || strings.HasPrefix(imp, module+"/internal/spikes") {
 					t.Errorf("production package %s imports %s", f[0], imp)
 				}
@@ -131,7 +139,7 @@ func TestFP1Foundation(t *testing.T) {
 		if contract.ExitCode(fmt.Errorf("wrap: %w", contract.New(contract.CodeConflict, "c"))) != 4 {
 			t.Fatal("wrapped mapping")
 		}
-		if contract.ProtocolVersion != 2 || contract.ExitInterrupted != 130 {
+		if contract.ProtocolVersion != 3 || contract.ExitInterrupted != 130 {
 			t.Fatal("constants")
 		}
 		e := &contract.Error{Code: contract.CodeNotFound, Message: "角色 missing", Details: map[string]any{"role": "coder"}, Cause: errors.New("SECRET")}

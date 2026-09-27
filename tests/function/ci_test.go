@@ -196,7 +196,7 @@ func qualifyingEvents(drop, skip string) string {
 	pkg := devcheck.NativePackage
 	evs := []map[string]any{synth("start", pkg, "")}
 	for _, name := range devcheck.NativeRequiredTests() {
-		if strings.HasPrefix(name, "TestPlane") || strings.HasPrefix(name, "TestNode") || strings.HasPrefix(name, "TestRole") {
+		if strings.HasPrefix(name, "TestPlane") || strings.HasPrefix(name, "TestNode") || strings.HasPrefix(name, "TestRole") || strings.HasPrefix(name, "TestTask") {
 			evs = append(evs, synth("run", pkg, name), synth("pass", pkg, name))
 		}
 	}
@@ -211,7 +211,8 @@ func qualifyingEvents(drop, skip string) string {
 			evs = append(evs, synth("run", pkg, name), synth("pass", pkg, name))
 		}
 	}
-	return events(append(evs, synth("pass", pkg, "TestFP6ProcessGroups"), synth("pass", pkg, ""))...)
+	evs = append(evs, synth("pass", pkg, "TestFP6ProcessGroups"), synth("pass", pkg, ""))
+	return events(append(evs, taskProcessEvents("")...)...)
 }
 
 // --- docs/ci.md helpers ---
@@ -586,8 +587,9 @@ const ownerAddContexts = "gh api --method POST \\\n" +
 
 // FP-7: the owner-applied branch protection handoff.
 func TestCIProtectionHandoff(t *testing.T) {
-	// Checks names the four required contexts first, then only the six
-	// stress workers (iteration 02c): no other check name.
+	// Checks names the four required contexts first, then only the ten
+	// stress workers (iteration 02c, plane since 05b, sidecar since its
+	// sidecar follow-up): no other check name.
 	checks := docSection(t, "Checks")
 	contexts := regexp.MustCompile("`(ci-[a-z0-9-]+)`").FindAllStringSubmatch(checks, -1)
 	var listed []string
@@ -671,13 +673,13 @@ func TestCIPRProcedure(t *testing.T) {
 	requireTerms(t, "green step", steps[green], "skipped, canceled, pending or unobserved check is not acceptable")
 	first := docSection(t, "First remote run")
 	requireTerms(t, "First remote run", first, "pending until observed", "run URL", "commit",
-		"conclusions of all ten jobs: all four checks, `ci-linux`, `ci-macos`, `ci-linux-stress` and `ci-macos-stress`", "native evidence", "native qualification passed on darwin",
+		"conclusions of all fourteen jobs: all four checks, `ci-linux`, `ci-macos`, `ci-linux-stress` and `ci-macos-stress`", "native evidence", "native qualification passed on darwin",
 		"branch protection verification",
 		"git ls-remote https://github.com/actions/checkout.git 'refs/tags/v6.0.2' 'refs/tags/v6.0.2^{}'",
 		"git ls-remote https://github.com/actions/setup-go.git 'refs/tags/v6.3.0' 'refs/tags/v6.3.0^{}'",
 		"peeled commit", "handoff blocker")
-	requireTerms(t, "First remote run", first, "stress evidence from the six worker logs", "`devcheck: stage stress-packages ok`",
-		"`devcheck: stage stress-functions ok`", "elapsed time of each stress command")
+	requireTerms(t, "First remote run", first, "stress evidence from the ten worker logs", "`devcheck: stage stress-packages ok`",
+		"`devcheck: stage stress-plane ok`", "`devcheck: stage stress-sidecar ok`", "`devcheck: stage stress-functions ok`", "elapsed time of each stress command")
 	local := docSection(t, "Local verification")
 	requireTerms(t, "Local verification", local, "go run ./cmd/devcheck all", "go run ./cmd/devcheck stress", "actionlint", "not a required dependency")
 }

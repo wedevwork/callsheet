@@ -49,7 +49,7 @@ func TestTLSService(t *testing.T) {
 	}
 	base := "https://" + addr
 	code, ctype, body, err := get(t, client(t, ca, "", tls.VersionTLS13), base+HealthPath)
-	if err != nil || code != 200 || ctype != "application/json" || body != "{\"status\":\"ok\",\"version\":2}\n" {
+	if err != nil || code != 200 || ctype != "application/json" || body != "{\"status\":\"ok\",\"version\":3}\n" {
 		t.Fatalf("health = %d %q %q %v", code, ctype, body, err)
 	}
 	// DNS SAN, with TLS 1.2 as the minimum.

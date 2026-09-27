@@ -1,7 +1,10 @@
 // Package adapter is the worker adapter boundary (iteration 04): immutable
 // adapter metadata (ID, allowed efforts, test-only mark) available to the
 // plane and coordinators without touching any filesystem, and an
-// invocability probe run by the sidecar on the worker. Only the fake
+// invocability probe run by the sidecar on the worker. Iteration 05 adds
+// the task boundary: explicit model and effort argv with the prompt on
+// stdin, incremental final-message extraction, and the native signal
+// names a failed task reports. Only the fake
 // adapter exists; it is a test/demo adapter that never calls a model and is
 // enabled only by an explicit absolute executable path on the worker.
 //
@@ -32,11 +35,16 @@ func (d Descriptor) clone() Descriptor {
 	return d
 }
 
-// Adapter is one registered adapter: its metadata and an invocability
-// probe of an explicit absolute executable path.
+// Adapter is one registered adapter: its metadata, an invocability probe
+// of an explicit absolute executable path and (iteration 05) the task
+// boundary: an invocation for one task and a fresh final-message
+// extractor. Invocation never opens a file or starts a process;
+// executable paths stay sidecar-local.
 type Adapter interface {
 	Descriptor() Descriptor
 	Probe(ctx context.Context, executable string) error
+	Invocation(input TaskInput) (Invocation, error)
+	NewFinalExtractor() FinalExtractor
 }
 
 // Registry is an immutable set of adapters, safe for concurrent use.

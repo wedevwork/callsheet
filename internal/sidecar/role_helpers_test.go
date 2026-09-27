@@ -104,6 +104,16 @@ func (a *scriptAdapter) awaitProbe(t *testing.T) string {
 	}
 }
 
+// Invocation and NewFinalExtractor are the product fake's task boundary
+// (pure: no file or process).
+func (a *scriptAdapter) Invocation(in adapter.TaskInput) (adapter.Invocation, error) {
+	return adapter.NewFake("").Invocation(in)
+}
+
+func (a *scriptAdapter) NewFinalExtractor() adapter.FinalExtractor {
+	return adapter.NewFake("").NewFinalExtractor()
+}
+
 func (a *scriptAdapter) registry() adapter.Registry {
 	r, err := adapter.NewRegistry(a)
 	if err != nil {
