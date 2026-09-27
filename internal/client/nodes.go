@@ -79,10 +79,16 @@ func (c *Client) DialNodeStream(ctx context.Context) (*websocket.Conn, error) {
 		HTTPClient:      c.http,
 		CompressionMode: websocket.CompressionDisabled,
 	})
-	if err != nil {
-		if perr := ctx.Err(); perr != nil {
-			return nil, perr
+	if oerr := octx.Err(); oerr != nil {
+		// A handshake answer that raced the deadline or the caller's
+		// cancellation is not the plane's answer (see Client.request):
+		// neither a late refusal nor a late upgrade is used.
+		if conn != nil {
+			conn.CloseNow()
 		}
+		return nil, c.transportError(ctx, oerr)
+	}
+	if err != nil {
 		if resp != nil && resp.StatusCode != http.StatusSwitchingProtocols {
 			if resp.StatusCode == http.StatusServiceUnavailable || resp.StatusCode >= 500 {
 				return nil, contract.Wrap(contract.CodeUnavailable, "the plane refused the node stream with HTTP "+strconv.Itoa(resp.StatusCode), err)
