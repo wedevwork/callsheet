@@ -16,8 +16,10 @@ import (
 // them.
 const (
 	// Placement since iteration 05b: ./internal/plane (whose role contracts
-	// run in its own package) is in the plane shard, not this invocation.
-	wantRoleStressPackages = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/sidecar ./internal/contract ./internal/adapter"
+	// run in its own package) is in the plane shard, and since its sidecar
+	// follow-up ./internal/sidecar is in the sidecar shard, not this
+	// invocation.
+	wantRoleStressPackages = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/contract ./internal/adapter"
 	wantRoleBenchPlan      = "go test ./internal/spikes/gittransport -run ^$ -bench . -benchmem -benchtime=3x -count=1 -timeout=180s|" +
 		"go test ./internal/plane -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s|" +
 		"go test ./internal/contract -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s|" +
@@ -94,10 +96,11 @@ func TestRolePolicy(t *testing.T) {
 	t.Run("policy", func(t *testing.T) {
 		for _, goos := range []string{"linux", "darwin"} {
 			shards, err := StressShards(goos)
-			if err != nil || len(shards) != 4 || strings.Join(shards[0].Steps[0].Argv, " ") != wantRoleStressPackages ||
+			if err != nil || len(shards) != 5 || strings.Join(shards[0].Steps[0].Argv, " ") != wantRoleStressPackages ||
 				strings.Join(argvOf(shards[1].Steps), "|") != wantStressPlane1+"|"+wantStressPlane2+"|"+wantStressPlane4 || !shards[1].Parallel ||
-				strings.Join(argvOf(shards[2].Steps), "|") != wantStressPG1+"|"+wantStressPG2+"|"+wantStressPG4 || !shards[2].Parallel ||
-				strings.Join(argvOf(shards[3].Steps), "|") != wantStressFunction+"|"+wantStressPlaneFunction+"|"+wantNodeStressFunction {
+				strings.Join(argvOf(shards[2].Steps), "|") != wantStressSidecar1+"|"+wantStressSidecar2+"|"+wantStressSidecar4 || !shards[2].Parallel ||
+				strings.Join(argvOf(shards[3].Steps), "|") != wantStressPG1+"|"+wantStressPG2+"|"+wantStressPG4 || !shards[3].Parallel ||
+				strings.Join(argvOf(shards[4].Steps), "|") != wantStressFunction+"|"+wantStressPlaneFunction+"|"+wantNodeStressFunction {
 				t.Fatalf("%s stress plan = %+v %v", goos, shards, err)
 			}
 		}

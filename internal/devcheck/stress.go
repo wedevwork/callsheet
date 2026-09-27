@@ -31,7 +31,7 @@ var (
 	// settings (values of stressCPUs) whose invocations run concurrently,
 	// and each wave starts only after the previous one has been joined and
 	// succeeded. A Parallel shard without an entry runs all of its
-	// invocations as one concurrent wave. It is empty: plane and
+	// invocations as one concurrent wave. It is empty: plane, sidecar and
 	// processgroup each run their three CPU settings together. The
 	// pre-authorised plane fallback of design 05b (applied only through the
 	// light flow, when the first hosted run triggers it) fills exactly
@@ -40,20 +40,20 @@ var (
 	// stressPackages are the timing- and concurrency-sensitive packages of
 	// the packages shard, run completely (tests only, no benchmarks) with
 	// the CPU list in one invocation. ./internal/plane left this list for
-	// its own shard in iteration 05b (stressPlanePackage).
+	// its own shard in iteration 05b (stressPlanePackage), and
+	// ./internal/sidecar in its sidecar follow-up (stressSidecarPackage).
 	stressPackages = []string{
 		"./internal/testkit",
 		"./internal/testkit/fakeadapter",
 		"./internal/spikes/gittransport",
-		// Iteration 03: the node client, sidecar (whose reconnect contracts
-		// run real plane subprocesses) and wire contract, complete.
+		// Iteration 03: the node client and wire contract, complete (the
+		// node sidecar is in the sidecar shard).
 		"./internal/client",
-		"./internal/sidecar",
 		"./internal/contract",
 		// Iteration 04: the adapter package (probe deadlines, cancellation
 		// and child waits on an injected clock), complete. The role
 		// contracts of plane, sidecar, client and contract already run in
-		// their packages (plane in the plane shard).
+		// their packages (plane and sidecar in their own shards).
 		"./internal/adapter",
 	}
 	// stressPlanePackage is the internal/plane package in the plane shard,
@@ -64,6 +64,16 @@ var (
 	// as three concurrent invocations (runConcurrentCPU), each StressCount
 	// times at one setting: the same 60 repetitions per test.
 	stressPlanePackage = "./internal/plane"
+	// stressSidecarPackage is the sidecar shard's package (design 05b's
+	// pre-decided sidecar follow-up, triggered when the first hosted run
+	// after the plane split measured the sidecar binary over 300.0 s in
+	// the packages shard). Its reconnect contracts run real plane
+	// subprocesses and TestTaskExecutionContract/process launches the
+	// iteration 05 task and probe children (3 per repetition, 180 per
+	// shard), so its three CPU settings run as three concurrent
+	// invocations (runConcurrentCPU), each StressCount times at one
+	// setting: the same 60 repetitions per test and the same children.
+	stressSidecarPackage = "./internal/sidecar"
 	// stressProcessGroupPackage is the processgroup shard's package
 	// (iteration 02c). Its stress time is dominated by the 1 s TERM grace
 	// repeated sequentially, not by CPU, so its three CPU settings run as
@@ -97,7 +107,7 @@ var (
 	// process-boundary node scenarios (iteration 03): real competing
 	// sidecar processes and a real sidecar CLI's SIGTERM shutdown. The
 	// delegated clock contracts behind TestNodeReconnect's restart and
-	// disconnect and TestNodeLease are repeated directly in the packages
+	// disconnect and TestNodeLease are repeated directly in the sidecar
 	// and plane shards, so their wrappers are not repeated here.
 	stressNodeFunctionTests = []string{"TestNodeEnrollment", "TestNodeReconnect"}
 	stressNodeSubtests      = []string{"locking", "shutdown"}
@@ -170,10 +180,11 @@ func stressSupported(goos string) error {
 	return nil
 }
 
-// StressShards returns the stress plan for goos as its four fixed shards,
+// StressShards returns the stress plan for goos as its five fixed shards,
 // in order: packages (sequential), plane (Parallel: one invocation per CPU
-// setting, iteration 05b), processgroup (Parallel, iteration 02c) and
-// functions (sequential). Their disjoint union is exactly the iteration 02b
+// setting, iteration 05b), sidecar (Parallel, design 05b's sidecar
+// follow-up), processgroup (Parallel, iteration 02c) and functions
+// (sequential). Their disjoint union is exactly the iteration 02b
 // selection plus iteration 03's node packages and node function selector
 // and iteration 04's adapter package: every selected test runs StressCount
 // times at each CPU setting under the race detector. Only linux and darwin
@@ -197,6 +208,7 @@ func StressShards(goos string) ([]StressShard, error) {
 			{Name: "stress packages", Env: env(), Argv: append(stressFlags(stressCPUList()), stressPackages...)},
 		}},
 		{Name: "plane", Parallel: true, Steps: perCPU("plane", stressPlanePackage)},
+		{Name: "sidecar", Parallel: true, Steps: perCPU("sidecar", stressSidecarPackage)},
 		{Name: "processgroup", Parallel: true, Steps: perCPU("processgroup", stressProcessGroupPackage)},
 		{Name: "functions", Steps: []Step{
 			{Name: "stress function", Env: env(),
@@ -210,7 +222,7 @@ func StressShards(goos string) ([]StressShard, error) {
 }
 
 // StressSteps returns the stress plan for goos flattened in shard and CPU
-// order: ten race-built go test commands. It is an inspection view only;
+// order: thirteen race-built go test commands. It is an inspection view only;
 // execution uses StressShards (and stressWaves for the order of a Parallel
 // shard's invocations) and never infers concurrency or execution order
 // from this list. Unsupported goos values are rejected like StressShards.
@@ -227,7 +239,7 @@ func StressSteps(goos string) ([]Step, error) {
 	return steps, nil
 }
 
-// stressPlan returns the shards a stress stage runs: all four for
+// stressPlan returns the shards a stress stage runs: all five for
 // "stress", else the single shard named by the stage. An invalid wave
 // schedule (stressWaves) for any returned shard is rejected here, before a
 // scratch directory or child exists.
@@ -261,13 +273,13 @@ func stressPlan(goos, stage string) ([]StressShard, error) {
 
 func isStressStage(stage string) bool {
 	return stage == "stress" || stage == stressStagePrefix+"packages" || stage == stressStagePrefix+"plane" ||
-		stage == stressStagePrefix+"processgroup" || stage == stressStagePrefix+"functions"
+		stage == stressStagePrefix+"sidecar" || stage == stressStagePrefix+"processgroup" || stage == stressStagePrefix+"functions"
 }
 
 // stress runs shards in order under one watchdog: a context that ends at
 // the earlier of stressWatchdog from now and the caller's deadline, and
 // that is always canceled on return. A shard stage passes one shard and so
-// gets its own watchdog; "stress" passes all four, which share one. A
+// gets its own watchdog; "stress" passes all five, which share one. A
 // failure or an expired watchdog fails the stage and never starts the next
 // step, wave or shard. Every Parallel shard's waves (stressGroups) are
 // resolved before anything starts, so an invalid schedule starts nothing

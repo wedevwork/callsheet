@@ -1015,12 +1015,15 @@ func TestNodePlatform(t *testing.T) {
 	t.Run("policy", func(t *testing.T) {
 		const nodeFn = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestNodeEnrollment|TestNodeReconnect)$/^(locking|shutdown)$ ./tests/function"
 		for _, goos := range []string{"linux", "darwin"} {
-			// The node packages stay in the packages shard; the plane's node
-			// contracts repeat in the plane shard (iteration 05b).
+			// The client and contract node packages stay in the packages
+			// shard; the plane's node contracts repeat in the plane shard
+			// (iteration 05b) and the sidecar's reconnect contracts in the
+			// sidecar shard (its sidecar follow-up).
 			shards, err := devcheck.StressShards(goos)
-			if err != nil || len(shards) != 4 || len(shards[3].Steps) != 3 || strings.Join(shards[3].Steps[2].Argv, " ") != nodeFn ||
-				!slices.Contains(shards[0].Steps[0].Argv, "./internal/sidecar") || !slices.Contains(shards[0].Steps[0].Argv, "./internal/client") || !slices.Contains(shards[0].Steps[0].Argv, "./internal/contract") ||
-				shards[1].Name != "plane" || len(shards[1].Steps) != 3 || !slices.Contains(shards[1].Steps[0].Argv, "./internal/plane") {
+			if err != nil || len(shards) != 5 || len(shards[4].Steps) != 3 || strings.Join(shards[4].Steps[2].Argv, " ") != nodeFn ||
+				slices.Contains(shards[0].Steps[0].Argv, "./internal/sidecar") || !slices.Contains(shards[0].Steps[0].Argv, "./internal/client") || !slices.Contains(shards[0].Steps[0].Argv, "./internal/contract") ||
+				shards[1].Name != "plane" || len(shards[1].Steps) != 3 || !slices.Contains(shards[1].Steps[0].Argv, "./internal/plane") ||
+				shards[2].Name != "sidecar" || len(shards[2].Steps) != 3 || !slices.Contains(shards[2].Steps[0].Argv, "./internal/sidecar") {
 				t.Fatalf("%s stress plan = %+v %v", goos, shards, err)
 			}
 		}

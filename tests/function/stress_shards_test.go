@@ -24,7 +24,9 @@ import (
 
 // Iteration 02c function tests: one top-level TestStressShard* per FP,
 // extended by iteration 05b (the plane shard: four shards, ten steps,
-// twelve jobs, four-result summaries). They read tracked artifacts only,
+// twelve jobs, four-result summaries) and by its sidecar follow-up (the
+// sidecar shard: five shards, thirteen steps, fourteen jobs, five-result
+// summaries). They read tracked artifacts only,
 // inject runners into devcheck, run the coordinator's contract by name in a
 // compiled devcheck test binary and the summaries' literal command in local
 // bash, and never contact GitHub or run a real suite, stress or devcheck
@@ -41,17 +43,23 @@ var shard02b = []string{
 
 // shardPlan is the literal shard table (design 02c, Shard plans, with
 // design 05b's plane shard: ./internal/plane left the packages command for
-// three single-CPU invocations).
+// three single-CPU invocations, and ./internal/sidecar likewise by its
+// sidecar follow-up).
 var shardPlan = []struct {
 	name     string
 	parallel bool
 	steps    [][2]string
 }{
-	{"packages", false, [][2]string{{"stress packages", "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/sidecar ./internal/contract ./internal/adapter"}}},
+	{"packages", false, [][2]string{{"stress packages", "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/contract ./internal/adapter"}}},
 	{"plane", true, [][2]string{
 		{"stress plane cpu1", "go test -race -count=20 -cpu=1 -timeout=6m ./internal/plane"},
 		{"stress plane cpu2", "go test -race -count=20 -cpu=2 -timeout=6m ./internal/plane"},
 		{"stress plane cpu4", "go test -race -count=20 -cpu=4 -timeout=6m ./internal/plane"},
+	}},
+	{"sidecar", true, [][2]string{
+		{"stress sidecar cpu1", "go test -race -count=20 -cpu=1 -timeout=6m ./internal/sidecar"},
+		{"stress sidecar cpu2", "go test -race -count=20 -cpu=2 -timeout=6m ./internal/sidecar"},
+		{"stress sidecar cpu4", "go test -race -count=20 -cpu=4 -timeout=6m ./internal/sidecar"},
 	}},
 	{"processgroup", true, [][2]string{
 		{"stress processgroup cpu1", "go test -race -count=20 -cpu=1 -timeout=6m ./internal/spikes/processgroup"},
@@ -160,10 +168,11 @@ func tuples(t *testing.T, argv string) []tuple {
 	return out
 }
 
-// FP-1: both OS plans are exactly the four literal shards (ten steps), and
-// their normalized union is the 02b multiset plus the literal additions of
-// iterations 03 and 04, with nothing duplicated or lost; the complete plane
-// package runs exactly once per CPU setting, in the plane shard only.
+// FP-1: both OS plans are exactly the five literal shards (thirteen steps),
+// and their normalized union is the 02b multiset plus the literal additions
+// of iterations 03 and 04, with nothing duplicated or lost; the complete
+// plane and sidecar packages run exactly once per CPU setting, each in its
+// own shard only.
 func TestStressShardSelection(t *testing.T) {
 	want := map[tuple]int{}
 	for _, argv := range shard02b {
@@ -238,10 +247,16 @@ func TestStressShardSelection(t *testing.T) {
 			if tp := (tuple{"./internal/plane", "", cpu, "20"}); got[tp] != 1 || owner[tp] != "plane" {
 				t.Fatalf("%s: plane at -cpu=%s selected %d times, in %q", goos, cpu, got[tp], owner[tp])
 			}
+			if tp := (tuple{"./internal/sidecar", "", cpu, "20"}); got[tp] != 1 || owner[tp] != "sidecar" {
+				t.Fatalf("%s: sidecar at -cpu=%s selected %d times, in %q", goos, cpu, got[tp], owner[tp])
+			}
 		}
 		for tp, sh := range owner {
 			if tp.pkg == "./internal/plane" && sh != "plane" {
 				t.Fatalf("%s: %+v outside the plane shard (%s)", goos, tp, sh)
+			}
+			if tp.pkg == "./internal/sidecar" && sh != "sidecar" {
+				t.Fatalf("%s: %+v outside the sidecar shard (%s)", goos, tp, sh)
 			}
 		}
 		steps, err := devcheck.StressSteps(goos)
@@ -249,15 +264,15 @@ func TestStressShardSelection(t *testing.T) {
 		for _, s := range steps {
 			flatSteps = append(flatSteps, strings.Join(s.Argv, " "))
 		}
-		if err != nil || len(steps) != 10 || !slices.Equal(flatSteps, flat) {
-			t.Fatalf("%s StressSteps is not the ten-step flattened shard view: %q", goos, flatSteps)
+		if err != nil || len(steps) != 13 || !slices.Equal(flatSteps, flat) {
+			t.Fatalf("%s StressSteps is not the thirteen-step flattened shard view: %q", goos, flatSteps)
 		}
 	}
 	// The functions shard keeps 02b's plane selector, whose executable
 	// fixture and exclusions TestCISpeedSelection still runs.
 	shards, _ := devcheck.StressShards("linux")
-	if !slices.Contains(shards[3].Steps[1].Argv, "-run="+speedPlaneSelector) {
-		t.Fatalf("plane selector changed: %v", shards[3].Steps[1].Argv)
+	if !slices.Contains(shards[4].Steps[1].Argv, "-run="+speedPlaneSelector) {
+		t.Fatalf("plane selector changed: %v", shards[4].Steps[1].Argv)
 	}
 	for _, goos := range []string{"windows", "freebsd", ""} {
 		if _, err := devcheck.StressShards(goos); err == nil {
@@ -288,15 +303,16 @@ func (r *syncRunner) run(_ context.Context, argv, _ []string, _ string, stdout, 
 }
 
 // FP-2: devcheck.Run executes the aggregate and each shard with the exact
-// commands and boundaries, runs stress-plane's three invocations
-// concurrently and joined with ordered logs, never overlaps the two
-// Parallel shards, fails with retained logs, and the concurrent
+// commands and boundaries, runs stress-plane's and stress-sidecar's three
+// invocations concurrently and joined with ordered logs, never overlaps the
+// three Parallel shards, fails with retained logs, and the concurrent
 // coordinator's contract passes by name.
 func TestStressShardExecution(t *testing.T) {
 	for stage, want := range map[string][][]string{
-		"stress":              shardArgv("packages", "plane", "processgroup", "functions"),
+		"stress":              shardArgv("packages", "plane", "sidecar", "processgroup", "functions"),
 		"stress-packages":     shardArgv("packages"),
 		"stress-plane":        shardArgv("plane"),
+		"stress-sidecar":      shardArgv("sidecar"),
 		"stress-processgroup": shardArgv("processgroup"),
 		"stress-functions":    shardArgv("functions"),
 	} {
@@ -318,19 +334,21 @@ func TestStressShardExecution(t *testing.T) {
 			t.Fatalf("%s: successful scratch %s not removed", stage, scratch)
 		}
 	}
-	// A failed plane or processgroup invocation fails its shard after all
-	// three ran, stops the aggregate before the next shard and keeps its
-	// log.
+	// A failed plane, sidecar or processgroup invocation fails its shard
+	// after all three ran, stops the aggregate before the next shard and
+	// keeps its log.
 	for _, c := range []struct {
 		stage, failOn, failed string
 		want                  [][]string
 	}{
 		{"stress", "-cpu=2 -timeout=6m ./internal/plane", "stress plane cpu2", shardArgv("packages", "plane")},
 		{"stress-plane", "-cpu=4 ", "stress plane cpu4", shardArgv("plane")},
-		{"stress", "-cpu=2 -timeout=6m ./internal/spikes/processgroup", "stress processgroup cpu2", shardArgv("packages", "plane", "processgroup")},
+		{"stress", "-cpu=2 -timeout=6m ./internal/sidecar", "stress sidecar cpu2", shardArgv("packages", "plane", "sidecar")},
+		{"stress-sidecar", "-cpu=1 ", "stress sidecar cpu1", shardArgv("sidecar")},
+		{"stress", "-cpu=2 -timeout=6m ./internal/spikes/processgroup", "stress processgroup cpu2", shardArgv("packages", "plane", "sidecar", "processgroup")},
 		{"stress-processgroup", "-cpu=4 ", "stress processgroup cpu4", shardArgv("processgroup")},
 		{"stress-functions", "TestFP4TransportHarness", "stress function", shardArgv("functions")[:1]},
-		{"stress", "./internal/sidecar", "stress packages", shardArgv("packages")},
+		{"stress", "./internal/contract", "stress packages", shardArgv("packages")},
 	} {
 		r := &syncRunner{failOn: c.failOn}
 		var out, errOut bytes.Buffer
@@ -347,10 +365,11 @@ func TestStressShardExecution(t *testing.T) {
 		os.RemoveAll(scratch)
 	}
 	// Through devcheck.Run: all three plane invocations have started before
-	// any ends (a barrier), and so have processgroup's; plane's six events
-	// all precede processgroup's six (the Parallel shards never overlap);
+	// any ends (a barrier), and so have sidecar's and processgroup's (each
+	// with its own barrier); plane's six events all precede sidecar's six,
+	// which precede processgroup's six (the Parallel shards never overlap);
 	// the logs replay under their CPU names in CPU order.
-	o := &overlapRunner{groups: map[string]*gate{"./internal/plane": newGate(3), "./internal/spikes/processgroup": newGate(3)}}
+	o := &overlapRunner{groups: map[string]*gate{"./internal/plane": newGate(3), "./internal/sidecar": newGate(3), "./internal/spikes/processgroup": newGate(3)}}
 	var out, errOut bytes.Buffer
 	if code := devcheck.Run(context.Background(), []string{"stress"}, &out, &errOut, o.run); code != 0 {
 		t.Fatalf("stress with overlap barriers = %d: %s", code, errOut.String())
@@ -358,19 +377,21 @@ func TestStressShardExecution(t *testing.T) {
 	o.mu.Lock()
 	events := slices.Clone(o.events)
 	o.mu.Unlock()
-	var pl, pg []int
+	var pl, sc, pg []int
 	for i, e := range events {
 		switch {
 		case strings.HasSuffix(e, " ./internal/plane"):
 			pl = append(pl, i)
+		case strings.HasSuffix(e, " ./internal/sidecar"):
+			sc = append(sc, i)
 		case strings.HasSuffix(e, " ./internal/spikes/processgroup"):
 			pg = append(pg, i)
 		}
 	}
-	if len(events) != 20 || !slices.Equal(pl, []int{2, 3, 4, 5, 6, 7}) || !slices.Equal(pg, []int{8, 9, 10, 11, 12, 13}) {
+	if len(events) != 26 || !slices.Equal(pl, []int{2, 3, 4, 5, 6, 7}) || !slices.Equal(sc, []int{8, 9, 10, 11, 12, 13}) || !slices.Equal(pg, []int{14, 15, 16, 17, 18, 19}) {
 		t.Fatalf("events = %q", events)
 	}
-	for _, from := range []int{2, 8} {
+	for _, from := range []int{2, 8, 14} {
 		for i := from; i < from+6; i++ {
 			if strings.HasPrefix(events[i], "start ") != (i < from+3) {
 				t.Fatalf("a Parallel shard's invocation ended before all three started: %q", events)
@@ -379,17 +400,19 @@ func TestStressShardExecution(t *testing.T) {
 	}
 	scratch := scratchOf(out.String())
 	pos := -1
-	for _, cpu := range []string{"1", "2", "4"} {
-		name := "stress plane cpu" + cpu
-		i := strings.Index(out.String(), "devcheck: ---- "+name+" log ("+filepath.Join(scratch, "stress-plane-cpu"+cpu+".log")+") ----\nok go test -race -count=20 -cpu="+cpu+" -timeout=6m ./internal/plane\n")
-		if i < 0 || i < pos || !strings.Contains(out.String()[i:], "devcheck: "+name+": ok in ") {
-			t.Fatalf("%s log not replayed in CPU order:\n%s", name, out.String())
+	for _, shard := range []string{"plane", "sidecar"} {
+		for _, cpu := range []string{"1", "2", "4"} {
+			name := "stress " + shard + " cpu" + cpu
+			i := strings.Index(out.String(), "devcheck: ---- "+name+" log ("+filepath.Join(scratch, "stress-"+shard+"-cpu"+cpu+".log")+") ----\nok go test -race -count=20 -cpu="+cpu+" -timeout=6m ./internal/"+shard+"\n")
+			if i < 0 || i < pos || !strings.Contains(out.String()[i:], "devcheck: "+name+": ok in ") {
+				t.Fatalf("%s log not replayed in shard and CPU order:\n%s", name, out.String())
+			}
+			pos = i
 		}
-		pos = i
 	}
 	// The coordinator's contract, by name, with every named subtest: the
-	// plane and processgroup overlap, failure, watchdog and log contracts
-	// and the inactive fallback's wave mechanism.
+	// plane, sidecar and processgroup overlap, failure, watchdog and log
+	// contracts and the inactive plane fallback's wave mechanism.
 	const pkg = "./internal/devcheck"
 	bin := testkit.BuildTestBinary(t, pkg, "devcheck-stress-contract")
 	contractRun(t, bin, pkg, "^TestStressConcurrencyContract$", os.Environ(),
@@ -458,8 +481,9 @@ func scratchOf(out string) string {
 	return ""
 }
 
-// shardJobs is the literal twelve-job table (design 02c, Workflow topology,
-// with design 05b's plane workers in CI-plan order).
+// shardJobs is the literal fourteen-job table (design 02c, Workflow
+// topology, with design 05b's plane workers and its sidecar follow-up's
+// sidecar workers in CI-plan order).
 var shardJobs = []struct {
 	id, name, runner, timeout string
 }{
@@ -467,24 +491,26 @@ var shardJobs = []struct {
 	{"macos", "ci-macos", "macos-15", "30"},
 	{"linux-stress-packages", "ci-linux-stress-packages", "ubuntu-24.04", "20"},
 	{"linux-stress-plane", "ci-linux-stress-plane", "ubuntu-24.04", "20"},
+	{"linux-stress-sidecar", "ci-linux-stress-sidecar", "ubuntu-24.04", "20"},
 	{"linux-stress-processgroup", "ci-linux-stress-processgroup", "ubuntu-24.04", "20"},
 	{"linux-stress-functions", "ci-linux-stress-functions", "ubuntu-24.04", "20"},
 	{"macos-stress-packages", "ci-macos-stress-packages", "macos-15", "20"},
 	{"macos-stress-plane", "ci-macos-stress-plane", "macos-15", "20"},
+	{"macos-stress-sidecar", "ci-macos-stress-sidecar", "macos-15", "20"},
 	{"macos-stress-processgroup", "ci-macos-stress-processgroup", "macos-15", "20"},
 	{"macos-stress-functions", "ci-macos-stress-functions", "macos-15", "20"},
 	{"linux-stress", "ci-linux-stress", "ubuntu-24.04", "5"},
 	{"macos-stress", "ci-macos-stress", "ubuntu-24.04", "5"},
 }
 
-const summaryCommand = `test "$PACKAGES_RESULT" = success && test "$PLANE_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success`
+const summaryCommand = `test "$PACKAGES_RESULT" = success && test "$PLANE_RESULT" = success && test "$SIDECAR_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success`
 
 // summaryKeys are the summary step's environment keys in needs order.
-var summaryKeys = []string{"PACKAGES_RESULT", "PLANE_RESULT", "PROCESSGROUP_RESULT", "FUNCTIONS_RESULT"}
+var summaryKeys = []string{"PACKAGES_RESULT", "PLANE_RESULT", "SIDECAR_RESULT", "PROCESSGROUP_RESULT", "FUNCTIONS_RESULT"}
 
-// FP-3: the actual workflow has the twelve jobs and two literal summaries,
-// and each summary's own command passes only when all four workers
-// concluded success.
+// FP-3: the actual workflow has the fourteen jobs and two literal
+// summaries, and each summary's own command passes only when all five
+// workers concluded success.
 func TestStressShardSummaries(t *testing.T) {
 	data := ciWorkflow(t)
 	if err := cicheck.ValidateWorkflow(data); err != nil {
@@ -525,7 +551,7 @@ func TestStressShardSummaries(t *testing.T) {
 		if strings.Join(keys, " ") != "name runs-on timeout-minutes needs if defaults steps" {
 			t.Fatalf("%s fields = %v", id, keys)
 		}
-		workers := []string{plat + "-stress-packages", plat + "-stress-plane", plat + "-stress-processgroup", plat + "-stress-functions"}
+		workers := []string{plat + "-stress-packages", plat + "-stress-plane", plat + "-stress-sidecar", plat + "-stress-processgroup", plat + "-stress-functions"}
 		var needs []string
 		for _, n := range node(t, job, "needs").Content {
 			needs = append(needs, n.Value)
@@ -538,7 +564,7 @@ func TestStressShardSummaries(t *testing.T) {
 			t.Fatalf("%s steps = %d", id, len(steps.Content))
 		}
 		env := node(t, steps, 0, "env")
-		if len(env.Content) != 8 {
+		if len(env.Content) != 10 {
 			t.Fatalf("%s env has %d entries", id, len(env.Content)/2)
 		}
 		for i, k := range summaryKeys {
@@ -551,22 +577,25 @@ func TestStressShardSummaries(t *testing.T) {
 			t.Fatalf("%s run = %q", id, run)
 		}
 		// Execute the extracted command as Actions' bash shell does, for
-		// every combination of the four conclusions in the four positions
-		// (4^4), then for an empty, an unknown, a case-altered and a
-		// whitespace value in each position with every other one success.
-		var tuples [][4]string
+		// every combination of the four conclusions in the five positions
+		// (4^n with n=5), then for an empty, an unknown, a case-altered and
+		// a whitespace value in each position with every other one success.
+		allSuccess := [5]string{"success", "success", "success", "success", "success"}
+		var tuples [][5]string
 		for _, a := range results {
 			for _, b := range results {
 				for _, c := range results {
 					for _, d := range results {
-						tuples = append(tuples, [4]string{a, b, c, d})
+						for _, e := range results {
+							tuples = append(tuples, [5]string{a, b, c, d, e})
+						}
 					}
 				}
 			}
 		}
-		for pos := 0; pos < 4; pos++ {
+		for pos := 0; pos < 5; pos++ {
 			for _, odd := range []string{"", "neutral", "Success", "success "} {
-				tp := [4]string{"success", "success", "success", "success"}
+				tp := allSuccess
 				tp[pos] = odd
 				tuples = append(tuples, tp)
 			}
@@ -583,7 +612,7 @@ func TestStressShardSummaries(t *testing.T) {
 			if err != nil && !errors.As(err, &ee) {
 				t.Fatalf("%s %q: bash did not run: %v", id, tp, err)
 			}
-			want := tp == [4]string{"success", "success", "success", "success"}
+			want := tp == allSuccess
 			if (err == nil) != want {
 				t.Fatalf("%s %q: exit error %v, want pass=%v (%s)", id, tp, err, want, out)
 			}
@@ -591,15 +620,15 @@ func TestStressShardSummaries(t *testing.T) {
 				passed++
 			}
 		}
-		if len(tuples) != 256+16 || passed != 1 {
+		if len(tuples) != 1024+20 || passed != 1 {
 			t.Fatalf("%s: %d tuples, %d passed", id, len(tuples), passed)
 		}
 	}
 }
 
 // FP-4: the validator accepts the actual workflow and rejects a removed or
-// miswired plane worker, any removed worker or a weakened summary;
-// contract, stages, extracted sequences and both OS plans agree.
+// miswired plane or sidecar worker, any removed worker or a weakened
+// summary; contract, stages, extracted sequences and both OS plans agree.
 func TestStressShardPolicy(t *testing.T) {
 	data := ciWorkflow(t)
 	if err := cicheck.ValidateWorkflow(data); err != nil {
@@ -610,7 +639,7 @@ func TestStressShardPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	contract := cicheck.Jobs()
-	if len(contract) != 12 || len(stages) != 12 {
+	if len(contract) != 14 || len(stages) != 14 {
 		t.Fatalf("contract %d jobs, workflow %d", len(contract), len(stages))
 	}
 	dispatch := devcheck.Stages()
@@ -685,11 +714,11 @@ func TestStressShardPolicy(t *testing.T) {
 			node(t, r, "jobs", id, "steps", 0, "run").Value = summaryCommand + " || true"
 		}), p+".steps[0].run: must be exactly")
 		mustReject(t, id+" check dropped", mutated(t, func(r *yaml.Node) {
-			node(t, r, "jobs", id, "steps", 0, "run").Value = `test "$PACKAGES_RESULT" = success && test "$PLANE_RESULT" = success && test "$PROCESSGROUP_RESULT" = success`
+			node(t, r, "jobs", id, "steps", 0, "run").Value = `test "$PACKAGES_RESULT" = success && test "$PLANE_RESULT" = success && test "$SIDECAR_RESULT" = success && test "$PROCESSGROUP_RESULT" = success`
 		}), p+".steps[0].run: must be exactly")
 		// Design 05b: the plane worker, its result and its comparison.
 		mustReject(t, id+" plane comparison omitted", mutated(t, func(r *yaml.Node) {
-			node(t, r, "jobs", id, "steps", 0, "run").Value = `test "$PACKAGES_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success`
+			node(t, r, "jobs", id, "steps", 0, "run").Value = `test "$PACKAGES_RESULT" = success && test "$SIDECAR_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success`
 		}), p+".steps[0].run: must be exactly")
 		mustReject(t, id+" plane result miswired", mutated(t, func(r *yaml.Node) {
 			node(t, r, "jobs", id, "steps", 0, "env", "PLANE_RESULT").Value = "${{ needs['" + id + "-packages'].result }}"
@@ -705,51 +734,77 @@ func TestStressShardPolicy(t *testing.T) {
 			other := map[string]string{"linux-stress": "macos", "macos-stress": "linux"}[id]
 			node(t, r, "jobs", id, "needs").Content[1].Value = other + "-stress-plane"
 		}), p+".needs[1]: must be")
+		// Design 05b's sidecar follow-up: the sidecar worker, its result and
+		// its comparison, with the four-result summary of 05b now too weak.
+		mustReject(t, id+" four-result summary", mutated(t, func(r *yaml.Node) {
+			node(t, r, "jobs", id, "steps", 0, "run").Value = `test "$PACKAGES_RESULT" = success && test "$PLANE_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success`
+		}), p+".steps[0].run: must be exactly")
+		mustReject(t, id+" sidecar result miswired", mutated(t, func(r *yaml.Node) {
+			node(t, r, "jobs", id, "steps", 0, "env", "SIDECAR_RESULT").Value = "${{ needs['" + id + "-plane'].result }}"
+		}), p+".steps[0].env.SIDECAR_RESULT: must be")
+		mustReject(t, id+" sidecar result removed", mutated(t, func(r *yaml.Node) {
+			deleteKey(t, node(t, r, "jobs", id, "steps", 0, "env"), "SIDECAR_RESULT")
+		}), p+".steps[0].env.SIDECAR_RESULT: missing required field")
+		mustReject(t, id+" sidecar worker not needed", mutated(t, func(r *yaml.Node) {
+			n := node(t, r, "jobs", id, "needs")
+			n.Content = append(n.Content[:2:2], n.Content[3:]...)
+		}), p+".needs: must be exactly")
+		mustReject(t, id+" sidecar worker from the other platform", mutated(t, func(r *yaml.Node) {
+			other := map[string]string{"linux-stress": "macos", "macos-stress": "linux"}[id]
+			node(t, r, "jobs", id, "needs").Content[2].Value = other + "-stress-sidecar"
+		}), p+".needs[2]: must be")
 		mustReject(t, id+" error bypass", mutated(t, func(r *yaml.Node) { setKey(node(t, r, "jobs", id), "continue-on-error", "true") }), p+".continue-on-error: unknown field")
 		mustReject(t, id+" setup added", mutated(t, func(r *yaml.Node) { setKey(node(t, r, "jobs", id), "env", "x") }), p+".env: unknown field")
 	}
 	// The workers never depend on anything.
 	mustReject(t, "worker needs", mutated(t, func(r *yaml.Node) { setKey(node(t, r, "jobs", "macos-stress-processgroup"), "needs", "macos") }), "jobs.macos-stress-processgroup.needs: unknown field")
 	mustReject(t, "plane worker needs", mutated(t, func(r *yaml.Node) { setKey(node(t, r, "jobs", "linux-stress-plane"), "needs", "linux-stress-packages") }), "jobs.linux-stress-plane.needs: unknown field")
-	// The plane worker's own stage, budget and runner are fixed.
-	for _, plat := range []string{"linux", "macos"} {
-		id := plat + "-stress-plane"
-		p := "jobs." + id
-		mustReject(t, id+" stage", mutated(t, func(r *yaml.Node) {
-			node(t, r, "jobs", id, "steps", 3, "run").Value = "go run ./cmd/devcheck stress-packages"
-		}), p+`.steps[3].run: must run devcheck stage "stress-plane", got "stress-packages"`)
-		mustReject(t, id+" count", mutated(t, func(r *yaml.Node) {
-			node(t, r, "jobs", id, "steps", 3, "run").Value = "go test -race -count=1 -cpu=4 -timeout=6m ./internal/plane"
-		}), p+`.steps[3].run: must be "go run ./cmd/devcheck stress-plane"`)
-		mustReject(t, id+" cpu", mutated(t, func(r *yaml.Node) {
-			node(t, r, "jobs", id, "steps", 3, "run").Value = "go run ./cmd/devcheck stress-plane -cpu=4"
-		}), p+`.steps[3].run: must be "go run ./cmd/devcheck stress-plane"`)
-		mustReject(t, id+" budget", mutated(t, func(r *yaml.Node) { node(t, r, "jobs", id, "timeout-minutes").Value = "30" }), p+`.timeout-minutes: must be "20", got "30"`)
+	mustReject(t, "sidecar worker needs", mutated(t, func(r *yaml.Node) { setKey(node(t, r, "jobs", "macos-stress-sidecar"), "needs", "macos-stress-plane") }), "jobs.macos-stress-sidecar.needs: unknown field")
+	// The plane and sidecar workers' own stage, budget and runner are fixed.
+	for _, shard := range []string{"plane", "sidecar"} {
+		for _, plat := range []string{"linux", "macos"} {
+			id := plat + "-stress-" + shard
+			p := "jobs." + id
+			stage := "stress-" + shard
+			mustReject(t, id+" stage", mutated(t, func(r *yaml.Node) {
+				node(t, r, "jobs", id, "steps", 3, "run").Value = "go run ./cmd/devcheck stress-packages"
+			}), p+`.steps[3].run: must run devcheck stage "`+stage+`", got "stress-packages"`)
+			mustReject(t, id+" count", mutated(t, func(r *yaml.Node) {
+				node(t, r, "jobs", id, "steps", 3, "run").Value = "go test -race -count=1 -cpu=4 -timeout=6m ./internal/" + shard
+			}), p+`.steps[3].run: must be "go run ./cmd/devcheck `+stage+`"`)
+			mustReject(t, id+" cpu", mutated(t, func(r *yaml.Node) {
+				node(t, r, "jobs", id, "steps", 3, "run").Value = "go run ./cmd/devcheck " + stage + " -cpu=4"
+			}), p+`.steps[3].run: must be "go run ./cmd/devcheck `+stage+`"`)
+			mustReject(t, id+" budget", mutated(t, func(r *yaml.Node) { node(t, r, "jobs", id, "timeout-minutes").Value = "30" }), p+`.timeout-minutes: must be "20", got "30"`)
+		}
 	}
 }
 
-// FP-5: docs/ci.md documents the four required contexts versus the eight
-// workers, the four shards with their exact commands, the plane invocation
-// and log evidence, the preserved budgets and contexts, measured versus
-// estimated times, the runner core assumptions, the sidecar risk with its
-// decided follow-up, the inactive plane fallback and the pending hosted
-// evidence rules.
+// FP-5: docs/ci.md documents the four required contexts versus the ten
+// workers, the five shards with their exact commands, the plane and sidecar
+// invocations and log evidence, the preserved budgets and contexts, measured
+// versus estimated times (the hosted run that triggered the sidecar
+// follow-up included), the runner core assumptions, the applied sidecar
+// follow-up, the inactive plane fallback and the pending hosted evidence
+// rules.
 func TestStressShardHandoff(t *testing.T) {
 	checks := docSection(t, "Checks")
 	requireTerms(t, "Checks", checks,
-		"Twelve fixed jobs run on every trigger",
+		"Fourteen fixed jobs run on every trigger",
 		"Exactly four of them are the required status check contexts on `main`: `ci-linux`, `ci-macos`, `ci-linux-stress` and `ci-macos-stress`",
-		"The other eight are the stress workers", "four shards per platform", "not required contexts",
+		"The other ten are the stress workers", "five shards per platform", "not required contexts",
 		"| `ci-linux-stress` | `ubuntu-24.04` | 5 min | required summary |", "| `ci-macos-stress` | `ubuntu-24.04` | 5 min | required summary |",
-		"succeeds only if the four Linux workers all concluded `success`", "succeeds only if the four macOS workers all concluded `success`",
+		"succeeds only if the five Linux workers all concluded `success`", "succeeds only if the five macOS workers all concluded `success`",
 		"if: ${{ always() }}", summaryCommand, "PLANE_RESULT: ${{ needs['linux-stress-plane'].result }}",
-		"Only all four results `success` exit zero",
+		"SIDECAR_RESULT: ${{ needs['linux-stress-sidecar'].result }}",
+		"Only all five results `success` exit zero",
 		"`failure`, `cancelled`, `skipped`, an empty or any unknown result in any position fails the summary",
-		"never put on the job's `if`", "Summaries hold no stress logs", "all eight workers check out")
-	for _, j := range shardJobs[2:10] {
+		"never put on the job's `if`", "Summaries hold no stress logs", "all ten workers check out")
+	for _, j := range shardJobs[2:12] {
 		requireTerms(t, "Checks", checks, fmt.Sprintf("| `%s` | `%s` | %s min | worker |", j.name, j.runner, j.timeout))
 	}
-	for _, stale := range []string{"An all-success triple alone exits zero", "The other six are the stress workers", "Ten fixed jobs run on every trigger"} {
+	for _, stale := range []string{"An all-success triple alone exits zero", "The other six are the stress workers", "Ten fixed jobs run on every trigger",
+		"The other eight are the stress workers", "Twelve fixed jobs run on every trigger", "Only all four results `success` exit zero"} {
 		if strings.Contains(strings.Join(strings.Fields(checks), " "), stale) {
 			t.Fatalf("Checks keeps the obsolete %q", stale)
 		}
@@ -766,10 +821,11 @@ func TestStressShardHandoff(t *testing.T) {
 	}
 	requireTerms(t, "Stress checks", stress,
 		"The project's declared repeat count is 20 per CPU setting (1, 2, 4).",
-		"four shards per platform", "The four shards run ten commands",
+		"five shards per platform", "The five shards run thirteen commands",
 		"| `plane` | `devcheck stress-plane` | `stress plane cpu1`, `cpu2`, `cpu4` | three concurrent invocations, one per CPU setting",
-		"The plane and processgroup shards are concurrent", "at most three at once within that shard", "two shards never overlap",
-		"does not cancel its siblings", "replayed from disk", "in CPU order", "`stress-plane-cpu1.log`",
+		"| `sidecar` | `devcheck stress-sidecar` | `stress sidecar cpu1`, `cpu2`, `cpu4` | three concurrent invocations, one per CPU setting",
+		"The plane, sidecar and processgroup shards are concurrent", "at most three at once within that shard", "no two shards overlap",
+		"does not cancel its siblings", "replayed from disk", "in CPU order", "`stress-plane-cpu1.log`", "`stress-sidecar-cpu1.log`",
 		"`devcheck: stress plane cpu4: ok in 97.3s`", "includes the go command's build",
 		"up to three test binaries (and their descendants) can remain as orphans", "there is no process-tree kill",
 		"`no tests to run`", "exactly the iteration 02b selection",
@@ -784,41 +840,52 @@ func TestStressShardHandoff(t *testing.T) {
 		"four vCPUs (`ubuntu-24.04`)", "three M1 cores (`macos-15`, arm64)", "1 + 2 + 4 permits seven Go execution threads",
 		"record the actual architecture and core count", "`testWait` and helper joins (20 s)", "`TestServerFailureContract/shutdown-deadline`",
 		"event synchronization is not immunity to overload", "never retried to green",
-		// The inactive, pre-authorised fallback.
+		// The inactive, pre-authorised plane fallback, not triggered.
 		"Pre-authorised plane fallback (inactive)", "`stressWaves`", "It is empty",
 		"`devcheck: stress plane cpuN: ok in Xs`", "`devcheck: stress plane cpuN: FAILED after Xs`", "X > 300.0 s", "exactly 300.0 does not",
 		"`panic: test timed out after 6m0s`", "Missing logs are an evidence blocker, not a trigger",
 		"both a trigger and an investigation blocker", "`\"plane\": {{4}, {1, 2}}`", "`TestStressConcurrencyContract/waves`", "it is not active",
-		// The sidecar risk and its decided follow-up.
-		"Sidecar stays in the packages shard", "310 s", "50 s (14%)", "260–310 s post-change estimate",
+		"The fallback did not trigger", "146.6 s", "202.8 s",
+		// The sidecar risk, its decided follow-up and the trigger that applied it.
+		"Sidecar has its own concurrent shard (iteration 05b sidecar follow-up, applied)", "310 s", "50 s (14%)", "260–310 s post-change estimate",
 		"sidecar over 300.0 s", "no temporary workflow is added",
 		"the follow-up is a fifth shard running sidecar's three CPU settings as concurrent invocations",
 		"A fifth sequential shard is not an option",
+		"`ok internal/sidecar 307.788s`", "`247.885s`", "The rule triggered on Linux",
 		"`stress-sidecar`", "`ci-linux-stress-sidecar`", "`ci-macos-stress-sidecar`",
+		"3 × 20 × 3 = 180 additional children", "in the sidecar shard since the iteration 05b sidecar follow-up",
+		"both native hosted sidecar workers must pass", "no further concurrency escalation or timing relaxation is authorised",
 		// Estimates versus measurements.
 		"Iteration 05b allocation", "explicit planning estimates, not measured speedups or hard upper bounds",
 		"about 140–225 s per Linux and 150–255 s per macOS plane invocation", "135 s / 105 s below the 6-minute limit",
 		"dividing the hosted alarm by three would be unsound", "about 300–380 s plus summary scheduling",
 		"current evidence does not support promising 300 s or less",
+		"Iteration 05b sidecar follow-up allocation", "revised planning estimates, not measurements",
 		"Measured with iteration 05b (plane shard)", "Hosted and local figures come from different machines",
-		"it is not a hosted estimate", "Hosted iteration 05b times: pending",
+		"it is not a hosted estimate", "Hosted iteration 05b times: measured by run 36325089074",
+		"Measured with the iteration 05b sidecar follow-up (sidecar shard)", "Hosted sidecar follow-up times: pending",
+		"Hosted run 36325089074", "`devcheck: stress plane cpu1: ok in 146.6s`", "`devcheck: stress plane cpu1: ok in 202.8s`",
+		"`devcheck: stress packages: ok in 366.5s`", "`317.9s`", "6 min 42 s", "core count is not printed",
 		"Hosted run 36315881191", "395.8 s", "432.6 s",
 		"Expected per-job wall-clock after iteration 05b", "planning estimates, not measurements",
+		"Expected per-job wall-clock after the iteration 05b sidecar follow-up",
 		// Historical 02c figures stay labelled as history.
 		"run 36236333755", "Measured with iteration 02c", "Expected per-job wall-clock after iteration 02c",
 		"macOS 02c worker times: pending until")
 	for _, j := range shardJobs {
 		requireTerms(t, "Stress checks expected times", stress, "`"+j.name+"` about")
 	}
-	for _, stale := range []string{"Only the processgroup shard is concurrent", "Why only processgroup is concurrent", "so it and the function commands stay sequential"} {
+	for _, stale := range []string{"Only the processgroup shard is concurrent", "Why only processgroup is concurrent", "so it and the function commands stay sequential",
+		"Sidecar stays in the packages shard", "The four shards run ten commands", "The plane and processgroup shards are concurrent",
+		"Hosted iteration 05b times: pending", "Follow-up rule, decided in advance and inactive"} {
 		if strings.Contains(strings.Join(strings.Fields(stress), " "), stale) {
 			t.Fatalf("Stress checks keeps the obsolete %q", stale)
 		}
 	}
 	bp := docSection(t, "Branch protection")
-	requireTerms(t, "Branch protection", bp, "eight worker contexts are not required", "no protection change is needed for 02c or 05b")
-	// The pull request #5 handoff: no protection change, all twelve jobs.
-	const sub = "\n### Plane workers (pull request #5)\n"
+	requireTerms(t, "Branch protection", bp, "ten worker contexts are not required", "no protection change is needed for 02c, 05b or its sidecar follow-up")
+	// The pull request #5 handoff: no protection change, all fourteen jobs.
+	const sub = "\n### Plane and sidecar workers (pull request #5)\n"
 	i := strings.Index(bp, sub)
 	if i < 0 {
 		t.Fatalf("Branch protection lacks %q", strings.TrimSpace(sub))
@@ -827,31 +894,32 @@ func TestStressShardHandoff(t *testing.T) {
 	if j := strings.Index(handoff, "\n### "); j >= 0 {
 		handoff = handoff[:j]
 	}
-	requireTerms(t, "Plane workers", handoff, "`ci-linux-stress-plane`", "`ci-macos-stress-plane`",
+	requireTerms(t, "Plane and sidecar workers", handoff, "`ci-linux-stress-plane`", "`ci-macos-stress-plane`",
+		"`ci-linux-stress-sidecar`", "`ci-macos-stress-sidecar`",
 		"The required contexts stay exactly `ci-linux`, `ci-macos`, `ci-linux-stress` and `ci-macos-stress`", "no protection change is made")
 	steps := numberedSteps(t, handoff)
-	review := stepIndex(t, steps, "REVIEW_APPROVED", "iterations 05 and 05b", "commit the reviewed code")
+	review := stepIndex(t, steps, "REVIEW_APPROVED", "iterations 05 and 05b", "sidecar follow-up", "commit the reviewed code")
 	push := stepIndex(t, steps, "Push `iter-05-dispatch`", "pull request #5")
-	green := stepIndex(t, steps, "all twelve jobs", "eight stress workers", "all four required checks", "current PR merge revision")
-	verify := stepIndex(t, steps, "owner verifies", "read-only", "same four required contexts", "neither plane worker")
+	green := stepIndex(t, steps, "all fourteen jobs", "ten stress workers", "all four required checks", "current PR merge revision")
+	verify := stepIndex(t, steps, "owner verifies", "read-only", "same four required contexts", "no plane or sidecar worker")
 	merge := stepIndex(t, steps, "Merge iterations 05 and 05b together", "all four checks green")
 	if !(review < push && push < green && green < verify && verify < merge) {
 		t.Fatalf("handoff order review=%d push=%d green=%d verify=%d merge=%d", review, push, green, verify, merge)
 	}
 	first := docSection(t, "First remote run")
-	requireTerms(t, "First remote run", first, "conclusions of all twelve jobs", "eight worker logs (the summaries hold none)",
-		"`devcheck: stage stress-plane ok`", "`devcheck: stage stress-processgroup ok`", "every CPU invocation's outcome",
-		"`devcheck: stress plane cpuN: ok in Xs`", "separately from its go command's build", "pre-authorised plane fallback trigger",
+	requireTerms(t, "First remote run", first, "conclusions of all fourteen jobs", "ten worker logs (the summaries hold none)",
+		"`devcheck: stage stress-plane ok`", "`devcheck: stage stress-sidecar ok`", "`devcheck: stage stress-processgroup ok`", "every CPU invocation's outcome",
+		"`devcheck: stress plane cpuN: ok in Xs`", "`devcheck: stress sidecar cpuN: ok in Xs`", "separately from its go command's build", "pre-authorised plane fallback trigger",
 		"sidecar follow-up rule", "core count and architecture", "summary wait", "critical path",
 		"failed runs stay in the evidence, never discarded as retries", "any timeout or assertion failure blocks qualification")
 	local := docSection(t, "Local verification")
 	requireTerms(t, "Local verification", local, "go run ./cmd/devcheck stress-packages", "go run ./cmd/devcheck stress-plane",
-		"go run ./cmd/devcheck stress-processgroup", "go run ./cmd/devcheck stress-functions",
+		"go run ./cmd/devcheck stress-sidecar", "go run ./cmd/devcheck stress-processgroup", "go run ./cmd/devcheck stress-functions",
 		"go test -race -count=20 -cpu=1,2,4 -timeout=6m -run '^TestStressConcurrencyContract$' ./internal/devcheck",
-		"without other stress work running on the same host", "both concurrent shards and the plane fallback's wave mechanism")
+		"without other stress work running on the same host", "all three concurrent shards and the plane fallback's wave mechanism")
 	pr := docSection(t, "PR flow")
 	requireTerms(t, "PR flow", pr, "iterations 02, 02b and 02c join pull request #2",
-		"Iteration 05b (the plane stress shard) is delivered with iteration 05 in pull request #5", "all twelve jobs")
+		"Iteration 05b (the plane stress shard) is delivered with iteration 05 in pull request #5", "its sidecar follow-up", "all fourteen jobs")
 	// No workflow step can change repository settings.
 	wf := string(ciWorkflow(t))
 	for _, forbidden := range []string{"gh ", "--method", "POST", "curl", "protection", "contents: write", "secrets.", "continue-on-error", "strategy:"} {

@@ -456,7 +456,7 @@ func TestTailBuffer(t *testing.T) {
 // --- driver (UT-2 stage dispatch, UT-4 native execution) ---
 
 func TestStagesMatchDispatch(t *testing.T) {
-	want := "test coverage bench cross all native stress stress-packages stress-plane stress-processgroup stress-functions"
+	want := "test coverage bench cross all native stress stress-packages stress-plane stress-sidecar stress-processgroup stress-functions"
 	got := Stages()
 	if strings.Join(got, " ") != want {
 		t.Fatalf("Stages = %v", got)
@@ -488,7 +488,7 @@ func TestStagesMatchDispatch(t *testing.T) {
 			os.RemoveAll(scratchFrom(out))
 		}
 	}
-	if code, _, errOut := runDriver(t, "linux", &fakeRunner{}, "natives"); code != 2 || !strings.Contains(errOut, "usage: devcheck test | coverage [-o profile] | bench | cross | all | native | stress | stress-packages | stress-plane | stress-processgroup | stress-functions") {
+	if code, _, errOut := runDriver(t, "linux", &fakeRunner{}, "natives"); code != 2 || !strings.Contains(errOut, "usage: devcheck test | coverage [-o profile] | bench | cross | all | native | stress | stress-packages | stress-plane | stress-sidecar | stress-processgroup | stress-functions") {
 		t.Fatalf("unknown stage = %d %s", code, errOut)
 	}
 }

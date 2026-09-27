@@ -972,11 +972,12 @@ func TestPlaneStatus(t *testing.T) {
 // "process" and "contracts" boundaries to the native required names;
 // iteration 02c moved processgroup out of the packages command into its own
 // shard, and iteration 05b moved the plane package likewise: three
-// concurrent single-CPU invocations in the plane shard.
+// concurrent single-CPU invocations in the plane shard (its sidecar
+// follow-up then moved the sidecar package into a shard of its own).
 func TestPlanePlatform(t *testing.T) {
 	const stressFn = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestFP4TransportHarness|TestFP5GitRoundTrip)$ ./tests/function"
 	const stressPlaneFn = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestPlaneState|TestPlaneTLS|TestPlaneReissue)$/^(paths|persistence|locking|validation|https-only|prelisten-validation|bounded-shutdown|process)$ ./tests/function"
-	const stressPkgs = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/sidecar ./internal/contract ./internal/adapter"
+	const stressPkgs = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/contract ./internal/adapter"
 	stressPlane := []string{
 		"go test -race -count=20 -cpu=1 -timeout=6m ./internal/plane",
 		"go test -race -count=20 -cpu=2 -timeout=6m ./internal/plane",
@@ -985,18 +986,18 @@ func TestPlanePlatform(t *testing.T) {
 	const benchPlane = "go test ./internal/plane -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s"
 	for _, goos := range []string{"linux", "darwin"} {
 		steps, err := devcheck.StressSteps(goos)
-		if err != nil || len(steps) != 10 || strings.Join(steps[0].Argv, " ") != stressPkgs || strings.Join(steps[7].Argv, " ") != stressFn ||
-			steps[8].Name != "stress plane function" || strings.Join(steps[8].Argv, " ") != stressPlaneFn {
+		if err != nil || len(steps) != 13 || strings.Join(steps[0].Argv, " ") != stressPkgs || strings.Join(steps[10].Argv, " ") != stressFn ||
+			steps[11].Name != "stress plane function" || strings.Join(steps[11].Argv, " ") != stressPlaneFn {
 			t.Fatalf("%s stress plan = %+v %v", goos, steps, err)
 		}
 		shards, err := devcheck.StressShards(goos)
 		var plane []string
-		if err == nil && len(shards) == 4 {
+		if err == nil && len(shards) == 5 {
 			for _, s := range shards[1].Steps {
 				plane = append(plane, strings.Join(s.Argv, " "))
 			}
 		}
-		if err != nil || len(shards) != 4 || shards[0].Parallel || shards[1].Name != "plane" || !shards[1].Parallel || shards[3].Parallel ||
+		if err != nil || len(shards) != 5 || shards[0].Parallel || shards[1].Name != "plane" || !shards[1].Parallel || shards[4].Parallel ||
 			slices.Contains(shards[0].Steps[0].Argv, "./internal/plane") || !slices.Equal(plane, stressPlane) {
 			t.Fatalf("%s: plane must run in its own concurrent plane shard: %+v %v", goos, shards, err)
 		}

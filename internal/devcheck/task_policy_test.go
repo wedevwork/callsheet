@@ -72,8 +72,9 @@ var wantTaskSuffix = []string{
 }
 
 // wantLaunchLedger is the design's per-test incremental task/probe-child
-// launch budget per packages repetition: exactly three OS children, all
-// in the sidecar's process qualification.
+// launch budget per stress repetition of the sidecar package (the packages
+// shard until design 05b's sidecar follow-up, the sidecar shard since):
+// exactly three OS children, all in the sidecar's process qualification.
 var wantLaunchLedger = []string{
 	"sidecar TestTaskExecutionContract/process|3",
 	"sidecar TestTaskExecutionContract/compose,/exit|0",
@@ -215,18 +216,21 @@ func TestTaskPolicy(t *testing.T) {
 		}
 		mustFail(t, "tuple in another package", stream(moved...), "in "+NativeTaskProcessPackage+" has no run event")
 		// Unchanged stress selection (iteration 05 adds no shard, selector
-		// or package; iteration 05b moved ./internal/plane to its own shard
-		// without changing the selection) and bench plan, the launch
-		// ledger's budget and the guards. The task children of
-		// TestTaskExecutionContract/process stay in the sidecar package,
-		// hence in the packages shard.
+		// or package; iteration 05b moved ./internal/plane, and its sidecar
+		// follow-up ./internal/sidecar, to their own shards without changing
+		// the selection) and bench plan, the launch ledger's budget and the
+		// guards. The task children of TestTaskExecutionContract/process
+		// stay in the sidecar package, hence since the follow-up in the
+		// sidecar shard (three concurrent single-CPU invocations, the same
+		// 60 repetitions), and none remain in the packages shard.
 		for _, goos := range []string{"linux", "darwin"} {
 			shards, err := StressShards(goos)
-			if err != nil || len(shards) != 4 || strings.Join(shards[0].Steps[0].Argv, " ") != wantRoleStressPackages ||
-				!strings.Contains(shards[0].Steps[0].Argv[len(shards[0].Steps[0].Argv)-3], "./internal/sidecar") ||
+			if err != nil || len(shards) != 5 || strings.Join(shards[0].Steps[0].Argv, " ") != wantRoleStressPackages ||
+				strings.Contains(strings.Join(shards[0].Steps[0].Argv, " "), "./internal/sidecar") ||
 				strings.Join(argvOf(shards[1].Steps), "|") != wantStressPlane1+"|"+wantStressPlane2+"|"+wantStressPlane4 ||
-				strings.Join(argvOf(shards[2].Steps), "|") != wantStressPG1+"|"+wantStressPG2+"|"+wantStressPG4 ||
-				strings.Join(argvOf(shards[3].Steps), "|") != wantStressFunction+"|"+wantStressPlaneFunction+"|"+wantNodeStressFunction {
+				shards[2].Name != "sidecar" || strings.Join(argvOf(shards[2].Steps), "|") != wantStressSidecar1+"|"+wantStressSidecar2+"|"+wantStressSidecar4 ||
+				strings.Join(argvOf(shards[3].Steps), "|") != wantStressPG1+"|"+wantStressPG2+"|"+wantStressPG4 ||
+				strings.Join(argvOf(shards[4].Steps), "|") != wantStressFunction+"|"+wantStressPlaneFunction+"|"+wantNodeStressFunction {
 				t.Fatalf("%s stress plan changed: %+v %v", goos, shards, err)
 			}
 		}
