@@ -51,6 +51,11 @@ func TestTaskStream(t *testing.T) {
 		tr := startTaskRun(t, fp, taskOpts{})
 		ins, run := manuals(t, tr.dir, "a", "INSTRUCTION")
 		s := tr.connect(t, 1, 1, roleConfig("a", ins, run))
+		// The first ready cycle completes before the clock moves: it read
+		// its start (T0) and armed the next cycle for T0+5s, the instant
+		// the advance below reaches. Moving the clock before that start
+		// would shift the whole cadence past the advance.
+		tr.ev.awaitMatch(t, evCycleDone, func(ev event) bool { return ev.rev == 1 })
 		// Full duplex: the sidecar's heartbeat is outstanding while the
 		// plane's start is answered, on independent slots.
 		tr.clk.Advance(heartbeatInterval)
@@ -64,9 +69,10 @@ func TestTaskStream(t *testing.T) {
 		ch := tr.child(t)
 		s.c.send(contract.ProtocolVersion, contract.FrameHeartbeatAck, hbRid, nil)
 		// The heartbeat ack, and the ready cycle due at the same tick (the
-		// second cycle), finish in either order; the final heartbeat's
-		// readiness depends on that cycle.
-		tr.ev.awaitAll(t, func(ev event) bool { return ev.kind == evAck && ev.acks == 2 }, nthKind(evCycleDone, 2))
+		// second cycle, the first published since the wait above), finish
+		// in either order; the final heartbeat's readiness depends on that
+		// cycle.
+		tr.ev.awaitAll(t, func(ev event) bool { return ev.kind == evAck && ev.acks == 2 }, nthKind(evCycleDone, 1))
 		if p := ch.prompt(t); !bytes.Contains(p, []byte("INSTRUCTION")) || !bytes.Contains(p, []byte(`"goal":"goal one"`)) {
 			t.Fatalf("prompt %s", p)
 		}
