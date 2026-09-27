@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -191,7 +192,7 @@ func TestTaskExecutionContract(t *testing.T) {
 			t.Fatalf("argv %q path %s", ch.spec.argv, ch.spec.path)
 		}
 		fi, err := os.Stat(ch.spec.dir)
-		if err != nil || fi.Mode().Perm() != 0o700 || !strings.HasPrefix(filepath.Base(ch.spec.dir), scratchPrefix+st.TaskID+"-") || filepath.Dir(ch.spec.dir) != tr.tmp {
+		if err != nil || fi.Mode().Perm() != 0o700 || !strings.HasPrefix(filepath.Base(ch.spec.dir), scratchPrefix+st.TaskID+"-") || filepath.Dir(ch.spec.dir) != scratchRoot(t, runtime.GOOS, tr.tmp) {
 			t.Fatalf("scratch %s %v", ch.spec.dir, err)
 		}
 		ch.prompt(t)
@@ -228,6 +229,34 @@ func TestTaskExecutionContract(t *testing.T) {
 		_, r = s3.start(t, 1, 0, "windows")
 		wantRefusal(t, r, contract.ReasonStartFailed)
 		tr3.noChild(t)
+	})
+	t.Run("symlinked-temp-root", func(t *testing.T) {
+		t.Parallel()
+		// A temp root reached through a symlink, as Darwin's /var is one to
+		// /private/var: the scratch directory is created in it, and its
+		// parent is the root as the platform seam names it.
+		for _, goos := range []string{"linux", "darwin"} {
+			t.Run(goos, func(t *testing.T) {
+				t.Parallel()
+				real := t.TempDir()
+				link := filepath.Join(t.TempDir(), "tmp-link")
+				if err := os.Symlink(real, link); err != nil {
+					t.Fatal(err)
+				}
+				fp := startFakePlane(t)
+				tr := startTaskRun(t, fp, taskOpts{goos: goos, tmp: link})
+				ins, run := manuals(t, tr.dir, "a", "m")
+				s := tr.connect(t, 1, 1, roleConfig("a", ins, run))
+				st, ch := s.run(t, 1, 0, "symlinked root")
+				fi, err := os.Stat(ch.spec.dir)
+				if err != nil || fi.Mode().Perm() != 0o700 || !strings.HasPrefix(filepath.Base(ch.spec.dir), scratchPrefix+st.TaskID+"-") || filepath.Dir(ch.spec.dir) != scratchRoot(t, goos, tr.tmp) {
+					t.Fatalf("scratch %s %v", ch.spec.dir, err)
+				}
+				ch.prompt(t)
+				ch.exitCode(0)
+				s.result(t, st)
+			})
+		}
 	})
 	t.Run("exit", func(t *testing.T) {
 		t.Parallel()

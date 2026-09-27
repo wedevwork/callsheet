@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strconv"
@@ -233,6 +234,8 @@ type taskOpts struct {
 	exe      string
 	goos     string
 	adapters func(dir string) adapter.Registry
+	// tmp, when set, replaces the injected temp root.
+	tmp string
 	// wrap, when set, wraps the counted factory.
 	wrap func(procFactory) procFactory
 }
@@ -242,6 +245,9 @@ func startTaskRun(t *testing.T, fp *fakePlane, o taskOpts) *taskRun {
 	ledger := newLedger()
 	tr := &taskRun{script: newScript(), dir: t.TempDir(), ledger: ledger, groups: &fakeGroups{l: ledger}, tmp: t.TempDir(), sup: make(chan *taskSupervisor, 1),
 		env: []string{"PATH=" + os.Getenv("PATH"), "PWD=/elsewhere", "CALLSHEET_FAKE_READY_FD=4", "KEEP=1", "CALLSHEET_FAKE_READY_FD=5"}}
+	if o.tmp != "" {
+		tr.tmp = o.tmp
+	}
 	f := &fakeRun{fp: fp, clk: testkit.NewFakeClock(time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)), logs: newSyncLog(), root: newRoot(t)}
 	f.d = testDeps(f.clk)
 	f.d.adapters = func(string) adapter.Registry { return tr.script.registry() }
@@ -285,6 +291,21 @@ func startTaskRun(t *testing.T, fp *fakePlane, o taskOpts) *taskRun {
 		}
 	})
 	return tr
+}
+
+// scratchRoot is the parent a task's scratch directory must have under
+// the injected temp root tmp: tmp as given on Linux, its physical path on
+// Darwin, whose seam resolves symlinks (/var is one to /private/var).
+func scratchRoot(t *testing.T, goos, tmp string) string {
+	t.Helper()
+	if goos != "darwin" {
+		return tmp
+	}
+	root, err := filepath.EvalSymlinks(tmp)
+	if err != nil {
+		t.Fatalf("resolve the temp root %s: %v", tmp, err)
+	}
+	return root
 }
 
 // setEnv replaces the children's environment source.
