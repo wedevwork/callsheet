@@ -38,6 +38,11 @@ var (
 		"./internal/client",
 		"./internal/sidecar",
 		"./internal/contract",
+		// Iteration 04: the adapter package (probe deadlines, cancellation
+		// and child waits on an injected clock), complete. The role
+		// contracts of plane, sidecar, client and contract already run in
+		// their packages above.
+		"./internal/adapter",
 	}
 	// stressProcessGroupPackage is the processgroup shard's package
 	// (iteration 02c). Its stress time is dominated by the 1 s TERM grace
@@ -146,7 +151,8 @@ func stressSupported(goos string) error {
 // in order: packages (sequential), processgroup (Parallel: one invocation
 // per CPU setting) and functions (sequential). Their disjoint union is
 // exactly the iteration 02b selection plus iteration 03's node packages
-// and node function selector: every selected test runs StressCount times at
+// and node function selector and iteration 04's adapter package: every
+// selected test runs StressCount times at
 // each CPU setting under the race detector. Only linux and darwin
 // are supported; every other goos is rejected before any child runs. Each
 // call returns fresh slices, nested ones included.

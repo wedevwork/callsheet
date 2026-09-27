@@ -227,13 +227,20 @@ func TestSteps(goos string) []Step {
 // BenchSteps runs the git transport (iteration 01 FP-5) benchmarks, then
 // the plane benchmarks (iteration 02 trust: issuance, initialization and
 // verified TLS health; iteration 03 nodes: heartbeat, snapshot and
-// enrollment), then the node wire-contract frame benchmark (iteration 03).
-// Timings are reported, never gated.
+// enrollment; iteration 04 roles: snapshot views and durable mutations),
+// then the wire-contract frame benchmarks (iteration 03 nodes, iteration 04
+// role frames), then the sidecar ready checks and the adapter's fake probe
+// (iteration 04). Timings are reported, never gated.
 func BenchSteps() []Step {
+	pkg := func(name, dir string) Step {
+		return Step{Name: name, Argv: []string{"go", "test", dir, "-run=^$", "-bench=.", "-benchmem", "-benchtime=3x", "-count=1", "-timeout=180s"}}
+	}
 	return []Step{
 		{Name: "bench", Argv: []string{"go", "test", "./internal/spikes/gittransport", "-run", "^$", "-bench", ".", "-benchmem", "-benchtime=3x", "-count=1", "-timeout=180s"}},
-		{Name: "bench plane", Argv: []string{"go", "test", "./internal/plane", "-run=^$", "-bench=.", "-benchmem", "-benchtime=3x", "-count=1", "-timeout=180s"}},
-		{Name: "bench contract", Argv: []string{"go", "test", "./internal/contract", "-run=^$", "-bench=.", "-benchmem", "-benchtime=3x", "-count=1", "-timeout=180s"}},
+		pkg("bench plane", "./internal/plane"),
+		pkg("bench contract", "./internal/contract"),
+		pkg("bench sidecar", "./internal/sidecar"),
+		pkg("bench adapter", "./internal/adapter"),
 	}
 }
 

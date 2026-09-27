@@ -18,7 +18,8 @@ import (
 )
 
 // HealthPath proves the real TLS listener and exposes no state. Since
-// iteration 03 the service also serves the node API (nodeService).
+// iteration 03 the service also serves the node API (nodeService), and
+// since iteration 04 the role API (roleService).
 const HealthPath = "/api/v1/health"
 
 // healthBody is the exact health response.
@@ -64,6 +65,12 @@ func (d *deps) run(ctx context.Context, o RunOptions) error {
 		return err
 	}
 	reg.d = d
+	doc, err := layout{root: o.StateDir}.loadRoleDoc(roleLookup, reg.ids())
+	if err != nil {
+		return err
+	}
+	reg.roles = newRoleRegistry(layout{root: o.StateDir}, d, roleLookup, doc)
+	reg.roles.adopt = reg.adoptRoles
 	if err := canceled(ctx); err != nil {
 		return err
 	}
@@ -98,6 +105,11 @@ func (d *deps) serve(ctx context.Context, logger *slog.Logger, m *material, fp s
 	svc := newNodeService(reg, d.nodeClock, logger, certPEM(m.caCert.Raw), d.streamCloseGrace)
 	svc.events = d.streamEvents
 	svc.helloRead = d.streamHelloRead
+	if reg.roles != nil {
+		svc.roles = newRoleService(reg.roles, reg, d.nodeClock, logger)
+		svc.roles.events = d.streamEvents
+		svc.roles.hook = d.roleHook
+	}
 	var h http.Handler = newServiceHandler(svc)
 	if d.wrap != nil {
 		h = d.wrap(h)
@@ -172,6 +184,8 @@ func newServiceHandler(svc *nodeService) http.Handler {
 			svc.handleStream(w, r)
 		case p == contract.PathNodes || strings.HasPrefix(p, contract.PathNodes+"/"):
 			svc.handleNodes(w, r)
+		case svc.roles != nil && (p == contract.PathRoles || strings.HasPrefix(p, contract.PathRoles+"/")):
+			svc.handleRoles(w, r)
 		default:
 			writeError(w, contract.New(contract.CodeNotFound, "no such endpoint"))
 		}

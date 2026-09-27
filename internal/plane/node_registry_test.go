@@ -247,10 +247,23 @@ func TestLeaseAlgorithm(t *testing.T) {
 	if err := r.Heartbeat(idA, gen3, nil); !contract.IsCode(err, contract.CodeUnavailable) || closes.count("a3") != 1 {
 		t.Fatalf("heartbeat after sweep eviction = %v (closes %d)", err, closes.count("a3"))
 	}
-	// Nonempty roles are rejected, never silently accepted.
-	if err := r.Heartbeat(idA, gen3, []contract.RoleStatus{{RoleID: "x"}}); !contract.IsCode(err, contract.CodeInvalidArgument) {
+	// Roles that are not exactly the acknowledged snapshot (here the
+	// empty revision 0 of a fresh attachment) are rejected, never silently
+	// accepted, and do not refresh the lease.
+	gen4, err := r.Attach(idA, "v5", 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Heartbeat(idA, gen4, []contract.RoleStatus{{RoleID: "x", Concurrency: 1}}); !contract.IsCode(err, contract.CodeInvalidArgument) {
 		t.Fatalf("roles = %v", err)
 	}
+	if err := r.heartbeat(idA, gen4, contract.HeartbeatBody{RolesRevision: 3}); !contract.IsCode(err, contract.CodeInvalidArgument) {
+		t.Fatalf("revision = %v", err)
+	}
+	if n := show(t, r, idA); n.Liveness != contract.LivenessOffline {
+		t.Fatalf("an invalid heartbeat renewed the lease: %+v", n)
+	}
+	r.Detach(idA, gen4)
 	// Unknown nodes cannot attach, and no read creates them.
 	if _, err := r.Attach(idB, "v", 1, nil); !contract.IsCode(err, contract.CodeNotFound) {
 		t.Fatalf("unknown attach = %v", err)
@@ -422,6 +435,46 @@ func TestRegistryEnrollment(t *testing.T) {
 	r.Close()
 	if _, _, err := r.Enroll(bg, idC); !contract.IsCode(err, contract.CodeUnavailable) {
 		t.Fatalf("after close = %v", err)
+	}
+}
+
+// TestRegistryParentSync: the state root's sync must succeed before the
+// first record is published, on every retry, whether nodes/ was left by
+// an attempt whose sync failed or found empty.
+func TestRegistryParentSync(t *testing.T) {
+	for _, precreated := range []bool{false, true} {
+		r, _ := newRegistry(t)
+		if precreated {
+			if err := os.Mkdir(r.l.path(nodesName), 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		syncs := 0
+		failing := true
+		r.d.fail = func(op, name string) error {
+			if op == "dirsync" && name == rootName {
+				syncs++
+				if failing {
+					return fmt.Errorf("injected dirsync failure at %s", name)
+				}
+			}
+			return nil
+		}
+		for attempt := 1; attempt <= 3; attempt++ {
+			_, _, err := r.Enroll(bg, idA)
+			wantCode(t, err, contract.CodeInternal, "injected dirsync", "nothing was registered")
+			if _, statErr := os.Stat(r.l.path(nodeRel(idA))); syncs != attempt || statErr == nil {
+				t.Fatalf("precreated=%v attempt %d: root syncs %d, record published %v", precreated, attempt, syncs, statErr == nil)
+			}
+		}
+		failing = false
+		if _, created, err := r.Enroll(bg, idA); err != nil || !created || syncs != 4 {
+			t.Fatalf("precreated=%v recovery: created=%v syncs=%d %v", precreated, created, syncs, err)
+		}
+		// Later enrollments do not sync the root again.
+		if _, _, err := r.Enroll(bg, idB); err != nil || syncs != 4 {
+			t.Fatalf("precreated=%v later enrollment: syncs=%d %v", precreated, syncs, err)
+		}
 	}
 }
 

@@ -248,6 +248,9 @@ type fakePlane struct {
 	url   string
 	caPEM []byte
 	conns chan *fakeConn
+	// ev, when set (role runs), lets the connection helpers wait for the
+	// sidecar's write of a message they read to return.
+	ev *events
 	// refuse, when set, answers upgrades with that HTTP status.
 	mu     sync.Mutex
 	refuse int
@@ -255,6 +258,7 @@ type fakePlane struct {
 
 type fakeConn struct {
 	t    *testing.T
+	ev   *events
 	ws   *websocket.Conn
 	done chan struct{}
 	once sync.Once
@@ -297,7 +301,7 @@ func startFakePlane(t *testing.T) *fakePlane {
 		go func() {
 			for {
 				typ, b, err := ws.Read(context.Background())
-				c.in <- readResult{typ, b, err}
+				c.in <- readResult{typ: typ, data: b, err: err}
 				if err != nil {
 					return
 				}
@@ -340,6 +344,10 @@ func (fp *fakePlane) accept(t *testing.T) *fakeConn {
 	select {
 	case c := <-fp.conns:
 		t.Cleanup(c.finish)
+		if fp.ev != nil {
+			fp.ev.drainWritten()
+			c.ev = fp.ev
+		}
 		return c
 	case <-time.After(testWait):
 		t.Fatal("the sidecar did not connect")
@@ -410,7 +418,7 @@ func (c *fakeConn) helloOK(id string) {
 	if err != nil || h.NodeID != id {
 		c.t.Fatalf("hello %+v %v", h, err)
 	}
-	c.send(1, contract.FrameHelloOK, "h1", contract.HelloOKBody{HeartbeatIntervalMS: contract.HeartbeatIntervalMS, LeaseMS: contract.LeaseMS})
+	c.send(contract.ProtocolVersion, contract.FrameHelloOK, "h1", contract.HelloOKBody{HeartbeatIntervalMS: contract.HeartbeatIntervalMS, LeaseMS: contract.LeaseMS})
 }
 
 // ack answers heartbeat k.
@@ -418,7 +426,7 @@ func (c *fakeConn) ack(k int) {
 	c.t.Helper()
 	rid := "b" + strconv.Itoa(k)
 	c.expect(contract.FrameHeartbeat, rid)
-	c.send(1, contract.FrameHeartbeatAck, rid, nil)
+	c.send(contract.ProtocolVersion, contract.FrameHeartbeatAck, rid, nil)
 }
 
 // closed reads until the socket ends and returns its close status.
@@ -451,12 +459,51 @@ func writeState(t *testing.T, root, id, url string, caPEM []byte) {
 // events collects observed transitions.
 type events struct {
 	ch chan event
+	// written receives the write-completion events (ack-written, replied)
+	// a second time, so a test can wait for a write to return without
+	// consuming the main stream.
+	written chan event
 }
 
 func observe(d *deps) *events {
-	e := &events{ch: make(chan event, 256)}
-	d.observe = func(ev event) { e.ch <- ev }
+	e := &events{ch: make(chan event, 4096), written: make(chan event, 4096)}
+	d.observe = func(ev event) {
+		e.ch <- ev
+		if ev.kind == evAckWritten || ev.kind == evReplied {
+			e.written <- ev
+		}
+	}
 	return e
+}
+
+// awaitWritten waits until the sidecar's write of message id (kind
+// evAckWritten or evReplied) returned: a test that read the message must
+// not move the clock before then, or it may fire that write's own bound.
+func (e *events) awaitWritten(t *testing.T, kind eventKind, id string) {
+	t.Helper()
+	deadline := time.After(testWait)
+	for {
+		select {
+		case ev := <-e.written:
+			if ev.kind == kind && ev.id == id {
+				return
+			}
+		case <-deadline:
+			t.Fatalf("the %s write of %s did not return", kind, id)
+		}
+	}
+}
+
+// drainWritten drops the previous sessions' write completions: a session
+// joins its writes before the sidecar reconnects.
+func (e *events) drainWritten() {
+	for {
+		select {
+		case <-e.written:
+		default:
+			return
+		}
+	}
 }
 
 // await returns the next event of kind, skipping others.

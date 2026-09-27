@@ -17,6 +17,12 @@ const (
 	wantBenchPlane = "go test ./internal/plane -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s"
 	// wantBenchContract is iteration 03's frame benchmark command.
 	wantBenchContract = "go test ./internal/contract -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s"
+	// wantBenchSidecar and wantBenchAdapter are iteration 04's appended
+	// bench commands.
+	wantBenchSidecar = "go test ./internal/sidecar -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s"
+	wantBenchAdapter = "go test ./internal/adapter -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s"
+	// wantBenchPlan is the complete bench plan in order.
+	wantBenchPlan = wantBenchGit + "|" + wantBenchPlane + "|" + wantBenchContract + "|" + wantBenchSidecar + "|" + wantBenchAdapter
 )
 
 func argvOf(steps []Step) []string {
@@ -37,7 +43,7 @@ func TestPlaneVerificationPolicyContract(t *testing.T) {
 		if got := strings.Join(argvOf(TestSteps("linux")), "|"); got != wantTestNative+"|"+wantTestRace {
 			t.Fatalf("test plan = %s", got)
 		}
-		if got := strings.Join(argvOf(BenchSteps()), "|"); got != wantBenchGit+"|"+wantBenchPlane+"|"+wantBenchContract {
+		if got := strings.Join(argvOf(BenchSteps()), "|"); got != wantBenchPlan {
 			t.Fatalf("bench plan = %s", got)
 		}
 		stress, err := StressSteps("linux")
@@ -48,7 +54,7 @@ func TestPlaneVerificationPolicyContract(t *testing.T) {
 			t.Fatal("linux native plan accepted")
 		}
 		for stage, want := range map[string][][]string{
-			"bench":               {{wantBenchGit}, {wantBenchPlane}, {wantBenchContract}},
+			"bench":               {{wantBenchGit}, {wantBenchPlane}, {wantBenchContract}, {wantBenchSidecar}, {wantBenchAdapter}},
 			"stress":              wantStageGroups["stress"],
 			"stress-packages":     wantStageGroups["stress-packages"],
 			"stress-processgroup": wantStageGroups["stress-processgroup"],
@@ -78,8 +84,8 @@ func TestPlaneVerificationPolicyContract(t *testing.T) {
 		req := NativeRequiredTests()
 		want := append([]string{fp6, fp6 + "/cooperative", fp6 + "/resistant", fp6 + "/leader-exits-first"}, planeNames()...)
 		// The 28 iteration-02 names are preserved first; iteration 03 appends
-		// the node names.
-		if strings.Join(req[:28], ",") != strings.Join(want, ",") || len(req) != 28+len(nodeNames()) || strings.Join(req[28:], ",") != strings.Join(nodeNames(), ",") {
+		// the node names, iteration 04 the role names.
+		if strings.Join(req[:28], ",") != strings.Join(want, ",") || len(req) != 28+len(nodeNames())+len(roleNames()) || strings.Join(req[28:58], ",") != strings.Join(nodeNames(), ",") {
 			t.Fatalf("required = %v", req)
 		}
 		if err := check(stream(qualification()...)); err != nil {

@@ -146,12 +146,32 @@ func TestStubLeaves(t *testing.T) {
 		}
 	}
 	// version, the four plane leaves (iteration 02), sidecar enroll and run
-	// and node ls and show (iteration 03) are implemented; 23 stubs remain.
-	if stubs != 23 {
+	// and node ls and show (iteration 03) and the five role leaves
+	// (iteration 04) are implemented; 18 stubs remain.
+	if stubs != 18 {
 		t.Fatalf("stubs = %d", stubs)
 	}
+	// The role group lists its five leaves as implemented, each leaf's help
+	// says so, and none is a stub any more.
+	code, out, _ := exec(t, "linux", "role")
+	if code != 0 || strings.Contains(out, "future stub") {
+		t.Fatalf("role group help: %d %q", code, out)
+	}
+	for _, name := range []string{"add", "set", "ls", "show", "rm"} {
+		if !strings.Contains(out, "  "+name+" ") || !strings.Contains(out, "[implemented]") {
+			t.Fatalf("role group help lacks %s: %q", name, out)
+		}
+		code, help, _ := exec(t, "linux", "role", name, "--help")
+		if code != 0 || !strings.HasPrefix(help, "Usage: callsheet role "+name+" ") || !strings.Contains(help, "Status: implemented.") || strings.Contains(help, "future stub") {
+			t.Fatalf("role %s help: %d %q", name, code, help)
+		}
+	}
+	// Root help still describes the stub convention for the other leaves.
+	if _, root, _ := exec(t, "linux", "help"); !strings.Contains(root, "[future stub] commands are reserved and exit 8") || !strings.Contains(root, "  role      Role commands [group]") {
+		t.Fatalf("root help: %q", root)
+	}
 	// Help after "--" is opaque and not honoured.
-	code, _, _ := exec(t, "linux", "task", "ls", "--", "--help")
+	code, _, _ = exec(t, "linux", "task", "ls", "--", "--help")
 	if code != 8 {
 		t.Fatalf("after -- code=%d", code)
 	}
@@ -160,7 +180,7 @@ func TestStubLeaves(t *testing.T) {
 func TestVersion(t *testing.T) {
 	for _, args := range [][]string{{"version"}, {"--version"}} {
 		code, out, errOut := exec(t, "linux", args...)
-		if code != 0 || out != "callsheet dev protocol=1\n" || errOut != "" {
+		if code != 0 || out != "callsheet dev protocol=2\n" || errOut != "" {
 			t.Fatalf("%v: %d %q %q", args, code, out, errOut)
 		}
 	}
@@ -168,7 +188,7 @@ func TestVersion(t *testing.T) {
 	Version = "1.2.3"
 	defer func() { Version = old }()
 	_, out, _ := exec(t, "linux", "version")
-	if out != "callsheet 1.2.3 protocol=1\n" {
+	if out != "callsheet 1.2.3 protocol=2\n" {
 		t.Fatalf("ldflags version: %q", out)
 	}
 	code, _, errOut := exec(t, "linux", "version", "extra")
@@ -249,7 +269,7 @@ func TestInterruptedAndPublicRun(t *testing.T) {
 	}
 	out.Reset()
 	errOut.Reset()
-	if code := Run(context.Background(), []string{"version"}, strings.NewReader(""), &out, &errOut); code != 0 || out.String() != "callsheet dev protocol=1\n" {
+	if code := Run(context.Background(), []string{"version"}, strings.NewReader(""), &out, &errOut); code != 0 || out.String() != "callsheet dev protocol=2\n" {
 		t.Fatalf("Run = %d %q", code, out.String())
 	}
 	// Run uses the host tree; the supported test hosts have the plane group.
@@ -285,7 +305,7 @@ func TestPlatformSeamContract(t *testing.T) {
 				out, err string
 			}{
 				{"help", context.Background(), nil, 0, "Usage: callsheet <command>\n", ""},
-				{"version", context.Background(), []string{"version"}, 0, "callsheet dev protocol=1\n", ""},
+				{"version", context.Background(), []string{"version"}, 0, "callsheet dev protocol=2\n", ""},
 				{"stub", context.Background(), []string{"task", "ls"}, 8, "", "callsheet: not_implemented: \"callsheet task ls\" is not implemented yet\n"},
 				{"usage", context.Background(), []string{"bogus"}, 2, "", "callsheet: invalid_argument: unknown command \"bogus\" for \"callsheet\"\n"},
 				{"cancel", canceled, []string{"version"}, 130, "", "callsheet: interrupted\n"},

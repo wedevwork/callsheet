@@ -111,7 +111,7 @@ func TestBackoffAndTimers(t *testing.T) {
 		t.Fatal("cap")
 	}
 	if heartbeatInterval != 5*time.Second || stepTimeout != 5*time.Second || stableAcks != 3 || closeGrace != time.Second || defaultDeps().closeGrace != time.Second {
-		t.Fatal("protocol-1 timing constants changed")
+		t.Fatal("stream timing constants changed")
 	}
 	for _, u := range []float64{defaultDeps().jitter(), defaultDeps().jitter()} {
 		if u < 0 || u >= 1 {
@@ -250,46 +250,47 @@ func TestReconnectTerminal(t *testing.T) {
 		reply bool // the sidecar answers with an error message and 1008
 	}{
 		{"mismatch", func(t *testing.T, c *fakeConn) {
+			// An iteration 03 (protocol 1) plane refuses this sidecar.
 			c.expect(contract.FrameHello, "h1")
-			c.send(2, contract.FrameError, "h1", contract.VersionMismatch(2, 1))
-		}, contract.CodeProtocolMismatch, "protocol version mismatch: local=1 remote=2", false},
-		{"mismatch-v1", func(t *testing.T, c *fakeConn) {
+			c.send(2, contract.FrameError, "h1", contract.VersionMismatch(1, 2))
+		}, contract.CodeProtocolMismatch, "protocol version mismatch: local=2 remote=1", false},
+		{"mismatch-v2", func(t *testing.T, c *fakeConn) {
 			c.expect(contract.FrameHello, "h1")
-			c.send(1, contract.FrameError, "h1", contract.VersionMismatch(3, 1))
-		}, contract.CodeProtocolMismatch, "local=1 remote=3", false},
+			c.send(2, contract.FrameError, "h1", contract.VersionMismatch(3, 2))
+		}, contract.CodeProtocolMismatch, "local=2 remote=3", false},
 		{"future-hello-ok", func(t *testing.T, c *fakeConn) {
 			c.expect(contract.FrameHello, "h1")
-			c.send(2, contract.FrameHelloOK, "h1", contract.HelloOKBody{HeartbeatIntervalMS: 5000, LeaseMS: 15000})
-		}, contract.CodeProtocolMismatch, "local=1 remote=2", false},
+			c.send(3, contract.FrameHelloOK, "h1", contract.HelloOKBody{HeartbeatIntervalMS: 5000, LeaseMS: 15000})
+		}, contract.CodeProtocolMismatch, "local=2 remote=3", false},
 		{"unknown-node", func(t *testing.T, c *fakeConn) {
 			c.expect(contract.FrameHello, "h1")
-			c.send(1, contract.FrameError, "h1", contract.New(contract.CodeNotFound, "node is not enrolled"))
+			c.send(2, contract.FrameError, "h1", contract.New(contract.CodeNotFound, "node is not enrolled"))
 		}, contract.CodeNotFound, "the plane refused the stream: node is not enrolled", false},
 		{"bad-hello-ok", func(t *testing.T, c *fakeConn) {
 			c.expect(contract.FrameHello, "h1")
-			c.send(1, contract.FrameHelloOK, "h1", contract.HelloOKBody{HeartbeatIntervalMS: 5000, LeaseMS: 3})
+			c.send(2, contract.FrameHelloOK, "h1", contract.HelloOKBody{HeartbeatIntervalMS: 5000, LeaseMS: 3})
 		}, contract.CodeInvalidArgument, "lease_ms=15000", true},
 		{"stale-ack", func(t *testing.T, c *fakeConn) {
 			c.helloOK(testID)
 			c.expect(contract.FrameHeartbeat, "b1")
-			c.send(1, contract.FrameHeartbeatAck, "b7", nil)
+			c.send(2, contract.FrameHeartbeatAck, "b7", nil)
 		}, contract.CodeInvalidArgument, "stale acknowledgement b7", true},
 		{"wrong-type", func(t *testing.T, c *fakeConn) {
 			c.expect(contract.FrameHello, "h1")
-			c.send(1, contract.FrameHeartbeatAck, "h1", nil)
+			c.send(2, contract.FrameHeartbeatAck, "h1", nil)
 		}, contract.CodeInvalidArgument, "unexpected heartbeat_ack", true},
 		{"bad-ack-body", func(t *testing.T, c *fakeConn) {
 			c.helloOK(testID)
 			c.expect(contract.FrameHeartbeat, "b1")
-			c.sendRaw([]byte(`{"version":1,"type":"heartbeat_ack","request_id":"b1","body":{"x":1}}`))
+			c.sendRaw([]byte(`{"version":2,"type":"heartbeat_ack","request_id":"b1","body":{"x":1}}`))
 		}, contract.CodeInvalidArgument, "unknown field", true},
 		{"malformed", func(t *testing.T, c *fakeConn) {
 			c.expect(contract.FrameHello, "h1")
-			c.sendRaw([]byte(`{"version":1,"type":"hello_ok"`))
+			c.sendRaw([]byte(`{"version":2,"type":"hello_ok"`))
 		}, contract.CodeInvalidArgument, "malformed", true},
 		{"bad-error-body", func(t *testing.T, c *fakeConn) {
 			c.expect(contract.FrameHello, "h1")
-			c.sendRaw([]byte(`{"version":1,"type":"error","request_id":"h1","body":{"error":{"code":"bogus","message":"m"}}}`))
+			c.sendRaw([]byte(`{"version":2,"type":"error","request_id":"h1","body":{"error":{"code":"bogus","message":"m"}}}`))
 		}, contract.CodeInvalidArgument, "unknown error code", true},
 		{"binary", func(t *testing.T, c *fakeConn) {
 			c.expect(contract.FrameHello, "h1")
@@ -302,11 +303,11 @@ func TestReconnectTerminal(t *testing.T) {
 			ctx, cancel := context.WithTimeout(bg, testWait)
 			defer cancel()
 			c.ws.Write(ctx, websocket.MessageText, make([]byte, contract.MaxFrameBytes+1))
-		}, contract.CodeInvalidArgument, "larger than 16384 bytes", false},
+		}, contract.CodeInvalidArgument, "larger than 2097152 bytes", false},
 		{"unsolicited", func(t *testing.T, c *fakeConn) {
 			c.helloOK(testID)
 			c.ack(1)
-			c.send(1, contract.FrameHeartbeatAck, "b1", nil)
+			c.send(2, contract.FrameHeartbeatAck, "b1", nil)
 		}, contract.CodeInvalidArgument, "unexpected heartbeat_ack", true},
 		{"peer-rejected", func(t *testing.T, c *fakeConn) {
 			c.expect(contract.FrameHello, "h1")
@@ -332,7 +333,7 @@ func TestReconnectTerminal(t *testing.T) {
 					t.Fatalf("sidecar close = %v", st)
 				}
 			}
-			if c.code == contract.CodeProtocolMismatch && (!strings.Contains(f.logs.String(), `"local_version":1`) || !strings.Contains(f.logs.String(), `"msg":"connection failed permanently"`)) {
+			if c.code == contract.CodeProtocolMismatch && (!strings.Contains(f.logs.String(), `"local_version":2`) || !strings.Contains(f.logs.String(), `"msg":"connection failed permanently"`)) {
 				t.Fatalf("mismatch logs: %s", f.logs.String())
 			}
 			if ws := f.clk.Waiters(); len(ws) != 0 {
@@ -345,7 +346,7 @@ func TestReconnectTerminal(t *testing.T) {
 		f := startFakeRun(t, fp, fp.url, fp.caPEM)
 		c := fp.accept(t)
 		c.expect(contract.FrameHello, "h1")
-		c.send(1, contract.FrameError, "h1", contract.New(contract.CodeConflict, "node already has an active stream"))
+		c.send(2, contract.FrameError, "h1", contract.New(contract.CodeConflict, "node already has an active stream"))
 		f.advanceBackoff(t, jitterDelay(0))
 		fp.accept(t).helloOK(testID)
 		f.ev.await(t, evConnected)

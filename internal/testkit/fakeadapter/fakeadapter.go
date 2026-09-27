@@ -34,6 +34,12 @@ const (
 	readinessTimeout = 10 * time.Second
 	// SignalFileSuffix is appended to --signal-file for the descendant.
 	SignalFileSuffix = ".grandchild"
+	// ProbeFlag selects the exclusive invocability probe mode (iteration
+	// 04): no other operand or flag, ProbeOutput on stdout, nothing on
+	// stderr, exit 0, no files, descendants or signal handling.
+	ProbeFlag = "--callsheet-probe"
+	// ProbeOutput is the probe mode's exact stdout.
+	ProbeOutput = "callsheet-fake-probe-v1\n"
 )
 
 // Term modes.
@@ -58,6 +64,8 @@ type Options struct {
 	ReadyFile          string
 	SignalFile         string
 	Rest               []string
+	// Probe is the exclusive --callsheet-probe mode.
+	Probe bool
 
 	descendant bool
 }
@@ -96,10 +104,13 @@ func parseFor(args []string, goos string, supported bool) (Options, error) {
 	fs.StringVar(&o.ReadyFile, "ready-file", "", "cwd-relative ready JSON")
 	fs.StringVar(&o.SignalFile, "signal-file", "", "cwd-relative signal log")
 	fs.BoolVar(&o.descendant, "internal-descendant", false, "internal")
+	fs.BoolVar(&o.Probe, "callsheet-probe", false, "exclusive invocability probe")
 	if err := fs.Parse(args); err != nil {
 		return Options{}, usagef("%v", err)
 	}
+	visited := 0
 	fs.Visit(func(f *flag.Flag) {
+		visited++
 		switch f.Name {
 		case "stdout":
 			o.stdoutSet = true
@@ -108,6 +119,9 @@ func parseFor(args []string, goos string, supported bool) (Options, error) {
 		}
 	})
 	o.Rest = fs.Args()
+	if o.Probe && (len(args) != 1 || args[0] != ProbeFlag || visited != 1 || len(o.Rest) != 0) {
+		return Options{}, usagef("%s takes no other flags or operands", ProbeFlag)
+	}
 	if o.Duration < 0 {
 		return Options{}, usagef("--duration must be nonnegative")
 	}
@@ -236,6 +250,14 @@ func Run(ctx context.Context, env Env) int {
 	if err != nil {
 		fmt.Fprintf(env.stderrOrDiscard(), "fake-adapter: %v\n", err)
 		return 2
+	}
+	if opts.Probe {
+		// The probe touches nothing: no working directory, signals,
+		// descendants or files.
+		if env.Stdout != nil {
+			io.WriteString(env.Stdout, ProbeOutput)
+		}
+		return 0
 	}
 	env, err = env.withDefaults()
 	if err != nil {

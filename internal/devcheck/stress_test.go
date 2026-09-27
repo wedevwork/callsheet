@@ -25,7 +25,7 @@ import (
 // design 02c with processgroup's CPU settings as separate invocations); it
 // is compared against StressShards and StressSteps, never derived from them.
 const (
-	wantStressPackages      = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/plane ./internal/client ./internal/sidecar ./internal/contract"
+	wantStressPackages      = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/plane ./internal/client ./internal/sidecar ./internal/contract ./internal/adapter"
 	wantStressPG1           = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/spikes/processgroup"
 	wantStressPG2           = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/spikes/processgroup"
 	wantStressPG4           = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/spikes/processgroup"
@@ -43,6 +43,12 @@ const (
 var want03Additions = []string{
 	"go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/client ./internal/sidecar ./internal/contract",
 	wantStressNodeFunction,
+}
+
+// want04Additions is iteration 04's literal addition (design 04, CI
+// plan): the adapter package, complete; no selector or count changes.
+var want04Additions = []string{
+	"go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/adapter",
 }
 
 // want02bSelection is iteration 02b's literal stress selection, the
@@ -236,6 +242,17 @@ func TestStressShardUnion(t *testing.T) {
 	if len(want) != (5+2+3+1)*3 {
 		t.Fatalf("03 selection has %d tuples", len(want))
 	}
+	for _, argv := range want04Additions {
+		for _, s := range normalize(t, argv) {
+			if want[s] != 0 {
+				t.Fatalf("04 addition %v overlaps", s)
+			}
+			want[s]++
+		}
+	}
+	if len(want) != (5+2+3+1+1)*3 {
+		t.Fatalf("04 selection has %d tuples", len(want))
+	}
 	for _, goos := range []string{"linux", "darwin"} {
 		shards, err := StressShards(goos)
 		if err != nil {
@@ -423,7 +440,8 @@ func TestStressStageDispatch(t *testing.T) {
 	}
 	// all stays test, coverage, bench, cross: stress is explicit.
 	f := &fakeRunner{coverTotal: "81%", cmdList: cmdList, profile: goodProfile}
-	if code, _, errOut := runDriver(t, "linux", f, "all"); code != 0 || len(f.calls) != 20 {
+	// test(2) + coverage(3) + bench(5, iteration 04) + cross(12).
+	if code, _, errOut := runDriver(t, "linux", f, "all"); code != 0 || len(f.calls) != 22 {
 		t.Fatalf("all = %d with %d calls %s", code, len(f.calls), errOut)
 	}
 	for _, c := range f.argvs() {

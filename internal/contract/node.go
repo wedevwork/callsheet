@@ -25,15 +25,16 @@ const (
 	PathNodeStream = "/api/v1/node-stream"
 
 	// MaxFrameBytes bounds one decoded node-stream message; MaxBodyBytes
-	// bounds its body. Both ends set the WebSocket read limit to
-	// MaxFrameBytes and enforce both limits on outbound messages.
-	MaxFrameBytes = 16 << 10
-	MaxBodyBytes  = 8 << 10
+	// bounds its body absolutely. Both ends set the WebSocket read limit to
+	// MaxFrameBytes and enforce both limits, plus the tighter per-type body
+	// limit (BodyLimit), on inbound and outbound messages (protocol 2).
+	MaxFrameBytes = 2 << 20
+	MaxBodyBytes  = 1 << 20
 	// MaxEnrollRequestBytes bounds POST /api/v1/nodes/enroll.
 	MaxEnrollRequestBytes = 4 << 10
 
-	// HeartbeatIntervalMS and LeaseMS are the fixed protocol-1 timing
-	// values carried by hello_ok; they are validated, never negotiated.
+	// HeartbeatIntervalMS and LeaseMS are the fixed timing values carried
+	// by hello_ok; they are validated, never negotiated.
 	HeartbeatIntervalMS = 5000
 	LeaseMS             = 15000
 
@@ -48,7 +49,34 @@ const (
 	FrameHeartbeat    = "heartbeat"
 	FrameHeartbeatAck = "heartbeat_ack"
 	FrameError        = "error"
+
+	// Protocol 2 (iteration 04) plane requests and their replies.
+	FrameRoleValidate       = "role_validate"
+	FrameRoleValidateResult = "role_validate_result"
+	FrameRolesReplace       = "roles_replace"
+	FrameRolesReplaceAck    = "roles_replace_ack"
 )
+
+// Per-type body limits (protocol 2). JSON whitespace counts toward them.
+const (
+	MaxRolesReplaceBody = 1 << 20
+	MaxHeartbeatBody    = 32 << 10
+	MaxRoleValidateBody = 16 << 10
+	MaxOtherBody        = 8 << 10
+)
+
+// BodyLimit is the exact body limit of a frame type.
+func BodyLimit(typ string) int {
+	switch typ {
+	case FrameRolesReplace:
+		return MaxRolesReplaceBody
+	case FrameHeartbeat:
+		return MaxHeartbeatBody
+	case FrameRoleValidate:
+		return MaxRoleValidateBody
+	}
+	return MaxOtherBody
+}
 
 // Direction names the sender of a frame.
 type Direction int
@@ -106,8 +134,8 @@ func VersionMismatch(local, remote int) *Error {
 	}
 }
 
-// RoleStatus is the reserved per-role heartbeat shape. In protocol 1 every
-// roles array must be empty; iteration 04 defines its validation.
+// RoleStatus is the per-role heartbeat and node-discovery shape (iteration
+// 04): exactly these four fields, validated by ParseRoleStatus.
 type RoleStatus struct {
 	RoleID      string `json:"role_id"`
 	Inflight    int    `json:"inflight"`
@@ -149,13 +177,13 @@ func (n Node) MarshalJSON() ([]byte, error) {
 	return compact(w)
 }
 
-// NodeResponse is {"version":1,"node":<Node>}.
+// NodeResponse is {"version":2,"node":<Node>}.
 type NodeResponse struct {
 	Version int  `json:"version"`
 	Node    Node `json:"node"`
 }
 
-// NodeListResponse is {"version":1,"nodes":[<Node>,...]}.
+// NodeListResponse is {"version":2,"nodes":[<Node>,...]}.
 type NodeListResponse struct {
 	Version int    `json:"version"`
 	Nodes   []Node `json:"nodes"`
@@ -321,23 +349,31 @@ func array(v json.RawMessage, what string) ([]json.RawMessage, error) {
 	return out, nil
 }
 
-// ParseRoles validates a protocol-1 roles array: present, an array, and
-// empty. Nonempty arrays are rejected, never silently accepted; element
-// shapes are still checked so the error names the actual problem.
+// ParseRoles validates a roles status array: present, an array of at most
+// MaxRoles valid statuses (ParseRoleStatus) with unique role IDs. Order is
+// the sender's: it carries no order field.
 func ParseRoles(v json.RawMessage) ([]RoleStatus, error) {
 	elems, err := array(v, "roles")
 	if err != nil {
 		return nil, err
 	}
+	if len(elems) > MaxRoles {
+		return nil, errInvalid("roles has %d entries; at most %d are allowed", len(elems), MaxRoles)
+	}
+	out := make([]RoleStatus, 0, len(elems))
+	seen := map[string]bool{}
 	for _, e := range elems {
-		if _, err := parseRole(e); err != nil {
+		r, err := ParseRoleStatus(e)
+		if err != nil {
 			return nil, err
 		}
+		if seen[r.RoleID] {
+			return nil, errInvalid("roles repeats role %s", r.RoleID)
+		}
+		seen[r.RoleID] = true
+		out = append(out, r)
 	}
-	if len(elems) != 0 {
-		return nil, errInvalid("roles must be empty in protocol %d", ProtocolVersion)
-	}
-	return []RoleStatus{}, nil
+	return out, nil
 }
 
 func parseRole(v json.RawMessage) (RoleStatus, error) {
@@ -448,7 +484,7 @@ func envelopeVersion(o object, what string) error {
 	return nil
 }
 
-// ParseNodeResponse strictly decodes {"version":1,"node":{...}}.
+// ParseNodeResponse strictly decodes {"version":2,"node":{...}}.
 func ParseNodeResponse(data []byte) (Node, error) {
 	const what = "node response"
 	o, err := decodeObject(data, what)
@@ -464,7 +500,7 @@ func ParseNodeResponse(data []byte) (Node, error) {
 	return ParseNode(o.raw["node"])
 }
 
-// ParseNodeListResponse strictly decodes {"version":1,"nodes":[...]} and
+// ParseNodeListResponse strictly decodes {"version":2,"nodes":[...]} and
 // requires IDs in strictly ascending order (sorted and unique).
 func ParseNodeListResponse(data []byte) ([]Node, error) {
 	const what = "node list response"

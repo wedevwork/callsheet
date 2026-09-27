@@ -20,8 +20,8 @@ required contexts:
 
 | Check context | Runner | Timeout | Kind | Steps after setup |
 |---|---|---|---|---|
-| `ci-linux` | `ubuntu-24.04` | 45 min | required | `devcheck test` (native suite, then the same suite with `-race`), `devcheck coverage` (unit coverage must be greater than 80.0%), `devcheck bench` (git transport payload byte limits and commit/tree invariants, then the plane trust benchmarks: issuance, initialization and verified TLS health, and the plane node benchmarks: heartbeat, snapshot of 100 nodes and durable enrollment, then the node frame encode/decode benchmark in `internal/contract`, each checking its invariants; timings are reported, never gated), `devcheck cross` (linux/amd64, linux/arm64, darwin/amd64, darwin/arm64: 12 artifacts) |
-| `ci-macos` | `macos-15` | 30 min | required | `devcheck native`: the complete suite as `go test -json`, which must show passing run and pass events in `github.com/wedevwork/callsheet/tests/function` for `TestFP6ProcessGroups` and its `cooperative`, `resistant` and `leader-exits-first` scenarios, for the plane trust tests and for the node tests (see below) |
+| `ci-linux` | `ubuntu-24.04` | 45 min | required | `devcheck test` (native suite, then the same suite with `-race`), `devcheck coverage` (unit coverage must be greater than 80.0%), `devcheck bench` (git transport payload byte limits and commit/tree invariants, then the plane trust benchmarks: issuance, initialization and verified TLS health, the plane node benchmarks: heartbeat, snapshot of 100 nodes and durable enrollment, and the plane role benchmarks: role list and node views for 1 and 100 roles and durable add/set/rm transactions, then the node and role frame encode/decode benchmarks in `internal/contract`, then the sidecar ready-check benchmark (100 manual pairs, one shared probe) and the adapter's real fake-probe benchmark, each checking its invariants; timings are reported, never gated), `devcheck cross` (linux/amd64, linux/arm64, darwin/amd64, darwin/arm64: 12 artifacts) |
+| `ci-macos` | `macos-15` | 30 min | required | `devcheck native`: the complete suite as `go test -json`, which must show passing run and pass events in `github.com/wedevwork/callsheet/tests/function` for `TestFP6ProcessGroups` and its `cooperative`, `resistant` and `leader-exits-first` scenarios, for the plane trust tests, the node tests and the role tests (see below) |
 | `ci-linux-stress-packages` | `ubuntu-24.04` | 20 min | worker | `devcheck stress-packages` on Linux (see Stress checks) |
 | `ci-linux-stress-processgroup` | `ubuntu-24.04` | 20 min | worker | `devcheck stress-processgroup` on Linux |
 | `ci-linux-stress-functions` | `ubuntu-24.04` | 20 min | worker | `devcheck stress-functions` on Linux |
@@ -104,6 +104,36 @@ subtest, and they prove on the runner itself the sidecar's native state
 modes, kernel `flock` between processes, atomic enrollment replacement,
 verified TLS trust, stream reconnect and signal cleanup.
 
+The role tests required on `ci-macos` (iteration 04) are one function test
+per role FP, each with its mandatory subtests: `TestRoleConfiguration`
+`fields` and `order`; `TestRoleAdapter` `disabled` and `probe`;
+`TestRoleValidation` `remote` and `rejections`; `TestRoleProtocol` `duplex`
+and `bounds`; `TestRoleReadiness` `changes` and `reconnect`;
+`TestRolePersistence` `restore` and `failures`; `TestRoleCommands` `text`,
+`json` and `trust`; `TestRoleMutation` `races` and `remove`;
+`TestRolePlatform` `manuals`, `executable` and `policy`. That is 29 more
+names, 87 in all, with the 58 earlier names unchanged and first. The
+subtests that delegate to package contracts follow the design's four-column
+delegation table, declared once in `internal/devcheck` (`RoleDelegations`):
+`duplex` and `bounds` each run both the `internal/plane` and the
+`internal/sidecar` `TestRoleStreamContract` and pass only when both
+packages independently show run and pass evidence for the named contract
+and subtest (identical names in one package never satisfy the other);
+`changes` runs the sidecar's `TestRoleReadinessContract/changes`,
+`reconnect` the plane's `TestRoleDistributionContract/reconnect`,
+`failures` the plane's `TestRoleRegistryContract/failures`, `races` the
+plane's `TestRoleMutationContract/races` including
+`races/snapshot-in-flight`, `manuals` the sidecar's and `executable` the
+adapter's `TestRolePlatformContract`, and `policy` devcheck's
+`TestRolePolicy/policy`, which also proves that missing either protocol
+package's evidence fails qualification. A delegated run whose output shows
+a failure, a skip, `no tests to run` or missing run/pass lines fails even
+when its binary exited zero. On the runner itself they prove the worker's
+native manual checks (symlinks, spaces, FIFOs, devices, permissions by the
+actual open result, case behavior of the volume), the real fake adapter's
+probe, loopback TLS, the plane and sidecar stream arbitration and the
+durable role registry.
+
 The main jobs and all six workers check out the event's revision without
 persisted credentials, take the Go version from `go.mod` with module
 caching, run `go mod download`, and then run their check steps with
@@ -143,10 +173,11 @@ declared once, in `internal/devcheck/stress.go` (`StressCount`,
 three shards run seven commands (argv, never a shell), each with
 `CGO_ENABLED=1`, named `stress packages`, `stress processgroup cpu1`,
 `stress processgroup cpu2`, `stress processgroup cpu4`, `stress function`,
-`stress plane function` and `stress node function` (iteration 03):
+`stress plane function` and `stress node function` (iteration 03); the
+packages command gained `./internal/adapter` in iteration 04:
 
 ```
-go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/plane ./internal/client ./internal/sidecar ./internal/contract
+go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/plane ./internal/client ./internal/sidecar ./internal/contract ./internal/adapter
 go test -race -count=20 -cpu=1 -timeout=6m ./internal/spikes/processgroup
 go test -race -count=20 -cpu=2 -timeout=6m ./internal/spikes/processgroup
 go test -race -count=20 -cpu=4 -timeout=6m ./internal/spikes/processgroup
@@ -173,7 +204,8 @@ their `locking` and `shutdown` subtests below them.
 
 - Selected packages: `internal/testkit`, `internal/testkit/fakeadapter`,
   `internal/spikes/gittransport`, `internal/plane`, `internal/client`,
-  `internal/sidecar` and `internal/contract` in the packages shard, and
+  `internal/sidecar`, `internal/contract` and `internal/adapter` in the
+  packages shard, and
   `internal/spikes/processgroup` in the processgroup shard, complete
   package tests (not benchmarks). The fake adapter is included because its
   signal handling and descendant lifecycle are timing-sensitive too; the
@@ -184,6 +216,15 @@ their `locking` and `shutdown` subtests below them.
   them) already run there, and `internal/client`, `internal/sidecar` (whose
   `TestNodeReconnectContract` starts real plane subprocesses and drives an
   injected retry clock) and `internal/contract` join the same invocation.
+  Iteration 04 added `internal/adapter` (probe deadlines, cancellation and
+  child waits on an injected clock, the real fake fixture) to the same
+  invocation. Every timing-dependent role contract (`TestRoleStreamContract`
+  of plane and sidecar, `TestRoleDistributionContract`,
+  `TestRoleReadinessContract`, `TestRoleMutationContract`,
+  `TestRoleRegistryContract`, `TestRoleValidationContract`, the client and
+  contract role tests and `TestAdapterContract`) runs in its own package
+  there, so the role function wrappers are not repeated: no new function
+  selector exists and no delegated contract repeats twice.
 - Selected function tests: only `TestFP4TransportHarness` and
   `TestFP5GitRoundTrip` (`stress function`), and the process-boundary
   subtests of the listener- and lock-bearing plane trust tests
@@ -208,8 +249,9 @@ their `locking` and `shutdown` subtests below them.
   reports `no tests to run` for its selector (`[no tests to run]` or
   `testing: warning: no tests to run`): an empty selection is never a pass.
 - The shards' union is exactly the iteration 02b selection plus iteration
-  03's additions (the three node packages and the node selector): every
-  (package, selector, CPU setting, count) combination appears exactly once.
+  03's additions (the three node packages and the node selector) and
+  iteration 04's `internal/adapter`: every (package, selector, CPU setting,
+  count) combination appears exactly once.
   Only processgroup's single `-cpu=1,2,4` invocation became three
   invocations of one CPU setting each; the per-test repetitions (60), the
   CPU settings, `-race` and the timeouts are unchanged.
@@ -357,9 +399,58 @@ Budgets:
   measurements exceed these allocations, repeated helper compilation and
   fixture setup are removed first, keeping every case and count; a shard or
   budget change requires a design revision.
+- Iteration 04 allocation (design 04, CI plan; planning allocations from the
+  coordinator-supplied latest hosted baseline, not measurements): whole
+  workflow 255 s, macOS packages worker 243 s, macOS functions worker
+  206 s. These supersede the iteration 03 hosted entry that was still
+  pending below. The packages shard may grow by at most 25 s on each
+  platform (about 268 s per packages job), the functions shard by at most
+  5 s of compile overhead with no new repeated cases (about 211 s on
+  macOS), processgroup and the summaries by nothing; each main job by at
+  most 20 s (normal role functions, Linux benchmarks), for a critical-path
+  target of about 280 s (4 min 40 s) at comparable setup and queue
+  conditions. The new `internal/adapter` binary and the grown sidecar
+  binary must stay below the plane binary, the packages critical path. If
+  hosted measurements miss these allocations, redundant builds and setup
+  are removed first; counts, cases, shards and budgets never change without
+  a design revision. The normal function package keeps its shared
+  `-timeout=180s` for all `tests/function` cases together.
 
 Measurements, newest first. Hosted and local figures come from different
 machines and are never combined into one number.
+
+- Measured with iteration 04 (roles): Linux, go1.26.4 linux/amd64 on the
+  same 16-thread Intel i7-11800H developer workstation (kernel 6.8), warm
+  build cache, 2026-09-26, each shard stage run alone on the host, with
+  the iteration 03 revision measured the same day on the same host as the
+  before figure:
+  - `devcheck stress-packages` 220.0 s against 202.8 s before (+17.2 s,
+    allocation 25 s; an earlier run 219.3 s): slowest binary
+    `internal/plane` 219.4 s (before 201.5 s), `internal/sidecar` 118.2 s
+    (98.6 s), `internal/testkit/fakeadapter` 54.3 s (53.2 s),
+    `internal/contract` 45.7 s (1.5 s; the exact 1 MiB and 2 MiB boundary
+    cases under the race detector), `internal/testkit` 39.6 s,
+    `internal/client` 35.1 s, `internal/spikes/gittransport` 31.0 s and
+    the new `internal/adapter` 11.3 s, all below the plane binary. The plane role contracts run as
+    parallel top-level tests after the serial ones, so they add their
+    whole CPU time at `-cpu=1`; `TestServerLimits`, whose plane shutdown
+    waits out net/http's half-second close delay after its 431 response,
+    now runs in parallel with them (same case and count), which kept the
+    plane binary inside the allocation (238.0 s before that change).
+  - `devcheck stress-functions` 101.6 s (iteration 03: 101.8 s; allocation
+    5 s): `stress function` 29.3 s, `stress plane function` 64.9 s,
+    `stress node function` 7.4 s.
+  - `devcheck stress-processgroup` 69.6 s (unchanged plan; each CPU setting
+    69.5 to 69.6 s, concurrently).
+  - Main-job work (`devcheck all`: test, coverage, bench, cross) 78.4 s
+    against 70.4 s before (+8.0 s, allocation 20 s). The `tests/function`
+    package takes 24.3 s ordinary and 27.5 s under the race detector
+    (before 20.4 s and 19.9 s), against its shared 180 s timeout. Three
+    role function tests (`TestRoleAdapter`, `TestRolePersistence`,
+    `TestRoleCommands`) each wait about 5 s for a real sidecar's next
+    heartbeat to report readiness; they run in parallel with each other
+    (38.3 s and 38.0 s for the package when they ran one after another).
+  - Hosted iteration 04 times: pending (first remote run).
 
 - Measured with iteration 03 (nodes): Linux, go1.26.4 linux/amd64 on the
   same 16-thread Intel i7-11800H developer workstation (kernel 6.8), warm
@@ -383,10 +474,9 @@ machines and are never combined into one number.
     28.9 s), `stress plane function` 64.1 s (binary 63.7 s) and
     `stress node function` 7.4 s (binary 7.0 s; design estimate 15 s on a
     hosted Linux worker).
-  - Hosted iteration 03 worker times: pending until the first worker runs
-    of the iteration 03 pull request, recorded in the flow handoff (see
-    First remote run), and compared with the iteration 03 allocation in
-    Budgets.
+  - Hosted iteration 03 worker times: superseded by the coordinator-supplied
+    latest hosted baseline recorded in Budgets (iteration 04 allocation):
+    total 255 s, macOS packages 243 s, macOS functions 206 s.
 
 - Measured with iteration 02c: Linux, go1.26.4 linux/amd64 on the same
   16-thread Intel i7-11800H developer workstation (kernel 6.8), warm build
@@ -554,6 +644,18 @@ Exempt files are not scanned for `runtime.GOOS`, so
 `internal/testkit/fakeadapter/signals_unix.go` must not grow a host branch:
 it is compiled for both `linux` and `darwin`, and such a branch would be an
 untested decision the guard cannot see.
+
+Iteration 04 adds no host OS read and no exemption: the guard's five
+wrappers and four exempt files are unchanged (checked by
+`TestRolePolicy/policy` in `internal/devcheck`). The worker's manual checks
+use the shared POSIX `syscall.O_NONBLOCK` open and descriptor `fstat` on
+both systems; the adapter probe runs the explicit absolute executable path
+(no `PATH` lookup) with the same code on both. `internal/adapter` imports
+no plane, sidecar, devcheck or testkit package, and no production file
+imports the fake fixture `internal/testkit/fakeadapter`: the product knows
+only the probe's argument and output, and filters the fixture's two
+file-descriptor variables by their literal names (both guarded by the same
+policy test).
 
 The plane package (iteration 02) resolves its default state directory in
 the pure `plane.ResolveStateDir(goos, ...)`, fed by `cli.Run`'s existing
@@ -735,7 +837,8 @@ handoff:
 - stress evidence from the six worker logs (the summaries hold none): the lines `devcheck: stage stress-packages ok`, `devcheck: stage stress-processgroup ok` and `devcheck: stage stress-functions ok` on each platform, the `-count=20` commands, every CPU invocation's outcome, and the elapsed time of each stress command with the runner's OS, architecture and cache state;
 - the actual job and step times of all ten jobs, setup, queue and summary wait time included, and the overall workflow critical path; compare each worker with the expected per-job wall-clock in Stress checks, and diagnose any miss of the 4–5 minute goal and the remaining bottleneck without weakening tests or reducing counts;
 - the branch protection verification described above (finishing the conditional 02b prerequisite first if it is needed);
-- for iteration 03, native evidence for the 30 node names (see Checks) on `ci-macos`, the `stress node function` step and the enlarged `stress packages` step on both platforms with their times, compared with the iteration 03 allocation in Budgets.
+- for iteration 03, native evidence for the 30 node names (see Checks) on `ci-macos`, the `stress node function` step and the enlarged `stress packages` step on both platforms with their times, compared with the iteration 03 allocation in Budgets;
+- for iteration 04, native evidence for the 29 role names (see Checks) on `ci-macos`, the `stress packages` step with `internal/adapter` and the `internal/plane`, `internal/sidecar` and `internal/adapter` binary times on both platforms, the function package time on both platforms, and the before/after job and command durations, compared with the iteration 04 allocation in Budgets. Hosted evidence pending at local review remains pending, not passed.
 
 The local validator checks action identity and full-SHA format only, not that
 a SHA exists or matches its release comment. Confirm each pin against its
@@ -764,6 +867,7 @@ go test -count=1 -run '^(TestCI|TestHardening|TestStressShard)' ./tests/function
 go test -race -count=20 -cpu=1,2,4 -run '^TestStressConcurrencyContract$' ./internal/devcheck
 go test -json -count=1 -run '^(TestPlaneState|TestPlaneTLS|TestPlaneReissue)$/^(paths|persistence|locking|validation|https-only|prelisten-validation|bounded-shutdown|process)$' ./tests/function
 go test -json -count=1 -run '^(TestNodeEnrollment|TestNodeReconnect)$/^(locking|shutdown)$' ./tests/function
+go test -count=1 -run '^TestRole' -v ./tests/function
 ```
 
 A single shard, as one CI worker runs it, is also available on its own:

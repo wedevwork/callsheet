@@ -13,9 +13,10 @@ import (
 // TestFP2CommandTree drives the built callsheet binary through every leaf,
 // group and help form plus invalid commands, in a fresh cwd and home, and
 // confirms no files are created. The four plane leaves implemented in
-// iteration 02 and the four sidecar and node leaves of iteration 03 get
-// help-only checks here (their behavior is tested by TestPlaneCommands and
-// the TestNode* function tests); every other leaf is a stub.
+// iteration 02, the four sidecar and node leaves of iteration 03 and the
+// five role leaves of iteration 04 get help-only checks here (their
+// behavior is tested by TestPlaneCommands, the TestNode* and the TestRole*
+// function tests); every other leaf is a stub.
 func TestFP2CommandTree(t *testing.T) {
 	bin := testkit.BuildBinary(t, "./cmd/callsheet", "callsheet")
 	home := t.TempDir()
@@ -37,7 +38,8 @@ func TestFP2CommandTree(t *testing.T) {
 			t.Fatalf("leaf count = %d", len(leaves))
 		}
 		implemented := map[string]bool{"callsheet plane init": true, "callsheet plane run": true, "callsheet plane status": true, "callsheet plane cert reissue": true,
-			"callsheet sidecar enroll": true, "callsheet sidecar run": true, "callsheet node ls": true, "callsheet node show": true}
+			"callsheet sidecar enroll": true, "callsheet sidecar run": true, "callsheet node ls": true, "callsheet node show": true,
+			"callsheet role add": true, "callsheet role set": true, "callsheet role ls": true, "callsheet role show": true, "callsheet role rm": true}
 		for _, leaf := range leaves {
 			args := argsOf(leaf)
 			if implemented[leaf.Path()] {
@@ -55,7 +57,7 @@ func TestFP2CommandTree(t *testing.T) {
 			}
 			r := run(args...)
 			if leaf.Name == "version" {
-				if r.code != 0 || r.stdout != "callsheet dev protocol=1\n" || r.stderr != "" {
+				if r.code != 0 || r.stdout != "callsheet dev protocol=2\n" || r.stderr != "" {
 					t.Fatalf("version = %+v", r)
 				}
 			} else {
@@ -102,7 +104,7 @@ func TestFP2CommandTree(t *testing.T) {
 				}
 			}
 		}
-		if r := run("--version"); r.code != 0 || r.stdout != "callsheet dev protocol=1\n" {
+		if r := run("--version"); r.code != 0 || r.stdout != "callsheet dev protocol=2\n" {
 			t.Fatalf("--version = %+v", r)
 		}
 	})

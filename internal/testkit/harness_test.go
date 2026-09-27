@@ -167,7 +167,7 @@ func TestInvalidOptionsFailSetupWithCleanup(t *testing.T) {
 func TestHelloEchoAndCorrelation(t *testing.T) {
 	h := NewHarness(t)
 	ctx := context.Background()
-	sc, err := h.DialSidecar(ctx, contract.ProtocolVersion)
+	sc, err := h.DialSidecar(ctx, HarnessProtocolVersion)
 	if err != nil {
 		t.Fatal(err)
 	}

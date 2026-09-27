@@ -1,7 +1,11 @@
 // Package sidecar is the node side of iteration 03: enrollment with a
 // plane over verified TLS, a stable node identity on disk, and the
 // outbound-only supervisor connection (version hello, heartbeats and
-// bounded reconnect). The sidecar creates no listener.
+// bounded reconnect). Since iteration 04 the connection is duplex: the
+// sidecar validates candidate roles locally (manuals and the adapter
+// executable never leave the node), installs the plane's role snapshots and
+// reports per-role readiness from periodic ready checks in its heartbeats.
+// The sidecar creates no listener.
 //
 // The public operations use the real clock, entropy, filesystem and
 // verified client. Tests inject clocks, jitter and failures through the
@@ -19,6 +23,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/wedevwork/callsheet/internal/adapter"
 	"github.com/wedevwork/callsheet/internal/client"
 	"github.com/wedevwork/callsheet/internal/contract"
 )
@@ -42,11 +47,15 @@ type Enrollment struct {
 }
 
 // RunOptions configures Run: the resolved state root, the build version
-// sent in hello, and the logger for connection diagnostics (nil discards).
+// sent in hello, the logger for connection diagnostics (nil discards) and,
+// optionally, the fake adapter's absolute executable path (iteration 04):
+// empty disables the fake adapter. It is local process configuration,
+// never persisted and never sent to the plane.
 type RunOptions struct {
 	StateDir        string
 	SoftwareVersion string
 	Logger          *slog.Logger
+	FakeAdapterPath string
 }
 
 // planeClient is the verified client surface the sidecar uses.
@@ -71,6 +80,23 @@ const (
 	evStable     eventKind = "stable"
 	evEnded      eventKind = "ended"
 	evBackoff    eventKind = "backoff"
+	// Iteration 04 role events.
+	// evInstalled: a snapshot was installed (rev) and its ack queued.
+	evInstalled eventKind = "installed"
+	// evAckWritten: the snapshot acknowledgement write completed.
+	evAckWritten eventKind = "ack-written"
+	// evValidating: a validation's worker started.
+	evValidating eventKind = "validating"
+	// evReplied: a validation result write completed.
+	evReplied eventKind = "replied"
+	// evCycleStarted and evCycleDone: a ready-check cycle started, and a
+	// cycle result (passed) was published for rev.
+	evCycleStarted eventKind = "cycle-started"
+	evCycleDone    eventKind = "cycle-done"
+	// evValidated and evChecked: a validation worker, or a cycle worker,
+	// returned (its slot released and its result published).
+	evValidated eventKind = "validated"
+	evChecked   eventKind = "checked"
 )
 
 // event is one observed transition: the session number (1-based), the
@@ -81,6 +107,12 @@ type event struct {
 	acks    int
 	delay   time.Duration
 	err     error
+	// Role events: the snapshot revision, plane request ID, a heartbeat's
+	// statuses and a cycle's per-role results.
+	rev      int
+	id       string
+	statuses []contract.RoleStatus
+	passed   []bool
 }
 
 // deps are the injectable dependencies of Enroll and Run.
@@ -104,6 +136,13 @@ type deps struct {
 	closeGrace time.Duration
 	// observe, when non-nil, receives every transition (tests only).
 	observe func(event)
+	// adapters builds the worker's adapter registry for a state root
+	// (iteration 04); openManual opens a manual without blocking; and
+	// observeCheck, when non-nil, sees every manual check and probe
+	// (tests only).
+	adapters     func(dir string) adapter.Registry
+	openManual   func(p string) (*os.File, error)
+	observeCheck func(kind, name string)
 }
 
 // closeGrace is the production bound of a graceful stream close.
@@ -121,6 +160,8 @@ func defaultDeps() *deps {
 			return client.New(u, t)
 		},
 		closeGrace: closeGrace,
+		adapters:   adapter.Builtin,
+		openManual: openManual,
 	}
 }
 

@@ -2,7 +2,9 @@
 // state directory, the internal certificate authority and server
 // certificate, the private HTTPS listener and offline status inspection;
 // since iteration 03 also the node registry, leases, the node stream and
-// the read-only roster API.
+// the read-only roster API; since iteration 04 the durable role registry,
+// role validation and distribution over the node stream, readiness and the
+// role API.
 //
 // The four public operations (Init, Run, Reissue, Inspect) use the real
 // clock, entropy, interface enumeration, filesystem and listener. Tests use
@@ -116,6 +118,8 @@ type deps struct {
 	// rawFsync as the fallback for ENOTSUP, ENOTTY and EINVAL.
 	fileSync func(*os.File) error
 	rawFsync func(*os.File) error
+	// syncFile syncs a written temporary file before it is published.
+	syncFile func(*os.File) error
 	// nodeClock drives leases, the sweep and node stream timeouts
 	// (iteration 03).
 	nodeClock nodeClock
@@ -127,6 +131,9 @@ type deps struct {
 	// streamHelloRead, when non-nil, runs after a hello read returned a
 	// frame, before its deadline is released (tests only).
 	streamHelloRead func(context.Context)
+	// roleHook, when non-nil, runs at named role mutation stages with the
+	// mutation's context (tests only; iteration 04).
+	roleHook func(stage string, ctx context.Context)
 }
 
 // shutdownTimeout is the production graceful-shutdown bound.
@@ -141,6 +148,7 @@ func defaultDeps() *deps {
 		shutdownTimeout:  shutdownTimeout,
 		fileSync:         (*os.File).Sync,
 		rawFsync:         rawFsync,
+		syncFile:         (*os.File).Sync,
 		nodeClock:        realClock{},
 		streamCloseGrace: streamCloseGrace,
 	}

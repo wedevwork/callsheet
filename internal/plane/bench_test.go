@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -234,4 +235,136 @@ func BenchmarkNodeEnrollment(b *testing.B) {
 			b.Fatal(err)
 		}
 	}
+}
+
+// benchRoles builds n role records alternating over two nodes and two
+// names, in registration order.
+func benchRoles(n int) []contract.RoleRecord {
+	var out []contract.RoleRecord
+	for i := 1; i <= n; i++ {
+		node, name := idA, "implementer"
+		if i%2 == 0 {
+			node, name = idB, "reviewer"
+		}
+		out = append(out, record(roleCfg("role-"+strconv.Itoa(i), name, node), i))
+	}
+	return out
+}
+
+// BenchmarkRoleSnapshot measures the role list and node views for 1 and
+// 100 roles: one node online with an acknowledged snapshot reporting every
+// role ready, the other offline. Every iteration checks the grouping and
+// order, zero inflight, readiness only for the ready node and false
+// masking for the offline one.
+func BenchmarkRoleSnapshot(b *testing.B) {
+	for _, n := range []int{1, 100} {
+		b.Run(strconv.Itoa(n), func(b *testing.B) {
+			root := filepath.Join(b.TempDir(), "state")
+			os.MkdirAll(filepath.Join(root, nodesName), 0o700)
+			for _, id := range []string{idA, idB} {
+				os.WriteFile(filepath.Join(root, nodesName, id+".json"), encodeNodeRecord(id, t0), 0o600)
+			}
+			recs := benchRoles(n)
+			doc := docOf(1, n+1, recs...)
+			r, err := loadNodeRegistry(layout{root: root}, realClock{})
+			if err != nil {
+				b.Fatal(err)
+			}
+			r.roles = newRoleRegistry(layout{root: root}, defaultDeps(), roleLookup, doc)
+			gen, err := r.attach(idA, "bench", contract.ProtocolVersion, nil, nil)
+			if err != nil {
+				b.Fatal(err)
+			}
+			snap := doc.snapshotFor(idA)
+			r.ackSnapshot(idA, gen, snap)
+			hb := contract.HeartbeatBody{RolesRevision: snap.rev}
+			for _, rec := range snap.roles {
+				hb.Roles = append(hb.Roles, contract.RoleStatus{RoleID: rec.ID, Concurrency: rec.Concurrency, CanAccept: true})
+			}
+			if err := r.heartbeat(idA, gen, hb); err != nil {
+				b.Fatal(err)
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				views := r.roleViews(func(s *roleState) []contract.RoleRecord { return sortedForList(s.visible.roles) }, roleLookup)
+				if len(views) != n {
+					b.Fatalf("%d views", len(views))
+				}
+				for i, v := range views {
+					if i > 0 && !contract.RoleListLess(views[i-1].RoleRecord, v.RoleRecord) {
+						b.Fatal("views not grouped by name and order")
+					}
+					online := v.Node == idA
+					if v.Inflight != 0 || v.CanAccept != online || (v.NodeLiveness == contract.LivenessOnline) != online {
+						b.Fatalf("view %+v", v)
+					}
+				}
+				nodes := r.Snapshot()
+				for _, nd := range nodes {
+					for _, rs := range nd.Roles {
+						if rs.Inflight != 0 || rs.CanAccept != (nd.ID == idA) {
+							b.Fatalf("node %s role %+v", nd.ID, rs)
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkRoleMutation measures one durable add, set and rm transaction
+// each (temporary write and fsync, no-replace link or rename, directory
+// sync) on a registry of 1 and 100 roles, and checks the published
+// document, counters and order after every iteration.
+func BenchmarkRoleMutation(b *testing.B) {
+	for _, n := range []int{1, 100} {
+		b.Run(strconv.Itoa(n), func(b *testing.B) {
+			root := filepath.Join(b.TempDir(), "state")
+			os.MkdirAll(root, 0o700)
+			recs := benchRoles(n - 1)
+			// The registry exists on disk, as it would after loading it.
+			writeRegistry(b, root, docOf(1, n, recs...))
+			reg := newRoleRegistry(layout{root: root}, defaultDeps(), roleLookup, docOf(1, n, recs...))
+			nodes := map[string]bool{idA: true, idB: true}
+			commit := func(next *roleDoc) {
+				tmp, err := reg.prepare(next)
+				if err == nil {
+					err = reg.publish(tmp, next, idA)
+				}
+				if err != nil {
+					b.Fatal(err)
+				}
+			}
+			b.ReportAllocs()
+			i := 0
+			for b.Loop() {
+				i++
+				doc := reg.load().visible
+				next, rec := doc.withAdded(roleCfg("bench-"+strconv.Itoa(i), "implementer", idA))
+				commit(next)
+				c := rec.RoleConfig
+				c.Concurrency = 3
+				_, idx, _ := next.find(rec.ID)
+				set, _ := next.withReplaced(idx, c)
+				commit(set)
+				commit(set.withRemoved(idx))
+				got, err := layout{root: root}.loadRoleDoc(roleLookup, nodes)
+				if err != nil || got.revision != doc.revision+3 || got.nextOrder != doc.nextOrder+1 || len(got.roles) != n-1 || len(roleTempsB(root)) != 0 {
+					b.Fatalf("after iteration %d: %+v %v", i, got, err)
+				}
+			}
+		})
+	}
+}
+
+// roleTempsB lists temporaries in roles/.
+func roleTempsB(root string) []string {
+	var out []string
+	entries, _ := os.ReadDir(layout{root: root}.path(rolesName))
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), tempPrefix) {
+			out = append(out, e.Name())
+		}
+	}
+	return out
 }
