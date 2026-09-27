@@ -214,13 +214,19 @@ func TestTaskPolicy(t *testing.T) {
 			moved = append(moved, c)
 		}
 		mustFail(t, "tuple in another package", stream(moved...), "in "+NativeTaskProcessPackage+" has no run event")
-		// Unchanged stress and bench plans (no new shard, selector or
-		// package), the launch ledger's budget and the guards.
+		// Unchanged stress selection (iteration 05 adds no shard, selector
+		// or package; iteration 05b moved ./internal/plane to its own shard
+		// without changing the selection) and bench plan, the launch
+		// ledger's budget and the guards. The task children of
+		// TestTaskExecutionContract/process stay in the sidecar package,
+		// hence in the packages shard.
 		for _, goos := range []string{"linux", "darwin"} {
 			shards, err := StressShards(goos)
-			if err != nil || len(shards) != 3 || strings.Join(shards[0].Steps[0].Argv, " ") != wantRoleStressPackages ||
-				strings.Join(argvOf(shards[1].Steps), "|") != wantStressPG1+"|"+wantStressPG2+"|"+wantStressPG4 ||
-				strings.Join(argvOf(shards[2].Steps), "|") != wantStressFunction+"|"+wantStressPlaneFunction+"|"+wantNodeStressFunction {
+			if err != nil || len(shards) != 4 || strings.Join(shards[0].Steps[0].Argv, " ") != wantRoleStressPackages ||
+				!strings.Contains(shards[0].Steps[0].Argv[len(shards[0].Steps[0].Argv)-3], "./internal/sidecar") ||
+				strings.Join(argvOf(shards[1].Steps), "|") != wantStressPlane1+"|"+wantStressPlane2+"|"+wantStressPlane4 ||
+				strings.Join(argvOf(shards[2].Steps), "|") != wantStressPG1+"|"+wantStressPG2+"|"+wantStressPG4 ||
+				strings.Join(argvOf(shards[3].Steps), "|") != wantStressFunction+"|"+wantStressPlaneFunction+"|"+wantNodeStressFunction {
 				t.Fatalf("%s stress plan changed: %+v %v", goos, shards, err)
 			}
 		}

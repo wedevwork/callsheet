@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,14 +26,25 @@ const StressCount = 20
 var (
 	// stressCPUs are the GOMAXPROCS settings of the top-level test binaries.
 	stressCPUs = []int{1, 2, 4}
+	// stressWaves is the static execution schedule of Parallel shards
+	// (iteration 05b, DW4), keyed by shard name: each wave lists the CPU
+	// settings (values of stressCPUs) whose invocations run concurrently,
+	// and each wave starts only after the previous one has been joined and
+	// succeeded. A Parallel shard without an entry runs all of its
+	// invocations as one concurrent wave. It is empty: plane and
+	// processgroup each run their three CPU settings together. The
+	// pre-authorised plane fallback of design 05b (applied only through the
+	// light flow, when the first hosted run triggers it) fills exactly
+	// "plane": {{4}, {1, 2}}; TestStressPlan pins this literal.
+	stressWaves = map[string][][]int{}
 	// stressPackages are the timing- and concurrency-sensitive packages of
 	// the packages shard, run completely (tests only, no benchmarks) with
-	// the CPU list in one invocation.
+	// the CPU list in one invocation. ./internal/plane left this list for
+	// its own shard in iteration 05b (stressPlanePackage).
 	stressPackages = []string{
 		"./internal/testkit",
 		"./internal/testkit/fakeadapter",
 		"./internal/spikes/gittransport",
-		"./internal/plane",
 		// Iteration 03: the node client, sidecar (whose reconnect contracts
 		// run real plane subprocesses) and wire contract, complete.
 		"./internal/client",
@@ -41,9 +53,17 @@ var (
 		// Iteration 04: the adapter package (probe deadlines, cancellation
 		// and child waits on an injected clock), complete. The role
 		// contracts of plane, sidecar, client and contract already run in
-		// their packages above.
+		// their packages (plane in the plane shard).
 		"./internal/adapter",
 	}
+	// stressPlanePackage is the internal/plane package in the plane shard,
+	// distinct from the plane function-test selector in the functions shard
+	// (stressPlaneFunctionTests). Its stress time is CPU-bound under the
+	// race detector, and one -cpu=1,2,4 binary outgrew its 6-minute limit
+	// on the hosted runners (iteration 05b), so its three CPU settings run
+	// as three concurrent invocations (runConcurrentCPU), each StressCount
+	// times at one setting: the same 60 repetitions per test.
+	stressPlanePackage = "./internal/plane"
 	// stressProcessGroupPackage is the processgroup shard's package
 	// (iteration 02c). Its stress time is dominated by the 1 s TERM grace
 	// repeated sequentially, not by CPU, so its three CPU settings run as
@@ -71,14 +91,14 @@ var (
 	// stressPlaneFunctionTests (iteration 02b): the process-boundary CLI
 	// scenarios only. Each parent's "contracts" subtest, which delegates to
 	// internal/plane contracts already repeated in the packages shard, is
-	// excluded.
+	// excluded; those contracts repeat in the plane shard.
 	stressPlaneSubtests = []string{"paths", "persistence", "locking", "validation", "https-only", "prelisten-validation", "bounded-shutdown", "process"}
 	// stressNodeFunctionTests and stressNodeSubtests select the two
 	// process-boundary node scenarios (iteration 03): real competing
 	// sidecar processes and a real sidecar CLI's SIGTERM shutdown. The
 	// delegated clock contracts behind TestNodeReconnect's restart and
 	// disconnect and TestNodeLease are repeated directly in the packages
-	// shard, so their wrappers are not repeated here.
+	// and plane shards, so their wrappers are not repeated here.
 	stressNodeFunctionTests = []string{"TestNodeEnrollment", "TestNodeReconnect"}
 	stressNodeSubtests      = []string{"locking", "shutdown"}
 )
@@ -90,7 +110,8 @@ const (
 	// shard stage has its own, and "stress" shares one across all shards.
 	stressWatchdog = 15 * time.Minute
 	// maxConcurrentCPU bounds the concurrent invocations of a Parallel
-	// shard: at most three top-level go test commands run at once.
+	// shard: at most three top-level go test commands run at once, within
+	// one shard only (shards never overlap).
 	maxConcurrentCPU = 3
 	// stressStagePrefix prefixes a shard's name to form its devcheck stage.
 	stressStagePrefix = "stress-"
@@ -99,7 +120,9 @@ const (
 // StressShard is one independently executable part of the stress plan
 // (iteration 02c). Steps of a sequential shard run one after another and
 // stop at the first failure; the steps of a Parallel shard run concurrently
-// (runConcurrentCPU). Its devcheck stage is "stress-" + Name.
+// (runConcurrentCPU), one step per CPU setting in stressCPUs order, in the
+// waves stressWaves declares (by default one wave of all steps). Its
+// devcheck stage is "stress-" + Name.
 type StressShard struct {
 	Name     string
 	Parallel bool
@@ -147,13 +170,13 @@ func stressSupported(goos string) error {
 	return nil
 }
 
-// StressShards returns the stress plan for goos as its three fixed shards,
-// in order: packages (sequential), processgroup (Parallel: one invocation
-// per CPU setting) and functions (sequential). Their disjoint union is
-// exactly the iteration 02b selection plus iteration 03's node packages
-// and node function selector and iteration 04's adapter package: every
-// selected test runs StressCount times at
-// each CPU setting under the race detector. Only linux and darwin
+// StressShards returns the stress plan for goos as its four fixed shards,
+// in order: packages (sequential), plane (Parallel: one invocation per CPU
+// setting, iteration 05b), processgroup (Parallel, iteration 02c) and
+// functions (sequential). Their disjoint union is exactly the iteration 02b
+// selection plus iteration 03's node packages and node function selector
+// and iteration 04's adapter package: every selected test runs StressCount
+// times at each CPU setting under the race detector. Only linux and darwin
 // are supported; every other goos is rejected before any child runs. Each
 // call returns fresh slices, nested ones included.
 func StressShards(goos string) ([]StressShard, error) {
@@ -161,16 +184,20 @@ func StressShards(goos string) ([]StressShard, error) {
 		return nil, err
 	}
 	env := func() []string { return []string{"CGO_ENABLED=1"} }
-	processgroup := make([]Step, 0, len(stressCPUs))
-	for _, c := range stressCPUs {
-		processgroup = append(processgroup, Step{Name: "stress processgroup cpu" + strconv.Itoa(c), Env: env(),
-			Argv: append(stressFlags(strconv.Itoa(c)), stressProcessGroupPackage)})
+	perCPU := func(name, pkg string) []Step {
+		steps := make([]Step, 0, len(stressCPUs))
+		for _, c := range stressCPUs {
+			steps = append(steps, Step{Name: "stress " + name + " cpu" + strconv.Itoa(c), Env: env(),
+				Argv: append(stressFlags(strconv.Itoa(c)), pkg)})
+		}
+		return steps
 	}
 	return []StressShard{
 		{Name: "packages", Steps: []Step{
 			{Name: "stress packages", Env: env(), Argv: append(stressFlags(stressCPUList()), stressPackages...)},
 		}},
-		{Name: "processgroup", Parallel: true, Steps: processgroup},
+		{Name: "plane", Parallel: true, Steps: perCPU("plane", stressPlanePackage)},
+		{Name: "processgroup", Parallel: true, Steps: perCPU("processgroup", stressProcessGroupPackage)},
 		{Name: "functions", Steps: []Step{
 			{Name: "stress function", Env: env(),
 				Argv: append(stressFlags(stressCPUList()), "-run="+stressSelector(stressFunctionTests), stressFunctionPackage)},
@@ -183,10 +210,11 @@ func StressShards(goos string) ([]StressShard, error) {
 }
 
 // StressSteps returns the stress plan for goos flattened in shard and CPU
-// order: seven race-built go test commands. It is an inspection view only;
-// execution uses StressShards and never infers concurrency from this list.
-// Unsupported goos values are rejected like StressShards. Each call returns
-// fresh slices.
+// order: ten race-built go test commands. It is an inspection view only;
+// execution uses StressShards (and stressWaves for the order of a Parallel
+// shard's invocations) and never infers concurrency or execution order
+// from this list. Unsupported goos values are rejected like StressShards.
+// Each call returns fresh slices.
 func StressSteps(goos string) ([]Step, error) {
 	shards, err := StressShards(goos)
 	if err != nil {
@@ -199,59 +227,137 @@ func StressSteps(goos string) ([]Step, error) {
 	return steps, nil
 }
 
-// stressPlan returns the shards a stress stage runs: all three for
-// "stress", else the single shard named by the stage.
+// stressPlan returns the shards a stress stage runs: all four for
+// "stress", else the single shard named by the stage. An invalid wave
+// schedule (stressWaves) for any returned shard is rejected here, before a
+// scratch directory or child exists.
 func stressPlan(goos, stage string) ([]StressShard, error) {
 	shards, err := StressShards(goos)
 	if err != nil {
 		return nil, err
 	}
-	if stage == "stress" {
-		return shards, nil
+	if stage != "stress" {
+		var one []StressShard
+		for _, sh := range shards {
+			if stressStagePrefix+sh.Name == stage {
+				one = []StressShard{sh}
+			}
+		}
+		if one == nil {
+			return nil, fmt.Errorf("devcheck: no stress shard for stage %q", stage)
+		}
+		shards = one
 	}
 	for _, sh := range shards {
-		if stressStagePrefix+sh.Name == stage {
-			return []StressShard{sh}, nil
+		if !sh.Parallel {
+			continue
+		}
+		if _, err := stressGroups(sh, stressWaves[sh.Name]); err != nil {
+			return nil, err
 		}
 	}
-	return nil, fmt.Errorf("devcheck: no stress shard for stage %q", stage)
+	return shards, nil
 }
 
 func isStressStage(stage string) bool {
-	return stage == "stress" || stage == stressStagePrefix+"packages" ||
+	return stage == "stress" || stage == stressStagePrefix+"packages" || stage == stressStagePrefix+"plane" ||
 		stage == stressStagePrefix+"processgroup" || stage == stressStagePrefix+"functions"
 }
 
 // stress runs shards in order under one watchdog: a context that ends at
 // the earlier of stressWatchdog from now and the caller's deadline, and
 // that is always canceled on return. A shard stage passes one shard and so
-// gets its own watchdog; "stress" passes all three, which share one. A
+// gets its own watchdog; "stress" passes all four, which share one. A
 // failure or an expired watchdog fails the stage and never starts the next
-// step or shard.
+// step, wave or shard. Every Parallel shard's waves (stressGroups) are
+// resolved before anything starts, so an invalid schedule starts nothing
+// (stressPlan has already rejected it for a dispatched stage).
 func (d *driver) stress(shards []StressShard) error {
+	groups := make([][][]Step, len(shards))
+	for i, sh := range shards {
+		if !sh.Parallel {
+			continue
+		}
+		g, err := stressGroups(sh, stressWaves[sh.Name])
+		if err != nil {
+			return err
+		}
+		groups[i] = g
+	}
 	ctx, cancel := context.WithTimeout(d.ctx, stressWatchdog)
 	defer cancel()
 	sd := *d
 	sd.ctx = ctx
-	for _, sh := range shards {
+	for i, sh := range shards {
 		if !sh.Parallel {
 			if err := sd.stressSequential(sh.Steps); err != nil {
 				return err
 			}
 			continue
 		}
-		label := "stress " + sh.Name
-		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("devcheck: stress watchdog (%v) ended before %s: %w", stressWatchdog, label, err)
-		}
-		if err := runConcurrentCPU(ctx, d.run, sh.Steps, dirLogs(d.scratch), d.out); err != nil {
-			if ctx.Err() != nil {
-				return fmt.Errorf("devcheck: stress watchdog (%v) ended during %s: %w", stressWatchdog, label, err)
+		for w, group := range groups[i] {
+			label := "stress " + sh.Name
+			if len(groups[i]) > 1 {
+				label += " wave " + strconv.Itoa(w+1)
 			}
-			return err
+			if err := ctx.Err(); err != nil {
+				return fmt.Errorf("devcheck: stress watchdog (%v) ended before %s: %w", stressWatchdog, label, err)
+			}
+			if err := runConcurrentCPU(ctx, d.run, group, dirLogs(d.scratch), d.out); err != nil {
+				if ctx.Err() != nil {
+					return fmt.Errorf("devcheck: stress watchdog (%v) ended during %s: %w", stressWatchdog, label, err)
+				}
+				return err
+			}
 		}
 	}
 	return nil
+}
+
+// stressGroups returns the concurrent groups of Parallel shard sh in
+// execution order (iteration 05b, DW4). With no waves the shard is one
+// group of all its steps. Otherwise each wave names CPU settings, and the
+// step of CPU setting stressCPUs[i] is sh.Steps[i]: every step must be
+// covered exactly once, by nonempty waves of at most maxConcurrentCPU
+// steps, or the schedule is rejected before anything runs. Waved groups
+// are fresh slices; neither kind of group changes the shard's step order,
+// its flattened inspection view.
+func stressGroups(sh StressShard, waves [][]int) ([][]Step, error) {
+	if len(waves) == 0 {
+		return [][]Step{sh.Steps}, nil
+	}
+	bad := func(format string, args ...any) error {
+		return fmt.Errorf("devcheck: invalid stress waves %v for shard %s: "+format, append([]any{waves, sh.Name}, args...)...)
+	}
+	if !sh.Parallel || len(sh.Steps) != len(stressCPUs) {
+		return nil, bad("not a Parallel shard of one step per CPU setting")
+	}
+	used := make([]bool, len(stressCPUs))
+	groups := make([][]Step, 0, len(waves))
+	for _, wave := range waves {
+		if len(wave) == 0 || len(wave) > maxConcurrentCPU {
+			return nil, bad("a wave runs 1 to %d invocations, got %d", maxConcurrentCPU, len(wave))
+		}
+		group := make([]Step, 0, len(wave))
+		for _, c := range wave {
+			i := slices.Index(stressCPUs, c)
+			if i < 0 {
+				return nil, bad("CPU setting %d is not in %v", c, stressCPUs)
+			}
+			if used[i] {
+				return nil, bad("CPU setting %d appears twice", c)
+			}
+			used[i] = true
+			group = append(group, sh.Steps[i])
+		}
+		groups = append(groups, group)
+	}
+	for i, u := range used {
+		if !u {
+			return nil, bad("CPU setting %d is not scheduled", stressCPUs[i])
+		}
+	}
+	return groups, nil
 }
 
 // stressSequential runs steps one after another under d.ctx (the watchdog
@@ -416,9 +522,9 @@ type cpuRun struct {
 }
 
 // runConcurrentCPU is the concurrent coordinator of a Parallel stress shard
-// (iteration 02c): it runs steps, at most maxConcurrentCPU of them,
-// concurrently under ctx and joins every started Runner call before it
-// returns.
+// (iteration 02c; one call per wave, iteration 05b): it runs steps, at most
+// maxConcurrentCPU of them, concurrently under ctx and joins every started
+// Runner call before it returns.
 //
 //   - A context already done starts nothing. All logs are created before
 //     any launch; if one cannot be, nothing starts and the prepared logs are

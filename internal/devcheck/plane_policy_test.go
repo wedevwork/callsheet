@@ -57,6 +57,7 @@ func TestPlaneVerificationPolicyContract(t *testing.T) {
 			"bench":               {{wantBenchGit}, {wantBenchPlane}, {wantBenchContract}, {wantBenchSidecar}, {wantBenchAdapter}},
 			"stress":              wantStageGroups["stress"],
 			"stress-packages":     wantStageGroups["stress-packages"],
+			"stress-plane":        wantStageGroups["stress-plane"],
 			"stress-processgroup": wantStageGroups["stress-processgroup"],
 			"stress-functions":    wantStageGroups["stress-functions"],
 			"test":                {{wantTestNative}, {wantTestRace}},

@@ -55,8 +55,10 @@ func testOnlySources(root, name string) (tests, others []string, err error) {
 // Literal oracles for iteration 03's verification policy (design 03, CI
 // plan), compared against the plans, never derived from them.
 const (
-	// Iteration 04 appended ./internal/adapter to the same invocation.
-	wantNodeStressPackages = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/plane ./internal/client ./internal/sidecar ./internal/contract ./internal/adapter"
+	// Iteration 04 appended ./internal/adapter to the same invocation;
+	// iteration 05b moved ./internal/plane (the plane's lease, registry and
+	// stream contracts) to the plane shard, one invocation per CPU setting.
+	wantNodeStressPackages = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/sidecar ./internal/contract ./internal/adapter"
 	wantNodeStressFunction = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestNodeEnrollment|TestNodeReconnect)$/^(locking|shutdown)$ ./tests/function"
 )
 
@@ -70,10 +72,11 @@ func TestNodeVerificationPolicyContract(t *testing.T) {
 	for _, goos := range []string{"linux", "darwin"} {
 		t.Run(goos, func(t *testing.T) {
 			shards, err := StressShards(goos)
-			if err != nil || len(shards) != 3 || strings.Join(shards[0].Steps[0].Argv, " ") != wantNodeStressPackages {
-				t.Fatalf("packages shard = %+v %v", shards, err)
+			if err != nil || len(shards) != 4 || strings.Join(shards[0].Steps[0].Argv, " ") != wantNodeStressPackages ||
+				shards[1].Name != "plane" || strings.Join(argvOf(shards[1].Steps), "|") != wantStressPlane1+"|"+wantStressPlane2+"|"+wantStressPlane4 {
+				t.Fatalf("packages and plane shards = %+v %v", shards, err)
 			}
-			fn := shards[2].Steps
+			fn := shards[3].Steps
 			if len(fn) != 3 || fn[2].Name != "stress node function" || strings.Join(fn[2].Argv, " ") != wantNodeStressFunction ||
 				strings.Join(fn[0].Argv, " ") != wantStressFunction || strings.Join(fn[1].Argv, " ") != wantStressPlaneFunction {
 				t.Fatalf("functions shard = %+v", fn)

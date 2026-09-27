@@ -1,6 +1,6 @@
 // Package devcheck is the development-only, pure-Go check driver behind
 // cmd/devcheck: test, coverage, bench, cross, all, native, stress and the
-// three stress shards stress-packages, stress-processgroup and
+// four stress shards stress-packages, stress-plane, stress-processgroup and
 // stress-functions. It is
 // not distributed and imports no product services. Child tools run with argv
 // (no shell).
@@ -24,9 +24,9 @@ import (
 
 // Runner runs argv (argv[0] is the executable) with the complete child
 // environment env in directory dir ("" = the caller's working directory).
-// A Runner must be safe for concurrent calls: the processgroup stress shard
-// (iteration 02c) calls it from up to three goroutines at once, each with
-// its own writers.
+// A Runner must be safe for concurrent calls: the plane (iteration 05b) and
+// processgroup (iteration 02c) stress shards call it from up to three
+// goroutines at once, each with its own writers.
 type Runner func(ctx context.Context, argv []string, env []string, dir string, stdout, stderr io.Writer) error
 
 // ExecRunner implements Runner with exec.CommandContext.
@@ -335,12 +335,13 @@ func (d *driver) cross() error {
 	return Cross(d.ctx, d.run, out, Matrix)
 }
 
-const usage = "usage: devcheck test | coverage [-o profile] | bench | cross | all | native | stress | stress-packages | stress-processgroup | stress-functions\n"
+const usage = "usage: devcheck test | coverage [-o profile] | bench | cross | all | native | stress | stress-packages | stress-plane | stress-processgroup | stress-functions\n"
 
 // stageNames is the single stage definition used by argument dispatch and
-// advertised by Stages. The three stress-* stages each run one stress shard
-// (iteration 02c, one CI worker job each); "stress" runs all three.
-var stageNames = [...]string{"test", "coverage", "bench", "cross", "all", "native", "stress", "stress-packages", "stress-processgroup", "stress-functions"}
+// advertised by Stages. The four stress-* stages each run one stress shard
+// (iteration 02c, one CI worker job per platform each; stress-plane since
+// iteration 05b); "stress" runs all four.
+var stageNames = [...]string{"test", "coverage", "bench", "cross", "all", "native", "stress", "stress-packages", "stress-plane", "stress-processgroup", "stress-functions"}
 
 // allStages is the stage sequence of "all". "native" and the stress stages
 // are selected explicitly: stress repeats subprocess builds and process
@@ -422,7 +423,7 @@ func runFor(ctx context.Context, goos string, args []string, out, errOut io.Writ
 			err = d.cross()
 		case "native":
 			err = d.native(nativeSteps)
-		case "stress", "stress-packages", "stress-processgroup", "stress-functions":
+		case "stress", "stress-packages", "stress-plane", "stress-processgroup", "stress-functions":
 			err = d.stress(stressShards)
 		default:
 			err = fmt.Errorf("devcheck: stage %q is advertised but not implemented", st)

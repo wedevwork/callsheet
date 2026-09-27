@@ -32,9 +32,13 @@ import (
 
 // The literal deduplicated stress plan (design 02b, Stress selection), as
 // sharded by design 02c: processgroup left the packages command for three
-// single-CPU invocations; the function commands are unchanged.
+// single-CPU invocations, and so did ./internal/plane by design 05b; the
+// function commands are unchanged.
 const (
-	speedPackages      = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/plane ./internal/client ./internal/sidecar ./internal/contract ./internal/adapter"
+	speedPackages      = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/sidecar ./internal/contract ./internal/adapter"
+	speedPlane1        = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/plane"
+	speedPlane2        = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/plane"
+	speedPlane4        = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/plane"
 	speedPG1           = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/spikes/processgroup"
 	speedPG2           = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/spikes/processgroup"
 	speedPG4           = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/spikes/processgroup"
@@ -144,9 +148,10 @@ func taskProcessEvents(drop string) []map[string]any {
 }
 
 // speedJobs is the table of ordinary jobs: the two main jobs (design 02b,
-// Workflow topology) and the six stress workers that replaced its two
-// stress jobs (design 02c). The two summaries that keep the stress
-// contexts are checked by TestStressShardSummaries.
+// Workflow topology) and the eight stress workers that replaced its two
+// stress jobs (design 02c, with design 05b's plane workers). The two
+// summaries that keep the stress contexts are checked by
+// TestStressShardSummaries.
 var speedJobs = []struct {
 	id, name, runner, timeout string
 	checks                    []string
@@ -154,9 +159,11 @@ var speedJobs = []struct {
 	{"linux", "ci-linux", "ubuntu-24.04", "45", []string{"go run ./cmd/devcheck test", "go run ./cmd/devcheck coverage", "go run ./cmd/devcheck bench", "go run ./cmd/devcheck cross"}},
 	{"macos", "ci-macos", "macos-15", "30", []string{"go run ./cmd/devcheck native"}},
 	{"linux-stress-packages", "ci-linux-stress-packages", "ubuntu-24.04", "20", []string{"go run ./cmd/devcheck stress-packages"}},
+	{"linux-stress-plane", "ci-linux-stress-plane", "ubuntu-24.04", "20", []string{"go run ./cmd/devcheck stress-plane"}},
 	{"linux-stress-processgroup", "ci-linux-stress-processgroup", "ubuntu-24.04", "20", []string{"go run ./cmd/devcheck stress-processgroup"}},
 	{"linux-stress-functions", "ci-linux-stress-functions", "ubuntu-24.04", "20", []string{"go run ./cmd/devcheck stress-functions"}},
 	{"macos-stress-packages", "ci-macos-stress-packages", "macos-15", "20", []string{"go run ./cmd/devcheck stress-packages"}},
+	{"macos-stress-plane", "ci-macos-stress-plane", "macos-15", "20", []string{"go run ./cmd/devcheck stress-plane"}},
 	{"macos-stress-processgroup", "ci-macos-stress-processgroup", "macos-15", "20", []string{"go run ./cmd/devcheck stress-processgroup"}},
 	{"macos-stress-functions", "ci-macos-stress-functions", "macos-15", "20", []string{"go run ./cmd/devcheck stress-functions"}},
 }
@@ -217,10 +224,11 @@ func delegatedCall(call *ast.CallExpr) (kind, contract string) {
 func TestCISpeedSelection(t *testing.T) {
 	for _, goos := range []string{"linux", "darwin"} {
 		steps, err := devcheck.StressSteps(goos)
-		if err != nil || len(steps) != 7 {
+		if err != nil || len(steps) != 10 {
 			t.Fatalf("%s: %+v %v", goos, steps, err)
 		}
-		for i, want := range []struct{ name, argv string }{{"stress packages", speedPackages}, {"stress processgroup cpu1", speedPG1},
+		for i, want := range []struct{ name, argv string }{{"stress packages", speedPackages},
+			{"stress plane cpu1", speedPlane1}, {"stress plane cpu2", speedPlane2}, {"stress plane cpu4", speedPlane4}, {"stress processgroup cpu1", speedPG1},
 			{"stress processgroup cpu2", speedPG2}, {"stress processgroup cpu4", speedPG4}, {"stress function", speedFunction}, {"stress plane function", speedPlaneFunction},
 			{"stress node function", speedNodeFunction}} {
 			if steps[i].Name != want.name || strings.Join(steps[i].Argv, " ") != want.argv || strings.Join(steps[i].Env, " ") != "CGO_ENABLED=1" {
@@ -229,18 +237,25 @@ func TestCISpeedSelection(t *testing.T) {
 		}
 		// FP-6 is no longer repeated by a function step; its experiment
 		// stays repeated through the complete processgroup package.
-		for _, s := range steps[4:] {
+		for _, s := range steps[7:] {
 			if strings.Contains(strings.Join(s.Argv, " "), "TestFP6ProcessGroups") {
 				t.Fatalf("%s: %s still selects TestFP6ProcessGroups", goos, s.Name)
 			}
 		}
-		for _, s := range steps[1:4] {
+		for _, s := range steps[4:7] {
 			if !slices.Contains(s.Argv, "./internal/spikes/processgroup") || len(s.Argv) != 7 {
 				t.Fatalf("%s %s lost the complete processgroup package: %v", goos, s.Name, s.Argv)
 			}
 		}
-		if !slices.Contains(steps[0].Argv, "./internal/plane") {
-			t.Fatalf("%s packages step lost plane: %v", goos, steps[0].Argv)
+		// The plane package (its delegated contracts included) is repeated
+		// completely in its own shard (design 05b), never in packages.
+		for _, s := range steps[1:4] {
+			if !slices.Contains(s.Argv, "./internal/plane") || len(s.Argv) != 7 {
+				t.Fatalf("%s %s lost the complete plane package: %v", goos, s.Name, s.Argv)
+			}
+		}
+		if slices.Contains(steps[0].Argv, "./internal/plane") {
+			t.Fatalf("%s packages step still repeats plane: %v", goos, steps[0].Argv)
 		}
 	}
 
@@ -304,7 +319,7 @@ func TestCISpeedSelection(t *testing.T) {
 	// fixture with the same names, near-prefix neighbours and FP-6.
 	var selector string
 	steps, _ := devcheck.StressSteps(runtime.GOOS)
-	for _, a := range steps[5].Argv {
+	for _, a := range steps[8].Argv {
 		if v, ok := strings.CutPrefix(a, "-run="); ok {
 			selector = v
 		}
@@ -447,9 +462,10 @@ func runSelectorFixture(t *testing.T, selector string) (passed, logged []string)
 	return passed, strings.Split(strings.TrimSuffix(string(b), "\n"), "\n")
 }
 
-// FP-2: the actual workflow's main jobs and, since iteration 02c, its six
-// stress workers are independent, with identical pinned setup and exact
-// check commands; the two summaries follow them.
+// FP-2: the actual workflow's main jobs and, since iteration 02c, its
+// stress workers (eight since iteration 05b) are independent, with
+// identical pinned setup and exact check commands; the two summaries
+// follow them.
 func TestCISpeedJobs(t *testing.T) {
 	data := ciWorkflow(t)
 	if err := cicheck.ValidateWorkflow(data); err != nil {
@@ -464,8 +480,8 @@ func TestCISpeedJobs(t *testing.T) {
 	for i := 0; i+1 < len(jobs.Content); i += 2 {
 		ids = append(ids, jobs.Content[i].Value)
 	}
-	if strings.Join(ids, " ") != "linux macos linux-stress-packages linux-stress-processgroup linux-stress-functions "+
-		"macos-stress-packages macos-stress-processgroup macos-stress-functions linux-stress macos-stress" {
+	if strings.Join(ids, " ") != "linux macos linux-stress-packages linux-stress-plane linux-stress-processgroup linux-stress-functions "+
+		"macos-stress-packages macos-stress-plane macos-stress-processgroup macos-stress-functions linux-stress macos-stress" {
 		t.Fatalf("job ids = %v", ids)
 	}
 	var names []string
@@ -514,7 +530,7 @@ func TestCISpeedJobs(t *testing.T) {
 			}
 		}
 	}
-	if strings.Join(names[:2], ",") != strings.Join(cicheck.RequiredChecks()[:2], ",") || len(names) != 8 {
+	if strings.Join(names[:2], ",") != strings.Join(cicheck.RequiredChecks()[:2], ",") || len(names) != 10 {
 		t.Fatalf("contexts %v, contract %v", names, cicheck.RequiredChecks())
 	}
 	for _, top := range []string{"concurrency", "env", "defaults"} {
@@ -616,10 +632,11 @@ func TestCISpeedPolicy(t *testing.T) {
 			}
 		}
 		// The complete local stress stage dispatches the whole plan, with
-		// processgroup's three invocations concurrent (compared as a set).
+		// plane's and processgroup's three invocations concurrent (each
+		// compared as a set).
 		r := &ciRunner{}
 		if code, out, errOut := devcheckRun(t, r, "stress"); code != 0 || !strings.Contains(out, "stage stress ok") ||
-			!sameGroups(r.calls, [][]string{{speedPackages}, {speedPG1, speedPG2, speedPG4}, {speedFunction}, {speedPlaneFunction}, {speedNodeFunction}}) {
+			!sameGroups(r.calls, [][]string{{speedPackages}, {speedPlane1, speedPlane2, speedPlane4}, {speedPG1, speedPG2, speedPG4}, {speedFunction}, {speedPlaneFunction}, {speedNodeFunction}}) {
 			t.Fatalf("stress dispatch = %d %v %s", code, r.calls, errOut)
 		}
 		// Drift: stress back in a main job is rejected.
@@ -641,7 +658,7 @@ func TestCISpeedPolicy(t *testing.T) {
 				t.Fatalf("Stress checks lacks the command %q", l)
 			}
 		}
-		requireTerms(t, "Stress checks", stress, "`stress packages`", "`stress processgroup cpu1`", "`stress function`", "`stress plane function`",
+		requireTerms(t, "Stress checks", stress, "`stress packages`", "`stress plane cpu1`", "`stress processgroup cpu1`", "`stress function`", "`stress plane function`",
 			"`TestFP6ProcessGroups`", "`TestExperiment`", "`TestNativeStateContract`", "`TestStateFailureContract`",
 			"`TestServerFailureContract`", "`TestReissueFailureContract`", "`contracts`", "`process`",
 			"quote the entire `-run` argument")

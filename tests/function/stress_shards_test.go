@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -21,11 +22,13 @@ import (
 	"github.com/wedevwork/callsheet/internal/testkit"
 )
 
-// Iteration 02c function tests: one top-level TestStressShard* per FP. They
-// read tracked artifacts only, inject runners into devcheck, run the
-// coordinator's contract by name in a compiled devcheck test binary and the
-// summaries' literal command in local bash, and never contact GitHub or run
-// a real suite, stress or devcheck recursively.
+// Iteration 02c function tests: one top-level TestStressShard* per FP,
+// extended by iteration 05b (the plane shard: four shards, ten steps,
+// twelve jobs, four-result summaries). They read tracked artifacts only,
+// inject runners into devcheck, run the coordinator's contract by name in a
+// compiled devcheck test binary and the summaries' literal command in local
+// bash, and never contact GitHub or run a real suite, stress or devcheck
+// recursively.
 
 // shard02b is iteration 02b's literal stress selection, the independent
 // baseline of the shard union: five packages and two selectors, each at
@@ -36,13 +39,20 @@ var shard02b = []string{
 	"go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=" + speedPlaneSelector + " ./tests/function",
 }
 
-// shardPlan is the literal 02c shard table (design 02c, Shard plans).
+// shardPlan is the literal shard table (design 02c, Shard plans, with
+// design 05b's plane shard: ./internal/plane left the packages command for
+// three single-CPU invocations).
 var shardPlan = []struct {
 	name     string
 	parallel bool
 	steps    [][2]string
 }{
-	{"packages", false, [][2]string{{"stress packages", "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/plane ./internal/client ./internal/sidecar ./internal/contract ./internal/adapter"}}},
+	{"packages", false, [][2]string{{"stress packages", "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/sidecar ./internal/contract ./internal/adapter"}}},
+	{"plane", true, [][2]string{
+		{"stress plane cpu1", "go test -race -count=20 -cpu=1 -timeout=6m ./internal/plane"},
+		{"stress plane cpu2", "go test -race -count=20 -cpu=2 -timeout=6m ./internal/plane"},
+		{"stress plane cpu4", "go test -race -count=20 -cpu=4 -timeout=6m ./internal/plane"},
+	}},
 	{"processgroup", true, [][2]string{
 		{"stress processgroup cpu1", "go test -race -count=20 -cpu=1 -timeout=6m ./internal/spikes/processgroup"},
 		{"stress processgroup cpu2", "go test -race -count=20 -cpu=2 -timeout=6m ./internal/spikes/processgroup"},
@@ -150,9 +160,10 @@ func tuples(t *testing.T, argv string) []tuple {
 	return out
 }
 
-// FP-1: both OS plans are exactly the three literal shards, and their
-// normalized union is the 02b multiset plus iteration 03's literal
-// additions, with nothing duplicated or lost.
+// FP-1: both OS plans are exactly the four literal shards (ten steps), and
+// their normalized union is the 02b multiset plus the literal additions of
+// iterations 03 and 04, with nothing duplicated or lost; the complete plane
+// package runs exactly once per CPU setting, in the plane shard only.
 func TestStressShardSelection(t *testing.T) {
 	want := map[tuple]int{}
 	for _, argv := range shard02b {
@@ -191,6 +202,7 @@ func TestStressShardSelection(t *testing.T) {
 			t.Fatalf("%s shards = %+v %v", goos, shards, err)
 		}
 		got := map[tuple]int{}
+		owner := map[tuple]string{}
 		var flat []string
 		for i, sh := range shards {
 			w := shardPlan[i]
@@ -207,6 +219,7 @@ func TestStressShardSelection(t *testing.T) {
 						t.Fatalf("%s %s: count %s", goos, s.Name, tp.count)
 					}
 					got[tp]++
+					owner[tp] = sh.Name
 				}
 				flat = append(flat, argv)
 			}
@@ -221,20 +234,30 @@ func TestStressShardSelection(t *testing.T) {
 				t.Errorf("%s: %+v selected %d times, 02b and 03 selected it %d times", goos, tp, n, want[tp])
 			}
 		}
+		for _, cpu := range []string{"1", "2", "4"} {
+			if tp := (tuple{"./internal/plane", "", cpu, "20"}); got[tp] != 1 || owner[tp] != "plane" {
+				t.Fatalf("%s: plane at -cpu=%s selected %d times, in %q", goos, cpu, got[tp], owner[tp])
+			}
+		}
+		for tp, sh := range owner {
+			if tp.pkg == "./internal/plane" && sh != "plane" {
+				t.Fatalf("%s: %+v outside the plane shard (%s)", goos, tp, sh)
+			}
+		}
 		steps, err := devcheck.StressSteps(goos)
 		var flatSteps []string
 		for _, s := range steps {
 			flatSteps = append(flatSteps, strings.Join(s.Argv, " "))
 		}
-		if err != nil || !slices.Equal(flatSteps, flat) {
-			t.Fatalf("%s StressSteps is not the flattened shard view: %q", goos, flatSteps)
+		if err != nil || len(steps) != 10 || !slices.Equal(flatSteps, flat) {
+			t.Fatalf("%s StressSteps is not the ten-step flattened shard view: %q", goos, flatSteps)
 		}
 	}
 	// The functions shard keeps 02b's plane selector, whose executable
 	// fixture and exclusions TestCISpeedSelection still runs.
 	shards, _ := devcheck.StressShards("linux")
-	if !slices.Contains(shards[2].Steps[1].Argv, "-run="+speedPlaneSelector) {
-		t.Fatalf("plane selector changed: %v", shards[2].Steps[1].Argv)
+	if !slices.Contains(shards[3].Steps[1].Argv, "-run="+speedPlaneSelector) {
+		t.Fatalf("plane selector changed: %v", shards[3].Steps[1].Argv)
 	}
 	for _, goos := range []string{"windows", "freebsd", ""} {
 		if _, err := devcheck.StressShards(goos); err == nil {
@@ -265,12 +288,15 @@ func (r *syncRunner) run(_ context.Context, argv, _ []string, _ string, stdout, 
 }
 
 // FP-2: devcheck.Run executes the aggregate and each shard with the exact
-// commands and boundaries, fails with retained logs, and the concurrent
+// commands and boundaries, runs stress-plane's three invocations
+// concurrently and joined with ordered logs, never overlaps the two
+// Parallel shards, fails with retained logs, and the concurrent
 // coordinator's contract passes by name.
 func TestStressShardExecution(t *testing.T) {
 	for stage, want := range map[string][][]string{
-		"stress":              shardArgv("packages", "processgroup", "functions"),
+		"stress":              shardArgv("packages", "plane", "processgroup", "functions"),
 		"stress-packages":     shardArgv("packages"),
+		"stress-plane":        shardArgv("plane"),
 		"stress-processgroup": shardArgv("processgroup"),
 		"stress-functions":    shardArgv("functions"),
 	} {
@@ -292,16 +318,19 @@ func TestStressShardExecution(t *testing.T) {
 			t.Fatalf("%s: successful scratch %s not removed", stage, scratch)
 		}
 	}
-	// A failed processgroup invocation fails the shard after all three
-	// ran, stops the aggregate before functions and keeps its log.
+	// A failed plane or processgroup invocation fails its shard after all
+	// three ran, stops the aggregate before the next shard and keeps its
+	// log.
 	for _, c := range []struct {
 		stage, failOn, failed string
 		want                  [][]string
 	}{
-		{"stress", "-cpu=2 ", "stress processgroup cpu2", shardArgv("packages", "processgroup")},
+		{"stress", "-cpu=2 -timeout=6m ./internal/plane", "stress plane cpu2", shardArgv("packages", "plane")},
+		{"stress-plane", "-cpu=4 ", "stress plane cpu4", shardArgv("plane")},
+		{"stress", "-cpu=2 -timeout=6m ./internal/spikes/processgroup", "stress processgroup cpu2", shardArgv("packages", "plane", "processgroup")},
 		{"stress-processgroup", "-cpu=4 ", "stress processgroup cpu4", shardArgv("processgroup")},
 		{"stress-functions", "TestFP4TransportHarness", "stress function", shardArgv("functions")[:1]},
-		{"stress", "./internal/plane", "stress packages", shardArgv("packages")},
+		{"stress", "./internal/sidecar", "stress packages", shardArgv("packages")},
 	} {
 		r := &syncRunner{failOn: c.failOn}
 		var out, errOut bytes.Buffer
@@ -317,12 +346,107 @@ func TestStressShardExecution(t *testing.T) {
 		}
 		os.RemoveAll(scratch)
 	}
-	// The coordinator's contract, by name, with every named subtest.
+	// Through devcheck.Run: all three plane invocations have started before
+	// any ends (a barrier), and so have processgroup's; plane's six events
+	// all precede processgroup's six (the Parallel shards never overlap);
+	// the logs replay under their CPU names in CPU order.
+	o := &overlapRunner{groups: map[string]*gate{"./internal/plane": newGate(3), "./internal/spikes/processgroup": newGate(3)}}
+	var out, errOut bytes.Buffer
+	if code := devcheck.Run(context.Background(), []string{"stress"}, &out, &errOut, o.run); code != 0 {
+		t.Fatalf("stress with overlap barriers = %d: %s", code, errOut.String())
+	}
+	o.mu.Lock()
+	events := slices.Clone(o.events)
+	o.mu.Unlock()
+	var pl, pg []int
+	for i, e := range events {
+		switch {
+		case strings.HasSuffix(e, " ./internal/plane"):
+			pl = append(pl, i)
+		case strings.HasSuffix(e, " ./internal/spikes/processgroup"):
+			pg = append(pg, i)
+		}
+	}
+	if len(events) != 20 || !slices.Equal(pl, []int{2, 3, 4, 5, 6, 7}) || !slices.Equal(pg, []int{8, 9, 10, 11, 12, 13}) {
+		t.Fatalf("events = %q", events)
+	}
+	for _, from := range []int{2, 8} {
+		for i := from; i < from+6; i++ {
+			if strings.HasPrefix(events[i], "start ") != (i < from+3) {
+				t.Fatalf("a Parallel shard's invocation ended before all three started: %q", events)
+			}
+		}
+	}
+	scratch := scratchOf(out.String())
+	pos := -1
+	for _, cpu := range []string{"1", "2", "4"} {
+		name := "stress plane cpu" + cpu
+		i := strings.Index(out.String(), "devcheck: ---- "+name+" log ("+filepath.Join(scratch, "stress-plane-cpu"+cpu+".log")+") ----\nok go test -race -count=20 -cpu="+cpu+" -timeout=6m ./internal/plane\n")
+		if i < 0 || i < pos || !strings.Contains(out.String()[i:], "devcheck: "+name+": ok in ") {
+			t.Fatalf("%s log not replayed in CPU order:\n%s", name, out.String())
+		}
+		pos = i
+	}
+	// The coordinator's contract, by name, with every named subtest: the
+	// plane and processgroup overlap, failure, watchdog and log contracts
+	// and the inactive fallback's wave mechanism.
 	const pkg = "./internal/devcheck"
 	bin := testkit.BuildTestBinary(t, pkg, "devcheck-stress-contract")
 	contractRun(t, bin, pkg, "^TestStressConcurrencyContract$", os.Environ(),
 		"TestStressConcurrencyContract", "TestStressConcurrencyContract/overlap", "TestStressConcurrencyContract/failure",
-		"TestStressConcurrencyContract/watchdog", "TestStressConcurrencyContract/logs")
+		"TestStressConcurrencyContract/watchdog", "TestStressConcurrencyContract/logs", "TestStressConcurrencyContract/waves")
+}
+
+// gate releases its waiters once n have arrived; a wait that is not
+// released within the hang guard fails instead of blocking forever. It is a
+// deadlock guard, never a timing oracle: correct code releases at once.
+type gate struct {
+	mu      sync.Mutex
+	n       int
+	arrived int
+	release chan struct{}
+}
+
+func newGate(n int) *gate { return &gate{n: n, release: make(chan struct{})} }
+
+func (g *gate) wait() error {
+	g.mu.Lock()
+	g.arrived++
+	if g.arrived == g.n {
+		close(g.release)
+	}
+	g.mu.Unlock()
+	select {
+	case <-g.release:
+		return nil
+	case <-time.After(30 * time.Second):
+		return errors.New("gate not released: the invocations did not overlap")
+	}
+}
+
+// overlapRunner records start and end events and holds each call whose
+// last argument names a gated package until all of that package's calls
+// have arrived.
+type overlapRunner struct {
+	mu     sync.Mutex
+	events []string
+	groups map[string]*gate
+}
+
+func (r *overlapRunner) run(_ context.Context, argv, _ []string, _ string, stdout, _ io.Writer) error {
+	a := strings.Join(argv, " ")
+	r.mu.Lock()
+	r.events = append(r.events, "start "+a)
+	r.mu.Unlock()
+	var err error
+	if g := r.groups[argv[len(argv)-1]]; g != nil {
+		err = g.wait()
+	}
+	fmt.Fprintf(stdout, "ok %s\n", a)
+	r.mu.Lock()
+	r.events = append(r.events, "end "+a)
+	r.mu.Unlock()
+	return err
 }
 
 func scratchOf(out string) string {
@@ -334,29 +458,32 @@ func scratchOf(out string) string {
 	return ""
 }
 
-// shardJobs is the literal ten-job table (design 02c, Workflow topology).
+// shardJobs is the literal twelve-job table (design 02c, Workflow topology,
+// with design 05b's plane workers in CI-plan order).
 var shardJobs = []struct {
 	id, name, runner, timeout string
 }{
 	{"linux", "ci-linux", "ubuntu-24.04", "45"},
 	{"macos", "ci-macos", "macos-15", "30"},
 	{"linux-stress-packages", "ci-linux-stress-packages", "ubuntu-24.04", "20"},
+	{"linux-stress-plane", "ci-linux-stress-plane", "ubuntu-24.04", "20"},
 	{"linux-stress-processgroup", "ci-linux-stress-processgroup", "ubuntu-24.04", "20"},
 	{"linux-stress-functions", "ci-linux-stress-functions", "ubuntu-24.04", "20"},
 	{"macos-stress-packages", "ci-macos-stress-packages", "macos-15", "20"},
+	{"macos-stress-plane", "ci-macos-stress-plane", "macos-15", "20"},
 	{"macos-stress-processgroup", "ci-macos-stress-processgroup", "macos-15", "20"},
 	{"macos-stress-functions", "ci-macos-stress-functions", "macos-15", "20"},
 	{"linux-stress", "ci-linux-stress", "ubuntu-24.04", "5"},
 	{"macos-stress", "ci-macos-stress", "ubuntu-24.04", "5"},
 }
 
-const summaryCommand = `test "$PACKAGES_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success`
+const summaryCommand = `test "$PACKAGES_RESULT" = success && test "$PLANE_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success`
 
 // summaryKeys are the summary step's environment keys in needs order.
-var summaryKeys = []string{"PACKAGES_RESULT", "PROCESSGROUP_RESULT", "FUNCTIONS_RESULT"}
+var summaryKeys = []string{"PACKAGES_RESULT", "PLANE_RESULT", "PROCESSGROUP_RESULT", "FUNCTIONS_RESULT"}
 
-// FP-3: the actual workflow has the ten jobs and two literal summaries,
-// and each summary's own command passes only when all three workers
+// FP-3: the actual workflow has the twelve jobs and two literal summaries,
+// and each summary's own command passes only when all four workers
 // concluded success.
 func TestStressShardSummaries(t *testing.T) {
 	data := ciWorkflow(t)
@@ -398,7 +525,7 @@ func TestStressShardSummaries(t *testing.T) {
 		if strings.Join(keys, " ") != "name runs-on timeout-minutes needs if defaults steps" {
 			t.Fatalf("%s fields = %v", id, keys)
 		}
-		workers := []string{plat + "-stress-packages", plat + "-stress-processgroup", plat + "-stress-functions"}
+		workers := []string{plat + "-stress-packages", plat + "-stress-plane", plat + "-stress-processgroup", plat + "-stress-functions"}
 		var needs []string
 		for _, n := range node(t, job, "needs").Content {
 			needs = append(needs, n.Value)
@@ -411,7 +538,7 @@ func TestStressShardSummaries(t *testing.T) {
 			t.Fatalf("%s steps = %d", id, len(steps.Content))
 		}
 		env := node(t, steps, 0, "env")
-		if len(env.Content) != 6 {
+		if len(env.Content) != 8 {
 			t.Fatalf("%s env has %d entries", id, len(env.Content)/2)
 		}
 		for i, k := range summaryKeys {
@@ -424,19 +551,22 @@ func TestStressShardSummaries(t *testing.T) {
 			t.Fatalf("%s run = %q", id, run)
 		}
 		// Execute the extracted command as Actions' bash shell does, for
-		// every combination of the four conclusions, then for an empty and
-		// an unknown value in each position.
-		var tuples [][3]string
+		// every combination of the four conclusions in the four positions
+		// (4^4), then for an empty, an unknown, a case-altered and a
+		// whitespace value in each position with every other one success.
+		var tuples [][4]string
 		for _, a := range results {
 			for _, b := range results {
 				for _, c := range results {
-					tuples = append(tuples, [3]string{a, b, c})
+					for _, d := range results {
+						tuples = append(tuples, [4]string{a, b, c, d})
+					}
 				}
 			}
 		}
-		for pos := 0; pos < 3; pos++ {
+		for pos := 0; pos < 4; pos++ {
 			for _, odd := range []string{"", "neutral", "Success", "success "} {
-				tp := [3]string{"success", "success", "success"}
+				tp := [4]string{"success", "success", "success", "success"}
 				tp[pos] = odd
 				tuples = append(tuples, tp)
 			}
@@ -453,7 +583,7 @@ func TestStressShardSummaries(t *testing.T) {
 			if err != nil && !errors.As(err, &ee) {
 				t.Fatalf("%s %q: bash did not run: %v", id, tp, err)
 			}
-			want := tp == [3]string{"success", "success", "success"}
+			want := tp == [4]string{"success", "success", "success", "success"}
 			if (err == nil) != want {
 				t.Fatalf("%s %q: exit error %v, want pass=%v (%s)", id, tp, err, want, out)
 			}
@@ -461,15 +591,15 @@ func TestStressShardSummaries(t *testing.T) {
 				passed++
 			}
 		}
-		if len(tuples) != 64+12 || passed != 1 {
+		if len(tuples) != 256+16 || passed != 1 {
 			t.Fatalf("%s: %d tuples, %d passed", id, len(tuples), passed)
 		}
 	}
 }
 
-// FP-4: the validator accepts the actual workflow and rejects a removed
-// worker or a weakened summary; contract, stages, extracted sequences and
-// both OS plans agree.
+// FP-4: the validator accepts the actual workflow and rejects a removed or
+// miswired plane worker, any removed worker or a weakened summary;
+// contract, stages, extracted sequences and both OS plans agree.
 func TestStressShardPolicy(t *testing.T) {
 	data := ciWorkflow(t)
 	if err := cicheck.ValidateWorkflow(data); err != nil {
@@ -480,7 +610,7 @@ func TestStressShardPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	contract := cicheck.Jobs()
-	if len(contract) != 10 || len(stages) != 10 {
+	if len(contract) != 12 || len(stages) != 12 {
 		t.Fatalf("contract %d jobs, workflow %d", len(contract), len(stages))
 	}
 	dispatch := devcheck.Stages()
@@ -555,29 +685,74 @@ func TestStressShardPolicy(t *testing.T) {
 			node(t, r, "jobs", id, "steps", 0, "run").Value = summaryCommand + " || true"
 		}), p+".steps[0].run: must be exactly")
 		mustReject(t, id+" check dropped", mutated(t, func(r *yaml.Node) {
-			node(t, r, "jobs", id, "steps", 0, "run").Value = `test "$PACKAGES_RESULT" = success && test "$PROCESSGROUP_RESULT" = success`
+			node(t, r, "jobs", id, "steps", 0, "run").Value = `test "$PACKAGES_RESULT" = success && test "$PLANE_RESULT" = success && test "$PROCESSGROUP_RESULT" = success`
 		}), p+".steps[0].run: must be exactly")
+		// Design 05b: the plane worker, its result and its comparison.
+		mustReject(t, id+" plane comparison omitted", mutated(t, func(r *yaml.Node) {
+			node(t, r, "jobs", id, "steps", 0, "run").Value = `test "$PACKAGES_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success`
+		}), p+".steps[0].run: must be exactly")
+		mustReject(t, id+" plane result miswired", mutated(t, func(r *yaml.Node) {
+			node(t, r, "jobs", id, "steps", 0, "env", "PLANE_RESULT").Value = "${{ needs['" + id + "-packages'].result }}"
+		}), p+".steps[0].env.PLANE_RESULT: must be")
+		mustReject(t, id+" plane result removed", mutated(t, func(r *yaml.Node) {
+			deleteKey(t, node(t, r, "jobs", id, "steps", 0, "env"), "PLANE_RESULT")
+		}), p+".steps[0].env.PLANE_RESULT: missing required field")
+		mustReject(t, id+" plane worker not needed", mutated(t, func(r *yaml.Node) {
+			n := node(t, r, "jobs", id, "needs")
+			n.Content = append(n.Content[:1:1], n.Content[2:]...)
+		}), p+".needs: must be exactly")
+		mustReject(t, id+" plane worker from the other platform", mutated(t, func(r *yaml.Node) {
+			other := map[string]string{"linux-stress": "macos", "macos-stress": "linux"}[id]
+			node(t, r, "jobs", id, "needs").Content[1].Value = other + "-stress-plane"
+		}), p+".needs[1]: must be")
 		mustReject(t, id+" error bypass", mutated(t, func(r *yaml.Node) { setKey(node(t, r, "jobs", id), "continue-on-error", "true") }), p+".continue-on-error: unknown field")
 		mustReject(t, id+" setup added", mutated(t, func(r *yaml.Node) { setKey(node(t, r, "jobs", id), "env", "x") }), p+".env: unknown field")
 	}
 	// The workers never depend on anything.
 	mustReject(t, "worker needs", mutated(t, func(r *yaml.Node) { setKey(node(t, r, "jobs", "macos-stress-processgroup"), "needs", "macos") }), "jobs.macos-stress-processgroup.needs: unknown field")
+	mustReject(t, "plane worker needs", mutated(t, func(r *yaml.Node) { setKey(node(t, r, "jobs", "linux-stress-plane"), "needs", "linux-stress-packages") }), "jobs.linux-stress-plane.needs: unknown field")
+	// The plane worker's own stage, budget and runner are fixed.
+	for _, plat := range []string{"linux", "macos"} {
+		id := plat + "-stress-plane"
+		p := "jobs." + id
+		mustReject(t, id+" stage", mutated(t, func(r *yaml.Node) {
+			node(t, r, "jobs", id, "steps", 3, "run").Value = "go run ./cmd/devcheck stress-packages"
+		}), p+`.steps[3].run: must run devcheck stage "stress-plane", got "stress-packages"`)
+		mustReject(t, id+" count", mutated(t, func(r *yaml.Node) {
+			node(t, r, "jobs", id, "steps", 3, "run").Value = "go test -race -count=1 -cpu=4 -timeout=6m ./internal/plane"
+		}), p+`.steps[3].run: must be "go run ./cmd/devcheck stress-plane"`)
+		mustReject(t, id+" cpu", mutated(t, func(r *yaml.Node) {
+			node(t, r, "jobs", id, "steps", 3, "run").Value = "go run ./cmd/devcheck stress-plane -cpu=4"
+		}), p+`.steps[3].run: must be "go run ./cmd/devcheck stress-plane"`)
+		mustReject(t, id+" budget", mutated(t, func(r *yaml.Node) { node(t, r, "jobs", id, "timeout-minutes").Value = "30" }), p+`.timeout-minutes: must be "20", got "30"`)
+	}
 }
 
-// FP-5: docs/ci.md documents the contexts versus the workers, the exact
-// commands, count and budgets, measured versus estimated times, the local
-// and remote evidence and the ordered handoff.
+// FP-5: docs/ci.md documents the four required contexts versus the eight
+// workers, the four shards with their exact commands, the plane invocation
+// and log evidence, the preserved budgets and contexts, measured versus
+// estimated times, the runner core assumptions, the sidecar risk with its
+// decided follow-up, the inactive plane fallback and the pending hosted
+// evidence rules.
 func TestStressShardHandoff(t *testing.T) {
 	checks := docSection(t, "Checks")
 	requireTerms(t, "Checks", checks,
+		"Twelve fixed jobs run on every trigger",
 		"Exactly four of them are the required status check contexts on `main`: `ci-linux`, `ci-macos`, `ci-linux-stress` and `ci-macos-stress`",
-		"six are the stress workers", "not required contexts",
+		"The other eight are the stress workers", "four shards per platform", "not required contexts",
 		"| `ci-linux-stress` | `ubuntu-24.04` | 5 min | required summary |", "| `ci-macos-stress` | `ubuntu-24.04` | 5 min | required summary |",
-		"if: ${{ always() }}", summaryCommand,
-		"An all-success triple alone exits zero", "`failure`, `cancelled`, `skipped`, an empty or any unknown result fails the summary",
-		"never put on the job's `if`", "Summaries hold no stress logs")
-	for _, j := range shardJobs[2:8] {
+		"succeeds only if the four Linux workers all concluded `success`", "succeeds only if the four macOS workers all concluded `success`",
+		"if: ${{ always() }}", summaryCommand, "PLANE_RESULT: ${{ needs['linux-stress-plane'].result }}",
+		"Only all four results `success` exit zero",
+		"`failure`, `cancelled`, `skipped`, an empty or any unknown result in any position fails the summary",
+		"never put on the job's `if`", "Summaries hold no stress logs", "all eight workers check out")
+	for _, j := range shardJobs[2:10] {
 		requireTerms(t, "Checks", checks, fmt.Sprintf("| `%s` | `%s` | %s min | worker |", j.name, j.runner, j.timeout))
+	}
+	for _, stale := range []string{"An all-success triple alone exits zero", "The other six are the stress workers", "Ten fixed jobs run on every trigger"} {
+		if strings.Contains(strings.Join(strings.Fields(checks), " "), stale) {
+			t.Fatalf("Checks keeps the obsolete %q", stale)
+		}
 	}
 	stress := docSection(t, "Stress checks")
 	for _, sh := range shardPlan {
@@ -591,27 +766,59 @@ func TestStressShardHandoff(t *testing.T) {
 	}
 	requireTerms(t, "Stress checks", stress,
 		"The project's declared repeat count is 20 per CPU setting (1, 2, 4).",
-		"three concurrent invocations, one per CPU setting", "at most three at once",
-		"does not cancel its siblings", "replayed from disk", "in CPU order",
+		"four shards per platform", "The four shards run ten commands",
+		"| `plane` | `devcheck stress-plane` | `stress plane cpu1`, `cpu2`, `cpu4` | three concurrent invocations, one per CPU setting",
+		"The plane and processgroup shards are concurrent", "at most three at once within that shard", "two shards never overlap",
+		"does not cancel its siblings", "replayed from disk", "in CPU order", "`stress-plane-cpu1.log`",
+		"`devcheck: stress plane cpu4: ok in 97.3s`", "includes the go command's build",
 		"up to three test binaries (and their descendants) can remain as orphans", "there is no process-tree kill",
 		"`no tests to run`", "exactly the iteration 02b selection",
 		"`-timeout=6m`", "Each shard stage, that is each worker job, has its own",
 		"one shared 15-minute watchdog", "not evidence about any hosted worker",
 		"Worker jobs: 20 minutes each", "Summary jobs: 5 minutes each",
-		"about 4–5 minutes", "not an acceptance threshold and not a measurement",
 		"380 ms", "620 ms", "a revised bound requires a design revision",
-		"run 36236333755", "`ci-linux` 101 s, `ci-macos` 49 s, `ci-linux-stress` 350 s and `ci-macos-stress` 568 s",
-		"227 s / 298 s", "211 s / 234 s", "185 s / 239 s", "41 s / 76 s", "63 s / 163 s",
-		"supersedes iteration 02b's pending first-run timing language",
-		"Measured with iteration 02c", "Expected per-job wall-clock after iteration 02c", "planning estimates, not measurements",
-		"Hosted and local figures come from different machines",
+		// Why plane is concurrent: the censored, contended hosted evidence.
+		"run 36315881191", "`FAIL internal/plane 360.096s`", "`360.066s`", "censored, contended observation",
+		"its `-p` default is GOMAXPROCS", "A lone sequential plane worker was rejected",
+		// Core assumptions and the remaining real-time bounds.
+		"four vCPUs (`ubuntu-24.04`)", "three M1 cores (`macos-15`, arm64)", "1 + 2 + 4 permits seven Go execution threads",
+		"record the actual architecture and core count", "`testWait` and helper joins (20 s)", "`TestServerFailureContract/shutdown-deadline`",
+		"event synchronization is not immunity to overload", "never retried to green",
+		// The inactive, pre-authorised fallback.
+		"Pre-authorised plane fallback (inactive)", "`stressWaves`", "It is empty",
+		"`devcheck: stress plane cpuN: ok in Xs`", "`devcheck: stress plane cpuN: FAILED after Xs`", "X > 300.0 s", "exactly 300.0 does not",
+		"`panic: test timed out after 6m0s`", "Missing logs are an evidence blocker, not a trigger",
+		"both a trigger and an investigation blocker", "`\"plane\": {{4}, {1, 2}}`", "`TestStressConcurrencyContract/waves`", "it is not active",
+		// The sidecar risk and its decided follow-up.
+		"Sidecar stays in the packages shard", "310 s", "50 s (14%)", "260–310 s post-change estimate",
+		"sidecar over 300.0 s", "no temporary workflow is added",
+		"the follow-up is a fifth shard running sidecar's three CPU settings as concurrent invocations",
+		"A fifth sequential shard is not an option",
+		"`stress-sidecar`", "`ci-linux-stress-sidecar`", "`ci-macos-stress-sidecar`",
+		// Estimates versus measurements.
+		"Iteration 05b allocation", "explicit planning estimates, not measured speedups or hard upper bounds",
+		"about 140–225 s per Linux and 150–255 s per macOS plane invocation", "135 s / 105 s below the 6-minute limit",
+		"dividing the hosted alarm by three would be unsound", "about 300–380 s plus summary scheduling",
+		"current evidence does not support promising 300 s or less",
+		"Measured with iteration 05b (plane shard)", "Hosted and local figures come from different machines",
+		"it is not a hosted estimate", "Hosted iteration 05b times: pending",
+		"Hosted run 36315881191", "395.8 s", "432.6 s",
+		"Expected per-job wall-clock after iteration 05b", "planning estimates, not measurements",
+		// Historical 02c figures stay labelled as history.
+		"run 36236333755", "Measured with iteration 02c", "Expected per-job wall-clock after iteration 02c",
 		"macOS 02c worker times: pending until")
 	for _, j := range shardJobs {
 		requireTerms(t, "Stress checks expected times", stress, "`"+j.name+"` about")
 	}
+	for _, stale := range []string{"Only the processgroup shard is concurrent", "Why only processgroup is concurrent", "so it and the function commands stay sequential"} {
+		if strings.Contains(strings.Join(strings.Fields(stress), " "), stale) {
+			t.Fatalf("Stress checks keeps the obsolete %q", stale)
+		}
+	}
 	bp := docSection(t, "Branch protection")
-	requireTerms(t, "Branch protection", bp, "no protection change is needed for 02c", "six worker contexts are not required")
-	const sub = "\n### Adding the stress contexts (pull request #2)\n"
+	requireTerms(t, "Branch protection", bp, "eight worker contexts are not required", "no protection change is needed for 02c or 05b")
+	// The pull request #5 handoff: no protection change, all twelve jobs.
+	const sub = "\n### Plane workers (pull request #5)\n"
 	i := strings.Index(bp, sub)
 	if i < 0 {
 		t.Fatalf("Branch protection lacks %q", strings.TrimSpace(sub))
@@ -620,25 +827,31 @@ func TestStressShardHandoff(t *testing.T) {
 	if j := strings.Index(handoff, "\n### "); j >= 0 {
 		handoff = handoff[:j]
 	}
+	requireTerms(t, "Plane workers", handoff, "`ci-linux-stress-plane`", "`ci-macos-stress-plane`",
+		"The required contexts stay exactly `ci-linux`, `ci-macos`, `ci-linux-stress` and `ci-macos-stress`", "no protection change is made")
 	steps := numberedSteps(t, handoff)
-	review := stepIndex(t, steps, "REVIEW_APPROVED", "iterations 02, 02b and 02c", "commit the reviewed code")
-	push := stepIndex(t, steps, "Push `iter-02-plane-trust`")
-	green := stepIndex(t, steps, "all ten jobs", "six stress workers", "all four required checks", "current PR merge revision")
-	add := stepIndex(t, steps, "Conditional 02b prerequisite", "only if", "not yet required")
-	verify := stepIndex(t, steps, "owner verifies", "read-only", "source bindings")
-	merge := stepIndex(t, steps, "Merge iterations 02, 02b and 02c together", "all four checks green")
-	if !(review < push && push < green && green < add && add < verify && verify < merge) {
-		t.Fatalf("handoff order review=%d push=%d green=%d add=%d verify=%d merge=%d", review, push, green, add, verify, merge)
+	review := stepIndex(t, steps, "REVIEW_APPROVED", "iterations 05 and 05b", "commit the reviewed code")
+	push := stepIndex(t, steps, "Push `iter-05-dispatch`", "pull request #5")
+	green := stepIndex(t, steps, "all twelve jobs", "eight stress workers", "all four required checks", "current PR merge revision")
+	verify := stepIndex(t, steps, "owner verifies", "read-only", "same four required contexts", "neither plane worker")
+	merge := stepIndex(t, steps, "Merge iterations 05 and 05b together", "all four checks green")
+	if !(review < push && push < green && green < verify && verify < merge) {
+		t.Fatalf("handoff order review=%d push=%d green=%d verify=%d merge=%d", review, push, green, verify, merge)
 	}
 	first := docSection(t, "First remote run")
-	requireTerms(t, "First remote run", first, "conclusions of all ten jobs", "six worker logs (the summaries hold none)",
-		"`devcheck: stage stress-processgroup ok`", "every CPU invocation's outcome", "summary wait", "overall workflow critical path",
-		"without weakening tests")
+	requireTerms(t, "First remote run", first, "conclusions of all twelve jobs", "eight worker logs (the summaries hold none)",
+		"`devcheck: stage stress-plane ok`", "`devcheck: stage stress-processgroup ok`", "every CPU invocation's outcome",
+		"`devcheck: stress plane cpuN: ok in Xs`", "separately from its go command's build", "pre-authorised plane fallback trigger",
+		"sidecar follow-up rule", "core count and architecture", "summary wait", "critical path",
+		"failed runs stay in the evidence, never discarded as retries", "any timeout or assertion failure blocks qualification")
 	local := docSection(t, "Local verification")
-	requireTerms(t, "Local verification", local, "go run ./cmd/devcheck stress-packages", "go run ./cmd/devcheck stress-processgroup",
-		"go run ./cmd/devcheck stress-functions", "go test -race -count=20 -cpu=1,2,4 -run '^TestStressConcurrencyContract$' ./internal/devcheck",
-		"without other stress work running on the same host")
-	requireTerms(t, "PR flow", docSection(t, "PR flow"), "iterations 02, 02b and 02c join pull request #2")
+	requireTerms(t, "Local verification", local, "go run ./cmd/devcheck stress-packages", "go run ./cmd/devcheck stress-plane",
+		"go run ./cmd/devcheck stress-processgroup", "go run ./cmd/devcheck stress-functions",
+		"go test -race -count=20 -cpu=1,2,4 -timeout=6m -run '^TestStressConcurrencyContract$' ./internal/devcheck",
+		"without other stress work running on the same host", "both concurrent shards and the plane fallback's wave mechanism")
+	pr := docSection(t, "PR flow")
+	requireTerms(t, "PR flow", pr, "iterations 02, 02b and 02c join pull request #2",
+		"Iteration 05b (the plane stress shard) is delivered with iteration 05 in pull request #5", "all twelve jobs")
 	// No workflow step can change repository settings.
 	wf := string(ciWorkflow(t))
 	for _, forbidden := range []string{"gh ", "--method", "POST", "curl", "protection", "contents: write", "secrets.", "continue-on-error", "strategy:"} {
