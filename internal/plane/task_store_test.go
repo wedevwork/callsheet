@@ -42,14 +42,23 @@ func TestTaskStore(t *testing.T) {
 		// records are final.
 		tp := startTaskPlane(t, nil, []contract.RoleRecord{record(taskCfg("a", "coder", idA, 5), 1)}, idA)
 		w := tp.worker(t, idA)
-		st := tp.run(t, w, "a", "succeed", "p2")
+		// Output and result arrive before running is published, so the
+		// writer's pass after running finds the captured result, whose
+		// terminal commit outranks a checkpoint: exactly one publication
+		// follows running (output alone, acknowledged after running,
+		// could be checkpointed by that pass first).
+		st, running := tp.runHeld(t, w, "a", "succeed", "p2")
+		w.log(st, 0, []byte("line 1\nline 2\n"))
+		msg := "fake task completed"
+		w.resultAck(w.sendResult(result(st, 0, 14, &msg)), st.TaskID)
+		commit := tp.th.arm("terminal-commit-queued", st.TaskID)
+		running()
+		tc := paused(t, commit, "terminal-commit-queued")
 		pending := tp.taskFile(t, st.TaskID)
 		if pending.State != contract.TaskRunning || pending.Revision != 2 || pending.StartedAt == nil || pending.FinishedAt != nil {
 			t.Fatalf("running record %+v", pending)
 		}
-		w.log(st, 0, []byte("line 1\nline 2\n"))
-		msg := "fake task completed"
-		w.resultAck(w.sendResult(result(st, 0, 14, &msg)), st.TaskID)
+		close(tc.release)
 		tp.log.awaitOnce(t, "terminal-committed "+st.TaskID)
 		rec := tp.taskFile(t, st.TaskID)
 		if rec.State != contract.TaskSucceeded || *rec.ExitCode != 0 || *rec.FinalMessage != msg || string(rec.Log.Data) != "line 1\nline 2\n" ||
@@ -100,11 +109,14 @@ func TestTaskStore(t *testing.T) {
 			t.Fatal("a terminal document was rewritten")
 		}
 		// Checkpoints coalesce at most once per second while dirty and
-		// never replace newer live bytes.
-		c := tp.run(t, w, "a", "checkpoint", "p6")
+		// never replace newer live bytes. Both writes are acknowledged
+		// before running is published, so the writer's pass after running
+		// takes the first checkpoint (due at once) with both; acknowledged
+		// after running, that pass could checkpoint the first alone.
+		c, running := tp.runHeld(t, w, "a", "checkpoint", "p6")
 		w.log(c, 0, []byte("a\n"))
 		w.log(c, 2, []byte("b\n"))
-		tp.clk.Advance(checkpointEvery)
+		running()
 		tp.log.await(t, "published checkpoint "+c.TaskID)
 		if r := tp.taskFile(t, c.TaskID); string(r.Log.Data) != "a\nb\n" || r.State != contract.TaskRunning {
 			t.Fatalf("checkpoint %+v", r)

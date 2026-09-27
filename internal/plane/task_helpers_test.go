@@ -396,6 +396,33 @@ func (tp *taskPlane) run(t *testing.T, w *worker, role, goal, pid string) contra
 	return st
 }
 
+// runHeld is run with the running publication held before its write:
+// the start is observed, so output and a result are accepted, but
+// running is not published until release, which lets the write proceed
+// and waits for published running. Nothing orders the writer's pass
+// after a publication against the test's next frames, and a task's
+// first checkpoint is due at once, so output acknowledged after
+// published running may be checkpointed by that pass, unobserved and
+// before any clock advance; output acknowledged before release is
+// dirty when that pass runs, which then deterministically selects the
+// captured result's terminal commit, or else the first checkpoint.
+func (tp *taskPlane) runHeld(t *testing.T, w *worker, role, goal, pid string) (contract.TaskStartBody, func()) {
+	t.Helper()
+	v := tp.admit(t, taskReq(contract.TargetID, role, goal))
+	st := w.start(pid)
+	if st.TaskID != v.TaskID {
+		t.Fatalf("started %s, admitted %s", st.TaskID, v.TaskID)
+	}
+	hold := tp.th.arm("running-queued", st.TaskID)
+	w.answer(pid, st.TaskID, nil)
+	call := paused(t, hold, "running-queued")
+	return st, func() {
+		t.Helper()
+		close(call.release)
+		tp.log.awaitOnce(t, "published running "+st.TaskID)
+	}
+}
+
 // finish reports st's exit after out output bytes and waits for its
 // durable terminal commit.
 func (tp *taskPlane) finish(t *testing.T, w *worker, st contract.TaskStartBody, exit, out int) {

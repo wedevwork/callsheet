@@ -86,10 +86,15 @@ func TestTaskOutput(t *testing.T) {
 		// newer live bytes.
 		tp := startTaskPlane(t, nil, []contract.RoleRecord{record(taskCfg("a", "coder", idA, 1), 1)}, idA)
 		w := tp.worker(t, idA)
-		st := tp.run(t, w, "a", "slow disk", "p2")
+		// The output is acknowledged before running is published, so the
+		// writer's pass after running takes the first checkpoint (due at
+		// once) and the hold catches it; acknowledged after running, that
+		// pass could publish it unheld before the hook was armed, leaving
+		// nothing dirty for a clock advance to queue.
+		st, running := tp.runHeld(t, w, "a", "slow disk", "p2")
 		w.log(st, 0, []byte("first\n"))
 		hold := tp.th.arm("checkpoint-queued", st.TaskID)
-		tp.clk.Advance(checkpointEvery)
+		running()
 		call := paused(t, hold, "checkpoint-queued")
 		off := 6
 		for i := 0; i < 50; i++ {
@@ -107,6 +112,8 @@ func TestTaskOutput(t *testing.T) {
 		if v := tp.show(t, st.TaskID); v.Log.ReceivedBytes != off {
 			t.Fatal("the checkpoint replaced newer live bytes")
 		}
+		// The first checkpoint was selected at the current instant: the
+		// next is due one second later, and the newer bytes are dirty.
 		tp.clk.Advance(checkpointEvery)
 		tp.log.await(t, "published checkpoint "+st.TaskID)
 		if r := tp.taskFile(t, st.TaskID); r.Log.SourceBytes != off {

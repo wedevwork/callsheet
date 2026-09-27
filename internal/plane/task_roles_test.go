@@ -197,9 +197,12 @@ func TestTaskRoleIntegration(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		// The dispatch returned with its start queued, not written, and a
+		// waiting validation takes the free request slot before queued
+		// starts: read the start first, so the set's validation is p4.
+		w.start("p3")
 		model := "changed model"
 		sres := tp.setAsync(bg, "a", contract.RolePatch{Model: &model})
-		w.start("p3")
 		w.answer("p3", racing.TaskID, nil)
 		w.validateOK("p4")
 		if _, err := sres.wait(t); err != nil {
