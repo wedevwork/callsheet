@@ -1,6 +1,7 @@
 // Package cli implements the callsheet command tree: parsing, help, the
 // implemented leaves (version, since iteration 02 the four plane commands,
-// since iteration 03 sidecar enroll and run and node ls and show) and the
+// since iteration 03 sidecar enroll and run and node ls and show, since
+// iteration 04 role add, set, ls, show and rm) and the
 // deterministic outcomes of reserved (not yet implemented) commands. Reserved commands never contact a plane, create
 // state or invoke a vendor CLI.
 package cli
@@ -119,11 +120,11 @@ func NewTree(goos string) *Command {
 			planeLeaf("run", "Run the node sidecar", sidecarUsage, sidecarRunDetails, sidecarRun),
 		),
 		node("role", "Role commands",
-			node("add", "Add a role"),
-			node("set", "Change a role"),
-			node("ls", "List roles"),
-			node("show", "Show a role"),
-			node("rm", "Remove a role"),
+			planeLeaf("add", "Add a role", roleAddUsage, roleAddDetails, roleAdd),
+			planeLeaf("set", "Change a role", roleSetUsage, roleSetDetails, roleSet),
+			planeLeaf("ls", "List roles", roleLsUsage, roleLsDetails, roleLs),
+			planeLeaf("show", "Show a role", roleShowUsage, roleShowDetails, roleShow),
+			planeLeaf("rm", "Remove a role", roleRmUsage, roleRmDetails, roleRm),
 		),
 		node("node", "Node commands",
 			planeLeaf("ls", "List nodes", nodeLsUsage, nodeLsDetails, nodeLs),

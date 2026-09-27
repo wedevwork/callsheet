@@ -20,8 +20,9 @@ const NativePackage = "github.com/wedevwork/callsheet/tests/function"
 // function test with the mandatory subtests of its compound FPs
 // (iteration 02), including the "process" and "contracts" boundaries that
 // separate process-boundary scenarios from delegated contracts
-// (iteration 02b), and every node function test with its mandatory
-// subtests (iteration 03).
+// (iteration 02b), every node function test with its mandatory subtests
+// (iteration 03), and every role function test with its mandatory subtests
+// (iteration 04).
 var nativeRequired = []string{
 	"TestFP6ProcessGroups",
 	"TestFP6ProcessGroups/cooperative",
@@ -83,6 +84,37 @@ var nativeRequired = []string{
 	"TestNodePlatform/native-state",
 	"TestNodePlatform/policy",
 	"TestNodePlatform/sticky-write",
+	// Iteration 04 (roles): one function test per FP with its mandatory
+	// subtests, delegated package contracts included.
+	"TestRoleConfiguration",
+	"TestRoleConfiguration/fields",
+	"TestRoleConfiguration/order",
+	"TestRoleAdapter",
+	"TestRoleAdapter/disabled",
+	"TestRoleAdapter/probe",
+	"TestRoleValidation",
+	"TestRoleValidation/remote",
+	"TestRoleValidation/rejections",
+	"TestRoleProtocol",
+	"TestRoleProtocol/duplex",
+	"TestRoleProtocol/bounds",
+	"TestRoleReadiness",
+	"TestRoleReadiness/changes",
+	"TestRoleReadiness/reconnect",
+	"TestRolePersistence",
+	"TestRolePersistence/restore",
+	"TestRolePersistence/failures",
+	"TestRoleCommands",
+	"TestRoleCommands/text",
+	"TestRoleCommands/json",
+	"TestRoleCommands/trust",
+	"TestRoleMutation",
+	"TestRoleMutation/races",
+	"TestRoleMutation/remove",
+	"TestRolePlatform",
+	"TestRolePlatform/manuals",
+	"TestRolePlatform/executable",
+	"TestRolePlatform/policy",
 }
 
 // NativeRequiredTests returns a fresh copy of the test names in NativePackage

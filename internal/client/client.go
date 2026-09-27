@@ -314,6 +314,13 @@ func (c *Client) request(ctx context.Context, method, path string, body []byte, 
 		return 0, nil, c.transportError(ctx, err)
 	}
 	defer resp.Body.Close()
+	if err := octx.Err(); err != nil {
+		// net/http can deliver a response that raced the operation
+		// deadline or the caller's cancellation (for example the empty
+		// 200 it completes for a handler that returned on cancel). It is
+		// not the plane's answer: classify the deadline, not the response.
+		return 0, nil, c.transportError(ctx, err)
+	}
 	if err := checkResponseVersion(resp.Header); err != nil {
 		return 0, nil, err
 	}

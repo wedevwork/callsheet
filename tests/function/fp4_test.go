@@ -46,7 +46,7 @@ func TestFP4TransportHarness(t *testing.T) {
 		t.Fatalf("health = %s", body)
 	}
 
-	sc, err := h.DialSidecar(ctx, contract.ProtocolVersion)
+	sc, err := h.DialSidecar(ctx, testkit.HarnessProtocolVersion)
 	if err != nil {
 		t.Fatalf("hello: %v", err)
 	}

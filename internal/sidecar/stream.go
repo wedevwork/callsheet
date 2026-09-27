@@ -13,10 +13,11 @@ import (
 	"github.com/wedevwork/callsheet/internal/contract"
 )
 
-// Protocol-1 timing on the sidecar side.
+// Stream timing on the sidecar side.
 const (
 	heartbeatInterval = contract.HeartbeatIntervalMS * time.Millisecond
-	// stepTimeout bounds hello_ok, each acknowledgement and each write.
+	// stepTimeout bounds hello_ok, each heartbeat's send/ack exchange and
+	// each write.
 	stepTimeout = 5 * time.Second
 	// helloID is the hello's request ID; heartbeats use b1, b2, ...
 	helloID = "h1"
@@ -26,16 +27,83 @@ const (
 
 func asContract(err error, ce **contract.Error) bool { return errors.As(err, ce) }
 
-// readResult is one message (or the terminal error) from the reader.
+// readResult is one message (or the terminal error) from the reader, with
+// the instant its read completed.
 type readResult struct {
 	typ  websocket.MessageType
 	data []byte
 	err  error
+	at   time.Time
 }
 
-// sessionConn is one connection: one reader goroutine delivering into a
-// one-slot channel (at most one request is in flight, so nothing queues
-// without bound) and serialized writes from the session goroutine.
+// inbox is the reader's bounded handoff to the session: one delivered
+// message plus the one a blocked reader already completed. A message's
+// completion instant is sampled and published in one critical section, so
+// once the session finds the inbox empty after a deadline fired, any later
+// message completed at or after that deadline.
+type inbox struct {
+	clock   clock
+	mu      sync.Mutex
+	item    *readResult
+	pending *readResult
+	ready   chan struct{}
+	space   chan struct{}
+}
+
+func newInbox(c clock) *inbox {
+	return &inbox{clock: c, ready: make(chan struct{}, 1), space: make(chan struct{}, 1)}
+}
+
+func notify(c chan struct{}) {
+	select {
+	case c <- struct{}{}:
+	default:
+	}
+}
+
+func (b *inbox) put(ctx context.Context, r readResult) bool {
+	b.mu.Lock()
+	r.at = b.clock.Now()
+	if b.item == nil {
+		b.item = &r
+		b.mu.Unlock()
+		notify(b.ready)
+		return true
+	}
+	p := &r
+	b.pending = p
+	for b.pending == p {
+		b.mu.Unlock()
+		select {
+		case <-b.space:
+		case <-ctx.Done():
+			return false
+		}
+		b.mu.Lock()
+	}
+	b.mu.Unlock()
+	return true
+}
+
+func (b *inbox) take() (readResult, bool) {
+	b.mu.Lock()
+	if b.item == nil {
+		b.mu.Unlock()
+		return readResult{}, false
+	}
+	r := *b.item
+	b.item, b.pending = b.pending, nil
+	more := b.item != nil
+	b.mu.Unlock()
+	notify(b.space)
+	if more {
+		notify(b.ready)
+	}
+	return r, true
+}
+
+// sessionConn is one connection: one reader goroutine delivering into the
+// bounded inbox and writes from the session goroutine only.
 type sessionConn struct {
 	d  *deps
 	ws *websocket.Conn
@@ -45,24 +113,19 @@ type sessionConn struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	msgs       chan readResult
+	in         *inbox
 	readerDone chan struct{}
 	closeOnce  sync.Once
 }
 
 func (d *deps) newSessionConn(ws *websocket.Conn) *sessionConn {
 	ctx, cancel := context.WithCancel(context.Background())
-	s := &sessionConn{d: d, ws: ws, ctx: ctx, cancel: cancel, msgs: make(chan readResult, 1), readerDone: make(chan struct{})}
+	s := &sessionConn{d: d, ws: ws, ctx: ctx, cancel: cancel, in: newInbox(d.clock), readerDone: make(chan struct{})}
 	go func() {
 		defer close(s.readerDone)
 		for {
 			typ, data, err := ws.Read(ctx)
-			select {
-			case s.msgs <- readResult{typ, data, err}:
-			case <-ctx.Done():
-				return
-			}
-			if err != nil {
+			if !s.in.put(ctx, readResult{typ: typ, data: data, err: err}) || err != nil {
 				return
 			}
 		}
@@ -101,11 +164,26 @@ func (s *sessionConn) close(code websocket.StatusCode, reason string) {
 // write sends one message, bounded by stepTimeout on the injected clock;
 // Run's cancellation or a forced close aborts it.
 func (s *sessionConn) write(ctx context.Context, typ, requestID string, body any) error {
+	return s.writeBy(ctx, time.Time{}, typ, requestID, body)
+}
+
+// writeBy is write with its bound shortened to the owning operation's
+// absolute deadline (zero: none).
+func (s *sessionConn) writeBy(ctx context.Context, deadline time.Time, typ, requestID string, body any) error {
 	b, err := contract.EncodeFrame(contract.ProtocolVersion, typ, requestID, body)
 	if err != nil {
 		return contract.Wrap(contract.CodeInternal, "cannot encode a "+typ+" message", err)
 	}
-	wctx, cancel := clockTimeout(ctx, s.d.clock, stepTimeout)
+	now := s.d.clock.Now()
+	at := now.Add(stepTimeout)
+	if !deadline.IsZero() && deadline.Before(at) {
+		at = deadline
+	}
+	if !at.After(now) {
+		return contract.New(contract.CodeUnavailable, "no heartbeat acknowledgement within "+stepTimeout.String())
+	}
+	bound := at.Sub(now)
+	wctx, cancel := clockDeadline(ctx, s.d.clock, at)
 	defer cancel()
 	stop := context.AfterFunc(s.ctx, cancel)
 	defer stop()
@@ -113,12 +191,12 @@ func (s *sessionConn) write(ctx context.Context, typ, requestID string, body any
 		if cerr := ctx.Err(); cerr != nil {
 			return cerr
 		}
-		return contract.Wrap(contract.CodeUnavailable, "cannot send to the plane: the connection was lost or blocked for "+stepTimeout.String(), err)
+		return contract.Wrap(contract.CodeUnavailable, "cannot send to the plane: the connection was lost or blocked for "+bound.String(), err)
 	}
 	return nil
 }
 
-// errNoReply is a missed hello_ok or acknowledgement.
+// errNoReply is a missed hello_ok.
 var errNoReply = errors.New("no reply")
 
 // await waits for the next message, at most timeout on the injected
@@ -126,18 +204,28 @@ var errNoReply = errors.New("no reply")
 func (s *sessionConn) await(ctx context.Context, timeout time.Duration) (readResult, error) {
 	timer, stop := s.d.clock.NewTimer(timeout)
 	defer stop()
-	var r readResult
-	var err error
-	select {
-	case r = <-s.msgs:
-	case <-timer:
-		err = errNoReply
-	case <-ctx.Done():
+	for {
+		if r, ok := s.in.take(); ok {
+			if cerr := ctx.Err(); cerr != nil {
+				return readResult{}, cerr
+			}
+			return r, nil
+		}
+		select {
+		case <-s.in.ready:
+			continue
+		case <-timer:
+		case <-ctx.Done():
+		}
+		if cerr := ctx.Err(); cerr != nil {
+			return readResult{}, cerr
+		}
+		// The timer fired: a message that completed before it still wins.
+		if r, ok := s.in.take(); ok {
+			return r, nil
+		}
+		return readResult{}, errNoReply
 	}
-	if cerr := ctx.Err(); cerr != nil {
-		return readResult{}, cerr
-	}
-	return r, err
 }
 
 // protocolError marks a defect the sidecar detected in the plane's
@@ -171,11 +259,11 @@ func lost(err error) error {
 	return contract.Wrap(contract.CodeUnavailable, "the connection to the plane was lost", err)
 }
 
-// expect validates one delivered message as typ with requestID. A plane
-// error message is returned as its contract error; a version mismatch is
-// reported with local=this sidecar and remote=the plane, recognized even
-// though the plane's envelope carries its own version.
-func expect(r readResult, typ, requestID string) (contract.NodeFrame, error) {
+// decode validates one delivered message's envelope. A plane error message
+// is returned as its contract error; a version mismatch is reported with
+// local=this sidecar and remote=the plane, recognized even though the
+// plane's envelope carries its own version.
+func decode(r readResult) (contract.NodeFrame, error) {
 	if r.err != nil {
 		return contract.NodeFrame{}, lost(r.err)
 	}
@@ -202,6 +290,15 @@ func expect(r readResult, typ, requestID string) (contract.NodeFrame, error) {
 		}
 		return f, &contract.Error{Code: pe.Code, Message: "the plane refused the stream: " + pe.Message, Details: pe.Details}
 	}
+	return f, nil
+}
+
+// expect validates one delivered message as typ with requestID.
+func expect(r readResult, typ, requestID string) (contract.NodeFrame, error) {
+	f, err := decode(r)
+	if err != nil {
+		return f, err
+	}
 	if f.Type != typ {
 		return f, invalid(f.RequestID, "unexpected "+f.Type+" message from the plane")
 	}
@@ -211,11 +308,12 @@ func expect(r readResult, typ, requestID string) (contract.NodeFrame, error) {
 	return f, nil
 }
 
-// session runs one connection: dial, hello, hello_ok, then heartbeats b1,
-// b2, ... each acknowledged before the next, the first immediately and
-// then every heartbeatInterval (coalescing, never queued). It returns why
-// the connection ended.
-func (d *deps) session(ctx context.Context, c planeClient, n int, id, sw string, logger *slog.Logger, onStable func()) (err error) {
+// session runs one connection: dial, hello, hello_ok, then the duplex
+// session (heartbeats b1, b2, ... one outstanding at a time, the first
+// immediately and then every heartbeatInterval, coalescing; plane requests
+// p1, p2, ... answered one at a time). It returns why the connection
+// ended.
+func (d *deps) session(ctx context.Context, c planeClient, n int, id, sw string, env roleEnv, w *workers, logger *slog.Logger, onStable func()) (err error) {
 	ws, err := c.DialNodeStream(ctx)
 	if err != nil {
 		return err
@@ -261,56 +359,8 @@ func (d *deps) session(ctx context.Context, c planeClient, n int, id, sw string,
 	}
 	logger.Info("connected", "session", n)
 	d.emit(event{kind: evConnected, session: n})
-	// Heartbeats are due every heartbeatInterval after the previous send.
-	// Time that passed while awaiting an acknowledgement is never queued:
-	// if the next heartbeat is already due, one current heartbeat is sent.
-	next := d.clock.Now()
-	for k := 1; ; k++ {
-		if wait := next.Sub(d.clock.Now()); wait > 0 {
-			timer, stop := d.clock.NewTimer(wait)
-			var unexpected *readResult
-			select {
-			case <-timer:
-			case r := <-s.msgs:
-				unexpected = &r
-			case <-ctx.Done():
-			}
-			stop()
-			if cerr := ctx.Err(); cerr != nil {
-				return cerr
-			}
-			if unexpected != nil {
-				_, err := expect(*unexpected, "", "")
-				return err
-			}
-		}
-		next = d.clock.Now().Add(heartbeatInterval)
-		rid := "b" + strconv.Itoa(k)
-		if err := s.write(ctx, contract.FrameHeartbeat, rid, contract.HeartbeatBody{}); err != nil {
-			return err
-		}
-		d.emit(event{kind: evAwaitReply, session: n, acks: k})
-		r, err := s.await(ctx, stepTimeout)
-		if errors.Is(err, errNoReply) {
-			return contract.New(contract.CodeUnavailable, "no heartbeat acknowledgement within "+stepTimeout.String())
-		}
-		if err != nil {
-			return err
-		}
-		f, err := expect(r, contract.FrameHeartbeatAck, rid)
-		if err != nil {
-			return err
-		}
-		if err := contract.DecodeAck(f.Body); err != nil {
-			return &protocolError{requestID: f.RequestID, err: err.(*contract.Error)}
-		}
-		if k == 1 {
-			logger.Info("heartbeat acknowledged", "session", n)
-		}
-		d.emit(event{kind: evAck, session: n, acks: k})
-		if k == stableAcks {
-			onStable()
-			d.emit(event{kind: evStable, session: n, acks: k})
-		}
-	}
+	jobs, cancelJobs := context.WithCancel(ctx)
+	rs := &roleSession{d: d, s: s, ctx: ctx, n: n, id: id, env: env, w: w, logger: logger, onStable: onStable, jobs: jobs}
+	defer rs.cleanup(cancelJobs)
+	return rs.run()
 }

@@ -354,7 +354,7 @@ func health(c *http.Client, addr string) error {
 	}
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != 200 || string(b) != "{\"status\":\"ok\",\"version\":1}\n" || resp.Header.Get("Content-Type") != "application/json" {
+	if resp.StatusCode != 200 || string(b) != "{\"status\":\"ok\",\"version\":2}\n" || resp.Header.Get("Content-Type") != "application/json" {
 		return fmt.Errorf("health = %d %q", resp.StatusCode, b)
 	}
 	return nil
@@ -384,7 +384,7 @@ func TestPlaneCommands(t *testing.T) {
 		}
 	}
 	// Remaining stubs keep their contract.
-	for _, stub := range [][]string{{"task", "ls"}, {"role", "ls"}, {"mcp"}} {
+	for _, stub := range [][]string{{"task", "ls"}, {"ws", "ls"}, {"mcp"}} {
 		want := "callsheet: not_implemented: \"callsheet " + strings.Join(stub, " ") + "\" is not implemented yet\n"
 		if r := p.run(t, stub...); r.code != 8 || r.stdout != "" || r.stderr != want {
 			t.Fatalf("%v = %+v", stub, r)
@@ -975,7 +975,7 @@ func TestPlaneStatus(t *testing.T) {
 func TestPlanePlatform(t *testing.T) {
 	const stressFn = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestFP4TransportHarness|TestFP5GitRoundTrip)$ ./tests/function"
 	const stressPlaneFn = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestPlaneState|TestPlaneTLS|TestPlaneReissue)$/^(paths|persistence|locking|validation|https-only|prelisten-validation|bounded-shutdown|process)$ ./tests/function"
-	const stressPkgs = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/plane ./internal/client ./internal/sidecar ./internal/contract"
+	const stressPkgs = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/plane ./internal/client ./internal/sidecar ./internal/contract ./internal/adapter"
 	const benchPlane = "go test ./internal/plane -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s"
 	for _, goos := range []string{"linux", "darwin"} {
 		steps, err := devcheck.StressSteps(goos)
@@ -989,7 +989,7 @@ func TestPlanePlatform(t *testing.T) {
 		}
 	}
 	bench := devcheck.BenchSteps()
-	if len(bench) != 3 || strings.Join(bench[1].Argv, " ") != benchPlane {
+	if len(bench) != 5 || strings.Join(bench[1].Argv, " ") != benchPlane {
 		t.Fatalf("bench plan = %+v", bench)
 	}
 	if _, err := devcheck.NativeSteps("linux"); err == nil {
@@ -1002,7 +1002,7 @@ func TestPlanePlatform(t *testing.T) {
 		"TestPlaneReissue", "TestPlaneReissue/process", "TestPlaneReissue/contracts", "TestPlaneStatus", "TestPlaneStatus/inspection", "TestPlaneStatus/expiry-warnings", "TestPlanePlatform"}
 	// The 28 iteration-02 names are preserved first; iteration 03 appends
 	// the node names (checked by TestNodePlatform).
-	if got := devcheck.NativeRequiredTests(); len(got) != 58 || !slices.Equal(got[:28], required) {
+	if got := devcheck.NativeRequiredTests(); len(got) != 87 || !slices.Equal(got[:28], required) {
 		t.Fatalf("native required = %v", got)
 	}
 	// Every required plane name exists as a top-level test or mandatory

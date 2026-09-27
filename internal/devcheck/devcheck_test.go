@@ -292,7 +292,9 @@ func TestStagePlanning(t *testing.T) {
 	runDriver(t, "linux", f, "bench")
 	if got := strings.Join(f.argvs(), "|"); got != "go test ./internal/spikes/gittransport -run ^$ -bench . -benchmem -benchtime=3x -count=1 -timeout=180s|"+
 		"go test ./internal/plane -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s|"+
-		"go test ./internal/contract -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s" {
+		"go test ./internal/contract -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s|"+
+		"go test ./internal/sidecar -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s|"+
+		"go test ./internal/adapter -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s" {
 		t.Fatalf("bench = %s", got)
 	}
 	f = &fakeRunner{}
@@ -377,10 +379,11 @@ func TestAllStopsAtFirstFailure(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("all = %d %s", code, errOut)
 	}
-	// test(2) + coverage(3) + bench(3) + cross(12), in that order.
+	// test(2) + coverage(3) + bench(5) + cross(12), in that order.
 	a := f.argvs()
-	if len(a) != 20 || !strings.Contains(a[0], "go test -count=1") || !strings.Contains(a[2], "-coverprofile") || !strings.Contains(a[5], "-bench") ||
-		!strings.Contains(a[6], "./internal/plane -run=^$ -bench=.") || !strings.Contains(a[7], "./internal/contract -run=^$ -bench=.") || !strings.Contains(a[8], "go build") {
+	if len(a) != 22 || !strings.Contains(a[0], "go test -count=1") || !strings.Contains(a[2], "-coverprofile") || !strings.Contains(a[5], "-bench") ||
+		!strings.Contains(a[6], "./internal/plane -run=^$ -bench=.") || !strings.Contains(a[7], "./internal/contract -run=^$ -bench=.") ||
+		!strings.Contains(a[8], "./internal/sidecar -run=^$ -bench=.") || !strings.Contains(a[9], "./internal/adapter -run=^$ -bench=.") || !strings.Contains(a[10], "go build") {
 		t.Fatalf("all order = %v", a)
 	}
 	f = &fakeRunner{fail: "-bench", coverTotal: "81%", cmdList: cmdList, profile: goodProfile}

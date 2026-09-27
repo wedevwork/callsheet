@@ -251,6 +251,10 @@ func bootstrapConfig(v *pinVerifier) (*tls.Config, error) {
 	}, nil
 }
 
+// fetchCAClient builds FetchCA's client over its pinned transport; tests
+// replace it to choose when a response is delivered.
+var fetchCAClient = newHTTPClient
+
 // FetchCA is the mandatory pinned fetch-once bootstrap. It completes the
 // pinned handshake first (bootstrapConfig), only then sends
 // GET /api/v1/ca, and requires status 200 and a bounded single-CA PEM whose
@@ -277,7 +281,7 @@ func FetchCA(ctx context.Context, planeURL, fingerprint string) (Trust, error) {
 	if err != nil {
 		return Trust{}, contract.Wrap(contract.CodeInternal, "cannot build the request", err)
 	}
-	resp, err := newHTTPClient(tr).Do(req)
+	resp, err := fetchCAClient(tr).Do(req)
 	if err != nil {
 		if perr := ctx.Err(); perr != nil {
 			return Trust{}, perr
@@ -285,6 +289,14 @@ func FetchCA(ctx context.Context, planeURL, fingerprint string) (Trust, error) {
 		return Trust{}, classify(ep, err)
 	}
 	defer resp.Body.Close()
+	if oerr := octx.Err(); oerr != nil {
+		// A response that raced the deadline or the caller's cancellation
+		// is not the plane's answer (see Client.request).
+		if perr := ctx.Err(); perr != nil {
+			return Trust{}, perr
+		}
+		return Trust{}, classify(ep, oerr)
+	}
 	pinned := v.verified()
 	if pinned == nil {
 		// Unreachable: a response implies a verified handshake.

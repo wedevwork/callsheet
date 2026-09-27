@@ -25,6 +25,12 @@ import (
 	"github.com/wedevwork/callsheet/internal/contract"
 )
 
+// HarnessProtocolVersion is the iteration 01 transport harness's own
+// frame version. The harness is a test-only transport experiment, not the
+// product protocol, so it stays at 1 when the product protocol changes
+// (iteration 04 raised contract.ProtocolVersion to 2).
+const HarnessProtocolVersion = 1
+
 const (
 	// MaxFrameBytes bounds a single harness frame.
 	MaxFrameBytes = 64 << 10
@@ -334,15 +340,15 @@ func (h *Harness) serveNodeStream(w http.ResponseWriter, r *http.Request) {
 		c.CloseNow()
 		return
 	}
-	if hello.Type != "hello" || hello.Version != contract.ProtocolVersion {
-		details := map[string]any{"local_version": contract.ProtocolVersion, "remote_version": hello.Version}
+	if hello.Type != "hello" || hello.Version != HarnessProtocolVersion {
+		details := map[string]any{"local_version": HarnessProtocolVersion, "remote_version": hello.Version}
 		msg := "protocol version mismatch"
 		if hello.Type != "hello" {
 			msg = "first frame must be hello"
 		}
 		body, _ := json.Marshal(&contract.Error{Code: contract.CodeProtocolMismatch, Message: msg, Details: details})
 		wctx, cancel := context.WithTimeout(ctx, HandshakeTimeout)
-		writeFrame(wctx, c, Frame{Version: contract.ProtocolVersion, Type: "error", RequestID: hello.RequestID, Body: body})
+		writeFrame(wctx, c, Frame{Version: HarnessProtocolVersion, Type: "error", RequestID: hello.RequestID, Body: body})
 		cancel()
 		c.Close(websocket.StatusPolicyViolation, "protocol mismatch")
 		return
@@ -358,7 +364,7 @@ func (h *Harness) serveNodeStream(w http.ResponseWriter, r *http.Request) {
 			c.CloseNow()
 			return
 		}
-		reply := Frame{Version: contract.ProtocolVersion, RequestID: f.RequestID}
+		reply := Frame{Version: HarnessProtocolVersion, RequestID: f.RequestID}
 		if f.Type == "echo" {
 			reply.Type, reply.Body = "echo_ok", f.Body
 		} else {
@@ -505,7 +511,7 @@ func (s *SidecarConn) Echo(ctx context.Context, requestID string, body json.RawM
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if err := writeFrame(ctx, s.conn, Frame{Version: contract.ProtocolVersion, Type: "echo", RequestID: requestID, Body: body}); err != nil {
+	if err := writeFrame(ctx, s.conn, Frame{Version: HarnessProtocolVersion, Type: "echo", RequestID: requestID, Body: body}); err != nil {
 		return nil, err
 	}
 	select {

@@ -83,6 +83,24 @@ func (c *FakeClock) NewTimer(d time.Duration) (<-chan time.Time, func() bool) {
 	return w.c, func() bool { return c.remove(w.id) }
 }
 
+// NewTimerAt returns a one-shot timer channel firing when Advance reaches
+// the absolute instant at (iteration 04): the instant never shifts if the
+// clock moves while the caller computes it. An instant that is not after
+// now fires at once. Its Waiter duration is at minus now at registration.
+func (c *FakeClock) NewTimerAt(at time.Time) (<-chan time.Time, func() bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.seq++
+	w := &fakeWaiter{id: c.seq, at: at, duration: at.Sub(c.now), c: make(chan time.Time, 1)}
+	if !at.After(c.now) {
+		w.c <- c.now
+		return w.c, func() bool { return false }
+	}
+	c.waiters[w.id] = w
+	c.notifyLocked()
+	return w.c, func() bool { return c.remove(w.id) }
+}
+
 // NewTicker returns a channel ticking every d of advanced time and its
 // stop function.
 func (c *FakeClock) NewTicker(d time.Duration) (<-chan time.Time, func()) {

@@ -102,7 +102,7 @@ func (d *deps) open(ctx context.Context, now time.Time, stateDir, bind string, b
 	if m, err = r.l.load(true); err != nil {
 		return lk, nil, false, err
 	}
-	if _, err = r.l.loadNodeRecords(); err != nil {
+	if _, err = r.l.loadRoles(roleLookup); err != nil {
 		return lk, nil, false, err
 	}
 	if r.bindSet && r.bind != m.bind {
@@ -164,7 +164,7 @@ func (d *deps) reissue(ctx context.Context, o ReissueOptions) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	if _, err := l.loadNodeRecords(); err != nil {
+	if _, err := l.loadRoles(roleLookup); err != nil {
 		return Status{}, err
 	}
 	now := d.clock()

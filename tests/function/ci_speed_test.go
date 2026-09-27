@@ -34,7 +34,7 @@ import (
 // sharded by design 02c: processgroup left the packages command for three
 // single-CPU invocations; the function commands are unchanged.
 const (
-	speedPackages      = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/plane ./internal/client ./internal/sidecar ./internal/contract"
+	speedPackages      = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/plane ./internal/client ./internal/sidecar ./internal/contract ./internal/adapter"
 	speedPG1           = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/spikes/processgroup"
 	speedPG2           = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/spikes/processgroup"
 	speedPG4           = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/spikes/processgroup"
@@ -94,6 +94,19 @@ var speedNodeNative = []string{
 	"TestNodeRegistry", "TestNodeRegistry/restore", "TestNodeRegistry/validation",
 	"TestNodeDiscovery", "TestNodeDiscovery/text", "TestNodeDiscovery/json", "TestNodeDiscovery/errors",
 	"TestNodePlatform", "TestNodePlatform/paths", "TestNodePlatform/native-state", "TestNodePlatform/policy", "TestNodePlatform/sticky-write",
+}
+
+// speedRoleNative are iteration 04's 29 required role names.
+var speedRoleNative = []string{
+	"TestRoleConfiguration", "TestRoleConfiguration/fields", "TestRoleConfiguration/order",
+	"TestRoleAdapter", "TestRoleAdapter/disabled", "TestRoleAdapter/probe",
+	"TestRoleValidation", "TestRoleValidation/remote", "TestRoleValidation/rejections",
+	"TestRoleProtocol", "TestRoleProtocol/duplex", "TestRoleProtocol/bounds",
+	"TestRoleReadiness", "TestRoleReadiness/changes", "TestRoleReadiness/reconnect",
+	"TestRolePersistence", "TestRolePersistence/restore", "TestRolePersistence/failures",
+	"TestRoleCommands", "TestRoleCommands/text", "TestRoleCommands/json", "TestRoleCommands/trust",
+	"TestRoleMutation", "TestRoleMutation/races", "TestRoleMutation/remove",
+	"TestRolePlatform", "TestRolePlatform/manuals", "TestRolePlatform/executable", "TestRolePlatform/policy",
 }
 
 // speedJobs is the table of ordinary jobs: the two main jobs (design 02b,
@@ -501,7 +514,7 @@ func TestCISpeedJobs(t *testing.T) {
 func qualifyingStream(drop string) string {
 	pkg := devcheck.NativePackage
 	evs := []map[string]any{synth("start", pkg, "")}
-	for _, name := range append(slices.Clone(speedNative), speedNodeNative...) {
+	for _, name := range append(append(slices.Clone(speedNative), speedNodeNative...), speedRoleNative...) {
 		if name != drop {
 			evs = append(evs, synth("run", pkg, name), synth("pass", pkg, name))
 		}
@@ -512,7 +525,7 @@ func qualifyingStream(drop string) string {
 // FP-3: validator, plans, native evidence and documentation agree.
 func TestCISpeedPolicy(t *testing.T) {
 	t.Run("native", func(t *testing.T) {
-		if got := devcheck.NativeRequiredTests(); len(got) != 58 || !slices.Equal(got[:28], speedNative) || !slices.Equal(got[28:], speedNodeNative) {
+		if got := devcheck.NativeRequiredTests(); len(got) != 87 || !slices.Equal(got[:28], speedNative) || !slices.Equal(got[28:58], speedNodeNative) || !slices.Equal(got[58:], speedRoleNative) {
 			t.Fatalf("native required = %v", got)
 		}
 		if err := devcheck.CheckNativeResults("darwin", strings.NewReader(qualifyingStream(""))); err != nil {

@@ -31,12 +31,18 @@ const testWait = 20 * time.Second
 
 // recConn records the deadlines set on an accepted connection and can
 // block its writes, to prove cleared HTTP deadlines and bounded writes.
+// A blocked write ends when the connection is closed or, like a real
+// socket's, at the write deadline in force when it started (TLS's
+// close_notify sets one before its alert, so a Close that finds no write
+// in flight cannot wait forever); each one that starts blocking signals
+// stalled.
 type recConn struct {
 	net.Conn
 	mu       sync.Mutex
 	readDL   []time.Time
 	writeDL  []time.Time
 	blocking atomic.Bool
+	stalled  chan struct{}
 	closed   chan struct{}
 	once     sync.Once
 }
@@ -46,6 +52,16 @@ func (c *recConn) SetDeadline(t time.Time) error {
 	c.readDL, c.writeDL = append(c.readDL, t), append(c.writeDL, t)
 	c.mu.Unlock()
 	return c.Conn.SetDeadline(t)
+}
+
+// awaitStalled waits until a write is blocked on the connection.
+func (c *recConn) awaitStalled(t *testing.T) {
+	t.Helper()
+	select {
+	case <-c.stalled:
+	case <-time.After(testWait):
+		t.Fatal("no write blocked on the connection")
+	}
 }
 
 func (c *recConn) SetReadDeadline(t time.Time) error {
@@ -64,8 +80,28 @@ func (c *recConn) SetWriteDeadline(t time.Time) error {
 
 func (c *recConn) Write(b []byte) (int, error) {
 	if c.blocking.Load() {
-		<-c.closed
-		return 0, net.ErrClosed
+		c.mu.Lock()
+		var dl time.Time
+		if n := len(c.writeDL); n > 0 {
+			dl = c.writeDL[n-1]
+		}
+		c.mu.Unlock()
+		var expire <-chan time.Time
+		if !dl.IsZero() {
+			t := time.NewTimer(time.Until(dl))
+			defer t.Stop()
+			expire = t.C
+		}
+		select {
+		case c.stalled <- struct{}{}:
+		default:
+		}
+		select {
+		case <-c.closed:
+			return 0, net.ErrClosed
+		case <-expire:
+			return 0, os.ErrDeadlineExceeded
+		}
 	}
 	return c.Conn.Write(b)
 }
@@ -100,7 +136,7 @@ func (l *recListener) Accept() (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	rc := &recConn{Conn: c, closed: make(chan struct{})}
+	rc := &recConn{Conn: c, stalled: make(chan struct{}, 1), closed: make(chan struct{})}
 	l.mu.Lock()
 	l.conns = append(l.conns, rc)
 	l.mu.Unlock()
@@ -137,13 +173,35 @@ func startNodePlane(t *testing.T, ids ...string) *nodePlane {
 // startNodePlaneWith is startNodePlane with prepared deps.
 func startNodePlaneWith(t *testing.T, d *deps, ids ...string) *nodePlane {
 	t.Helper()
+	return startNodePlaneSetup(t, d, nil, ids...)
+}
+
+// startNodePlaneSetup is startNodePlaneWith with setup run on the root
+// after the node records are written and before the plane starts.
+func startNodePlaneSetup(t *testing.T, d *deps, setup func(root string), ids ...string) *nodePlane {
+	t.Helper()
 	root := freshRoot(t)
 	for _, id := range ids {
 		writeNodeRecord(t, root, id+".json", encodeNodeRecord(id, t0), 0o600)
 	}
+	if setup != nil {
+		setup(root)
+	}
+	return serveNodePlaneAt(t, d, root)
+}
+
+// serveNodePlaneAt serves the existing root with a fake node clock.
+func serveNodePlaneAt(t *testing.T, d *deps, root string) *nodePlane {
+	t.Helper()
 	np := &nodePlane{d: d, root: root, clk: testkit.NewFakeClock(t0), lis: &recListener{}, logs: &logBuffer{}, events: make(chan string, 64)}
 	d.nodeClock = np.clk
+	// A test's own observer (iteration 04 role tests) keeps every event;
+	// the bounded channel serves the node tests.
+	prev := d.streamEvents
 	d.streamEvents = func(e string) {
+		if prev != nil {
+			prev(e)
+		}
 		select {
 		case np.events <- e:
 		default:
@@ -197,10 +255,18 @@ func (np *nodePlane) awaitEvent(t *testing.T, want string) {
 	}
 }
 
-// peer is a test-driven node stream speaking raw wire messages.
+// peer is a test-driven node stream speaking raw wire messages. rev and
+// roles are the last snapshot it acknowledged; its heartbeats describe it.
 type peer struct {
-	t *testing.T
-	c *websocket.Conn
+	t     *testing.T
+	c     *websocket.Conn
+	rev   int
+	roles []contract.RoleRecord
+	// ready is the can_accept each heartbeat reports (by role ID).
+	ready map[string]bool
+	// held are plane messages read past (a heartbeat's wait for its ack
+	// skips interleaved plane requests); recv returns them first.
+	held []contract.NodeFrame
 }
 
 func (np *nodePlane) dial(t *testing.T) *peer {
@@ -238,6 +304,11 @@ func (p *peer) hello(id string) {
 // recv reads one plane message (bounded wait) and decodes its envelope.
 func (p *peer) recv() contract.NodeFrame {
 	p.t.Helper()
+	if len(p.held) > 0 {
+		f := p.held[0]
+		p.held = p.held[1:]
+		return f
+	}
 	ctx, cancel := context.WithTimeout(bg, testWait)
 	defer cancel()
 	typ, b, err := p.c.Read(ctx)
@@ -323,23 +394,69 @@ func (np *nodePlane) released(t *testing.T) {
 	lk.release()
 }
 
-// connect completes hello and n heartbeats (b1..bn).
+// connect completes hello, acknowledges the initial snapshot p1 and sends
+// n heartbeats (b1..bn).
 func (p *peer) connect(id string, n int) {
 	p.t.Helper()
 	p.hello(id)
 	p.expect(contract.FrameHelloOK, "h1")
+	p.ackReplace("p1")
 	for i := 1; i <= n; i++ {
 		p.heartbeat(i)
 	}
 }
 
+// readReplace reads the snapshot request rid without acknowledging it.
+func (p *peer) readReplace(rid string) contract.RolesReplaceBody {
+	p.t.Helper()
+	f := p.expect(contract.FrameRolesReplace, rid)
+	b, err := contract.DecodeRolesReplace(f.Body, roleLookup)
+	if err != nil {
+		p.t.Fatalf("roles_replace %s: %v", f.Body, err)
+	}
+	return b
+}
+
+// ackReplace reads snapshot request rid, installs it and acknowledges it.
+func (p *peer) ackReplace(rid string) contract.RolesReplaceBody {
+	p.t.Helper()
+	b := p.readReplace(rid)
+	p.rev, p.roles = b.Revision, b.Roles
+	p.send(contract.ProtocolVersion, contract.FrameRolesReplaceAck, rid, contract.RolesReplaceAckBody{Revision: b.Revision})
+	return b
+}
+
+// body is a heartbeat describing the acknowledged snapshot.
+func (p *peer) body() contract.HeartbeatBody {
+	hb := contract.HeartbeatBody{RolesRevision: p.rev, Roles: []contract.RoleStatus{}}
+	for _, r := range p.roles {
+		hb.Roles = append(hb.Roles, contract.RoleStatus{RoleID: r.ID, Concurrency: r.Concurrency, CanAccept: p.ready[r.ID]})
+	}
+	return hb
+}
+
+// heartbeat sends heartbeat i describing the acknowledged snapshot and
+// waits for its acknowledgement; plane requests that arrive first are held
+// for later reads, in order.
 func (p *peer) heartbeat(i int) {
 	p.t.Helper()
 	rid := "b" + strconv.Itoa(i)
-	p.send(contract.ProtocolVersion, contract.FrameHeartbeat, rid, contract.HeartbeatBody{})
-	f := p.expect(contract.FrameHeartbeatAck, rid)
-	if err := contract.DecodeAck(f.Body); err != nil {
-		p.t.Fatal(err)
+	p.send(contract.ProtocolVersion, contract.FrameHeartbeat, rid, p.body())
+	var skipped []contract.NodeFrame
+	for {
+		f := p.recv()
+		if f.Type == contract.FrameRolesReplace || f.Type == contract.FrameRoleValidate {
+			skipped = append(skipped, f)
+			continue
+		}
+		if f.Type != contract.FrameHeartbeatAck || f.RequestID != rid {
+			p.t.Fatalf("got %s %s (%s), want heartbeat_ack %s", f.Type, f.RequestID, f.Body, rid)
+		}
+		if err := contract.DecodeAck(f.Body); err != nil {
+			p.t.Fatal(err)
+		}
+		p.held = append(skipped, p.held...)
+		return
 	}
 }
 
@@ -369,6 +486,7 @@ func TestNodeLeaseContract(t *testing.T) {
 		p := np.dial(t)
 		p.hello(idA)
 		p.expect(contract.FrameHelloOK, "h1")
+		p.ackReplace("p1")
 		if n := np.show(t, idA); n.Liveness != contract.LivenessOffline {
 			t.Fatalf("hello made the node online: %+v", n)
 		}
@@ -376,7 +494,7 @@ func TestNodeLeaseContract(t *testing.T) {
 		hbAt := np.clk.Now()
 		p.heartbeat(1)
 		n := np.show(t, idA)
-		if n.Liveness != contract.LivenessOnline || !n.LastSeen.Equal(hbAt) || *n.ProtocolVersion != 1 || *n.SoftwareVersion != "test-1" {
+		if n.Liveness != contract.LivenessOnline || !n.LastSeen.Equal(hbAt) || *n.ProtocolVersion != 2 || *n.SoftwareVersion != "test-1" {
 			t.Fatalf("after heartbeat = %+v", n)
 		}
 		// A closed socket keeps the lease until its deadline.
@@ -482,22 +600,22 @@ func TestNodeAPI(t *testing.T) {
 	}{
 		{"GET", contract.PathNodes, "", nil, "", 400, contract.CodeInvalidArgument},
 		{"GET", contract.PathNodes, "x", nil, "", 400, contract.CodeInvalidArgument},
-		{"GET", contract.PathNodes, "1", map[string]string{contract.ProtocolHeader: "1"}, "", 400, contract.CodeInvalidArgument},
-		{"GET", contract.PathNodes, "2", nil, "", 409, contract.CodeProtocolMismatch},
-		{"GET", contract.PathNodes + "?all=SECRET-QUERY", "1", nil, "", 400, contract.CodeInvalidArgument},
-		{"GET", contract.PathNodes + "?", "1", nil, "", 400, contract.CodeInvalidArgument},
-		{"POST", contract.PathNodes, "1", nil, "SECRET-BODY", 400, contract.CodeInvalidArgument},
-		{"DELETE", contract.PathNodes + "/" + idA, "1", nil, "", 400, contract.CodeInvalidArgument},
-		{"GET", contract.PathNodes + "/SECRET-ID", "1", nil, "", 400, contract.CodeInvalidArgument},
-		{"GET", contract.PathNodes + "/", "1", nil, "", 400, contract.CodeInvalidArgument},
-		{"GET", contract.PathNodes + "/" + idA + "/x", "1", nil, "", 400, contract.CodeInvalidArgument},
-		{"GET", contract.PathNodes + "/n_ffffffffffffffffffffffffffffffff", "1", nil, "", 404, contract.CodeNotFound},
-		{"GET", contract.PathEnroll, "1", nil, "", 400, contract.CodeInvalidArgument},
-		{"POST", contract.PathEnroll, "1", nil, "SECRET-BODY", 400, contract.CodeInvalidArgument},
-		{"POST", contract.PathEnroll, "1", nil, `{"node_id":"` + idA + `","software_version":"v","x":"SECRET-BODY"}`, 400, contract.CodeInvalidArgument},
-		{"POST", contract.PathEnroll, "2", nil, `{}`, 409, contract.CodeProtocolMismatch},
+		{"GET", contract.PathNodes, "2", map[string]string{contract.ProtocolHeader: "2"}, "", 400, contract.CodeInvalidArgument},
+		{"GET", contract.PathNodes, "3", nil, "", 409, contract.CodeProtocolMismatch},
+		{"GET", contract.PathNodes + "?all=SECRET-QUERY", "2", nil, "", 400, contract.CodeInvalidArgument},
+		{"GET", contract.PathNodes + "?", "2", nil, "", 400, contract.CodeInvalidArgument},
+		{"POST", contract.PathNodes, "2", nil, "SECRET-BODY", 400, contract.CodeInvalidArgument},
+		{"DELETE", contract.PathNodes + "/" + idA, "2", nil, "", 400, contract.CodeInvalidArgument},
+		{"GET", contract.PathNodes + "/SECRET-ID", "2", nil, "", 400, contract.CodeInvalidArgument},
+		{"GET", contract.PathNodes + "/", "2", nil, "", 400, contract.CodeInvalidArgument},
+		{"GET", contract.PathNodes + "/" + idA + "/x", "2", nil, "", 400, contract.CodeInvalidArgument},
+		{"GET", contract.PathNodes + "/n_ffffffffffffffffffffffffffffffff", "2", nil, "", 404, contract.CodeNotFound},
+		{"GET", contract.PathEnroll, "2", nil, "", 400, contract.CodeInvalidArgument},
+		{"POST", contract.PathEnroll, "2", nil, "SECRET-BODY", 400, contract.CodeInvalidArgument},
+		{"POST", contract.PathEnroll, "2", nil, `{"node_id":"` + idA + `","software_version":"v","x":"SECRET-BODY"}`, 400, contract.CodeInvalidArgument},
+		{"POST", contract.PathEnroll, "3", nil, `{}`, 409, contract.CodeProtocolMismatch},
 		{"POST", contract.PathCA, "", nil, "", 400, contract.CodeInvalidArgument},
-		{"GET", "/api/v1/nodez", "1", nil, "", 404, contract.CodeNotFound},
+		{"GET", "/api/v1/nodez", "2", nil, "", 404, contract.CodeNotFound},
 		{"GET", contract.PathNodeStream, "", map[string]string{"Origin": "https://evil.example"}, "", 400, contract.CodeInvalidArgument},
 		{"POST", contract.PathNodeStream, "", nil, "", 400, contract.CodeInvalidArgument},
 		{"GET", contract.PathNodeStream + "?x=1", "", nil, "", 400, contract.CodeInvalidArgument},
@@ -507,19 +625,19 @@ func TestNodeAPI(t *testing.T) {
 		if status != c.status || err != nil || e.Code != c.code || bytes.Contains([]byte(body), []byte("SECRET")) {
 			t.Fatalf("%s %s v=%q = %d %q (%v)", c.method, c.path, c.version, status, body, err)
 		}
-		if c.path != contract.PathCA && c.path != "/api/v1/nodez" && hdr != "1" {
+		if c.path != contract.PathCA && c.path != "/api/v1/nodez" && hdr != "2" {
 			t.Fatalf("%s %s: response protocol header %q", c.method, c.path, hdr)
 		}
 		if c.code == contract.CodeProtocolMismatch {
-			if e.Message != "protocol version mismatch: local=1 remote=2" {
+			if e.Message != "protocol version mismatch: local=2 remote=3" {
 				t.Fatalf("mismatch message %q", e.Message)
 			}
-			if l, _ := e.DetailInt("local_version"); l != 1 {
+			if l, _ := e.DetailInt("local_version"); l != 2 {
 				t.Fatal("details")
 			}
 		}
 	}
-	if !bytes.Contains([]byte(np.logs.String()), []byte(`"local_version":1,"remote_version":2`)) {
+	if !bytes.Contains([]byte(np.logs.String()), []byte(`"local_version":2,"remote_version":3`)) {
 		t.Fatalf("mismatch not logged: %s", np.logs.String())
 	}
 	// An oversized enrollment body is refused by the bounded reader (checked
@@ -527,7 +645,7 @@ func TestNodeAPI(t *testing.T) {
 	// connection before closing it).
 	svc := newNodeService(np.srvReg(t), np.clk, discardLogger(), nil, time.Second)
 	req, _ := newRequest("POST", contract.PathEnroll, `{"node_id":"`+idA+`","software_version":"`+strings.Repeat("v", 5000)+`"}`)
-	req.Header.Set(contract.ProtocolHeader, "1")
+	req.Header.Set(contract.ProtocolHeader, "2")
 	rec := httptest.NewRecorder()
 	svc.handleNodes(rec, req)
 	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "larger than 4096 bytes") {
@@ -544,17 +662,17 @@ func TestNodeAPI(t *testing.T) {
 		t.Fatalf("health = %d %q", status, body)
 	}
 	// Enrollment status codes: 201 new, 200 existing.
-	status, _, body = do("POST", contract.PathEnroll, "1", nil, `{"node_id":"n_dddddddddddddddddddddddddddddddd","software_version":"v"}`)
+	status, _, body = do("POST", contract.PathEnroll, "2", nil, `{"node_id":"n_dddddddddddddddddddddddddddddddd","software_version":"v"}`)
 	if status != 201 {
 		t.Fatalf("new enroll = %d %s", status, body)
 	}
-	status, _, _ = do("POST", contract.PathEnroll, "1", nil, `{"node_id":"n_dddddddddddddddddddddddddddddddd","software_version":"v"}`)
+	status, _, _ = do("POST", contract.PathEnroll, "2", nil, `{"node_id":"n_dddddddddddddddddddddddddddddddd","software_version":"v"}`)
 	if status != 200 {
 		t.Fatalf("repeat enroll = %d", status)
 	}
 	// The response JSON is exactly the envelope with a final LF.
-	status, _, body = do("GET", contract.PathNodes+"/"+idA, "1", nil, "")
-	if status != 200 || body != `{"version":1,"node":{"id":"`+idA+`","liveness":"offline","last_seen":null,"protocol_version":null,"software_version":null,"roles":[]}}`+"\n" {
+	status, _, body = do("GET", contract.PathNodes+"/"+idA, "2", nil, "")
+	if status != 200 || body != `{"version":2,"node":{"id":"`+idA+`","liveness":"offline","last_seen":null,"protocol_version":null,"software_version":null,"roles":[]}}`+"\n" {
 		t.Fatalf("show body %q", body)
 	}
 }
@@ -604,6 +722,7 @@ func TestNodeStreamProtocol(t *testing.T) {
 		default:
 			t.Fatal("the deadline did not fire at the hello read")
 		}
+		p.ackReplace("p1")
 		p.heartbeat(1)
 		if n := np.show(t, idA); n.Liveness != contract.LivenessOnline {
 			t.Fatalf("after a hello read at the deadline = %+v", n)
@@ -614,14 +733,16 @@ func TestNodeStreamProtocol(t *testing.T) {
 	})
 	t.Run("version", func(t *testing.T) {
 		p := np.dial(t)
-		p.send(2, contract.FrameHello, "h9", map[string]any{"node_id": idA, "future": true})
+		// An iteration 03 (protocol 1) sidecar is refused before its body
+		// is read, naming both versions.
+		p.send(1, contract.FrameHello, "h9", map[string]any{"node_id": idA, "future": true})
 		f := p.recv()
 		e, err := contract.ParseErrorBody(f.Body)
-		if f.Version != 1 || f.Type != contract.FrameError || f.RequestID != "h9" || err != nil || e.Code != contract.CodeProtocolMismatch ||
-			e.Message != "protocol version mismatch: local=1 remote=2" {
+		if f.Version != 2 || f.Type != contract.FrameError || f.RequestID != "h9" || err != nil || e.Code != contract.CodeProtocolMismatch ||
+			e.Message != "protocol version mismatch: local=2 remote=1" {
 			t.Fatalf("mismatch = %+v %v %v", f, e, err)
 		}
-		if r, _ := e.DetailInt("remote_version"); r != 2 {
+		if r, _ := e.DetailInt("remote_version"); r != 1 {
 			t.Fatal("details")
 		}
 		if st := p.closed(); st != websocket.StatusPolicyViolation {
@@ -630,7 +751,7 @@ func TestNodeStreamProtocol(t *testing.T) {
 		if n := np.show(t, idA); n.Liveness != contract.LivenessOffline || n.SoftwareVersion != nil {
 			t.Fatalf("mismatch mutated the registry: %+v", n)
 		}
-		if !strings.Contains(np.logs.String(), `"msg":"protocol version mismatch","component":"plane","local_version":1,"remote_version":2,"path":"/api/v1/node-stream"`) {
+		if !strings.Contains(np.logs.String(), `"msg":"protocol version mismatch","component":"plane","local_version":2,"remote_version":1,"path":"/api/v1/node-stream"`) {
 			t.Fatalf("mismatch not logged with both versions: %s", np.logs.String())
 		}
 		// Nothing was attached: a correct hello succeeds at once.
@@ -649,7 +770,7 @@ func TestNodeStreamProtocol(t *testing.T) {
 		{"heartbeat-first", mustFrame(t, contract.FrameHeartbeat, "b1", contract.HeartbeatBody{}), "b1", contract.CodeInvalidArgument},
 		{"unknown-node", mustFrame(t, contract.FrameHello, "h1", contract.HelloBody{NodeID: idC, SoftwareVersion: "v"}), "h1", contract.CodeNotFound},
 		{"bad-hello", mustFrame(t, contract.FrameHello, "h1", map[string]any{"node_id": idA}), "h1", contract.CodeInvalidArgument},
-		{"malformed", []byte(`{"version":1,`), invalidRequestID, contract.CodeInvalidArgument},
+		{"malformed", []byte(`{"version":2,`), invalidRequestID, contract.CodeInvalidArgument},
 		{"wrong-direction", mustFrame(t, contract.FrameHelloOK, "h1", contract.HelloOKBody{HeartbeatIntervalMS: 5000, LeaseMS: 15000}), "h1", contract.CodeInvalidArgument},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -667,19 +788,26 @@ func TestNodeStreamProtocol(t *testing.T) {
 			send func(p *peer)
 			rid  string
 		}{
-			{"skip", func(p *peer) { p.send(1, contract.FrameHeartbeat, "b2", contract.HeartbeatBody{}) }, "b2"},
+			{"skip", func(p *peer) { p.send(2, contract.FrameHeartbeat, "b2", contract.HeartbeatBody{}) }, "b2"},
 			{"duplicate", func(p *peer) {
 				p.heartbeat(1)
-				p.send(1, contract.FrameHeartbeat, "b1", contract.HeartbeatBody{})
+				p.send(2, contract.FrameHeartbeat, "b1", contract.HeartbeatBody{})
 			}, "b1"},
 			{"hello-again", func(p *peer) { p.hello(idA) }, "h1"},
 			{"roles", func(p *peer) {
-				p.sendRaw([]byte(`{"version":1,"type":"heartbeat","request_id":"b1","body":{"roles":[{"role_id":"r","inflight":0,"concurrency":1,"can_accept":true}]}}`))
+				p.sendRaw([]byte(`{"version":2,"type":"heartbeat","request_id":"b1","body":{"roles_revision":0,"roles":[{"role_id":"r","inflight":0,"concurrency":1,"can_accept":true}]}}`))
 			}, "b1"},
+			{"revision", func(p *peer) {
+				p.send(2, contract.FrameHeartbeat, "b1", contract.HeartbeatBody{RolesRevision: 7})
+			}, "b1"},
+			{"unsolicited-ack", func(p *peer) {
+				p.send(2, contract.FrameRolesReplaceAck, "p1", contract.RolesReplaceAckBody{})
+			}, "p1"},
 		} {
 			p := np.dial(t)
 			p.hello(idB)
 			p.expect(contract.FrameHelloOK, "h1")
+			p.ackReplace("p1")
 			c.send(p)
 			p.expectError(c.rid, contract.CodeInvalidArgument)
 			if st := p.closed(); st != websocket.StatusPolicyViolation {
@@ -691,7 +819,7 @@ func TestNodeStreamProtocol(t *testing.T) {
 	t.Run("peer-error", func(t *testing.T) {
 		p := np.dial(t)
 		p.connect(idB, 1)
-		p.send(1, contract.FrameError, "b2", contract.New(contract.CodeInternal, "sidecar trouble"))
+		p.send(2, contract.FrameError, "b2", contract.New(contract.CodeInternal, "sidecar trouble"))
 		if st := p.closed(); st != websocket.StatusPolicyViolation {
 			t.Fatalf("close = %v", st)
 		}
@@ -756,9 +884,12 @@ func TestNodeStreamProtocol(t *testing.T) {
 		p := np.dial(t)
 		p.hello(idB)
 		p.expect(contract.FrameHelloOK, "h1")
-		// Advance only after the hello_ok write returned (the attached
-		// event), so the advance cannot fire that write's own 5 s bound.
+		p.ackReplace("p1")
+		// Advance only after the snapshot acknowledgement was processed
+		// (hello_ok's write returned before it), so the advance cannot fire
+		// a write's own 5 s bound or the snapshot's 4 s timeout.
 		np.awaitEvent(t, "attached "+idB)
+		np.awaitEvent(t, "replace-acked "+idB+" p1 0")
 		np.clk.Advance(firstHeartbeatWindow)
 		if st := p.closed(); st != websocket.StatusPolicyViolation {
 			t.Fatalf("first heartbeat timeout close = %v", st)
@@ -817,13 +948,14 @@ func TestNodeStreamLifecycle(t *testing.T) {
 		p.connect(idA, 1)
 		conn := np.lis.all()[0]
 		conn.blocking.Store(true)
-		p.send(1, contract.FrameHeartbeat, "b2", contract.HeartbeatBody{})
+		p.send(2, contract.FrameHeartbeat, "b2", contract.HeartbeatBody{})
 		// Only once b2's ack write starts is the one 5 s timer its write
 		// bound (b1's ack write, and its timer, ended before b2 was read).
 		np.awaitEvent(t, "acking "+idA+" b2")
 		if err := np.clk.AwaitWaiter(testWait, testkit.HasTimer(streamStepTimeout)); err != nil {
 			t.Fatal(err)
 		}
+		conn.awaitStalled(t)
 		np.clk.Advance(streamStepTimeout)
 		np.awaitEvent(t, "detached "+idA)
 		p.closed()
@@ -876,7 +1008,7 @@ func TestNodeStreamLifecycle(t *testing.T) {
 		svc.shutdown(time.Now().Add(time.Second))
 		rec := &respRecorder{h: map[string][]string{}}
 		svc.handleStream(rec, newGet(t, contract.PathNodeStream))
-		if rec.code != 503 || rec.h.Get(contract.ProtocolHeader) != "1" {
+		if rec.code != 503 || rec.h.Get(contract.ProtocolHeader) != "2" {
 			t.Fatalf("stream after shutdown = %d, protocol header %q", rec.code, rec.h.Get(contract.ProtocolHeader))
 		}
 		if svc.admit(&nodeStream{}) {

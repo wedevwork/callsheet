@@ -248,13 +248,28 @@ type nodeRegistry struct {
 	l     layout
 	clock nodeClock
 	d     *deps
+	// roles, when set (iteration 04), supplies configured roles for node
+	// views and the confirmed snapshots distributed on attach. Readers load
+	// its state pointer while mu is held; the role registry swaps it only
+	// through adoptRoles, under mu (lock order: mu, then nothing).
+	roles *roleRegistry
 
 	regMu sync.Mutex
+	// parentSynced (regMu) records a successful sync of the state root
+	// after nodes/ existed.
+	parentSynced bool
 
 	mu     sync.Mutex
 	nodes  map[string]*nodeState
 	gen    uint64
 	closed bool
+}
+
+// roleSnap is one full per-node role snapshot: a registry revision and the
+// node's immutable records in registration order.
+type roleSnap struct {
+	rev   int
+	roles []contract.RoleRecord
 }
 
 // nodeState is one known node.
@@ -284,6 +299,17 @@ type attachment struct {
 	heartbeated   bool
 	sw            string
 	pv            int
+
+	// Role distribution and readiness (iteration 04), all volatile.
+	// stream receives dirty signals for this attachment; desired is the
+	// newest confirmed snapshot for the node; acked is the snapshot the
+	// sidecar last acknowledged (revision 0 and empty until the first
+	// acknowledgement); status holds the readiness of each acked role from
+	// the last heartbeat at the acked revision (nil before one arrived).
+	stream  *nodeStream
+	desired roleSnap
+	acked   roleSnap
+	status  []bool
 }
 
 // loadNodeRegistry loads and validates every durable record; all nodes
@@ -377,21 +403,32 @@ func (r *nodeRegistry) unconfirmed(id string, err error) error {
 	return wrapf(contract.CodeInternal, err, "node %s is registered but syncing %s failed: %v; its durability is not confirmed: retry the enrollment, which confirms it (the record is kept and never replaced)", id, r.l.path(nodesName), err)
 }
 
-// ensureNodesDir creates nodes/ (0700) and syncs the root when absent.
+// ensureNodesDir makes nodes/ (0700) durable before the first record is
+// published: it creates the directory when absent and syncs the root, on
+// every attempt until one sync succeeds (a nodes/ left by an attempt whose
+// sync failed, or an empty one found at startup, is not proof that its
+// entry is durable). Known records, loaded or published, or a successful
+// sync end the requirement. Called with regMu held.
 func (r *nodeRegistry) ensureNodesDir(d *deps) error {
-	p := r.l.path(nodesName)
-	if _, err := os.Lstat(p); err == nil {
+	r.mu.Lock()
+	known := len(r.nodes) > 0
+	r.mu.Unlock()
+	if r.parentSynced || known {
 		return nil
 	}
-	if err := d.hook("mkdir", nodesName); err != nil {
-		return wrapf(contract.CodeInternal, err, "cannot create %s: %v; nothing was registered", p, err)
-	}
-	if err := os.Mkdir(p, dirMode); err != nil && !errors.Is(err, fs.ErrExist) {
-		return wrapf(contract.CodeInternal, err, "cannot create %s: %v; nothing was registered", p, err)
+	p := r.l.path(nodesName)
+	if _, err := os.Lstat(p); err != nil {
+		if err := d.hook("mkdir", nodesName); err != nil {
+			return wrapf(contract.CodeInternal, err, "cannot create %s: %v; nothing was registered", p, err)
+		}
+		if err := os.Mkdir(p, dirMode); err != nil && !errors.Is(err, fs.ErrExist) {
+			return wrapf(contract.CodeInternal, err, "cannot create %s: %v; nothing was registered", p, err)
+		}
 	}
 	if err := d.syncDir(r.l, rootName); err != nil {
 		return wrapf(contract.CodeInternal, err, "created %s but syncing the state directory failed: %v; nothing was registered, retry the enrollment", p, err)
 	}
+	r.parentSynced = true
 	return nil
 }
 
@@ -430,13 +467,33 @@ func runAll(fs []func()) {
 // first-heartbeat window). It returns the attachment's generation. Hello
 // never makes a node online.
 func (r *nodeRegistry) Attach(id, softwareVersion string, protocolVersion int, closeConn func()) (uint64, error) {
+	return r.attach(id, softwareVersion, protocolVersion, closeConn, nil)
+}
+
+// attach is Attach for a stream: the attachment's desired snapshot is the
+// node's current confirmed snapshot, read under mu (so a publication that
+// swaps the registry afterwards always reaches it through adoptRoles).
+func (r *nodeRegistry) attach(id, softwareVersion string, protocolVersion int, closeConn func(), st *nodeStream) (uint64, error) {
 	r.mu.Lock()
 	now := r.clock.Now()
 	closers := r.expireLocked(now, 0)
 	gen, err := r.attachLocked(now, id, softwareVersion, protocolVersion, closeConn)
+	if err == nil {
+		a := r.nodes[id].att
+		a.stream = st
+		a.desired = r.confirmedSnap(id)
+	}
 	r.mu.Unlock()
 	runAll(closers)
 	return gen, err
+}
+
+// confirmedSnap is the node's snapshot in the confirmed registry.
+func (r *nodeRegistry) confirmedSnap(id string) roleSnap {
+	if r.roles == nil {
+		return roleSnap{}
+	}
+	return r.roles.load().confirmed.snapshotFor(id)
 }
 
 func (r *nodeRegistry) attachLocked(now time.Time, id, sw string, pv int, closeConn func()) (uint64, error) {
@@ -460,9 +517,16 @@ func (r *nodeRegistry) attachLocked(now time.Time, id, sw string, pv int, closeC
 // offline), then sets deadline = instant + lease, last_seen = the same
 // instant in UTC, the observed versions, and online.
 func (r *nodeRegistry) Heartbeat(id string, generation uint64, roles []contract.RoleStatus) error {
-	if len(roles) != 0 {
-		return errf(contract.CodeInvalidArgument, "roles must be empty in protocol %d", contract.ProtocolVersion)
-	}
+	return r.heartbeat(id, generation, contract.HeartbeatBody{Roles: roles})
+}
+
+// heartbeat is Heartbeat for a complete body (iteration 04). The body must
+// describe exactly the attachment's last acknowledged snapshot: its
+// revision, and one status per acknowledged role in registration order
+// with the configured concurrency. Anything else is invalid_argument and
+// neither refreshes the lease nor changes readiness. A valid heartbeat
+// refreshes the lease and records the per-role readiness it reports.
+func (r *nodeRegistry) heartbeat(id string, generation uint64, hb contract.HeartbeatBody) error {
 	r.mu.Lock()
 	now := r.clock.Now()
 	closers := r.expireLocked(now, generation)
@@ -470,7 +534,7 @@ func (r *nodeRegistry) Heartbeat(id string, generation uint64, roles []contract.
 	var err error
 	if st == nil || st.att == nil || st.att.gen != generation {
 		err = errf(contract.CodeUnavailable, "the stream for node %s is no longer current; reconnect", id)
-	} else {
+	} else if err = checkHeartbeat(st.att.acked, hb); err == nil {
 		a := st.att
 		seen := now.UTC()
 		pv, sw := a.pv, a.sw
@@ -478,10 +542,208 @@ func (r *nodeRegistry) Heartbeat(id string, generation uint64, roles []contract.
 		st.lastSeen, st.protocolVersion, st.softwareVersion = &seen, &pv, &sw
 		st.online = true
 		a.heartbeated = true
+		a.status = make([]bool, len(hb.Roles))
+		for i, rs := range hb.Roles {
+			a.status[i] = rs.CanAccept
+		}
 	}
 	r.mu.Unlock()
 	runAll(closers)
 	return err
+}
+
+// checkHeartbeat validates a heartbeat against the acknowledged snapshot.
+func checkHeartbeat(acked roleSnap, hb contract.HeartbeatBody) error {
+	if hb.RolesRevision != acked.rev {
+		return errf(contract.CodeInvalidArgument, "heartbeat roles_revision %d is not the acknowledged revision %d", hb.RolesRevision, acked.rev)
+	}
+	if len(hb.Roles) != len(acked.roles) {
+		return errf(contract.CodeInvalidArgument, "heartbeat reports %d roles; revision %d has %d", len(hb.Roles), acked.rev, len(acked.roles))
+	}
+	for i, rs := range hb.Roles {
+		want := acked.roles[i]
+		if rs.RoleID != want.ID {
+			return errf(contract.CodeInvalidArgument, "heartbeat role %d is %s; want %s (registration order)", i+1, rs.RoleID, want.ID)
+		}
+		if rs.Concurrency != want.Concurrency {
+			return errf(contract.CodeInvalidArgument, "heartbeat role %s reports concurrency %d; configured %d", rs.RoleID, rs.Concurrency, want.Concurrency)
+		}
+		if rs.Inflight != 0 {
+			return errf(contract.CodeInvalidArgument, "heartbeat role %s reports inflight %d; it must be 0 in protocol %d", rs.RoleID, rs.Inflight, contract.ProtocolVersion)
+		}
+	}
+	return nil
+}
+
+// desiredFor returns the attachment's desired snapshot, if generation is
+// still current.
+func (r *nodeRegistry) desiredFor(id string, generation uint64) (roleSnap, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st := r.nodes[id]
+	if st == nil || st.att == nil || st.att.gen != generation {
+		return roleSnap{}, false
+	}
+	return st.att.desired, true
+}
+
+// ackSnapshot records that the sidecar installed snap on the current
+// attachment: readiness restarts from its next heartbeat.
+func (r *nodeRegistry) ackSnapshot(id string, generation uint64, snap roleSnap) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if st := r.nodes[id]; st != nil && st.att != nil && st.att.gen == generation {
+		st.att.acked, st.att.status = snap, nil
+	}
+}
+
+// adoptRoles installs a new role registry state (store) under mu. For a
+// confirmed state it also makes the confirmed snapshot of node its
+// desired one in the same critical section, which masks the node's
+// readiness until the sidecar acknowledges it and reports a heartbeat at
+// that revision; a blocked state masks all readiness by itself and is
+// never distributed. The stream is signaled outside mu.
+func (r *nodeRegistry) adoptRoles(next *roleState, node string, store func()) {
+	r.mu.Lock()
+	store()
+	var st *nodeStream
+	if !next.blocked && node != "" {
+		if n := r.nodes[node]; n != nil && n.att != nil {
+			n.att.desired = next.confirmed.snapshotFor(node)
+			st = n.att.stream
+		}
+	}
+	r.mu.Unlock()
+	if st != nil {
+		st.markDirty()
+	}
+}
+
+// target returns the node's current attachment for a role validation: the
+// node must hold a lease (else node_offline) and a live current stream
+// (else node_disconnected).
+func (r *nodeRegistry) target(id string) (uint64, *nodeStream, error) {
+	r.mu.Lock()
+	closers := r.expireLocked(r.clock.Now(), 0)
+	st := r.nodes[id]
+	var gen uint64
+	var s *nodeStream
+	var err error
+	switch {
+	case st == nil:
+		err = contract.RoleError(contract.CodeNotFound, "", id, "node", "", "node %s is not enrolled with this plane", id)
+	case !st.online:
+		err = contract.RoleError(contract.CodeUnavailable, "", id, "", contract.ReasonNodeOffline, "node %s is offline; start its sidecar and retry", id)
+	case st.att == nil || st.att.stream == nil:
+		err = contract.RoleError(contract.CodeUnavailable, "", id, "", contract.ReasonNodeDisconnected, "node %s has no live stream to the plane; wait for its sidecar to reconnect and retry", id)
+	default:
+		gen, s = st.att.gen, st.att.stream
+	}
+	r.mu.Unlock()
+	runAll(closers)
+	return gen, s, err
+}
+
+// stillTarget rechecks that generation is the node's current attachment
+// and that its lease is online.
+func (r *nodeRegistry) stillTarget(id string, generation uint64) error {
+	r.mu.Lock()
+	closers := r.expireLocked(r.clock.Now(), 0)
+	st := r.nodes[id]
+	var err error
+	// An expired lease is reported as offline even though expiry evicted
+	// the attachment in the same step.
+	switch {
+	case st != nil && !st.online:
+		err = contract.RoleError(contract.CodeUnavailable, "", id, "", contract.ReasonNodeOffline, "node %s went offline during the role change; nothing was changed, retry", id)
+	case st == nil || st.att == nil || st.att.gen != generation:
+		err = contract.RoleError(contract.CodeUnavailable, "", id, "", contract.ReasonNodeDisconnected, "the stream of node %s ended or was replaced during the role change; nothing was changed, retry", id)
+	}
+	r.mu.Unlock()
+	runAll(closers)
+	return err
+}
+
+// known reports whether id is an enrolled node.
+func (r *nodeRegistry) known(id string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.nodes[id] != nil
+}
+
+// ids returns the enrolled node IDs.
+func (r *nodeRegistry) ids() map[string]bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make(map[string]bool, len(r.nodes))
+	for id := range r.nodes {
+		out[id] = true
+	}
+	return out
+}
+
+// canAcceptLocked derives rec's plane-side readiness: registry durability
+// confirmed, node lease online, a current attachment, acknowledged
+// revision equal to desired, the role acknowledged with the same
+// configuration and order, and the last heartbeat at that revision
+// reporting it ready. Callers expire leases first.
+func (r *nodeRegistry) canAcceptLocked(rs *roleState, rec contract.RoleRecord) bool {
+	if rs == nil || rs.blocked {
+		return false
+	}
+	st := r.nodes[rec.Node]
+	if st == nil || !st.online || st.att == nil {
+		return false
+	}
+	a := st.att
+	if a.acked.rev != a.desired.rev || a.status == nil {
+		return false
+	}
+	for i, ar := range a.acked.roles {
+		if ar.ID == rec.ID {
+			return i < len(a.status) && a.status[i] && ar.RegistrationOrder == rec.RegistrationOrder && contract.SameRoleConfig(ar.RoleConfig, rec.RoleConfig)
+		}
+	}
+	return false
+}
+
+// roleStatusesLocked returns the node's configured roles (visible
+// registry, registration order) as statuses with derived readiness.
+func (r *nodeRegistry) roleStatusesLocked(id string) []contract.RoleStatus {
+	out := []contract.RoleStatus{}
+	if r.roles == nil {
+		return out
+	}
+	rs := r.roles.load()
+	for _, rec := range rs.visible.forNode(id) {
+		out = append(out, contract.RoleStatus{RoleID: rec.ID, Inflight: 0, Concurrency: rec.Concurrency, CanAccept: r.canAcceptLocked(rs, rec)})
+	}
+	return out
+}
+
+// roleViews derives the views of the records sel picks from the role
+// registry state, loaded under the same lock (so a state and its
+// readiness invalidation are always seen together) and clock sample: zero
+// inflight, node liveness under the lease rule and can_accept.
+func (r *nodeRegistry) roleViews(sel func(*roleState) []contract.RoleRecord, lookup contract.AdapterLookup) []contract.RoleView {
+	r.mu.Lock()
+	closers := r.expireLocked(r.clock.Now(), 0)
+	rs := r.roles.load()
+	recs := sel(rs)
+	out := make([]contract.RoleView, 0, len(recs))
+	for _, rec := range recs {
+		v := contract.RoleView{RoleRecord: rec, NodeLiveness: contract.LivenessOffline, CanAccept: r.canAcceptLocked(rs, rec)}
+		if st := r.nodes[rec.Node]; st != nil && st.online {
+			v.NodeLiveness = contract.LivenessOnline
+		}
+		if info, ok := lookup(rec.Adapter); ok {
+			v.AdapterTestOnly = info.TestOnly
+		}
+		out = append(out, v)
+	}
+	r.mu.Unlock()
+	runAll(closers)
+	return out
 }
 
 // Detach clears the node's attachment if generation is still current. The
@@ -494,8 +756,8 @@ func (r *nodeRegistry) Detach(id string, generation uint64) {
 	}
 }
 
-func (st *nodeState) snapshot() contract.Node {
-	n := contract.Node{ID: st.id, Liveness: contract.LivenessOffline, Roles: []contract.RoleStatus{}}
+func (st *nodeState) snapshot(roles []contract.RoleStatus) contract.Node {
+	n := contract.Node{ID: st.id, Liveness: contract.LivenessOffline, Roles: roles}
 	if st.online {
 		n.Liveness = contract.LivenessOnline
 	}
@@ -521,7 +783,7 @@ func (r *nodeRegistry) Snapshot() []contract.Node {
 	closers := r.expireLocked(r.clock.Now(), 0)
 	out := make([]contract.Node, 0, len(r.nodes))
 	for _, st := range r.nodes {
-		out = append(out, st.snapshot())
+		out = append(out, st.snapshot(r.roleStatusesLocked(st.id)))
 	}
 	r.mu.Unlock()
 	runAll(closers)
@@ -536,7 +798,7 @@ func (r *nodeRegistry) Show(id string) (contract.Node, error) {
 	st := r.nodes[id]
 	var n contract.Node
 	if st != nil {
-		n = st.snapshot()
+		n = st.snapshot(r.roleStatusesLocked(id))
 	}
 	r.mu.Unlock()
 	runAll(closers)

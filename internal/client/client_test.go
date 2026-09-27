@@ -127,7 +127,7 @@ func planeHandler(caPEM []byte, routes map[string]http.HandlerFunc) http.Handler
 			h(w, r)
 			return
 		}
-		w.Header().Set(contract.ProtocolHeader, "1")
+		w.Header().Set(contract.ProtocolHeader, "2")
 		w.WriteHeader(404)
 		io.WriteString(w, `{"error":{"code":"not_found","message":"no such endpoint"}}`)
 	})
@@ -554,12 +554,12 @@ func TestRequests(t *testing.T) {
 	}
 	defer c.Close()
 	set := func(path string, h http.HandlerFunc) { routes[path] = h }
-	set(contract.PathNodes, jsonRoute("1", 200, `{"version":1,"nodes":[`+nodeJSON(nodeA)+`]}`))
+	set(contract.PathNodes, jsonRoute("2", 200, `{"version":2,"nodes":[`+nodeJSON(nodeA)+`]}`))
 	nodes, err := c.ListNodes(bg)
 	if err != nil || len(nodes) != 1 || nodes[0].ID != nodeA {
 		t.Fatalf("list = %v %v", nodes, err)
 	}
-	if v := gotVersion.Load().([]string); len(v) != 1 || v[0] != "1" {
+	if v := gotVersion.Load().([]string); len(v) != 1 || v[0] != "2" {
 		t.Fatalf("request version header = %v", v)
 	}
 	for name, c2 := range map[string]struct {
@@ -567,26 +567,26 @@ func TestRequests(t *testing.T) {
 		code contract.Code
 		msg  string
 	}{
-		"mismatch":       {jsonRoute("2", 200, `{"version":2,"nodes":[]}`), contract.CodeProtocolMismatch, "local=1 remote=2"},
-		"mismatch error": {jsonRoute("2", 409, `{"error":{"code":"protocol_mismatch","message":"x"}}`), contract.CodeProtocolMismatch, "local=1 remote=2"},
+		"mismatch":       {jsonRoute("3", 200, `{"version":3,"nodes":[]}`), contract.CodeProtocolMismatch, "local=2 remote=3"},
+		"mismatch error": {jsonRoute("3", 409, `{"error":{"code":"protocol_mismatch","message":"x"}}`), contract.CodeProtocolMismatch, "local=2 remote=3"},
 		"missing header": {jsonRoute("", 200, `{}`), contract.CodeInvalidArgument, "lacks exactly one"},
 		"bad header":     {jsonRoute("one", 200, `{}`), contract.CodeInvalidArgument, "not an integer"},
 		"two headers": {func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Add(contract.ProtocolHeader, "1")
-			w.Header().Add(contract.ProtocolHeader, "1")
+			w.Header().Add(contract.ProtocolHeader, "2")
+			w.Header().Add(contract.ProtocolHeader, "2")
 		}, contract.CodeInvalidArgument, "exactly one"},
-		"error body":      {jsonRoute("1", 404, `{"error":{"code":"not_found","message":"no\nsuch node"}}`), contract.CodeNotFound, "no?such node"},
-		"server mismatch": {jsonRoute("1", 409, `{"error":{"code":"protocol_mismatch","message":"m","details":{"local_version":3,"remote_version":1}}}`), contract.CodeProtocolMismatch, "local=1 remote=3"},
-		"503":             {jsonRoute("1", 503, ``), contract.CodeUnavailable, "HTTP 503"},
-		"500":             {jsonRoute("1", 500, `garbage`), contract.CodeInternal, "HTTP 500"},
-		"malformed":       {jsonRoute("1", 200, `{"version":1,"nodes":[{}]}`), contract.CodeInvalidArgument, "required field"},
-		"body version":    {jsonRoute("1", 200, `{"version":2,"nodes":[]}`), contract.CodeProtocolMismatch, "remote=2"},
+		"error body":      {jsonRoute("2", 404, `{"error":{"code":"not_found","message":"no\nsuch node"}}`), contract.CodeNotFound, "no?such node"},
+		"server mismatch": {jsonRoute("2", 409, `{"error":{"code":"protocol_mismatch","message":"m","details":{"local_version":3,"remote_version":1}}}`), contract.CodeProtocolMismatch, "local=2 remote=3"},
+		"503":             {jsonRoute("2", 503, ``), contract.CodeUnavailable, "HTTP 503"},
+		"500":             {jsonRoute("2", 500, `garbage`), contract.CodeInternal, "HTTP 500"},
+		"malformed":       {jsonRoute("2", 200, `{"version":2,"nodes":[{}]}`), contract.CodeInvalidArgument, "required field"},
+		"body version":    {jsonRoute("2", 200, `{"version":3,"nodes":[]}`), contract.CodeProtocolMismatch, "remote=3"},
 		"redirect": {func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set(contract.ProtocolHeader, "1")
+			w.Header().Set(contract.ProtocolHeader, "2")
 			http.Redirect(w, r, "/elsewhere", 302)
 		}, contract.CodeInvalidArgument, "redirect"},
 		"oversized": {func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set(contract.ProtocolHeader, "1")
+			w.Header().Set(contract.ProtocolHeader, "2")
 			w.Write(make([]byte, maxRosterBody+1))
 		}, contract.CodeInvalidArgument, "larger than"},
 	} {
@@ -597,19 +597,19 @@ func TestRequests(t *testing.T) {
 		}
 	}
 	// Show and enroll validate the named node.
-	set(contract.PathNodes+"/"+nodeA, jsonRoute("1", 200, `{"version":1,"node":`+nodeJSON("n_0000000000000000000000000000000b")+`}`))
+	set(contract.PathNodes+"/"+nodeA, jsonRoute("2", 200, `{"version":2,"node":`+nodeJSON("n_0000000000000000000000000000000b")+`}`))
 	if _, err := c.ShowNode(bg, nodeA); contract.CodeOf(err) != contract.CodeInvalidArgument || !strings.Contains(err.Error(), "names another node") {
 		t.Fatalf("show other = %v", err)
 	}
-	set(contract.PathNodes+"/"+nodeA, jsonRoute("1", 200, `{"version":1,"node":`+nodeJSON(nodeA)+`}`))
+	set(contract.PathNodes+"/"+nodeA, jsonRoute("2", 200, `{"version":2,"node":`+nodeJSON(nodeA)+`}`))
 	if n, err := c.ShowNode(bg, nodeA); err != nil || n.ID != nodeA {
 		t.Fatalf("show = %v %v", n, err)
 	}
-	set(contract.PathNodes+"/"+nodeA, jsonRoute("1", 200, `{"version":1}`))
+	set(contract.PathNodes+"/"+nodeA, jsonRoute("2", 200, `{"version":2}`))
 	if _, err := c.ShowNode(bg, nodeA); contract.CodeOf(err) != contract.CodeInvalidArgument {
 		t.Fatal("show malformed")
 	}
-	set(contract.PathNodes+"/"+nodeA, jsonRoute("1", 404, `{"error":{"code":"not_found","message":"unknown"}}`))
+	set(contract.PathNodes+"/"+nodeA, jsonRoute("2", 404, `{"error":{"code":"not_found","message":"unknown"}}`))
 	if _, err := c.ShowNode(bg, nodeA); contract.CodeOf(err) != contract.CodeNotFound {
 		t.Fatal("show 404")
 	}
@@ -621,14 +621,14 @@ func TestRequests(t *testing.T) {
 		body   string
 		code   contract.Code
 	}{
-		{201, `{"version":1,"node":` + nodeJSON(nodeA) + `}`, ""},
-		{200, `{"version":1,"node":` + nodeJSON(nodeA) + `}`, ""},
-		{202, `{"version":1,"node":` + nodeJSON(nodeA) + `}`, contract.CodeInvalidArgument},
-		{201, `{"version":1,"node":` + nodeJSON("n_0000000000000000000000000000000b") + `}`, contract.CodeInvalidArgument},
+		{201, `{"version":2,"node":` + nodeJSON(nodeA) + `}`, ""},
+		{200, `{"version":2,"node":` + nodeJSON(nodeA) + `}`, ""},
+		{202, `{"version":2,"node":` + nodeJSON(nodeA) + `}`, contract.CodeInvalidArgument},
+		{201, `{"version":2,"node":` + nodeJSON("n_0000000000000000000000000000000b") + `}`, contract.CodeInvalidArgument},
 		{201, `[]`, contract.CodeInvalidArgument},
 		{409, `{"error":{"code":"conflict","message":"c"}}`, contract.CodeConflict},
 	} {
-		set(contract.PathEnroll, jsonRoute("1", c2.status, c2.body))
+		set(contract.PathEnroll, jsonRoute("2", c2.status, c2.body))
 		_, err := c.EnrollNode(bg, nodeA, "dev")
 		if contract.CodeOf(err) != c2.code {
 			t.Fatalf("enroll %d %s = %v", c2.status, c2.body, err)

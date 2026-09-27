@@ -23,10 +23,12 @@ func TestRunWrapper(t *testing.T) {
 	if code := run([]string{"bench"}, &out, &errOut, fake); code != 0 {
 		t.Fatalf("bench = %d %s", code, errOut.String())
 	}
-	// Three bench commands: git transport, plane (iteration 02, with the
-	// iteration 03 node benchmarks), then the node frame contract
-	// (iteration 03).
-	if len(calls) != 3 || calls[0][0] != "go" || calls[0][1] != "test" || calls[1][2] != "./internal/plane" || calls[2][2] != "./internal/contract" {
+	// Five bench commands: git transport, plane (iteration 02, with the
+	// iteration 03 node and iteration 04 role benchmarks), the frame
+	// contract (iterations 03 and 04), then the sidecar ready checks and
+	// the adapter probe (iteration 04).
+	if len(calls) != 5 || calls[0][0] != "go" || calls[0][1] != "test" || calls[1][2] != "./internal/plane" || calls[2][2] != "./internal/contract" ||
+		calls[3][2] != "./internal/sidecar" || calls[4][2] != "./internal/adapter" {
 		t.Fatalf("calls = %v", calls)
 	}
 	// The stress shard stages (iteration 02c) take no operands or flags:

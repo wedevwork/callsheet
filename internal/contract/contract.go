@@ -11,7 +11,11 @@ import (
 )
 
 // ProtocolVersion is the plane/sidecar/client wire protocol version.
-const ProtocolVersion = 1
+// Iteration 04 raised it to 2: roles on the node stream (role validation,
+// role snapshots, per-role heartbeat statuses) and the role API. There is
+// no negotiation or fallback; plane, sidecars and coordinators upgrade
+// together.
+const ProtocolVersion = 2
 
 // Code is a stable, machine-readable error code.
 type Code string

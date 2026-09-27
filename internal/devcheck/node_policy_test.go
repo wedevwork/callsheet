@@ -55,7 +55,8 @@ func testOnlySources(root, name string) (tests, others []string, err error) {
 // Literal oracles for iteration 03's verification policy (design 03, CI
 // plan), compared against the plans, never derived from them.
 const (
-	wantNodeStressPackages = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/plane ./internal/client ./internal/sidecar ./internal/contract"
+	// Iteration 04 appended ./internal/adapter to the same invocation.
+	wantNodeStressPackages = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/plane ./internal/client ./internal/sidecar ./internal/contract ./internal/adapter"
 	wantNodeStressFunction = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestNodeEnrollment|TestNodeReconnect)$/^(locking|shutdown)$ ./tests/function"
 )
 
@@ -77,7 +78,7 @@ func TestNodeVerificationPolicyContract(t *testing.T) {
 				strings.Join(fn[0].Argv, " ") != wantStressFunction || strings.Join(fn[1].Argv, " ") != wantStressPlaneFunction {
 				t.Fatalf("functions shard = %+v", fn)
 			}
-			if got := strings.Join(argvOf(BenchSteps()), "|"); got != wantBenchGit+"|"+wantBenchPlane+"|"+wantBenchContract {
+			if got := strings.Join(argvOf(BenchSteps()), "|"); got != wantBenchPlan {
 				t.Fatalf("bench plan = %s", got)
 			}
 			f := &fakeRunner{}
@@ -87,7 +88,7 @@ func TestNodeVerificationPolicyContract(t *testing.T) {
 			}
 			os.RemoveAll(scratchFrom(out))
 			req := NativeRequiredTests()
-			if len(req) != 58 || strings.Join(req[28:], ",") != strings.Join(nodeNames(), ",") {
+			if len(req) != 87 || strings.Join(req[28:58], ",") != strings.Join(nodeNames(), ",") {
 				t.Fatalf("native required = %v", req)
 			}
 			if goos == "darwin" {

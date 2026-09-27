@@ -3,8 +3,10 @@ package sidecar
 import (
 	"context"
 	"log/slog"
+	"path/filepath"
 	"time"
 
+	"github.com/wedevwork/callsheet/internal/adapter"
 	"github.com/wedevwork/callsheet/internal/client"
 	"github.com/wedevwork/callsheet/internal/contract"
 )
@@ -51,6 +53,9 @@ func (d *deps) run(ctx context.Context, o RunOptions) error {
 	if !contract.ValidSoftwareVersion(o.SoftwareVersion) {
 		return errf(contract.CodeInvalidArgument, "invalid software version %q", contract.SafeText(o.SoftwareVersion, 64))
 	}
+	if o.FakeAdapterPath != "" && !filepath.IsAbs(o.FakeAdapterPath) {
+		return errf(contract.CodeInvalidArgument, "--fake-adapter must be an absolute path to the fake adapter executable")
+	}
 	l := layout{root: o.StateDir}
 	pre, err := l.scan()
 	if err != nil {
@@ -88,18 +93,29 @@ func (d *deps) run(ctx context.Context, o RunOptions) error {
 	}
 	defer c.Close()
 	logger = logger.With("node_id", id)
+	env := roleEnv{adapters: d.adapters(l.root), executables: map[string]string{}}
+	if o.FakeAdapterPath != "" {
+		env.executables[adapter.FakeID] = o.FakeAdapterPath
+	}
 	logger.Info("sidecar starting", "plane_url", e.PlaneURL, "state_dir", l.root)
+	if o.FakeAdapterPath != "" {
+		logger.Warn(FakeAdapterWarning)
+	}
 	d.emit(event{kind: evStarted})
-	return d.loop(ctx, c, id, o.SoftwareVersion, logger)
+	w := newWorkers()
+	// Workers are joined before Run returns: probe children are killed by
+	// cancellation and completed filesystem checks return.
+	defer w.wg.Wait()
+	return d.loop(ctx, c, id, o.SoftwareVersion, env, w, logger)
 }
 
 // loop dials once immediately, then after every ended session retries with
 // the capped, jittered backoff until ctx ends or a terminal error occurs.
 // It never exits just because the plane went away.
-func (d *deps) loop(ctx context.Context, c planeClient, id, sw string, logger *slog.Logger) error {
+func (d *deps) loop(ctx context.Context, c planeClient, id, sw string, env roleEnv, w *workers, logger *slog.Logger) error {
 	attempt := 0
 	for n := 1; ; n++ {
-		err := d.session(ctx, c, n, id, sw, logger, func() { attempt = 0 })
+		err := d.session(ctx, c, n, id, sw, env, w, logger, func() { attempt = 0 })
 		// Cancellation wins whenever it happened.
 		if cerr := ctx.Err(); cerr != nil {
 			logger.Info("sidecar stopped")

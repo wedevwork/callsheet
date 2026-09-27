@@ -19,7 +19,9 @@ import (
 // upgraded socket; Run joins them, and the sweep, before the HTTP server
 // shuts down.
 type nodeService struct {
-	reg    *nodeRegistry
+	reg *nodeRegistry
+	// roles serves the role API (iteration 04); nil serves none.
+	roles  *roleService
 	clock  nodeClock
 	logger *slog.Logger
 	caPEM  []byte

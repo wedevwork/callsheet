@@ -84,6 +84,26 @@ var nodeRequired = []struct {
 	{"TestNodePlatform", []string{"paths", "native-state", "policy", "sticky-write"}},
 }
 
+// roleRequired are the iteration 04 role function tests and their
+// mandatory subtests (design 04, Function tests), in FP order.
+var roleRequired = []struct {
+	test string
+	subs []string
+}{
+	{"TestRoleConfiguration", []string{"fields", "order"}},
+	{"TestRoleAdapter", []string{"disabled", "probe"}},
+	{"TestRoleValidation", []string{"remote", "rejections"}},
+	{"TestRoleProtocol", []string{"duplex", "bounds"}},
+	{"TestRoleReadiness", []string{"changes", "reconnect"}},
+	{"TestRolePersistence", []string{"restore", "failures"}},
+	{"TestRoleCommands", []string{"text", "json", "trust"}},
+	{"TestRoleMutation", []string{"races", "remove"}},
+	{"TestRolePlatform", []string{"manuals", "executable", "policy"}},
+}
+
+// roleNames lists every required role name, parents before subtests.
+func roleNames() []string { return requiredNames(roleRequired) }
+
 // planeNames lists every required plane name, parents before subtests.
 func planeNames() []string { return requiredNames(planeRequired) }
 
@@ -116,7 +136,7 @@ func qualification() []evt {
 		evs = append(evs, ev("pass", NativePackage, fp6+"/"+s))
 	}
 	evs = append(evs, ev("pass", NativePackage, fp6))
-	for _, p := range append(append(planeRequired[:0:0], planeRequired...), nodeRequired...) {
+	for _, p := range append(append(append(planeRequired[:0:0], planeRequired...), nodeRequired...), roleRequired...) {
 		evs = append(evs, ev("run", NativePackage, p.test))
 		for _, s := range p.subs {
 			evs = append(evs, ev("run", NativePackage, p.test+"/"+s), ev("pass", NativePackage, p.test+"/"+s))
@@ -194,7 +214,12 @@ func TestNativeStepsAndUnsupportedOS(t *testing.T) {
 		"TestNodeProtocol,TestNodeProtocol/hello,TestNodeProtocol/limits,TestNodeReconnect,TestNodeReconnect/restart,TestNodeReconnect/disconnect,TestNodeReconnect/shutdown,"+
 		"TestNodeLease,TestNodeLease/expiry,TestNodeLease/return,TestNodeRegistry,TestNodeRegistry/restore,TestNodeRegistry/validation,"+
 		"TestNodeDiscovery,TestNodeDiscovery/text,TestNodeDiscovery/json,TestNodeDiscovery/errors,"+
-		"TestNodePlatform,TestNodePlatform/paths,TestNodePlatform/native-state,TestNodePlatform/policy,TestNodePlatform/sticky-write" || len(req) != 58 {
+		"TestNodePlatform,TestNodePlatform/paths,TestNodePlatform/native-state,TestNodePlatform/policy,TestNodePlatform/sticky-write,"+
+		"TestRoleConfiguration,TestRoleConfiguration/fields,TestRoleConfiguration/order,TestRoleAdapter,TestRoleAdapter/disabled,TestRoleAdapter/probe,"+
+		"TestRoleValidation,TestRoleValidation/remote,TestRoleValidation/rejections,TestRoleProtocol,TestRoleProtocol/duplex,TestRoleProtocol/bounds,"+
+		"TestRoleReadiness,TestRoleReadiness/changes,TestRoleReadiness/reconnect,TestRolePersistence,TestRolePersistence/restore,TestRolePersistence/failures,"+
+		"TestRoleCommands,TestRoleCommands/text,TestRoleCommands/json,TestRoleCommands/trust,TestRoleMutation,TestRoleMutation/races,TestRoleMutation/remove,"+
+		"TestRolePlatform,TestRolePlatform/manuals,TestRolePlatform/executable,TestRolePlatform/policy" || len(req) != 87 {
 		t.Fatalf("required = %v", req)
 	}
 	req[0] = "mutated"

@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/wedevwork/callsheet/internal/client"
@@ -20,7 +21,7 @@ import (
 const (
 	trustUsage   = "--plane URL (--ca FILE | --ca-fingerprint SHA256)"
 	enrollUsage  = trustUsage + " [--state-dir PATH]"
-	sidecarUsage = "[--state-dir PATH]"
+	sidecarUsage = "[--state-dir PATH] [--fake-adapter PATH]"
 
 	trustHelp = "  --plane URL        the plane's https origin, e.g. https://plane.example:8443; a DNS name\n" +
 		"                     or IP address the plane's certificate names (callsheet plane status)\n" +
@@ -43,9 +44,17 @@ const (
 		"  callsheet sidecar enroll --plane https://plane.example:8443 \\\n" +
 		"    --ca-fingerprint sha256:<fingerprint from callsheet plane status>\n" +
 		"  callsheet sidecar run\n"
-	sidecarRunDetails = "Flags:\n" + sidecarStateHelp + "\n" +
+	sidecarRunDetails = "Flags:\n" + sidecarStateHelp +
+		"  --fake-adapter PATH\n" +
+		"                     enable the fake adapter with this absolute executable path:\n" +
+		"                     test/demo adapter; never calls a model. Without it roles using\n" +
+		"                     the fake adapter fail validation on this node. Not persisted:\n" +
+		"                     give it on every start\n\n" +
 		"Connects out to the enrolled plane over verified TLS (it listens on nothing), proves\n" +
-		"the protocol version and heartbeats every 5 s. When the plane goes away it reconnects\n" +
+		"the protocol version and heartbeats every 5 s, reporting each configured role's\n" +
+		"readiness (its manuals readable and its adapter executable invocable, checked locally\n" +
+		"every 5 s; manual contents never leave this node). It validates roles registered for\n" +
+		"this node on the plane's request. When the plane goes away it reconnects\n" +
 		"with backoff (1, 2, 4, 8, 16, then 30 s) and never exits for that reason. It exits on\n" +
 		"SIGINT or SIGTERM (130), or on a configuration error: protocol version mismatch (7),\n" +
 		"an invalid protocol exchange (2), a node unknown to the plane (3) or failed trust\n" +
@@ -77,11 +86,15 @@ type remoteFlags struct {
 
 // parseRemote parses flags that may surround at most maxOps operands. It
 // returns ok=false with the exit code of a usage error. Empty explicit
-// values are rejected.
-func parseRemote(c *Command, args []string, withTrust, withStateDir, withJSON bool, maxOps int, errOut io.Writer) (*remoteFlags, []string, int, bool) {
+// values of the trust and state flags are rejected. extra registers a
+// leaf's own flags.
+func parseRemote(c *Command, args []string, withTrust, withStateDir, withJSON bool, maxOps int, errOut io.Writer, extra ...func(*flag.FlagSet)) (*remoteFlags, []string, int, bool) {
 	f := &remoteFlags{}
 	fs := flag.NewFlagSet(c.Path(), flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
+	for _, x := range extra {
+		x(fs)
+	}
 	if withTrust {
 		fs.Var(&f.plane, "plane", "")
 		fs.Var(&f.ca, "ca", "")
@@ -171,16 +184,20 @@ func sidecarEnroll(ctx context.Context, goos string, c *Command, args []string, 
 }
 
 func sidecarRun(ctx context.Context, goos string, c *Command, args []string, out, errOut io.Writer) int {
-	f, _, code, ok := parseRemote(c, args, false, true, false, 0, errOut)
+	var fake single
+	f, _, code, ok := parseRemote(c, args, false, true, false, 0, errOut, func(fs *flag.FlagSet) { fs.Var(&fake, "fake-adapter", "") })
 	if !ok {
 		return code
+	}
+	if fake.set && (fake.val == "" || !filepath.IsAbs(fake.val)) {
+		return usageError(errOut, c, "--fake-adapter must be an absolute path to the fake adapter executable")
 	}
 	dir, err := f.resolveSidecar(goos)
 	if err != nil {
 		return planeFail(errOut, err)
 	}
 	logger := logging.Component(logging.New(errOut, slog.LevelInfo), "sidecar")
-	err = sidecar.Run(ctx, sidecar.RunOptions{StateDir: dir, SoftwareVersion: Version, Logger: logger})
+	err = sidecar.Run(ctx, sidecar.RunOptions{StateDir: dir, SoftwareVersion: Version, Logger: logger, FakeAdapterPath: fake.val})
 	return planeFail(errOut, err)
 }
 

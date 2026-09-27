@@ -115,6 +115,8 @@ type scanResult struct {
 	missing    []string
 	// nodesPresent reports the optional nodes/ directory (iteration 03).
 	nodesPresent bool
+	// rolesPresent reports the optional roles/ directory (iteration 04).
+	rolesPresent bool
 }
 
 // scan checks the root, managed directories, lock and durable files for
@@ -122,11 +124,13 @@ type scanResult struct {
 // entry that is not a managed name or an unpublished .tmp- temporary: in
 // the root, only pki/, tmp/, nodes/, .lock and config.json; in pki/, only
 // the four PKI files; in tmp/, nothing else; in nodes/ (iteration 03), only
-// canonical <id>.json records and regular temporaries (scanNodes). It then
-// classifies the state as empty (a missing root, or only empty managed
-// directories plus .lock and temporaries, and no nodes/), partial (any
-// strict subset of the durable files, or a node registry without them) or
-// complete. Record contents are validated by loadNodeRecords.
+// canonical <id>.json records and regular temporaries (scanNodes); in
+// roles/ (iteration 04), only registry.json and regular temporaries
+// (scanRoles). It then classifies the state as empty (a missing root, or
+// only empty managed directories plus .lock and temporaries, and neither
+// nodes/ nor roles/), partial (any strict subset of the durable files, or
+// a node or role registry without them) or complete. Record contents are
+// validated by loadNodeRecords and loadRoleDoc.
 func (l layout) scan() (scanResult, error) {
 	var s scanResult
 	fi, err := os.Lstat(l.root)
@@ -148,7 +152,7 @@ func (l layout) scan() (scanResult, error) {
 	}
 	for _, e := range rootEntries {
 		switch n := e.Name(); {
-		case n == pkiName, n == tmpName, n == lockName, n == configName, n == nodesName, strings.HasPrefix(n, tempPrefix):
+		case n == pkiName, n == tmpName, n == lockName, n == configName, n == nodesName, n == rolesName, strings.HasPrefix(n, tempPrefix):
 		default:
 			unexpected = append(unexpected, filepath.Join(l.root, n))
 		}
@@ -182,6 +186,12 @@ func (l layout) scan() (scanResult, error) {
 	}
 	s.nodesPresent = present
 	unexpected = append(unexpected, nodeUnexpected...)
+	rolesPresent, roleUnexpected, err := l.scanRoles()
+	if err != nil {
+		return s, err
+	}
+	s.rolesPresent = rolesPresent
+	unexpected = append(unexpected, roleUnexpected...)
 	if fi, err := os.Lstat(l.path(lockName)); err == nil {
 		if err := checkPublic(l.path(lockName), fi); err != nil {
 			return s, err
@@ -209,7 +219,7 @@ func (l layout) scan() (scanResult, error) {
 	}
 	if len(unexpected) > 0 {
 		sort.Strings(unexpected)
-		return s, errf(contract.CodeConflict, "state directory %s holds unexpected %s; plane state may contain only config.json, pki/ (the four PKI files), tmp/, nodes/ (node records) and .lock. Nothing was changed: move the unexpected entries out of the state directory, or choose a fresh --state-dir",
+		return s, errf(contract.CodeConflict, "state directory %s holds unexpected %s; plane state may contain only config.json, pki/ (the four PKI files), tmp/, nodes/ (node records), roles/ (the role registry) and .lock. Nothing was changed: move the unexpected entries out of the state directory, or choose a fresh --state-dir",
 			l.root, strings.Join(unexpected, ", "))
 	}
 	switch len(s.missing) {
@@ -217,9 +227,9 @@ func (l layout) scan() (scanResult, error) {
 		s.kind = kindComplete
 	case len(durable):
 		s.kind = kindEmpty
-		if s.nodesPresent {
-			// A roster without its trust is never a reason to bootstrap a
-			// new CA around it.
+		if s.nodesPresent || s.rolesPresent {
+			// A roster or role registry without its trust is never a
+			// reason to bootstrap a new CA around it.
 			s.kind = kindPartial
 		}
 	default:
@@ -243,9 +253,13 @@ func (l layout) partialError(s scanResult) error {
 	for i, rel := range s.missing {
 		paths[i] = l.path(rel)
 	}
-	if s.nodesPresent && len(s.missing) == len(durable) {
-		return errf(contract.CodeConflict, "plane state in %s holds a node registry (%s) but no plane trust or configuration (missing %s); a new CA is never bootstrapped around an existing roster. Preserve the directory and restore a complete stopped backup, or choose a fresh --state-dir",
-			l.root, l.path(nodesName), strings.Join(paths, ", "))
+	if (s.nodesPresent || s.rolesPresent) && len(s.missing) == len(durable) {
+		what, reg := "node registry", l.path(nodesName)
+		if !s.nodesPresent {
+			what, reg = "role registry", l.path(rolesName)
+		}
+		return errf(contract.CodeConflict, "plane state in %s holds a %s (%s) but no plane trust or configuration (missing %s); a new CA is never bootstrapped around an existing roster. Preserve the directory and restore a complete stopped backup, or choose a fresh --state-dir",
+			l.root, what, reg, strings.Join(paths, ", "))
 	}
 	return errf(contract.CodeConflict, "plane state in %s is incomplete (missing %s): an initialization did not finish; no file was replaced. Preserve the directory and restore a complete stopped backup, or choose a fresh --state-dir",
 		l.root, strings.Join(paths, ", "))
@@ -378,7 +392,7 @@ func (d *deps) writeTemp(l layout, rel string, data []byte) (string, error) {
 	if err := d.hook("sync", rel); err != nil {
 		return fail(err)
 	}
-	if err := f.Sync(); err != nil {
+	if err := d.syncFile(f); err != nil {
 		return fail(err)
 	}
 	if err := d.hook("close", rel); err != nil {
