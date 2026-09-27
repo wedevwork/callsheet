@@ -84,8 +84,9 @@ func TestPlaneVerificationPolicyContract(t *testing.T) {
 		req := NativeRequiredTests()
 		want := append([]string{fp6, fp6 + "/cooperative", fp6 + "/resistant", fp6 + "/leader-exits-first"}, planeNames()...)
 		// The 28 iteration-02 names are preserved first; iteration 03 appends
-		// the node names, iteration 04 the role names.
-		if strings.Join(req[:28], ",") != strings.Join(want, ",") || len(req) != 28+len(nodeNames())+len(roleNames()) || strings.Join(req[28:58], ",") != strings.Join(nodeNames(), ",") {
+		// the node names, iteration 04 the role names, iteration 05 the
+		// task names.
+		if strings.Join(req[:28], ",") != strings.Join(want, ",") || len(req) != 28+len(nodeNames())+len(roleNames())+len(taskNames()) || strings.Join(req[28:58], ",") != strings.Join(nodeNames(), ",") {
 			t.Fatalf("required = %v", req)
 		}
 		if err := check(stream(qualification()...)); err != nil {

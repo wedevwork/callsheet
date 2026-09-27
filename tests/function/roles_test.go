@@ -139,6 +139,10 @@ func roleAdd(np *nodePlane, id, name, node, ins, run string, extra ...string) []
 	return append(args, np.trust()...)
 }
 
+// rmNotice is the fixed no-cancellation notice every successful text
+// role rm prints since iteration 05 (tasks.md, Recovery-only removal).
+const rmNotice = "notice: removal cancels no task and signals no worker; adding the role again is not proof that old execution stopped\n"
+
 func mustOK(t *testing.T, r result) result {
 	t.Helper()
 	if r.code != 0 || r.stderr != "" {
@@ -418,7 +422,7 @@ func TestRoleProtocol(t *testing.T) {
 		s := dialPeer(t, np)
 		s.send(1, contract.FrameHello, "h1", contract.HelloBody{NodeID: id, SoftwareVersion: "iteration-03"})
 		f, e := s.recv()
-		if e == nil || e.Code != contract.CodeProtocolMismatch || e.Message != "protocol version mismatch: local=2 remote=1" || f.Version != 2 {
+		if e == nil || e.Code != contract.CodeProtocolMismatch || e.Message != "protocol version mismatch: local=3 remote=1" || f.Version != 3 {
 			t.Fatalf("protocol-1 hello = %+v %v", f, e)
 		}
 	})
@@ -546,7 +550,7 @@ func TestRoleCommands(t *testing.T) {
 		if r := mustOK(t, a.run(t, append([]string{"role", "show", "r1"}, np.trust()...)...)); !strings.Contains(r.stdout, "concurrency: 3\n") {
 			t.Fatalf("show from the first root:\n%s", r.stdout)
 		}
-		if r := mustOK(t, b.run(t, append([]string{"role", "rm", "r3"}, np.trust()...)...)); r.stdout != "removed: r3\n" {
+		if r := mustOK(t, b.run(t, append([]string{"role", "rm", "r3"}, np.trust()...)...)); r.stdout != "removed: r3\n"+rmNotice {
 			t.Fatalf("rm = %q", r.stdout)
 		}
 	})
@@ -556,7 +560,7 @@ func TestRoleCommands(t *testing.T) {
 		if err != nil || strings.Count(r.stdout, "\n") != 1 || v.ID != "r4" || v.RegistrationOrder != 4 {
 			t.Fatalf("add json = %q %v", r.stdout, err)
 		}
-		if again, _ := contract.Encode(contract.RoleResponse{Version: 2, Role: v}); string(again)+"\n" != r.stdout {
+		if again, _ := contract.Encode(contract.RoleResponse{Version: 3, Role: v}); string(again)+"\n" != r.stdout {
 			t.Fatalf("not the compact envelope: %q", r.stdout)
 		}
 		r = mustOK(t, b.run(t, append([]string{"role", "ls", "--json"}, np.trust()...)...))
@@ -564,13 +568,13 @@ func TestRoleCommands(t *testing.T) {
 		if err != nil || len(list) != 3 || list[0].ID != "r1" || list[1].ID != "r4" || list[2].ID != "r2" {
 			t.Fatalf("ls json = %q %v", r.stdout, err)
 		}
-		if again, _ := contract.Encode(contract.RoleListResponse{Version: 2, Roles: list}); string(again)+"\n" != r.stdout {
+		if again, _ := contract.Encode(contract.RoleListResponse{Version: 3, Roles: list}); string(again)+"\n" != r.stdout {
 			t.Fatalf("not the compact list envelope: %q", r.stdout)
 		}
-		if r := mustOK(t, b.run(t, append([]string{"role", "show", "r2", "--json"}, np.trust()...)...)); !strings.HasPrefix(r.stdout, `{"version":2,"role":{"id":"r2",`) {
+		if r := mustOK(t, b.run(t, append([]string{"role", "show", "r2", "--json"}, np.trust()...)...)); !strings.HasPrefix(r.stdout, `{"version":3,"role":{"id":"r2",`) {
 			t.Fatalf("show json = %q", r.stdout)
 		}
-		if r := mustOK(t, a.run(t, append([]string{"role", "rm", "--json", "r4", "--force"}, np.trust()...)...)); r.stdout != `{"version":2,"removed":"r4"}`+"\n" {
+		if r := mustOK(t, a.run(t, append([]string{"role", "rm", "--json", "r4", "--force"}, np.trust()...)...)); r.stdout != `{"version":3,"removed":"r4"}`+"\n" {
 			t.Fatalf("rm json = %q", r.stdout)
 		}
 		var decoded map[string]any
@@ -633,7 +637,7 @@ func TestRoleMutation(t *testing.T) {
 			if force {
 				args = append(args, "--force")
 			}
-			if r := mustOK(t, p.run(t, args...)); r.stdout != "removed: "+id+"\n" {
+			if r := mustOK(t, p.run(t, args...)); r.stdout != "removed: "+id+"\n"+rmNotice {
 				t.Fatalf("online rm = %+v", r)
 			}
 		}
@@ -648,7 +652,7 @@ func TestRoleMutation(t *testing.T) {
 			if force {
 				args = append(args, "--force")
 			}
-			if r := mustOK(t, p.run(t, args...)); r.stdout != "removed: "+id+"\n" {
+			if r := mustOK(t, p.run(t, args...)); r.stdout != "removed: "+id+"\n"+rmNotice {
 				t.Fatalf("offline rm = %+v", r)
 			}
 			if r := p.run(t, args...); r.code != 3 || !strings.Contains(r.stderr, "does not exist") {

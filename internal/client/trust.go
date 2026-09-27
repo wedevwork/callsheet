@@ -124,7 +124,7 @@ func LoadCAFile(path string) (*x509.Certificate, error) {
 		return nil, contract.Wrap(contract.CodeTrustFailed, untrusted+": cannot read the --ca file "+path, err)
 	}
 	defer f.Close()
-	b, err := readLimited(f, maxCertInput)
+	b, err := readLimited(f, maxCertInput, -1)
 	if err != nil {
 		return nil, untrustedErr(fmt.Sprintf("the --ca file %s is unreadable or larger than 64 KiB", path))
 	}
@@ -305,7 +305,7 @@ func FetchCA(ctx context.Context, planeURL, fingerprint string) (Trust, error) {
 	if resp.StatusCode != http.StatusOK {
 		return Trust{}, untrustedErr(fmt.Sprintf("the plane answered the CA request with HTTP %d", resp.StatusCode))
 	}
-	b, err := readLimited(resp.Body, maxCertInput)
+	b, err := readLimited(resp.Body, maxCertInput, -1)
 	if err != nil {
 		if errors.Is(err, errTooLarge) || errors.Is(err, io.ErrUnexpectedEOF) {
 			return Trust{}, untrustedErr("the plane's CA response is unreadable or larger than 64 KiB")

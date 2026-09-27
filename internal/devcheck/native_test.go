@@ -101,6 +101,26 @@ var roleRequired = []struct {
 	{"TestRolePlatform", []string{"manuals", "executable", "policy"}},
 }
 
+// taskRequired are the iteration 05 task function tests and their
+// mandatory subtests (design 05, Function tests), in FP order.
+var taskRequired = []struct {
+	test string
+	subs []string
+}{
+	{"TestTaskModel", []string{"envelope", "states"}},
+	{"TestTaskDispatch", []string{"selection", "gate-race", "reserved-slot"}},
+	{"TestTaskProtocol", []string{"duplex", "bounds", "result-receipt", "result-ack-loss"}},
+	{"TestTaskExecution", []string{"compose", "invoke", "exit", "process", "platform", "policy"}},
+	{"TestTaskLogs", []string{"retention", "backpressure", "final"}},
+	{"TestTaskPersistence", []string{"durability", "restore"}},
+	{"TestTaskCommands", []string{"dispatch", "ls", "show", "logs", "trust"}},
+	{"TestTaskRoles", []string{"counts", "mutation", "remaining-capacity", "recovery-remove"}},
+	{"TestTaskRecoveryBoundary", []string{"disconnect", "remaining-capacity", "recovery-remove"}},
+}
+
+// taskNames lists every required task name, parents before subtests.
+func taskNames() []string { return requiredNames(taskRequired) }
+
 // roleNames lists every required role name, parents before subtests.
 func roleNames() []string { return requiredNames(roleRequired) }
 
@@ -136,14 +156,19 @@ func qualification() []evt {
 		evs = append(evs, ev("pass", NativePackage, fp6+"/"+s))
 	}
 	evs = append(evs, ev("pass", NativePackage, fp6))
-	for _, p := range append(append(append(planeRequired[:0:0], planeRequired...), nodeRequired...), roleRequired...) {
+	for _, p := range append(append(append(append(planeRequired[:0:0], planeRequired...), nodeRequired...), roleRequired...), taskRequired...) {
 		evs = append(evs, ev("run", NativePackage, p.test))
 		for _, s := range p.subs {
 			evs = append(evs, ev("run", NativePackage, p.test+"/"+s), ev("pass", NativePackage, p.test+"/"+s))
 		}
 		evs = append(evs, ev("pass", NativePackage, p.test))
 	}
-	return append(evs, ev("output", NativePackage, "").with("Output", "ok\n"), ev("pass", NativePackage, ""))
+	evs = append(evs, ev("output", NativePackage, "").with("Output", "ok\n"), ev("pass", NativePackage, ""))
+	// The sidecar's own package stream carries the real task-process
+	// qualification (iteration 05).
+	sc := NativeTaskProcessPackage
+	return append(evs, ev("start", sc, ""), ev("run", sc, "TestTaskExecutionContract"), ev("run", sc, "TestTaskExecutionContract/process"),
+		ev("pass", sc, "TestTaskExecutionContract/process"), ev("pass", sc, "TestTaskExecutionContract"), ev("pass", sc, ""))
 }
 
 // without drops events matching action and test.
@@ -219,7 +244,14 @@ func TestNativeStepsAndUnsupportedOS(t *testing.T) {
 		"TestRoleValidation,TestRoleValidation/remote,TestRoleValidation/rejections,TestRoleProtocol,TestRoleProtocol/duplex,TestRoleProtocol/bounds,"+
 		"TestRoleReadiness,TestRoleReadiness/changes,TestRoleReadiness/reconnect,TestRolePersistence,TestRolePersistence/restore,TestRolePersistence/failures,"+
 		"TestRoleCommands,TestRoleCommands/text,TestRoleCommands/json,TestRoleCommands/trust,TestRoleMutation,TestRoleMutation/races,TestRoleMutation/remove,"+
-		"TestRolePlatform,TestRolePlatform/manuals,TestRolePlatform/executable,TestRolePlatform/policy" || len(req) != 87 {
+		"TestRolePlatform,TestRolePlatform/manuals,TestRolePlatform/executable,TestRolePlatform/policy,"+
+		"TestTaskModel,TestTaskModel/envelope,TestTaskModel/states,TestTaskDispatch,TestTaskDispatch/selection,TestTaskDispatch/gate-race,TestTaskDispatch/reserved-slot,"+
+		"TestTaskProtocol,TestTaskProtocol/duplex,TestTaskProtocol/bounds,TestTaskProtocol/result-receipt,TestTaskProtocol/result-ack-loss,"+
+		"TestTaskExecution,TestTaskExecution/compose,TestTaskExecution/invoke,TestTaskExecution/exit,TestTaskExecution/process,TestTaskExecution/platform,TestTaskExecution/policy,"+
+		"TestTaskLogs,TestTaskLogs/retention,TestTaskLogs/backpressure,TestTaskLogs/final,TestTaskPersistence,TestTaskPersistence/durability,TestTaskPersistence/restore,"+
+		"TestTaskCommands,TestTaskCommands/dispatch,TestTaskCommands/ls,TestTaskCommands/show,TestTaskCommands/logs,TestTaskCommands/trust,"+
+		"TestTaskRoles,TestTaskRoles/counts,TestTaskRoles/mutation,TestTaskRoles/remaining-capacity,TestTaskRoles/recovery-remove,"+
+		"TestTaskRecoveryBoundary,TestTaskRecoveryBoundary/disconnect,TestTaskRecoveryBoundary/remaining-capacity,TestTaskRecoveryBoundary/recovery-remove" || len(req) != 128 {
 		t.Fatalf("required = %v", req)
 	}
 	req[0] = "mutated"
@@ -364,7 +396,9 @@ func TestNativeFailures(t *testing.T) {
 		for k, v := range e {
 			c[k] = v
 		}
-		c["Package"] = "github.com/wedevwork/callsheet/tests/other"
+		if c["Package"] == NativePackage {
+			c["Package"] = "github.com/wedevwork/callsheet/tests/other"
+		}
 		wrong = append(wrong, c)
 	}
 	mustFail(t, "wrong package", stream(wrong...), "package "+NativePackage+" has no start event")

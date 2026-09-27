@@ -55,8 +55,10 @@ func fakeBinary(t testing.TB) string {
 // stub is a minimal adapter for registry tests.
 type stub struct{ d Descriptor }
 
-func (s stub) Descriptor() Descriptor              { return s.d }
-func (s stub) Probe(context.Context, string) error { return nil }
+func (s stub) Descriptor() Descriptor                   { return s.d }
+func (s stub) Probe(context.Context, string) error      { return nil }
+func (s stub) Invocation(TaskInput) (Invocation, error) { return Invocation{}, nil }
+func (s stub) NewFinalExtractor() FinalExtractor        { return &markerExtractor{} }
 
 // script writes an executable /bin/sh script.
 func script(t testing.TB, dir, name, body string) string {

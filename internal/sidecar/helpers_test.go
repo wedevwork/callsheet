@@ -61,6 +61,9 @@ func TestMain(m *testing.M) {
 	if fixtureDir != "" {
 		os.RemoveAll(fixtureDir)
 	}
+	if fakeDir != "" {
+		os.RemoveAll(fakeDir)
+	}
 	os.Exit(code)
 }
 
@@ -463,14 +466,21 @@ type events struct {
 	// a second time, so a test can wait for a write to return without
 	// consuming the main stream.
 	written chan event
+	// collected receives every worker collection (iteration 05) a second
+	// time; gone remembers the IDs read from it (test goroutine only).
+	collected chan event
+	gone      map[string]bool
 }
 
 func observe(d *deps) *events {
-	e := &events{ch: make(chan event, 4096), written: make(chan event, 4096)}
+	e := &events{ch: make(chan event, 4096), written: make(chan event, 4096), collected: make(chan event, 4096), gone: map[string]bool{}}
 	d.observe = func(ev event) {
 		e.ch <- ev
 		if ev.kind == evAckWritten || ev.kind == evReplied {
 			e.written <- ev
+		}
+		if ev.kind == evTaskCollected {
+			e.collected <- ev
 		}
 	}
 	return e

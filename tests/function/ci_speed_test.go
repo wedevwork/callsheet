@@ -109,6 +109,40 @@ var speedRoleNative = []string{
 	"TestRolePlatform", "TestRolePlatform/manuals", "TestRolePlatform/executable", "TestRolePlatform/policy",
 }
 
+// speedTaskNative are iteration 05's 41 required task names.
+var speedTaskNative = []string{
+	"TestTaskModel", "TestTaskModel/envelope", "TestTaskModel/states",
+	"TestTaskDispatch", "TestTaskDispatch/selection", "TestTaskDispatch/gate-race", "TestTaskDispatch/reserved-slot",
+	"TestTaskProtocol", "TestTaskProtocol/duplex", "TestTaskProtocol/bounds", "TestTaskProtocol/result-receipt", "TestTaskProtocol/result-ack-loss",
+	"TestTaskExecution", "TestTaskExecution/compose", "TestTaskExecution/invoke", "TestTaskExecution/exit", "TestTaskExecution/process", "TestTaskExecution/platform", "TestTaskExecution/policy",
+	"TestTaskLogs", "TestTaskLogs/retention", "TestTaskLogs/backpressure", "TestTaskLogs/final",
+	"TestTaskPersistence", "TestTaskPersistence/durability", "TestTaskPersistence/restore",
+	"TestTaskCommands", "TestTaskCommands/dispatch", "TestTaskCommands/ls", "TestTaskCommands/show", "TestTaskCommands/logs", "TestTaskCommands/trust",
+	"TestTaskRoles", "TestTaskRoles/counts", "TestTaskRoles/mutation", "TestTaskRoles/remaining-capacity", "TestTaskRoles/recovery-remove",
+	"TestTaskRecoveryBoundary", "TestTaskRecoveryBoundary/disconnect", "TestTaskRecoveryBoundary/remaining-capacity", "TestTaskRecoveryBoundary/recovery-remove",
+}
+
+// speedTaskProcess is the sidecar package's native tuple (iteration 05).
+var speedTaskProcess = []string{"TestTaskExecutionContract", "TestTaskExecutionContract/process"}
+
+// taskProcessEvents is a passing sidecar-package stream for the tuple
+// except drop.
+func taskProcessEvents(drop string) []map[string]any {
+	pkg := devcheck.NativeTaskProcessPackage
+	evs := []map[string]any{synth("start", pkg, "")}
+	for _, name := range speedTaskProcess {
+		if name != drop {
+			evs = append(evs, synth("run", pkg, name))
+		}
+	}
+	for i := len(speedTaskProcess) - 1; i >= 0; i-- {
+		if speedTaskProcess[i] != drop {
+			evs = append(evs, synth("pass", pkg, speedTaskProcess[i]))
+		}
+	}
+	return append(evs, synth("pass", pkg, ""))
+}
+
 // speedJobs is the table of ordinary jobs: the two main jobs (design 02b,
 // Workflow topology) and the six stress workers that replaced its two
 // stress jobs (design 02c). The two summaries that keep the stress
@@ -514,18 +548,19 @@ func TestCISpeedJobs(t *testing.T) {
 func qualifyingStream(drop string) string {
 	pkg := devcheck.NativePackage
 	evs := []map[string]any{synth("start", pkg, "")}
-	for _, name := range append(append(slices.Clone(speedNative), speedNodeNative...), speedRoleNative...) {
+	for _, name := range append(append(append(slices.Clone(speedNative), speedNodeNative...), speedRoleNative...), speedTaskNative...) {
 		if name != drop {
 			evs = append(evs, synth("run", pkg, name), synth("pass", pkg, name))
 		}
 	}
-	return events(append(evs, synth("pass", pkg, ""))...)
+	evs = append(evs, synth("pass", pkg, ""))
+	return events(append(evs, taskProcessEvents(drop)...)...)
 }
 
 // FP-3: validator, plans, native evidence and documentation agree.
 func TestCISpeedPolicy(t *testing.T) {
 	t.Run("native", func(t *testing.T) {
-		if got := devcheck.NativeRequiredTests(); len(got) != 87 || !slices.Equal(got[:28], speedNative) || !slices.Equal(got[28:58], speedNodeNative) || !slices.Equal(got[58:], speedRoleNative) {
+		if got := devcheck.NativeRequiredTests(); len(got) != 128 || !slices.Equal(got[:28], speedNative) || !slices.Equal(got[28:58], speedNodeNative) || !slices.Equal(got[58:87], speedRoleNative) || !slices.Equal(got[87:], speedTaskNative) {
 			t.Fatalf("native required = %v", got)
 		}
 		if err := devcheck.CheckNativeResults("darwin", strings.NewReader(qualifyingStream(""))); err != nil {
@@ -536,6 +571,20 @@ func TestCISpeedPolicy(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), name+" has no run event") || !strings.Contains(err.Error(), "native qualification unobserved") {
 				t.Fatalf("missing %s: %v", name, err)
 			}
+		}
+		for _, name := range []string{"TestTaskCommands/trust", "TestTaskExecution/process"} {
+			err := devcheck.CheckNativeResults("darwin", strings.NewReader(qualifyingStream(name)))
+			if err == nil || !strings.Contains(err.Error(), name+" has no run event") || !strings.Contains(err.Error(), "native qualification unobserved") {
+				t.Fatalf("missing %s: %v", name, err)
+			}
+		}
+		// The sidecar tuple is its own package's evidence.
+		if !slices.Equal(devcheck.NativeTaskProcessTests(), speedTaskProcess) {
+			t.Fatalf("sidecar tuple = %v", devcheck.NativeTaskProcessTests())
+		}
+		err := devcheck.CheckNativeResults("darwin", strings.NewReader(qualifyingStream("TestTaskExecutionContract/process")))
+		if err == nil || !strings.Contains(err.Error(), "TestTaskExecutionContract/process in "+devcheck.NativeTaskProcessPackage+" has no run event") {
+			t.Fatalf("missing sidecar tuple: %v", err)
 		}
 		fixture := string(repoFile(t, "internal/devcheck/testdata/cli-go-test.jsonl"))
 		if err := devcheck.CheckNativeResults("darwin", strings.NewReader(fixture)); err == nil || !strings.Contains(err.Error(), "TestPlaneReissue/contracts has no run event") {

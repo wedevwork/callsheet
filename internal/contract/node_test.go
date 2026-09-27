@@ -75,22 +75,22 @@ func TestNodeJSON(t *testing.T) {
 	if string(b) != `{"id":"`+testID+`","liveness":"offline","last_seen":null,"protocol_version":null,"software_version":null,"roles":[]}` {
 		t.Fatalf("empty node = %s", b)
 	}
-	list, _ := Encode(NodeListResponse{Version: 2})
-	if string(list) != `{"version":2,"nodes":[]}` {
+	list, _ := Encode(NodeListResponse{Version: 3})
+	if string(list) != `{"version":3,"nodes":[]}` {
 		t.Fatalf("empty list = %s", list)
 	}
-	resp, _ := Encode(NodeResponse{Version: 2, Node: n})
+	resp, _ := Encode(NodeResponse{Version: 3, Node: n})
 	got, err := ParseNodeResponse(resp)
 	if err != nil || got.ID != testID || !got.LastSeen.Equal(ts) || *got.ProtocolVersion != 1 || *got.SoftwareVersion != "dev" || len(got.Roles) != 0 || got.Roles == nil {
 		t.Fatalf("round trip = %+v %v", got, err)
 	}
 	two := Node{ID: "n_1123456789abcdef0123456789abcdef", Liveness: LivenessOffline}
-	lb, _ := Encode(NodeListResponse{Version: 2, Nodes: []Node{empty, two}})
+	lb, _ := Encode(NodeListResponse{Version: 3, Nodes: []Node{empty, two}})
 	nodes, err := ParseNodeListResponse(lb)
 	if err != nil || len(nodes) != 2 || nodes[0].LastSeen != nil || nodes[1].ID != two.ID {
 		t.Fatalf("list = %+v %v", nodes, err)
 	}
-	if nodes, err := ParseNodeListResponse([]byte(`{"version":2,"nodes":[]}`)); err != nil || len(nodes) != 0 {
+	if nodes, err := ParseNodeListResponse([]byte(`{"version":3,"nodes":[]}`)); err != nil || len(nodes) != 0 {
 		t.Fatalf("empty list = %v %v", nodes, err)
 	}
 }
@@ -116,7 +116,8 @@ func TestNodeParsingRejects(t *testing.T) {
 		"sv spaces":     {repl(`"software_version":null`, `"software_version":"a b"`), "software_version"},
 		"sv type":       {repl(`"software_version":null`, `"software_version":1`), "must be a string"},
 		"roles object":  {repl(`"roles":[]`, `"roles":{}`), "must be an array"},
-		"role inflight": {repl(`"roles":[]`, `"roles":[{"role_id":"r","inflight":1,"concurrency":1,"can_accept":true}]`), "inflight must be 0"},
+		"role inflight": {repl(`"roles":[]`, `"roles":[{"role_id":"r","inflight":1,"concurrency":1,"can_accept":true}]`), "can_accept must be false"},
+		"role negative": {repl(`"roles":[]`, `"roles":[{"role_id":"r","inflight":-1,"concurrency":1,"can_accept":false}]`), "inflight must be 0 to"},
 		"role zero":     {repl(`"roles":[]`, `"roles":[{"role_id":"r","inflight":0,"concurrency":0,"can_accept":true}]`), "concurrency must be 1"},
 		"role big":      {repl(`"roles":[]`, `"roles":[{"role_id":"r","inflight":0,"concurrency":2147483648,"can_accept":true}]`), "concurrency must be 1"},
 		"role slug":     {repl(`"roles":[]`, `"roles":[{"role_id":"R","inflight":0,"concurrency":1,"can_accept":true}]`), "role ID slug"},
@@ -137,11 +138,11 @@ func TestNodeParsingRejects(t *testing.T) {
 		}
 	}
 	for name, c := range map[string]struct{ in, want string }{
-		"version":  {`{"version":1,"node":` + good + `}`, "protocol version mismatch: local=2 remote=1"},
+		"version":  {`{"version":1,"node":` + good + `}`, "protocol version mismatch: local=3 remote=1"},
 		"version2": {`{"version":"2","node":` + good + `}`, "integer"},
-		"extra":    {`{"version":2,"node":` + good + `,"x":1}`, "unknown field"},
-		"null":     {`{"version":2,"node":null}`, "must not be null"},
-		"bad node": {`{"version":2,"node":{}}`, "required field"},
+		"extra":    {`{"version":3,"node":` + good + `,"x":1}`, "unknown field"},
+		"null":     {`{"version":3,"node":null}`, "must not be null"},
+		"bad node": {`{"version":3,"node":{}}`, "required field"},
 		"array":    {`[]`, "not a JSON object"},
 	} {
 		_, err := ParseNodeResponse([]byte(c.in))
@@ -150,15 +151,15 @@ func TestNodeParsingRejects(t *testing.T) {
 		}
 	}
 	for name, c := range map[string]struct{ in, want string }{
-		"null nodes": {`{"version":2,"nodes":null}`, "must not be null"},
-		"not array":  {`{"version":2,"nodes":{}}`, "must be an array"},
-		"unsorted":   {`{"version":2,"nodes":[` + strings.Replace(good, "n_0", "n_1", 1) + `,` + good + `]}`, "not sorted"},
-		"duplicate":  {`{"version":2,"nodes":[` + good + `,` + good + `]}`, "not sorted"},
-		"bad item":   {`{"version":2,"nodes":[{}]}`, "required field"},
-		"version":    {`{"version":3,"nodes":[]}`, "remote=3"},
-		"missing":    {`{"version":2}`, "required field"},
+		"null nodes": {`{"version":3,"nodes":null}`, "must not be null"},
+		"not array":  {`{"version":3,"nodes":{}}`, "must be an array"},
+		"unsorted":   {`{"version":3,"nodes":[` + strings.Replace(good, "n_0", "n_1", 1) + `,` + good + `]}`, "not sorted"},
+		"duplicate":  {`{"version":3,"nodes":[` + good + `,` + good + `]}`, "not sorted"},
+		"bad item":   {`{"version":3,"nodes":[{}]}`, "required field"},
+		"version":    {`{"version":4,"nodes":[]}`, "remote=4"},
+		"missing":    {`{"version":3}`, "required field"},
 		"garbage":    {`x`, "not a JSON object"},
-		"broken arr": {`{"version":2,"nodes":[1,}`, "malformed"},
+		"broken arr": {`{"version":3,"nodes":[1,}`, "malformed"},
 	} {
 		_, err := ParseNodeListResponse([]byte(c.in))
 		if err == nil || !strings.Contains(err.Error(), c.want) {
@@ -240,7 +241,7 @@ func frame(version any, typ, rid, body string) []byte {
 // version-before-body rule.
 func TestFrames(t *testing.T) {
 	hello, err := EncodeFrame(ProtocolVersion, FrameHello, "h1", HelloBody{NodeID: testID, SoftwareVersion: "dev"})
-	want := `{"version":2,"type":"hello","request_id":"h1","body":{"node_id":"` + testID + `","software_version":"dev"}}`
+	want := `{"version":3,"type":"hello","request_id":"h1","body":{"node_id":"` + testID + `","software_version":"dev"}}`
 	if err != nil || string(hello) != want {
 		t.Fatalf("hello = %s %v", hello, err)
 	}
@@ -253,7 +254,7 @@ func TestFrames(t *testing.T) {
 		t.Fatalf("hello body = %+v %v", h, err)
 	}
 	ok, _ := EncodeFrame(ProtocolVersion, FrameHelloOK, "h1", HelloOKBody{HeartbeatIntervalMS, LeaseMS})
-	if string(ok) != `{"version":2,"type":"hello_ok","request_id":"h1","body":{"heartbeat_interval_ms":5000,"lease_ms":15000}}` {
+	if string(ok) != `{"version":3,"type":"hello_ok","request_id":"h1","body":{"heartbeat_interval_ms":5000,"lease_ms":15000}}` {
 		t.Fatalf("hello_ok = %s", ok)
 	}
 	f, _ = DecodeFrame(ok, FromPlane)
@@ -261,7 +262,7 @@ func TestFrames(t *testing.T) {
 		t.Fatal(err)
 	}
 	hb, _ := EncodeFrame(ProtocolVersion, FrameHeartbeat, "b1", HeartbeatBody{})
-	if string(hb) != `{"version":2,"type":"heartbeat","request_id":"b1","body":{"roles_revision":0,"roles":[]}}` {
+	if string(hb) != `{"version":3,"type":"heartbeat","request_id":"b1","body":{"roles_revision":0,"roles":[]}}` {
 		t.Fatalf("heartbeat = %s", hb)
 	}
 	f, _ = DecodeFrame(hb, FromSidecar)
@@ -269,7 +270,7 @@ func TestFrames(t *testing.T) {
 		t.Fatalf("heartbeat body %v %v", b, err)
 	}
 	ack, _ := EncodeFrame(ProtocolVersion, FrameHeartbeatAck, "b1", nil)
-	if string(ack) != `{"version":2,"type":"heartbeat_ack","request_id":"b1","body":{}}` {
+	if string(ack) != `{"version":3,"type":"heartbeat_ack","request_id":"b1","body":{}}` {
 		t.Fatalf("ack = %s", ack)
 	}
 	f, _ = DecodeFrame(ack, FromPlane)
@@ -277,7 +278,7 @@ func TestFrames(t *testing.T) {
 		t.Fatal(err)
 	}
 	ef, _ := EncodeFrame(ProtocolVersion, FrameError, "h1", VersionMismatch(1, 2))
-	if string(ef) != `{"version":2,"type":"error","request_id":"h1","body":{"error":{"code":"protocol_mismatch","message":"protocol version mismatch: local=1 remote=2","details":{"local_version":1,"remote_version":2}}}}` {
+	if string(ef) != `{"version":3,"type":"error","request_id":"h1","body":{"error":{"code":"protocol_mismatch","message":"protocol version mismatch: local=1 remote=2","details":{"local_version":1,"remote_version":2}}}}` {
 		t.Fatalf("error frame = %s", ef)
 	}
 	for _, from := range []Direction{FromSidecar, FromPlane} {
@@ -302,7 +303,7 @@ func TestFrames(t *testing.T) {
 		[]byte(`{"type":"future","version":1,"request_id":"h7"}`),
 	} {
 		f, err := DecodeFrame(in, FromSidecar)
-		if CodeOf(err) != CodeProtocolMismatch || !strings.Contains(err.Error(), "local=2 remote=1") || f.Version != 1 || f.RequestID != "h7" {
+		if CodeOf(err) != CodeProtocolMismatch || !strings.Contains(err.Error(), "local=3 remote=1") || f.Version != 1 || f.RequestID != "h7" {
 			t.Fatalf("mismatch %s = %+v %v", in, f, err)
 		}
 	}
@@ -320,23 +321,23 @@ func TestFrames(t *testing.T) {
 		"null version":   {[]byte(`{"version":null,"type":"hello","request_id":"h1","body":{}}`), FromSidecar, `"version"`},
 		"string version": {frame("2", "hello", "h1", `{}`), FromSidecar, "must be an integer"},
 		"float version":  {frame(1.5, "hello", "h1", `{}`), FromSidecar, "must be an integer"},
-		"duplicate":      {[]byte(`{"version":2,"version":2,"type":"hello","request_id":"h1","body":{}}`), FromSidecar, "duplicate field"},
-		"unknown":        {[]byte(`{"version":2,"type":"hello","request_id":"h1","body":{},"x":1}`), FromSidecar, "unknown field"},
-		"null type":      {[]byte(`{"version":2,"type":null,"request_id":"h1","body":{}}`), FromSidecar, "must not be null"},
-		"null body":      {[]byte(`{"version":2,"type":"hello","request_id":"h1","body":null}`), FromSidecar, "must not be null"},
-		"no body":        {[]byte(`{"version":2,"type":"hello","request_id":"h1"}`), FromSidecar, "required field"},
-		"trailing":       {append(frame(2, "hello", "h1", `{}`), []byte(` {}`)...), FromSidecar, "trailing data"},
-		"bad request id": {frame(2, "hello", "a b", `{}`), FromSidecar, "request_id must be"},
-		"long rid":       {frame(2, "hello", strings.Repeat("a", 65), `{}`), FromSidecar, "request_id must be"},
-		"rid type":       {[]byte(`{"version":2,"type":"hello","request_id":1,"body":{}}`), FromSidecar, "must be a string"},
-		"type type":      {[]byte(`{"version":2,"type":1,"request_id":"h1","body":{}}`), FromSidecar, "must be a string"},
-		"unknown type":   {frame(2, "task", "h1", `{}`), FromSidecar, `unexpected message type "task"`},
-		"wrong dir 1":    {frame(2, "hello_ok", "h1", `{}`), FromSidecar, "not valid in this direction"},
-		"wrong dir 2":    {frame(2, "heartbeat", "b1", `{"roles":[]}`), FromPlane, "not valid in this direction"},
-		"wrong dir 3":    {frame(2, "hello", "h1", `{}`), FromPlane, "not valid in this direction"},
-		"body array":     {frame(2, "hello", "h1", `[]`), FromSidecar, "body must be a JSON object"},
-		"body string":    {frame(2, "hello", "h1", `"x"`), FromSidecar, "body must be a JSON object"},
-		"malformed":      {[]byte(`{"version":2,`), FromSidecar, "malformed"},
+		"duplicate":      {[]byte(`{"version":3,"version":2,"type":"hello","request_id":"h1","body":{}}`), FromSidecar, "duplicate field"},
+		"unknown":        {[]byte(`{"version":3,"type":"hello","request_id":"h1","body":{},"x":1}`), FromSidecar, "unknown field"},
+		"null type":      {[]byte(`{"version":3,"type":null,"request_id":"h1","body":{}}`), FromSidecar, "must not be null"},
+		"null body":      {[]byte(`{"version":3,"type":"hello","request_id":"h1","body":null}`), FromSidecar, "must not be null"},
+		"no body":        {[]byte(`{"version":3,"type":"hello","request_id":"h1"}`), FromSidecar, "required field"},
+		"trailing":       {append(frame(3, "hello", "h1", `{}`), []byte(` {}`)...), FromSidecar, "trailing data"},
+		"bad request id": {frame(3, "hello", "a b", `{}`), FromSidecar, "request_id must be"},
+		"long rid":       {frame(3, "hello", strings.Repeat("a", 65), `{}`), FromSidecar, "request_id must be"},
+		"rid type":       {[]byte(`{"version":3,"type":"hello","request_id":1,"body":{}}`), FromSidecar, "must be a string"},
+		"type type":      {[]byte(`{"version":3,"type":1,"request_id":"h1","body":{}}`), FromSidecar, "must be a string"},
+		"unknown type":   {frame(3, "task", "h1", `{}`), FromSidecar, `unexpected message type "task"`},
+		"wrong dir 1":    {frame(3, "hello_ok", "h1", `{}`), FromSidecar, "not valid in this direction"},
+		"wrong dir 2":    {frame(3, "heartbeat", "b1", `{"roles":[]}`), FromPlane, "not valid in this direction"},
+		"wrong dir 3":    {frame(3, "hello", "h1", `{}`), FromPlane, "not valid in this direction"},
+		"body array":     {frame(3, "hello", "h1", `[]`), FromSidecar, "body must be a JSON object"},
+		"body string":    {frame(3, "hello", "h1", `"x"`), FromSidecar, "body must be a JSON object"},
+		"malformed":      {[]byte(`{"version":3,`), FromSidecar, "malformed"},
 	} {
 		_, err := DecodeFrame(c.in, c.from)
 		if CodeOf(err) != CodeInvalidArgument || !strings.Contains(err.Error(), c.want) {
@@ -362,7 +363,7 @@ func TestFrames(t *testing.T) {
 		"ok missing":     {func(b json.RawMessage) error { _, e := DecodeHelloOK(b); return e }, `{"heartbeat_interval_ms":5000}`, "required field"},
 		"ok garbage":     {func(b json.RawMessage) error { _, e := DecodeHelloOK(b); return e }, `[]`, "not a JSON object"},
 		"hb roles null":  {func(b json.RawMessage) error { _, e := DecodeHeartbeat(b); return e }, `{"roles_revision":0,"roles":null}`, "must not be null"},
-		"hb roles bad":   {func(b json.RawMessage) error { _, e := DecodeHeartbeat(b); return e }, `{"roles_revision":0,"roles":[{"role_id":"a","inflight":2,"concurrency":1,"can_accept":true}]}`, "inflight must be 0"},
+		"hb roles bad":   {func(b json.RawMessage) error { _, e := DecodeHeartbeat(b); return e }, `{"roles_revision":0,"roles":[{"role_id":"a","inflight":2,"concurrency":1,"can_accept":true}]}`, "can_accept must be false"},
 		"hb extra":       {func(b json.RawMessage) error { _, e := DecodeHeartbeat(b); return e }, `{"roles_revision":0,"roles":[],"x":1}`, "unknown field"},
 		"hb missing":     {func(b json.RawMessage) error { _, e := DecodeHeartbeat(b); return e }, `{"roles":[]}`, "required field"},
 		"hb revision":    {func(b json.RawMessage) error { _, e := DecodeHeartbeat(b); return e }, `{"roles_revision":-1,"roles":[]}`, "integer from 0"},
@@ -413,19 +414,19 @@ func TestFrameLimits(t *testing.T) {
 		if len(at) != c.limit {
 			t.Fatal(len(at))
 		}
-		if f, err := DecodeFrame(frame(2, c.typ, "p1", at), c.from); err != nil || len(f.Body) != c.limit {
+		if f, err := DecodeFrame(frame(3, c.typ, "p1", at), c.from); err != nil || len(f.Body) != c.limit {
 			t.Fatalf("%s body at limit: %v", c.typ, err)
 		}
-		if _, err := DecodeFrame(frame(2, c.typ, "p1", bodyOf(c.limit+1)), c.from); CodeOf(err) != CodeInvalidArgument || !strings.Contains(err.Error(), "exceeds "+strconv.Itoa(c.limit)) {
+		if _, err := DecodeFrame(frame(3, c.typ, "p1", bodyOf(c.limit+1)), c.from); CodeOf(err) != CodeInvalidArgument || !strings.Contains(err.Error(), "exceeds "+strconv.Itoa(c.limit)) {
 			t.Fatalf("%s body above limit: %v", c.typ, err)
 		}
 		// Whitespace counts: a compact body one byte under the limit plus
 		// one inner space is exactly at it, two spaces are above it.
 		spaced := `{ "x":"` + pad(c.limit-9) + `"}`
-		if _, err := DecodeFrame(frame(2, c.typ, "p1", spaced), c.from); err != nil {
+		if _, err := DecodeFrame(frame(3, c.typ, "p1", spaced), c.from); err != nil {
 			t.Fatalf("%s spaced body at limit: %v", c.typ, err)
 		}
-		if _, err := DecodeFrame(frame(2, c.typ, "p1", `{  "x":"`+pad(c.limit-9)+`"}`), c.from); CodeOf(err) != CodeInvalidArgument {
+		if _, err := DecodeFrame(frame(3, c.typ, "p1", `{  "x":"`+pad(c.limit-9)+`"}`), c.from); CodeOf(err) != CodeInvalidArgument {
 			t.Fatalf("%s spaced body above limit: %v", c.typ, err)
 		}
 		if _, err := EncodeFrame(2, c.typ, "p1", big{pad(c.limit - 8)}); err != nil {
@@ -440,7 +441,7 @@ func TestFrameLimits(t *testing.T) {
 	}
 	// A message of exactly MaxFrameBytes with whitespace padding outside the
 	// body, and one byte more.
-	base := frame(2, "hello", "h1", `{}`)
+	base := frame(3, "hello", "h1", `{}`)
 	exact := append(bytes.Repeat([]byte(" "), MaxFrameBytes-len(base)), base...)
 	if len(exact) != MaxFrameBytes {
 		t.Fatal(len(exact))

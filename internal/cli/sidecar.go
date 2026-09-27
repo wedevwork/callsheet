@@ -197,7 +197,7 @@ func sidecarRun(ctx context.Context, goos string, c *Command, args []string, out
 		return planeFail(errOut, err)
 	}
 	logger := logging.Component(logging.New(errOut, slog.LevelInfo), "sidecar")
-	err = sidecar.Run(ctx, sidecar.RunOptions{StateDir: dir, SoftwareVersion: Version, Logger: logger, FakeAdapterPath: fake.val})
+	err = sidecar.Run(ctx, sidecar.RunOptions{StateDir: dir, SoftwareVersion: Version, Logger: logger, FakeAdapterPath: fake.val, GOOS: goos})
 	return planeFail(errOut, err)
 }
 

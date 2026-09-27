@@ -211,10 +211,10 @@ func TestRoleStreamContract(t *testing.T) {
 					c.replace("p1", 1, a)
 				}, "p1", "another node"},
 				{"bad-snapshot", func(c *fakeConn, a contract.RoleConfig) {
-					c.sendRaw([]byte(`{"version":2,"type":"roles_replace","request_id":"p1","body":{"revision":1,"roles":[{"id":"a"}]}}`))
+					c.sendRaw([]byte(`{"version":3,"type":"roles_replace","request_id":"p1","body":{"revision":1,"roles":[{"id":"a"}]}}`))
 				}, "p1", "required field"},
 				{"bad-validate", func(c *fakeConn, a contract.RoleConfig) {
-					c.sendRaw([]byte(`{"version":2,"type":"role_validate","request_id":"p1","body":{"role":{},"x":1}}`))
+					c.sendRaw([]byte(`{"version":3,"type":"role_validate","request_id":"p1","body":{"role":{},"x":1}}`))
 				}, "p1", "unknown field"},
 				{"hello-again", func(c *fakeConn, a contract.RoleConfig) {
 					c.send(contract.ProtocolVersion, contract.FrameHelloOK, "h1", contract.HelloOKBody{HeartbeatIntervalMS: 5000, LeaseMS: 15000})
@@ -257,7 +257,7 @@ func TestRoleStreamContract(t *testing.T) {
 			c := fp.accept(t)
 			c.helloOK(testID)
 			ack := func(rid string, n int) {
-				c.sendRaw([]byte(`{"version":2,"type":"heartbeat_ack","request_id":"` + rid + `","body":{` + strings.Repeat(" ", n-2) + `}}`))
+				c.sendRaw([]byte(`{"version":3,"type":"heartbeat_ack","request_id":"` + rid + `","body":{` + strings.Repeat(" ", n-2) + `}}`))
 			}
 			c.readHeartbeat(1)
 			ack("b1", contract.MaxOtherBody)

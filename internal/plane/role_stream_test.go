@@ -296,7 +296,6 @@ func TestRoleStreamContract(t *testing.T) {
 				"duplicate role":    {RolesRevision: 4, Roles: []contract.RoleStatus{st("a", 2), st("a", 2)}},
 				"reordered":         {RolesRevision: 4, Roles: []contract.RoleStatus{st("b", 2), st("a", 2)}},
 				"wrong concurrency": {RolesRevision: 4, Roles: []contract.RoleStatus{st("a", 3), st("b", 2)}},
-				"inflight":          {RolesRevision: 4, Roles: []contract.RoleStatus{{RoleID: "a", Inflight: 1, Concurrency: 2}, st("b", 2)}},
 				"empty":             {RolesRevision: 4},
 			} {
 				if err := r.heartbeat(idA, gen, hb); !contract.IsCode(err, contract.CodeInvalidArgument) {
@@ -311,6 +310,16 @@ func TestRoleStreamContract(t *testing.T) {
 			}
 			if n := show(t, r, idA); n.Liveness != contract.LivenessOnline {
 				t.Fatalf("valid heartbeat = %+v", n)
+			}
+			// Iteration 05: a worker's inflight is an observation (it may
+			// exceed a lowered concurrency); it never books or frees a plane
+			// reservation (the plane's counts are TestTaskRoleIntegration's).
+			busy := contract.HeartbeatBody{RolesRevision: 4, Roles: []contract.RoleStatus{{RoleID: "a", Inflight: 3, Concurrency: 2}, st("b", 2)}}
+			if err := r.heartbeat(idA, gen, busy); err != nil {
+				t.Fatalf("an inflight observation was refused: %v", err)
+			}
+			if n := show(t, r, idA); n.Liveness != contract.LivenessOnline {
+				t.Fatalf("after an inflight observation = %+v", n)
 			}
 		})
 		t.Run("result", func(t *testing.T) {
@@ -533,9 +542,9 @@ func TestRoleStreamContract(t *testing.T) {
 			// stream's own and is proven by TestNodeStreamProtocol/oversized.
 			p := rp.online(t, idA)
 			body := `{"roles_revision":0,"roles":[]` + strings.Repeat(" ", contract.MaxHeartbeatBody-len(`{"roles_revision":0,"roles":[]}`)) + `}`
-			p.sendRaw([]byte(`{"version":2,"type":"heartbeat","request_id":"b2","body":` + body + `}`))
+			p.sendRaw([]byte(`{"version":3,"type":"heartbeat","request_id":"b2","body":` + body + `}`))
 			p.expect(contract.FrameHeartbeatAck, "b2")
-			p.sendRaw([]byte(`{"version":2,"type":"heartbeat","request_id":"b3","body":` + body[:len(body)-1] + ` }` + `}`))
+			p.sendRaw([]byte(`{"version":3,"type":"heartbeat","request_id":"b3","body":` + body[:len(body)-1] + ` }` + `}`))
 			p.expectError("b3", contract.CodeInvalidArgument)
 			if st := p.closed(); st != websocket.StatusPolicyViolation {
 				t.Fatalf("oversized heartbeat close = %v", st)

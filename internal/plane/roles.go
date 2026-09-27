@@ -34,7 +34,11 @@ type roleService struct {
 	clock  nodeClock
 	logger *slog.Logger
 	lookup contract.AdapterLookup
-	gate   atomic.Bool
+	// gate is the nonblocking mutation gate shared with dispatch
+	// admission (iteration 05).
+	gate *atomic.Bool
+	// tasks, when set, supplies role rm's reservation predicate.
+	tasks *taskService
 	// events and hook, when non-nil, let tests observe and pause a
 	// mutation at named stages ("submitting", "validated", "prepared")
 	// with its context.
@@ -43,7 +47,7 @@ type roleService struct {
 }
 
 func newRoleService(roles *roleRegistry, reg *nodeRegistry, clock nodeClock, logger *slog.Logger) *roleService {
-	return &roleService{roles: roles, reg: reg, clock: clock, logger: logger, lookup: roles.lookup}
+	return &roleService{roles: roles, reg: reg, clock: clock, logger: logger, lookup: roles.lookup, gate: &atomic.Bool{}}
 }
 
 func (rs *roleService) event(e string) {
@@ -283,10 +287,15 @@ func (rs *roleService) validateOn(m mutation, c contract.RoleConfig) (uint64, er
 // immediately before publication), the mutation's liveness, the validated
 // attachment (when validated) and the base revision. The second recheck is
 // the authorization instant; nothing is rolled back after it.
-func (rs *roleService) commit(m mutation, base int, node string, gen uint64, validated bool, next *roleDoc) error {
+func (rs *roleService) commit(m mutation, base int, node string, gen uint64, validated bool, next *roleDoc, guard func() error) error {
 	recheck := func() error {
 		if err := m.live(rs); err != nil {
 			return err
+		}
+		if guard != nil {
+			if err := guard(); err != nil {
+				return err
+			}
 		}
 		if validated {
 			if err := rs.reg.stillTarget(node, gen); err != nil {
@@ -370,7 +379,7 @@ func (rs *roleService) add(w http.ResponseWriter, r *http.Request, body []byte) 
 			return 0, nil, err
 		}
 		next, rec := doc.withAdded(c)
-		if err := rs.commit(m, doc.revision, c.Node, gen, true, next); err != nil {
+		if err := rs.commit(m, doc.revision, c.Node, gen, true, next, nil); err != nil {
 			return 0, nil, err
 		}
 		rs.logger.Info("role added", "role_id", c.ID, "node_id", c.Node, "registration_order", rec.RegistrationOrder)
@@ -438,7 +447,7 @@ func (rs *roleService) set(w http.ResponseWriter, r *http.Request, id string, bo
 			return 0, nil, counterErr("revision")
 		}
 		next, rec := doc.withReplaced(i, merged)
-		if err := rs.commit(m, doc.revision, cur.Node, gen, true, next); err != nil {
+		if err := rs.commit(m, doc.revision, cur.Node, gen, true, next, nil); err != nil {
 			return 0, nil, err
 		}
 		rs.logger.Info("role changed", "role_id", id, "node_id", cur.Node)
@@ -447,9 +456,15 @@ func (rs *roleService) set(w http.ResponseWriter, r *http.Request, id string, bo
 	}))
 }
 
-// remove deletes a role. rm needs no worker and works offline; in this
-// iteration force=false and force=true behave identically (no tasks
-// exist): no cancellation, task record or grace period.
+// remove deletes a role. rm needs no worker and works offline. Iteration
+// 05: while the instance holds reservations that are not all
+// recovery-required, the whole removal is refused (conflict/tasks_inflight,
+// or force_cancel_not_supported with force: there is no cancellation in
+// this build); when none are held, or every held one is
+// recovery-required, either form removes only the registry entry and
+// leaves the task records, their states, logs and historical instance
+// untouched, sending no signal. The predicate is checked again at the
+// authorization instant; admissions are excluded by the shared gate.
 func (rs *roleService) remove(w http.ResponseWriter, r *http.Request, id string, body []byte) {
 	force, err := contract.ParseRoleRemoveRequest(body)
 	if err == nil {
@@ -470,7 +485,16 @@ func (rs *roleService) remove(w http.ResponseWriter, r *http.Request, id string,
 		if doc.revision >= contract.MaxSafeInteger {
 			return 0, nil, counterErr("revision")
 		}
-		if err := rs.commit(m, doc.revision, cur.Node, 0, false, doc.withRemoved(i)); err != nil {
+		guard := func() error {
+			if rs.tasks == nil {
+				return nil
+			}
+			return rs.tasks.removalCheck(keyOf(cur), force)
+		}
+		if err := guard(); err != nil {
+			return 0, nil, err
+		}
+		if err := rs.commit(m, doc.revision, cur.Node, 0, false, doc.withRemoved(i), guard); err != nil {
 			return 0, nil, err
 		}
 		rs.logger.Info("role removed", "role_id", id, "node_id", cur.Node, "force", force)

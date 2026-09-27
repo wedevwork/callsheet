@@ -36,6 +36,7 @@ type stubPlane struct {
 
 type stubReq struct {
 	method, path, ctype, body string
+	query                     string
 }
 
 func startStubPlane(t *testing.T) *stubPlane {
@@ -67,7 +68,7 @@ func startStubPlane(t *testing.T) *stubPlane {
 			return
 		}
 		b, _ := io.ReadAll(r.Body)
-		req := stubReq{r.Method, r.URL.Path, r.Header.Get("Content-Type"), string(b)}
+		req := stubReq{r.Method, r.URL.Path, r.Header.Get("Content-Type"), string(b), r.URL.RawQuery}
 		s.mu.Lock()
 		s.reqs = append(s.reqs, req)
 		route := s.route
@@ -88,7 +89,7 @@ func startStubPlane(t *testing.T) *stubPlane {
 
 func (s *stubPlane) answer(status int, body string) {
 	s.mu.Lock()
-	s.route = func(stubReq) (int, string, string) { return status, "2", body }
+	s.route = func(stubReq) (int, string, string) { return status, "3", body }
 	s.mu.Unlock()
 }
 
@@ -137,7 +138,7 @@ func TestRoleCLI(t *testing.T) {
 		return append(append(args, extra...), trust...)
 	}
 	t.Run("add", func(t *testing.T) {
-		sp.answer(201, envelope(t, contract.RoleResponse{Version: 2, Role: a}))
+		sp.answer(201, envelope(t, contract.RoleResponse{Version: 3, Role: a}))
 		code, out, errOut := exec(t, "linux", addArgs()...)
 		want := "id: worker-a\nname: coder\nnode: " + roleNode + "\nadapter: fake\ninstruction: \"/srv/manuals/worker-a/instruction.md\"\n" +
 			"runbook: \"/srv/manuals/worker-a/runbook.md\"\nmodel: \"example \\\"model\\\" <x>\"\neffort: medium\nconcurrency: 2\ntimeout: 2h0m0s\n" +
@@ -153,7 +154,7 @@ func TestRoleCLI(t *testing.T) {
 		// Flags before the operand, a timeout and --json.
 		args := append([]string{"role", "add", "--json", "--timeout", "0"}, addArgs()[2:]...)
 		code, out, _ = exec(t, "darwin", args...)
-		if code != 0 || out != envelope(t, contract.RoleResponse{Version: 2, Role: a})+"\n" || !strings.Contains(sp.last().body, `"timeout":"0s"`) {
+		if code != 0 || out != envelope(t, contract.RoleResponse{Version: 3, Role: a})+"\n" || !strings.Contains(sp.last().body, `"timeout":"0s"`) {
 			t.Fatalf("add --json = %d %q %+v", code, out, sp.last())
 		}
 	})
@@ -217,7 +218,7 @@ func TestRoleCLI(t *testing.T) {
 			{mut("--node", "n_1"), "node must be a node ID", false},
 			{mut("--name", "Coder"), "name must be a 1-63 character slug", false},
 		} {
-			sp.answer(201, envelope(t, contract.RoleResponse{Version: 2, Role: a}))
+			sp.answer(201, envelope(t, contract.RoleResponse{Version: 3, Role: a}))
 			code, _, errOut := exec(t, "linux", c.args...)
 			if c.msg == "" {
 				// The FIFO path is sent as is; nothing opened it locally.
@@ -236,7 +237,7 @@ func TestRoleCLI(t *testing.T) {
 		}
 	})
 	t.Run("set", func(t *testing.T) {
-		sp.answer(200, envelope(t, contract.RoleResponse{Version: 2, Role: a}))
+		sp.answer(200, envelope(t, contract.RoleResponse{Version: 3, Role: a}))
 		code, _, errOut := exec(t, "linux", append([]string{"role", "set", "worker-a", "--concurrency", "3", "--timeout", "90m", "--model", "-x"}, trust...)...)
 		req := sp.last()
 		if code != 0 || req.method != "PATCH" || req.path != contract.PathRoles+"/worker-a" || req.body != `{"model":"-x","concurrency":3,"timeout":"1h30m0s"}` {
@@ -263,7 +264,7 @@ func TestRoleCLI(t *testing.T) {
 	})
 	t.Run("ls", func(t *testing.T) {
 		views := []contract.RoleView{stubView("worker-b", "coder", 2, "m1", true), stubView("worker-d", "coder", 4, "m 2", false), stubView("worker-a", "reviewer", 1, "模型", true)}
-		sp.answer(200, envelope(t, contract.RoleListResponse{Version: 2, Roles: views}))
+		sp.answer(200, envelope(t, contract.RoleListResponse{Version: 3, Roles: views}))
 		code, out, _ := exec(t, "linux", append([]string{"role", "ls"}, trust...)...)
 		want := "NAME\tID\tNODE\tNODE_LIVENESS\tADAPTER\tMODEL\tEFFORT\tINFLIGHT\tCONCURRENCY\tCAN_ACCEPT\n" +
 			"coder\tworker-b\t" + roleNode + "\tonline\tfake\t\"m1\"\tmedium\t0\t2\ttrue\n" +
@@ -273,10 +274,10 @@ func TestRoleCLI(t *testing.T) {
 			t.Fatalf("ls = %d\n%s", code, out)
 		}
 		code, out, _ = exec(t, "linux", append([]string{"role", "ls", "--json"}, trust...)...)
-		if code != 0 || out != envelope(t, contract.RoleListResponse{Version: 2, Roles: views})+"\n" || sp.last().method != "GET" || sp.last().body != "" {
+		if code != 0 || out != envelope(t, contract.RoleListResponse{Version: 3, Roles: views})+"\n" || sp.last().method != "GET" || sp.last().body != "" {
 			t.Fatalf("ls --json = %d %q", code, out)
 		}
-		sp.answer(200, `{"version":2,"roles":[]}`)
+		sp.answer(200, `{"version":3,"roles":[]}`)
 		if code, out, _ := exec(t, "linux", append([]string{"role", "ls"}, trust...)...); code != 0 || out != strings.Join(RoleColumns, "\t")+"\n" {
 			t.Fatalf("empty ls = %q", out)
 		}
@@ -285,22 +286,22 @@ func TestRoleCLI(t *testing.T) {
 		}
 	})
 	t.Run("show-rm", func(t *testing.T) {
-		sp.answer(200, envelope(t, contract.RoleResponse{Version: 2, Role: a}))
-		if code, out, _ := exec(t, "linux", append([]string{"role", "show", "worker-a", "--json"}, trust...)...); code != 0 || out != envelope(t, contract.RoleResponse{Version: 2, Role: a})+"\n" {
+		sp.answer(200, envelope(t, contract.RoleResponse{Version: 3, Role: a}))
+		if code, out, _ := exec(t, "linux", append([]string{"role", "show", "worker-a", "--json"}, trust...)...); code != 0 || out != envelope(t, contract.RoleResponse{Version: 3, Role: a})+"\n" {
 			t.Fatalf("show = %d %q", code, out)
 		}
-		sp.answer(200, `{"version":2,"removed":"worker-a"}`)
+		sp.answer(200, `{"version":3,"removed":"worker-a"}`)
 		for _, force := range []bool{false, true} {
 			args := []string{"role", "rm", "worker-a"}
 			if force {
 				args = append(args, "--force")
 			}
 			code, out, _ := exec(t, "linux", append(args, trust...)...)
-			if code != 0 || out != "removed: worker-a\n" || sp.last().method != "DELETE" || sp.last().body != `{"force":`+map[bool]string{false: "false", true: "true"}[force]+`}` {
+			if code != 0 || out != "removed: worker-a\n"+roleRmNotice || sp.last().method != "DELETE" || sp.last().body != `{"force":`+map[bool]string{false: "false", true: "true"}[force]+`}` {
 				t.Fatalf("rm force=%v = %d %q %+v", force, code, out, sp.last())
 			}
 		}
-		if code, out, _ := exec(t, "linux", append([]string{"role", "rm", "--json", "worker-a"}, trust...)...); code != 0 || out != `{"version":2,"removed":"worker-a"}`+"\n" {
+		if code, out, _ := exec(t, "linux", append([]string{"role", "rm", "--json", "worker-a"}, trust...)...); code != 0 || out != `{"version":3,"removed":"worker-a"}`+"\n" {
 			t.Fatalf("rm --json = %d %q", code, out)
 		}
 		if code, _, errOut := exec(t, "linux", append([]string{"role", "rm", "worker-a", "--force", "--force"}, trust...)...); code != 2 || !strings.Contains(errOut, "only once") {
@@ -311,7 +312,7 @@ func TestRoleCLI(t *testing.T) {
 		}
 	})
 	t.Run("trust", func(t *testing.T) {
-		sp.answer(200, envelope(t, contract.RoleResponse{Version: 2, Role: a}))
+		sp.answer(200, envelope(t, contract.RoleResponse{Version: 3, Role: a}))
 		if code, _, errOut := exec(t, "linux", "role", "show", "worker-a", "--plane", sp.url, "--ca-fingerprint", sp.pin); code != 0 {
 			t.Fatalf("pin = %d %q", code, errOut)
 		}
@@ -347,12 +348,12 @@ func TestRoleCLI(t *testing.T) {
 			code    int
 			stderr  string
 		}{
-			{409, "2", `{"error":{"code":"conflict","message":"role worker-a already exists"}}`, 4, "callsheet: conflict: role worker-a already exists\n"},
-			{404, "2", `{"error":{"code":"not_found","message":"node n_x is not enrolled"}}`, 3, "callsheet: not_found: node n_x is not enrolled\n"},
-			{503, "2", `{"error":{"code":"unavailable","message":"another role change is in progress; retry","details":{"reason":"busy"}}}`, 5, "callsheet: unavailable: another role change is in progress; retry\n"},
-			{400, "2", `{"error":{"code":"invalid_argument","message":"the runbook manual is not readable on this node: permission denied"}}`, 2, "callsheet: invalid_argument: the runbook manual is not readable on this node: permission denied\n"},
-			{500, "2", `{"error":{"code":"internal","message":"role change was published but durability is unconfirmed"}}`, 1, "callsheet: internal: role change was published but durability is unconfirmed\n"},
-			{409, "1", `{"error":{"code":"protocol_mismatch","message":"x"}}`, 7, "callsheet: protocol_mismatch: protocol version mismatch: local=2 remote=1\n"},
+			{409, "3", `{"error":{"code":"conflict","message":"role worker-a already exists"}}`, 4, "callsheet: conflict: role worker-a already exists\n"},
+			{404, "3", `{"error":{"code":"not_found","message":"node n_x is not enrolled"}}`, 3, "callsheet: not_found: node n_x is not enrolled\n"},
+			{503, "3", `{"error":{"code":"unavailable","message":"another role change is in progress; retry","details":{"reason":"busy"}}}`, 5, "callsheet: unavailable: another role change is in progress; retry\n"},
+			{400, "3", `{"error":{"code":"invalid_argument","message":"the runbook manual is not readable on this node: permission denied"}}`, 2, "callsheet: invalid_argument: the runbook manual is not readable on this node: permission denied\n"},
+			{500, "3", `{"error":{"code":"internal","message":"role change was published but durability is unconfirmed"}}`, 1, "callsheet: internal: role change was published but durability is unconfirmed\n"},
+			{409, "1", `{"error":{"code":"protocol_mismatch","message":"x"}}`, 7, "callsheet: protocol_mismatch: protocol version mismatch: local=3 remote=1\n"},
 		} {
 			sp.mu.Lock()
 			sp.route = func(stubReq) (int, string, string) { return c.status, c.version, c.body }
@@ -363,7 +364,7 @@ func TestRoleCLI(t *testing.T) {
 			}
 		}
 		// A write failure on stdout is internal (1) after a completed call.
-		sp.answer(200, envelope(t, contract.RoleResponse{Version: 2, Role: a}))
+		sp.answer(200, envelope(t, contract.RoleResponse{Version: 3, Role: a}))
 		var errOut bytes.Buffer
 		code := run(context.Background(), NewTree("linux"), "linux", append([]string{"role", "show", "worker-a"}, trust...), failWriter{}, &errOut)
 		if code != 1 || !strings.Contains(errOut.String(), "cannot write to stdout") {
@@ -374,13 +375,13 @@ func TestRoleCLI(t *testing.T) {
 		// Node discovery renders a nonempty roles array compactly, in the
 		// order the plane supplies.
 		n := contract.Node{ID: roleNode, Liveness: contract.LivenessOnline, Roles: []contract.RoleStatus{{RoleID: "worker-b", Concurrency: 2, CanAccept: true}, {RoleID: "worker-a", Concurrency: 1}}}
-		sp.answer(200, envelope(t, contract.NodeResponse{Version: 2, Node: n}))
+		sp.answer(200, envelope(t, contract.NodeResponse{Version: 3, Node: n}))
 		code, out, _ := exec(t, "linux", append([]string{"node", "show", roleNode}, trust...)...)
 		if code != 0 || !strings.Contains(out, `roles: [{"role_id":"worker-b","inflight":0,"concurrency":2,"can_accept":true},{"role_id":"worker-a","inflight":0,"concurrency":1,"can_accept":false}]`+"\n") {
 			t.Fatalf("node show = %d\n%s", code, out)
 		}
 		var decoded map[string]any
-		if json.Unmarshal([]byte(envelope(t, contract.NodeResponse{Version: 2, Node: n})), &decoded) != nil {
+		if json.Unmarshal([]byte(envelope(t, contract.NodeResponse{Version: 3, Node: n})), &decoded) != nil {
 			t.Fatal("envelope")
 		}
 	})
@@ -390,7 +391,7 @@ func TestRoleCLI(t *testing.T) {
 			"set":  {"Usage: callsheet role set ID [--name NAME]", "omitted fields keep their values", "node must be online"},
 			"ls":   {"NAME, ID, NODE, NODE_LIVENESS, ADAPTER", "sorted by name"},
 			"show": {"Usage: callsheet role show ID"},
-			"rm":   {"Usage: callsheet role rm ID [--force]", "rm --force behave identically", "also while its node is offline"},
+			"rm":   {"Usage: callsheet role rm ID [--force]", "force_cancel_not_supported", "also while its node is offline", "not proof that old execution stopped"},
 		} {
 			_, out, _ := exec(t, "linux", "role", leaf, "--help")
 			for _, w := range wants {

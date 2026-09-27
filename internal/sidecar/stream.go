@@ -360,7 +360,8 @@ func (d *deps) session(ctx context.Context, c planeClient, n int, id, sw string,
 	logger.Info("connected", "session", n)
 	d.emit(event{kind: evConnected, session: n})
 	jobs, cancelJobs := context.WithCancel(ctx)
-	rs := &roleSession{d: d, s: s, ctx: ctx, n: n, id: id, env: env, w: w, logger: logger, onStable: onStable, jobs: jobs}
+	rs := &roleSession{d: d, s: s, ctx: ctx, n: n, id: id, env: env, w: w, logger: logger, onStable: onStable, jobs: jobs,
+		tasks: w.tasks, tag: &attachTag{n: n}, starts: map[string]*startEntry{}}
 	defer rs.cleanup(cancelJobs)
 	return rs.run()
 }

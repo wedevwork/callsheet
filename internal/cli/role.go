@@ -59,10 +59,19 @@ const (
 		"Shows one role as label: value lines in field order; instruction, runbook and model\n" +
 		"are JSON strings.\n"
 	roleRmDetails = "Flags:\n" +
-		"  --force            accepted for tasks in flight; with no tasks yet (this build) rm\n" +
-		"                     and rm --force behave identically\n" +
+		"  --force            reserved for cancelling tasks in flight, which this build cannot\n" +
+		"                     do: rm --force is refused like rm while the role has tasks\n" +
+		"                     running or pending (force_cancel_not_supported)\n" +
 		trustHelp + roleJSONHelp + "\n" +
-		"Removes a role from the plane, also while its node is offline. It prints removed: ID.\n"
+		"Removes a role from the plane, also while its node is offline. It prints removed: ID\n" +
+		"and the notice below. While the role has tasks in flight rm is refused\n" +
+		"(tasks_inflight): wait for them (callsheet task ls). Tasks whose outcome is\n" +
+		"unconfirmed (recovery_required) do not block removal: when every task holding the\n" +
+		"role is recovery-required, rm and rm --force remove only the role; the tasks keep\n" +
+		"their state, output and history. Removal cancels nothing and signals no worker, and\n" +
+		"adding the role again (a new instance) is not proof that old execution stopped.\n"
+	// roleRmNotice is printed after every successful text rm.
+	roleRmNotice = "notice: removal cancels no task and signals no worker; adding the role again is not proof that old execution stopped\n"
 )
 
 // roleFlags are a role leaf's own flags.
@@ -308,7 +317,7 @@ func roleRm(ctx context.Context, goos string, c *Command, args []string, out, er
 		}
 		return writeOut(out, errOut, string(b)+"\n")
 	}
-	return writeOut(out, errOut, "removed: "+id+"\n")
+	return writeOut(out, errOut, "removed: "+id+"\n"+roleRmNotice)
 }
 
 // writeRole prints one role view as text or its JSON envelope.

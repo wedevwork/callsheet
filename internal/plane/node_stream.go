@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -136,10 +137,12 @@ type planeRequest struct {
 	timer    <-chan time.Time
 	stop     func() bool
 	expired  bool
-	// Exactly one of v (role_validate) and snap (roles_replace) is used.
+	// Exactly one of v (role_validate), snap (roles_replace) and start
+	// (task_start, iteration 05) is used.
 	v      *validation
 	snap   roleSnap
 	isSnap bool
+	start  *startItem
 }
 
 // nodeStream is one upgraded node connection: the handler goroutine reads
@@ -168,6 +171,12 @@ type nodeStream struct {
 	ended  bool
 	waiter *validation
 	dirty  bool
+	// Task starts (iteration 05): committed starts queued for this
+	// attachment, oldest first, and the transport tokens reserved by
+	// admissions (queued, not yet queued or being exchanged), at most
+	// maxQueuedStarts.
+	starts []*startItem
+	tokens int
 }
 
 // handleStream serves GET /api/v1/node-stream. Browser origins, other
@@ -351,6 +360,7 @@ func (st *nodeStream) serve() {
 	detach := func() {
 		st.end()
 		s.reg.Detach(hello.NodeID, gen)
+		s.tasks.detached(hello.NodeID, gen)
 		s.logger.Info("node disconnected", "node_id", hello.NodeID)
 		s.event("detached " + hello.NodeID)
 	}
@@ -382,16 +392,115 @@ func (st *nodeStream) serve() {
 	<-readerDone
 }
 
-// end marks the session over and completes its waiting validation.
+// end marks the session over and completes its waiting validation; every
+// start still queued was never written and is rejected as unsent.
 func (st *nodeStream) end() {
 	st.mu.Lock()
 	st.ended = true
 	v := st.waiter
 	st.waiter = nil
+	queued := st.starts
+	st.starts = nil
 	st.mu.Unlock()
 	if v != nil {
 		v.complete(disconnected(st.nodeID))
 	}
+	for _, it := range queued {
+		it.res.release()
+		st.svc.tasks.startUnsent(it.id)
+	}
+}
+
+// startReservation is one admission's transport token on an attachment.
+// The admission owns it until its start is committed; then the task entry
+// and its queued start carry it. Whichever path ends the start (an
+// admission failure, a definitely-unsent start, a reply, an ambiguous or
+// failed write) releases it; release is exactly once. The task entry keeps
+// its reservation for its lifetime, so a released one holds no stream: a
+// retired attachment (socket, connection, inbox) is never kept reachable.
+type startReservation struct {
+	st atomic.Pointer[nodeStream]
+}
+
+func newReservation(st *nodeStream) *startReservation {
+	r := &startReservation{}
+	r.st.Store(st)
+	return r
+}
+
+// release returns the token and drops the stream; later calls do
+// nothing (the swap makes it exactly once).
+func (r *startReservation) release() {
+	if r == nil {
+		return
+	}
+	if st := r.st.Swap(nil); st != nil {
+		st.mu.Lock()
+		st.tokens--
+		st.mu.Unlock()
+	}
+}
+
+// reserveStart reserves one transport token for an admission, before its
+// publication: at most maxQueuedStarts starts per attachment are pending.
+// It returns nil when the queue is full or the session ended.
+func (st *nodeStream) reserveStart() *startReservation {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.ended || st.tokens >= maxQueuedStarts {
+		return nil
+	}
+	st.tokens++
+	return newReservation(st)
+}
+
+// enqueueStart queues a committed start; false when the session ended
+// (the start was never sent).
+func (st *nodeStream) enqueueStart(it *startItem) bool {
+	st.mu.Lock()
+	if st.ended {
+		st.mu.Unlock()
+		return false
+	}
+	st.starts = append(st.starts, it)
+	st.mu.Unlock()
+	st.svc.event("start-queued " + st.nodeID + " " + it.id)
+	signal(st.kick)
+	return true
+}
+
+// takeStart removes the oldest queued start for dispatch; starts whose
+// deadline passed while queued are withdrawn as unsent (the stream stays
+// attached). next is the oldest remaining deadline (zero when none).
+func (st *nodeStream) takeStart(now time.Time, dispatch bool) (*startItem, time.Time) {
+	st.mu.Lock()
+	var expired []*startItem
+	for len(st.starts) > 0 && !now.Before(st.starts[0].deadline) {
+		expired = append(expired, st.starts[0])
+		st.starts = st.starts[1:]
+	}
+	var it *startItem
+	if dispatch && len(st.starts) > 0 {
+		it = st.starts[0]
+		st.starts = st.starts[1:]
+	}
+	var next time.Time
+	if len(st.starts) > 0 {
+		next = st.starts[0].deadline
+	}
+	st.mu.Unlock()
+	for _, e := range expired {
+		e.res.release()
+		st.svc.event("start-expired " + st.nodeID + " " + e.id)
+		st.svc.tasks.startUnsent(e.id)
+	}
+	return it, next
+}
+
+func (st *nodeStream) hasStarts() bool {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return len(st.starts) > 0
 }
 
 func disconnected(node string) error {
@@ -503,15 +612,26 @@ func (st *nodeStream) session() {
 			if inflight.v != nil {
 				inflight.v.complete(disconnected(st.nodeID))
 			}
+			if inflight.start != nil {
+				// The write began and no conclusive reply arrived.
+				s.tasks.startUncertain(inflight.start.id)
+				inflight.start.res.release()
+			}
 		}
 	}()
 	p := 0        // plane request counter: p1, p2, ... per connection
-	hb := 1       // next heartbeat number
+	b := 1        // next sidecar request number (heartbeat, task_log, task_result)
 	sent := false // whether any snapshot was sent in this session
 	lastRev := 0  // revision of the last snapshot sent
+	// preferStart alternates a snapshot and a start when both have work.
+	preferStart := false
+	var queueTimer <-chan time.Time
+	var queueAt time.Time
+	stopQueue := func() bool { return false }
+	defer func() { stopQueue() }()
 	for {
 		if r, ok := st.inbox.take(); ok {
-			if !st.handle(r, &inflight, &hb) {
+			if !st.handle(r, &inflight, &b) {
 				return
 			}
 			continue
@@ -526,6 +646,15 @@ func (st *nodeStream) session() {
 			st.terminate(closePolicy, "request timeout")
 			return
 		}
+		// Queued starts whose deadline passed are withdrawn as unsent;
+		// the next one's deadline is watched (re-armed only on change).
+		if _, next := st.takeStart(s.clock.Now(), false); !next.Equal(queueAt) {
+			stopQueue()
+			queueTimer, stopQueue, queueAt = nil, func() bool { return false }, next
+			if !next.IsZero() {
+				queueTimer, stopQueue = s.clock.NewTimerAt(next)
+			}
+		}
 		if inflight == nil {
 			if v := st.takeWaiter(); v != nil {
 				r, ok := st.dispatchValidation(v, &p)
@@ -535,7 +664,21 @@ func (st *nodeStream) session() {
 				inflight = r
 				continue
 			}
+			dirty := st.peekDirty()
+			if st.hasStarts() && (preferStart || !dirty) {
+				preferStart = false
+				it, _ := st.takeStart(s.clock.Now(), true)
+				if it != nil {
+					r, ok := st.dispatchStart(it, &p)
+					if !ok {
+						return
+					}
+					inflight = r
+				}
+				continue
+			}
 			if st.takeDirty() {
+				preferStart = true
 				snap, ok := s.reg.desiredFor(st.nodeID, st.gen)
 				if ok && (!sent || snap.rev > lastRev) {
 					r, ok := st.dispatchSnapshot(snap, &p)
@@ -556,10 +699,51 @@ func (st *nodeStream) session() {
 		case <-st.kick:
 		case <-timer:
 			inflight.expired = true
+		case <-queueTimer:
+			queueTimer, queueAt = nil, time.Time{}
 		case <-st.ctx.Done():
 			return
 		}
 	}
+}
+
+// peekDirty reports a pending snapshot signal without consuming it.
+func (st *nodeStream) peekDirty() bool {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.dirty
+}
+
+// dispatchStart sends a committed task's sole start attempt after
+// rechecking its never-reset deadline and that it is still queued. A
+// start that fails a recheck before any write is unsent; once the write
+// began, only a conclusive reply decides (ok=false ends the session).
+func (st *nodeStream) dispatchStart(it *startItem, p *int) (*planeRequest, bool) {
+	s := st.svc
+	if !s.clock.Now().Before(it.deadline) {
+		it.res.release()
+		s.tasks.startUnsent(it.id)
+		return nil, true
+	}
+	if !s.tasks.claimStart(it.id) {
+		it.res.release()
+		return nil, true
+	}
+	id, ok := st.nextID(p)
+	if !ok {
+		it.res.release()
+		s.tasks.startUncertain(it.id)
+		return nil, false
+	}
+	r := &planeRequest{id: id, deadline: it.deadline, start: it}
+	s.event("start-writing " + st.nodeID + " " + id + " " + it.id)
+	if err := st.write(contract.FrameTaskStart, id, it.body, it.deadline); err != nil {
+		it.res.release()
+		s.tasks.startUncertain(it.id)
+		return nil, false
+	}
+	s.event("start-sent " + st.nodeID + " " + id + " " + it.id)
+	return st.arm(r), true
 }
 
 // nextID assigns the next plane request ID, or fails on exhaustion.
@@ -636,6 +820,21 @@ func (st *nodeStream) dispatchSnapshot(snap roleSnap, p *int) (*planeRequest, bo
 
 // handle processes one delivered message; false ends the session.
 func (st *nodeStream) handle(r readResult, inflight **planeRequest, hb *int) bool {
+	return st.handleFrame(r, inflight, hb)
+}
+
+// nextSidecarID checks a sidecar request's ID against the single b1, b2,
+// ... sequence shared by heartbeats, task_log and task_result.
+func (st *nodeStream) nextSidecarID(f contract.NodeFrame, b *int) bool {
+	want := "b" + strconv.Itoa(*b)
+	if f.RequestID != want {
+		st.reject(f.RequestID, contract.New(contract.CodeInvalidArgument, f.Type+" request_id must be "+want), "invalid sequence")
+		return false
+	}
+	return true
+}
+
+func (st *nodeStream) handleFrame(r readResult, inflight **planeRequest, hb *int) bool {
 	s := st.svc
 	if r.err != nil {
 		return false
@@ -654,10 +853,70 @@ func (st *nodeStream) handle(r readResult, inflight **planeRequest, hb *int) boo
 		s.logger.Warn("node reported an error", "node_id", st.nodeID)
 		st.terminate(closePolicy, "peer error")
 		return false
+	case contract.FrameTaskLog:
+		if !st.nextSidecarID(f, hb) {
+			return false
+		}
+		body, err := contract.DecodeTaskLog(f.Body)
+		if err == nil {
+			var next int
+			if next, err = s.tasks.receiveLog(st.nodeID, st.gen, body); err == nil {
+				s.event("log-received " + st.nodeID + " " + f.RequestID + " " + body.TaskID)
+				if err := st.write(contract.FrameTaskLogAck, f.RequestID, contract.TaskLogAckBody{TaskID: body.TaskID, NextOffset: next}, time.Time{}); err != nil {
+					return false
+				}
+				s.event("log-acked " + st.nodeID + " " + f.RequestID)
+				*hb++
+				return true
+			}
+		}
+		st.reject(f.RequestID, err, "invalid message")
+		return false
+	case contract.FrameTaskResult:
+		if !st.nextSidecarID(f, hb) {
+			return false
+		}
+		body, err := contract.DecodeTaskResult(f.Body)
+		if err == nil {
+			if err = s.tasks.receiveResult(st.nodeID, st.gen, body); err == nil {
+				s.event("result-acking " + st.nodeID + " " + f.RequestID + " " + body.TaskID)
+				if err := st.write(contract.FrameTaskResultAck, f.RequestID, contract.TaskResultAckBody{TaskID: body.TaskID, Received: true}, time.Time{}); err != nil {
+					return false
+				}
+				s.event("result-acked " + st.nodeID + " " + f.RequestID)
+				*hb++
+				return true
+			}
+		}
+		st.reject(f.RequestID, err, "invalid message")
+		return false
+	case contract.FrameTaskStartResult:
+		req := *inflight
+		if req == nil || req.start == nil || req.id != f.RequestID {
+			st.reject(f.RequestID, contract.New(contract.CodeInvalidArgument, "unsolicited, stale or mismatched "+f.Type+" "+f.RequestID), "invalid sequence")
+			return false
+		}
+		res, err := contract.DecodeTaskStartResult(f.Body)
+		if err == nil && res.TaskID != req.start.id {
+			err = contract.New(contract.CodeInvalidArgument, "task_start_result names another task")
+		}
+		if err != nil {
+			st.reject(f.RequestID, err, "invalid message")
+			return false
+		}
+		// Only a reply completed strictly before the deadline counts.
+		if !r.at.Before(req.deadline) {
+			req.expired = true
+			return true
+		}
+		req.stop()
+		*inflight = nil
+		s.tasks.startReplied(req.start.id, res.Err)
+		req.start.res.release()
+		s.event("start-result " + st.nodeID + " " + f.RequestID)
+		return true
 	case contract.FrameHeartbeat:
-		want := "b" + strconv.Itoa(*hb)
-		if f.RequestID != want {
-			st.reject(f.RequestID, contract.New(contract.CodeInvalidArgument, "heartbeat request_id must be "+want), "invalid sequence")
+		if !st.nextSidecarID(f, hb) {
 			return false
 		}
 		body, err := contract.DecodeHeartbeat(f.Body)
@@ -678,7 +937,7 @@ func (st *nodeStream) handle(r readResult, inflight **planeRequest, hb *int) boo
 		return true
 	case contract.FrameRoleValidateResult, contract.FrameRolesReplaceAck:
 		req := *inflight
-		if req == nil || req.id != f.RequestID || req.isSnap != (f.Type == contract.FrameRolesReplaceAck) {
+		if req == nil || req.start != nil || req.id != f.RequestID || req.isSnap != (f.Type == contract.FrameRolesReplaceAck) {
 			st.reject(f.RequestID, contract.New(contract.CodeInvalidArgument, "unsolicited, stale or mismatched "+f.Type+" "+f.RequestID), "invalid sequence")
 			return false
 		}

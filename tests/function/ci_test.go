@@ -196,7 +196,7 @@ func qualifyingEvents(drop, skip string) string {
 	pkg := devcheck.NativePackage
 	evs := []map[string]any{synth("start", pkg, "")}
 	for _, name := range devcheck.NativeRequiredTests() {
-		if strings.HasPrefix(name, "TestPlane") || strings.HasPrefix(name, "TestNode") || strings.HasPrefix(name, "TestRole") {
+		if strings.HasPrefix(name, "TestPlane") || strings.HasPrefix(name, "TestNode") || strings.HasPrefix(name, "TestRole") || strings.HasPrefix(name, "TestTask") {
 			evs = append(evs, synth("run", pkg, name), synth("pass", pkg, name))
 		}
 	}
@@ -211,7 +211,8 @@ func qualifyingEvents(drop, skip string) string {
 			evs = append(evs, synth("run", pkg, name), synth("pass", pkg, name))
 		}
 	}
-	return events(append(evs, synth("pass", pkg, "TestFP6ProcessGroups"), synth("pass", pkg, ""))...)
+	evs = append(evs, synth("pass", pkg, "TestFP6ProcessGroups"), synth("pass", pkg, ""))
+	return events(append(evs, taskProcessEvents("")...)...)
 }
 
 // --- docs/ci.md helpers ---

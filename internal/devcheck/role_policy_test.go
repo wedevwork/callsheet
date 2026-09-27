@@ -102,9 +102,10 @@ func TestRolePolicy(t *testing.T) {
 			t.Fatalf("bench plan = %s", got)
 		}
 		// Native: the 58 earlier names first and unchanged, then the nine
-		// role tests and their 20 subtests.
+		// role tests and their 20 subtests (iteration 05's 41 task names
+		// follow them).
 		req := NativeRequiredTests()
-		if len(req) != 87 || strings.Join(req[58:], ",") != strings.Join(roleNames(), ",") || len(roleNames()) != 29 {
+		if len(req) != 128 || strings.Join(req[58:87], ",") != strings.Join(roleNames(), ",") || len(roleNames()) != 29 {
 			t.Fatalf("native required = %v", req)
 		}
 		f := &fakeRunner{native: stream(qualification()...)}

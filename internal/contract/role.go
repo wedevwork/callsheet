@@ -169,13 +169,13 @@ func (v RoleView) MarshalJSON() ([]byte, error) {
 		Inflight: v.Inflight, CanAccept: v.CanAccept, NodeLiveness: v.NodeLiveness, AdapterTestOnly: v.AdapterTestOnly})
 }
 
-// RoleResponse is {"version":2,"role":RoleView}.
+// RoleResponse is {"version":3,"role":RoleView}.
 type RoleResponse struct {
 	Version int      `json:"version"`
 	Role    RoleView `json:"role"`
 }
 
-// RoleListResponse is {"version":2,"roles":[RoleView,...]}.
+// RoleListResponse is {"version":3,"roles":[RoleView,...]}.
 type RoleListResponse struct {
 	Version int        `json:"version"`
 	Roles   []RoleView `json:"roles"`
@@ -191,7 +191,7 @@ func (r RoleListResponse) MarshalJSON() ([]byte, error) {
 	return compact(w)
 }
 
-// RoleRemoveResponse is {"version":2,"removed":ID}.
+// RoleRemoveResponse is {"version":3,"removed":ID}.
 type RoleRemoveResponse struct {
 	Version int    `json:"version"`
 	Removed string `json:"removed"`
@@ -663,8 +663,10 @@ func ParseRoleRecord(v json.RawMessage, lookup AdapterLookup) (RoleRecord, error
 }
 
 // ParseRoleView strictly decodes one RoleView: the record, then inflight
-// (exactly 0 in this iteration), can_accept, node_liveness and
-// adapter_test_only, which must match the adapter's metadata.
+// (the plane's held reservations, 0..MaxSafeInteger, which may exceed a
+// lowered concurrency; iteration 05), can_accept (false while inflight
+// reaches the concurrency), node_liveness and adapter_test_only, which
+// must match the adapter's metadata.
 func ParseRoleView(v json.RawMessage, lookup AdapterLookup) (RoleView, error) {
 	const what = "role view"
 	o, err := decodeObject(v, what)
@@ -685,11 +687,14 @@ func ParseRoleView(v json.RawMessage, lookup AdapterLookup) (RoleView, error) {
 	if rv.Inflight, err = o.integer(what, "inflight"); err != nil {
 		return rv, err
 	}
-	if rv.Inflight != 0 {
-		return rv, errInvalid("%s inflight must be 0 in protocol %d", what, ProtocolVersion)
+	if rv.Inflight < 0 || rv.Inflight > MaxSafeInteger {
+		return rv, errInvalid("%s inflight must be an integer from 0 to %d", what, MaxSafeInteger)
 	}
 	if rv.CanAccept, err = o.boolean(what, "can_accept"); err != nil {
 		return rv, err
+	}
+	if rv.CanAccept && rv.Inflight >= rv.Concurrency {
+		return rv, errInvalid("%s can_accept must be false while inflight reaches the concurrency", what)
 	}
 	if rv.NodeLiveness, err = o.str(what, "node_liveness"); err != nil {
 		return rv, err
@@ -708,7 +713,7 @@ func ParseRoleView(v json.RawMessage, lookup AdapterLookup) (RoleView, error) {
 	return rv, nil
 }
 
-// ParseRoleResponse strictly decodes {"version":2,"role":RoleView}.
+// ParseRoleResponse strictly decodes {"version":3,"role":RoleView}.
 func ParseRoleResponse(data []byte, lookup AdapterLookup) (RoleView, error) {
 	const what = "role response"
 	o, err := decodeObject(data, what)
@@ -736,7 +741,7 @@ func RoleListLess(a, b RoleRecord) bool {
 	return a.ID < b.ID
 }
 
-// ParseRoleListResponse strictly decodes {"version":2,"roles":[...]} and
+// ParseRoleListResponse strictly decodes {"version":3,"roles":[...]} and
 // requires at most MaxRoles views in list order with unique IDs and
 // registration orders.
 func ParseRoleListResponse(data []byte, lookup AdapterLookup) ([]RoleView, error) {
@@ -777,7 +782,7 @@ func ParseRoleListResponse(data []byte, lookup AdapterLookup) ([]RoleView, error
 	return out, nil
 }
 
-// ParseRoleRemoveResponse strictly decodes {"version":2,"removed":ID}.
+// ParseRoleRemoveResponse strictly decodes {"version":3,"removed":ID}.
 func ParseRoleRemoveResponse(data []byte) (string, error) {
 	const what = "role removal response"
 	o, err := decodeObject(data, what)
@@ -814,8 +819,10 @@ func ParseRoleRemoveRequest(data []byte) (bool, error) {
 }
 
 // ParseRoleStatus strictly decodes one heartbeat/node role status: a slug
-// role ID, inflight exactly 0 in this iteration, concurrency 1..MaxConcurrency
-// and a boolean readiness.
+// role ID, inflight 0..MaxConcurrency (iteration 05: not bounded by the
+// concurrency, which a set may lower below it), concurrency
+// 1..MaxConcurrency and a boolean readiness that is false while inflight
+// reaches the concurrency.
 func ParseRoleStatus(v json.RawMessage) (RoleStatus, error) {
 	r, err := parseRole(v)
 	if err != nil {
@@ -824,10 +831,12 @@ func ParseRoleStatus(v json.RawMessage) (RoleStatus, error) {
 	switch {
 	case !ValidSlug(r.RoleID):
 		return r, errInvalid("role status role_id must be a role ID slug")
-	case r.Inflight != 0:
-		return r, errInvalid("role status inflight must be 0 in protocol %d", ProtocolVersion)
+	case r.Inflight < 0 || r.Inflight > MaxConcurrency:
+		return r, errInvalid("role status inflight must be 0 to %d", MaxConcurrency)
 	case r.Concurrency < 1 || r.Concurrency > MaxConcurrency:
 		return r, errInvalid("role status concurrency must be 1 to %d", MaxConcurrency)
+	case r.CanAccept && r.Inflight >= r.Concurrency:
+		return r, errInvalid("role status can_accept must be false while inflight reaches the concurrency")
 	}
 	return r, nil
 }

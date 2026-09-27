@@ -75,6 +75,44 @@ func (l *eventLog) await(t *testing.T, want string) {
 	}
 }
 
+// mark is the log position before an action whose events are awaited
+// with awaitFrom.
+func (l *eventLog) mark() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.events)
+}
+
+// awaitFrom waits (bounded, real time) for want at or after position
+// from: an event name reused by another session (a request ID) is
+// matched only when it follows the action that caused it. The cursor is
+// not moved.
+func (l *eventLog) awaitFrom(t *testing.T, from int, want string) {
+	t.Helper()
+	at := func() bool {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		for i := from; i < len(l.events); i++ {
+			if l.events[i] == want {
+				return true
+			}
+		}
+		return false
+	}
+	deadline := time.After(testWait)
+	for !at() {
+		select {
+		case <-l.sig:
+		case <-deadline:
+			// The event and the deadline may be ready together: recheck.
+			if at() {
+				return
+			}
+			t.Fatalf("no event %q after position %d in %v", want, from, l.all())
+		}
+	}
+}
+
 // seen reports whether want occurred at any time.
 func (l *eventLog) seen(want string) bool {
 	l.mu.Lock()
