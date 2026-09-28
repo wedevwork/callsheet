@@ -138,8 +138,10 @@ func TestControlPlaneRestart(t *testing.T) {
 		p.expect(contract.FrameHelloOK, "h1")
 		p.send(contract.ProtocolVersion, contract.FrameTaskInventory, "i1", contract.TaskInventoryBody{RunID: peerRunID})
 		p.expect(contract.FrameTaskInventoryAck, "i1")
+		// The restart's own detach is logged earlier: wait for this one.
+		closing := tp.log.mark()
 		p.c.CloseNow()
-		tp.log.await(t, "detached "+idA)
+		tp.log.awaitFrom(t, closing, "detached "+idA)
 		if v := tp.show(t, st.TaskID); v.State != contract.TaskRunning || !v.Reconciling || tp.log.seenPrefix("lost-latched "+st.TaskID) {
 			t.Fatalf("after a partial inventory %+v", v)
 		}
@@ -180,6 +182,11 @@ func TestControlPlaneRestart(t *testing.T) {
 		tp.log.awaitFrom(t, from, "replace-acked "+idA+" p1 "+strconv.Itoa(b.Revision))
 		tp.clk.Advance(5*time.Second - time.Nanosecond)
 		p.heartbeat(1)
+		// Advance only after the ack's write returned: the ack is readable
+		// as soon as it is flushed, while its own 5 s write bound is still
+		// armed, and the jump past the grace would fire that bound and
+		// close the stream.
+		tp.log.awaitFrom(t, from, "ack "+idA+" b1")
 		tp.clk.Advance(armed.Add(startupGrace + time.Nanosecond).Sub(tp.clk.Now()))
 		tp.svc(t).reg.Expire()
 		if v := tp.show(t, st.TaskID); v.State != contract.TaskRunning || v.Reconciling || tp.log.seenPrefix("loss-applied "+idA) {

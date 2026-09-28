@@ -317,9 +317,16 @@ func (st *nodeStream) serve() {
 	// and only a read that returned no frame is a timeout. Each frame read
 	// clears its cancellation before returning, so the deadline firing
 	// after a successful read cannot close the socket, and no goroutine
-	// outlives this read (clockTimeout's cancel is synchronous). A timed-out
-	// read has already closed the socket, so no close frame can follow.
+	// outlives this read (clockTimeout's cancel is synchronous). A timeout
+	// closes the socket without a close frame. A read already waiting when
+	// the deadline fires closes it itself, but a deadline that fired before
+	// the read began can return with the socket still open, so the timeout
+	// path closes it (CloseNow, which also marks it closing: handleStream's
+	// terminate then sends nothing).
 	ctx, cancel := clockTimeout(st.ctx, s.clock, streamStepTimeout)
+	if s.helloArmed != nil {
+		s.helloArmed(ctx)
+	}
 	typ, data, err := st.ws.Read(ctx)
 	if err == nil && s.helloRead != nil {
 		s.helloRead(ctx)
@@ -331,6 +338,7 @@ func (st *nodeStream) serve() {
 	cancel()
 	if err != nil {
 		if timedOut {
+			st.ws.CloseNow()
 			s.logger.Warn("node stream rejected", "reason", "hello timeout")
 			s.event("hello timeout")
 		}

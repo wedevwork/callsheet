@@ -132,6 +132,7 @@ func (d *deps) serve(ctx context.Context, logger *slog.Logger, m *material, fp s
 	svc := newNodeService(reg, d.nodeClock, logger, certPEM(m.caCert.Raw), d.streamCloseGrace)
 	svc.events = d.streamEvents
 	svc.helloRead = d.streamHelloRead
+	svc.helloArmed = d.streamHelloArmed
 	if reg.roles != nil {
 		svc.roles = newRoleService(reg.roles, reg, d.nodeClock, logger)
 		svc.roles.events = d.streamEvents

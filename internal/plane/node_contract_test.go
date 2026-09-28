@@ -754,6 +754,35 @@ func TestNodeStreamProtocol(t *testing.T) {
 			t.Fatalf("a read hello was treated as a timeout: %s", np.logs.String())
 		}
 	})
+	t.Run("hello-timeout-before-read", func(t *testing.T) {
+		// The hello deadline fires after it was armed and before the hello
+		// read starts (the hook holds the handler there until the deadline
+		// canceled the read's context). The timeout still closes the socket
+		// without a close frame: nothing that runs after serve may send one.
+		d := testDeps(t)
+		armed := make(chan struct{}, 1)
+		d.streamHelloArmed = func(ctx context.Context) {
+			armed <- struct{}{}
+			<-ctx.Done()
+		}
+		np := startNodePlaneWith(t, d, idA)
+		for i := 0; i < helloBeforeReadDials; i++ {
+			p := np.dial(t)
+			select {
+			case <-armed:
+			case <-time.After(testWait):
+				t.Fatal("the hello deadline was not armed")
+			}
+			np.clk.Advance(streamStepTimeout)
+			if st := p.closed(); st != -1 {
+				t.Fatalf("dial %d: hello timeout before the read closed with %v, want a closed socket without a close frame", i, st)
+			}
+			np.awaitEvent(t, "hello timeout")
+		}
+		if !strings.Contains(np.logs.String(), `"reason":"hello timeout"`) {
+			t.Fatalf("hello timeout not logged: %s", np.logs.String())
+		}
+	})
 	t.Run("version", func(t *testing.T) {
 		p := np.dial(t)
 		// An iteration 03 (protocol 1) sidecar is refused before its body
@@ -1068,3 +1097,12 @@ func keepAliveClient(t *testing.T, ca *x509.Certificate) *http.Client {
 	t.Cleanup(tr.CloseIdleConnections)
 	return &http.Client{Transport: tr, Timeout: testWait}
 }
+
+// helloBeforeReadDials is how many connections hello-timeout-before-read
+// times out. With the read's context already canceled, coder/websocket's
+// Read picks at random between that cancellation (returning with the
+// socket still open) and its free read lock (whose timeout closer then
+// closes the socket at once), so a serve that relied on the read to close
+// would send a close frame on about half the connections; forty leave a
+// 2^-40 chance of such a regression passing.
+const helloBeforeReadDials = 40

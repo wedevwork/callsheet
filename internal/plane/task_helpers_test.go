@@ -227,12 +227,25 @@ type worker struct {
 	node string
 	// marks are the log positions before each sidecar request was sent.
 	marks map[string]int
+	// dialed is the log position before this worker's stream was dialed
+	// (set by worker and workerInv): its session's detach follows it.
+	dialed int
+}
+
+// detached waits until the plane detached this worker's session. A close
+// the worker observed is sent while the session is still ending: the
+// session's own state changes (an uncertain start, the detach) follow
+// it, and a new stream of the node is refused until the detach.
+func (w *worker) detached() {
+	w.t.Helper()
+	w.ev.awaitFrom(w.t, w.dialed, "detached "+w.node)
 }
 
 // online connects id's worker: hello, the initial snapshot acknowledged,
 // every role ready, and one heartbeat.
 func (tp *taskPlane) worker(t *testing.T, id string) *worker {
 	t.Helper()
+	dialed := tp.log.mark()
 	p := tp.dial(t)
 	p.ready = map[string]bool{}
 	p.helloOK(id)
@@ -240,7 +253,7 @@ func (tp *taskPlane) worker(t *testing.T, id string) *worker {
 	for _, r := range b.Roles {
 		p.ready[r.ID] = true
 	}
-	w := &worker{peer: p, b: 1, ev: tp.log, node: id, marks: map[string]int{}}
+	w := &worker{peer: p, b: 1, ev: tp.log, node: id, marks: map[string]int{}, dialed: dialed}
 	tp.workers = append(tp.workers, w)
 	w.beat()
 	return w
@@ -561,6 +574,7 @@ func (p *peer) reconcile(entries ...contract.TaskInventoryEntry) map[string]stri
 // inventory and requiring the dispositions want.
 func (tp *taskPlane) workerInv(t *testing.T, id string, want map[string]string, entries ...contract.TaskInventoryEntry) *worker {
 	t.Helper()
+	dialed := tp.log.mark()
 	p := tp.dial(t)
 	p.ready = map[string]bool{}
 	p.hello(id)
@@ -579,7 +593,7 @@ func (tp *taskPlane) workerInv(t *testing.T, id string, want map[string]string, 
 	for _, r := range b.Roles {
 		p.ready[r.ID] = true
 	}
-	w := &worker{peer: p, b: 1, ev: tp.log, node: id, marks: map[string]int{}}
+	w := &worker{peer: p, b: 1, ev: tp.log, node: id, marks: map[string]int{}, dialed: dialed}
 	tp.workers = append(tp.workers, w)
 	w.beat()
 	return w

@@ -14,7 +14,8 @@ import (
 	"github.com/wedevwork/callsheet/internal/contract"
 )
 
-// expectClosed requires the plane to close the peer's stream with 1008.
+// expectClosed requires the plane to close the peer's stream with 1008
+// and waits until the plane detached that session.
 func expectClosed(t *testing.T, w *worker, rid string) {
 	t.Helper()
 	for {
@@ -29,6 +30,7 @@ func expectClosed(t *testing.T, w *worker, rid string) {
 	if st := w.closed(); st != websocket.StatusPolicyViolation {
 		t.Fatalf("close = %v", st)
 	}
+	w.detached()
 }
 
 // TestTaskStream is UT FP-3/9 for the plane's task frames; its duplex,
@@ -145,6 +147,10 @@ func TestTaskStream(t *testing.T) {
 			if st := w.closed(); st != websocket.StatusPolicyViolation {
 				t.Fatalf("close = %v", st)
 			}
+			// The close frame is sent while the session is still ending:
+			// its uncertain start is recorded (reconciling) before the
+			// detach, not before the close reaches the worker.
+			w.detached()
 			sv := tp.show(t, v2.TaskID)
 			if sv.State != contract.TaskPending || !sv.Reconciling || tp.roleInflight(t, "a") != 2 {
 				t.Fatalf("expired start %+v", sv)
