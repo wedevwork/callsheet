@@ -9,7 +9,8 @@ import (
 	"testing"
 )
 
-// wantControlDelegations is iteration 06a's delegation table, literally:
+// wantControlDelegations is iterations 06a's and 06b's delegation table,
+// literally:
 // wrapper | package | selector | required names.
 var wantControlDelegations = []string{
 	"TestControlDurability|./internal/plane|^TestControlCommit$|TestControlCommit",
@@ -26,6 +27,20 @@ var wantControlDelegations = []string{
 	"TestControlLateResult|./internal/sidecar|^TestControlLate$|TestControlLate",
 	"TestControlLegacy|./internal/contract|^TestControlMigration$|TestControlMigration",
 	"TestControlLegacy|./internal/plane|^TestControlMigration$|TestControlMigration",
+	// Iteration 06b: 13 rows for the four task-control wrappers.
+	"TestControlCancellation|./internal/plane|^TestControlCancel$|TestControlCancel,TestControlCancel/unsent,TestControlCancel/loaded-pending,TestControlCancel/durable-order,TestControlCancel/storage-retry,TestControlCancel/offline,TestControlCancel/duplicate",
+	"TestControlCancellation|./internal/sidecar|^TestControlCancel$|TestControlCancel,TestControlCancel/preparing,TestControlCancel/guardian-control,TestControlCancel/partial-output,TestControlCancel/cleanup-unconfirmed,TestControlCancel/duplicate",
+	"TestControlCancellation|./internal/client|^TestControlCancel$|TestControlCancel,TestControlCancel/accepted,TestControlCancel/terminal,TestControlCancel/errors",
+	"TestControlCancellation|./internal/cli|^TestControlCancel$|TestControlCancel,TestControlCancel/accepted,TestControlCancel/terminal,TestControlCancel/errors",
+	"TestControlExecutionTimeout|./internal/sidecar|^TestControlTimeout$|TestControlTimeout,TestControlTimeout/default-override-zero,TestControlTimeout/deadline-tie,TestControlTimeout/slow-start,TestControlTimeout/plane-outage,TestControlTimeout/restart,TestControlTimeout/status-failure",
+	"TestControlExecutionTimeout|./internal/contract|^TestControlTimeout$|TestControlTimeout,TestControlTimeout/policy,TestControlTimeout/outcome,TestControlTimeout/migration",
+	"TestControlBoundedWait|./internal/plane|^TestControlWait$|TestControlWait,TestControlWait/register-race,TestControlWait/any-of,TestControlWait/deadline,TestControlWait/capacity,TestControlWait/shutdown,TestControlWait/dispatch",
+	"TestControlBoundedWait|./internal/client|^TestControlWait$|TestControlWait,TestControlWait/restart-budget,TestControlWait/no-dispatch-retry,TestControlWait/deadline,TestControlWait/correlation",
+	"TestControlBoundedWait|./internal/cli|^TestControlWait$|TestControlWait,TestControlWait/text,TestControlWait/json,TestControlWait/exit",
+	"TestControlBoundedWait|./internal/contract|^TestControlWait$|TestControlWait,TestControlWait/bounds,TestControlWait/validation",
+	"TestControlForceRemove|./internal/plane|^TestControlRemove$|TestControlRemove,TestControlRemove/fence,TestControlRemove/drain,TestControlRemove/restart,TestControlRemove/storage-retry,TestControlRemove/instance-reuse",
+	"TestControlForceRemove|./internal/sidecar|^TestControlRemove$|TestControlRemove,TestControlRemove/removed-instance-cleanup",
+	"TestControlForceRemove|./internal/cli|^TestControlRemove$|TestControlRemove,TestControlRemove/pending,TestControlRemove/completed,TestControlRemove/retry",
 }
 
 // wantControlNative is the exact 06a suffix of the native required names.
@@ -34,6 +49,15 @@ var wantControlNative = []string{
 	"TestControlPlaneRecovery", "TestControlLateResult", "TestControlLegacy",
 	"TestControlNativeGroups", "TestControlNativeGroups/cooperative", "TestControlNativeGroups/resistant",
 	"TestControlNativeGroups/orphan-restart", "TestControlNativeGroups/plane-restart",
+}
+
+// wantTaskControlNative is the exact 06b suffix of the native required
+// names: the four task-control function parents, one per FP.
+var wantTaskControlNative = []string{"TestControlCancellation", "TestControlExecutionTimeout", "TestControlBoundedWait", "TestControlForceRemove"}
+
+// controlWrappers is every control wrapper in table order.
+func controlWrappers() []string {
+	return append(append([]string(nil), wantControlNative[:8]...), wantTaskControlNative...)
 }
 
 // controlTestFiles are the 06a test files the launch guard covers: none
@@ -46,6 +70,14 @@ var controlTestFiles = []string{
 	"internal/sidecar/control_mode_linux_test.go", "internal/sidecar/control_mode_darwin_test.go",
 	"internal/sidecar/fixture_unix_test.go", "internal/sidecar/fixture_other_test.go",
 	"internal/devcheck/control_policy_test.go",
+	// Iteration 06b: the task-control families (all injected; zero real
+	// children).
+	"internal/contract/control_ctl_test.go",
+	"internal/plane/control_cancel_test.go", "internal/plane/control_wait_test.go", "internal/plane/control_remove_test.go",
+	"internal/plane/control_ext_test.go",
+	"internal/sidecar/control_cancel_test.go", "internal/sidecar/control_timeout_test.go", "internal/sidecar/control_timeout_unix_test.go",
+	"internal/sidecar/control_migrate_test.go", "internal/sidecar/control_fifo_unix_test.go",
+	"internal/client/control_test.go", "internal/cli/control_test.go",
 }
 
 // TestControlPolicy is UT FP-1-8 for devcheck (iteration 06a): the exact
@@ -69,8 +101,20 @@ func TestControlPolicy(t *testing.T) {
 				wrappers = append(wrappers, d.Wrapper)
 			}
 		}
-		if strings.Join(wrappers, ",") != strings.Join(wantControlNative[:8], ",") {
-			t.Fatalf("wrappers %v are not the eight FPs in order", wrappers)
+		if strings.Join(wrappers, ",") != strings.Join(controlWrappers(), ",") {
+			t.Fatalf("wrappers %v are not the twelve FPs in order", wrappers)
+		}
+		// Every 06b row requires its parent and at least one mandatory
+		// subcase of that parent: a vacuous parent never qualifies.
+		for _, d := range rows[14:] {
+			if len(d.Required) < 2 || "^"+d.Required[0]+"$" != d.Selector {
+				t.Fatalf("06b row %+v", d)
+			}
+			for _, r := range d.Required[1:] {
+				if !strings.HasPrefix(r, d.Required[0]+"/") {
+					t.Fatalf("06b row %s requires a foreign name %s", d.Wrapper, r)
+				}
+			}
 		}
 		rows[0].Required[0] = "mutated"
 		if ControlDelegations()[0].Required[0] != "TestControlCommit" {
@@ -78,7 +122,7 @@ func TestControlPolicy(t *testing.T) {
 		}
 	})
 	t.Run("evidence", func(t *testing.T) {
-		for _, w := range wantControlNative[:8] {
+		for _, w := range controlWrappers() {
 			good := map[string]string{}
 			rows := ControlDelegationsFor(w)
 			for _, d := range rows {
@@ -115,7 +159,7 @@ func TestControlPolicy(t *testing.T) {
 				}
 			}
 			extra := copyOutputs(good)
-			extra["./internal/client"] = passing(rows[0].Required...)
+			extra["./internal/adapter"] = passing(rows[0].Required...)
 			if err := CheckControlWrapperEvidence(w, extra); err == nil || !strings.Contains(err.Error(), "outside its table rows") {
 				t.Fatalf("%s accepted a foreign package: %v", w, err)
 			}
@@ -126,14 +170,16 @@ func TestControlPolicy(t *testing.T) {
 	})
 	t.Run("native", func(t *testing.T) {
 		// The 128 earlier names first and unchanged, then exactly the 06a
-		// suffix; no 06b name; the sidecar process tuple is unchanged.
+		// suffix, then exactly the four 06b parents (145); no 06b name
+		// before them; the sidecar process tuple is unchanged.
 		req := NativeRequiredTests()
-		if len(req) != 141 || strings.Join(req[128:], ",") != strings.Join(wantControlNative, ",") || strings.Join(req[87:128], ",") != strings.Join(wantTaskSuffix, ",") {
+		if len(req) != 145 || strings.Join(req[128:141], ",") != strings.Join(wantControlNative, ",") || strings.Join(req[87:128], ",") != strings.Join(wantTaskSuffix, ",") ||
+			strings.Join(req[141:], ",") != strings.Join(wantTaskControlNative, ",") {
 			t.Fatalf("native suffix %v", req[128:])
 		}
-		for _, n := range req {
-			if strings.Contains(n, "Cancel") || strings.Contains(n, "Wait") || strings.Contains(n, "Timeout") {
-				t.Fatalf("a 06b name %s is required", n)
+		for _, n := range req[:141] {
+			if strings.Contains(n, "Cancel") || strings.Contains(n, "Wait") || strings.Contains(n, "Timeout") || strings.Contains(n, "ForceRemove") {
+				t.Fatalf("a 06b name %s is required before the 06b suffix", n)
 			}
 		}
 		if strings.Join(NativeTaskProcessTests(), ",") != "TestTaskExecutionContract,TestTaskExecutionContract/process" {
@@ -141,7 +187,8 @@ func TestControlPolicy(t *testing.T) {
 		}
 		// Missing, failed or skipped native control evidence fails the
 		// native check.
-		for _, name := range []string{"TestControlLegacy", "TestControlNativeGroups/plane-restart"} {
+		for _, name := range []string{"TestControlLegacy", "TestControlNativeGroups/plane-restart", "TestControlCancellation", "TestControlExecutionTimeout",
+			"TestControlBoundedWait", "TestControlForceRemove"} {
 			if err := check(stream(without(qualification(), "pass", name)...)); err == nil || !strings.Contains(err.Error(), name) {
 				t.Fatalf("native without %s's pass: %v", name, err)
 			}
@@ -240,8 +287,9 @@ func TestControlPolicy(t *testing.T) {
 		// The new benchmarks exist and their packages are selected with
 		// -bench=. (an empty selection would pass unobserved).
 		root := repoRoot(t)
-		for pkg, name := range map[string]string{"internal/contract": "BenchmarkControlReplay", "internal/sidecar": "BenchmarkControlReplay",
-			"internal/plane": "BenchmarkControlCommit"} {
+		for _, pn := range [][2]string{{"internal/contract", "BenchmarkControlReplay"}, {"internal/sidecar", "BenchmarkControlReplay"},
+			{"internal/plane", "BenchmarkControlCommit"}, {"internal/plane", "BenchmarkControlWait"}} {
+			pkg, name := pn[0], pn[1]
 			found := false
 			entries, _ := os.ReadDir(filepath.Join(root, filepath.FromSlash(pkg)))
 			for _, e := range entries {

@@ -82,16 +82,36 @@ type prefixInjector struct {
 	op     string
 	prefix string
 	count  int
-	// syncOnce, when set, runs in place of the next tasks/ directory
-	// sync's injection check (a slow or failing sync) and is cleared.
-	syncOnce func() error
+	// syncOnce holds, per directory (tasks/ or roles/), a function run in
+	// place of that directory's next sync's injection check (a slow, held
+	// or failing sync); it is cleared before it runs, so it may install
+	// the next one.
+	syncOnce map[string]func() error
+	// failOnce, when set, runs after the next injected failure is decided
+	// and before it is returned (a failing write held before its outcome
+	// is applied), and is cleared.
+	failOnce func()
+}
+
+// onNextFailure makes the next injected failure run f before it returns.
+func (i *prefixInjector) onNextFailure(f func()) {
+	i.mu.Lock()
+	i.failOnce = f
+	i.mu.Unlock()
 }
 
 // onNextSync makes the next tasks/ directory sync run f first and
 // return its error.
-func (i *prefixInjector) onNextSync(f func() error) {
+func (i *prefixInjector) onNextSync(f func() error) { i.onNextSyncOf(tasksName, f) }
+
+// onNextSyncOf makes the next sync of directory dir run f first and
+// return its error.
+func (i *prefixInjector) onNextSyncOf(dir string, f func() error) {
 	i.mu.Lock()
-	i.syncOnce = f
+	if i.syncOnce == nil {
+		i.syncOnce = map[string]func() error{}
+	}
+	i.syncOnce[dir] = f
 	i.mu.Unlock()
 }
 
@@ -103,16 +123,22 @@ func (i *prefixInjector) set(op, prefix string) {
 
 func (i *prefixInjector) fail(op, name string) error {
 	i.mu.Lock()
-	if f := i.syncOnce; f != nil && op == "dirsync" && name == tasksName {
-		i.syncOnce = nil
+	if f := i.syncOnce[name]; f != nil && op == "dirsync" {
+		delete(i.syncOnce, name)
 		i.mu.Unlock()
 		return f()
 	}
-	defer i.mu.Unlock()
 	if i.op != "" && op == i.op && strings.HasPrefix(name, i.prefix) {
 		i.count++
+		f := i.failOnce
+		i.failOnce = nil
+		i.mu.Unlock()
+		if f != nil {
+			f()
+		}
 		return fmt.Errorf("injected %s failure at %s", op, name)
 	}
+	i.mu.Unlock()
 	return nil
 }
 
@@ -273,7 +299,8 @@ func (w *worker) beat() {
 
 // isPlaneRequest reports frames the plane initiates.
 func isPlaneRequest(typ string) bool {
-	return typ == contract.FrameRolesReplace || typ == contract.FrameRoleValidate || typ == contract.FrameTaskStart || typ == contract.FrameTaskReconcile
+	return typ == contract.FrameRolesReplace || typ == contract.FrameRoleValidate || typ == contract.FrameTaskStart || typ == contract.FrameTaskReconcile ||
+		typ == contract.FrameTaskCancel
 }
 
 // reply reads the plane's reply rid of type typ, holding plane requests
@@ -444,6 +471,59 @@ func (tp *taskPlane) finish(t *testing.T, w *worker, st contract.TaskStartBody, 
 	t.Helper()
 	w.resultAck(w.sendResult(result(st, exit, out, nil)), st.TaskID)
 	tp.log.awaitOnce(t, "terminal-committed "+st.TaskID)
+}
+
+// writerState is a task's publication retry state and the fake time.
+type writerState struct {
+	fault        bool
+	retryAt, now time.Time
+	wakes        int
+}
+
+// parked reports that the task's writer waits on a failed publication's
+// armed retry: the fault stands, the retry is strictly in the future and
+// no wake is pending. While an attempt is in flight its previous retry
+// is due (not after the clock) or a wake is pending.
+func (s writerState) parked() bool { return s.fault && s.now.Before(s.retryAt) && s.wakes == 0 }
+
+// writerState reads task id's retry state under the task lock, then the
+// fake clock.
+func (tp *taskPlane) writerState(t *testing.T, id string) writerState {
+	t.Helper()
+	ts := tp.svc(t)
+	ts.mu.Lock()
+	e := ts.tasks[id]
+	if e == nil {
+		ts.mu.Unlock()
+		t.Fatalf("no task %s", id)
+	}
+	s := writerState{fault: e.fault, retryAt: e.retryAt, wakes: len(e.wake)}
+	ts.mu.Unlock()
+	s.now = tp.clk.Now()
+	return s
+}
+
+// awaitWriterParked polls (bounded, real time) until task id's writer is
+// parked on its armed retry. A clock advance meant to make that retry due
+// must follow it: a failing attempt samples the clock before it stores
+// its retry, so one overlapping the advance arms its retry a full
+// interval after it, and nothing fires it (CI run 36454235765). Waiting
+// for publish-failed is not enough: the event of an earlier attempt does
+// not cover one still in flight, and on the passing order no later event
+// comes. Leave the fault injected meanwhile.
+func (tp *taskPlane) awaitWriterParked(t *testing.T, id string) writerState {
+	t.Helper()
+	deadline := time.Now().Add(testWait)
+	for {
+		s := tp.writerState(t, id)
+		if s.parked() {
+			return s
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("task %s's writer never parked on its retry: %+v", id, s)
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 // startDeadline is task id's never-reset start deadline.

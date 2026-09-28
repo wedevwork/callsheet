@@ -56,6 +56,10 @@ const (
 	resultRetry = time.Second
 	// journalRetry is the retry interval of a failed journal publication.
 	journalRetry = time.Second
+	// controlRetry spaces a failed guardian cancel delivery's retries
+	// (iteration 06b): one pending delivery per execution, until the
+	// guardian has it or the execution ends.
+	controlRetry = time.Second
 	// promptFormat is the stdin envelope's format.
 	promptFormat = "callsheet-task-v1"
 )
@@ -67,6 +71,10 @@ const (
 	lostSidecarStopped   = "sidecar_stopped"
 	lostStopped          = "stop_lost"
 	lostUnobserved       = "outcome_unobserved"
+	// cleanupUnconfirmed (iteration 06b names the 06a literal): a group
+	// whose absence could not be proved; local logs and the admission
+	// blocker only, never a task or wire reason.
+	cleanupUnconfirmed = "cleanup_unconfirmed"
 )
 
 // instanceKey identifies a role instance: a reused role ID with a new
@@ -151,6 +159,28 @@ type taskWorker struct {
 	forgotten bool
 	// unconfirmed: an attachment ended before the result's receipt.
 	unconfirmed bool
+
+	// Iteration 06b controls. ctl is the latched plane stop intent (once;
+	// ctlCh closes with it) and cause the guardian's trusted stopping
+	// cause. g is the live guardian. jmu serializes this execution's
+	// journal writes (outside w.mu and the supervisor's lock); jphase and
+	// jnonce are the last written phase and owner nonce.
+	ctl     *contract.StopIntent
+	ctlCh   chan struct{}
+	ctlOnce sync.Once
+	cause   string
+	causeID *string
+	g       guardianProc
+	jmu     sync.Mutex
+	jphase  string
+	jnonce  *string
+}
+
+// latched returns w's latched control, or nil.
+func (w *taskWorker) latched() *contract.StopIntent {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.ctl
 }
 
 func (w *taskWorker) id() string { return w.start.TaskID }
@@ -360,7 +390,7 @@ func (s *taskSupervisor) begin(start contract.TaskStartBody, tag *attachTag, dea
 		ringCap = s.d.taskRingCap
 	}
 	w := &taskWorker{sup: s, start: start, digest: start.StartDigestHex(), key: keyOf(start.Role), tag: tag, deadline: deadline,
-		ring: newOutputRing(ringCap), exitedCh: make(chan struct{}), stopCh: make(chan struct{}), commitCh: make(chan struct{})}
+		ring: newOutputRing(ringCap), exitedCh: make(chan struct{}), stopCh: make(chan struct{}), commitCh: make(chan struct{}), ctlCh: make(chan struct{})}
 	s.mu.Lock()
 	s.workers[w] = true
 	s.mu.Unlock()
@@ -387,10 +417,119 @@ func (s *taskSupervisor) complete(w *taskWorker) {
 	s.gc()
 }
 
-// journalOf is w's journal document in phase.
+// journalOf is w's journal document in phase, with its latched stop
+// intent. Every protocol 5 start is enforced (iteration 06b).
 func (s *taskSupervisor) journalOf(w *taskWorker, phase string, nonce *string) contract.ExecutionJournal {
 	return contract.ExecutionJournal{TaskID: w.id(), Execution: w.start.Execution, StartDigest: w.digest, Role: w.start.Role,
-		Effective: w.start.Effective, TimeoutPolicy: contract.TimeoutPolicyLegacy, OwnerNonce: nonce, Phase: phase}
+		Effective: w.start.Effective, TimeoutPolicy: contract.TimeoutPolicyEnforced, OwnerNonce: nonce, Phase: phase, StopIntent: w.latched()}
+}
+
+// writeJournal publishes w's journal in phase (created when first),
+// serialized with every other journal write of w.
+func (s *taskSupervisor) writeJournal(w *taskWorker, j contract.ExecutionJournal, create bool) error {
+	w.jmu.Lock()
+	defer w.jmu.Unlock()
+	var err error
+	if create {
+		err = s.jr.create(j)
+	} else {
+		err = s.jr.write(j)
+	}
+	if err == nil {
+		w.jphase, w.jnonce = j.Phase, j.OwnerNonce
+	}
+	return err
+}
+
+// control latches a plane stop intent on w (iteration 06b), once: a
+// preparing execution never releases its adapter; a launched one asks
+// its guardian to cancel (the worker goroutine performs that FIFO I/O),
+// and the intent is journaled by its own writer, independently of the
+// cleanup. A worker with a frozen outcome, a refused start or another
+// latched control keeps what it has: its result answers.
+func (s *taskSupervisor) control(w *taskWorker, in contract.StopIntent) bool {
+	s.mu.Lock()
+	closing := s.closing
+	s.mu.Unlock()
+	w.mu.Lock()
+	if w.ctl != nil || w.outcome != nil || w.forgotten || w.recovered || w.phase == phaseRefused || closing {
+		w.mu.Unlock()
+		return false
+	}
+	c := in
+	w.ctl = &c
+	// A launched (or launching) execution's group cleanup is unresolved
+	// until its disappearance is proved: the node accepts nothing
+	// meanwhile, whatever became of its role (as for stop_lost).
+	active := w.phase != phasePreparing
+	if active {
+		w.cleaning = true
+	}
+	w.mu.Unlock()
+	if active {
+		s.refreshBlocker(w)
+	}
+	s.event(evControlLatched, w)
+	w.ctlOnce.Do(func() { close(w.ctlCh) })
+	s.wg.Add(1)
+	go s.persistIntent(w)
+	return true
+}
+
+// persistIntent is w's intent journal writer: it republishes the
+// prepared or running journal with the latched intent (a later freeze
+// carries it anyway), retrying while the journal fails.
+func (s *taskSupervisor) persistIntent(w *taskWorker) {
+	defer s.wg.Done()
+	for {
+		w.jmu.Lock()
+		phase, nonce := w.jphase, w.jnonce
+		if phase != contract.JournalPrepared && phase != contract.JournalRunning {
+			w.jmu.Unlock()
+			return
+		}
+		j := s.journalOf(w, phase, nonce)
+		w.mu.Lock()
+		j.StartedAt = w.started
+		w.mu.Unlock()
+		err := s.jr.write(j)
+		w.jmu.Unlock()
+		if err == nil {
+			w.mu.Lock()
+			failing := w.journalFailing
+			w.journalFailing = false
+			w.mu.Unlock()
+			if failing {
+				s.refreshBlocker(w)
+			}
+			s.event(evIntentJournaled, w)
+			return
+		}
+		s.logger.Error("task journal publication failed; retrying", "task_id", w.id(), "error", err)
+		w.mu.Lock()
+		w.journalFailing = true
+		w.mu.Unlock()
+		s.refreshBlocker(w)
+		if !s.pause(journalRetry) {
+			return
+		}
+	}
+}
+
+// sendControl asks w's guardian to cancel with the latched stop ID and
+// reports whether the guardian's control FIFO took it. A failure is
+// retried by the caller (the same intent: the guardian's cause latch and
+// cleanup grace are its own and never reset by a repeat).
+func (s *taskSupervisor) sendControl(w *taskWorker, g guardianProc) bool {
+	c := w.latched()
+	if c == nil {
+		return true
+	}
+	if err := g.Control(c.ID); err != nil {
+		s.logger.Warn("task cancel could not reach its guardian; retrying", "task_id", w.id(), "error_class", errorClass(err))
+		return false
+	}
+	return true
 }
 
 // newNonce returns 32 random bytes in lowercase hex.
@@ -426,6 +565,8 @@ func (s *taskSupervisor) waitStatus(w *taskWorker, g guardianProc, bounded bool)
 		return contract.GuardianStatus{}, false, true
 	case <-w.stopCh:
 		return contract.GuardianStatus{}, false, true
+	case <-w.ctlCh:
+		return contract.GuardianStatus{}, false, true
 	}
 }
 
@@ -445,9 +586,14 @@ func (s *taskSupervisor) run(w *taskWorker) {
 	}
 	// Barrier 1: the durable task directory and prepared journal, before
 	// anything is spawned.
-	if err := s.jr.create(s.journalOf(w, contract.JournalPrepared, nil)); err != nil {
+	if err := s.writeJournal(w, s.journalOf(w, contract.JournalPrepared, nil), true); err != nil {
 		s.logger.Error("task journal unavailable", "task_id", w.id(), "error", err)
 		s.refuseStart(w, contract.ReasonStartFailed, nil, scratch, true)
+		return
+	}
+	if w.latched() != nil {
+		// Cancelled while preparing: nothing is spawned.
+		s.cancelBeforeStart(w, scratch, nil)
 		return
 	}
 	nonce, err := s.newNonce()
@@ -467,7 +613,8 @@ func (s *taskSupervisor) run(w *taskWorker) {
 	}
 	spec := guardianSpec{exe: self, inv: contract.GuardianInvocation{Version: contract.GuardianInvocationVersion, TaskID: w.id(),
 		Execution: w.start.Execution, StartDigest: w.digest, TaskDir: s.jr.l.path(taskDirRel(w.id())), Nonce: nonce, Path: exe,
-		Argv: inv.Argv, Env: childEnv(s.environ(), scratch), Dir: scratch},
+		Argv: inv.Argv, Env: childEnv(s.environ(), scratch), Dir: scratch, Timeout: w.start.Effective.Timeout.String(),
+		TimeoutPolicy: contract.TimeoutPolicyEnforced},
 		proc: procSpec{path: exe, argv: inv.Argv, env: childEnv(s.environ(), scratch), dir: scratch, stdin: p.stdinR, stdout: p.stdoutW, stderr: p.stderrW}}
 	g := s.guardians(spec)
 	// Barrier 2: the guardian in its own new group; it cannot start an
@@ -479,17 +626,23 @@ func (s *taskSupervisor) run(w *taskWorker) {
 	}
 	pgid := g.PID()
 	w.mu.Lock()
-	w.pgid = pgid
+	w.pgid, w.g = pgid, g
 	w.mu.Unlock()
 	abandon := func(reason string) {
 		// Never released, so no adapter can exist: revoke, reap the
-		// guardian, confirm its group is gone, then refuse definitely.
+		// guardian, confirm its group is gone, then refuse definitely (or,
+		// under a latched control, cancel before start).
 		g.Revoke()
 		g.Wait()
-		if err := s.groups.gone(pgid); err != nil {
-			s.logger.Error("task process group cleanup unconfirmed", "task_id", w.id(), "role_id", w.key.id, "reason", "cleanup_unconfirmed")
+		err := s.groups.gone(pgid)
+		if err != nil {
+			s.logger.Error("task process group cleanup unconfirmed", "task_id", w.id(), "role_id", w.key.id, "reason", cleanupUnconfirmed)
 		}
 		p.closeParent()
+		if w.latched() != nil {
+			s.cancelBeforeStart(w, scratch, err)
+			return
+		}
 		s.refuseStart(w, reason, nil, scratch, true)
 	}
 	// Barrier 3: durable ownership (owner.json armed, the FIFO) and ready.
@@ -511,7 +664,7 @@ func (s *taskSupervisor) run(w *taskWorker) {
 	s.mu.Lock()
 	closing := s.closing
 	s.mu.Unlock()
-	if w.expired || closing || !s.d.clock.Now().Before(w.deadline) {
+	if w.expired || closing || w.ctl != nil || !s.d.clock.Now().Before(w.deadline) {
 		w.mu.Unlock()
 		abandon(contract.ReasonPreparationTimeout)
 		return
@@ -519,7 +672,7 @@ func (s *taskSupervisor) run(w *taskWorker) {
 	w.phase = phaseAuthorized
 	w.mu.Unlock()
 	s.event(evTaskAuthorized, w)
-	if err := s.jr.write(s.journalOf(w, contract.JournalRunning, &nonce)); err != nil {
+	if err := s.writeJournal(w, s.journalOf(w, contract.JournalRunning, &nonce), false); err != nil {
 		// Not released: no adapter can exist.
 		s.logger.Error("task journal unavailable", "task_id", w.id(), "error", err)
 		abandon(contract.ReasonStartFailed)
@@ -529,9 +682,17 @@ func (s *taskSupervisor) run(w *taskWorker) {
 	// Barrier 5: the adapter's launch.
 	m, ok, stopped := s.waitStatus(w, g, false)
 	if stopped {
-		// Run shutdown while the launch is in progress: the guardian is
-		// asked to clean up, and its next message (or EOF) decides.
-		g.Stop()
+		// Run shutdown or a stop while the launch is in progress: the
+		// guardian is asked to clean up (a latched control asks it to
+		// cancel), and its next message (or EOF) decides.
+		if w.latched() != nil && !s.isClosing() && !closedCh(w.stopCh) {
+			// A failed delivery is retried by supervise once the launch
+			// reports (its control channel is already closed).
+			s.sendControl(w, g)
+			s.event(evControlSent, w)
+		} else {
+			g.Stop()
+		}
 		m, ok = <-g.Status()
 	}
 	switch {
@@ -542,12 +703,18 @@ func (s *taskSupervisor) run(w *taskWorker) {
 		w.mu.Unlock()
 	case ok && m.Type == contract.GuardianError:
 		// The guardian proves no adapter started: a definite refusal after
-		// its group is gone.
+		// its group is gone (under a latched control, a cancellation
+		// before start).
 		g.Wait()
-		if err := s.groups.gone(pgid); err != nil {
-			s.logger.Error("task process group cleanup unconfirmed", "task_id", w.id(), "role_id", w.key.id, "reason", "cleanup_unconfirmed")
+		err := s.groups.gone(pgid)
+		if err != nil {
+			s.logger.Error("task process group cleanup unconfirmed", "task_id", w.id(), "role_id", w.key.id, "reason", cleanupUnconfirmed)
 		}
 		p.closeParent()
+		if w.latched() != nil {
+			s.cancelBeforeStart(w, scratch, err)
+			return
+		}
 		s.refuseStart(w, contract.ReasonStartFailed, nil, scratch, true)
 		return
 	default:
@@ -618,6 +785,55 @@ func (s *taskSupervisor) refuseStart(w *taskWorker, reason string, p *pipes, scr
 	s.refreshBlocker(w)
 	s.event(evTaskRefused, w)
 	s.signal()
+}
+
+// cancelBeforeStart resolves a latched control that prevented any
+// adapter: the scratch directory and slot are released, and the frozen
+// outcome is cancelled without exit or signal, naming the stop intent
+// (started_at stays null). A guardian group whose absence was not proved
+// is lost instead (still naming the intent): its slot, scratch directory
+// and ownership are kept and the instance stays blocked.
+func (s *taskSupervisor) cancelBeforeStart(w *taskWorker, scratch string, cleanupErr error) {
+	if scratch != "" && cleanupErr == nil {
+		removeScratch(scratch)
+	}
+	c := w.latched()
+	w.mu.Lock()
+	w.cleaning = false
+	if cleanupErr != nil {
+		w.cleanupFailed = true
+	} else {
+		w.cleanupOK = true
+	}
+	w.mu.Unlock()
+	if cleanupErr != nil {
+		s.mu.Lock()
+		s.blocked[w.key] = true
+		s.mu.Unlock()
+	} else {
+		s.release(w.key)
+	}
+	s.refreshBlocker(w)
+	id := c.ID
+	outcome := contract.OutcomeCancelled
+	if cleanupErr != nil {
+		outcome = contract.OutcomeLost
+		s.logger.Warn("task execution lost", "task_id", w.id(), "reason", cleanupUnconfirmed)
+	}
+	s.freeze(w, contract.TaskResultBody{TaskID: w.id(), Execution: w.start.Execution, Outcome: outcome, StopID: &id}.Sealed())
+	close(w.exitedCh)
+	s.event(evTaskExited, w)
+	s.signal()
+}
+
+// closedCh reports whether c is closed.
+func closedCh(c chan struct{}) bool {
+	select {
+	case <-c:
+		return true
+	default:
+		return false
+	}
 }
 
 // removeJournal deletes w's journal, retrying every journalRetry until it
@@ -781,13 +997,37 @@ func (s *taskSupervisor) supervise(w *taskWorker, g guardianProc, a adapter.Adap
 	go func() { defer drains.Done(); drain(p.stdoutR, w.ring, ext.Feed, s.signal) }()
 	go func() { defer drains.Done(); drain(p.stderrR, w.ring, nil, s.signal) }()
 	var exit *procExit
-	stopCh, stopAll := w.stopCh, s.stopAll
+	stopCh, stopAll, ctlCh := w.stopCh, s.stopAll, w.ctlCh
+	if unobserved {
+		ctlCh = nil
+	}
+	// One pending cancel delivery at most: a failed attempt arms a single
+	// retry timer, dropped once the guardian reports stopping or ends.
+	var retry <-chan time.Time
+	stopRetry := func() bool { return false }
+	deliver := func() {
+		if !s.sendControl(w, g) {
+			retry, stopRetry = s.d.clock.NewTimer(controlRetry)
+		}
+		s.event(evControlSent, w) // the attempt is over (a retry armed)
+	}
 	for status != nil {
 		select {
 		case m, ok := <-status:
 			if !ok {
 				status = nil
 				break
+			}
+			if m.Type == contract.GuardianStopping {
+				// The guardian's trusted cause, reported before its KILL.
+				w.mu.Lock()
+				w.cause, w.causeID = *m.Cause, m.StopID
+				w.mu.Unlock()
+				// The guardian is cleaning up: nothing is pending for it.
+				stopRetry()
+				retry, stopRetry = nil, func() bool { return false }
+				s.event(evStopping, w)
+				continue
 			}
 			if m.Type == contract.GuardianExit {
 				ex := procExit{}
@@ -799,6 +1039,12 @@ func (s *taskSupervisor) supervise(w *taskWorker, g guardianProc, a adapter.Adap
 				exit = &ex
 				status = nil
 			}
+		case <-ctlCh:
+			ctlCh = nil
+			deliver()
+		case <-retry:
+			retry, stopRetry = nil, func() bool { return false }
+			deliver()
 		case <-stopCh:
 			stopCh = nil
 			g.Stop()
@@ -807,6 +1053,7 @@ func (s *taskSupervisor) supervise(w *taskWorker, g guardianProc, a adapter.Adap
 			g.Stop()
 		}
 	}
+	stopRetry()
 	close(w.exitedCh)
 	s.event(evChildExited, w)
 	g.Wait()
@@ -836,8 +1083,11 @@ func (s *taskSupervisor) supervise(w *taskWorker, g guardianProc, a adapter.Adap
 	pgid := w.pgid
 	w.mu.Unlock()
 	cleanupErr := s.groups.gone(pgid)
+	if cleanupErr == nil {
+		s.event(evGroupGone, w)
+	}
 	if cleanupErr != nil {
-		s.logger.Error("task process group cleanup unconfirmed", "task_id", w.id(), "role_id", w.key.id, "reason", "cleanup_unconfirmed")
+		s.logger.Error("task process group cleanup unconfirmed", "task_id", w.id(), "role_id", w.key.id, "reason", cleanupUnconfirmed)
 		w.mu.Lock()
 		w.cleanupFailed, w.cleaning = true, false
 		w.mu.Unlock()
@@ -873,23 +1123,54 @@ func (s *taskSupervisor) supervise(w *taskWorker, g guardianProc, a adapter.Adap
 		res.FinalMessageTruncated = false
 	}
 	w.mu.Lock()
-	interrupted := w.stopReq
+	interrupted, ctl, cause, causeID, started := w.stopReq, w.ctl, w.cause, w.causeID, w.started
 	w.mu.Unlock()
-	s.mu.Lock()
-	interrupted = interrupted || s.closing
-	s.mu.Unlock()
-	if exit == nil || interrupted {
-		// Interrupted (a stop, Run shutdown) or unobserved: the outcome is
-		// unconfirmed. An observed wait status is kept, never invented.
+	interrupted = interrupted || s.isClosing()
+	lost := func(why string) {
+		// Unconfirmed: an observed wait status is kept, never invented.
 		res.Outcome = contract.OutcomeLost
-		why := lostStopped
-		switch {
-		case exit == nil:
-			why = lostUnobserved
-		case s.isClosing():
-			why = lostSidecarStopped
+		if ctl != nil {
+			id := ctl.ID
+			res.StopID = &id
 		}
 		s.logger.Warn("task execution lost", "task_id", w.id(), "reason", why)
+	}
+	switch {
+	case cause == contract.CauseCancelled || (cause == "" && exit == nil && ctl != nil):
+		// A trusted control cause (or this worker's own accepted cancel)
+		// plus confirmed group absence is cancelled; without that proof it
+		// is lost.
+		if cleanupErr != nil {
+			lost(cleanupUnconfirmed)
+			break
+		}
+		res.Outcome = contract.OutcomeCancelled
+		switch {
+		case causeID != nil:
+			id := *causeID
+			res.StopID = &id
+		case ctl != nil:
+			id := ctl.ID
+			res.StopID = &id
+		}
+	case cause == contract.CauseTimedOut:
+		switch {
+		case cleanupErr != nil:
+			lost(cleanupUnconfirmed)
+		case started == nil:
+			// Launch authorization timed out without a confirmed Start.
+			lost(lostUnobserved)
+		default:
+			res.Outcome = contract.OutcomeTimedOut
+		}
+	case exit == nil:
+		lost(lostUnobserved)
+	case interrupted || cause == contract.CauseLost:
+		why := lostStopped
+		if s.isClosing() {
+			why = lostSidecarStopped
+		}
+		lost(why)
 	}
 	if cleanupErr == nil {
 		// Release after the group's verified disappearance, before the
@@ -925,7 +1206,7 @@ func (s *taskSupervisor) freeze(w *taskWorker, res contract.TaskResultBody) {
 	for {
 		j := s.journalOf(w, phase, nil)
 		j.StartedAt, j.Result, j.Log = started, &res, w.ring.journalLog()
-		err := s.jr.write(j)
+		err := s.writeJournal(w, j, false)
 		if err == nil {
 			break
 		}

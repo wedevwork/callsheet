@@ -223,14 +223,14 @@ func TestRoleRegistryContract(t *testing.T) {
 			for _, op := range ops {
 				before := registryBytes(t, rp.root)
 				inj.set(op, roleRegistryName)
-				err := rp.cl.RemoveRole(bg, op, false)
+				err := rmRole(rp.cl, bg, op, false)
 				wantCode(t, err, contract.CodeInternal, "nothing was changed")
 				if !bytes.Equal(before, registryBytes(t, rp.root)) || len(roleTemps(t, rp.root)) != 0 {
 					t.Fatalf("after %s failure the registry changed or a temporary stayed: %v", op, roleTemps(t, rp.root))
 				}
 				rp.view(t, op)
 				inj.clear()
-				if err := rp.cl.RemoveRole(bg, op, false); err != nil {
+				if err := rmRole(rp.cl, bg, op, false); err != nil {
 					t.Fatalf("%s retry: %v", op, err)
 				}
 			}
@@ -252,7 +252,7 @@ func TestRoleRegistryContract(t *testing.T) {
 				t.Fatal("not ready")
 			}
 			inj.set("dirsync", rolesName)
-			err := rp.cl.RemoveRole(bg, "b", false)
+			err := rmRole(rp.cl, bg, "b", false)
 			wantCode(t, err, contract.CodeInternal, "role change was published but durability is unconfirmed; inspect role show and retry after storage recovery")
 			if _, err := rp.cl.ShowRole(bg, "b"); !contract.IsCode(err, contract.CodeNotFound) {
 				t.Fatalf("the visible removal was rolled back: %v", err)
@@ -271,16 +271,16 @@ func TestRoleRegistryContract(t *testing.T) {
 			}
 			// While the sync keeps failing, the next mutation fails first and
 			// changes nothing more; a retried rm conflicts at once (not found).
-			if err := rp.cl.RemoveRole(bg, "b", false); !contract.IsCode(err, contract.CodeNotFound) {
+			if err := rmRole(rp.cl, bg, "b", false); !contract.IsCode(err, contract.CodeNotFound) {
 				t.Fatalf("retried rm = %v", err)
 			}
-			err = rp.cl.RemoveRole(bg, "a", false)
+			err = rmRole(rp.cl, bg, "a", false)
 			wantCode(t, err, contract.CodeInternal, "durability is still unconfirmed")
 			rp.view(t, "a")
 			// Recovery: the sync succeeds first, the confirmed state is
 			// distributed, then the mutation proceeds.
 			inj.clear()
-			if err := rp.cl.RemoveRole(bg, "a", true); err != nil {
+			if err := rmRole(rp.cl, bg, "a", true); err != nil {
 				t.Fatal(err)
 			}
 			for next := 2; ; next++ {
@@ -351,11 +351,11 @@ func TestRoleRegistryContract(t *testing.T) {
 		c.Timeout, c.HasTimeout = 0, true
 		next, _ := emptyRoleDoc().withAdded(c)
 		commit(next)
-		want := "{\n  \"schema_version\": 1,\n  \"revision\": 1,\n  \"next_registration_order\": 2,\n  \"roles\": [\n    {\n" +
+		want := "{\n  \"schema_version\": 2,\n  \"revision\": 1,\n  \"next_registration_order\": 2,\n  \"roles\": [\n    {\n" +
 			"      \"id\": \"worker-a\",\n      \"name\": \"implementer\",\n      \"node\": \"" + idA + "\",\n      \"adapter\": \"fake\",\n" +
 			"      \"instruction\": \"/srv/manuals/worker-a/instruction.md\",\n      \"runbook\": \"/srv/manuals/worker-a/runbook.md\",\n" +
 			"      \"model\": \"<model & \\\"quoted\\\">\",\n      \"effort\": \"medium\",\n      \"concurrency\": 2,\n      \"timeout\": \"0s\",\n" +
-			"      \"registration_order\": 1\n    }\n  ]\n}\n"
+			"      \"registration_order\": 1\n    }\n  ],\n  \"removals\": []\n}\n"
 		if got := string(registryBytes(t, root)); got != want {
 			t.Fatalf("registry bytes:\n%s\nwant:\n%s", got, want)
 		}
@@ -366,7 +366,7 @@ func TestRoleRegistryContract(t *testing.T) {
 		}
 		// Removing the last role keeps the file and its counters.
 		commit(next.withRemoved(0))
-		if got := string(registryBytes(t, root)); got != "{\n  \"schema_version\": 1,\n  \"revision\": 2,\n  \"next_registration_order\": 2,\n  \"roles\": []\n}\n" {
+		if got := string(registryBytes(t, root)); got != "{\n  \"schema_version\": 2,\n  \"revision\": 2,\n  \"next_registration_order\": 2,\n  \"roles\": [],\n  \"removals\": []\n}\n" {
 			t.Fatalf("empty registry:\n%s", got)
 		}
 	})
@@ -414,7 +414,7 @@ func TestRoleRegistryContract(t *testing.T) {
 		rp3 := &rolePlane{log: newEventLog(), hooks: newHooks()}
 		d3.streamEvents = rp3.log.add
 		rp3.nodePlane = serveNodePlaneAt(t, d3, root2)
-		if err := rp3.cl.RemoveRole(bg, "x", false); !contract.IsCode(err, contract.CodeConflict) || !strings.Contains(err.Error(), "exhausted") {
+		if err := rmRole(rp3.cl, bg, "x", false); !contract.IsCode(err, contract.CodeConflict) || !strings.Contains(err.Error(), "exhausted") {
 			t.Fatalf("exhausted rm = %v", err)
 		}
 		if _, err := rp3.cl.AddRole(bg, roleCfg("y", "coder", idA)); !contract.IsCode(err, contract.CodeConflict) {
@@ -450,7 +450,7 @@ func TestRoleRegistryContract(t *testing.T) {
 			"malformed":       {content(`{"schema_version":1,`), contract.CodeConflict, "invalid role registry"},
 			"unknown field":   {content(strings.Replace(good, `"revision"`, `"extra": 1, "revision"`, 1)), contract.CodeConflict, "unknown field"},
 			"duplicate key":   {content(strings.Replace(good, `"revision": 1`, `"revision": 1, "revision": 1`, 1)), contract.CodeConflict, "duplicate key"},
-			"schema":          {content(strings.Replace(good, `"schema_version": 1`, `"schema_version": 2`, 1)), contract.CodeConflict, "unsupported schema_version"},
+			"schema":          {content(strings.Replace(good, `"schema_version": 2`, `"schema_version": 3`, 1)), contract.CodeConflict, "unsupported schema_version"},
 			"revision zero":   {content(strings.Replace(good, `"revision": 1`, `"revision": 0`, 1)), contract.CodeConflict, `"revision" must be`},
 			"revision float":  {content(strings.Replace(good, `"revision": 1`, `"revision": 1.0`, 1)), contract.CodeConflict, `"revision" must be`},
 			"next too low":    {content(strings.Replace(good, `"next_registration_order": 2`, `"next_registration_order": 1`, 1)), contract.CodeConflict, "not below next_registration_order"},

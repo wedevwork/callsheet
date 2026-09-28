@@ -6,8 +6,9 @@ import (
 	"strings"
 )
 
-// Iteration 06a (resilient execution): the single delegation table of the
-// eight control function tests, one top-level function test per FP. Each
+// Iteration 06a (resilient execution) and 06b (task controls): the single
+// delegation table of the twelve control function tests (06a's eight and
+// 06b's four), one top-level function test per FP. Each
 // row is the function wrapper, one package whose compiled test binary it
 // runs, the exact single-argv selector and the name that must show RUN
 // and PASS evidence in that package's own output. A multi-package wrapper
@@ -29,6 +30,23 @@ var controlDelegations = []RoleDelegation{
 	{"TestControlLateResult", "./internal/sidecar", "^TestControlLate$", []string{"TestControlLate"}},
 	{"TestControlLegacy", "./internal/contract", "^TestControlMigration$", []string{"TestControlMigration"}},
 	{"TestControlLegacy", "./internal/plane", "^TestControlMigration$", []string{"TestControlMigration"}},
+	// Iteration 06b (task controls): four function parents, one per FP.
+	// Each row requires its package contract's parent and every mandatory
+	// subcase (design 06b, Mandatory test subcases), so a vacuous parent
+	// never qualifies.
+	{"TestControlCancellation", "./internal/plane", "^TestControlCancel$", []string{"TestControlCancel", "TestControlCancel/unsent", "TestControlCancel/loaded-pending", "TestControlCancel/durable-order", "TestControlCancel/storage-retry", "TestControlCancel/offline", "TestControlCancel/duplicate"}},
+	{"TestControlCancellation", "./internal/sidecar", "^TestControlCancel$", []string{"TestControlCancel", "TestControlCancel/preparing", "TestControlCancel/guardian-control", "TestControlCancel/partial-output", "TestControlCancel/cleanup-unconfirmed", "TestControlCancel/duplicate"}},
+	{"TestControlCancellation", "./internal/client", "^TestControlCancel$", []string{"TestControlCancel", "TestControlCancel/accepted", "TestControlCancel/terminal", "TestControlCancel/errors"}},
+	{"TestControlCancellation", "./internal/cli", "^TestControlCancel$", []string{"TestControlCancel", "TestControlCancel/accepted", "TestControlCancel/terminal", "TestControlCancel/errors"}},
+	{"TestControlExecutionTimeout", "./internal/sidecar", "^TestControlTimeout$", []string{"TestControlTimeout", "TestControlTimeout/default-override-zero", "TestControlTimeout/deadline-tie", "TestControlTimeout/slow-start", "TestControlTimeout/plane-outage", "TestControlTimeout/restart", "TestControlTimeout/status-failure"}},
+	{"TestControlExecutionTimeout", "./internal/contract", "^TestControlTimeout$", []string{"TestControlTimeout", "TestControlTimeout/policy", "TestControlTimeout/outcome", "TestControlTimeout/migration"}},
+	{"TestControlBoundedWait", "./internal/plane", "^TestControlWait$", []string{"TestControlWait", "TestControlWait/register-race", "TestControlWait/any-of", "TestControlWait/deadline", "TestControlWait/capacity", "TestControlWait/shutdown", "TestControlWait/dispatch"}},
+	{"TestControlBoundedWait", "./internal/client", "^TestControlWait$", []string{"TestControlWait", "TestControlWait/restart-budget", "TestControlWait/no-dispatch-retry", "TestControlWait/deadline", "TestControlWait/correlation"}},
+	{"TestControlBoundedWait", "./internal/cli", "^TestControlWait$", []string{"TestControlWait", "TestControlWait/text", "TestControlWait/json", "TestControlWait/exit"}},
+	{"TestControlBoundedWait", "./internal/contract", "^TestControlWait$", []string{"TestControlWait", "TestControlWait/bounds", "TestControlWait/validation"}},
+	{"TestControlForceRemove", "./internal/plane", "^TestControlRemove$", []string{"TestControlRemove", "TestControlRemove/fence", "TestControlRemove/drain", "TestControlRemove/restart", "TestControlRemove/storage-retry", "TestControlRemove/instance-reuse"}},
+	{"TestControlForceRemove", "./internal/sidecar", "^TestControlRemove$", []string{"TestControlRemove", "TestControlRemove/removed-instance-cleanup"}},
+	{"TestControlForceRemove", "./internal/cli", "^TestControlRemove$", []string{"TestControlRemove", "TestControlRemove/pending", "TestControlRemove/completed", "TestControlRemove/retry"}},
 }
 
 // ControlDelegations returns a fresh copy of the control delegation table.

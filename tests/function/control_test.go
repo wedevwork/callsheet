@@ -7,8 +7,8 @@ import (
 	"github.com/wedevwork/callsheet/internal/devcheck"
 )
 
-// Iteration 06a function tests: exactly one top-level TestControl* per
-// FP, in FP order. Each delegates to the package contract(s) named in
+// Iteration 06a and 06b function tests: exactly one top-level TestControl*
+// per FP, in FP order. Each delegates to the package contract(s) named in
 // devcheck's control delegation table, through the precompiled package
 // test binaries, and requires every listed package's own RUN and PASS
 // evidence (no failure, skip or empty selection). TestControlNativeGroups
@@ -59,3 +59,18 @@ func TestControlLateResult(t *testing.T) { controlDelegate(t, "TestControlLateRe
 
 // FP-8: legacy records (contract and plane).
 func TestControlLegacy(t *testing.T) { controlDelegate(t, "TestControlLegacy") }
+
+// Iteration 06b (task controls), each wrapper the conjunction of its
+// packages' contracts with every mandatory subcase.
+
+// 06b FP-1: cancellation (plane, sidecar, client and cli).
+func TestControlCancellation(t *testing.T) { controlDelegate(t, "TestControlCancellation") }
+
+// 06b FP-2: the guardian-enforced execution timeout (sidecar and contract).
+func TestControlExecutionTimeout(t *testing.T) { controlDelegate(t, "TestControlExecutionTimeout") }
+
+// 06b FP-3: bounded wait (plane, client, cli and contract).
+func TestControlBoundedWait(t *testing.T) { controlDelegate(t, "TestControlBoundedWait") }
+
+// 06b FP-4: forced role removal (plane, sidecar and cli).
+func TestControlForceRemove(t *testing.T) { controlDelegate(t, "TestControlForceRemove") }

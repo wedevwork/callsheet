@@ -53,7 +53,7 @@ func TestRoleDistributionContract(t *testing.T) {
 		pa.heartbeat(1)
 		pc.heartbeat(1)
 		// A mutation on A sends A a snapshot; C gets nothing.
-		if err := rp.cl.RemoveRole(bg, "a1", false); err != nil {
+		if err := rmRole(rp.cl, bg, "a1", false); err != nil {
 			t.Fatal(err)
 		}
 		if b := pa.ackReplace("p2"); b.Revision != 6 || len(b.Roles) != 1 || b.Roles[0].ID != "a2" {
@@ -123,7 +123,7 @@ func TestRoleDistributionContract(t *testing.T) {
 		}
 		// (2) Ambiguous durability, then the resync that confirms it.
 		inj.set("dirsync", rolesName)
-		wantCode(t, rp.cl.RemoveRole(bg, "b", false), contract.CodeInternal, "durability is unconfirmed")
+		wantCode(t, rmRole(rp.cl, bg, "b", false), contract.CodeInternal, "durability is unconfirmed")
 		p.heartbeat(4)
 		inj.clear()
 		rp.hooks.pause("resynced")
@@ -192,7 +192,7 @@ func TestRoleDistributionContract(t *testing.T) {
 		// Control messages never renew the lease: only heartbeats do.
 		seen := *rp.show(t, idA).LastSeen
 		rp.clk.Advance(1)
-		if err := rp.cl.RemoveRole(bg, "b", false); err != nil {
+		if err := rmRole(rp.cl, bg, "b", false); err != nil {
 			t.Fatal(err)
 		}
 		p.ackReplace("p6")
@@ -251,7 +251,7 @@ func TestRoleDistributionContract(t *testing.T) {
 		}
 		// rm works while disconnected and sends nothing; the reconnect's
 		// full replacement reflects it exactly.
-		if err := rp.cl.RemoveRole(bg, "a", false); err != nil {
+		if err := rmRole(rp.cl, bg, "a", false); err != nil {
 			t.Fatal(err)
 		}
 		q := rp.dial(t)

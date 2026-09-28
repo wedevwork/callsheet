@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	pclient "github.com/wedevwork/callsheet/internal/client"
 	"github.com/wedevwork/callsheet/internal/contract"
 )
 
@@ -295,7 +296,14 @@ func (rp *rolePlane) setAsync(ctx context.Context, id string, p contract.RolePat
 }
 
 func (rp *rolePlane) rmAsync(ctx context.Context, id string, force bool) *call[struct{}] {
-	return async(func() (struct{}, error) { return struct{}{}, rp.cl.RemoveRole(ctx, id, force) })
+	return async(func() (struct{}, error) { return struct{}{}, rmRole(rp.cl, ctx, id, force) })
+}
+
+// rmRole removes id through the verified client (no operation token) and
+// returns only the error: a pending forced removal is not an error.
+func rmRole(cl *pclient.Client, ctx context.Context, id string, force bool) error {
+	_, err := cl.RemoveRole(ctx, id, force, "")
+	return err
 }
 
 // expectValidate reads role_validate rid and returns its candidate.

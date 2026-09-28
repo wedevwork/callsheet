@@ -41,7 +41,7 @@ type TaskCandidate struct {
 }
 
 // CandidateReasons are the per-candidate reasons, in precedence order.
-var CandidateReasons = []string{ReasonStorageUnconfirmed, ReasonNodeOffline, ReasonNodeDetached, ReasonRoleUnsynced, ReasonWorkerUnready, ReasonFull, ReasonAvailable}
+var CandidateReasons = []string{ReasonStorageUnconfirmed, ReasonRoleRemoving, ReasonNodeOffline, ReasonNodeDetached, ReasonRoleUnsynced, ReasonWorkerUnready, ReasonFull, ReasonAvailable}
 
 func (c TaskCandidate) validate(what string) error {
 	known := false
@@ -218,8 +218,9 @@ type TaskView struct {
 	Request             DispatchRequest  `json:"request"`
 	Role                TaskRole         `json:"role"`
 	Effective           TaskEffective    `json:"effective"`
-	TimeoutEnforced     bool             `json:"timeout_enforced"`
+	TimeoutPolicy       string           `json:"timeout_policy"`
 	State               string           `json:"state"`
+	StopRequested       bool             `json:"stop_requested"`
 	CreatedAt           string           `json:"created_at"`
 	StartedAt           *string          `json:"started_at"`
 	FinishedAt          *string          `json:"finished_at"`
@@ -254,6 +255,7 @@ type TaskSummary struct {
 	Target              TaskTarget    `json:"target"`
 	Role                TaskRole      `json:"role"`
 	State               string        `json:"state"`
+	StopRequested       bool          `json:"stop_requested"`
 	CreatedAt           string        `json:"created_at"`
 	StartedAt           *string       `json:"started_at"`
 	FinishedAt          *string       `json:"finished_at"`
@@ -290,7 +292,7 @@ func validLifecycle(state string, started, finished bool, exit *int, signal, fin
 	if state != TaskRejected && candidates > 0 {
 		return bad("has no candidates")
 	}
-	if state != TaskRejected && state != TaskLost && reason {
+	if state != TaskRejected && state != TaskLost && state != TaskCancelled && reason {
 		return bad("has no reason")
 	}
 	switch state {
@@ -321,6 +323,17 @@ func validLifecycle(state string, started, finished bool, exit *int, signal, fin
 		if !finished || !reason || (exit != nil && signal != nil) {
 			return bad("has a finish time and a reason, and at most one of exit code and signal")
 		}
+	case TaskCancelled:
+		// Cancelled (iteration 06b): cleanup confirmed. Its exit or signal
+		// (at most one) is the adapter's own during cleanup; without a start
+		// it was cancelled before any adapter ran, and says so.
+		if !finished || (exit != nil && signal != nil) || started == reason {
+			return bad("has a finish time, at most one of exit code and signal, and a start or the reason cancelled_before_start")
+		}
+	case TaskTimedOut:
+		if !started || !finished || (exit != nil && signal != nil) || reason {
+			return bad("has both timestamps, at most one of exit code and signal and no reason")
+		}
 	default:
 		return errInvalid("%s state %q is not a state this build produces", what, SafeText(state, 32))
 	}
@@ -344,8 +357,11 @@ func (v TaskView) validate() error {
 	if err := v.Role.validate(what); err != nil {
 		return err
 	}
-	if v.TimeoutEnforced {
-		return errInvalid("%s timeout_enforced must be false in this build", what)
+	if !ValidTimeoutPolicy(v.TimeoutPolicy) {
+		return errInvalid("%s timeout_policy must be %q or %q", what, TimeoutPolicyEnforced, TimeoutPolicyLegacy)
+	}
+	if v.StopRequested && !stopIntentState(v.State) {
+		return errInvalid("%s: a %s task has no stop request", what, v.State)
 	}
 	if err := validTimes(v.CreatedAt, v.StartedAt, v.FinishedAt, what); err != nil {
 		return err
@@ -413,6 +429,9 @@ func (s TaskSummary) validate() error {
 	if err := validTimes(s.CreatedAt, s.StartedAt, s.FinishedAt, what); err != nil {
 		return err
 	}
+	if s.StopRequested && !stopIntentState(s.State) {
+		return errInvalid("%s: a %s task has no stop request", what, s.State)
+	}
 	if s.ElapsedMS < 0 || (s.Reconciling && TaskTerminal(s.State)) || (s.PersistenceReason != nil && *s.PersistenceReason != ReasonResultStorageUnconfirmed) {
 		return errInvalid("%s derived fields are inconsistent", what)
 	}
@@ -422,11 +441,15 @@ func (s TaskSummary) validate() error {
 	return nil
 }
 
-// DispatchResponse is 202 {"version":4,"task_id":ID,"task":TaskView}.
+// DispatchResponse is 202 {"version":5,"task_id":ID,"task":TaskView,
+// "wait_result":null} for an asynchronous dispatch, or (iteration 06b) with
+// the task omitted and wait_result the wait union for a dispatch with a
+// wait: the admitted view is never repeated beside it.
 type DispatchResponse struct {
-	Version int      `json:"version"`
-	TaskID  string   `json:"task_id"`
-	Task    TaskView `json:"task"`
+	Version    int           `json:"version"`
+	TaskID     string        `json:"task_id"`
+	Task       *TaskView     `json:"task,omitempty"`
+	WaitResult *WaitResponse `json:"wait_result"`
 }
 
 // TaskListResponse is one page of tasks ordered by task ID.
@@ -524,17 +547,63 @@ func versioned(data []byte, v any, what string) error {
 	return decodeFields(o, reflect.ValueOf(v).Elem(), what)
 }
 
-// ParseDispatchResponse strictly decodes a dispatch response.
+// ParseDispatchResponse strictly decodes an asynchronous dispatch
+// response: its task view and a null wait_result.
 func ParseDispatchResponse(data []byte) (TaskView, error) {
 	const what = "dispatch response"
-	var r DispatchResponse
-	if err := versioned(data, &r, what); err != nil {
+	o, err := decodeObject(data, what)
+	if err != nil {
+		return TaskView{}, err
+	}
+	if err := o.only(what, []string{"version", "task_id", "task"}, "wait_result"); err != nil {
+		return TaskView{}, err
+	}
+	if err := envelopeVersion(o, what); err != nil {
+		return TaskView{}, err
+	}
+	if raw, ok := o.raw["wait_result"]; !ok || !isNull(raw) {
+		return TaskView{}, errInvalid("%s of an asynchronous dispatch has a null wait_result", what)
+	}
+	var r struct {
+		TaskID string   `json:"task_id"`
+		Task   TaskView `json:"task"`
+	}
+	if err := decodeStrict([]byte(`{"task_id":`+string(o.raw["task_id"])+`,"task":`+string(o.raw["task"])+`}`), &r, what); err != nil {
 		return TaskView{}, err
 	}
 	if r.TaskID != r.Task.TaskID {
 		return TaskView{}, errInvalid("%s task_id differs from its task", what)
 	}
 	return r.Task, r.Task.validate()
+}
+
+// ParseDispatchWaitResponse strictly decodes a dispatch-with-wait
+// response (iteration 06b): its task_id, no task view, and a wait union
+// that answers exactly that task within the requested wait.
+func ParseDispatchWaitResponse(data []byte, requested time.Duration) (string, WaitResponse, error) {
+	const what = "dispatch response"
+	o, err := decodeObject(data, what)
+	if err != nil {
+		return "", WaitResponse{}, err
+	}
+	if err := o.only(what, []string{"version", "task_id", "wait_result"}); err != nil {
+		return "", WaitResponse{}, err
+	}
+	if err := envelopeVersion(o, what); err != nil {
+		return "", WaitResponse{}, err
+	}
+	id, err := o.str(what, "task_id")
+	if err != nil || !ValidTaskID(id) {
+		return "", WaitResponse{}, errInvalid("%s task_id is not a task ID", what)
+	}
+	wr, err := ParseWaitResponse(o.raw["wait_result"], []string{id}, requested)
+	if err != nil {
+		return "", WaitResponse{}, err
+	}
+	if len(data)+1 > MaxWaitResponseBytes || (wr.Status == WaitStillRunning && len(data)+1 > MaxStillRunningOneBytes) {
+		return "", WaitResponse{}, errInvalid("%s exceeds its bound", what)
+	}
+	return id, wr, nil
 }
 
 // ParseTaskShowResponse strictly decodes a task show response.

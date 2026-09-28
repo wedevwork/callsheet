@@ -207,13 +207,18 @@ func (c *Client) Close() { c.tr.CloseIdleConnections() }
 
 // newTransport is the only transport constructor: no proxy, no HTTP/2
 // upgrade, bounded dialing and handshake.
-func newTransport(cfg *tls.Config) *http.Transport {
+func newTransport(cfg *tls.Config) *http.Transport { return newTransportHeader(cfg, operationTimeout) }
+
+// newTransportHeader is newTransport with a response header bound of
+// header (a bounded wait's own transport, iteration 06b: dial and TLS
+// caps unchanged).
+func newTransportHeader(cfg *tls.Config, header time.Duration) *http.Transport {
 	return &http.Transport{
 		Proxy:                 nil,
 		DialContext:           (&net.Dialer{Timeout: operationTimeout}).DialContext,
 		TLSClientConfig:       cfg,
 		TLSHandshakeTimeout:   operationTimeout,
-		ResponseHeaderTimeout: operationTimeout,
+		ResponseHeaderTimeout: header,
 		ForceAttemptHTTP2:     false,
 		MaxIdleConns:          4,
 		IdleConnTimeout:       30 * time.Second,
@@ -299,19 +304,28 @@ func trustReason(ep endpoint, err error) (string, bool) {
 // error for any other status. The protocol header is validated before any
 // success body is consumed.
 func (c *Client) request(ctx context.Context, method, path string, body []byte, limit int64) (int, []byte, error) {
-	octx, cancel := context.WithTimeout(ctx, operationTimeout)
+	status, b, err, _ := c.requestVia(ctx, c.http, operationTimeout, method, path, body, limit)
+	return status, b, err
+}
+
+// requestVia is request over hc with the operation bound timeout. transport
+// reports a failure before any plane answer (dial, TLS, write, EOF or a
+// response header timeout), the only kind a bounded wait may retry.
+func (c *Client) requestVia(ctx context.Context, hc *http.Client, timeout time.Duration, method, path string, body []byte, limit int64) (int, []byte, error, bool) {
+	octx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(octx, method, c.ep.url+path, bytes.NewReader(body))
 	if err != nil {
-		return 0, nil, contract.Wrap(contract.CodeInternal, "cannot build the request", err)
+		return 0, nil, contract.Wrap(contract.CodeInternal, "cannot build the request", err), false
 	}
 	req.Header.Set(contract.ProtocolHeader, strconv.Itoa(contract.ProtocolVersion))
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := c.http.Do(req)
+	resp, err := hc.Do(req)
 	if err != nil {
-		return 0, nil, c.transportError(ctx, err)
+		terr := c.transportError(ctx, err)
+		return 0, nil, terr, contract.CodeOf(terr) == contract.CodeUnavailable
 	}
 	defer resp.Body.Close()
 	if err := octx.Err(); err != nil {
@@ -319,23 +333,24 @@ func (c *Client) request(ctx context.Context, method, path string, body []byte, 
 		// deadline or the caller's cancellation (for example the empty
 		// 200 it completes for a handler that returned on cancel). It is
 		// not the plane's answer: classify the deadline, not the response.
-		return 0, nil, c.transportError(ctx, err)
+		return 0, nil, c.transportError(ctx, err), ctx.Err() == nil
 	}
 	if err := checkResponseVersion(resp.Header); err != nil {
-		return 0, nil, err
+		return 0, nil, err, false
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		b, _ := readLimited(resp.Body, maxErrorBody, resp.ContentLength)
-		return resp.StatusCode, nil, responseError(c.ep, resp.StatusCode, b)
+		return resp.StatusCode, nil, responseError(c.ep, resp.StatusCode, b), false
 	}
 	b, err := readLimited(resp.Body, limit, resp.ContentLength)
 	if err != nil {
 		if errors.Is(err, errTooLarge) {
-			return 0, nil, contract.New(contract.CodeInvalidArgument, fmt.Sprintf("the plane's response is larger than %d bytes", limit))
+			return 0, nil, contract.New(contract.CodeInvalidArgument, fmt.Sprintf("the plane's response is larger than %d bytes", limit)), false
 		}
-		return 0, nil, c.transportError(ctx, err)
+		terr := c.transportError(ctx, err)
+		return 0, nil, terr, contract.CodeOf(terr) == contract.CodeUnavailable
 	}
-	return resp.StatusCode, b, nil
+	return resp.StatusCode, b, nil, false
 }
 
 // checkResponseVersion requires exactly one integer protocol header equal

@@ -453,7 +453,7 @@ func TestTaskCommands(t *testing.T) {
 		}
 		ids = append(ids, v.TaskID)
 		r = runCLI(bg, append([]string{"dispatch", "--role-id", "worker-a", "--goal", "please fail", "--acceptance", "a", "--timeout", "90m"}, p.trust()...)...)
-		if r.code != 0 || !strings.HasPrefix(r.stdout, "task_id: t_") || !strings.Contains(r.stdout, "\ntimeout: 1h30m0s\nnotice: "+contract.TimeoutNotice+"\n") {
+		if r.code != 0 || !strings.HasPrefix(r.stdout, "task_id: t_") || !strings.Contains(r.stdout, "\ntimeout: 1h30m0s\ntimeout_policy: enforced\n") || strings.Contains(r.stdout, contract.TimeoutNotice) {
 			t.Fatalf("dispatch text %+v", r)
 		}
 		ids = append(ids, strings.TrimPrefix(strings.SplitN(r.stdout, "\n", 2)[0], "task_id: "))

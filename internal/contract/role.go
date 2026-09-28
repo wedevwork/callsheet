@@ -145,28 +145,40 @@ func (r RoleRecord) MarshalJSON() ([]byte, error) {
 	return compact(roleRecordWire{roleConfigWire: r.Resolved().wire(), RegistrationOrder: r.RegistrationOrder})
 }
 
+// RoleRemoval is a role instance's durable force-removal fence as a view
+// shows it (iteration 06b): its operation token and instance.
+type RoleRemoval struct {
+	OperationID       string `json:"operation_id"`
+	RegistrationOrder int    `json:"registration_order"`
+}
+
 // RoleView is the operator view of a role: the record followed by the
-// derived observation fields.
+// derived observation fields and (iteration 06b) its removal fence.
 type RoleView struct {
 	RoleRecord
 	Inflight        int
 	CanAccept       bool
 	NodeLiveness    string
 	AdapterTestOnly bool
+	Removing        bool
+	Removal         *RoleRemoval
 }
 
 // MarshalJSON renders the flat record fields, then inflight, can_accept,
-// node_liveness and adapter_test_only.
+// node_liveness, adapter_test_only, removing and removal.
 func (v RoleView) MarshalJSON() ([]byte, error) {
 	type wire struct {
 		roleRecordWire
-		Inflight        int    `json:"inflight"`
-		CanAccept       bool   `json:"can_accept"`
-		NodeLiveness    string `json:"node_liveness"`
-		AdapterTestOnly bool   `json:"adapter_test_only"`
+		Inflight        int          `json:"inflight"`
+		CanAccept       bool         `json:"can_accept"`
+		NodeLiveness    string       `json:"node_liveness"`
+		AdapterTestOnly bool         `json:"adapter_test_only"`
+		Removing        bool         `json:"removing"`
+		Removal         *RoleRemoval `json:"removal"`
 	}
 	return compact(wire{roleRecordWire: roleRecordWire{roleConfigWire: v.Resolved().wire(), RegistrationOrder: v.RegistrationOrder},
-		Inflight: v.Inflight, CanAccept: v.CanAccept, NodeLiveness: v.NodeLiveness, AdapterTestOnly: v.AdapterTestOnly})
+		Inflight: v.Inflight, CanAccept: v.CanAccept, NodeLiveness: v.NodeLiveness, AdapterTestOnly: v.AdapterTestOnly, Removing: v.Removing,
+		Removal: v.Removal})
 }
 
 // RoleResponse is {"version":3,"role":RoleView}.
@@ -191,16 +203,41 @@ func (r RoleListResponse) MarshalJSON() ([]byte, error) {
 	return compact(w)
 }
 
-// RoleRemoveResponse is {"version":3,"removed":ID}.
+// RoleRemoveResponse is 200 {"version":5,"removed":ID}: the removal is
+// directory-confirmed.
 type RoleRemoveResponse struct {
 	Version int    `json:"version"`
 	Removed string `json:"removed"`
 }
 
-// RoleRemoveRequest is the DELETE body {"force":BOOL}.
-type RoleRemoveRequest struct {
-	Force bool `json:"force"`
+// RoleRemovePendingResponse is 202 (iteration 06b): a force removal whose
+// fence is durable but whose deletion was not confirmed within the
+// mutation budget; the plane completes it.
+type RoleRemovePendingResponse struct {
+	Version           int    `json:"version"`
+	OperationID       string `json:"operation_id"`
+	RoleID            string `json:"role_id"`
+	RegistrationOrder int    `json:"registration_order"`
+	Removing          bool   `json:"removing"`
 }
+
+// RoleRemoveResult is a removal's decoded union: exactly one of Completed
+// (HTTP 200) and Pending (HTTP 202) is non-nil.
+type RoleRemoveResult struct {
+	Completed *RoleRemoveResponse
+	Pending   *RoleRemovePendingResponse
+}
+
+// RoleRemoveRequest is the DELETE body {"force":BOOL} with (iteration 06b)
+// the optional operation_id of a force removal's safe retry.
+type RoleRemoveRequest struct {
+	Force       bool   `json:"force"`
+	OperationID string `json:"operation_id,omitempty"`
+}
+
+// ValidOperationID reports whether id is a removal operation token: 32
+// lowercase hex digits.
+func ValidOperationID(id string) bool { return runIDRE.MatchString(id) }
 
 // RolePatch holds the mutable fields a set changes; nil fields are
 // omitted and keep their values.
@@ -673,13 +710,13 @@ func ParseRoleView(v json.RawMessage, lookup AdapterLookup) (RoleView, error) {
 	if err != nil {
 		return RoleView{}, err
 	}
-	obs := []string{"inflight", "can_accept", "node_liveness", "adapter_test_only"}
+	obs := []string{"inflight", "can_accept", "node_liveness", "adapter_test_only", "removing", "removal"}
 	rec, err := parseRoleRecordObject(o, what, lookup, obs...)
 	if err != nil {
 		return RoleView{}, err
 	}
 	for _, k := range obs {
-		if raw, ok := o.raw[k]; !ok || isNull(raw) {
+		if raw, ok := o.raw[k]; !ok || (isNull(raw) && k != "removal") {
 			return RoleView{}, errInvalid("%s lacks the required field %q", what, k)
 		}
 	}
@@ -709,6 +746,24 @@ func ParseRoleView(v json.RawMessage, lookup AdapterLookup) (RoleView, error) {
 		if info, _ := lookup(rv.Adapter); info.TestOnly != rv.AdapterTestOnly {
 			return rv, errInvalid("%s adapter_test_only does not match adapter %s", what, rv.Adapter)
 		}
+	}
+	if rv.Removing, err = o.boolean(what, "removing"); err != nil {
+		return rv, err
+	}
+	if raw := o.raw["removal"]; !isNull(raw) {
+		var rm RoleRemoval
+		if err := decodeStrict(raw, &rm, what+" removal"); err != nil {
+			return rv, err
+		}
+		rv.Removal = &rm
+	}
+	switch {
+	case rv.Removing != (rv.Removal != nil):
+		return rv, errInvalid("%s removing must be true exactly when removal is present", what)
+	case rv.Removal != nil && (!ValidOperationID(rv.Removal.OperationID) || rv.Removal.RegistrationOrder != rv.RegistrationOrder):
+		return rv, errInvalid("%s removal must name a valid operation on this instance", what)
+	case rv.Removing && rv.CanAccept:
+		return rv, errInvalid("%s: a removing role cannot accept", what)
 	}
 	return rv, nil
 }
@@ -805,17 +860,67 @@ func ParseRoleRemoveResponse(data []byte) (string, error) {
 	return id, nil
 }
 
-// ParseRoleRemoveRequest strictly decodes the DELETE body {"force":BOOL}.
-func ParseRoleRemoveRequest(data []byte) (bool, error) {
+// ParseRoleRemoveRequest strictly decodes the DELETE body {"force":BOOL}
+// with the optional operation_id (32 lowercase hex), which requires force.
+func ParseRoleRemoveRequest(data []byte) (RoleRemoveRequest, error) {
 	const what = "role removal request"
 	o, err := decodeObject(data, what)
 	if err != nil {
-		return false, err
+		return RoleRemoveRequest{}, err
 	}
-	if err := o.only(what, []string{"force"}); err != nil {
-		return false, err
+	if err := o.only(what, []string{"force"}, "operation_id"); err != nil {
+		return RoleRemoveRequest{}, err
 	}
-	return o.boolean(what, "force")
+	var r RoleRemoveRequest
+	if r.Force, err = o.boolean(what, "force"); err != nil {
+		return r, err
+	}
+	if raw, ok := o.raw["operation_id"]; ok {
+		if isNull(raw) {
+			return r, fieldErr("operation_id", "%s field %q must not be null", what, "operation_id")
+		}
+		if r.OperationID, err = o.str(what, "operation_id"); err != nil {
+			return r, err
+		}
+		if err := ValidateRemovalOperation(r.Force, r.OperationID); err != nil {
+			return r, err
+		}
+	}
+	return r, nil
+}
+
+// ValidateRemovalOperation checks a removal's operation token: it
+// requires force and is 32 lowercase hex digits.
+func ValidateRemovalOperation(force bool, op string) error {
+	switch {
+	case !force:
+		return fieldErr("operation_id", "an operation ID retries a force removal only: it requires --force")
+	case !ValidOperationID(op):
+		return fieldErr("operation_id", "an operation ID is 32 lowercase hex digits (see role show's removal)")
+	}
+	return nil
+}
+
+// ParseRoleRemovePendingResponse strictly decodes a 202 removal: its
+// role, a positive safe registration order, removing=true and a valid
+// operation ID.
+func ParseRoleRemovePendingResponse(data []byte) (RoleRemovePendingResponse, error) {
+	const what = "role removal response"
+	var r RoleRemovePendingResponse
+	if err := versioned(data, &r, what); err != nil {
+		return r, err
+	}
+	switch {
+	case !ValidSlug(r.RoleID):
+		return r, errInvalid("%s role_id is not a valid role ID", what)
+	case r.RegistrationOrder < 1 || r.RegistrationOrder > MaxSafeInteger:
+		return r, errInvalid("%s registration_order is out of range", what)
+	case !r.Removing:
+		return r, errInvalid("%s removing must be true", what)
+	case !ValidOperationID(r.OperationID):
+		return r, errInvalid("%s operation_id must be 32 lowercase hex digits", what)
+	}
+	return r, nil
 }
 
 // ParseRoleStatus strictly decodes one heartbeat/node role status: a slug

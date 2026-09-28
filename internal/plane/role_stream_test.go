@@ -71,7 +71,7 @@ func TestRoleStreamContract(t *testing.T) {
 				t.Fatalf("initial snapshot = %+v", b)
 			}
 			p.heartbeat(1)
-			if err := rp.cl.RemoveRole(bg, "x", false); err != nil {
+			if err := rmRole(rp.cl, bg, "x", false); err != nil {
 				t.Fatal(err)
 			}
 			if b := p.readReplace("p2"); b.Revision != 4 || len(b.Roles) != 2 {
@@ -79,7 +79,7 @@ func TestRoleStreamContract(t *testing.T) {
 			}
 			rp.log.await(t, "replace-sent "+idA+" p2 4")
 			for _, id := range []string{"y", "w"} {
-				if err := rp.cl.RemoveRole(bg, id, id == "w"); err != nil {
+				if err := rmRole(rp.cl, bg, id, id == "w"); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -538,9 +538,9 @@ func TestRoleStreamContract(t *testing.T) {
 			// stream's own and is proven by TestNodeStreamProtocol/oversized.
 			p := rp.online(t, idA)
 			body := `{"roles_revision":0,"roles":[]` + strings.Repeat(" ", contract.MaxHeartbeatBody-len(`{"roles_revision":0,"roles":[]}`)) + `}`
-			p.sendRaw([]byte(`{"version":4,"type":"heartbeat","request_id":"b2","body":` + body + `}`))
+			p.sendRaw([]byte(`{"version":5,"type":"heartbeat","request_id":"b2","body":` + body + `}`))
 			p.expect(contract.FrameHeartbeatAck, "b2")
-			p.sendRaw([]byte(`{"version":4,"type":"heartbeat","request_id":"b3","body":` + body[:len(body)-1] + ` }` + `}`))
+			p.sendRaw([]byte(`{"version":5,"type":"heartbeat","request_id":"b3","body":` + body[:len(body)-1] + ` }` + `}`))
 			p.expectError("b3", contract.CodeInvalidArgument)
 			if st := p.closed(); st != websocket.StatusPolicyViolation {
 				t.Fatalf("oversized heartbeat close = %v", st)

@@ -278,6 +278,14 @@ func TestControlLate(t *testing.T) {
 		"success": func(st contract.TaskStartBody) contract.TaskResultBody { return result(st, 0, 13, nil) },
 		"failure": func(st contract.TaskStartBody) contract.TaskResultBody { return result(st, 3, 13, nil) },
 		"lost":    func(st contract.TaskStartBody) contract.TaskResultBody { return lostResult(st, 13) },
+		// Iteration 06b: control outcomes are late evidence too (a
+		// worker-originated cancel or timeout without a plane intent).
+		"timed_out": func(st contract.TaskStartBody) contract.TaskResultBody {
+			return ctlResult(st, contract.OutcomeTimedOut, nil, ip(143), nil, 13)
+		},
+		"cancelled": func(st contract.TaskStartBody) contract.TaskResultBody {
+			return ctlResult(st, contract.OutcomeCancelled, nil, ip(130), nil, 13)
+		},
 	} {
 		t.Run("after-lost-"+name, func(t *testing.T) {
 			t.Parallel()
@@ -328,6 +336,46 @@ func TestControlLate(t *testing.T) {
 			tp.checkCounts(t)
 		})
 	}
+	t.Run("stop-id", func(t *testing.T) {
+		t.Parallel()
+		// Review C5: a late result's stop_id is validated like a primary
+		// one: it must be the task's durable intent. Missing intent and a
+		// mismatched intent are protocol errors that record nothing; the
+		// exact intent is accepted as late evidence.
+		for _, c := range []string{"missing-intent", "mismatched-intent", "matching-intent"} {
+			tp, w := ctlPlane(t, 1)
+			st := tp.run(t, w, "a", "late "+c, "p2")
+			started := tp.clk.Now()
+			var intent string
+			if c != "missing-intent" {
+				if r := tp.cancel(t, st.TaskID); !r.Accepted {
+					t.Fatalf("%s: cancel %+v", c, r)
+				}
+				intent = tp.stopID(t, st.TaskID)
+			}
+			tp.loseByLease(t, w, st.TaskID)
+			tp.log.awaitOnce(t, "terminal-committed "+st.TaskID)
+			stop := strings.Repeat("9", 32)
+			if c == "matching-intent" {
+				stop = intent
+			}
+			r := ctlResult(st, contract.OutcomeCancelled, &stop, nil, sp("SIGTERM"), 0)
+			rev := tp.taskFile(t, st.TaskID).Revision
+			w = tp.workerInv(t, idA, map[string]string{st.TaskID: contract.ActionSendResult}, entry(st, contract.PhaseResult, &started, &r.Digest))
+			if c == "matching-intent" {
+				w.resultAck(w.sendResult(r), st.TaskID)
+				tp.log.awaitOnce(t, "late-committed "+st.TaskID)
+				if l := tp.show(t, st.TaskID).LateResult; l == nil || l.Digest != r.Digest {
+					t.Fatalf("%s: late %+v", c, l)
+				}
+				continue
+			}
+			expectClosed(t, w, w.sendResult(r))
+			if rec := tp.taskFile(t, st.TaskID); rec.Revision != rev || rec.Late != nil || tp.log.seen("late-captured "+st.TaskID) {
+				t.Fatalf("%s: a late result with a foreign stop_id was recorded", c)
+			}
+		}
+	})
 	t.Run("conflict", func(t *testing.T) {
 		t.Parallel()
 		tp, w := ctlPlane(t, 1)
@@ -605,7 +653,7 @@ func TestControlMigration(t *testing.T) {
 			}
 			if tail, ok := migrated[name]; ok {
 				if v.State != contract.TaskLost || v.Reason.Code != contract.ReasonLegacyUnrecoverable || v.FinishedAt == nil || v.Reconciling ||
-					v.LogTail != tail || v.TimeoutEnforced || rec.Schema != contract.TaskRecordSchemaVersion || rec.TimeoutPolicy != contract.TimeoutPolicyLegacy {
+					v.LogTail != tail || v.TimeoutPolicy != contract.TimeoutPolicyLegacy || rec.Schema != contract.TaskRecordSchemaVersion || rec.TimeoutPolicy != contract.TimeoutPolicyLegacy {
 					t.Fatalf("%s migrated %+v", name, v)
 				}
 				if (name == "pending") != (v.StartedAt == nil) {
@@ -624,7 +672,7 @@ func TestControlMigration(t *testing.T) {
 			t.Fatalf("worker-a %+v %v", r, err)
 		}
 		// Ordinary removal needs no recovery exception now.
-		if err := np.cl.RemoveRole(bg, "worker-a", false); err != nil {
+		if err := rmRole(np.cl, bg, "worker-a", false); err != nil {
 			t.Fatalf("rm: %v", err)
 		}
 	})
@@ -654,7 +702,7 @@ func TestControlMigration(t *testing.T) {
 			}
 			return out
 		}
-		if s := schemas(); s[order[0]] != 2 || s[order[1]] != 1 || s[order[2]] != 1 {
+		if s := schemas(); s[order[0]] != contract.TaskRecordSchemaVersion || s[order[1]] != 1 || s[order[2]] != 1 {
 			t.Fatalf("after the failure %v", s)
 		}
 		migratedBytes := taskFiles(t, root)[order[0]+".json"]
@@ -668,7 +716,7 @@ func TestControlMigration(t *testing.T) {
 			return nil
 		}
 		np := serveNodePlaneAt(t, d, root)
-		if s := schemas(); s[order[1]] != 2 || s[order[2]] != 2 || !failed {
+		if s := schemas(); s[order[1]] != contract.TaskRecordSchemaVersion || s[order[2]] != contract.TaskRecordSchemaVersion || !failed {
 			t.Fatalf("after the rerun %v (sync failed %v)", s, failed)
 		}
 		if !bytes.Equal(migratedBytes, taskFiles(t, root)[order[0]+".json"]) {
@@ -717,15 +765,16 @@ func TestControlMigration(t *testing.T) {
 }
 
 // BenchmarkControlCommit measures the per-task writer's terminal
-// publications (natural and lost) and a late append, with 0, 64 KiB and
-// 10 MiB tails: encode, temporary write and fsync, rename and directory
+// publications (natural and lost), a late append, and (iteration 06b) a
+// stop intent's publication followed by its cancelled terminal and a
+// timed_out late append, with 0, 64 KiB and 10 MiB tails: encode, temporary write and fsync, rename and directory
 // sync, installation under the task lock. It reports the bytes written
 // per commit and asserts bounded allocation (about one document per
 // write; a late append also decodes the document for the frozen primary
 // tail), the
 // release of every buffer and exactly-once release of the reservation.
 func BenchmarkControlCommit(b *testing.B) {
-	for _, kind := range []string{"natural", "lost", "late"} {
+	for _, kind := range []string{"natural", "lost", "late", "intent-terminal", "late-timed_out"} {
 		for _, size := range []int{0, 64 << 10, contract.MaxLogRetainedBytes} {
 			b.Run(kind+"-"+strconv.Itoa(size), func(b *testing.B) { benchCommit(b, kind, size) })
 		}
@@ -746,7 +795,8 @@ func benchCommit(b *testing.B, kind string, size int) {
 		Execution: contract.ExecutionToken{Epoch: "00000000000000000000000000000000", Attachment: 1}, State: contract.TaskRunning,
 		CreatedAt: t0, StartedAt: &start, Revision: 1, StartDigest: &digest, TimeoutPolicy: contract.TimeoutPolicyLegacy}
 	tail := contract.TaskLog{Data: bytes.Repeat([]byte{0x1b, 'x', '\n'}, size/3+1)[:size], SourceBytes: size, ReceivedBytes: size}
-	if kind == "late" {
+	late := kind == "late" || kind == "late-timed_out"
+	if late {
 		fin := start.Add(time.Second)
 		rec.State, rec.FinishedAt = contract.TaskLost, &fin
 		rec.Reason = &contract.TaskReason{Code: contract.ReasonLeaseExpired, Message: "expired"}
@@ -759,6 +809,15 @@ func benchCommit(b *testing.B, kind string, size int) {
 		b.Fatal(err)
 	}
 	res := contract.TaskResultBody{TaskID: rec.TaskID, Execution: rec.Execution, Outcome: contract.OutcomeNatural, ExitCode: new(int), OutputBytes: size}.Sealed()
+	stop := contract.StopIntent{ID: strings.Repeat("5", 32), Kind: contract.StopKindCancelled, RequestedAt: start}
+	switch kind {
+	case "late-timed_out":
+		res = contract.TaskResultBody{TaskID: rec.TaskID, Execution: rec.Execution, Outcome: contract.OutcomeTimedOut, Signal: sp("SIGTERM"), OutputBytes: size}.Sealed()
+	case "intent-terminal":
+		id := stop.ID
+		res = contract.TaskResultBody{TaskID: rec.TaskID, Execution: rec.Execution, Outcome: contract.OutcomeCancelled, StopID: &id, Signal: sp("SIGTERM"),
+			OutputBytes: size}.Sealed()
+	}
 	var written int64
 	var before, after runtime.MemStats
 	b.ReportAllocs()
@@ -775,9 +834,38 @@ func benchCommit(b *testing.B, kind string, size int) {
 		case "lost":
 			e.cand = &terminalCand{kind: candLost, at: now,
 				outcome: terminalOutcome{state: contract.TaskLost, started: &start, finished: now, log: tail, reason: &contract.TaskReason{Code: contract.ReasonLeaseExpired, Message: "expired"}}}
-		case "late":
+		case "late", "late-timed_out":
 			e.released = true
 			e.late = &lateCand{result: res, at: now, log: tail}
+		case "intent-terminal":
+			// The intent's nonterminal publication (a checkpoint of the live
+			// tail) precedes the control terminal it governs; the
+			// reservation is held until the terminal commit.
+			in := stop
+			e.pendingIntent, e.ring = &in, newPlaneLogFrom(tail)
+			ts.mu.Lock()
+			ts.tasks[rec.TaskID] = e
+			ts.refreshLocked(e)
+			job, _ := ts.nextJobLocked(e, now)
+			ts.mu.Unlock()
+			if job == nil || job.kind != "stop-intent" || len(job.rec.Log.Data) != size {
+				b.Fatalf("no stop-intent publication: %+v", job)
+			}
+			enc, err := encodeTask(job.rec)
+			if err != nil || len(enc) > maxTaskFile {
+				b.Fatalf("intent document %d bytes: %v", len(enc), err)
+			}
+			written += int64(len(enc))
+			err = st.update(job.rec)
+			ts.mu.Lock()
+			ts.applyLocked(e, job, err)
+			ok := e.confirmed && e.intentDurable && !e.released && !e.terminal() && e.pendingIntent == nil && e.rec.StopIntent != nil
+			ts.mu.Unlock()
+			if err != nil || !ok {
+				b.Fatalf("intent: %v", err)
+			}
+			e.cand = &terminalCand{kind: candControl, at: now, digest: res.Digest,
+				outcome: terminalOutcome{state: contract.TaskCancelled, started: &start, finished: now, signal: res.Signal, log: tail}}
 		}
 		ts.mu.Lock()
 		ts.tasks[rec.TaskID] = e
@@ -787,7 +875,7 @@ func benchCommit(b *testing.B, kind string, size int) {
 		if job == nil {
 			b.Fatal("no publication")
 		}
-		if kind == "late" {
+		if late {
 			if job, err = ts.composeLate(e, job); err != nil {
 				b.Fatal(err)
 			}
@@ -805,10 +893,13 @@ func benchCommit(b *testing.B, kind string, size int) {
 		if err != nil || !ok {
 			b.Fatalf("commit: %v (confirmed %v released %v)", err, e.confirmed, e.released)
 		}
+		if kind == "intent-terminal" && (e.rec.State != contract.TaskCancelled || e.rec.StopIntent == nil || e.rec.StopIntent.ID != stop.ID) {
+			b.Fatalf("control terminal %+v", e.rec)
+		}
 		rec = e.rec
-		if kind != "late" {
+		if !late {
 			// Every iteration commits the same running task afresh.
-			rec.State, rec.FinishedAt, rec.ExitCode, rec.Reason, rec.ResultDigest = contract.TaskRunning, nil, nil, nil, nil
+			rec.State, rec.FinishedAt, rec.ExitCode, rec.Signal, rec.Reason, rec.ResultDigest, rec.StopIntent = contract.TaskRunning, nil, nil, nil, nil, nil, nil
 		}
 		rec.Log.Data = nil
 	}
@@ -821,7 +912,7 @@ func benchCommit(b *testing.B, kind string, size int) {
 	// (05's readTaskFile, also behind show and logs) does at about ten
 	// times the document's size: bounded, per task, transient.
 	docs := uint64(3)
-	if kind == "late" {
+	if late {
 		docs = 14
 	}
 	if bound := docs*uint64(written/int64(max(n, 1))) + 4<<20; per > bound {
@@ -831,7 +922,7 @@ func benchCommit(b *testing.B, kind string, size int) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	if kind == "late" && (got.Late == nil || len(got.Log.Data)+len(got.Late.Log.Data) > contract.MaxLogRetainedBytes) {
+	if late && (got.Late == nil || len(got.Log.Data)+len(got.Late.Log.Data) > contract.MaxLogRetainedBytes) {
 		b.Fatal("late tail budget")
 	}
 }

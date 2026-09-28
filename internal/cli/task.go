@@ -24,10 +24,12 @@ import (
 var hostname = os.Hostname
 
 const (
-	dispatchUsage = "(--role-id ID | --role-name NAME) --goal TEXT --acceptance TEXT [--payload POINTER ...] [--model MODEL] [--effort EFFORT] [--timeout DURATION] " + trustUsage + " [--json]"
-	taskLsUsage   = "[--limit N] [--after ID] " + trustUsage + " [--json]"
-	taskShowUsage = "ID [--lines N] " + trustUsage + " [--json]"
-	taskLogsUsage = "ID [--late] " + trustUsage + " [--json]"
+	dispatchUsage   = "(--role-id ID | --role-name NAME) --goal TEXT --acceptance TEXT [--payload POINTER ...] [--model MODEL] [--effort EFFORT] [--timeout DURATION] [--wait DURATION] " + trustUsage + " [--json]"
+	taskCancelUsage = "ID " + trustUsage + " [--json]"
+	taskWaitUsage   = "ID [ID ...] [--wait DURATION] " + trustUsage + " [--json]"
+	taskLsUsage     = "[--limit N] [--after ID] " + trustUsage + " [--json]"
+	taskShowUsage   = "ID [--lines N] " + trustUsage + " [--json]"
+	taskLogsUsage   = "ID [--late] " + trustUsage + " [--json]"
 
 	taskJSONHelp = "  --json             print the plane's response envelope as one JSON value\n"
 
@@ -41,20 +43,45 @@ const (
 		"  --payload POINTER  an opaque pointer for the worker (repeatable; never fetched)\n" +
 		"  --model MODEL      override the role's model for this task only\n" +
 		"  --effort EFFORT    override the role's effort for this task only (the adapter's efforts)\n" +
-		"  --timeout DURATION record a timeout for this task, e.g. 90m; 0 is unlimited. The\n" +
-		"                     recorded timeout is not enforced in this build\n" +
+		"  --timeout DURATION this task's execution timeout, e.g. 90m; 0 is unlimited (default:\n" +
+		"                     the role's). It is enforced on the worker from the adapter's start\n" +
+		"                     (queue and preparation time excluded), also while the plane is\n" +
+		"                     unreachable; an expired task ends timed_out\n" +
+		"  --wait DURATION    after admission, wait at most this long (0 to 5m) for the task to\n" +
+		"                     end, then print its result or a compact still-running line; the\n" +
+		"                     plane may answer sooner (plane run --max-task-wait, default 30s)\n" +
 		trustHelp + taskJSONHelp + "\n" +
 		"Exactly one of --role-id and --role-name is required. The plane reserves one of the\n" +
 		"role's slots atomically, or fails at once listing every candidate with its state:\n" +
 		"there is no queue and no reroute. The worker composes the prompt from its local\n" +
 		"manuals and this task, and runs the adapter's CLI child in a fresh scratch directory.\n" +
-		"Exit 0 means the task was admitted, not that it succeeded: follow it with callsheet\n" +
-		"task show. A lost response may hide an admitted task; check callsheet task ls before\n" +
-		"dispatching again. Workspaces and waiting are not supported in this build.\n\n" +
+		"Exit 0 means the task was admitted, not that it succeeded, with or without --wait:\n" +
+		"follow it with callsheet task wait or task show. A lost response may hide an admitted\n" +
+		"task; check callsheet task ls before dispatching again (a dispatch is never retried).\n" +
+		"Workspaces are not supported in this build. The wait bounds are CLI and operator\n" +
+		"choices, not a verified MCP tool-call limit.\n\n" +
 		"Example, on an operator machine:\n" +
 		"  callsheet dispatch --role-name implementer --goal \"fix the parser\" \\\n" +
 		"    --acceptance \"all tests pass\" --payload repo://callsheet \\\n" +
 		"    --plane https://plane.example:8443 --ca plane-ca.crt\n"
+	taskCancelDetails = "Flags:\n" + trustHelp + taskJSONHelp + "\n" +
+		"Asks the plane to cancel the task and prints cancel accepted: ID once the request is\n" +
+		"durable, or task already terminal: ID STATE. Acceptance is not the outcome: the worker\n" +
+		"stops the task's whole process group (TERM, 1 s grace, KILL) and keeps its partial\n" +
+		"output; follow it with callsheet task wait ID. A task that already finished keeps its\n" +
+		"result. A task whose node is offline is cancelled when the node reconnects, or becomes\n" +
+		"lost (stop_requested) when its lease expires. Repeating a cancel is safe and changes\n" +
+		"nothing; a lost response may hide an accepted cancel: repeat it or run task show.\n"
+	taskWaitDetails = "Flags:\n" +
+		"  --wait DURATION    wait at most this long (0 to 5m, default 5s; 0 answers at once)\n" +
+		trustHelp + taskJSONHelp + "\n" +
+		"Waits for the first of up to 16 tasks to end durably and prints winner: ID and that\n" +
+		"task as task show does. When none ends in time it prints one tab-separated line per\n" +
+		"task, in the given order: TASK_ID, STATE, ELAPSED_MS, LAST_LOG_LINE (its last at most\n" +
+		"96 bytes, control bytes escaped), LOG_TRUNCATED and DURABILITY_CONFIRMED. Both exit 0,\n" +
+		"whatever the task's own result. The plane may answer sooner than asked (plane run\n" +
+		"--max-task-wait, default 30s); a plane restart is retried within the same overall\n" +
+		"wait. These bounds are CLI and operator choices, not a verified MCP tool-call limit.\n"
 	taskLsDetails = "Flags:\n" +
 		"  --limit N          at most N tasks (1-100, default 100)\n" +
 		"  --after ID         start after this task ID (the previous page's next_after)\n" +
@@ -86,10 +113,10 @@ const (
 
 // taskFlags are the task leaves' own flags.
 type taskFlags struct {
-	roleID, roleName, goal, acceptance, model, effort, timeout single
-	payload                                                    multi
-	limit, after, lines                                        single
-	late                                                       boolFlag
+	roleID, roleName, goal, acceptance, model, effort, timeout, wait single
+	payload                                                          multi
+	limit, after, lines                                              single
+	late                                                             boolFlag
 }
 
 func (tf *taskFlags) dispatchFlags(fs *flag.FlagSet) {
@@ -101,6 +128,15 @@ func (tf *taskFlags) dispatchFlags(fs *flag.FlagSet) {
 	fs.Var(&tf.model, "model", "")
 	fs.Var(&tf.effort, "effort", "")
 	fs.Var(&tf.timeout, "timeout", "")
+	fs.Var(&tf.wait, "wait", "")
+}
+
+// waitFlag parses an explicit --wait (def when absent).
+func (tf *taskFlags) waitFlag(def time.Duration) (time.Duration, error) {
+	if !tf.wait.set {
+		return def, nil
+	}
+	return contract.ParseWaitDuration(tf.wait.val)
 }
 
 // requester is this CLI's self-reported attribution: fixed name, the build
@@ -167,6 +203,10 @@ func dispatch(ctx context.Context, goos string, c *Command, args []string, out, 
 	if err := req.Validate(); err != nil {
 		return planeFail(errOut, err)
 	}
+	wait, err := tf.waitFlag(0)
+	if err != nil {
+		return planeFail(errOut, err)
+	}
 	if _, err := f.trustSyntax(); err != nil {
 		return planeFail(errOut, err)
 	}
@@ -175,14 +215,109 @@ func dispatch(ctx context.Context, goos string, c *Command, args []string, out, 
 		return code
 	}
 	defer cl.Close()
+	if tf.wait.set {
+		r, err := cl.DispatchWithWait(ctx, req, wait)
+		if err != nil {
+			return taskFail(errOut, err)
+		}
+		if f.json.val {
+			return writeJSON(out, errOut, r)
+		}
+		text, err := RenderWait("task_id: "+r.TaskID+"\n", *r.WaitResult)
+		if err != nil {
+			return planeFail(errOut, err)
+		}
+		return writeOut(out, errOut, text)
+	}
 	v, err := cl.Dispatch(ctx, req)
 	if err != nil {
 		return taskFail(errOut, err)
 	}
 	if f.json.val {
-		return writeJSON(out, errOut, contract.DispatchResponse{Version: contract.ProtocolVersion, TaskID: v.TaskID, Task: v})
+		return writeJSON(out, errOut, contract.DispatchResponse{Version: contract.ProtocolVersion, TaskID: v.TaskID, Task: &v})
 	}
 	return writeOut(out, errOut, RenderDispatch(v))
+}
+
+func taskCancel(ctx context.Context, goos string, c *Command, args []string, out, errOut io.Writer) int {
+	f, ops, code, ok := parseRemote(c, args, true, false, true, 1, errOut)
+	if !ok {
+		return code
+	}
+	id, code, ok := taskOperand(c, ops, errOut)
+	if !ok {
+		return code
+	}
+	cl, code, ok := roleClient(ctx, f, errOut)
+	if !ok {
+		return code
+	}
+	defer cl.Close()
+	r, err := cl.CancelTask(ctx, id)
+	if err != nil {
+		return planeFail(errOut, err)
+	}
+	if f.json.val {
+		return writeJSON(out, errOut, r)
+	}
+	if r.Accepted {
+		return writeOut(out, errOut, "cancel accepted: "+id+"\n")
+	}
+	return writeOut(out, errOut, "task already terminal: "+id+" "+r.Task.State+"\n")
+}
+
+func taskWait(ctx context.Context, goos string, c *Command, args []string, out, errOut io.Writer) int {
+	tf := &taskFlags{}
+	f, ops, code, ok := parseRemote(c, args, true, false, true, contract.MaxWaitIDs, errOut, func(fs *flag.FlagSet) { fs.Var(&tf.wait, "wait", "") })
+	if !ok {
+		return code
+	}
+	if len(ops) == 0 {
+		return usageError(errOut, c, c.Path()+" takes 1 to 16 task IDs")
+	}
+	if err := contract.ValidateWaitIDs(ops); err != nil {
+		return planeFail(errOut, err)
+	}
+	wait, err := tf.waitFlag(contract.DefaultTaskWait)
+	if err != nil {
+		return planeFail(errOut, err)
+	}
+	cl, code, ok := roleClient(ctx, f, errOut)
+	if !ok {
+		return code
+	}
+	defer cl.Close()
+	r, err := cl.WaitTasks(ctx, ops, wait)
+	if err != nil {
+		return planeFail(errOut, err)
+	}
+	if f.json.val {
+		b, err := contract.EncodeWaitResponse(r)
+		if err != nil {
+			return planeFail(errOut, err)
+		}
+		return writeOut(out, errOut, string(b)+"\n")
+	}
+	text, err := RenderWait("", r)
+	if err != nil {
+		return planeFail(errOut, err)
+	}
+	return writeOut(out, errOut, text)
+}
+
+// RenderWait renders a wait union after prefix: winner: ID and the task as
+// task show renders it, or the still_running table; a still_running
+// answer (prefix included) must fit its compact bound, asserted before
+// anything is written.
+func RenderWait(prefix string, r contract.WaitResponse) (string, error) {
+	if r.Status == contract.WaitTerminal && r.Task != nil {
+		return prefix + "winner: " + r.Winner + "\n" + RenderTask(*r.Task), nil
+	}
+	text := prefix + contract.RenderWaitRows(r.Tasks)
+	if limit := contract.StillRunningLimit(len(r.Tasks)); len(text) > limit {
+		return "", contract.New(contract.CodeInternal, "the still-running answer of "+strconv.Itoa(len(text))+" bytes exceeds its "+strconv.Itoa(limit)+"-byte bound")
+	}
+	return text, nil
 }
 
 // taskFail reports err like planeFail and then the candidate snapshot an
@@ -390,9 +525,12 @@ func RenderDispatch(v contract.TaskView) string {
 	for _, kv := range [][2]string{
 		{"task_id", v.TaskID}, {"state", v.State}, {"role_id", v.Role.ID}, {"role_name", v.Role.Name}, {"node", v.Role.Node},
 		{"registration_order", strconv.Itoa(v.Role.RegistrationOrder)}, {"model", jsonString(v.Effective.Model)}, {"effort", v.Effective.Effort},
-		{"timeout", v.Effective.Timeout.String()}, {"notice", contract.TimeoutNotice},
+		{"timeout", v.Effective.Timeout.String()}, {"timeout_policy", v.TimeoutPolicy},
 	} {
 		b.WriteString(kv[0] + ": " + kv[1] + "\n")
+	}
+	if v.TimeoutPolicy == contract.TimeoutPolicyLegacy {
+		b.WriteString("notice: " + contract.TimeoutNotice + "\n")
 	}
 	if v.Reason != nil {
 		b.WriteString("reason: " + v.Reason.Code + " " + jsonString(v.Reason.Message) + "\n")
@@ -441,7 +579,8 @@ func RenderTask(v contract.TaskView) string {
 	line("model", jsonString(v.Effective.Model))
 	line("effort", v.Effective.Effort)
 	line("timeout", v.Effective.Timeout.String())
-	line("timeout_enforced", "false")
+	line("timeout_policy", v.TimeoutPolicy)
+	line("stop_requested", strconv.FormatBool(v.StopRequested))
 	line("created_at", v.CreatedAt)
 	line("started_at", dash(v.StartedAt))
 	line("finished_at", dash(v.FinishedAt))
@@ -493,6 +632,9 @@ func RenderTask(v contract.TaskView) string {
 	}
 	if v.State == contract.TaskLost {
 		b.WriteString("warning: the execution's outcome and cleanup are unconfirmed (lost); it is never retried or rerouted\n")
+	}
+	if v.TimeoutPolicy == contract.TimeoutPolicyLegacy {
+		b.WriteString("notice: " + contract.TimeoutNotice + "\n")
 	}
 	if v.LateResult != nil {
 		b.WriteString("notice: a late result was recorded after the task became final; the state is unchanged (callsheet task logs --late prints its output)\n")

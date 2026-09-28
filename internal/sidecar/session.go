@@ -359,7 +359,7 @@ func (rs *roleSession) handle(r readResult) error {
 		return rs.onAck(f, r.at)
 	case contract.FrameTaskReconcile:
 		return rs.onReconcile(f)
-	case contract.FrameRoleValidate, contract.FrameRolesReplace, contract.FrameTaskStart:
+	case contract.FrameRoleValidate, contract.FrameRolesReplace, contract.FrameTaskStart, contract.FrameTaskCancel:
 		if !rs.reconciled {
 			// Attachment order (DW5): nothing of the plane's but
 			// reconciliation before its final acknowledgement.
@@ -381,6 +381,8 @@ func (rs *roleSession) handle(r readResult) error {
 			return rs.onValidate(f, r.at)
 		case contract.FrameTaskStart:
 			return rs.onTaskStart(f, r.at)
+		case contract.FrameTaskCancel:
+			return rs.onTaskCancel(f)
 		}
 		return rs.onReplace(f)
 	}
@@ -555,6 +557,10 @@ func (rs *roleSession) writeReply() error {
 			w.mu.Unlock()
 		}
 		rs.emit(event{kind: evStartReplied, id: r.body.(contract.TaskStartResult).TaskID})
+		return nil
+	}
+	if r.typ == contract.FrameTaskCancelAck {
+		rs.emit(event{kind: evCancelAcked, id: r.id})
 		return nil
 	}
 	if r.typ == contract.FrameTaskReconcileAck {

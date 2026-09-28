@@ -121,8 +121,9 @@ var taskRequired = []struct {
 // taskNames lists every required task name, parents before subtests.
 func taskNames() []string { return requiredNames(taskRequired) }
 
-// controlRequired are iteration 06a's native names: the eight control
-// function parents and the native group scenarios.
+// controlRequired are iteration 06a's native names (the eight control
+// function parents and the native group scenarios) and 06b's four
+// task-control function parents.
 var controlRequired = []struct {
 	test string
 	subs []string
@@ -130,6 +131,7 @@ var controlRequired = []struct {
 	{"TestControlDurability", nil}, {"TestControlReconnect", nil}, {"TestControlNodeLoss", nil}, {"TestControlLaunchSafety", nil},
 	{"TestControlWorkerRecovery", nil}, {"TestControlPlaneRecovery", nil}, {"TestControlLateResult", nil}, {"TestControlLegacy", nil},
 	{"TestControlNativeGroups", []string{"cooperative", "resistant", "orphan-restart", "plane-restart"}},
+	{"TestControlCancellation", nil}, {"TestControlExecutionTimeout", nil}, {"TestControlBoundedWait", nil}, {"TestControlForceRemove", nil},
 }
 
 // controlNames lists every required control name, parents before
@@ -269,7 +271,8 @@ func TestNativeStepsAndUnsupportedOS(t *testing.T) {
 		"TestTaskRecoveryBoundary,TestTaskRecoveryBoundary/disconnect,TestTaskRecoveryBoundary/remaining-capacity,TestTaskRecoveryBoundary/recovery-remove,"+
 		"TestControlDurability,TestControlReconnect,TestControlNodeLoss,TestControlLaunchSafety,TestControlWorkerRecovery,TestControlPlaneRecovery,"+
 		"TestControlLateResult,TestControlLegacy,TestControlNativeGroups,TestControlNativeGroups/cooperative,TestControlNativeGroups/resistant,"+
-		"TestControlNativeGroups/orphan-restart,TestControlNativeGroups/plane-restart" || len(req) != 141 {
+		"TestControlNativeGroups/orphan-restart,TestControlNativeGroups/plane-restart,"+
+		"TestControlCancellation,TestControlExecutionTimeout,TestControlBoundedWait,TestControlForceRemove" || len(req) != 145 {
 		t.Fatalf("required = %v", req)
 	}
 	req[0] = "mutated"

@@ -138,14 +138,15 @@ type planeRequest struct {
 	stop     func() bool
 	expired  bool
 	// Exactly one of v (role_validate), snap (roles_replace), start
-	// (task_start, iteration 05) and recon (a task_reconcile page,
-	// iteration 06a) is used.
+	// (task_start, iteration 05), recon (a task_reconcile page, iteration
+	// 06a) and ctl (a task_cancel, iteration 06b) is used.
 	v      *validation
 	snap   roleSnap
 	isSnap bool
 	start  *startItem
 	recon  bool
 	final  bool
+	ctl    *controlItem
 }
 
 // nodeStream is one upgraded node connection: the handler goroutine reads
@@ -632,6 +633,11 @@ func (st *nodeStream) session() {
 				s.tasks.startUncertain(inflight.start.id)
 				inflight.start.res.release()
 			}
+			if inflight.ctl != nil {
+				// Not received here: the next attachment's reconciliation
+				// latches the durable intent (stop_control).
+				s.tasks.controlDone(inflight.ctl.id, false, time.Time{})
+			}
 		}
 	}()
 	p := 0        // plane request counter: p1, p2, ... per connection
@@ -639,12 +645,20 @@ func (st *nodeStream) session() {
 	b := 1        // next sidecar request number (heartbeat, task_log, task_result)
 	sent := false // whether any snapshot was sent in this session
 	lastRev := 0  // revision of the last snapshot sent
-	// preferStart alternates a snapshot and a start when both have work.
+	// preferStart alternates a snapshot and task work (a start or a
+	// control) when both have work; preferControl alternates controls and
+	// starts, one control at most before other work is checked again.
 	preferStart := false
+	preferControl := true
+	lastCtl := ""
 	var queueTimer <-chan time.Time
 	var queueAt time.Time
 	stopQueue := func() bool { return false }
 	defer func() { stopQueue() }()
+	var ctlTimer <-chan time.Time
+	var ctlAt time.Time
+	stopCtl := func() bool { return false }
+	defer func() { stopCtl() }()
 	for {
 		if r, ok := st.inbox.take(); ok {
 			if !st.handle(r, &inflight, &b) {
@@ -691,8 +705,34 @@ func (st *nodeStream) session() {
 				continue
 			}
 			dirty := st.peekDirty()
-			if st.hasStarts() && (preferStart || !dirty) {
-				preferStart = false
+			starts := st.hasStarts()
+			var ctl *controlItem
+			if preferControl || !starts {
+				var next time.Time
+				ctl, next = s.tasks.takeControl(st.nodeID, st.gen, s.clock.Now(), lastCtl)
+				if !next.Equal(ctlAt) {
+					stopCtl()
+					ctlTimer, stopCtl, ctlAt = nil, func() bool { return false }, next
+					if !next.IsZero() {
+						ctlTimer, stopCtl = s.clock.NewTimerAt(next)
+					}
+				}
+			}
+			if ctl != nil && (preferStart || !dirty) {
+				preferStart, preferControl, lastCtl = false, false, ctl.id
+				r, ok := st.dispatchControl(ctl, &p)
+				if !ok {
+					return
+				}
+				inflight = r
+				continue
+			}
+			if ctl != nil {
+				// A snapshot goes first: the control is taken again next pass.
+				s.tasks.controlDone(ctl.id, false, time.Time{})
+			}
+			if starts && (preferStart || !dirty) {
+				preferStart, preferControl = false, true
 				it, _ := st.takeStart(s.clock.Now(), true)
 				if it != nil {
 					r, ok := st.dispatchStart(it, &p)
@@ -727,6 +767,8 @@ func (st *nodeStream) session() {
 			inflight.expired = true
 		case <-queueTimer:
 			queueTimer, queueAt = nil, time.Time{}
+		case <-ctlTimer:
+			ctlTimer, ctlAt = nil, time.Time{}
 		case <-st.ctx.Done():
 			return
 		}
@@ -789,6 +831,26 @@ func (st *nodeStream) dispatchStart(it *startItem, p *int) (*planeRequest, bool)
 		return nil, false
 	}
 	s.event("start-sent " + st.nodeID + " " + id + " " + it.id)
+	return st.arm(r), true
+}
+
+// dispatchControl sends a durable stop intent's task_cancel with its own
+// controlTimeout from now through write and acknowledgement, under the
+// attachment's single p<n> counter. ok=false ends the session.
+func (st *nodeStream) dispatchControl(it *controlItem, p *int) (*planeRequest, bool) {
+	s := st.svc
+	id, ok := st.nextID(p)
+	if !ok {
+		s.tasks.controlDone(it.id, false, time.Time{})
+		return nil, false
+	}
+	r := &planeRequest{id: id, deadline: s.clock.Now().Add(controlTimeout), ctl: it}
+	s.event("cancel-writing " + st.nodeID + " " + id + " " + it.id)
+	if err := st.write(contract.FrameTaskCancel, id, it.body, r.deadline); err != nil {
+		s.tasks.controlDone(it.id, false, time.Time{})
+		return nil, false
+	}
+	s.event("cancel-sent " + st.nodeID + " " + id + " " + it.id)
 	return st.arm(r), true
 }
 
@@ -896,7 +958,16 @@ func (st *nodeStream) handleFrame(r readResult, inflight **planeRequest, hb *int
 	}
 	switch f.Type {
 	case contract.FrameError:
-		s.logger.Warn("node reported an error", "node_id", st.nodeID)
+		// A worker without the execution a control named (iteration 06b,
+		// unavailable/execution_missing) ends this attachment: the next one
+		// reconciles, and only its complete inventory can resolve the task
+		// lost; the error itself is never cleanup success.
+		reason := ""
+		if e, err := contract.ParseErrorBody(f.Body); err == nil {
+			reason = errReason(e)
+		}
+		s.logger.Warn("node reported an error", "node_id", st.nodeID, "reason", contract.SafeText(reason, 64))
+		s.event("peer-error " + st.nodeID + " " + reason)
 		st.terminate(closePolicy, "peer error")
 		return false
 	case contract.FrameTaskLog:
@@ -1002,6 +1073,29 @@ func (st *nodeStream) handleFrame(r readResult, inflight **planeRequest, hb *int
 			st.markDirty() // the initial full snapshot, whatever its revision
 		}
 		return true
+	case contract.FrameTaskCancelAck:
+		req := *inflight
+		if req == nil || req.ctl == nil || req.id != f.RequestID {
+			st.reject(f.RequestID, contract.New(contract.CodeInvalidArgument, "unsolicited, stale or mismatched "+f.Type+" "+f.RequestID), "invalid sequence")
+			return false
+		}
+		a, err := contract.DecodeTaskCancelAck(f.Body)
+		if err == nil && (a.TaskID != req.ctl.body.TaskID || a.Execution != req.ctl.body.Execution || a.StopID != req.ctl.body.StopID) {
+			err = contract.New(contract.CodeInvalidArgument, "task_cancel_ack names another task, execution or stop")
+		}
+		if err != nil {
+			st.reject(f.RequestID, err, "invalid message")
+			return false
+		}
+		if !r.at.Before(req.deadline) {
+			req.expired = true
+			return true
+		}
+		req.stop()
+		*inflight = nil
+		s.tasks.controlDone(req.ctl.id, true, r.at)
+		s.event("cancel-acked " + st.nodeID + " " + f.RequestID + " " + req.ctl.id)
+		return true
 	case contract.FrameTaskStartResult:
 		req := *inflight
 		if req == nil || req.start == nil || req.id != f.RequestID {
@@ -1049,7 +1143,7 @@ func (st *nodeStream) handleFrame(r readResult, inflight **planeRequest, hb *int
 		return true
 	case contract.FrameRoleValidateResult, contract.FrameRolesReplaceAck:
 		req := *inflight
-		if req == nil || req.start != nil || req.recon || req.id != f.RequestID || req.isSnap != (f.Type == contract.FrameRolesReplaceAck) {
+		if req == nil || req.start != nil || req.recon || req.ctl != nil || req.id != f.RequestID || req.isSnap != (f.Type == contract.FrameRolesReplaceAck) {
 			st.reject(f.RequestID, contract.New(contract.CodeInvalidArgument, "unsolicited, stale or mismatched "+f.Type+" "+f.RequestID), "invalid sequence")
 			return false
 		}

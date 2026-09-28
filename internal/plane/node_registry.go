@@ -785,11 +785,17 @@ func (r *nodeRegistry) canAcceptLocked(rs *roleState, rec contract.RoleRecord) b
 }
 
 // readinessLocked is canAcceptLocked's reason, in the candidate
-// precedence (iteration 05): storage_unconfirmed, node_offline,
+// precedence (iteration 05; role_removing since 06b): storage_unconfirmed,
+// role_removing, node_offline,
 // node_detached, role_unsynced, worker_unready, else available.
 func (r *nodeRegistry) readinessLocked(rs *roleState, rec contract.RoleRecord) string {
 	if rs == nil || rs.blocked {
 		return contract.ReasonStorageUnconfirmed
+	}
+	if rs.visible.fenced(rec) {
+		// A fenced instance (iteration 06b) never accepts, whatever its
+		// node and heartbeats report.
+		return contract.ReasonRoleRemoving
 	}
 	st := r.nodes[rec.Node]
 	switch {
@@ -873,6 +879,20 @@ func (r *nodeRegistry) enqueueStart(node string, gen uint64, it *startItem) bool
 	return s != nil && s.enqueueStart(it)
 }
 
+// kick wakes node's current attachment's session (a pending control,
+// iteration 06b). The caller may hold the task lock (task, then node).
+func (r *nodeRegistry) kick(node string) {
+	r.mu.Lock()
+	var s *nodeStream
+	if st := r.nodes[node]; st != nil && st.att != nil {
+		s = st.att.stream
+	}
+	r.mu.Unlock()
+	if s != nil {
+		signal(s.kick)
+	}
+}
+
 // lockTasks takes the task observation lock (before mu) when a task
 // service is attached, and returns the held count lookup valid until the
 // returned unlock.
@@ -923,6 +943,9 @@ func (r *nodeRegistry) roleViews(sel func(*roleState) []contract.RoleRecord, loo
 		}
 		if info, ok := lookup(rec.Adapter); ok {
 			v.AdapterTestOnly = info.TestOnly
+		}
+		if f := rs.visible.fenceOf(rec.ID, rec.RegistrationOrder); f != nil {
+			v.Removing, v.Removal = true, &contract.RoleRemoval{OperationID: f.OperationID, RegistrationOrder: f.RegistrationOrder}
 		}
 		out = append(out, v)
 	}

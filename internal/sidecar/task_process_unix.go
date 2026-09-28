@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -47,7 +48,7 @@ type execGuardian struct {
 }
 
 func newExecGuardian(spec guardianSpec) guardianProc {
-	return &execGuardian{spec: spec, msgs: make(chan contract.GuardianStatus, 4), diag: &tailWriter{max: maxGuardianDiag * 4}}
+	return &execGuardian{spec: spec, msgs: make(chan contract.GuardianStatus, 8), diag: &tailWriter{max: maxGuardianDiag * 4}}
 }
 
 // tailWriter keeps the last max bytes written (bounded diagnostics).
@@ -140,7 +141,18 @@ func (g *execGuardian) Release() {
 }
 
 func (g *execGuardian) Revoke() { g.relOnce.Do(func() { g.relW.Close() }) }
-func (g *execGuardian) Stop()   { g.lifeOnce.Do(func() { g.lifeW.Close() }) }
+
+// Control asks the live guardian to cancel through its control FIFO: the
+// version-2 command with cause cancelled and the plane's stop ID.
+func (g *execGuardian) Control(stopID string) error {
+	cmd, err := contract.EncodeGuardianCommand(contract.GuardianCommand{TaskID: g.spec.inv.TaskID, Execution: g.spec.inv.Execution,
+		Nonce: g.spec.inv.Nonce, Command: contract.GuardianStop, Cause: contract.CauseCancelled, StopID: stopID})
+	if err != nil {
+		return err
+	}
+	return sendCommand(filepath.Join(g.spec.inv.TaskDir, controlName), cmd)
+}
+func (g *execGuardian) Stop() { g.lifeOnce.Do(func() { g.lifeW.Close() }) }
 
 func (g *execGuardian) Wait() procExit {
 	err := g.cmd.Wait()
@@ -265,6 +277,10 @@ func defaultGuardianEnv() guardianEnv {
 		grace:  groupGrace,
 		now:    func() time.Time { return time.Now().UTC() },
 		lookup: adapter.Lookup(),
+		timerAt: func(at time.Time) (<-chan time.Time, func() bool) {
+			t := time.NewTimer(time.Until(at))
+			return t.C, t.Stop
+		},
 	}
 }
 

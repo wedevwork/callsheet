@@ -35,20 +35,54 @@ type TaskRecord struct {
 	// StartDigest is the canonical SHA-256 of the original task_start
 	// body (lowercase hex); nil only for history migrated from schema 1.
 	StartDigest *string
-	// TimeoutPolicy is TimeoutPolicyLegacy in 06a.
+	// TimeoutPolicy is TimeoutPolicyEnforced for 06b dispatches and
+	// TimeoutPolicyLegacy for history.
 	TimeoutPolicy string
+	// StopIntent is the task's durable plane stop intent (iteration 06b),
+	// retained in lost and control terminal history.
+	StopIntent *StopIntent
 	// ResultDigest is the committed worker outcome's digest, when a worker
 	// result decided the terminal state.
 	ResultDigest *string
 	// Late is the single late-evidence slot (terminal records only).
 	Late *LateResult
-	// Schema is the on-disk schema the record was decoded from (1 or 2);
-	// EncodeTaskRecord always writes schema 2.
+	// Schema is the on-disk schema the record was decoded from (1, 2 or
+	// 3); EncodeTaskRecord always writes schema 3.
 	Schema int
 }
 
-// taskRecordWire is the ordered schema-2 form of tasks/<task_id>.json.
+// taskRecordWire is the ordered schema-3 form of tasks/<task_id>.json
+// (iteration 06b): no timeout_enforced, the timeout policy and the
+// nullable stop intent.
 type taskRecordWire struct {
+	SchemaVersion         int             `json:"schema_version"`
+	TaskID                string          `json:"task_id"`
+	Request               DispatchRequest `json:"request"`
+	Role                  json.RawMessage `json:"role"`
+	RolesRevision         int             `json:"roles_revision"`
+	Effective             TaskEffective   `json:"effective"`
+	TimeoutPolicy         string          `json:"timeout_policy"`
+	Execution             ExecutionToken  `json:"execution"`
+	StartDigest           *string         `json:"start_digest"`
+	StopIntent            *StopIntent     `json:"stop_intent"`
+	State                 string          `json:"state"`
+	CreatedAt             string          `json:"created_at"`
+	StartedAt             *string         `json:"started_at"`
+	FinishedAt            *string         `json:"finished_at"`
+	ExitCode              *int            `json:"exit_code"`
+	Signal                *string         `json:"signal"`
+	FinalMessage          *string         `json:"final_message"`
+	FinalMessageTruncated bool            `json:"final_message_truncated"`
+	ResultDigest          *string         `json:"result_digest"`
+	Reason                *TaskReason     `json:"reason"`
+	Candidates            []TaskCandidate `json:"candidates"`
+	Log                   json.RawMessage `json:"log"`
+	LateResult            *lateWire       `json:"late_result"`
+	Revision              int             `json:"revision"`
+}
+
+// taskRecordWireV2 is iteration 06a's exact schema-2 document.
+type taskRecordWireV2 struct {
 	SchemaVersion         int             `json:"schema_version"`
 	TaskID                string          `json:"task_id"`
 	Request               DispatchRequest `json:"request"`
@@ -128,7 +162,7 @@ func timePtr(t *time.Time) *string {
 // late result's log, in that order.
 var logDataKey = []byte(`"data": ""`)
 
-// EncodeTaskRecord renders the exact schema-2 writer bytes: two-space
+// EncodeTaskRecord renders the exact schema-3 writer bytes: two-space
 // indentation, schema field order, one final LF, no HTML escaping; the log
 // tails are base64. The metadata is encoded first with empty tails and
 // each base64 tail is then written once into an exact-size buffer, so a
@@ -186,7 +220,7 @@ func encodeTaskMeta(r TaskRecord) ([]byte, error) {
 		policy = TimeoutPolicyLegacy
 	}
 	w := taskRecordWire{SchemaVersion: TaskRecordSchemaVersion, TaskID: r.TaskID, Request: r.Request, Role: role, RolesRevision: r.RolesRevision,
-		Effective: r.Effective, TimeoutPolicy: policy, Execution: r.Execution, StartDigest: r.StartDigest, State: r.State,
+		Effective: r.Effective, TimeoutPolicy: policy, Execution: r.Execution, StartDigest: r.StartDigest, StopIntent: r.StopIntent, State: r.State,
 		CreatedAt: FormatTime(r.CreatedAt), StartedAt: timePtr(r.StartedAt), FinishedAt: timePtr(r.FinishedAt), ExitCode: r.ExitCode,
 		Signal: r.Signal, FinalMessage: r.FinalMessage, FinalMessageTruncated: r.FinalMessageTruncated, ResultDigest: r.ResultDigest,
 		Reason: r.Reason, Candidates: cands, Log: lg, Revision: r.Revision}
@@ -210,13 +244,14 @@ func encodeTaskMeta(r TaskRecord) ([]byte, error) {
 }
 
 // ParseTaskRecord strictly decodes and validates one task document of
-// schema 2, or of schema 1 with iteration 05's exact validation converted
-// in memory (timeout_policy legacy_unenforced, null start and result
-// digests, no late result; Schema reports 1). It checks the task ID,
-// request, role record and effective settings (against lookup), the
-// execution token, timestamps, lifecycle invariants, reason and
-// candidates, the base64 logs and their counters, the combined tail bound
-// and the revision. Registry references are checked by the plane's loader.
+// schema 3, or of schema 2 or 1 with its exact older wire struct and
+// validation, normalized in memory (Schema reports the decoded schema;
+// nothing is rewritten by a read). It checks the task ID, request, role
+// record and effective settings (against lookup), the execution token,
+// timestamps, lifecycle invariants, reason and candidates, the timeout
+// policy and stop intent, the base64 logs and their counters, the combined
+// tail bound and the revision. Registry references are checked by the
+// plane's loader.
 func ParseTaskRecord(data []byte, lookup AdapterLookup) (TaskRecord, error) {
 	const what = "task record"
 	// A light probe of the schema (one scan, no copy of the tails); the
@@ -235,23 +270,61 @@ func ParseTaskRecord(data []byte, lookup AdapterLookup) (TaskRecord, error) {
 	switch v, _ := ParseInteger(string(bytes.TrimSpace(raw))); v {
 	case LegacyTaskRecordSchemaVersion:
 		return parseLegacyTaskRecord(data, lookup)
+	case TaskRecordSchema2:
+		var w taskRecordWireV2
+		if err := decodeStrict(data, &w, what); err != nil {
+			return TaskRecord{}, err
+		}
+		if w.TimeoutEnforced {
+			return TaskRecord{}, errInvalid("%s timeout_enforced must be false in schema 2", what)
+		}
+		if w.TimeoutPolicy != TimeoutPolicyLegacy {
+			return TaskRecord{}, errInvalid("%s timeout_policy must be %q in schema 2", what, TimeoutPolicyLegacy)
+		}
+		if w.State == TaskCancelled || w.State == TaskTimedOut {
+			return TaskRecord{}, errInvalid("%s state %q is not a schema 2 state", what, w.State)
+		}
+		rec, err := finishRecord(taskRecordWire{SchemaVersion: w.SchemaVersion, TaskID: w.TaskID, Request: w.Request, Role: w.Role,
+			RolesRevision: w.RolesRevision, Effective: w.Effective, TimeoutPolicy: w.TimeoutPolicy, Execution: w.Execution,
+			StartDigest: w.StartDigest, State: w.State, CreatedAt: w.CreatedAt, StartedAt: w.StartedAt, FinishedAt: w.FinishedAt,
+			ExitCode: w.ExitCode, Signal: w.Signal, FinalMessage: w.FinalMessage, FinalMessageTruncated: w.FinalMessageTruncated,
+			ResultDigest: w.ResultDigest, Reason: w.Reason, Candidates: w.Candidates, Log: w.Log, LateResult: w.LateResult, Revision: w.Revision},
+			lookup, what)
+		if err == nil && rec.Late != nil && rec.Late.Outcome != OutcomeNatural && rec.Late.Outcome != OutcomeLost {
+			return TaskRecord{}, errInvalid("%s late_result outcome must be natural or lost in schema 2", what)
+		}
+		rec.Schema = TaskRecordSchema2
+		return rec, err
 	case TaskRecordSchemaVersion:
 	default:
-		return TaskRecord{}, errInvalid("%s schema_version %s is not supported (this build supports %d and %d)", what, SafeText(string(raw), 32),
-			LegacyTaskRecordSchemaVersion, TaskRecordSchemaVersion)
+		return TaskRecord{}, errInvalid("%s schema_version %s is not supported (this build supports %d, %d and %d)", what, SafeText(string(raw), 32),
+			LegacyTaskRecordSchemaVersion, TaskRecordSchema2, TaskRecordSchemaVersion)
 	}
 	var w taskRecordWire
 	if err := decodeStrict(data, &w, what); err != nil {
 		return TaskRecord{}, err
 	}
-	rec, err := commonRecord(w.TaskID, w.Role, w.Effective, w.RolesRevision, w.Revision, w.TimeoutEnforced, w.CreatedAt, w.StartedAt,
+	if !ValidTimeoutPolicy(w.TimeoutPolicy) {
+		return TaskRecord{}, errInvalid("%s timeout_policy must be %q or %q", what, TimeoutPolicyEnforced, TimeoutPolicyLegacy)
+	}
+	return finishRecord(w, lookup, what)
+}
+
+// stopIntentState reports whether a record in state may carry a stop
+// intent: pending and running ones (the intent precedes the terminal
+// decision), and lost and cancelled history.
+func stopIntentState(state string) bool {
+	return state == TaskPending || state == TaskRunning || state == TaskLost || state == TaskCancelled
+}
+
+// finishRecord validates a schema-2 or schema-3 document's fields.
+func finishRecord(w taskRecordWire, lookup AdapterLookup, what string) (TaskRecord, error) {
+	rec, err := commonRecord(w.TaskID, w.Role, w.Effective, w.RolesRevision, w.Revision, false, w.CreatedAt, w.StartedAt,
 		w.FinishedAt, w.State, w.ExitCode, w.Signal, w.FinalMessage, w.FinalMessageTruncated, w.Reason, w.Candidates, w.Log, lookup, what)
 	if err != nil {
 		return TaskRecord{}, err
 	}
 	switch {
-	case w.TimeoutPolicy != TimeoutPolicyLegacy:
-		return TaskRecord{}, errInvalid("%s timeout_policy must be %q in this build", what, TimeoutPolicyLegacy)
 	case w.StartDigest != nil && !ValidDigest(*w.StartDigest):
 		return TaskRecord{}, errInvalid("%s start_digest must be null or 64 lowercase hex digits", what)
 	case w.ResultDigest != nil && !ValidDigest(*w.ResultDigest):
@@ -260,8 +333,12 @@ func ParseTaskRecord(data []byte, lookup AdapterLookup) (TaskRecord, error) {
 		return TaskRecord{}, errInvalid("%s: a %s task has no result digest", what, w.State)
 	case w.LateResult != nil && !TaskTerminal(w.State):
 		return TaskRecord{}, errInvalid("%s: a %s task has no late result", what, w.State)
+	case w.StopIntent != nil && !stopIntentState(w.State):
+		return TaskRecord{}, errInvalid("%s: a %s task has no stop intent", what, w.State)
+	case w.State == TaskTimedOut && w.TimeoutPolicy != TimeoutPolicyEnforced:
+		return TaskRecord{}, errInvalid("%s: a timed_out task has the enforced timeout policy", what)
 	}
-	rec.Request, rec.Execution, rec.StartDigest, rec.ResultDigest = w.Request, w.Execution, w.StartDigest, w.ResultDigest
+	rec.Request, rec.Execution, rec.StartDigest, rec.ResultDigest, rec.StopIntent = w.Request, w.Execution, w.StartDigest, w.ResultDigest, w.StopIntent
 	rec.TimeoutPolicy, rec.Schema = w.TimeoutPolicy, TaskRecordSchemaVersion
 	if lw := w.LateResult; lw != nil {
 		at, ok := ParseTime(lw.ReceivedAt)
@@ -294,7 +371,7 @@ func parseLegacyTaskRecord(data []byte, lookup AdapterLookup) (TaskRecord, error
 	if err := decodeStrict(data, &w, what); err != nil {
 		return TaskRecord{}, err
 	}
-	if w.State == TaskLost {
+	if w.State == TaskLost || w.State == TaskCancelled || w.State == TaskTimedOut {
 		return TaskRecord{}, errInvalid("%s state %q is not a schema 1 state", what, w.State)
 	}
 	var cands []TaskCandidate

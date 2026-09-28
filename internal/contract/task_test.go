@@ -138,7 +138,7 @@ func TestTaskContract(t *testing.T) {
 			{"workspace", dispatchJSON(map[string]*string{"workspace": s(`"ws"`)}), "workspace", ReasonWorkspaceNotSupported, "iteration 10"},
 			{"workspace null", dispatchJSON(map[string]*string{"workspace": s(`null`)}), "workspace", ReasonWorkspaceNotSupported, "iteration 10"},
 			{"base empty", dispatchJSON(map[string]*string{"base": s(`""`)}), "base", ReasonWorkspaceNotSupported, "iteration 10"},
-			{"wait", dispatchJSON(map[string]*string{"wait": s(`true`)}), "wait", ReasonWaitNotSupported, "iteration 06"},
+			{"wait", dispatchJSON(map[string]*string{"wait": s(`"5s"`)}), "", "", "unknown field"},
 			{"bare target", dispatchJSON(map[string]*string{"target": s(`"worker-a"`)}), "target", "", "not a JSON object"},
 			{"target kind", dispatchJSON(map[string]*string{"target": s(`{"kind":"role","value":"a"}`)}), "target", "", "target kind"},
 			{"target slug", dispatchJSON(map[string]*string{"target": s(`{"kind":"name","value":"A"}`)}), "target", "", "target value"},
@@ -414,14 +414,14 @@ func TestTaskContract(t *testing.T) {
 		}
 	})
 	t.Run("protocol", func(t *testing.T) {
-		if ProtocolVersion != 4 {
+		if ProtocolVersion != 5 {
 			t.Fatalf("protocol %d", ProtocolVersion)
 		}
 		// A protocol-3 peer is refused with both versions named, before its
 		// body is looked at.
 		_, err := DecodeFrame(frame(3, FrameTaskLog, "b1", `{"garbage":true}`), FromSidecar)
 		var ce *Error
-		if !errors.As(err, &ce) || ce.Code != CodeProtocolMismatch || ce.Message != "protocol version mismatch: local=4 remote=3" {
+		if !errors.As(err, &ce) || ce.Code != CodeProtocolMismatch || ce.Message != "protocol version mismatch: local=5 remote=3" {
 			t.Fatalf("protocol 3 frame: %v", err)
 		}
 		// Heartbeat inflight is 0..MaxConcurrency, may exceed a lowered
@@ -544,14 +544,15 @@ func TestTaskContract(t *testing.T) {
 		}
 		good2, _ := EncodeTaskRecord(base)
 		for name, raw := range map[string]string{
-			"schema":       strings.Replace(string(good2), `"schema_version": 2`, `"schema_version": 3`, 1),
-			"enforced":     strings.Replace(string(good2), `"timeout_enforced": false`, `"timeout_enforced": true`, 1),
-			"bool number":  strings.Replace(string(good2), `"timeout_enforced": false`, `"timeout_enforced": 0`, 1),
-			"extra":        strings.Replace(string(good2), `"revision": 1`, `"revision": 1, "x": 1`, 1),
-			"missing":      strings.Replace(string(good2), `"final_message": null,`, ``, 1),
-			"created time": strings.Replace(string(good2), `"created_at": "2026-09-27T10:00:00Z"`, `"created_at": "2026-09-27 10:00:00"`, 1),
-			"base64":       strings.Replace(string(good2), `"data": ""`, `"data": "YQ"`, 1),
-			"duplicate":    strings.Replace(string(good2), `"revision": 1`, `"revision": 1, "revision": 1`, 1),
+			"schema":        strings.Replace(string(good2), `"schema_version": 3`, `"schema_version": 4`, 1),
+			"policy":        strings.Replace(string(good2), `"timeout_policy": "legacy_unenforced"`, `"timeout_policy": "odd"`, 1),
+			"enforced flag": strings.Replace(string(good2), `"timeout_policy": "legacy_unenforced"`, `"timeout_policy": "legacy_unenforced", "timeout_enforced": false`, 1),
+			"stop intent":   strings.Replace(string(good2), `"stop_intent": null`, `"stop_intent": {"id":"x","kind":"cancelled","requested_at":"2026-09-27T10:00:00Z"}`, 1),
+			"extra":         strings.Replace(string(good2), `"revision": 1`, `"revision": 1, "x": 1`, 1),
+			"missing":       strings.Replace(string(good2), `"final_message": null,`, ``, 1),
+			"created time":  strings.Replace(string(good2), `"created_at": "2026-09-27T10:00:00Z"`, `"created_at": "2026-09-27 10:00:00"`, 1),
+			"base64":        strings.Replace(string(good2), `"data": ""`, `"data": "YQ"`, 1),
+			"duplicate":     strings.Replace(string(good2), `"revision": 1`, `"revision": 1, "revision": 1`, 1),
 		} {
 			if raw == string(good2) {
 				t.Fatalf("%s: mutation did not apply", name)
@@ -563,7 +564,7 @@ func TestTaskContract(t *testing.T) {
 	})
 	t.Run("responses", func(t *testing.T) {
 		v := maxView()
-		b, err := Encode(DispatchResponse{Version: ProtocolVersion, TaskID: v.TaskID, Task: v})
+		b, err := Encode(DispatchResponse{Version: ProtocolVersion, TaskID: v.TaskID, Task: &v})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -584,7 +585,7 @@ func TestTaskContract(t *testing.T) {
 		// a full reason, within the 2 MiB single-task bound.
 		combined := maxView()
 		combined.Candidates, combined.Reason = maxRejected().Candidates, maxRejected().Reason
-		cb, _ := Encode(DispatchResponse{Version: ProtocolVersion, TaskID: combined.TaskID, Task: combined})
+		cb, _ := Encode(DispatchResponse{Version: ProtocolVersion, TaskID: combined.TaskID, Task: &combined})
 		if len(cb)+1 > MaxTaskViewBytes || len(b) < 1<<20 {
 			t.Fatalf("worst-case view is %d bytes (success alone %d)", len(cb), len(b))
 		}
@@ -608,7 +609,8 @@ func TestTaskContract(t *testing.T) {
 			"commit":             {smallView, func(v *TaskView) {}},
 			"reconciling final":  {smallView, func(v *TaskView) { v.Reconciling = true }},
 			"persistence reason": {smallView, func(v *TaskView) { v.PersistenceReason = s("other") }},
-			"enforced":           {smallView, func(v *TaskView) { v.TimeoutEnforced = true }},
+			"policy":             {smallView, func(v *TaskView) { v.TimeoutPolicy = "odd" }},
+			"stop on success":    {smallView, func(v *TaskView) { v.StopRequested = true }},
 			"dropped":            {smallView, func(v *TaskView) { v.Log.DroppedBytes++ }},
 			"tail":               {smallView, func(v *TaskView) { v.Result.LogTail = "other" }},
 			"success candidates": {smallView, func(v *TaskView) { v.Candidates = smallRejected().Candidates }},
@@ -634,7 +636,7 @@ func TestTaskContract(t *testing.T) {
 		}
 		// A protocol-3 envelope is a mismatch naming both versions.
 		small, _ := Encode(TaskShowResponse{Version: ProtocolVersion, Task: smallView()})
-		if _, err := ParseTaskShowResponse(bytes.Replace(small, []byte(`{"version":4`), []byte(`{"version":3`), 1)); !IsCode(err, CodeProtocolMismatch) {
+		if _, err := ParseTaskShowResponse(bytes.Replace(small, []byte(`{"version":5`), []byte(`{"version":3`), 1)); !IsCode(err, CodeProtocolMismatch) {
 			t.Fatalf("version 3 view: %v", err)
 		}
 		// Lists: ascending IDs, at most 100, next_after is the last ID.
@@ -648,21 +650,21 @@ func TestTaskContract(t *testing.T) {
 		if got, n, err := ParseTaskListResponse(lb); err != nil || len(got) != 2 || *n != next {
 			t.Fatalf("list %v", err)
 		}
-		if b, _ := Encode(TaskListResponse{Version: ProtocolVersion}); string(b) != `{"version":4,"tasks":[],"next_after":null}` {
+		if b, _ := Encode(TaskListResponse{Version: ProtocolVersion}); string(b) != `{"version":5,"tasks":[],"next_after":null}` {
 			t.Fatalf("empty page %s", b)
 		}
 		for name, r := range map[string]TaskListResponse{
-			"unsorted":  {Version: 4, Tasks: []TaskSummary{sum(ids[1]), sum(ids[0])}},
-			"duplicate": {Version: 4, Tasks: []TaskSummary{sum(ids[0]), sum(ids[0])}},
-			"cursor":    {Version: 4, Tasks: []TaskSummary{sum(ids[0])}, NextAfter: &next},
-			"empty cur": {Version: 4, NextAfter: &next},
+			"unsorted":  {Version: 5, Tasks: []TaskSummary{sum(ids[1]), sum(ids[0])}},
+			"duplicate": {Version: 5, Tasks: []TaskSummary{sum(ids[0]), sum(ids[0])}},
+			"cursor":    {Version: 5, Tasks: []TaskSummary{sum(ids[0])}, NextAfter: &next},
+			"empty cur": {Version: 5, NextAfter: &next},
 		} {
 			b, _ := Encode(r)
 			if _, _, err := ParseTaskListResponse(b); err == nil {
 				t.Fatalf("%s accepted", name)
 			}
 		}
-		many := TaskListResponse{Version: 4}
+		many := TaskListResponse{Version: 5}
 		for i := 0; i <= MaxTaskListLimit; i++ {
 			many.Tasks = append(many.Tasks, sum("t_"+strings.Repeat("0", 29)+strconv.FormatInt(int64(100+i), 10)))
 		}
@@ -675,13 +677,13 @@ func TestTaskContract(t *testing.T) {
 		}
 		// Logs: byte exact base64; counters consistent.
 		data := []byte{0, 1, 0xff, '\n', 0x1b}
-		lr := TaskLogsResponse{Version: 4, TaskID: testTaskID, Data: data, RetainedBytes: 5, SourceBytes: 9, DroppedBytes: 4, Truncated: true}
+		lr := TaskLogsResponse{Version: 5, TaskID: testTaskID, Data: data, RetainedBytes: 5, SourceBytes: 9, DroppedBytes: 4, Truncated: true}
 		b, _ = Encode(lr)
 		if got, err := ParseTaskLogsResponse(b); err != nil || !bytes.Equal(got.Data, data) {
 			t.Fatalf("logs %v", err)
 		}
 		// The spliced encoder renders exactly the generic encoder's form.
-		if generic, _ := json.Marshal(lr); string(b) != string(generic) || string(b) != `{"version":4,"task_id":"`+testTaskID+`","data":"AAH/Chs=","retained_bytes":5,"source_bytes":9,"dropped_bytes":4,"truncated":true,"incomplete":false,"counter_overflow":false,"log_may_be_incomplete":false}` {
+		if generic, _ := json.Marshal(lr); string(b) != string(generic) || string(b) != `{"version":5,"task_id":"`+testTaskID+`","data":"AAH/Chs=","retained_bytes":5,"source_bytes":9,"dropped_bytes":4,"truncated":true,"incomplete":false,"counter_overflow":false,"log_may_be_incomplete":false}` {
 			t.Fatalf("logs encoding %s", b)
 		}
 		for name, mut := range map[string]func(*TaskLogsResponse){
@@ -697,7 +699,7 @@ func TestTaskContract(t *testing.T) {
 				t.Fatalf("logs %s accepted", name)
 			}
 		}
-		full := TaskLogsResponse{Version: 4, TaskID: testTaskID, Data: make([]byte, MaxLogRetainedBytes), RetainedBytes: MaxLogRetainedBytes, SourceBytes: MaxLogRetainedBytes}
+		full := TaskLogsResponse{Version: 5, TaskID: testTaskID, Data: make([]byte, MaxLogRetainedBytes), RetainedBytes: MaxLogRetainedBytes, SourceBytes: MaxLogRetainedBytes}
 		if b, _ := Encode(full); len(b)+1 > MaxTaskLogsBytes || len(b) < base64.StdEncoding.EncodedLen(MaxLogRetainedBytes) {
 			t.Fatalf("a full log response is %d bytes", len(b))
 		}
@@ -772,7 +774,7 @@ func maxView() TaskView {
 	zero := 0
 	now := FormatTime(time.Date(2026, 9, 27, 10, 0, 0, 0, time.UTC))
 	return TaskView{TaskID: testTaskID, Request: req, Role: PublicRole(validRole()), Effective: TaskEffective{Model: "example", Effort: "medium", Timeout: time.Hour},
-		State: TaskSucceeded, CreatedAt: now, StartedAt: &now, FinishedAt: &now, DurabilityConfirmed: true,
+		TimeoutPolicy: TimeoutPolicyLegacy, State: TaskSucceeded, CreatedAt: now, StartedAt: &now, FinishedAt: &now, DurabilityConfirmed: true,
 		Log: TaskLogMeta{RetainedBytes: 10, SourceBytes: 10, ReceivedBytes: 10}, LogTail: tail,
 		Result: &TaskResult{State: TaskSucceeded, ExitCode: &zero, FinalMessage: &msg, LogTail: tail}}
 }
@@ -782,7 +784,7 @@ func smallView() TaskView {
 	msg, tail, zero := "done", "tail\n", 0
 	now := FormatTime(time.Date(2026, 9, 27, 10, 0, 0, 0, time.UTC))
 	return TaskView{TaskID: testTaskID, Request: validRequest(), Role: PublicRole(validRole()), Effective: TaskEffective{Model: "example", Effort: "medium", Timeout: time.Hour},
-		State: TaskSucceeded, CreatedAt: now, StartedAt: &now, FinishedAt: &now, DurabilityConfirmed: true,
+		TimeoutPolicy: TimeoutPolicyEnforced, State: TaskSucceeded, CreatedAt: now, StartedAt: &now, FinishedAt: &now, DurabilityConfirmed: true,
 		Log: TaskLogMeta{RetainedBytes: 5, SourceBytes: 5, ReceivedBytes: 5}, LogTail: tail,
 		Result: &TaskResult{State: TaskSucceeded, ExitCode: &zero, FinalMessage: &msg, LogTail: tail}}
 }

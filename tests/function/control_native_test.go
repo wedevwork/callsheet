@@ -40,6 +40,9 @@ import (
 // invocation, asserted. The plane is in process; the orphan-restart
 // replacement sidecar is this test process (sidecar.Run in process, fake
 // adapter disabled: no child). Every child is gone when a scenario ends.
+// Iteration 06b drives cooperative through the public cancel API and
+// resistant through the guardian's own execution timeout (no child is
+// added).
 func TestControlNativeGroups(t *testing.T) {
 	ledger := &nativeLedger{}
 	t.Cleanup(func() {
@@ -49,42 +52,63 @@ func TestControlNativeGroups(t *testing.T) {
 	})
 	t.Run("cooperative", func(t *testing.T) {
 		t.Parallel()
-		// Run shutdown asks the guardian to clean its group: TERM reaches
-		// the leader (its wait status) and the descendant, which exits; the
-		// whole group completes and is proved gone.
-		r := startNativeRig(t, ledger, fakeadapter.TermExit)
+		// Public cancellation (06b) after the leader's output reached the
+		// plane and its descendant is ready: the plane's durable intent
+		// reaches the guardian, whose TERM reaches the leader (its wait
+		// status) and the descendant, which exits; the whole group completes
+		// and is proved gone before the task is cancelled, and a Run
+		// shutdown afterwards has nothing left to stop.
+		r := startNativeRig(t, ledger, fakeadapter.TermExit, 0)
+		started := "native started pid=" + strconv.Itoa(r.info.LeaderPID) + "\n"
+		r.awaitTask(t, func(v contract.TaskView) bool { return strings.Contains(v.LogTail, started) })
 		start := time.Now()
-		r.fixture.Process.Signal(syscall.SIGTERM)
-		if code := r.fixtureExit(t); code != 130 {
-			t.Fatalf("fixture exit %d:\n%s", code, r.logs.String())
+		resp, err := r.cl.CancelTask(context.Background(), r.taskID)
+		if err != nil || !resp.Accepted || !resp.Task.StopRequested {
+			t.Fatalf("cancel %+v %v", resp, err)
 		}
-		res := r.journalResult(t)
-		if res.Outcome != contract.OutcomeLost || res.Signal == nil || *res.Signal != "SIGTERM" {
-			t.Fatalf("interrupted result %+v", res)
-		}
+		v := r.awaitTask(t, func(v contract.TaskView) bool { return contract.TaskTerminal(v.State) })
 		if el := time.Since(start); el < time.Second {
 			t.Fatalf("the group was reported gone after %v, before the 1 s grace", el)
 		}
+		if v.State != contract.TaskCancelled || v.Result == nil || v.Result.Signal == nil || *v.Result.Signal != "SIGTERM" ||
+			!strings.Contains(v.LogTail, started) {
+			t.Fatalf("cancelled task %+v", v)
+		}
 		r.allGone(t)
-	})
-	t.Run("resistant", func(t *testing.T) {
-		t.Parallel()
-		// The leader exits on TERM; its descendant ignores TERM and is
-		// killed with the group at the end of the grace (KILL to the
-		// guardian's own group, the guardian included).
-		r := startNativeRig(t, ledger, fakeadapter.TermIgnore)
-		start := time.Now()
 		r.fixture.Process.Signal(syscall.SIGTERM)
 		if code := r.fixtureExit(t); code != 130 {
 			t.Fatalf("fixture exit %d:\n%s", code, r.logs.String())
 		}
-		if el := time.Since(start); el < time.Second {
-			t.Fatalf("a TERM-resistant descendant was gone after %v", el)
+	})
+	t.Run("resistant", func(t *testing.T) {
+		t.Parallel()
+		// The guardian's own execution timeout (06b; a 5 s dispatch
+		// override, armed at the adapter's Start authorization): the leader
+		// stays alive until the deadline's TERM, then exits; its descendant
+		// ignores TERM and is killed with the group at the end of the grace
+		// (KILL to the guardian's own group, the guardian included). The
+		// rig's descendant-ready barrier must be reached inside the timeout,
+		// or the scenario fails as a missed setup.
+		r := startNativeRig(t, ledger, fakeadapter.TermIgnore, resistantTimeout)
+		if r.ready.Sub(r.dispatched) >= resistantTimeout {
+			t.Fatalf("setup missed the %v timeout: the descendant was ready %v after dispatch", resistantTimeout, r.ready.Sub(r.dispatched))
 		}
-		if res := r.journalResult(t); res.Signal == nil || *res.Signal != "SIGTERM" {
-			t.Fatalf("leader status %+v", res)
+		if err := syscall.Kill(r.info.LeaderPID, 0); err != nil {
+			t.Fatalf("the leader did not wait for its deadline: %v", err)
+		}
+		v := r.awaitTask(t, func(v contract.TaskView) bool { return contract.TaskTerminal(v.State) })
+		if el := time.Since(r.dispatched); el < resistantTimeout+time.Second {
+			t.Fatalf("a TERM-resistant descendant's group was gone %v after dispatch, before the timeout and its grace", el)
+		}
+		if v.State != contract.TaskTimedOut || v.StopRequested || v.TimeoutPolicy != contract.TimeoutPolicyEnforced || v.Result == nil ||
+			v.Result.Signal == nil || *v.Result.Signal != "SIGTERM" {
+			t.Fatalf("timed out task %+v", v)
 		}
 		r.allGone(t)
+		r.fixture.Process.Signal(syscall.SIGTERM)
+		if code := r.fixtureExit(t); code != 130 {
+			t.Fatalf("fixture exit %d:\n%s", code, r.logs.String())
+		}
 	})
 	t.Run("orphan-restart", func(t *testing.T) {
 		t.Parallel()
@@ -95,7 +119,7 @@ func TestControlNativeGroups(t *testing.T) {
 		// journal, asks the authentic guardian to stop through its FIFO
 		// (or finds the group gone), reports the execution lost and the
 		// group ends in ESRCH.
-		r := startNativeRig(t, ledger, fakeadapter.TermIgnore)
+		r := startNativeRig(t, ledger, fakeadapter.TermIgnore, 0)
 		// The plane received output before the crash: the recovered lost
 		// outcome reports less than that (its journal predates it) and
 		// must still resolve the execution, keeping that output.
@@ -136,7 +160,7 @@ func TestControlNativeGroups(t *testing.T) {
 		// Only the plane closes and reopens: the exact same leader PID
 		// keeps running, then produces output and exits; its result is the
 		// task's (no lost decision, no replay, no cleanup signal before).
-		r := startNativeRig(t, ledger, fakeadapter.TermExit)
+		r := startNativeRig(t, ledger, fakeadapter.TermExit, 0)
 		r.plane.stop(t)
 		r.plane.start(t)
 		r.awaitOnline(t)
@@ -155,6 +179,11 @@ func TestControlNativeGroups(t *testing.T) {
 		r.allGone(t)
 	})
 }
+
+// resistantTimeout is the resistant scenario's execution timeout: room
+// for the launch and the descendant-ready barrier (checked), at most 5 s
+// added per invocation.
+const resistantTimeout = 5 * time.Second
 
 // sidecarFixtureEnv selects the sidecar package test binary's fixture
 // mode (internal/sidecar's FixtureEnv, fixture_unix_test.go).
@@ -274,13 +303,17 @@ type nativeRig struct {
 	info     fakeadapter.GroupInfo
 	guardian int
 	pids     []int
+	// dispatched is taken before the dispatch request (a lower bound of
+	// the timeout's arming); ready after the descendant-ready barrier.
+	dispatched, ready time.Time
 }
 
 // startNativeRig serves a plane, enrolls and starts the sidecar fixture,
 // installs a fake role, dispatches one group-mode task and waits until
 // its guardian released the leader and the descendant is ready. It
-// asserts the group's identity and the four-child ledger.
-func startNativeRig(t *testing.T, ledger *nativeLedger, descendantTerm string) *nativeRig {
+// asserts the group's identity and the four-child ledger. A nonzero
+// timeout is the dispatch's execution timeout override.
+func startNativeRig(t *testing.T, ledger *nativeLedger, descendantTerm string, timeout time.Duration) *nativeRig {
 	t.Helper()
 	bg := context.Background()
 	r := &nativeRig{plane: startFixedPlane(t), state: filepath.Join(t.TempDir(), "sidecar"), groupDir: t.TempDir(), logs: &safeBuffer{}, exited: make(chan int, 1)}
@@ -349,9 +382,14 @@ func startNativeRig(t *testing.T, ledger *nativeLedger, descendantTerm string) *
 		v, err := r.cl.ShowRole(bg, "native")
 		return err == nil && v.CanAccept
 	})
+	req := contract.DispatchRequest{Target: contract.TaskTarget{Kind: contract.TargetID, Value: "native"}, Goal: "native group",
+		Payload: []string{}, Acceptance: "group", RequestedBy: contract.RequestedBy{Name: "callsheet", Version: "test", Hostname: "native"}}
+	if timeout > 0 {
+		req.Override = &contract.TaskOverride{Timeout: &timeout}
+	}
 	dispatched := time.Now()
-	v, err := r.cl.Dispatch(bg, contract.DispatchRequest{Target: contract.TaskTarget{Kind: contract.TargetID, Value: "native"}, Goal: "native group",
-		Payload: []string{}, Acceptance: "group", RequestedBy: contract.RequestedBy{Name: "callsheet", Version: "test", Hostname: "native"}})
+	r.dispatched = dispatched
+	v, err := r.cl.Dispatch(bg, req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,6 +404,7 @@ func startNativeRig(t *testing.T, ledger *nativeLedger, descendantTerm string) *
 		b, err := os.ReadFile(filepath.Join(r.groupDir, fakeadapter.GroupFile))
 		return err == nil && json.Unmarshal(b, &r.info) == nil
 	})
+	r.ready = time.Now()
 	var owner contract.OwnerRecord
 	poll(t, "owner released", func() bool {
 		b, err := os.ReadFile(filepath.Join(r.state, "tasks", r.taskID, "owner.json"))
@@ -443,23 +482,6 @@ func (r *nativeRig) fixtureExit(t *testing.T) int {
 		t.Fatalf("the sidecar fixture did not exit:\n%s", r.logs.String())
 		return -1
 	}
-}
-
-// journalResult is the task's journaled outcome.
-func (r *nativeRig) journalResult(t *testing.T) contract.TaskResultBody {
-	t.Helper()
-	b, err := os.ReadFile(filepath.Join(r.state, "tasks", r.taskID, "execution.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var j struct {
-		Phase  string                   `json:"phase"`
-		Result *contract.TaskResultBody `json:"result"`
-	}
-	if err := json.Unmarshal(b, &j); err != nil || j.Result == nil {
-		t.Fatalf("journal %s: %v", b, err)
-	}
-	return *j.Result
 }
 
 // allGone requires the guardian, the leader and the descendant gone and

@@ -37,7 +37,7 @@ var ctlStarted = time.Date(2026, 9, 26, 11, 0, 0, 0, time.UTC)
 // journalOf is st's journal in phase (a previous Run's durable state).
 func journalOf(st contract.TaskStartBody, phase string) contract.ExecutionJournal {
 	j := contract.ExecutionJournal{TaskID: st.TaskID, Execution: st.Execution, StartDigest: st.StartDigestHex(), Role: st.Role, Effective: st.Effective,
-		TimeoutPolicy: contract.TimeoutPolicyLegacy, Phase: phase}
+		TimeoutPolicy: contract.TimeoutPolicyEnforced, Phase: phase}
 	if phase != contract.JournalPrepared {
 		n, at := ctlNonce, ctlStarted
 		j.OwnerNonce, j.StartedAt = &n, &at
@@ -149,6 +149,12 @@ func TestControlProtocol(t *testing.T) {
 			"replace":  func(c *fakeConn, cfg contract.RoleConfig) { c.replace("p1", 1, cfg) },
 			"validate": func(c *fakeConn, cfg contract.RoleConfig) { c.validate("p1", cfg) },
 			"start":    func(c *fakeConn, cfg contract.RoleConfig) { c.sendStart("p1", startBody(1, cfg, 1, 1, "early")) },
+			// Protocol 5: a task_cancel is a plane request like a start.
+			"cancel": func(c *fakeConn, cfg contract.RoleConfig) {
+				st := startBody(1, cfg, 1, 1, "early")
+				c.send(contract.ProtocolVersion, contract.FrameTaskCancel, "p1",
+					contract.TaskCancelBody{TaskID: st.TaskID, Execution: st.Execution, StopID: stopOf("e").ID, Kind: contract.StopKindCancelled})
+			},
 			"reconcile": func(c *fakeConn, cfg contract.RoleConfig) {
 				c.send(contract.ProtocolVersion, contract.FrameTaskReconcile, "r1", contract.TaskReconcileBody{Final: true})
 			},
@@ -306,6 +312,52 @@ func TestControlProtocol(t *testing.T) {
 		tr.ev.awaitMatch(t, evTaskForgotten, func(ev event) bool { return ev.id == st.TaskID })
 		if _, err := os.Stat(dir); !os.IsNotExist(err) {
 			t.Fatalf("the committed outbox remains: %v", err)
+		}
+	})
+	t.Run("control-kind", func(t *testing.T) {
+		t.Parallel()
+		// timed_out is the guardian's own cause, never a plane control: a
+		// task_cancel naming it (or an unknown field) is a protocol error
+		// closing the attachment (a non-retryable defect ending Run, whose
+		// shutdown interrupts the execution), and nothing is latched: the
+		// journaled outcome names no intent and is neither cancelled nor
+		// timed_out.
+		for _, mode := range []string{"timed_out", "unknown-field"} {
+			fp := startFakePlane(t)
+			tr := startTaskRun(t, fp, taskOpts{})
+			ins, run := manuals(t, tr.dir, "a", "m")
+			cfg := roleConfig("a", ins, run)
+			s := tr.connect(t, 1, 1, cfg)
+			st, ch := s.run(t, 1, 0, "kind "+mode)
+			ch.prompt(t)
+			body := map[string]any{"task_id": st.TaskID, "execution": st.Execution, "stop_id": stopOf("e").ID, "kind": contract.StopKindCancelled}
+			if mode == "timed_out" {
+				body["kind"] = contract.OutcomeTimedOut
+			} else {
+				body["reason"] = "x"
+			}
+			rid := s.nextP()
+			s.c.send(contract.ProtocolVersion, contract.FrameTaskCancel, rid, body)
+			for {
+				f := s.c.recv()
+				if f.Type != contract.FrameError {
+					continue // the execution's own output frames
+				}
+				e, err := contract.ParseErrorBody(f.Body)
+				if err != nil || f.RequestID != rid || e.Code != contract.CodeInvalidArgument {
+					t.Fatalf("%s: %s %+v %v", mode, f.RequestID, e, err)
+				}
+				break
+			}
+			if cl := s.c.closed(); cl != websocket.StatusPolicyViolation {
+				t.Fatalf("%s: close %v", mode, cl)
+			}
+			ch.exitCode(0)
+			tr.settled(t, st.TaskID)
+			if j := tr.journalNow(t, st.TaskID); j.StopIntent != nil || j.Result == nil || j.Result.StopID != nil ||
+				j.Result.Outcome == contract.OutcomeCancelled || j.Result.Outcome == contract.OutcomeTimedOut {
+				t.Fatalf("%s: journal %+v result %+v", mode, j, j.Result)
+			}
 		}
 	})
 	t.Run("fencing", func(t *testing.T) {
@@ -923,6 +975,10 @@ func TestControlRestart(t *testing.T) {
 			})
 		}
 	})
+	t.Run("journal-migration", func(t *testing.T) {
+		t.Parallel()
+		restartMigration(t)
+	})
 	t.Run("reboot", func(t *testing.T) {
 		t.Parallel()
 		// After a host reboot the recorded group is absent (ESRCH): the
@@ -1345,6 +1401,10 @@ func TestControlPlaneRestart(t *testing.T) {
 // task or token change nothing. Do not rename or skip it.
 func TestControlLate(t *testing.T) {
 	t.Parallel()
+	t.Run("intent-replay", func(t *testing.T) {
+		t.Parallel()
+		lateIntentReplay(t)
+	})
 	t.Run("stop-lost", func(t *testing.T) {
 		t.Parallel()
 		// stop_lost: the guardian stops the group; the frozen lost outcome

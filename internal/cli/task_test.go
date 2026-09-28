@@ -22,7 +22,7 @@ func cliRequest(goal string) contract.DispatchRequest {
 
 func cliView(id, state string) contract.TaskView {
 	now := "2026-09-27T10:00:00Z"
-	v := contract.TaskView{TaskID: id, Request: cliRequest("fix \"it\""), Role: contract.TaskRole{ID: "worker-a", Name: "coder", Node: roleNode, Adapter: "fake", RegistrationOrder: 2},
+	v := contract.TaskView{TaskID: id, TimeoutPolicy: contract.TimeoutPolicyEnforced, Request: cliRequest("fix \"it\""), Role: contract.TaskRole{ID: "worker-a", Name: "coder", Node: roleNode, Adapter: "fake", RegistrationOrder: 2},
 		Effective: contract.TaskEffective{Model: "m", Effort: "low", Timeout: 2 * time.Hour}, State: state, CreatedAt: now, DurabilityConfirmed: true}
 	switch state {
 	case contract.TaskSucceeded:
@@ -67,7 +67,7 @@ func TestTaskCLI(t *testing.T) {
 	hostname = func() (string, error) { return "coord-host", nil }
 	t.Cleanup(func() { hostname = old })
 	t.Run("dispatch", func(t *testing.T) {
-		sp.answer(202, envelope(t, contract.DispatchResponse{Version: 4, TaskID: cliTask, Task: cliView(cliTask, contract.TaskPending)}))
+		sp.answer(202, envelope(t, contract.DispatchResponse{Version: 5, TaskID: cliTask, Task: ptrView(cliView(cliTask, contract.TaskPending))}))
 		args := append([]string{"dispatch", "--role-name", "coder", "--goal", "fix \"it\"", "--acceptance", "tests pass", "--timeout", "90m",
 			"--payload", "a://1", "--payload", "-x literal", "--effort", "high"}, trust...)
 		code, out, errOut := exec(t, "linux", args...)
@@ -82,16 +82,16 @@ func TestTaskCLI(t *testing.T) {
 			string(body["requested_by"]) != `{"name":"callsheet","version":"`+Version+`","hostname":"coord-host"}` {
 			t.Fatalf("request %+v", got)
 		}
-		want := "task_id: " + cliTask + "\nstate: pending\nrole_id: worker-a\nrole_name: coder\nnode: " + roleNode + "\nregistration_order: 2\nmodel: \"m\"\neffort: low\ntimeout: 2h0m0s\nnotice: " + contract.TimeoutNotice + "\n"
+		want := "task_id: " + cliTask + "\nstate: pending\nrole_id: worker-a\nrole_name: coder\nnode: " + roleNode + "\nregistration_order: 2\nmodel: \"m\"\neffort: low\ntimeout: 2h0m0s\ntimeout_policy: enforced\n"
 		if out != want {
 			t.Fatalf("text\n%s\nwant\n%s", out, want)
 		}
 		byID := cliView(cliTask, contract.TaskPending)
 		byID.Request.Target = contract.TaskTarget{Kind: contract.TargetID, Value: "worker-a"}
 		byID.Request.Goal, byID.Request.Acceptance = "g", "a"
-		sp.answer(202, envelope(t, contract.DispatchResponse{Version: 4, TaskID: cliTask, Task: byID}))
+		sp.answer(202, envelope(t, contract.DispatchResponse{Version: 5, TaskID: cliTask, Task: &byID}))
 		code, out, _ = exec(t, "linux", append([]string{"dispatch", "--json", "--role-id", "worker-a", "--goal", "g", "--acceptance", "a"}, trust...)...)
-		if code != 0 || out != envelope(t, contract.DispatchResponse{Version: 4, TaskID: cliTask, Task: byID})+"\n" {
+		if code != 0 || out != envelope(t, contract.DispatchResponse{Version: 5, TaskID: cliTask, Task: &byID})+"\n" {
 			t.Fatalf("json %d %q", code, out)
 		}
 		if !strings.Contains(sp.last().body, `"target":{"kind":"id","value":"worker-a"}`) {
@@ -101,7 +101,7 @@ func TestTaskCLI(t *testing.T) {
 		// reason and candidates; exit 0 means admission.
 		rejected := cliView(cliTask, contract.TaskRejected)
 		rejected.Request = byID.Request
-		sp.answer(202, envelope(t, contract.DispatchResponse{Version: 4, TaskID: cliTask, Task: rejected}))
+		sp.answer(202, envelope(t, contract.DispatchResponse{Version: 5, TaskID: cliTask, Task: &rejected}))
 		code, out, _ = exec(t, "linux", append([]string{"dispatch", "--role-id", "worker-a", "--goal", "g", "--acceptance", "a"}, trust...)...)
 		if code != 0 || !strings.Contains(out, "reason: local_full \"the worker is full\"\n") || !strings.Contains(out, "candidate: role_id=worker-a node="+roleNode) {
 			t.Fatalf("rejected %d %q", code, out)
@@ -164,7 +164,7 @@ func TestTaskCLI(t *testing.T) {
 			return s
 		}
 		next := cliTaskB
-		resp := contract.TaskListResponse{Version: 4, Tasks: []contract.TaskSummary{sum(cliTask, false), sum(cliTaskB, true)}, NextAfter: &next}
+		resp := contract.TaskListResponse{Version: 5, Tasks: []contract.TaskSummary{sum(cliTask, false), sum(cliTaskB, true)}, NextAfter: &next}
 		sp.answer(200, envelope(t, resp))
 		code, out, _ := exec(t, "linux", append([]string{"task", "ls", "--limit", "2", "--after", "t_0000000000000000000000000000000a"}, trust...)...)
 		want := "TASK_ID\tSTATE\tROLE_ID\tNODE\tELAPSED_MS\tRECONCILING\n" + cliTask + "\tpending\tworker-a\t" + roleNode + "\t1500\tfalse\n" +
@@ -176,7 +176,7 @@ func TestTaskCLI(t *testing.T) {
 		if code != 0 || out != envelope(t, resp)+"\n" || sp.last().query != "" {
 			t.Fatalf("ls json %d %q", code, out)
 		}
-		sp.answer(200, `{"version":4,"tasks":[],"next_after":null}`)
+		sp.answer(200, `{"version":5,"tasks":[],"next_after":null}`)
 		if code, out, _ := exec(t, "linux", append([]string{"task", "ls"}, trust...)...); code != 0 || out != "TASK_ID\tSTATE\tROLE_ID\tNODE\tELAPSED_MS\tRECONCILING\n" {
 			t.Fatalf("empty ls %d %q", code, out)
 		}
@@ -187,7 +187,7 @@ func TestTaskCLI(t *testing.T) {
 		}
 	})
 	t.Run("show", func(t *testing.T) {
-		sp.answer(200, envelope(t, contract.TaskShowResponse{Version: 4, Task: cliView(cliTask, contract.TaskSucceeded)}))
+		sp.answer(200, envelope(t, contract.TaskShowResponse{Version: 5, Task: cliView(cliTask, contract.TaskSucceeded)}))
 		code, out, _ := exec(t, "linux", append([]string{"task", "show", cliTask, "--lines", "5"}, trust...)...)
 		if code != 0 || sp.last().query != "lines=5" || sp.last().path != contract.PathTasks+"/"+cliTask {
 			t.Fatalf("show %d %+v", code, sp.last())
@@ -202,9 +202,9 @@ func TestTaskCLI(t *testing.T) {
 		if strings.Contains(out, "\x1b") {
 			t.Fatal("show printed a raw escape")
 		}
-		sp.answer(200, envelope(t, contract.TaskShowResponse{Version: 4, Task: cliView(cliTask, contract.TaskRunning)}))
+		sp.answer(200, envelope(t, contract.TaskShowResponse{Version: 5, Task: cliView(cliTask, contract.TaskRunning)}))
 		code, out, _ = exec(t, "linux", append([]string{"task", "show", "--json", cliTask}, trust...)...)
-		if code != 0 || !strings.HasPrefix(out, `{"version":4,"task":{"task_id":"`+cliTask+`"`) {
+		if code != 0 || !strings.HasPrefix(out, `{"version":5,"task":{"task_id":"`+cliTask+`"`) {
 			t.Fatalf("show json %d %q", code, out)
 		}
 		code, out, _ = exec(t, "linux", append([]string{"task", "show", cliTask}, trust...)...)
@@ -215,7 +215,7 @@ func TestTaskCLI(t *testing.T) {
 		}
 		// A lost task with a late result: the state is unchanged, the late
 		// outcome is summarized separately.
-		sp.answer(200, envelope(t, contract.TaskShowResponse{Version: 4, Task: cliView(cliTask, contract.TaskLost)}))
+		sp.answer(200, envelope(t, contract.TaskShowResponse{Version: 5, Task: cliView(cliTask, contract.TaskLost)}))
 		code, out, _ = exec(t, "linux", append([]string{"task", "show", cliTask}, trust...)...)
 		for _, want := range []string{"state: lost\n", "reason: lease_expired", "late_result: outcome=natural digest=" + strings.Repeat("d", 64) + " received_at=", "late_exit_code: 1\n",
 			"late_final_message: \"late done\"\n", "late_log: retained_bytes=4 source_bytes=9 received_bytes=4 truncated=true incomplete=true\n",
@@ -236,7 +236,7 @@ func TestTaskCLI(t *testing.T) {
 	})
 	t.Run("logs", func(t *testing.T) {
 		data := []byte("line\n\x1b]0;title\x07\xff tail")
-		lr := contract.TaskLogsResponse{Version: 4, TaskID: cliTask, Data: data, RetainedBytes: len(data), SourceBytes: len(data) + 10, DroppedBytes: 10, Truncated: true, Incomplete: true}
+		lr := contract.TaskLogsResponse{Version: 5, TaskID: cliTask, Data: data, RetainedBytes: len(data), SourceBytes: len(data) + 10, DroppedBytes: 10, Truncated: true, Incomplete: true}
 		sp.answer(200, envelope(t, lr))
 		code, out, errOut := exec(t, "linux", append([]string{"task", "logs", cliTask}, trust...)...)
 		if code != 0 || out != "line\n\\x1b]0;title\\x07\uFFFD tail" || !strings.Contains(errOut, "callsheet: notice: the retained output is truncated") ||
@@ -248,7 +248,7 @@ func TestTaskCLI(t *testing.T) {
 			t.Fatalf("logs json %d %q %q", code, out, errOut)
 		}
 		// --late: the late result's separate tail (iteration 06a).
-		late := contract.TaskLogsResponse{Version: 4, TaskID: cliTask, Data: []byte("late tail\n"), RetainedBytes: 10, SourceBytes: 10}
+		late := contract.TaskLogsResponse{Version: 5, TaskID: cliTask, Data: []byte("late tail\n"), RetainedBytes: 10, SourceBytes: 10}
 		sp.answer(200, envelope(t, late))
 		code, out, errOut = exec(t, "linux", append([]string{"task", "logs", cliTask, "--late"}, trust...)...)
 		if code != 0 || out != "late tail\n" || errOut != "" || sp.last().query != "late=true" {
@@ -272,7 +272,7 @@ func TestTaskCLI(t *testing.T) {
 				t.Fatalf("%v = %d %q", args, code, errOut)
 			}
 		}
-		sp.answer(200, `{"version":4,"tasks":[],"next_after":null}`)
+		sp.answer(200, `{"version":5,"tasks":[],"next_after":null}`)
 		if code, _, _ := exec(t, "linux", "task", "ls", "--plane", sp.url, "--ca-fingerprint", sp.pin); code != 0 {
 			t.Fatalf("pinned ls = %d", code)
 		}
@@ -301,3 +301,6 @@ func TestSafeLog(t *testing.T) {
 		}
 	}
 }
+
+// ptrView is v's address (a dispatch response's task).
+func ptrView(v contract.TaskView) *contract.TaskView { return &v }

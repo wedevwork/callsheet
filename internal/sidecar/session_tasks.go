@@ -451,10 +451,15 @@ func (rs *roleSession) onReconcile(f contract.NodeFrame) error {
 			rs.tasks.kickJanitor()
 		default:
 			w.mu.Lock()
-			w.tag, w.replied, w.late = rs.tag, true, e.Action != contract.ActionContinue
+			w.tag, w.replied, w.late = rs.tag, true, e.Action != contract.ActionContinue && e.Action != contract.ActionStopControl
 			w.mu.Unlock()
-			if e.Action == contract.ActionStopLost {
+			switch e.Action {
+			case contract.ActionStopLost:
 				w.requestStop()
+			case contract.ActionStopControl:
+				// The durable plane intent is latched before this page's
+				// acknowledgement; the worker drives the cleanup.
+				rs.tasks.control(w, *e.Stop)
 			}
 		}
 		rs.emit(event{kind: evDisposed, id: e.TaskID, action: e.Action})
@@ -462,5 +467,44 @@ func (rs *roleSession) onReconcile(f contract.NodeFrame) error {
 	rs.tasks.kickReplay()
 	rs.reply = &reply{typ: contract.FrameTaskReconcileAck, id: f.RequestID, body: contract.TaskReconcileAckBody{Received: true}, reconFinal: b.Final}
 	rs.tasks.signal()
+	return nil
+}
+
+// errExecutionMissing answers a control naming an execution this worker
+// does not hold (iteration 06b): the bounded error message with
+// unavailable/execution_missing; the plane closes the attachment and
+// reconciles on the next one. It is retryable, never a terminal
+// configuration error.
+func errExecutionMissing(rid, id string) error {
+	return &protocolError{requestID: rid, err: contract.TaskError(contract.CodeUnavailable, "", contract.ReasonExecutionMissing,
+		"this worker holds no execution of task %s", id)}
+}
+
+// onTaskCancel handles a task_cancel (a plane request p<n>, iteration
+// 06b): the body is strictly decoded (a timed_out kind or a malformed body
+// is a protocol error); the worker holding exactly this stable execution
+// latches the control (receipt, not cleanup: it is acknowledged before any
+// journal or FIFO I/O, which its Run-owned worker performs); the same stop
+// again, or another stop for an already latched or decided execution, is
+// acknowledged without applying anything twice. A worker without it
+// answers execution_missing.
+func (rs *roleSession) onTaskCancel(f contract.NodeFrame) error {
+	b, err := contract.DecodeTaskCancel(f.Body)
+	if err != nil {
+		return &protocolError{requestID: f.RequestID, err: err.(*contract.Error)}
+	}
+	w := rs.tasks.find(b.TaskID)
+	if w == nil || w.start.Execution != b.Execution {
+		return errExecutionMissing(f.RequestID, b.TaskID)
+	}
+	w.mu.Lock()
+	gone := w.forgotten || (w.phase == phaseRefused && w.outcome == nil)
+	w.mu.Unlock()
+	if gone {
+		return errExecutionMissing(f.RequestID, b.TaskID)
+	}
+	rs.tasks.control(w, contract.StopIntent{ID: b.StopID, Kind: b.Kind, RequestedAt: rs.d.clock.Now().UTC()})
+	rs.reply = &reply{typ: contract.FrameTaskCancelAck, id: f.RequestID,
+		body: contract.TaskCancelAckBody{TaskID: b.TaskID, Execution: b.Execution, StopID: b.StopID, Received: true}}
 	return nil
 }
