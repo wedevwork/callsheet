@@ -32,16 +32,31 @@ func TestRunWrapper(t *testing.T) {
 		t.Fatalf("calls = %v", calls)
 	}
 	// The stress shard stages (iteration 02c, stress-plane since 05b,
-	// stress-sidecar since its sidecar follow-up) take no operands or flags:
+	// stress-sidecar since its sidecar follow-up, stress-plane-cpu1 and
+	// stress-sidecar-cpu1 since design 06a-perf) take no operands or flags:
 	// rejected with exit 2 before any child runs, and the usage names every
 	// shard stage.
+	const usage = "usage: devcheck test | coverage [-o profile] | bench | cross | all | native | stress | stress-packages | stress-plane-cpu1 | stress-plane | stress-sidecar-cpu1 | stress-sidecar | stress-processgroup | stress-functions\n"
 	calls = nil
-	for _, args := range [][]string{{"stress-packages", "x"}, {"stress-plane", "-cpu=1"}, {"stress-plane", "extra"}, {"stress-sidecar", "-cpu=1"}, {"stress-sidecar", "extra"},
-		{"stress-processgroup", "-cpu=1"}, {"stress-functions", "-count=1"}, {"stress", "-o", "p"}} {
+	for _, args := range [][]string{{"stress-packages", "x"}, {"stress-plane-cpu1", "-cpu=1"}, {"stress-plane-cpu1", "extra"}, {"stress-plane-cpu1", "-count=1"},
+		{"stress-plane", "-cpu=1"}, {"stress-plane", "extra"}, {"stress-sidecar-cpu1", "-cpu=2"}, {"stress-sidecar-cpu1", "extra"}, {"stress-sidecar-cpu1", "-o", "p"},
+		{"stress-sidecar", "-cpu=1"}, {"stress-sidecar", "extra"}, {"stress-processgroup", "-cpu=1"}, {"stress-functions", "-count=1"}, {"stress", "-o", "p"}} {
 		errOut.Reset()
-		if code := run(args, &out, &errOut, fake); code != 2 || len(calls) != 0 ||
-			!strings.Contains(errOut.String(), "stress | stress-packages | stress-plane | stress-sidecar | stress-processgroup | stress-functions") {
+		if code := run(args, &out, &errOut, fake); code != 2 || len(calls) != 0 || errOut.String() != "devcheck: invalid arguments for "+args[0]+"\n"+usage {
 			t.Fatalf("%v = %d, %d calls, %q", args, code, len(calls), errOut.String())
+		}
+	}
+	// The new stages dispatch exactly their one CPU1 invocation.
+	for stage, want := range map[string]string{
+		"stress-plane-cpu1":   "go test -race -count=20 -cpu=1 -timeout=6m ./internal/plane",
+		"stress-sidecar-cpu1": "go test -race -count=20 -cpu=1 -timeout=6m ./internal/sidecar",
+	} {
+		calls = nil
+		out.Reset()
+		errOut.Reset()
+		if code := run([]string{stage}, &out, &errOut, fake); code != 0 || len(calls) != 1 || strings.Join(calls[0], " ") != want ||
+			!strings.Contains(out.String(), "devcheck: stage "+stage+" ok") {
+			t.Fatalf("%s = %d, calls %q, %s", stage, code, calls, errOut.String())
 		}
 	}
 }

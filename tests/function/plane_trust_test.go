@@ -990,16 +990,21 @@ func TestPlanePlatform(t *testing.T) {
 			steps[11].Name != "stress plane function" || strings.Join(steps[11].Argv, " ") != stressPlaneFn {
 			t.Fatalf("%s stress plan = %+v %v", goos, steps, err)
 		}
+		// Design 06a-perf: plane's CPU 1 invocation runs alone in
+		// plane-cpu1 (index 1), CPU 2 and 4 concurrently in plane (index 2);
+		// together they are the unchanged three plane commands, and the
+		// sequential functions shard is index 6.
 		shards, err := devcheck.StressShards(goos)
 		var plane []string
-		if err == nil && len(shards) == 5 {
-			for _, s := range shards[1].Steps {
+		if err == nil && len(shards) == 7 {
+			for _, s := range append(slices.Clone(shards[1].Steps), shards[2].Steps...) {
 				plane = append(plane, strings.Join(s.Argv, " "))
 			}
 		}
-		if err != nil || len(shards) != 5 || shards[0].Parallel || shards[1].Name != "plane" || !shards[1].Parallel || shards[4].Parallel ||
+		if err != nil || len(shards) != 7 || shards[0].Parallel || shards[1].Name != "plane-cpu1" || !shards[1].Parallel || len(shards[1].Steps) != 1 ||
+			shards[2].Name != "plane" || !shards[2].Parallel || len(shards[2].Steps) != 2 || shards[6].Name != "functions" || shards[6].Parallel ||
 			slices.Contains(shards[0].Steps[0].Argv, "./internal/plane") || !slices.Equal(plane, stressPlane) {
-			t.Fatalf("%s: plane must run in its own concurrent plane shard: %+v %v", goos, shards, err)
+			t.Fatalf("%s: plane must run in its own concurrent plane shards: %+v %v", goos, shards, err)
 		}
 	}
 	bench := devcheck.BenchSteps()

@@ -125,20 +125,20 @@ func TestHardeningStress(t *testing.T) {
 	if _, err := devcheck.StressSteps("windows"); err == nil {
 		t.Fatal("windows stress plan accepted")
 	}
-	for _, st := range []string{"stress", "stress-packages", "stress-plane", "stress-sidecar", "stress-processgroup", "stress-functions"} {
+	for _, st := range []string{"stress", "stress-packages", "stress-plane-cpu1", "stress-plane", "stress-sidecar-cpu1", "stress-sidecar", "stress-processgroup", "stress-functions"} {
 		if !strings.Contains(" "+strings.Join(devcheck.Stages(), " ")+" ", " "+st+" ") {
 			t.Fatalf("%s not advertised: %v", st, devcheck.Stages())
 		}
 	}
-	// The native host dispatches every command, shards in order and
-	// plane's, sidecar's and processgroup's three concurrently, with the
-	// parent
-	// environment plus CGO_ENABLED=1.
+	// The native host dispatches every command, shards in order, the plane
+	// and sidecar CPU1 singletons alone, the plane and sidecar CPU2/CPU4
+	// pairs and processgroup's three concurrently (design 06a-perf), with
+	// the parent environment plus CGO_ENABLED=1.
 	r := &ciRunner{}
 	code, out, errOut := devcheckRun(t, r, "stress")
 	if code != 0 || !strings.Contains(out, "stage stress ok") ||
-		!sameGroups(r.calls, [][]string{{hardeningStressPackages}, {hardeningStressPlane1, hardeningStressPlane2, hardeningStressPlane4},
-			{hardeningStressSidecar1, hardeningStressSidecar2, hardeningStressSidecar4},
+		!sameGroups(r.calls, [][]string{{hardeningStressPackages}, {hardeningStressPlane1}, {hardeningStressPlane2, hardeningStressPlane4},
+			{hardeningStressSidecar1}, {hardeningStressSidecar2, hardeningStressSidecar4},
 			{hardeningStressPG1, hardeningStressPG2, hardeningStressPG4}, {hardeningStressFunction}, {hardeningStressPlaneFn}, {hardeningStressNodeFn}}) {
 		t.Fatalf("%s stress = %d %v %s", runtime.GOOS, code, r.calls, errOut)
 	}
@@ -152,7 +152,8 @@ func TestHardeningStress(t *testing.T) {
 	for _, c := range []struct {
 		failOn, step string
 		calls        int
-	}{{"./internal/spikes/gittransport", "stress packages", 1}, {"-cpu=4 -timeout=6m ./internal/plane", "stress plane cpu4", 4},
+	}{{"./internal/spikes/gittransport", "stress packages", 1}, {"-cpu=1 -timeout=6m ./internal/plane", "stress plane cpu1", 2},
+		{"-cpu=4 -timeout=6m ./internal/plane", "stress plane cpu4", 4}, {"-cpu=1 -timeout=6m ./internal/sidecar", "stress sidecar cpu1", 5},
 		{"-cpu=4 -timeout=6m ./internal/sidecar", "stress sidecar cpu4", 7},
 		{"-cpu=4 -timeout=6m ./internal/spikes/processgroup", "stress processgroup cpu4", 10}, {"TestFP5GitRoundTrip", "stress function", 11},
 		{"TestPlaneTLS", "stress plane function", 12}, {"TestNodeReconnect", "stress node function", 13}} {
@@ -164,7 +165,8 @@ func TestHardeningStress(t *testing.T) {
 		}
 	}
 	// Usage errors and all's unchanged sequence.
-	for _, args := range [][]string{{"stress", "extra"}, {"stress", "-o", "x"}, {"stress-plane", "-count=1"}, {"stress-sidecar", "-cpu=4"}, {"stress-processgroup", "-cpu=1"}, {"stress-functions", "-count=1"}} {
+	for _, args := range [][]string{{"stress", "extra"}, {"stress", "-o", "x"}, {"stress-plane-cpu1", "-cpu=1"}, {"stress-plane-cpu1", "extra"}, {"stress-plane", "-count=1"},
+		{"stress-sidecar-cpu1", "-count=1"}, {"stress-sidecar-cpu1", "-o", "x"}, {"stress-sidecar", "-cpu=4"}, {"stress-processgroup", "-cpu=1"}, {"stress-functions", "-count=1"}} {
 		r := &ciRunner{}
 		if code, _, _ := devcheckRun(t, r, args...); code != 2 || len(r.calls) != 0 {
 			t.Fatalf("%v = %d", args, code)
@@ -287,7 +289,7 @@ func TestHardeningSignalEvidence(t *testing.T) {
 }
 
 // FP-6: since iteration 02c the stress workers (ten since iteration 05b's
-// sidecar follow-up)
+// sidecar follow-up, fourteen since design 06a-perf's CPU1 workers)
 // run their exact shard step as their step 3 (the summaries
 // ci-linux-stress and ci-macos-stress keep the contexts), the main jobs
 // keep their stages without stress,
@@ -308,9 +310,11 @@ func TestHardeningCIStress(t *testing.T) {
 	}
 	for _, j := range []struct{ id, want string }{
 		{"linux", "test coverage bench cross"}, {"macos", "native"},
-		{"linux-stress-packages", "stress-packages"}, {"linux-stress-plane", "stress-plane"}, {"linux-stress-sidecar", "stress-sidecar"},
+		{"linux-stress-packages", "stress-packages"}, {"linux-stress-plane-cpu1", "stress-plane-cpu1"}, {"linux-stress-plane", "stress-plane"},
+		{"linux-stress-sidecar-cpu1", "stress-sidecar-cpu1"}, {"linux-stress-sidecar", "stress-sidecar"},
 		{"linux-stress-processgroup", "stress-processgroup"}, {"linux-stress-functions", "stress-functions"},
-		{"macos-stress-packages", "stress-packages"}, {"macos-stress-plane", "stress-plane"}, {"macos-stress-sidecar", "stress-sidecar"},
+		{"macos-stress-packages", "stress-packages"}, {"macos-stress-plane-cpu1", "stress-plane-cpu1"}, {"macos-stress-plane", "stress-plane"},
+		{"macos-stress-sidecar-cpu1", "stress-sidecar-cpu1"}, {"macos-stress-sidecar", "stress-sidecar"},
 		{"macos-stress-processgroup", "stress-processgroup"}, {"macos-stress-functions", "stress-functions"},
 	} {
 		got := stages[j.id]
@@ -350,19 +354,36 @@ func TestHardeningCIStress(t *testing.T) {
 			}
 		}
 	}
+	workers := 0
 	for _, j := range cicheck.Jobs() {
 		worker := strings.Contains(j.ID, "-stress-")
 		summary := strings.HasSuffix(j.ID, "-stress")
+		// A worker's stage is its ID without the leading platform prefix
+		// (linux- or macos-), never the text after its last hyphen, which
+		// would turn linux-stress-plane-cpu1 into stress-cpu1.
+		stage, prefixed := strings.CutPrefix(j.ID, "linux-")
+		if !prefixed {
+			stage, prefixed = strings.CutPrefix(j.ID, "macos-")
+		}
+		if worker {
+			workers++
+		}
 		switch {
-		case worker && (len(j.Stages) != 1 || j.Stages[0] != "stress-"+j.ID[strings.LastIndex(j.ID, "-")+1:]):
+		case worker && (!prefixed || len(j.Stages) != 1 || j.Stages[0] != stage):
 			t.Fatalf("worker %s stages = %v", j.ID, j.Stages)
-		case summary && (len(j.Stages) != 0 || len(j.Needs) != 5 || len(node(t, &doc, "jobs", j.ID, "steps").Content) != 1):
+		case summary && (len(j.Stages) != 0 || len(j.Needs) != 7 || len(node(t, &doc, "jobs", j.ID, "steps").Content) != 1):
 			t.Fatalf("summary %s = %+v", j.ID, j)
 		case !worker && !summary && strings.Contains(" "+strings.Join(j.Stages, " ")+" ", " stress"):
 			t.Fatalf("main job %s stages = %v", j.ID, j.Stages)
 		}
 	}
-	for stage, calls := range map[string]int{"stress": 13, "stress-packages": 1, "stress-plane": 3, "stress-sidecar": 3, "stress-processgroup": 3, "stress-functions": 3} {
+	if workers != 14 {
+		t.Fatalf("%d worker jobs, want 14", workers)
+	}
+	// Invocations per stage: full stress 13, the plane and sidecar pairs 2
+	// each, the new CPU1 stages 1 each.
+	for stage, calls := range map[string]int{"stress": 13, "stress-packages": 1, "stress-plane-cpu1": 1, "stress-plane": 2, "stress-sidecar-cpu1": 1,
+		"stress-sidecar": 2, "stress-processgroup": 3, "stress-functions": 3} {
 		r := &ciRunner{}
 		if code, _, errOut := devcheckRun(t, r, stage); code != 0 || len(r.calls) != calls {
 			t.Fatalf("%s dispatch = %d with %d calls %s", stage, code, len(r.calls), errOut)

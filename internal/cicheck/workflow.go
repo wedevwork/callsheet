@@ -31,35 +31,44 @@ type Job struct {
 	Required       bool     // Name is a required status check context
 }
 
-// jobs is the fixed fourteen-job contract (iteration 02c, with the plane
-// workers of iteration 05b and the sidecar workers of its sidecar
-// follow-up); order is the documentation (CI-plan) order. The main jobs
-// keep their verification stages. Stress runs in ten independent worker
-// jobs, five shards per platform at the same count: a
-// Linux-only stress pass cannot qualify Darwin. Each worker's 20 minutes
-// allow five minutes of setup beyond its own 15-minute stress watchdog.
-// Main and worker jobs never depend on each other: the strict field
-// grammar rejects needs, conditions, matrices and continue-on-error. Only
-// the two summaries, which keep the required stress contexts, need their
-// own platform's five workers and pass only if all five concluded success;
-// both evaluate on Ubuntu.
+// jobs is the fixed eighteen-job contract (iteration 02c, with the plane
+// workers of iteration 05b, the sidecar workers of its sidecar follow-up
+// and the plane and sidecar CPU1 workers of design 06a-perf); order is the
+// documentation (CI-plan) order. The main jobs keep their verification
+// stages. Stress runs in fourteen independent worker jobs, seven shards per
+// platform at the same count: a Linux-only stress pass cannot qualify
+// Darwin. Every worker runs exactly one devcheck stage: the plane and
+// sidecar CPU1 invocations each alone on a worker of their own, their
+// CPU2/CPU4 pairs concurrently on the plane and sidecar workers. Each
+// worker's 20 minutes allow five minutes of setup beyond its own 15-minute
+// stress watchdog. Main and worker jobs never depend on each other: the
+// strict field grammar rejects needs, conditions, matrices and
+// continue-on-error. Only the two summaries, which keep the required stress
+// contexts, need their own platform's seven workers and pass only if all
+// seven concluded success; both evaluate on Ubuntu.
 var jobs = []Job{
 	{ID: "linux", Name: "ci-linux", RunsOn: "ubuntu-24.04", TimeoutMinutes: 45, Stages: []string{"test", "coverage", "bench", "cross"}, Required: true},
 	{ID: "macos", Name: "ci-macos", RunsOn: "macos-15", TimeoutMinutes: 30, Stages: []string{"native"}, Required: true},
 	{ID: "linux-stress-packages", Name: "ci-linux-stress-packages", RunsOn: "ubuntu-24.04", TimeoutMinutes: 20, Stages: []string{"stress-packages"}},
+	{ID: "linux-stress-plane-cpu1", Name: "ci-linux-stress-plane-cpu1", RunsOn: "ubuntu-24.04", TimeoutMinutes: 20, Stages: []string{"stress-plane-cpu1"}},
 	{ID: "linux-stress-plane", Name: "ci-linux-stress-plane", RunsOn: "ubuntu-24.04", TimeoutMinutes: 20, Stages: []string{"stress-plane"}},
+	{ID: "linux-stress-sidecar-cpu1", Name: "ci-linux-stress-sidecar-cpu1", RunsOn: "ubuntu-24.04", TimeoutMinutes: 20, Stages: []string{"stress-sidecar-cpu1"}},
 	{ID: "linux-stress-sidecar", Name: "ci-linux-stress-sidecar", RunsOn: "ubuntu-24.04", TimeoutMinutes: 20, Stages: []string{"stress-sidecar"}},
 	{ID: "linux-stress-processgroup", Name: "ci-linux-stress-processgroup", RunsOn: "ubuntu-24.04", TimeoutMinutes: 20, Stages: []string{"stress-processgroup"}},
 	{ID: "linux-stress-functions", Name: "ci-linux-stress-functions", RunsOn: "ubuntu-24.04", TimeoutMinutes: 20, Stages: []string{"stress-functions"}},
 	{ID: "macos-stress-packages", Name: "ci-macos-stress-packages", RunsOn: "macos-15", TimeoutMinutes: 20, Stages: []string{"stress-packages"}},
+	{ID: "macos-stress-plane-cpu1", Name: "ci-macos-stress-plane-cpu1", RunsOn: "macos-15", TimeoutMinutes: 20, Stages: []string{"stress-plane-cpu1"}},
 	{ID: "macos-stress-plane", Name: "ci-macos-stress-plane", RunsOn: "macos-15", TimeoutMinutes: 20, Stages: []string{"stress-plane"}},
+	{ID: "macos-stress-sidecar-cpu1", Name: "ci-macos-stress-sidecar-cpu1", RunsOn: "macos-15", TimeoutMinutes: 20, Stages: []string{"stress-sidecar-cpu1"}},
 	{ID: "macos-stress-sidecar", Name: "ci-macos-stress-sidecar", RunsOn: "macos-15", TimeoutMinutes: 20, Stages: []string{"stress-sidecar"}},
 	{ID: "macos-stress-processgroup", Name: "ci-macos-stress-processgroup", RunsOn: "macos-15", TimeoutMinutes: 20, Stages: []string{"stress-processgroup"}},
 	{ID: "macos-stress-functions", Name: "ci-macos-stress-functions", RunsOn: "macos-15", TimeoutMinutes: 20, Stages: []string{"stress-functions"}},
 	{ID: "linux-stress", Name: "ci-linux-stress", RunsOn: "ubuntu-24.04", TimeoutMinutes: 5,
-		Needs: []string{"linux-stress-packages", "linux-stress-plane", "linux-stress-sidecar", "linux-stress-processgroup", "linux-stress-functions"}, Required: true},
+		Needs: []string{"linux-stress-packages", "linux-stress-plane-cpu1", "linux-stress-plane", "linux-stress-sidecar-cpu1", "linux-stress-sidecar",
+			"linux-stress-processgroup", "linux-stress-functions"}, Required: true},
 	{ID: "macos-stress", Name: "ci-macos-stress", RunsOn: "ubuntu-24.04", TimeoutMinutes: 5,
-		Needs: []string{"macos-stress-packages", "macos-stress-plane", "macos-stress-sidecar", "macos-stress-processgroup", "macos-stress-functions"}, Required: true},
+		Needs: []string{"macos-stress-packages", "macos-stress-plane-cpu1", "macos-stress-plane", "macos-stress-sidecar-cpu1", "macos-stress-sidecar",
+			"macos-stress-processgroup", "macos-stress-functions"}, Required: true},
 }
 
 // Jobs returns a fresh copy of the job contract, nested slices included.
@@ -85,18 +94,18 @@ func RequiredChecks() []string {
 }
 
 // The summary job template (iteration 02c, four results since 05b, five
-// since its sidecar follow-up): the
-// exact job condition, the step environment keys and result expressions,
-// and the one command line.
+// since its sidecar follow-up, seven since design 06a-perf's CPU1 workers):
+// the exact job condition, the step environment keys and result
+// expressions, and the one command line, byte-identical on both platforms.
 // Only these expressions, at exactly these paths, pass the hygiene check.
 const (
 	summaryIf  = "${{ always() }}"
-	summaryRun = `test "$PACKAGES_RESULT" = success && test "$PLANE_RESULT" = success && test "$SIDECAR_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success`
+	summaryRun = `test "$PACKAGES_RESULT" = success && test "$PLANE_CPU1_RESULT" = success && test "$PLANE_RESULT" = success && test "$SIDECAR_CPU1_RESULT" = success && test "$SIDECAR_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success`
 )
 
 // summaryEnvKeys are the summary step's environment keys, one per needed
 // worker, in Needs order.
-var summaryEnvKeys = []string{"PACKAGES_RESULT", "PLANE_RESULT", "SIDECAR_RESULT", "PROCESSGROUP_RESULT", "FUNCTIONS_RESULT"}
+var summaryEnvKeys = []string{"PACKAGES_RESULT", "PLANE_CPU1_RESULT", "PLANE_RESULT", "SIDECAR_CPU1_RESULT", "SIDECAR_RESULT", "PROCESSGROUP_RESULT", "FUNCTIONS_RESULT"}
 
 // summaryEnv returns the exact step environment of summary j.
 func summaryEnv(j Job) map[string]string {
@@ -418,9 +427,9 @@ func (v *validator) job(n *yaml.Node, path string, j Job) {
 }
 
 // summary checks a summary job against the exact template: its identity
-// and budget, needs exactly its own platform's five workers in order, the
+// and budget, needs exactly its own platform's seven workers in order, the
 // unconditional always() condition, the bash default and one step running
-// the literal all-success command with the five exact result expressions.
+// the literal all-success command with the seven exact result expressions.
 // Its command is compared literally, never parsed as shell.
 func (v *validator) summary(n *yaml.Node, path string, j Job) {
 	f := v.fields(n, path, []string{"name", "runs-on", "timeout-minutes", "needs", "if", "defaults", "steps"}, nil)

@@ -208,7 +208,7 @@ func TestControlPolicy(t *testing.T) {
 		}
 		for _, goos := range []string{"linux", "darwin"} {
 			shards, err := StressShards(goos)
-			if err != nil || len(shards) != 5 {
+			if err != nil || len(shards) != 7 {
 				t.Fatalf("%s shards %v %v", goos, shards, err)
 			}
 			for _, sh := range shards {
@@ -218,8 +218,10 @@ func TestControlPolicy(t *testing.T) {
 						t.Fatalf("%s %s: %s", goos, sh.Name, a)
 					}
 				}
-				if (sh.Name == "plane" || sh.Name == "sidecar" || sh.Name == "processgroup") && (!sh.Parallel || len(sh.Steps) != 3) {
-					t.Fatalf("%s %s is not three concurrent invocations", goos, sh.Name)
+				// Design 06a-perf: the CPU1 singletons, the CPU2/CPU4 pairs
+				// and processgroup's three are Parallel shards.
+				if want, ok := map[string]int{"plane-cpu1": 1, "plane": 2, "sidecar-cpu1": 1, "sidecar": 2, "processgroup": 3}[sh.Name]; ok && (!sh.Parallel || len(sh.Steps) != want) {
+					t.Fatalf("%s %s is not %d concurrent invocations", goos, sh.Name, want)
 				}
 			}
 		}

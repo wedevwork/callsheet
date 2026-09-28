@@ -1038,15 +1038,32 @@ func TestNodePlatform(t *testing.T) {
 		const nodeFn = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestNodeEnrollment|TestNodeReconnect)$/^(locking|shutdown)$ ./tests/function"
 		for _, goos := range []string{"linux", "darwin"} {
 			// The client and contract node packages stay in the packages
-			// shard; the plane's node contracts repeat in the plane shard
+			// shard; the plane's node contracts repeat in the plane shards
 			// (iteration 05b) and the sidecar's reconnect contracts in the
-			// sidecar shard (its sidecar follow-up).
+			// sidecar shards (its sidecar follow-up): CPU 1 in plane-cpu1
+			// and sidecar-cpu1, CPU 2 and 4 in plane and sidecar (design
+			// 06a-perf). The functions shard, index 6, keeps its three
+			// steps and the node selector.
 			shards, err := devcheck.StressShards(goos)
-			if err != nil || len(shards) != 5 || len(shards[4].Steps) != 3 || strings.Join(shards[4].Steps[2].Argv, " ") != nodeFn ||
-				slices.Contains(shards[0].Steps[0].Argv, "./internal/sidecar") || !slices.Contains(shards[0].Steps[0].Argv, "./internal/client") || !slices.Contains(shards[0].Steps[0].Argv, "./internal/contract") ||
-				shards[1].Name != "plane" || len(shards[1].Steps) != 3 || !slices.Contains(shards[1].Steps[0].Argv, "./internal/plane") ||
-				shards[2].Name != "sidecar" || len(shards[2].Steps) != 3 || !slices.Contains(shards[2].Steps[0].Argv, "./internal/sidecar") {
+			if err != nil || len(shards) != 7 || shards[6].Name != "functions" || len(shards[6].Steps) != 3 || strings.Join(shards[6].Steps[2].Argv, " ") != nodeFn ||
+				slices.Contains(shards[0].Steps[0].Argv, "./internal/sidecar") || !slices.Contains(shards[0].Steps[0].Argv, "./internal/client") || !slices.Contains(shards[0].Steps[0].Argv, "./internal/contract") {
 				t.Fatalf("%s stress plan = %+v %v", goos, shards, err)
+			}
+			for _, c := range []struct {
+				i         int
+				name, pkg string
+				cpus      []string
+			}{{1, "plane-cpu1", "./internal/plane", []string{"-cpu=1"}}, {2, "plane", "./internal/plane", []string{"-cpu=2", "-cpu=4"}},
+				{3, "sidecar-cpu1", "./internal/sidecar", []string{"-cpu=1"}}, {4, "sidecar", "./internal/sidecar", []string{"-cpu=2", "-cpu=4"}}} {
+				sh := shards[c.i]
+				if sh.Name != c.name || !sh.Parallel || len(sh.Steps) != len(c.cpus) {
+					t.Fatalf("%s shard %d = %+v, want %s with %d steps", goos, c.i, sh, c.name, len(c.cpus))
+				}
+				for j, st := range sh.Steps {
+					if st.Argv[len(st.Argv)-1] != c.pkg || !slices.Contains(st.Argv, c.cpus[j]) {
+						t.Fatalf("%s %s step %d = %v, want %s at %s", goos, c.name, j, st.Argv, c.pkg, c.cpus[j])
+					}
+				}
 			}
 		}
 		if b := devcheck.BenchSteps(); len(b) != 5 || strings.Join(b[2].Argv, " ") != "go test ./internal/contract -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s" {
