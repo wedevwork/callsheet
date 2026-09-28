@@ -43,6 +43,10 @@ func (d *deps) run(ctx context.Context, o RunOptions) error {
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
+	maxWait, err := checkMaxTaskWait(o.MaxTaskWait)
+	if err != nil {
+		return err
+	}
 	now := d.clock()
 	lk, m, initialized, err := d.open(ctx, now, o.StateDir, o.Bind, o.BindSet, o.SANs, o.SANsSet)
 	if err != nil {
@@ -94,6 +98,7 @@ func (d *deps) run(ctx context.Context, o RunOptions) error {
 		return err
 	}
 	ts.events, ts.hook = d.streamEvents, d.taskHook
+	ts.maxWait = maxWait
 	reg.tasks = ts
 	if d.onTasks != nil {
 		d.onTasks(ts)
@@ -102,6 +107,17 @@ func (d *deps) run(ctx context.Context, o RunOptions) error {
 		return err
 	}
 	return d.serve(ctx, logger, m, fp, reg)
+}
+
+// checkMaxTaskWait validates plane run's wait cap (zero: the default).
+func checkMaxTaskWait(d time.Duration) (time.Duration, error) {
+	if d == 0 {
+		return contract.DefaultMaxTaskWait, nil
+	}
+	if d < contract.MinMaxTaskWait || d > contract.MaxWait {
+		return 0, errf(contract.CodeInvalidArgument, "--max-task-wait must be from %v to %v", contract.MinMaxTaskWait, contract.MaxWait)
+	}
+	return d, nil
 }
 
 // logWarning emits the structured FP-7 warning record.
@@ -142,6 +158,11 @@ func (d *deps) serve(ctx context.Context, logger *slog.Logger, m *material, fp s
 		svc.tasks = reg.tasks
 		if svc.roles != nil {
 			svc.roles.gate, svc.roles.tasks = reg.tasks.gate, reg.tasks
+			svc.roles.rand = d.rand
+			// Iteration 06b: forced removals resume from their durable fences
+			// and are woken by every released reservation.
+			svc.roles.rm = newRemovalCoordinator(svc.roles)
+			reg.tasks.onRelease = svc.roles.rm.wake
 		}
 	}
 	var h http.Handler = newServiceHandler(svc)
@@ -173,6 +194,9 @@ func (d *deps) serve(ctx context.Context, logger *slog.Logger, m *material, fp s
 		reg.tasks.start()
 		reg.armGrace(d.nodeClock.Now(), reg.tasks.graceNodes())
 		reg.tasks.event("startup-grace-armed")
+		if svc.roles != nil && svc.roles.rm != nil {
+			svc.roles.rm.start()
+		}
 	}
 	svc.startSweep()
 	done := make(chan error, 1)

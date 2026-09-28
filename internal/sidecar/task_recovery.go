@@ -37,9 +37,16 @@ func (s *taskSupervisor) recoverJournals(ids []string, lookup contract.AdapterLo
 		}
 		w := s.recovered(lj)
 		if lj.j.Phase == contract.JournalPrepared || lj.j.Phase == contract.JournalRunning {
-			// Never resumed: its outcome is lost, frozen once.
+			// Never resumed: its outcome is lost, frozen once, keeping a
+			// latched stop intent's ID (iteration 06b: never a newly
+			// inferred cancelled or timed_out).
 			res := contract.TaskResultBody{TaskID: w.id(), Execution: w.start.Execution, Outcome: contract.OutcomeLost,
-				OutputBytes: lj.j.Log.SourceBytes, LogIncomplete: true, CounterOverflow: lj.j.Log.CounterOverflow}.Sealed()
+				OutputBytes: lj.j.Log.SourceBytes, LogIncomplete: true, CounterOverflow: lj.j.Log.CounterOverflow}
+			if in := lj.j.StopIntent; in != nil {
+				id := in.ID
+				res.StopID = &id
+			}
+			res = res.Sealed()
 			j := lj.j
 			j.Phase, j.Result = contract.JournalLost, &res
 			s.logger.Warn("task execution lost", "task_id", w.id(), "reason", lostSidecarRestarted)
@@ -90,8 +97,8 @@ func (s *taskSupervisor) recovered(lj loadedJournal) *taskWorker {
 	// the replay loader reads it back for a reconciled attachment.
 	w := &taskWorker{sup: s, start: contract.TaskStartBody{TaskID: j.TaskID, Execution: j.Execution, Role: j.Role, Effective: j.Effective},
 		digest: j.StartDigest, key: keyOf(j.Role), ring: newOutputRingMeta(ringCap, j.Log), exitedCh: make(chan struct{}),
-		stopCh: make(chan struct{}), commitCh: make(chan struct{}), recovered: true, owner: lj.owner, phase: phaseStarted,
-		started: j.StartedAt, done: true}
+		stopCh: make(chan struct{}), commitCh: make(chan struct{}), ctlCh: make(chan struct{}), recovered: true, owner: lj.owner, phase: phaseStarted,
+		started: j.StartedAt, done: true, ctl: j.StopIntent}
 	close(w.exitedCh)
 	if lj.owner != nil {
 		w.pgid = lj.owner.PGID

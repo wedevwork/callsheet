@@ -20,7 +20,7 @@ import (
 // there are no positional operands and no prompts.
 const (
 	initUsage    = "[--state-dir PATH] [--bind IP:PORT] --san NAME [--san NAME ...]"
-	runUsage     = "[--state-dir PATH] [--bind IP:PORT] [--san NAME ...]"
+	runUsage     = "[--state-dir PATH] [--bind IP:PORT] [--san NAME ...] [--max-task-wait DURATION]"
 	statusUsage  = "[--state-dir PATH]"
 	reissueUsage = "[--state-dir PATH] --san NAME [--san NAME ...]"
 
@@ -37,7 +37,11 @@ const (
 		"their paths, validity and the CA fingerprint. On initialized state nothing is\n" +
 		"rewritten: supplied flags must match, and the same report is printed.\n"
 	runDetails = "Flags:\n" + stateDirHelp + bindHelp +
-		"  --san NAME        first-start SANs when the state is empty (as plane init)\n\n" +
+		"  --san NAME        first-start SANs when the state is empty (as plane init)\n" +
+		"  --max-task-wait DURATION\n" +
+		"                    the longest a task wait or dispatch --wait may block on this plane,\n" +
+		"                    100ms to 5m (default 30s); longer requests are answered within it.\n" +
+		"                    A runtime choice for interactive waits, not a verified MCP limit\n\n" +
 		"Serves HTTPS only, on the configured private bind, until interrupted (SIGINT or\n" +
 		"SIGTERM; exit 130). Logs are JSON on stderr; stdout stays empty.\n\n" +
 		"Tasks survive a plane restart: their workers keep running and reconcile when they\n" +
@@ -96,10 +100,13 @@ type planeFlags struct {
 
 // parsePlane parses a plane leaf's flags. withBind and withSAN select the
 // optional flags. It returns ok=false with the exit code of a usage error.
-func parsePlane(c *Command, args []string, withBind, withSAN bool, errOut io.Writer) (*planeFlags, int, bool) {
+func parsePlane(c *Command, args []string, withBind, withSAN bool, errOut io.Writer, extra ...func(*flag.FlagSet)) (*planeFlags, int, bool) {
 	f := &planeFlags{}
 	fs := flag.NewFlagSet(c.Path(), flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
+	for _, x := range extra {
+		x(fs)
+	}
 	fs.Var(&f.stateDir, "state-dir", "")
 	if withBind {
 		fs.Var(&f.bind, "bind", "")
@@ -160,16 +167,26 @@ func planeInit(ctx context.Context, goos string, c *Command, args []string, out,
 }
 
 func planeRun(ctx context.Context, goos string, c *Command, args []string, out, errOut io.Writer) int {
-	f, code, ok := parsePlane(c, args, true, true, errOut)
+	var maxWait single
+	f, code, ok := parsePlane(c, args, true, true, errOut, func(fs *flag.FlagSet) { fs.Var(&maxWait, "max-task-wait", "") })
 	if !ok {
 		return code
+	}
+	var maxWaitCap time.Duration
+	if maxWait.set {
+		d, err := time.ParseDuration(maxWait.val)
+		if err != nil || strings.TrimSpace(maxWait.val) != maxWait.val || d < contract.MinMaxTaskWait || d > contract.MaxWait {
+			return usageError(errOut, c, "--max-task-wait must be a Go duration from 100ms to 5m")
+		}
+		maxWaitCap = d
 	}
 	dir, err := f.resolve(goos)
 	if err != nil {
 		return planeFail(errOut, err)
 	}
 	logger := logging.Component(logging.New(errOut, slog.LevelInfo), "plane")
-	err = plane.Run(ctx, plane.RunOptions{StateDir: dir, Bind: f.bind.val, BindSet: f.bind.set, SANs: f.sans.vals, SANsSet: f.sans.set, Logger: logger})
+	err = plane.Run(ctx, plane.RunOptions{StateDir: dir, Bind: f.bind.val, BindSet: f.bind.set, SANs: f.sans.vals, SANsSet: f.sans.set, Logger: logger,
+		MaxTaskWait: maxWaitCap})
 	return planeFail(errOut, err)
 }
 

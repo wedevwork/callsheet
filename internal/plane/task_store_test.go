@@ -329,7 +329,7 @@ func TestTaskStore(t *testing.T) {
 		if n := tp.roleInflight(t, "a"); n != 2 {
 			t.Fatalf("rebuilt a reservations = %d", n)
 		}
-		if err := tp.cl.RemoveRole(bg, "b", false); contract.CodeOf(err) != contract.CodeConflict {
+		if err := rmRole(tp.cl, bg, "b", false); contract.CodeOf(err) != contract.CodeConflict {
 			t.Fatalf("rm of an instance with a restored reservation: %v", err)
 		}
 		bres := result(onB, 0, 0, nil)
@@ -351,7 +351,7 @@ func TestTaskStore(t *testing.T) {
 		if !w.resultAck(w.sendResult(bres), onB.TaskID) {
 			t.Fatal("the durable result was not acknowledged as committed")
 		}
-		if err := tp.cl.RemoveRole(bg, "b", false); err != nil {
+		if err := rmRole(tp.cl, bg, "b", false); err != nil {
 			t.Fatalf("rm after resolution: %v", err)
 		}
 		w.ackReplace("p3")

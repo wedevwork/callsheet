@@ -24,7 +24,15 @@ import (
 // committed acknowledgement (a receipt no longer authorizes deletion), and
 // task records gain the lost state and schema 2. A protocol 3 peer is
 // refused at the version gate naming both versions; upgrade together.
-const ProtocolVersion = 4
+// Iteration 06b raised it to 5: task controls. The plane sends task_cancel
+// (acknowledged by task_cancel_ack) and reconciles stop_control; results
+// carry a nullable stop_id and the cancelled and timed_out outcomes; task
+// records gain schema 3 (stop intent, enforced timeout policy), public
+// views stop_requested and timeout_policy, and the task wait, cancel and
+// forced role removal APIs change their shapes. A strict protocol 4 peer
+// cannot receive any of them, so it is refused at the version gate before
+// any mutation; plane, sidecars and clients upgrade together.
+const ProtocolVersion = 5
 
 // Code is a stable, machine-readable error code.
 type Code string

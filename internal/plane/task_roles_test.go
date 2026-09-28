@@ -80,17 +80,15 @@ func wantAdmissionOK(t *testing.T, tp *taskPlane, role string) contract.TaskCand
 	return candidatesOf(t, err)[0]
 }
 
-// wantRemovalBusy requires both rm forms to be refused for role a with
-// the given held and reconciling counts.
+// wantRemovalBusy requires ordinary rm to be refused for role a with the
+// given held and reconciling counts (iteration 06b: a forced removal
+// fences and cancels instead, TestControlRemove).
 func wantRemovalBusy(t *testing.T, tp *taskPlane, held, reconciling int) {
 	t.Helper()
-	for _, force := range []bool{false, true} {
-		err := tp.cl.RemoveRole(bg, "a", force)
+	for _, force := range []bool{false} {
+		err := rmRole(tp.cl, bg, "a", force)
 		d, _ := err.(*contract.Error)
 		why := contract.ReasonTasksInflight
-		if force {
-			why = contract.ReasonForceNotSupported
-		}
 		if contract.CodeOf(err) != contract.CodeConflict || d == nil || d.Details["reason"] != why {
 			t.Fatalf("rm force=%v: %v", force, err)
 		}
@@ -128,7 +126,7 @@ func recoveryRemove(t *testing.T, force bool) {
 	close(call.release)
 	tp.log.awaitOnce(t, "terminal-committed "+old.TaskID)
 	before := taskBytes(t, tp.root, old.TaskID)
-	if err := tp.cl.RemoveRole(bg, "a", force); err != nil {
+	if err := rmRole(tp.cl, bg, "a", force); err != nil {
 		t.Fatalf("rm after the durable loss (force %v): %v", force, err)
 	}
 	v := tp.show(t, old.TaskID)
@@ -214,16 +212,16 @@ func TestTaskRoleIntegration(t *testing.T) {
 	})
 	t.Run("mutation", func(t *testing.T) {
 		t.Parallel()
-		// rm of a busy role is refused whole (tasks_inflight; with force,
-		// force_cancel_not_supported), with counts; rm and dispatch are
+		// Ordinary rm of a busy role is refused whole (tasks_inflight), with
+		// counts (a forced one cancels: TestControlRemove); rm and dispatch are
 		// serialized by the shared gate; set never rewrites a running
 		// task's snapshot.
 		tp := startTaskPlane(t, nil, []contract.RoleRecord{record(taskCfg("a", "coder", idA, 2), 1)}, idA)
 		w := tp.worker(t, idA)
 		st := tp.run(t, w, "a", "busy", "p2")
-		for _, force := range []bool{false, true} {
-			err := tp.cl.RemoveRole(bg, "a", force)
-			want := map[bool]string{false: contract.ReasonTasksInflight, true: contract.ReasonForceNotSupported}[force]
+		for _, force := range []bool{false} {
+			err := rmRole(tp.cl, bg, "a", force)
+			want := contract.ReasonTasksInflight
 			if contract.CodeOf(err) != contract.CodeConflict || reasonOf(err) != want {
 				t.Fatalf("rm force=%v: %v", force, err)
 			}
@@ -237,7 +235,7 @@ func TestTaskRoleIntegration(t *testing.T) {
 		pub := tp.th.arm("before-task-publication", "racing")
 		res := tp.dispatchAsync(taskReq(contract.TargetID, "a", "racing"))
 		p := paused(t, pub, "racing")
-		wantReason(t, tp.cl.RemoveRole(bg, "a", false), contract.CodeUnavailable, contract.ReasonBusy)
+		wantReason(t, rmRole(tp.cl, bg, "a", false), contract.CodeUnavailable, contract.ReasonBusy)
 		close(p.release)
 		racing, err := res.wait(t)
 		if err != nil {
@@ -295,7 +293,7 @@ func TestTaskRoleIntegration(t *testing.T) {
 			tp.log.await(t, "detached "+idA)
 			tp.clk.Advance(leaseDuration)
 			tp.log.awaitOnce(t, "terminal-committed "+unc.TaskID)
-			if err := tp.cl.RemoveRole(bg, "a", false); err != nil {
+			if err := rmRole(tp.cl, bg, "a", false); err != nil {
 				t.Fatalf("rm after the durable loss: %v", err)
 			}
 		})
@@ -310,12 +308,12 @@ func TestTaskRoleIntegration(t *testing.T) {
 			w.resultAck(w.sendResult(result(st, 0, 0, nil)), st.TaskID)
 			call := paused(t, hold, "terminal-commit-queued")
 			tp.detachWorker(t, w, false)
-			if err := tp.cl.RemoveRole(bg, "a", true); contract.CodeOf(err) != contract.CodeConflict {
+			if err := rmRole(tp.cl, bg, "a", false); contract.CodeOf(err) != contract.CodeConflict {
 				t.Fatalf("rm with a pending commit: %v", err)
 			}
 			close(call.release)
 			tp.log.awaitOnce(t, "terminal-committed "+st.TaskID)
-			if err := tp.cl.RemoveRole(bg, "a", false); err != nil {
+			if err := rmRole(tp.cl, bg, "a", false); err != nil {
 				t.Fatalf("rm after the commit: %v", err)
 			}
 		})

@@ -2,7 +2,8 @@
 // implemented leaves (version, since iteration 02 the four plane commands,
 // since iteration 03 sidecar enroll and run and node ls and show, since
 // iteration 04 role add, set, ls, show and rm, since iteration 05 dispatch
-// and task ls, show and logs) and the
+// and task ls, show and logs, since iteration 06b task cancel and wait)
+// and the
 // deterministic outcomes of reserved (not yet implemented) commands. Reserved commands never contact a plane, create
 // state or invoke a vendor CLI.
 package cli
@@ -137,8 +138,8 @@ func NewTree(goos string) *Command {
 			planeLeaf("ls", "List tasks", taskLsUsage, taskLsDetails, taskLs),
 			planeLeaf("show", "Show a task", taskShowUsage, taskShowDetails, taskShow),
 			planeLeaf("logs", "Show task output", taskLogsUsage, taskLogsDetails, taskLogs),
-			node("cancel", "Cancel a task"),
-			node("wait", "Wait for a task"),
+			planeLeaf("cancel", "Cancel a task", taskCancelUsage, taskCancelDetails, taskCancel),
+			planeLeaf("wait", "Wait for tasks to end", taskWaitUsage, taskWaitDetails, taskWait),
 			node("prune", "Prune finished tasks"),
 		),
 		node("ws", "Workspace commands",

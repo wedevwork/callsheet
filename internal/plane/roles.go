@@ -2,6 +2,7 @@ package plane
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"io"
 	"log/slog"
@@ -37,8 +38,12 @@ type roleService struct {
 	// gate is the nonblocking mutation gate shared with dispatch
 	// admission (iteration 05).
 	gate *atomic.Bool
-	// tasks, when set, supplies role rm's reservation predicate.
+	// tasks, when set, supplies role rm's reservation predicate and (since
+	// iteration 06b) a forced removal's cancellations; rm coordinates
+	// forced removals and rand generates their operation tokens.
 	tasks *taskService
+	rm    *removalCoordinator
+	rand  io.Reader
 	// events and hook, when non-nil, let tests observe and pause a
 	// mutation at named stages ("submitting", "validated", "prepared")
 	// with its context.
@@ -47,7 +52,7 @@ type roleService struct {
 }
 
 func newRoleService(roles *roleRegistry, reg *nodeRegistry, clock nodeClock, logger *slog.Logger) *roleService {
-	return &roleService{roles: roles, reg: reg, clock: clock, logger: logger, lookup: roles.lookup, gate: &atomic.Bool{}}
+	return &roleService{roles: roles, reg: reg, clock: clock, logger: logger, lookup: roles.lookup, gate: &atomic.Bool{}, rand: rand.Reader}
 }
 
 func (rs *roleService) event(e string) {
@@ -418,6 +423,9 @@ func (rs *roleService) set(w http.ResponseWriter, r *http.Request, id string, bo
 	respond(w)(rs.locked(r, func(m mutation) (int, any, error) {
 		doc := rs.roles.load().visible
 		cur, i, merged, err := rs.merge(doc, id, p)
+		if err == nil && doc.fenced(cur) {
+			err = removing(id)
+		}
 		if err == nil {
 			err = rs.nodeKnown(cur.Node)
 		}
@@ -456,24 +464,30 @@ func (rs *roleService) set(w http.ResponseWriter, r *http.Request, id string, bo
 	}))
 }
 
-// remove deletes a role. rm needs no worker and works offline. Iteration
-// 05: while the instance holds reservations that are not all
-// recovery-required, the whole removal is refused (conflict/tasks_inflight,
-// or force_cancel_not_supported with force: there is no cancellation in
-// this build); when none are held, or every held one is
-// recovery-required, either form removes only the registry entry and
-// leaves the task records, their states, logs and historical instance
-// untouched, sending no signal. The predicate is checked again at the
-// authorization instant; admissions are excluded by the shared gate.
+// remove deletes a role. rm needs no worker and works offline. Without
+// force, an instance holding any reservation (an unconfirmed terminal one
+// included) is refused (conflict/tasks_inflight), and a fenced instance
+// conflicts (role_removing); the predicate is checked again at the
+// authorization instant, and admissions are excluded by the shared gate.
+// With force (iteration 06b) the instance is fenced, its held tasks are
+// cancelled and the role is deleted after their durable resolution
+// (forceRemove); operation_id retries join only the matching fence.
 func (rs *roleService) remove(w http.ResponseWriter, r *http.Request, id string, body []byte) {
-	force, err := contract.ParseRoleRemoveRequest(body)
+	req, err := contract.ParseRoleRemoveRequest(body)
 	if err == nil {
 		if _, _, ok := rs.roles.load().visible.find(id); !ok {
 			err = notFound(id)
 		}
 	}
+	if err == nil && req.Force && (rs.tasks == nil || rs.rm == nil) {
+		err = contract.New(contract.CodeUnavailable, "this plane serves no tasks; a forced removal cannot run")
+	}
 	if err != nil {
 		writeCodeError(w, err)
+		return
+	}
+	if req.Force {
+		respond(w)(rs.forceRemove(r, id, req.OperationID))
 		return
 	}
 	respond(w)(rs.locked(r, func(m mutation) (int, any, error) {
@@ -482,14 +496,20 @@ func (rs *roleService) remove(w http.ResponseWriter, r *http.Request, id string,
 		if !ok {
 			return 0, nil, notFound(id)
 		}
+		if doc.fenced(cur) {
+			return 0, nil, removing(id)
+		}
 		if doc.revision >= contract.MaxSafeInteger {
 			return 0, nil, counterErr("revision")
 		}
 		guard := func() error {
+			if d := rs.roles.load().visible; d.fenced(cur) {
+				return removing(id)
+			}
 			if rs.tasks == nil {
 				return nil
 			}
-			return rs.tasks.removalCheck(keyOf(cur), force)
+			return rs.tasks.removalCheck(keyOf(cur))
 		}
 		if err := guard(); err != nil {
 			return 0, nil, err
@@ -497,7 +517,7 @@ func (rs *roleService) remove(w http.ResponseWriter, r *http.Request, id string,
 		if err := rs.commit(m, doc.revision, cur.Node, 0, false, doc.withRemoved(i), guard); err != nil {
 			return 0, nil, err
 		}
-		rs.logger.Info("role removed", "role_id", id, "node_id", cur.Node, "force", force)
+		rs.logger.Info("role removed", "role_id", id, "node_id", cur.Node, "force", false)
 		rs.event("removed " + id)
 		return http.StatusOK, contract.RoleRemoveResponse{Version: contract.ProtocolVersion, Removed: id}, nil
 	}))

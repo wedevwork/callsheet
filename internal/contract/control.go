@@ -41,6 +41,7 @@ const (
 	ActionStopLost   = "stop_lost"
 	ActionSendResult = "send_result"
 	ActionForget     = "forget"
+	// ActionStopControl (protocol 5) is defined with the controls.
 )
 
 var (
@@ -176,11 +177,14 @@ func DecodeTaskInventoryAck(body json.RawMessage) (TaskInventoryAckBody, error) 
 	return b, nil
 }
 
-// TaskReconcileEntry is one disposition of the plane.
+// TaskReconcileEntry is one disposition of the plane. Stop (protocol 5)
+// is the durable plane stop intent a stop_control latches; it is null for
+// every other action.
 type TaskReconcileEntry struct {
 	TaskID    string         `json:"task_id"`
 	Execution ExecutionToken `json:"execution"`
 	Action    string         `json:"action"`
+	Stop      *StopIntent    `json:"stop"`
 }
 
 // TaskReconcileBody is one task_reconcile page.
@@ -217,8 +221,10 @@ func DecodeTaskReconcile(body json.RawMessage) (TaskReconcileBody, error) {
 		switch {
 		case !ValidTaskID(e.TaskID):
 			return b, errInvalid("%s entry task_id is not a task ID", what)
-		case e.Action != ActionContinue && e.Action != ActionStopLost && e.Action != ActionSendResult && e.Action != ActionForget:
-			return b, errInvalid("%s entry action must be continue, stop_lost, send_result or forget", what)
+		case e.Action != ActionContinue && e.Action != ActionStopLost && e.Action != ActionSendResult && e.Action != ActionForget && e.Action != ActionStopControl:
+			return b, errInvalid("%s entry action must be continue, stop_lost, send_result, forget or stop_control", what)
+		case (e.Action == ActionStopControl) != (e.Stop != nil):
+			return b, errInvalid("%s entry stop is required exactly for stop_control", what)
 		case seen[e.TaskID]:
 			return b, errInvalid("%s repeats task %s", what, e.TaskID)
 		}
@@ -288,8 +294,8 @@ func (l LateResult) validate(what string) error {
 	switch {
 	case !ValidDigest(l.Digest):
 		return errInvalid("%s late_result digest must be 64 lowercase hex digits", what)
-	case l.Outcome != OutcomeNatural && l.Outcome != OutcomeLost:
-		return errInvalid("%s late_result outcome must be natural or lost", what)
+	case !validOutcome(l.Outcome):
+		return errInvalid("%s late_result outcome must be natural, lost, cancelled or timed_out", what)
 	case l.Outcome == OutcomeNatural && (l.ExitCode == nil) == (l.Signal == nil):
 		return errInvalid("%s late_result needs exactly one of exit_code and signal", what)
 	case l.ExitCode != nil && l.Signal != nil:

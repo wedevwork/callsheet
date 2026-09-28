@@ -32,6 +32,17 @@ import (
 // Only the guardian signals its group after a sidecar restart; a stop
 // command on its FIFO or its parent-lifetime pipe's EOF requests that
 // cleanup. It opens no network listener and is no public command.
+//
+// Iteration 06b: the guardian is the sole execution-deadline authority.
+// Under one arbitration mutex it samples the monotonic authorization
+// instant immediately before starting the adapter and arms the timeout
+// (invocation version 2; zero arms none) before invoking Start, which runs
+// outside the mutex. One cause latch decides the outcome: an adapter exit
+// observed strictly before the deadline is natural, at or after it
+// timed_out; a cancel command (cause cancelled with the plane's stop ID)
+// or the parent's EOF (lost) latched first keeps its cause. The latched
+// control cause is reported as a stopping status before the deliberate
+// group KILL, through one bounded, ordered status writer.
 
 // maxGuardianDiag bounds the guardian's stderr diagnostics.
 const maxGuardianDiag = 512
@@ -71,7 +82,25 @@ type guardianEnv struct {
 	grace        time.Duration
 	now          func() time.Time
 	lookup       contract.AdapterLookup
+	// timerAt arms a stoppable timer at an absolute instant of clock (the
+	// same clock: its Now samples every instant); events, when non-nil,
+	// observes the arbitration (tests only).
+	timerAt func(at time.Time) (<-chan time.Time, func() bool)
+	events  func(string)
 }
+
+// statusDeadline bounds one status delivery on the injected clock: a
+// blocked status pipe is abandoned, never waited for.
+const statusDeadline = 100 * time.Millisecond
+
+// Status queue slots, in lifecycle order: at most one record each.
+const (
+	slotReady = iota
+	slotStarted
+	slotStopping
+	slotExit
+	slotCount
+)
 
 // RunTaskGuardian is the guardian entrypoint: args are os.Args[1:] and
 // must be exactly [GuardianToken]. cmd/callsheet dispatches it before any
@@ -115,7 +144,11 @@ func runGuardian(args []string, stderr io.Writer, env guardianEnv) int {
 		diagf(stderr, "invalid task directory: %v", err)
 		return 2
 	}
-	g := &guardian{env: env, fds: fds, inv: inv, pid: pid, diag: stderr, stop: make(chan struct{}), parentGone: make(chan struct{})}
+	g := &guardian{env: env, fds: fds, inv: inv, pid: pid, diag: stderr, stop: make(chan struct{}), parentGone: make(chan struct{}),
+		exitCh: make(chan struct{}), done: make(chan struct{})}
+	g.sq = newStatusQueue(g)
+	defer g.sq.close()
+	defer close(g.done)
 	return g.run()
 }
 
@@ -174,11 +207,61 @@ type guardian struct {
 	stopOnce   sync.Once
 	stop       chan struct{}
 	parentGone chan struct{}
+	sq         *statusQueue
+	// arb is the arbitration mutex and its cause latch: the first cause
+	// latched governs the outcome and is never replaced.
+	arb      sync.Mutex
+	cause    string
+	stopID   string
+	deadline time.Time
+	armed    bool
+	// exitCh closes once the adapter's exit fact is published; done when
+	// the guardian returns (injected tests).
+	exitCh    chan struct{}
+	exitOnce  sync.Once
+	done      chan struct{}
+	cleanOnce sync.Once
+	cleaned   chan struct{}
+}
+
+func (g *guardian) event(e string) {
+	if g.env.events != nil {
+		g.env.events(e)
+	}
 }
 
 // requestStop latches a stop request (idempotent: a cleanup already under
 // way keeps its grace).
 func (g *guardian) requestStop() { g.stopOnce.Do(func() { close(g.stop) }) }
+
+// latch sets the cause if none is latched yet (under the arbitration
+// mutex) and reports whether it did.
+func (g *guardian) latch(cause, stopID string) bool {
+	g.arb.Lock()
+	defer g.arb.Unlock()
+	if g.cause != "" {
+		return false
+	}
+	g.cause, g.stopID = cause, stopID
+	return true
+}
+
+// stopping enqueues the latched control cause's stopping status.
+func (g *guardian) stopping() {
+	g.arb.Lock()
+	cause, stopID := g.cause, g.stopID
+	g.arb.Unlock()
+	if cause == "" || cause == "natural" {
+		return
+	}
+	s := contract.GuardianStatus{Type: contract.GuardianStopping, Cause: &cause}
+	if stopID != "" {
+		id := stopID
+		s.StopID = &id
+	}
+	g.sq.put(slotStopping, s)
+	g.event("stopping " + cause)
+}
 
 func (g *guardian) status(s contract.GuardianStatus) error {
 	s.TaskID, s.Nonce = g.inv.TaskID, g.inv.Nonce
@@ -189,11 +272,181 @@ func (g *guardian) status(s contract.GuardianStatus) error {
 	return contract.WriteFramed(g.fds.status, b)
 }
 
+// after is a bounded wait of d on the injected clock's stoppable timer
+// (nil without one: unbounded; the injected tests without a timer seam).
+func (g *guardian) after(d time.Duration) (<-chan time.Time, func() bool) {
+	if g.env.timerAt == nil {
+		return nil, func() bool { return false }
+	}
+	return g.env.timerAt(g.env.clock.Now().Add(d))
+}
+
 func (g *guardian) fail(reason string, err error) int {
 	diagf(g.diag, "%s: %v", reason, err)
 	r := reason
-	g.status(contract.GuardianStatus{Type: contract.GuardianError, Reason: &r})
+	g.sq.skipSlot(slotReady)
+	g.sq.put(slotStarted, contract.GuardianStatus{Type: contract.GuardianError, Reason: &r})
+	g.sq.skipFrom(slotStopping)
+	g.sq.drain()
 	return 1
+}
+
+// statusQueue is the guardian's one bounded, ordered status writer: at
+// most one record per lifecycle slot (ready, started or error, stopping,
+// exit), written in slot order by one goroutine, each delivery bounded by
+// statusDeadline on the injected clock. A delivery that fails or times
+// out abandons the pipe (closed; nothing later is written) and records no
+// success. It never blocks the escalation: callers only enqueue.
+type statusQueue struct {
+	g       *guardian
+	mu      sync.Mutex
+	slots   [slotCount]*contract.GuardianStatus
+	skip    [slotCount]bool
+	written int // slots handled (written, skipped or abandoned)
+	closed  bool
+	dead    bool
+	wake    chan struct{}
+	idle    chan struct{} // signaled whenever written advances
+	joined  chan struct{}
+}
+
+func newStatusQueue(g *guardian) *statusQueue {
+	q := &statusQueue{g: g, wake: make(chan struct{}, 1), idle: make(chan struct{}, 1), joined: make(chan struct{})}
+	go q.loop()
+	return q
+}
+
+func (q *statusQueue) put(slot int, s contract.GuardianStatus) {
+	q.mu.Lock()
+	if q.slots[slot] == nil && !q.skip[slot] {
+		q.slots[slot] = &s
+	}
+	q.mu.Unlock()
+	notify(q.wake)
+}
+
+// skipFrom marks every unfilled slot from slot on as never written.
+func (q *statusQueue) skipFrom(slot int) {
+	q.mu.Lock()
+	for i := slot; i < slotCount; i++ {
+		if q.slots[i] == nil {
+			q.skip[i] = true
+		}
+	}
+	q.mu.Unlock()
+	notify(q.wake)
+}
+
+func (q *statusQueue) skipSlot(slot int) {
+	q.mu.Lock()
+	if q.slots[slot] == nil {
+		q.skip[slot] = true
+	}
+	q.mu.Unlock()
+	notify(q.wake)
+}
+
+func (q *statusQueue) loop() {
+	defer close(q.joined)
+	for i := 0; i < slotCount; {
+		q.mu.Lock()
+		s, skip, closed, dead := q.slots[i], q.skip[i], q.closed, q.dead
+		q.mu.Unlock()
+		switch {
+		case dead || (closed && s == nil):
+			return
+		case skip:
+			i++
+			q.advance(i)
+			continue
+		case s == nil:
+			<-q.wake
+			continue
+		}
+		if !q.deliver(*s) {
+			q.mu.Lock()
+			q.dead = true
+			q.mu.Unlock()
+			q.g.fds.status.Close()
+			q.advance(slotCount)
+			return
+		}
+		// The delivery returned: its bound timer is stopped.
+		q.g.event("status-delivered " + s.Type)
+		i++
+		q.advance(i)
+	}
+}
+
+func (q *statusQueue) advance(n int) {
+	q.mu.Lock()
+	q.written = n
+	q.mu.Unlock()
+	notify(q.idle)
+}
+
+// deliver writes one status within statusDeadline.
+func (q *statusQueue) deliver(s contract.GuardianStatus) bool {
+	res := make(chan error, 1)
+	go func() { res <- q.g.status(s) }()
+	timeout, stop := q.g.after(statusDeadline)
+	defer stop()
+	select {
+	case err := <-res:
+		return err == nil
+	case <-timeout:
+		select {
+		case err := <-res:
+			return err == nil
+		default:
+		}
+		q.g.fds.status.Close() // unblocks the write
+		<-res
+		return false
+	}
+}
+
+// flush waits (bounded by statusDeadline) until every deliverable
+// enqueued record (none of its predecessors still awaited) is delivered or
+// abandoned: called immediately before the deliberate KILL.
+func (q *statusQueue) flush() {
+	timeout, stop := q.g.after(statusDeadline)
+	defer stop()
+	for {
+		q.mu.Lock()
+		pending := false
+		for i := q.written; i < slotCount; i++ {
+			if q.slots[i] != nil {
+				pending = true
+				continue
+			}
+			if !q.skip[i] {
+				break
+			}
+		}
+		dead := q.dead
+		q.mu.Unlock()
+		if !pending || dead {
+			return
+		}
+		select {
+		case <-q.idle:
+		case <-timeout:
+			return
+		}
+	}
+}
+
+// drain waits (bounded) for the enqueued records before a return.
+func (q *statusQueue) drain() { q.flush() }
+
+// close stops the writer and joins it (the guardian's return).
+func (q *statusQueue) close() {
+	q.mu.Lock()
+	q.closed = true
+	q.mu.Unlock()
+	notify(q.wake)
+	<-q.joined
 }
 
 // writeOwner publishes owner.json in phase durably: a synced private
@@ -270,6 +523,17 @@ func (g *guardian) readCommands(f *os.File) {
 			diagf(g.diag, "a control command for another execution was ignored")
 			continue
 		}
+		// A command without a cause is the recovery stop (lost); a cancel
+		// carries the plane's stop ID. A cause latched earlier (a natural
+		// exit, the deadline, an earlier stop) is kept.
+		cause := contract.CauseLost
+		if c.Cause == contract.CauseCancelled {
+			cause = contract.CauseCancelled
+		}
+		if g.latch(cause, c.StopID) {
+			g.event("cause " + cause)
+			g.stopping()
+		}
 		g.requestStop()
 	}
 }
@@ -332,6 +596,7 @@ func (g *guardian) run() int {
 		diagf(g.diag, "the parent is gone before ready: %v", err)
 		return 0
 	}
+	g.sq.skipSlot(slotReady) // written synchronously above
 	release := make(chan bool, 1)
 	go func() { release <- readRelease(g.fds.release) }()
 	select {
@@ -352,57 +617,145 @@ func (g *guardian) run() int {
 	if err := g.writeOwner(contract.OwnerReleased); err != nil {
 		return g.fail(guardianOwnerFailed, err)
 	}
+	g.cleaned = make(chan struct{})
+	// Start authorization: the monotonic instant is sampled and the
+	// deadline armed under the arbitration mutex, immediately before Start;
+	// Start runs outside it, so a blocked Start never prevents the timeout.
+	g.arb.Lock()
+	authAt, authWall := g.env.clock.Now(), g.env.now()
+	var timer <-chan time.Time
+	stopTimer := func() bool { return false }
+	if d := g.inv.TimeoutDuration(); g.inv.TimeoutPolicy == contract.TimeoutPolicyEnforced && d > 0 && g.env.timerAt != nil {
+		g.deadline, g.armed = authAt.Add(d), true
+		timer, stopTimer = g.env.timerAt(g.deadline)
+		g.event("timeout-armed")
+	}
+	g.arb.Unlock()
+	defer stopTimer()
+	if timer != nil {
+		go g.watchDeadline(timer)
+	}
 	run, err := g.env.startAdapter(g.inv, g.fds.stdin, g.fds.stdout, g.fds.stderr)
 	g.fds.stdin.Close()
 	g.fds.stdout.Close()
 	g.fds.stderr.Close()
 	if err != nil {
-		return g.fail(guardianStartFailed, err)
+		// A definite Start failure: no adapter, so no execution timeout
+		// result (a latched deadline's cleanup still runs on the group).
+		code := g.fail(guardianStartFailed, err)
+		g.arb.Lock()
+		began := g.cause != ""
+		g.arb.Unlock()
+		if began {
+			<-g.cleaned
+		}
+		return code
 	}
-	at := contract.FormatTime(g.env.now())
-	g.status(contract.GuardianStatus{Type: contract.GuardianStarted, PID: run.PID(), StartedAt: &at})
-	exited := make(chan procExit, 1)
-	go func() { exited <- run.Wait() }()
-	cleaned := make(chan struct{})
-	var once sync.Once
-	cleanup := func() {
-		once.Do(func() {
-			go func() {
-				defer close(cleaned)
-				// TERM to its own group, the grace, then KILL to that same
-				// group, the guardian included: no descendant-enumeration
-				// fast path; the adapter's wait status, not this KILL,
-				// decides the outcome.
-				processgroup.Escalate(context.Background(), processgroup.Plan{PGID: g.pid, Grace: g.env.grace, Sig: g.env.sig, Clock: g.env.clock})
-			}()
-		})
+	at := contract.FormatTime(authWall)
+	g.sq.put(slotStarted, contract.GuardianStatus{Type: contract.GuardianStarted, PID: run.PID(), StartedAt: &at})
+	g.arb.Lock()
+	late := g.cause != "" && g.cause != "natural"
+	g.arb.Unlock()
+	if late {
+		// The deadline (or a control) fired while Start was outstanding: no
+		// fresh duration, the group is cleaned up at once; the adapter,
+		// started after the first TERM, gets its own.
+		g.env.sig.Signal(-g.pid, syscall.SIGTERM)
 	}
+	go func() {
+		ex := run.Wait()
+		g.publishExit(ex)
+	}()
 	parentGone, stop := g.parentGone, g.stop
 	for {
 		select {
-		case ex := <-exited:
-			s := contract.GuardianStatus{Type: contract.GuardianExit}
-			switch {
-			case ex.signal != "":
-				sig := ex.signal
-				s.Signal = &sig
-			case ex.err != nil:
-				sig := contract.SignalUnknown
-				s.Signal = &sig
-			default:
-				code := ex.code
-				s.ExitCode = &code
-			}
-			g.status(s)
-			cleanup()
-			<-cleaned
+		case <-g.exitCh:
+			g.cleanup()
+			<-g.cleaned
 			return 0
 		case <-parentGone:
 			parentGone = nil
-			cleanup()
+			if g.latch(contract.CauseLost, "") {
+				g.event("cause " + contract.CauseLost)
+				g.stopping()
+			}
+			g.cleanup()
 		case <-stop:
 			stop = nil
-			cleanup()
+			g.cleanup()
 		}
 	}
+}
+
+// watchDeadline is the timer's own goroutine: at the deadline, absent an
+// earlier cause (an exit observed strictly before it is natural), it
+// latches timed_out and starts the cleanup at once, independently of
+// status, journal I/O or a Start still outstanding.
+func (g *guardian) watchDeadline(timer <-chan time.Time) {
+	select {
+	case <-timer:
+	case <-g.done:
+		return
+	}
+	if g.latch(contract.CauseTimedOut, "") {
+		g.event("cause " + contract.CauseTimedOut)
+		g.stopping()
+		g.cleanup()
+	}
+}
+
+// publishExit publishes the adapter's exit fact with its monotonic
+// observation instant under the arbitration mutex, before waking the
+// loop: strictly before the deadline an unlatched cause becomes natural,
+// at or after it timed_out. Its exact wait status is forwarded either way.
+func (g *guardian) publishExit(ex procExit) {
+	g.arb.Lock()
+	at := g.env.clock.Now()
+	timedOut := false
+	if g.cause == "" {
+		if g.armed && !at.Before(g.deadline) {
+			g.cause, timedOut = contract.CauseTimedOut, true
+		} else {
+			g.cause = "natural"
+		}
+	}
+	natural := g.cause == "natural"
+	g.arb.Unlock()
+	g.event("adapter-exit-observed")
+	if timedOut {
+		g.event("cause " + contract.CauseTimedOut)
+		g.stopping()
+	}
+	if natural {
+		g.sq.skipSlot(slotStopping)
+	}
+	s := contract.GuardianStatus{Type: contract.GuardianExit}
+	switch {
+	case ex.signal != "":
+		sig := ex.signal
+		s.Signal = &sig
+	case ex.err != nil:
+		sig := contract.SignalUnknown
+		s.Signal = &sig
+	default:
+		code := ex.code
+		s.ExitCode = &code
+	}
+	g.sq.put(slotExit, s)
+	g.exitOnce.Do(func() { close(g.exitCh) })
+}
+
+// cleanup starts the group cleanup once: TERM to its own group, the
+// grace, then KILL to that same group, the guardian included; no
+// descendant-enumeration fast path. The adapter's wait status, not this
+// KILL, decides a natural outcome; the enqueued status records are flushed
+// (bounded) immediately before the KILL.
+func (g *guardian) cleanup() {
+	g.cleanOnce.Do(func() {
+		go func() {
+			defer close(g.cleaned)
+			processgroup.Escalate(context.Background(), processgroup.Plan{PGID: g.pid, Grace: g.env.grace, Sig: g.env.sig, Clock: g.env.clock,
+				BeforeDeadline: func() error { g.sq.flush(); return nil }})
+		}()
+	})
 }

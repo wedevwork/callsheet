@@ -202,7 +202,7 @@ func TestControlLease(t *testing.T) {
 		started := tp.clk.Now()
 		tp.loseByLease(t, w, st.TaskID)
 		tp.log.awaitOnce(t, "terminal-committed "+st.TaskID)
-		if err := tp.cl.RemoveRole(bg, "a", false); err != nil {
+		if err := rmRole(tp.cl, bg, "a", false); err != nil {
 			t.Fatalf("rm after the durable loss: %v", err)
 		}
 		p := tp.dial(t)
@@ -251,7 +251,7 @@ func TestControlProtocol(t *testing.T) {
 		wantAdmission(t, err, contract.CodeUnavailable, contract.ReasonNoCapacity, "a:role_unsynced")
 		p.send(contract.ProtocolVersion, contract.FrameTaskInventory, "i1", contract.TaskInventoryBody{RunID: peerRunID})
 		p.expect(contract.FrameTaskInventoryAck, "i1")
-		if err := tp.cl.RemoveRole(bg, "b", false); err != nil {
+		if err := rmRole(tp.cl, bg, "b", false); err != nil {
 			t.Fatalf("rm mid inventory: %v", err)
 		}
 		p.heartbeat(2)
@@ -351,6 +351,10 @@ func TestControlProtocol(t *testing.T) {
 		if list, _, err := tp.cl.ListTasks(bg, "", 100); err != nil || len(list) != 0 {
 			t.Fatalf("tasks %d %v", len(list), err)
 		}
+	})
+	t.Run("controls", func(t *testing.T) {
+		t.Parallel()
+		controlFairness(t)
 	})
 	t.Run("strict", func(t *testing.T) {
 		t.Parallel()

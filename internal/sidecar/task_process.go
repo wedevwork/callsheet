@@ -70,6 +70,11 @@ type guardianProc interface {
 	// Stop closes the parent-lifetime pipe: the guardian cleans its
 	// group up (TERM, grace, KILL). Idempotent.
 	Stop()
+	// Control (iteration 06b) asks the live guardian to cancel with the
+	// plane's stop ID (its FIFO's cause-cancelled command); the guardian
+	// latches it unless a cause was latched first. Delivery is not
+	// cleanup.
+	Control(stopID string) error
 	// Wait reaps the guardian (it normally ends by its own group KILL).
 	Wait() procExit
 }

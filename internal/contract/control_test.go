@@ -64,6 +64,13 @@ func withField(t testing.TB, b []byte, key, raw string) []byte {
 	return out
 }
 
+// asSchema2 turns a schema-3 document of legacy history into 06a's exact
+// schema-2 form (no stop intent, timeout_enforced false).
+func asSchema2(t testing.TB, b []byte) []byte {
+	t.Helper()
+	return withField(t, withField(t, withField(t, b, "stop_intent", ""), "timeout_enforced", "false"), "schema_version", "2")
+}
+
 func mustCompact(t testing.TB, v any) []byte {
 	t.Helper()
 	b, err := compact(v)
@@ -78,12 +85,12 @@ func mustCompact(t testing.TB, v any) []byte {
 // digest and the committed acknowledgement.
 func TestControlProtocol(t *testing.T) {
 	t.Run("version", func(t *testing.T) {
-		if ProtocolVersion != 4 {
+		if ProtocolVersion != 5 {
 			t.Fatalf("protocol %d", ProtocolVersion)
 		}
 		// A protocol 3 (05) peer and an unknown future version are
 		// refused before the body, naming both versions.
-		for _, v := range []int{3, 5} {
+		for _, v := range []int{4, 6} {
 			b := frame(v, FrameTaskInventory, "i1", `{"garbage":true}`)
 			f, err := DecodeFrame(b, FromSidecar)
 			ce, ok := err.(*Error)
@@ -92,7 +99,7 @@ func TestControlProtocol(t *testing.T) {
 			}
 			l, _ := ce.DetailInt("local_version")
 			r, _ := ce.DetailInt("remote_version")
-			if l != 4 || r != v || !strings.Contains(ce.Message, "local=4 remote="+FormatInt(v)) {
+			if l != 5 || r != v || !strings.Contains(ce.Message, "local=5 remote="+FormatInt(v)) {
 				t.Fatalf("version %d mismatch %+v", v, ce)
 			}
 		}
@@ -108,8 +115,18 @@ func TestControlProtocol(t *testing.T) {
 				t.Fatalf("%s from the other side: %v", typ, err)
 			}
 		}
-		// No 06b control frame is reserved in protocol 4.
-		for _, typ := range []string{"task_stop", "task_cancel", "task_control"} {
+		// Protocol 5's control frame and its receipt, each from its sender
+		// only; no other control frame exists.
+		for typ, from := range map[string]Direction{FrameTaskCancel: FromPlane, FrameTaskCancelAck: FromSidecar} {
+			b := frame(ProtocolVersion, typ, "p1", `{}`)
+			if _, err := DecodeFrame(b, from); err != nil {
+				t.Fatalf("%s from its sender: %v", typ, err)
+			}
+			if _, err := DecodeFrame(b, 1-from); err == nil || !strings.Contains(err.Error(), "not valid in this direction") {
+				t.Fatalf("%s from the other side: %v", typ, err)
+			}
+		}
+		for _, typ := range []string{"task_stop", "task_control", "task_timeout"} {
 			if _, err := DecodeFrame(frame(ProtocolVersion, typ, "p1", `{}`), FromPlane); err == nil {
 				t.Fatalf("%s accepted", typ)
 			}
@@ -272,17 +289,21 @@ func TestControlProtocol(t *testing.T) {
 		}
 		for name, x := range map[string]TaskResultBody{
 			"natural without exit": {TaskID: ctlTask, Execution: ctlExec(), Outcome: OutcomeNatural},
-			"unknown outcome":      {TaskID: ctlTask, Execution: ctlExec(), Outcome: "timed_out"},
+			"unknown outcome":      {TaskID: ctlTask, Execution: ctlExec(), Outcome: "exploded"},
 			"missing outcome":      {TaskID: ctlTask, Execution: ctlExec()},
 		} {
 			if _, err := DecodeTaskResult(mustCompact(t, x.Sealed())); CodeOf(err) != CodeInvalidArgument {
 				t.Fatalf("%s: %v", name, err)
 			}
 		}
-		for _, key := range []string{"stop_intent", "stop_id", "state"} {
+		for _, key := range []string{"stop_intent", "state"} {
 			if _, err := DecodeTaskResult(withField(t, b, key, "null")); err == nil {
 				t.Fatalf("%s accepted", key)
 			}
+		}
+		// Protocol 5 carries stop_id on the wire, null included.
+		if _, err := DecodeTaskResult(withField(t, b, "stop_id", "")); err == nil {
+			t.Fatal("a result without stop_id was accepted")
 		}
 		if _, err := DecodeTaskResult(withField(t, b, "digest", "")); err == nil {
 			t.Fatal("a result without its digest was accepted")
@@ -304,6 +325,95 @@ func TestControlProtocol(t *testing.T) {
 			if _, err := DecodeTaskResultAck(raw); err == nil {
 				t.Fatalf("ack %s accepted", name)
 			}
+		}
+	})
+	t.Run("controls", func(t *testing.T) {
+		// Protocol 5's controls are strict: the task_cancel and its receipt
+		// (1 KiB each, every field required, no unknown field, cancelled the
+		// only plane kind), the reconcile's stop_control with exactly its
+		// intent, and the result's stop_id per outcome.
+		stop := strings.Repeat("c", 32)
+		for _, typ := range []string{FrameTaskCancel, FrameTaskCancelAck} {
+			if BodyLimit(typ) != MaxControlBody || MaxControlBody != 1<<10 {
+				t.Fatalf("%s limit %d", typ, BodyLimit(typ))
+			}
+		}
+		cb := mustCompact(t, TaskCancelBody{TaskID: ctlTask, Execution: ctlExec(), StopID: stop, Kind: StopKindCancelled})
+		if got, err := DecodeTaskCancel(cb); err != nil || got.StopID != stop || got.Execution != ctlExec() {
+			t.Fatalf("task_cancel %+v %v", got, err)
+		}
+		for name, raw := range map[string][]byte{
+			"unknown":   withField(t, cb, "reason", `"x"`),
+			"no-stop":   withField(t, cb, "stop_id", ""),
+			"no-kind":   withField(t, cb, "kind", ""),
+			"no-exec":   withField(t, cb, "execution", ""),
+			"null-stop": withField(t, cb, "stop_id", "null"),
+			"upper":     withField(t, cb, "stop_id", `"`+strings.Repeat("C", 32)+`"`),
+			"timed_out": withField(t, cb, "kind", `"timed_out"`),
+			"kind":      withField(t, cb, "kind", `"stop"`),
+			"task":      withField(t, cb, "task_id", `"t_x"`),
+			"oversized": append(bytes.Repeat([]byte(" "), MaxControlBody), cb...),
+		} {
+			if _, err := DecodeTaskCancel(raw); CodeOf(err) != CodeInvalidArgument {
+				t.Fatalf("task_cancel %s: %v", name, err)
+			}
+		}
+		ab := mustCompact(t, TaskCancelAckBody{TaskID: ctlTask, Execution: ctlExec(), StopID: stop, Received: true})
+		if got, err := DecodeTaskCancelAck(ab); err != nil || !got.Received {
+			t.Fatalf("task_cancel_ack %v", err)
+		}
+		for name, raw := range map[string][]byte{
+			"not-received": withField(t, ab, "received", "false"),
+			"unknown":      withField(t, ab, "cleaned", "true"),
+			"no-stop":      withField(t, ab, "stop_id", ""),
+			"stop":         withField(t, ab, "stop_id", `"x"`),
+			"oversized":    append(bytes.Repeat([]byte(" "), MaxControlBody), ab...),
+		} {
+			if _, err := DecodeTaskCancelAck(raw); CodeOf(err) != CodeInvalidArgument {
+				t.Fatalf("task_cancel_ack %s: %v", name, err)
+			}
+		}
+		// The reconcile's stop_control carries exactly its durable intent.
+		in := StopIntent{ID: stop, Kind: StopKindCancelled}
+		ok := TaskReconcileBody{Entries: []TaskReconcileEntry{{TaskID: ctlTask, Execution: ctlExec(), Action: ActionStopControl, Stop: &in}}, Final: true}
+		if got, err := DecodeTaskReconcile(mustCompact(t, ok)); err != nil || got.Entries[0].Stop == nil || *got.Entries[0].Stop != in {
+			t.Fatalf("stop_control %+v %v", got, err)
+		}
+		bad := StopIntent{ID: stop, Kind: OutcomeTimedOut}
+		for name, e := range map[string]TaskReconcileEntry{
+			"no-intent":   {TaskID: ctlTask, Execution: ctlExec(), Action: ActionStopControl},
+			"intent-lost": {TaskID: ctlTask, Execution: ctlExec(), Action: ActionStopLost, Stop: &in},
+			"kind":        {TaskID: ctlTask, Execution: ctlExec(), Action: ActionStopControl, Stop: &bad},
+		} {
+			body := TaskReconcileBody{Entries: []TaskReconcileEntry{e}, Final: true}
+			if _, err := DecodeTaskReconcile(mustCompact(t, body)); CodeOf(err) != CodeInvalidArgument {
+				t.Fatalf("reconcile %s: %v", name, err)
+			}
+		}
+		// Result stop_id: cancelled and lost may name the intent; natural and
+		// timed_out never do; a stop_id changes the digest and a null one
+		// keeps protocol 4's.
+		sig := "SIGTERM"
+		for _, o := range []string{OutcomeCancelled, OutcomeLost} {
+			r := TaskResultBody{TaskID: ctlTask, Execution: ctlExec(), Outcome: o, StopID: &stop, Signal: &sig}.Sealed()
+			if _, err := DecodeTaskResult(mustCompact(t, r)); err != nil {
+				t.Fatalf("%s with stop_id: %v", o, err)
+			}
+			n := r
+			n.StopID = nil
+			if n.Sealed().Digest == r.Digest {
+				t.Fatalf("%s: stop_id outside the digest", o)
+			}
+		}
+		for _, o := range []string{OutcomeNatural, OutcomeTimedOut} {
+			r := TaskResultBody{TaskID: ctlTask, Execution: ctlExec(), Outcome: o, StopID: &stop, Signal: &sig}.Sealed()
+			if _, err := DecodeTaskResult(mustCompact(t, r)); CodeOf(err) != CodeInvalidArgument {
+				t.Fatalf("%s with stop_id: %v", o, err)
+			}
+		}
+		to := TaskResultBody{TaskID: ctlTask, Execution: ctlExec(), Outcome: OutcomeTimedOut, Signal: &sig}.Sealed()
+		if _, err := DecodeTaskResult(mustCompact(t, to)); err != nil {
+			t.Fatalf("timed_out: %v", err)
 		}
 	})
 	t.Run("late-log", func(t *testing.T) {
@@ -372,14 +482,19 @@ func TestControlMigration(t *testing.T) {
 				rec.ResultDigest != nil || rec.Late != nil {
 				t.Fatalf("%s converted %+v", name, rec)
 			}
-			// A schema-2 rewrite round-trips (timeout still unenforced).
+			// A schema-3 rewrite round-trips (timeout still unenforced, no
+			// stop intent, no timeout_enforced member).
 			b, err := EncodeTaskRecord(rec)
 			if err != nil {
 				t.Fatalf("%s encode: %v", name, err)
 			}
-			if !bytes.Contains(b, []byte(`"schema_version": 2`)) || !bytes.Contains(b, []byte(`"timeout_enforced": false`)) ||
+			if !bytes.Contains(b, []byte(`"schema_version": 3`)) || bytes.Contains(b, []byte(`"timeout_enforced"`)) || !bytes.Contains(b, []byte(`"stop_intent": null`)) ||
 				!bytes.Contains(b, []byte(`"timeout_policy": "legacy_unenforced"`)) || !bytes.Contains(b, []byte(`"start_digest": null`)) {
-				t.Fatalf("%s schema 2:\n%s", name, b)
+				t.Fatalf("%s schema 3:\n%s", name, b)
+			}
+			// Its exact 06a schema-2 form decodes too, reported as schema 2.
+			if two, err := ParseTaskRecord(asSchema2(t, b), testLookup); err != nil || two.Schema != TaskRecordSchema2 || two.State != rec.State {
+				t.Fatalf("%s schema 2 %+v %v", name, two, err)
 			}
 			again, err := ParseTaskRecord(b, testLookup)
 			if err != nil || again.Schema != TaskRecordSchemaVersion || again.State != rec.State || !bytes.Equal(again.Log.Data, rec.Log.Data) ||
@@ -401,7 +516,7 @@ func TestControlMigration(t *testing.T) {
 			"timeout enforced": withField(t, raw, "timeout_enforced", "true"),
 			"lost in 05":       withField(t, withField(t, raw, "state", `"lost"`), "finished_at", `"2026-09-20T10:01:00Z"`),
 			"schema 2 fields":  withField(t, raw, "start_digest", "null"),
-			"schema 3":         withField(t, raw, "schema_version", "3"),
+			"schema 4":         withField(t, raw, "schema_version", "4"),
 		} {
 			if _, err := ParseTaskRecord(doc, testLookup); err == nil {
 				t.Fatalf("%s accepted", name)
@@ -409,8 +524,13 @@ func TestControlMigration(t *testing.T) {
 		}
 		// Schema 2 rejects stop fields even when null, and 06b states.
 		rec, _ := ParseTaskRecord(raw, testLookup)
-		b, _ := EncodeTaskRecord(rec)
+		b3, _ := EncodeTaskRecord(rec)
+		b := asSchema2(t, b3)
+		if _, err := ParseTaskRecord(b, testLookup); err != nil {
+			t.Fatalf("schema 2 base: %v", err)
+		}
 		for name, doc := range map[string][]byte{
+			"enforced flag":  withField(t, b, "timeout_enforced", "true"),
 			"stop intent":    withField(t, b, "stop_intent", "null"),
 			"stop id":        withField(t, b, "stop_requested", "null"),
 			"policy":         withField(t, b, "timeout_policy", `"enforced"`),
@@ -528,9 +648,9 @@ func TestControlJournalCodec(t *testing.T) {
 		}
 		b, _ := EncodeExecutionJournal(base)
 		for name, doc := range map[string][]byte{
-			"schema":  withField(t, b, "schema_version", "2"),
+			"schema":  withField(t, b, "schema_version", "3"),
 			"unknown": withField(t, b, "prompt", `"x"`),
-			"policy":  withField(t, b, "timeout_policy", `"enforced"`),
+			"policy":  withField(t, b, "timeout_policy", `"odd"`),
 			"digest":  withField(t, b, "start_digest", `"x"`),
 			"nonce":   withField(t, b, "owner_nonce", `"x"`),
 			"started": withField(t, b, "started_at", `"yesterday"`),
@@ -577,7 +697,7 @@ func TestControlJournalCodec(t *testing.T) {
 		}
 	})
 	t.Run("guardian", func(t *testing.T) {
-		inv := GuardianInvocation{Version: 1, TaskID: ctlTask, Execution: ctlExec(), StartDigest: ctlDigest, TaskDir: "/state/tasks/" + ctlTask,
+		inv := GuardianInvocation{Version: GuardianInvocationVersion, Timeout: "2h0m0s", TimeoutPolicy: TimeoutPolicyEnforced, TaskID: ctlTask, Execution: ctlExec(), StartDigest: ctlDigest, TaskDir: "/state/tasks/" + ctlTask,
 			Nonce: nonce, Path: "/bin/fake", Argv: []string{"fake", "--x"}, Env: []string{"A=1"}, Dir: "/tmp/scratch"}
 		b, err := EncodeGuardianInvocation(inv)
 		if err != nil {
@@ -587,7 +707,10 @@ func TestControlJournalCodec(t *testing.T) {
 			t.Fatalf("invocation %v", err)
 		}
 		for name, mut := range map[string]func(*GuardianInvocation){
-			"version":  func(x *GuardianInvocation) { x.Version = 2 },
+			"version":  func(x *GuardianInvocation) { x.Version = 1 },
+			"timeout":  func(x *GuardianInvocation) { x.Timeout = "2h" },
+			"negative": func(x *GuardianInvocation) { x.Timeout = "-1s" },
+			"policy":   func(x *GuardianInvocation) { x.TimeoutPolicy = "" },
 			"task dir": func(x *GuardianInvocation) { x.TaskDir = "/state/other/" + ctlTask },
 			"relative": func(x *GuardianInvocation) { x.Path = "fake" },
 			"nul":      func(x *GuardianInvocation) { x.Argv = []string{"a\x00b"} },

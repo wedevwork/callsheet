@@ -22,8 +22,8 @@ their names are unique diagnostic checks, not required contexts:
 
 | Check context | Runner | Timeout | Kind | Steps after setup |
 |---|---|---|---|---|
-| `ci-linux` | `ubuntu-24.04` | 45 min | required | `devcheck test` (native suite, then the same suite with `-race`), `devcheck coverage` (unit coverage must be greater than 80.0%), `devcheck bench` (git transport payload byte limits and commit/tree invariants, then the plane trust benchmarks: issuance, initialization and verified TLS health, the plane node benchmarks: heartbeat, snapshot of 100 nodes and durable enrollment, and the plane role benchmarks: role list and node views for 1 and 100 roles and durable add/set/rm transactions, then the node and role frame encode/decode benchmarks in `internal/contract`, then the sidecar ready-check benchmark (100 manual pairs, one shared probe) and the adapter's real fake-probe benchmark, then the task benchmarks: plane admission over 100 roles (first, last and no match, no filesystem), full-tail checkpoint writes of 0, 64 KiB and 10 MiB, the task envelope encode/decode at its maximum legal size in `internal/contract`, and the sidecar log-tail ring and maximum prompt composition, then the iteration 06a control benchmarks: the plane's per-task writer committing natural and lost terminal records and late evidence with 0, 64 KiB and 10 MiB tails (`BenchmarkControlCommit`: bytes written and bounded allocation), and one maximum sealed result, one maximum outbox and one 64-entry inventory page (`BenchmarkControlReplay` in `internal/contract` and `internal/sidecar`), each checking its invariants; timings are reported, never gated), `devcheck cross` (linux/amd64, linux/arm64, darwin/amd64, darwin/arm64: 12 artifacts) |
-| `ci-macos` | `macos-15` | 30 min | required | `devcheck native`: the complete suite as `go test -json`, which must show passing run and pass events in `github.com/wedevwork/callsheet/tests/function` for `TestFP6ProcessGroups` and its `cooperative`, `resistant` and `leader-exits-first` scenarios, for the plane trust tests, the node tests, the role tests, the task tests and the control tests (iteration 06a: the eight control function parents and the native group qualification), and in `github.com/wedevwork/callsheet/internal/sidecar` for `TestTaskExecutionContract` and its `process` subtest (see below) |
+| `ci-linux` | `ubuntu-24.04` | 45 min | required | `devcheck test` (native suite, then the same suite with `-race`), `devcheck coverage` (unit coverage must be greater than 80.0%), `devcheck bench` (git transport payload byte limits and commit/tree invariants, then the plane trust benchmarks: issuance, initialization and verified TLS health, the plane node benchmarks: heartbeat, snapshot of 100 nodes and durable enrollment, and the plane role benchmarks: role list and node views for 1 and 100 roles and durable add/set/rm transactions, then the node and role frame encode/decode benchmarks in `internal/contract`, then the sidecar ready-check benchmark (100 manual pairs, one shared probe) and the adapter's real fake-probe benchmark, then the task benchmarks: plane admission over 100 roles (first, last and no match, no filesystem), full-tail checkpoint writes of 0, 64 KiB and 10 MiB, the task envelope encode/decode at its maximum legal size in `internal/contract`, and the sidecar log-tail ring and maximum prompt composition, then the iteration 06a control benchmarks: the plane's per-task writer committing natural and lost terminal records and late evidence with 0, 64 KiB and 10 MiB tails (`BenchmarkControlCommit`: bytes written and bounded allocation; since iteration 06b also a stop intent's publication followed by its cancelled terminal record and a timed_out late append at the same tails), and one maximum sealed result, one maximum outbox and one 64-entry inventory page (`BenchmarkControlReplay` in `internal/contract` and `internal/sidecar`), then the iteration 06b bounded-wait benchmark (`BenchmarkControlWait` in `internal/plane`: registering and unregistering 1 and 16 IDs, waking 1 and 1,000 waiters; every waiter woken and no registration retained), each checking its invariants; timings are reported, never gated), `devcheck cross` (linux/amd64, linux/arm64, darwin/amd64, darwin/arm64: 12 artifacts) |
+| `ci-macos` | `macos-15` | 30 min | required | `devcheck native`: the complete suite as `go test -json`, which must show passing run and pass events in `github.com/wedevwork/callsheet/tests/function` for `TestFP6ProcessGroups` and its `cooperative`, `resistant` and `leader-exits-first` scenarios, for the plane trust tests, the node tests, the role tests, the task tests and the control tests (iteration 06a: the eight control function parents and the native group qualification; iteration 06b: the four task-control function parents), and in `github.com/wedevwork/callsheet/internal/sidecar` for `TestTaskExecutionContract` and its `process` subtest (see below) |
 | `ci-linux-stress-packages` | `ubuntu-24.04` | 20 min | worker | `devcheck stress-packages` on Linux (see Stress checks) |
 | `ci-linux-stress-plane-cpu1` | `ubuntu-24.04` | 20 min | worker | `devcheck stress-plane-cpu1` on Linux: `internal/plane` at CPU 1, one invocation alone on its worker (iteration 06a-perf) |
 | `ci-linux-stress-plane` | `ubuntu-24.04` | 20 min | worker | `devcheck stress-plane` on Linux: `internal/plane` CPU 2 and CPU 4 as two concurrent invocations (iteration 05b; CPU 1 on its own worker since iteration 06a-perf) |
@@ -209,8 +209,7 @@ execution, protocol 4) are one function parent per FP:
 `TestControlLegacy`, plus the direct real-binary group qualification
 `TestControlNativeGroups` and its `cooperative`, `resistant`,
 `orphan-restart` and `plane-restart` scenarios. That is 13 more names, 141
-in all, with the 128 earlier names unchanged and first; no 06b name is
-required. Each parent delegates by the single control table in
+in all, with the 128 earlier names unchanged and first. Each parent delegates by the single control table in
 `internal/devcheck` (`ControlDelegations`, 14 rows for 8 wrappers) to the
 package contracts of its FP, as a conjunction over every listed package:
 `TestControlCommit` (plane), `TestControlProtocol` (contract, plane and
@@ -234,6 +233,40 @@ and the recovery by this test process as the replacement sidecar
 across a plane restart (`plane-restart`), each ending with the group
 absent (ESRCH). It runs in the normal, race and native suites only, never
 in a stress shard.
+
+Iteration 06b (task controls, protocol 5, milestone M2) appends one
+function parent per FP, 145 names in all, with the 141 earlier names
+unchanged and first: `TestControlCancellation`,
+`TestControlExecutionTimeout`, `TestControlBoundedWait` and
+`TestControlForceRemove`. They extend the same control table
+(`ControlDelegations`, now 27 rows for 12 wrappers: the 14 earlier rows
+unchanged, then 13 more), and each 06b row requires its package contract's
+parent **and every mandatory subcase** by name, so a vacuous parent never
+qualifies: `TestControlCancel` (plane `unsent`, `loaded-pending`,
+`durable-order`, `storage-retry`, `offline`, `duplicate`; sidecar
+`preparing`, `guardian-control`, `partial-output`, `cleanup-unconfirmed`,
+`duplicate`; client and cli `accepted`, `terminal`, `errors`),
+`TestControlTimeout` (sidecar `default-override-zero`, `deadline-tie`,
+`slow-start`, `plane-outage`, `restart`, `status-failure`; contract
+`policy`, `outcome`, `migration`), `TestControlWait` (plane
+`register-race`, `any-of`, `deadline`, `capacity`, `shutdown`, `dispatch`;
+client `restart-budget`, `no-dispatch-retry`, `deadline`, `correlation`;
+cli `text`, `json`, `exit`; contract `bounds`, `validation`) and
+`TestControlRemove` (plane `fence`, `drain`, `restart`, `storage-retry`,
+`instance-reuse`; sidecar `removed-instance-cleanup`; cli `pending`,
+`completed`, `retry`). A failed, skipped or missing subcase, an empty
+selection or an invocation of another package fails the wrapper. The 06a
+families gain the 06b cases in place (stop-versus-result durability in
+`TestControlCommit`, protocol 5 control strictness and control/heartbeat
+fairness in `TestControlProtocol`, cancelled and timed_out late outcomes
+and intent replay in `TestControlLate`, journal migration in
+`TestControlRestart`). `TestControlNativeGroups` keeps its four scenarios
+and sixteen children, but `cooperative` now stops its group through the
+public cancel API (after the leader's output and the descendant are
+ready) and `resistant` through the guardian's own execution timeout (a
+5 s dispatch override, the descendant-ready barrier checked to fall
+inside it), adding at most 5 s per ordinary invocation and never repeated
+in stress.
 
 The main jobs and all fourteen workers check out the event's revision without
 persisted credentials, take the Go version from `go.mod` with module
@@ -381,6 +414,15 @@ their `locking` and `shutdown` subtests below them.
   control function wrappers and `TestControlNativeGroups` are not
   repeated. The only real-child change is the sidecar's existing process
   qualification (below): five children per repetition instead of three.
+  Iteration 06b (task controls) adds no package, selector, shard or job
+  either (the pre-authorised CPU1 split was not applied: 18 jobs): its
+  contracts (`TestControlCancel`, `TestControlTimeout`, `TestControlWait`
+  and `TestControlRemove`, with the 06a families' new cases) run in their
+  packages' existing shards (plane and sidecar CPU 1 alone and CPU 2 and 4
+  concurrent; contract and client in the packages shard; cli and devcheck
+  in the ordinary suites) with injected guardians, groups, timers and
+  clocks: zero real children per repetition, the sidecar's process
+  qualification unchanged at five.
   Iteration 05 (tasks) adds no package, selector or shard: the task
   contracts (`TestTaskContract`, `TestTaskAdmission`, `TestTaskStream` and
   `TestTaskOutput` of plane and sidecar, `TestTaskStore`,
@@ -849,8 +891,47 @@ Budgets:
   6-minute limit, per-stage 15-minute watchdog and 20-minute worker budget
   are unchanged.
 
+- Iteration 06b allocation (design 06b DW6): a conservative screening
+  estimate, not a gate and not a measurement. The new plane matrix counts
+  21 case-equivalents and the sidecar's 16 (17 and 12 new first-level
+  subtests plus four for the 06a families' extensions), costed at the
+  measured persistence cases (0.10 s plane, 0.12 s sidecar per
+  repetition, Linux `-race -count=1 -cpu=1`): 42.0 s and 38.4 s added per
+  CPU invocation at count 20 on Linux, 63.6 s and 69.6 s on macOS (scaled by
+  the hosted CPU1 macOS/Linux ratios 1.5143 and 1.8124). Against the hosted
+  06a-perf references that projects plane CPU1 at 199.5 s (Linux) and
+  302.1 s (macOS) and sidecar CPU1 at 180.2 s and 326.6 s: both macOS
+  values plausibly breach 300 s. The owner chose to build with the current
+  matrix and measure on the pull request; a hosted CPU1 invocation strictly
+  above 300.0 s, or its timeout, triggers the pre-authorised split of that
+  package's CPU1 worker into two alphabetical halves on both platforms (up
+  to 22 jobs), through the light flow. CPU 2 and 4 keep the full CPU 1
+  increment as a no-speedup allowance. The packages stage keeps its
+  provisional 10 s allocation; processgroup and functions have no workload
+  delta, and the function package adds at most 5 s per ordinary invocation
+  (the native `resistant` timeout) within its 180 s bound.
+
 Measurements, newest first. Hosted and local figures come from different
 machines and are never combined into one number.
+
+- Measured with iteration 06b (task controls): Linux, go1.26.4
+  linux/amd64 on the same 16-thread developer workstation as 06a-perf
+  below, warm build cache, 2026-09-28, each shard stage run alone, one after
+  another (`devcheck` outcome lines). Local execution evidence only, not a
+  hosted estimate or qualification:
+  - `stress plane cpu1` 158.8 s (06a-perf: 135.3 s, +23.5 s; the Linux
+    screening allowance was +42.0 s); `stress sidecar cpu1` 160.3 s
+    (146.5 s, +13.8 s; allowance +38.4 s).
+  - `stress plane cpu2` 126.3 s and `cpu4` 100.4 s, concurrently (116.3 s
+    and 97.2 s); `stress sidecar cpu2` 109.7 s and `cpu4` 90.7 s,
+    concurrently (99.6 s and 83.0 s).
+  - `stress packages` 122.4 s; `stress processgroup` 69.9 s per CPU
+    setting; `stress function` 33.0 s, `stress plane function` 72.2 s,
+    `stress node function` 8.4 s (unchanged workloads).
+  - `tests/function` 49.1 s (race 54.1 s) within its 180 s bound; the
+    native `resistant` scenario takes about 5 s longer (its timeout).
+  - Hosted iteration 06b times: pending (the pull request's first remote
+    run; see First remote run for the CPU1 split trigger).
 
 - Measured with iteration 06a-perf (CPU 1 shards): Linux, go1.26.4
   linux/amd64 on the same 16-thread Intel i7-11800H developer workstation
@@ -1563,6 +1644,12 @@ protection change; the pull request merges only after all eighteen jobs,
 and so all four checks, are green on its current merge revision (Branch
 protection, CPU1 workers).
 
+Iteration 06b (task controls, milestone M2) is delivered in its own pull
+request (branch `iter-06b-task-controls`). It adds no job and changes no
+required context: the workflow keeps its eighteen jobs, and the
+pre-authorised CPU1 split (Budgets, iteration 06b) is applied only if the
+first remote run triggers it.
+
 ## First remote run
 
 Local checks cannot prove runner provisioning, Go and action download or cache
@@ -1581,6 +1668,7 @@ handoff:
 - for iteration 05b, from both plane workers, each `devcheck: stress plane cpuN: ok in Xs` (or `FAILED after Xs`) line and each plane binary's own time separately from its go command's build, evaluated against the pre-authorised plane fallback trigger (X > 300.0 s, or a plane binary timeout in the CPU-labelled replay); from both packages workers, the `internal/sidecar` and `internal/contract` binary times, the sidecar line evaluated against the sidecar follow-up rule; setup, summary wait, the runner's core count and architecture, and the critical path, compared with the iteration 05b estimates in Budgets. Collect one complete successful run per platform; failed runs stay in the evidence, never discarded as retries. Values above the estimated ranges need a documented explanation or revised estimate, and any timeout or assertion failure blocks qualification.
 - for the iteration 05b sidecar follow-up, from both sidecar workers, each `devcheck: stress sidecar cpuN: ok in Xs` (or `FAILED after Xs`) line and each sidecar binary's own time separately from its go command's build, with every process, cleanup and timing assertion passing unchanged; from both packages workers, the remaining binaries' times; setup, summary wait, the runner's core count and architecture, and the critical path, compared with the sidecar follow-up estimates in Budgets. Any timeout or assertion failure blocks qualification, and no further concurrency escalation or timing relaxation is authorised.
 - for iteration 06a-perf, the owner's pre-decided post-push qualification (not the local code-review bar): record all eighteen job conclusions and step and job times, setup and queue costs, the runner's architecture and core count, and every plane and sidecar CPU-labelled `devcheck` outcome. Use `devcheck: stress <package> cpu1: ok in Xs` as each CPU 1 invocation's elapsed value (it includes the command's build), and keep the binary's own time separately. Evaluate all four CPU1 invocations, Linux and macOS, plane and sidecar. If every CPU1 invocation passes and is ≤300.0 seconds, and all ordinary correctness, coverage and CI gates pass, this slice is done. A value above 250 but at or below 300 succeeds under the owner's rule; record that the aspirational target was missed. Otherwise report the measured values and failures to the owner. Missing, cancelled or timed-out invocations do not count as passes. In that case make no automatic further change to topology, waves, flags, counts, timeouts, workload tests or fixtures. Do not discard a failed first run by retrying until green. The ≤250-second macOS CPU1 goal is a first-run hypothesis, not an additional acceptance gate. There is no two-run requirement. All CPU 2 and CPU 4 invocations and every other job must still pass their unchanged gates, and until that run exists hosted qualification is pending, not passed.
+- for iteration 06b (owner decision on DW6, 2026-09-28: build with the current matrix and measure on the pull request): native evidence for the four task-control parents (145 names) on `ci-macos`, and all four CPU1 invocations' `devcheck: stress <package> cpu1: ok in Xs` values, Linux and macOS, plane and sidecar, against the screening estimates in Budgets. A value strictly greater than 300.0 s, or that invocation's timeout, triggers the pre-authorised CPU1 split for that package on both platforms, through the light flow (a fix brief preserving the triggering log, implementation and review), without another design round; exactly 300.0 s does not trigger. An assertion failure is a correctness failure, never cured by splitting. Until that run exists hosted qualification is pending, not passed.
 
 The local validator checks action identity and full-SHA format only, not that
 a SHA exists or matches its release comment. Confirm each pin against its
@@ -1612,6 +1700,8 @@ go test -json -count=1 -run '^(TestNodeEnrollment|TestNodeReconnect)$/^(locking|
 go test -count=1 -run '^TestRole' -v ./tests/function
 go test -count=1 -run '^TestTask' -v ./tests/function
 go test -race -covermode=atomic -count=20 -cpu=1,2,4 -timeout=6m -run '^TestTask' ./internal/plane ./internal/sidecar ./internal/adapter ./internal/client ./internal/contract
+go test -count=1 -run '^TestControl(Cancellation|ExecutionTimeout|BoundedWait|ForceRemove|NativeGroups)$' -v ./tests/function
+go test -race -count=20 -cpu=1,2,4 -timeout=6m -run '^TestControl(Cancel|Timeout|Wait|Remove)$' ./internal/plane ./internal/sidecar ./internal/client ./internal/cli ./internal/contract
 ```
 
 A single shard, as one CI worker runs it, is also available on its own:

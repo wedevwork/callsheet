@@ -21,7 +21,7 @@ const (
 	roleSetUsage  = "ID [--name NAME] [--adapter ID] [--instruction PATH] [--runbook PATH] [--model MODEL] [--effort EFFORT] [--concurrency N] [--timeout DURATION] " + trustUsage + " [--json]"
 	roleLsUsage   = trustUsage + " [--json]"
 	roleShowUsage = "ID " + trustUsage + " [--json]"
-	roleRmUsage   = "ID [--force] " + trustUsage + " [--json]"
+	roleRmUsage   = "ID [--force [--operation OPERATION_ID]] " + trustUsage + " [--json]"
 
 	roleNameHelp = "  --name NAME        logical role name (a slug; several roles may share it)\n"
 	roleNodeHelp = "  --node NODE        the worker node ID (n_ + 32 hex digits; see callsheet node ls)\n"
@@ -59,25 +59,33 @@ const (
 		"Shows one role as label: value lines in field order; instruction, runbook and model\n" +
 		"are JSON strings.\n"
 	roleRmDetails = "Flags:\n" +
-		"  --force            reserved for cancelling tasks in flight, which this build cannot\n" +
-		"                     do: rm --force is refused like rm while the role has tasks\n" +
-		"                     running or pending (force_cancel_not_supported)\n" +
+		"  --force            cancel the role's tasks first: the plane fences this role instance\n" +
+		"                     (no new task is admitted), cancels every task it holds, waits for\n" +
+		"                     each to end durably, then removes the role\n" +
+		"  --operation OPERATION_ID\n" +
+		"                     with --force only: retry a pending forced removal; it joins only\n" +
+		"                     that operation on the same role instance (see role show's removal)\n" +
 		trustHelp + roleJSONHelp + "\n" +
-		"Removes a role from the plane, also while its node is offline. It prints removed: ID\n" +
-		"and the notice below. While the role has tasks in flight rm is refused\n" +
-		"(tasks_inflight): wait for them (callsheet task ls). Tasks whose outcome is\n" +
-		"unconfirmed (recovery_required) do not block removal: when every task holding the\n" +
-		"role is recovery-required, rm and rm --force remove only the role; the tasks keep\n" +
-		"their state, output and history. Removal cancels nothing and signals no worker, and\n" +
-		"adding the role again (a new instance) is not proof that old execution stopped.\n"
-	// roleRmNotice is printed after every successful text rm.
-	roleRmNotice = "notice: removal cancels no task and signals no worker; adding the role again is not proof that old execution stopped\n"
+		"Removes a role from the plane, also while its node is offline, and prints removed: ID\n" +
+		"and the notice below. Without --force, while the role has tasks in flight (their\n" +
+		"outcome unconfirmed included) rm is refused (tasks_inflight): wait for them (callsheet\n" +
+		"task ls) or use --force. With --force the removal completes once every task of the\n" +
+		"role is durably cancelled, finished or lost (an offline node's tasks become lost when\n" +
+		"its lease expires). If that takes longer than the plane's few-second budget, rm prints\n" +
+		"removal pending: ID operation: OPERATION_ID and the exact retry command, and exits 0:\n" +
+		"the plane finishes the removal (role show reports removing and the operation). A\n" +
+		"retry with --operation is safe; after a lost response read role show for the operation\n" +
+		"instead of repeating a bare --force, because the role ID may be reused. A role being\n" +
+		"removed cannot be changed (role_removing). Adding the role again (a new instance) is\n" +
+		"not proof that old execution stopped.\n"
+	// roleRmNotice is printed after every completed text rm.
+	roleRmNotice = "notice: a forced removal cancels the role's tasks through the plane first; adding the role again is not proof that old execution stopped\n"
 )
 
 // roleFlags are a role leaf's own flags.
 type roleFlags struct {
-	name, node, adapter, instruction, runbook, model, effort, concurrency, timeout single
-	force                                                                          boolFlag
+	name, node, adapter, instruction, runbook, model, effort, concurrency, timeout, operation single
+	force                                                                                     boolFlag
 }
 
 func (rf *roleFlags) register(withNode, withForce bool) func(*flag.FlagSet) {
@@ -100,7 +108,10 @@ func (rf *roleFlags) register(withNode, withForce bool) func(*flag.FlagSet) {
 }
 
 func onlyForce(rf *roleFlags) func(*flag.FlagSet) {
-	return func(fs *flag.FlagSet) { fs.Var(&rf.force, "force", "") }
+	return func(fs *flag.FlagSet) {
+		fs.Var(&rf.force, "force", "")
+		fs.Var(&rf.operation, "operation", "")
+	}
 }
 
 // syntax parses the integer and duration flags; a malformed value is a
@@ -302,22 +313,38 @@ func roleRm(ctx context.Context, goos string, c *Command, args []string, out, er
 	if !ok {
 		return code
 	}
+	if rf.operation.set {
+		if err := contract.ValidateRemovalOperation(rf.force.val, rf.operation.val); err != nil {
+			return planeFail(errOut, err)
+		}
+	}
 	cl, code, ok := roleClient(ctx, f, errOut)
 	if !ok {
 		return code
 	}
 	defer cl.Close()
-	if err := cl.RemoveRole(ctx, id, rf.force.val); err != nil {
+	res, err := cl.RemoveRole(ctx, id, rf.force.val, rf.operation.val)
+	if err != nil {
 		return planeFail(errOut, err)
 	}
-	if f.json.val {
-		b, err := contract.Encode(contract.RoleRemoveResponse{Version: contract.ProtocolVersion, Removed: id})
-		if err != nil {
-			return planeFail(errOut, err)
+	if p := res.Pending; p != nil {
+		if f.json.val {
+			return writeJSON(out, errOut, *p)
 		}
-		return writeOut(out, errOut, string(b)+"\n")
+		return writeOut(out, errOut, RenderRemovalPending(*p))
+	}
+	if f.json.val {
+		return writeJSON(out, errOut, contract.RoleRemoveResponse{Version: contract.ProtocolVersion, Removed: id})
 	}
 	return writeOut(out, errOut, "removed: "+id+"\n"+roleRmNotice)
+}
+
+// RenderRemovalPending is a pending forced removal's text: its operation
+// and the exact safe retry command (no task payloads).
+func RenderRemovalPending(p contract.RoleRemovePendingResponse) string {
+	return "removal pending: " + p.RoleID + " operation: " + p.OperationID + "\n" +
+		"retry: callsheet role rm " + p.RoleID + " --force --operation " + p.OperationID + "\n" +
+		"notice: the plane completes the removal after the role's tasks end durably; callsheet role show " + p.RoleID + " reports it\n"
 }
 
 // writeRole prints one role view as text or its JSON envelope.
@@ -368,9 +395,12 @@ func RenderRole(v contract.RoleView) string {
 		{"effort", r.Effort}, {"concurrency", strconv.Itoa(r.Concurrency)}, {"timeout", r.Timeout.String()},
 		{"registration_order", strconv.Itoa(v.RegistrationOrder)}, {"inflight", strconv.Itoa(v.Inflight)},
 		{"can_accept", strconv.FormatBool(v.CanAccept)}, {"node_liveness", v.NodeLiveness},
-		{"adapter_test_only", strconv.FormatBool(v.AdapterTestOnly)},
+		{"adapter_test_only", strconv.FormatBool(v.AdapterTestOnly)}, {"removing", strconv.FormatBool(v.Removing)},
 	} {
 		b.WriteString(kv[0] + ": " + kv[1] + "\n")
+	}
+	if v.Removal != nil {
+		b.WriteString("removal: operation_id=" + v.Removal.OperationID + " registration_order=" + strconv.Itoa(v.Removal.RegistrationOrder) + "\n")
 	}
 	return b.String()
 }

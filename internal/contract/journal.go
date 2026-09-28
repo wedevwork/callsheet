@@ -19,8 +19,13 @@ import (
 // guardian invocation carries the adapter's argv and environment on a
 // private inherited pipe only).
 const (
-	// JournalSchemaVersion is execution.json's and owner.json's schema.
-	JournalSchemaVersion = 1
+	// ExecutionJournalSchemaVersion is execution.json's schema (iteration
+	// 06b: the stop intent and control outcomes);
+	// LegacyExecutionJournalSchemaVersion is 06a's, still decoded strictly
+	// and normalized. OwnerSchemaVersion is owner.json's, unchanged.
+	ExecutionJournalSchemaVersion       = 2
+	LegacyExecutionJournalSchemaVersion = 1
+	OwnerSchemaVersion                  = 1
 	// MaxExecutionJournalBytes bounds execution.json (the retained tail
 	// dominates); MaxOwnerBytes bounds owner.json.
 	MaxExecutionJournalBytes = 16 << 20
@@ -31,8 +36,9 @@ const (
 	MaxGuardianInvocationBytes = 1 << 20
 	MaxGuardianStatusBytes     = 8 << 10
 	MaxGuardianCommandBytes    = 512
-	// GuardianInvocationVersion is the invocation format.
-	GuardianInvocationVersion = 1
+	// GuardianInvocationVersion is the invocation format (iteration 06b:
+	// version 2 adds the timeout and its policy).
+	GuardianInvocationVersion = 2
 )
 
 // Execution journal phases.
@@ -55,6 +61,16 @@ const (
 	GuardianStarted = "started"
 	GuardianExit    = "exit"
 	GuardianError   = "error"
+	// GuardianStopping (iteration 06b) reports the guardian's latched
+	// cleanup cause before its deliberate group KILL.
+	GuardianStopping = "stopping"
+)
+
+// Guardian cleanup causes of a stopping status.
+const (
+	CauseCancelled = "cancelled"
+	CauseTimedOut  = "timed_out"
+	CauseLost      = "lost"
 )
 
 // GuardianStop is the only control command.
@@ -79,9 +95,14 @@ type ExecutionJournal struct {
 	TimeoutPolicy string
 	OwnerNonce    *string
 	Phase         string
-	StartedAt     *time.Time
-	Result        *TaskResultBody
-	Log           TaskLog
+	// StopIntent is the plane's stop intent latched by this execution
+	// (iteration 06b; nil for none and for a guardian's own timeout).
+	StopIntent *StopIntent
+	StartedAt  *time.Time
+	Result     *TaskResultBody
+	Log        TaskLog
+	// Schema is the decoded schema (1 or 2); the encoder writes 2.
+	Schema int
 }
 
 type executionWire struct {
@@ -94,9 +115,43 @@ type executionWire struct {
 	TimeoutPolicy string          `json:"timeout_policy"`
 	OwnerNonce    *string         `json:"owner_nonce"`
 	Phase         string          `json:"phase"`
+	StopIntent    *StopIntent     `json:"stop_intent"`
 	StartedAt     *string         `json:"started_at"`
 	Result        *TaskResultBody `json:"result"`
 	Log           json.RawMessage `json:"log"`
+}
+
+// executionWireV1 is iteration 06a's exact schema-1 journal: no stop
+// intent, and a result without stop_id (its digest is the same one a null
+// stop_id seals).
+type executionWireV1 struct {
+	SchemaVersion int             `json:"schema_version"`
+	TaskID        string          `json:"task_id"`
+	Execution     ExecutionToken  `json:"execution"`
+	StartDigest   string          `json:"start_digest"`
+	Role          json.RawMessage `json:"role"`
+	Effective     TaskEffective   `json:"effective"`
+	TimeoutPolicy string          `json:"timeout_policy"`
+	OwnerNonce    *string         `json:"owner_nonce"`
+	Phase         string          `json:"phase"`
+	StartedAt     *string         `json:"started_at"`
+	Result        *legacyResultV1 `json:"result"`
+	Log           json.RawMessage `json:"log"`
+}
+
+// legacyResultV1 is a protocol 4 result (no stop_id).
+type legacyResultV1 struct {
+	TaskID                string         `json:"task_id"`
+	Execution             ExecutionToken `json:"execution"`
+	Outcome               string         `json:"outcome"`
+	ExitCode              *int           `json:"exit_code"`
+	Signal                *string        `json:"signal"`
+	FinalMessage          *string        `json:"final_message"`
+	FinalMessageTruncated bool           `json:"final_message_truncated"`
+	OutputBytes           int            `json:"output_bytes"`
+	LogIncomplete         bool           `json:"log_incomplete"`
+	CounterOverflow       bool           `json:"counter_overflow"`
+	Digest                string         `json:"digest"`
 }
 
 // EncodeExecutionJournal renders j in its two-space indented writer form
@@ -116,8 +171,9 @@ func EncodeExecutionJournal(j ExecutionJournal) ([]byte, error) {
 	if policy == "" {
 		policy = TimeoutPolicyLegacy
 	}
-	w := executionWire{SchemaVersion: JournalSchemaVersion, TaskID: j.TaskID, Execution: j.Execution, StartDigest: j.StartDigest, Role: role,
-		Effective: j.Effective, TimeoutPolicy: policy, OwnerNonce: j.OwnerNonce, Phase: j.Phase, StartedAt: timePtr(j.StartedAt), Result: j.Result, Log: lg}
+	w := executionWire{SchemaVersion: ExecutionJournalSchemaVersion, TaskID: j.TaskID, Execution: j.Execution, StartDigest: j.StartDigest, Role: role,
+		Effective: j.Effective, TimeoutPolicy: policy, OwnerNonce: j.OwnerNonce, Phase: j.Phase, StopIntent: j.StopIntent, StartedAt: timePtr(j.StartedAt),
+		Result: j.Result, Log: lg}
 	var b bytes.Buffer
 	enc := json.NewEncoder(&b)
 	enc.SetEscapeHTML(false)
@@ -142,29 +198,60 @@ func EncodeExecutionJournal(j ExecutionJournal) ([]byte, error) {
 }
 
 // ParseExecutionJournal strictly decodes and validates one execution
-// journal against lookup: identity, role and effort, timeout policy, the
-// phase invariants (a prepared record has no owner nonce, start or
-// result; a running one has its owner nonce; completed holds a natural
-// result and lost a lost one, both sealed and naming this execution) and
-// the log counters.
+// journal against lookup: schema 2, or 06a's schema 1 with its exact wire
+// struct normalized in memory (null intent, legacy policy, the original
+// frozen result and digest). It checks identity, role and effort, timeout
+// policy, the phase invariants (a prepared record has no owner nonce,
+// start or result; a running one has its owner nonce; completed holds a
+// natural or control result and lost a lost one, both sealed and naming
+// this execution; a timed_out result has its start) and the log counters.
 func ParseExecutionJournal(data []byte, lookup AdapterLookup) (ExecutionJournal, error) {
 	const what = "execution journal"
 	if len(data) > MaxExecutionJournalBytes {
 		return ExecutionJournal{}, errInvalid("%s is larger than %d bytes", what, MaxExecutionJournalBytes)
 	}
+	var probe struct {
+		SchemaVersion json.RawMessage `json:"schema_version"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil || probe.SchemaVersion == nil {
+		return ExecutionJournal{}, errInvalid("%s is not a JSON object with a schema_version", what)
+	}
 	var w executionWire
-	if err := decodeStrict(data, &w, what); err != nil {
-		return ExecutionJournal{}, err
+	switch v, _ := ParseInteger(string(bytes.TrimSpace(probe.SchemaVersion))); v {
+	case LegacyExecutionJournalSchemaVersion:
+		var o executionWireV1
+		if err := decodeStrict(data, &o, what); err != nil {
+			return ExecutionJournal{}, err
+		}
+		if o.TimeoutPolicy != TimeoutPolicyLegacy {
+			return ExecutionJournal{}, errInvalid("%s timeout_policy must be %q in schema 1", what, TimeoutPolicyLegacy)
+		}
+		w = executionWire{SchemaVersion: o.SchemaVersion, TaskID: o.TaskID, Execution: o.Execution, StartDigest: o.StartDigest, Role: o.Role,
+			Effective: o.Effective, TimeoutPolicy: o.TimeoutPolicy, OwnerNonce: o.OwnerNonce, Phase: o.Phase, StartedAt: o.StartedAt, Log: o.Log}
+		if r := o.Result; r != nil {
+			if r.Outcome != OutcomeNatural && r.Outcome != OutcomeLost {
+				return ExecutionJournal{}, errInvalid("%s schema 1 result outcome must be natural or lost", what)
+			}
+			w.Result = &TaskResultBody{TaskID: r.TaskID, Execution: r.Execution, Outcome: r.Outcome, ExitCode: r.ExitCode, Signal: r.Signal,
+				FinalMessage: r.FinalMessage, FinalMessageTruncated: r.FinalMessageTruncated, OutputBytes: r.OutputBytes,
+				LogIncomplete: r.LogIncomplete, CounterOverflow: r.CounterOverflow, Digest: r.Digest}
+		}
+	case ExecutionJournalSchemaVersion:
+		if err := decodeStrict(data, &w, what); err != nil {
+			return ExecutionJournal{}, err
+		}
+		if !ValidTimeoutPolicy(w.TimeoutPolicy) {
+			return ExecutionJournal{}, errInvalid("%s timeout_policy must be %q or %q", what, TimeoutPolicyEnforced, TimeoutPolicyLegacy)
+		}
+	default:
+		return ExecutionJournal{}, errInvalid("%s schema_version %s is not supported (this build supports %d and %d)", what, SafeText(string(probe.SchemaVersion), 32),
+			LegacyExecutionJournalSchemaVersion, ExecutionJournalSchemaVersion)
 	}
 	switch {
-	case w.SchemaVersion != JournalSchemaVersion:
-		return ExecutionJournal{}, errInvalid("%s schema_version %d is not supported (this build supports %d)", what, w.SchemaVersion, JournalSchemaVersion)
 	case !ValidTaskID(w.TaskID):
 		return ExecutionJournal{}, errInvalid("%s task_id is not a task ID", what)
 	case !ValidDigest(w.StartDigest):
 		return ExecutionJournal{}, errInvalid("%s start_digest must be 64 lowercase hex digits", what)
-	case w.TimeoutPolicy != TimeoutPolicyLegacy:
-		return ExecutionJournal{}, errInvalid("%s timeout_policy must be %q", what, TimeoutPolicyLegacy)
 	case w.OwnerNonce != nil && !ValidNonce(*w.OwnerNonce):
 		return ExecutionJournal{}, errInvalid("%s owner_nonce must be null or 64 lowercase hex digits", what)
 	case w.StartedAt != nil && !validTime(*w.StartedAt):
@@ -187,18 +274,24 @@ func ParseExecutionJournal(data []byte, lookup AdapterLookup) (ExecutionJournal,
 			return ExecutionJournal{}, errInvalid("%s: a running execution has its owner nonce and no result", what)
 		}
 	case JournalCompleted, JournalLost:
-		want := OutcomeNatural
-		if w.Phase == JournalLost {
-			want = OutcomeLost
+		ok := w.Result != nil && w.Result.Outcome == OutcomeLost
+		if w.Phase == JournalCompleted {
+			ok = w.Result != nil && w.Result.Outcome != OutcomeLost
 		}
-		if w.Result == nil || w.Result.Outcome != want {
-			return ExecutionJournal{}, errInvalid("%s: a %s execution holds a %s result", what, w.Phase, want)
+		if !ok {
+			return ExecutionJournal{}, errInvalid("%s: a %s execution holds a matching result", what, w.Phase)
 		}
 		if w.Result.TaskID != w.TaskID || w.Result.Execution != w.Execution {
 			return ExecutionJournal{}, errInvalid("%s result names another execution", what)
 		}
 		if err := w.Result.Validate(); err != nil {
 			return ExecutionJournal{}, err
+		}
+		if w.Result.Outcome == OutcomeTimedOut && w.StartedAt == nil {
+			return ExecutionJournal{}, errInvalid("%s: a timed_out execution has its start", what)
+		}
+		if id := w.Result.StopID; id != nil && (w.StopIntent == nil || w.StopIntent.ID != *id) {
+			return ExecutionJournal{}, errInvalid("%s result stop_id names no latched stop intent", what)
 		}
 	default:
 		return ExecutionJournal{}, errInvalid("%s phase must be prepared, running, completed or lost", what)
@@ -211,7 +304,8 @@ func ParseExecutionJournal(data []byte, lookup AdapterLookup) (ExecutionJournal,
 		return ExecutionJournal{}, err
 	}
 	j := ExecutionJournal{TaskID: w.TaskID, Execution: w.Execution, StartDigest: w.StartDigest, Role: role, Effective: w.Effective,
-		TimeoutPolicy: w.TimeoutPolicy, OwnerNonce: w.OwnerNonce, Phase: w.Phase, Result: w.Result, Log: lg}
+		TimeoutPolicy: w.TimeoutPolicy, OwnerNonce: w.OwnerNonce, Phase: w.Phase, StopIntent: w.StopIntent, Result: w.Result, Log: lg,
+		Schema: w.SchemaVersion}
 	if w.StartedAt != nil {
 		t, _ := ParseTime(*w.StartedAt)
 		j.StartedAt = &t
@@ -234,7 +328,7 @@ type OwnerRecord struct {
 
 // EncodeOwner renders an owner record (indented, final LF).
 func EncodeOwner(o OwnerRecord) ([]byte, error) {
-	o.SchemaVersion = JournalSchemaVersion
+	o.SchemaVersion = OwnerSchemaVersion
 	b, err := json.MarshalIndent(o, "", "  ")
 	if err != nil {
 		return nil, err
@@ -254,7 +348,7 @@ func ParseOwner(data []byte) (OwnerRecord, error) {
 		return o, err
 	}
 	switch {
-	case o.SchemaVersion != JournalSchemaVersion:
+	case o.SchemaVersion != OwnerSchemaVersion:
 		return o, errInvalid("%s schema_version %d is not supported", what, o.SchemaVersion)
 	case !ValidTaskID(o.TaskID):
 		return o, errInvalid("%s task_id is not a task ID", what)
@@ -283,6 +377,17 @@ type GuardianInvocation struct {
 	Argv        []string       `json:"argv"`
 	Env         []string       `json:"env"`
 	Dir         string         `json:"dir"`
+	// Timeout and TimeoutPolicy (version 2): the canonical effective
+	// execution duration ("0s" unlimited) the guardian enforces from its
+	// adapter's Start authorization when the policy is enforced.
+	Timeout       string `json:"timeout"`
+	TimeoutPolicy string `json:"timeout_policy"`
+}
+
+// TimeoutDuration is the invocation's parsed timeout (0: none).
+func (g GuardianInvocation) TimeoutDuration() time.Duration {
+	d, _ := ParseRoleTimeout(g.Timeout)
+	return d
 }
 
 // Validate checks the invocation's identity and shape.
@@ -304,6 +409,11 @@ func (g GuardianInvocation) Validate() error {
 		return errInvalid("%s task_dir must be the absolute private tasks/<task_id> directory", what)
 	case !filepath.IsAbs(g.Path) || !filepath.IsAbs(g.Dir):
 		return errInvalid("%s path and dir must be absolute", what)
+	case !ValidTimeoutPolicy(g.TimeoutPolicy):
+		return errInvalid("%s timeout_policy must be %q or %q", what, TimeoutPolicyEnforced, TimeoutPolicyLegacy)
+	}
+	if d, err := ParseRoleTimeout(g.Timeout); err != nil || d.String() != g.Timeout {
+		return errInvalid("%s timeout must be a canonical nonnegative Go duration", what)
 	}
 	for _, s := range append(append([]string{}, g.Argv...), g.Env...) {
 		if bytes.IndexByte([]byte(s), 0) >= 0 {
@@ -327,6 +437,9 @@ type GuardianStatus struct {
 	ExitCode  *int    `json:"exit_code"`
 	Signal    *string `json:"signal"`
 	Reason    *string `json:"reason"`
+	// Cause and StopID (iteration 06b) belong to stopping only.
+	Cause  *string `json:"cause"`
+	StopID *string `json:"stop_id"`
 }
 
 // Validate checks a status message's type-specific shape.
@@ -335,7 +448,23 @@ func (s GuardianStatus) Validate() error {
 	if !ValidTaskID(s.TaskID) || !ValidNonce(s.Nonce) {
 		return errInvalid("%s must name a task and its nonce", what)
 	}
+	if s.Type != GuardianStopping && (s.Cause != nil || s.StopID != nil) {
+		return errInvalid("%s: only stopping carries a cause and stop_id", what)
+	}
 	switch s.Type {
+	case GuardianStopping:
+		c := ""
+		if s.Cause != nil {
+			c = *s.Cause
+		}
+		switch {
+		case c != CauseCancelled && c != CauseTimedOut && c != CauseLost:
+			return errInvalid("%s stopping cause must be cancelled, timed_out or lost", what)
+		case (c == CauseCancelled) != (s.StopID != nil), s.StopID != nil && !ValidStopID(*s.StopID):
+			return errInvalid("%s stopping carries a stop_id exactly for a cancelled cause", what)
+		case s.PID != 0 || s.PGID != 0 || s.StartedAt != nil || s.ExitCode != nil || s.Signal != nil || s.Reason != nil:
+			return errInvalid("%s stopping carries only its cause and stop_id", what)
+		}
 	case GuardianReady:
 		if s.PID <= 1 || s.PGID != s.PID || s.StartedAt != nil || s.ExitCode != nil || s.Signal != nil || s.Reason != nil {
 			return errInvalid("%s ready carries the guardian's pid equal to its pgid, above 1", what)
@@ -354,7 +483,7 @@ func (s GuardianStatus) Validate() error {
 			return errInvalid("%s error carries a short reason", what)
 		}
 	default:
-		return errInvalid("%s type must be ready, started, exit or error", what)
+		return errInvalid("%s type must be ready, started, stopping, exit or error", what)
 	}
 	return nil
 }
@@ -430,11 +559,19 @@ type GuardianCommand struct {
 	Execution ExecutionToken `json:"execution"`
 	Nonce     string         `json:"nonce"`
 	Command   string         `json:"command"`
+	// Cause and StopID (iteration 06b, optional): cancelled with its plane
+	// stop intent. A command without a cause is 06a's stop (recovery), the
+	// only form sent to a recovered, possibly older, guardian.
+	Cause  string `json:"cause,omitempty"`
+	StopID string `json:"stop_id,omitempty"`
 }
 
 // EncodeGuardianCommand renders one command line (JSON and LF) of at most
 // MaxGuardianCommandBytes.
 func EncodeGuardianCommand(c GuardianCommand) ([]byte, error) {
+	if (c.Cause != "" || c.StopID != "") && (c.Cause != CauseCancelled || !ValidStopID(c.StopID)) {
+		return nil, errInvalid("guardian command cause must be absent or cancelled with its stop_id")
+	}
 	b, err := compact(c)
 	if err != nil {
 		return nil, err
@@ -457,6 +594,12 @@ func ParseGuardianCommand(b []byte) (GuardianCommand, error) {
 	}
 	if !ValidTaskID(c.TaskID) || !ValidNonce(c.Nonce) || c.Command != GuardianStop {
 		return c, errInvalid("guardian command must name a task, its nonce and stop")
+	}
+	switch {
+	case c.Cause == "" && c.StopID == "":
+	case c.Cause == CauseCancelled && ValidStopID(c.StopID):
+	default:
+		return c, errInvalid("guardian command cause must be absent or cancelled with its stop_id")
 	}
 	return c, nil
 }

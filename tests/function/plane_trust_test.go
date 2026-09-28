@@ -354,7 +354,7 @@ func health(c *http.Client, addr string) error {
 	}
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != 200 || string(b) != "{\"status\":\"ok\",\"version\":4}\n" || resp.Header.Get("Content-Type") != "application/json" {
+	if resp.StatusCode != 200 || string(b) != "{\"status\":\"ok\",\"version\":5}\n" || resp.Header.Get("Content-Type") != "application/json" {
 		return fmt.Errorf("health = %d %q", resp.StatusCode, b)
 	}
 	return nil
@@ -384,7 +384,7 @@ func TestPlaneCommands(t *testing.T) {
 		}
 	}
 	// Remaining stubs keep their contract.
-	for _, stub := range [][]string{{"task", "wait"}, {"ws", "ls"}, {"mcp"}} {
+	for _, stub := range [][]string{{"task", "prune"}, {"ws", "ls"}, {"mcp"}} {
 		want := "callsheet: not_implemented: \"callsheet " + strings.Join(stub, " ") + "\" is not implemented yet\n"
 		if r := p.run(t, stub...); r.code != 8 || r.stdout != "" || r.stderr != want {
 			t.Fatalf("%v = %+v", stub, r)
@@ -1021,7 +1021,7 @@ func TestPlanePlatform(t *testing.T) {
 		"TestPlaneReissue", "TestPlaneReissue/process", "TestPlaneReissue/contracts", "TestPlaneStatus", "TestPlaneStatus/inspection", "TestPlaneStatus/expiry-warnings", "TestPlanePlatform"}
 	// The 28 iteration-02 names are preserved first; iteration 03 appends
 	// the node names (checked by TestNodePlatform).
-	if got := devcheck.NativeRequiredTests(); len(got) != 141 || !slices.Equal(got[:28], required) {
+	if got := devcheck.NativeRequiredTests(); len(got) != 145 || !slices.Equal(got[:28], required) {
 		t.Fatalf("native required = %v", got)
 	}
 	// Every required plane name exists as a top-level test or mandatory

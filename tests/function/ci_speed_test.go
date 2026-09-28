@@ -125,6 +125,8 @@ var speedControlNative = []string{
 	"TestControlPlaneRecovery", "TestControlLateResult", "TestControlLegacy",
 	"TestControlNativeGroups", "TestControlNativeGroups/cooperative", "TestControlNativeGroups/resistant",
 	"TestControlNativeGroups/orphan-restart", "TestControlNativeGroups/plane-restart",
+	// Iteration 06b: the four task-control function parents.
+	"TestControlCancellation", "TestControlExecutionTimeout", "TestControlBoundedWait", "TestControlForceRemove",
 }
 
 var speedTaskNative = []string{
@@ -611,7 +613,7 @@ func qualifyingStream(drop string) string {
 // FP-3: validator, plans, native evidence and documentation agree.
 func TestCISpeedPolicy(t *testing.T) {
 	t.Run("native", func(t *testing.T) {
-		if got := devcheck.NativeRequiredTests(); len(got) != 141 || !slices.Equal(got[:28], speedNative) || !slices.Equal(got[28:58], speedNodeNative) || !slices.Equal(got[58:87], speedRoleNative) || !slices.Equal(got[87:128], speedTaskNative) ||
+		if got := devcheck.NativeRequiredTests(); len(got) != 145 || !slices.Equal(got[:28], speedNative) || !slices.Equal(got[28:58], speedNodeNative) || !slices.Equal(got[58:87], speedRoleNative) || !slices.Equal(got[87:128], speedTaskNative) ||
 			!slices.Equal(got[128:], speedControlNative) {
 			t.Fatalf("native required = %v", got)
 		}

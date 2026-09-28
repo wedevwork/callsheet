@@ -72,8 +72,13 @@ func (ts *taskService) receiveLog(node string, gen uint64, b contract.TaskLogBod
 	return next, nil
 }
 
-// resultOutcome derives the terminal outcome of worker result b.
-func (ts *taskService) resultOutcome(e *taskEntry, b contract.TaskResultBody, now time.Time) terminalOutcome {
+// resultOutcome derives the terminal outcome of worker result b. Under a
+// selected stop intent a cleanup-confirmed natural or control outcome
+// supplies the terminal fields and partial logs of a cancelled task (its
+// primary state), and a lost outcome stays lost with the intent retained;
+// without an intent the worker's own outcome decides (DW7: a
+// worker-originated cancelled or timed_out is a control terminal).
+func (ts *taskService) resultOutcome(e *taskEntry, b contract.TaskResultBody, now time.Time) (terminalOutcome, candKind) {
 	o := terminalOutcome{finished: now.UTC(), exit: b.ExitCode, signal: b.Signal, final: b.FinalMessage, truncated: b.FinalMessageTruncated}
 	switch {
 	case e.started:
@@ -94,13 +99,24 @@ func (ts *taskService) resultOutcome(e *taskEntry, b contract.TaskResultBody, no
 	if b.Outcome == contract.OutcomeLost {
 		o.state = contract.TaskLost
 		o.reason = &contract.TaskReason{Code: contract.ReasonWorkerLost, Message: "the worker could not confirm the execution's outcome (it restarted or stopped while the execution was active)"}
-		return o
+		return o, candLost
+	}
+	switch {
+	case e.intentLocked() != nil || b.Outcome == contract.OutcomeCancelled:
+		o.state = contract.TaskCancelled
+		if o.started == nil {
+			o.reason = &contract.TaskReason{Code: contract.ReasonCancelledBeforeStart, Message: "the task was cancelled before any adapter started"}
+		}
+		return o, candControl
+	case b.Outcome == contract.OutcomeTimedOut:
+		o.state = contract.TaskTimedOut
+		return o, candControl
 	}
 	o.state = contract.TaskFailed
 	if b.ExitCode != nil && *b.ExitCode == 0 {
 		o.state = contract.TaskSucceeded
 	}
-	return o
+	return o, candNatural
 }
 
 // committedLocked reports whether the outcome with digest d is durable for
@@ -149,6 +165,10 @@ func (ts *taskService) receiveResult(node string, gen uint64, b contract.TaskRes
 		return false, nil // visible, not yet confirmed
 	case e.terminal() && e.rec.Late != nil && e.rec.Late.Digest == d:
 		return false, nil
+	case b.StopID != nil && (e.intentLocked() == nil || e.intentLocked().ID != *b.StopID):
+		// A named stop must be the task's own intent, whether the result
+		// becomes the primary outcome or late evidence.
+		return false, errf(contract.CodeInvalidArgument, "task %s's result names stop_id %s, which is not the task's stop intent", b.TaskID, *b.StopID)
 	case e.cand != nil && e.cand.digest != "":
 		return false, conflict(e.cand.digest)
 	case e.terminal() && e.rec.ResultDigest != nil:
@@ -158,19 +178,17 @@ func (ts *taskService) receiveResult(node string, gen uint64, b contract.TaskRes
 	case e.terminal() && e.rec.Late != nil:
 		return false, conflict(e.rec.Late.Digest)
 	case !e.terminal() && e.cand == nil:
-		if e.ring != nil && b.OutputBytes < e.ring.next && b.Outcome == contract.OutcomeNatural {
+		complete := b.Outcome != contract.OutcomeLost
+		if e.ring != nil && b.OutputBytes < e.ring.next && complete {
 			return false, errf(contract.CodeInvalidArgument, "task %s reports %d output bytes, fewer than the %d received", b.TaskID, b.OutputBytes, e.ring.next)
 		}
-		if !e.started && e.rec.StartedAt == nil && b.Outcome == contract.OutcomeNatural {
-			// The worker's launch fact precedes its natural result: running
-			// is published before the terminal record.
+		ran := b.Outcome == contract.OutcomeNatural || b.Outcome == contract.OutcomeTimedOut || (complete && (b.ExitCode != nil || b.Signal != nil))
+		if !e.started && e.rec.StartedAt == nil && ran {
+			// The worker's launch fact precedes its outcome: running is
+			// published before the terminal record.
 			e.started, e.needRunning, e.startedAt = true, true, now.UTC()
 		}
-		o := ts.resultOutcome(e, b, now)
-		kind := candNatural
-		if b.Outcome == contract.OutcomeLost {
-			kind = candLost
-		}
+		o, kind := ts.resultOutcome(e, b, now)
 		e.cand = &terminalCand{kind: kind, outcome: o, at: now, digest: d}
 		e.reconciling = false
 		ts.refreshLocked(e)
@@ -398,7 +416,11 @@ func (ts *taskService) inventory(node string, gen uint64, b contract.TaskInvento
 			return errf(contract.CodeInvalidArgument, "task_inventory entry %s changed its start digest", in.TaskID)
 		}
 		e.seen = gen
-		rc.actions[in.TaskID] = contract.TaskReconcileEntry{TaskID: in.TaskID, Execution: in.Execution, Action: ts.disposeLocked(e, gen, in)}
+		ent := contract.TaskReconcileEntry{TaskID: in.TaskID, Execution: in.Execution, Action: ts.disposeLocked(e, gen, in)}
+		if ent.Action == contract.ActionStopControl {
+			ent.Stop = e.rec.StopIntent
+		}
+		rc.actions[in.TaskID] = ent
 	}
 	ts.event("inventory " + node + " " + itoa(b.Page))
 	if !b.Final {
@@ -437,7 +459,8 @@ func (ts *taskService) inventory(node string, gen uint64, b contract.TaskInvento
 }
 
 // disposeLocked decides one known execution's disposition and applies it:
-// an undecided task continues (active) or sends its result; a decided one
+// an undecided task continues (active; stop_control under a durable stop
+// intent, iteration 06b) or sends its result; a decided one
 // is forgotten when the reported digest is committed, else stopped
 // (active) or asked for its result as late evidence.
 func (ts *taskService) disposeLocked(e *taskEntry, gen uint64, in contract.TaskInventoryEntry) string {
@@ -458,6 +481,13 @@ func (ts *taskService) disposeLocked(e *taskEntry, gen uint64, in contract.TaskI
 			ts.wakeLocked(e)
 		}
 		ts.refreshLocked(e)
+		if active && e.intentDurable {
+			// The worker latches the durable intent before acknowledging
+			// this page; a redelivery on this attachment is coalesced.
+			e.ctlDue = ts.clock.Now().Add(storageRetry)
+			ts.wantControlLocked(e)
+			return contract.ActionStopControl
+		}
 		if active {
 			return contract.ActionContinue
 		}
@@ -497,9 +527,14 @@ func (ts *taskService) viewLocked(e *taskEntry, lines int, doc *roleDoc, now tim
 	// A latched candidate is published only once durable: the view keeps
 	// the visible nonterminal state, with completion_pending.
 	rec := e.rec
+	policy := rec.TimeoutPolicy
+	if policy == "" {
+		policy = contract.TimeoutPolicyLegacy
+	}
 	v := contract.TaskView{TaskID: rec.TaskID, Request: rec.Request, Role: contract.PublicRole(rec.Role), Effective: rec.Effective,
-		State: rec.State, CreatedAt: contract.FormatTime(rec.CreatedAt), DurabilityConfirmed: e.confirmed, Reason: rec.Reason,
-		Candidates: rec.Candidates, CompletionPending: e.cand != nil && !e.terminal(), Reconciling: e.isReconciling()}
+		TimeoutPolicy: policy, State: rec.State, StopRequested: rec.StopIntent != nil, CreatedAt: contract.FormatTime(rec.CreatedAt),
+		DurabilityConfirmed: e.confirmed, Reason: rec.Reason, Candidates: rec.Candidates, CompletionPending: e.cand != nil && !e.terminal(),
+		Reconciling: e.isReconciling()}
 	if rec.StartedAt != nil {
 		s := contract.FormatTime(*rec.StartedAt)
 		v.StartedAt = &s
@@ -511,7 +546,7 @@ func (ts *taskService) viewLocked(e *taskEntry, lines int, doc *roleDoc, now tim
 		end = *rec.FinishedAt
 	}
 	v.ElapsedMS = int(max(0, end.Sub(rec.CreatedAt).Milliseconds()))
-	if (e.cand != nil || e.late != nil) && (e.watchdog || e.commitFailed) {
+	if (e.cand != nil || e.late != nil || e.pendingIntent != nil) && (e.watchdog || e.commitFailed) {
 		r := contract.ReasonResultStorageUnconfirmed
 		v.PersistenceReason = &r
 	}
@@ -652,7 +687,7 @@ func (ts *taskService) list(after string, limit int) ([]contract.TaskSummary, *s
 	for ; i < len(ts.ids) && len(out) < limit; i++ {
 		e := ts.tasks[ts.ids[i]]
 		v := ts.viewLocked(e, 0, doc, now)
-		out = append(out, contract.TaskSummary{TaskID: v.TaskID, Target: e.rec.Request.Target, Role: v.Role, State: v.State, CreatedAt: v.CreatedAt,
+		out = append(out, contract.TaskSummary{TaskID: v.TaskID, Target: e.rec.Request.Target, Role: v.Role, State: v.State, StopRequested: v.StopRequested, CreatedAt: v.CreatedAt,
 			StartedAt: v.StartedAt, FinishedAt: v.FinishedAt, ElapsedMS: v.ElapsedMS, Effective: v.Effective, RequestedBy: e.rec.Request.RequestedBy,
 			Reconciling: v.Reconciling, CompletionPending: v.CompletionPending, PersistenceReason: v.PersistenceReason,
 			DurabilityConfirmed: v.DurabilityConfirmed, Reason: v.Reason})

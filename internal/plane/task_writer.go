@@ -42,7 +42,7 @@ func (o terminalOutcome) apply(rec contract.TaskRecord) contract.TaskRecord {
 
 // publication is one prepared document write.
 type publication struct {
-	kind string // running, checkpoint, terminal, lost, rejected, late
+	kind string // running, stop-intent, checkpoint, terminal, lost, rejected, late
 	rec  contract.TaskRecord
 	live int // retained bytes of rec's primary log (in-memory metadata)
 }
@@ -60,9 +60,11 @@ func candKindName(k candKind) string {
 
 // nextJobLocked selects e's next publication: nothing while its visible
 // record is unconfirmed (its resync precedes any later candidate) or a
-// retry is not due; then running before any terminal record; then the
-// latched terminal candidate; then late evidence once the terminal record
-// is confirmed; then a due checkpoint. done reports that the writer may
+// retry is not due; then running before any terminal record; then a
+// selected stop intent (iteration 06b: a nonterminal publication, ahead of
+// the terminal candidate it governs and of checkpoints); then the latched
+// terminal candidate; then late evidence once the terminal record is
+// confirmed; then a due checkpoint. done reports that the writer may
 // exit (terminal, confirmed, nothing pending).
 func (ts *taskService) nextJobLocked(e *taskEntry, now time.Time) (job *publication, done bool) {
 	if e.terminal() && e.released && e.confirmed && e.late == nil {
@@ -93,6 +95,15 @@ func (ts *taskService) nextJobLocked(e *taskEntry, now time.Time) (job *publicat
 			next.Log = e.ring.snapshot()
 		}
 		return &publication{kind: "running", rec: next, live: len(next.Log.Data)}, false
+	case e.pendingIntent != nil && !e.terminal():
+		// The frozen intent, with the live tail (a checkpoint of it): the
+		// document's retained output never regresses.
+		next.StopIntent = e.pendingIntent
+		if e.ring != nil {
+			next.Log = e.ring.snapshot()
+			e.logDirty, e.lastCheckpoint = false, now
+		}
+		return &publication{kind: "stop-intent", rec: next, live: len(next.Log.Data)}, false
 	case e.cand != nil && !e.terminal():
 		rec := e.cand.outcome.apply(next)
 		if e.cand.digest != "" {
@@ -222,6 +233,8 @@ func (ts *taskService) applyLocked(e *taskEntry, job *publication, err error) {
 		switch job.kind {
 		case "running":
 			e.needRunning = false
+		case "stop-intent":
+			e.pendingIntent = nil
 		case "terminal", "lost", "rejected":
 			e.cand = nil
 		case "late":
@@ -236,7 +249,7 @@ func (ts *taskService) applyLocked(e *taskEntry, job *publication, err error) {
 	default:
 		e.fault, e.retryAt = true, now.Add(storageRetry)
 		switch job.kind {
-		case "terminal", "lost", "rejected", "late":
+		case "terminal", "lost", "rejected", "late", "stop-intent":
 			e.commitFailed = true
 		case "checkpoint":
 			e.logDirty = true
@@ -253,6 +266,16 @@ func (ts *taskService) applyLocked(e *taskEntry, job *publication, err error) {
 // log data of any record leaves memory (the ring or the document holds
 // it).
 func (ts *taskService) finishPublicationLocked(e *taskEntry) {
+	if e.rec.StopIntent != nil && !e.intentDurable {
+		// The intent is durable: every later record carries it.
+		e.intentDurable = true
+		if e.cand == nil || e.cand.kind != candControl {
+			e.commitFailed, e.watchdog = false, false
+		}
+		ts.event("stop-intent-committed " + e.rec.TaskID)
+		ts.wantControlLocked(e)
+	}
+	defer ts.notifyLocked(e)
 	if e.terminal() {
 		first := !e.released
 		e.released = true
@@ -260,6 +283,8 @@ func (ts *taskService) finishPublicationLocked(e *taskEntry) {
 		e.rec.Log.Data = nil
 		if first {
 			ts.event("terminal-committed " + e.rec.TaskID)
+			ts.wakeWaitsLocked(e)
+			ts.dropControlLocked(e)
 		}
 		if e.rec.Late != nil {
 			e.rec.Late.Log.Data = nil
@@ -288,6 +313,8 @@ func (ts *taskService) tick() {
 			since = e.cand.at
 		case e.late != nil:
 			since = e.late.at
+		case e.pendingIntent != nil:
+			since = e.pendingIntent.RequestedAt
 		}
 		if !since.IsZero() && !e.watchdog && !now.Before(since.Add(commitWatchdog)) {
 			e.watchdog = true
@@ -305,5 +332,31 @@ func (ts *taskService) tick() {
 	ts.mu.Unlock()
 	if resync {
 		ts.resyncStore()
+	}
+}
+
+// notifyLocked wakes every cancel response waiting on e (each rechecks its
+// own condition) after a confirmed publication.
+func (ts *taskService) notifyLocked(e *taskEntry) {
+	for _, c := range e.waiters {
+		close(c)
+	}
+	e.waiters = nil
+}
+
+// waiterLocked registers a cancel response waiter on e.
+func (e *taskEntry) waiterLocked() chan struct{} {
+	c := make(chan struct{})
+	e.waiters = append(e.waiters, c)
+	return c
+}
+
+// dropWaiterLocked removes waiter c from e (a detached response).
+func (e *taskEntry) dropWaiterLocked(c chan struct{}) {
+	for i, w := range e.waiters {
+		if w == c {
+			e.waiters = append(e.waiters[:i], e.waiters[i+1:]...)
+			return
+		}
 	}
 }

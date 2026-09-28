@@ -273,7 +273,8 @@ func (w *worker) beat() {
 
 // isPlaneRequest reports frames the plane initiates.
 func isPlaneRequest(typ string) bool {
-	return typ == contract.FrameRolesReplace || typ == contract.FrameRoleValidate || typ == contract.FrameTaskStart || typ == contract.FrameTaskReconcile
+	return typ == contract.FrameRolesReplace || typ == contract.FrameRoleValidate || typ == contract.FrameTaskStart || typ == contract.FrameTaskReconcile ||
+		typ == contract.FrameTaskCancel
 }
 
 // reply reads the plane's reply rid of type typ, holding plane requests

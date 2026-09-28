@@ -142,6 +142,16 @@ const (
 	evCleanupBlocked    eventKind = "cleanup-blocked"
 	evRecoveryDone      eventKind = "recovery-done"
 	evPreparationFenced eventKind = "preparation-fenced"
+	// Iteration 06b control events (id = task ID): a plane stop intent
+	// latched on a worker, journaled, sent to its guardian; the guardian's
+	// stopping cause received; the group's disappearance confirmed; a
+	// task_cancel acknowledged (id = request ID).
+	evControlLatched  eventKind = "control-latched"
+	evIntentJournaled eventKind = "intent-journaled"
+	evControlSent     eventKind = "control-sent"
+	evStopping        eventKind = "stopping"
+	evGroupGone       eventKind = "group-gone"
+	evCancelAcked     eventKind = "cancel-acked"
 )
 
 // event is one observed transition: the session number (1-based), the

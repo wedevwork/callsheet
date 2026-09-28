@@ -50,10 +50,21 @@ type procLedger struct {
 	nextPID   int
 	guardians []*fakeGuardian
 	groups    *fakeGroups
+	// manualControl makes an injected guardian only record a cancel
+	// command (iteration 06b): the test drives its stopping status and the
+	// child's exit; controls counts every recorded command.
+	manualControl bool
+	controls      chan string
+	// controlErrs fails that many next cancel deliveries (a FIFO failure;
+	// each attempt is still recorded on controls).
+	controlErrs int
+	// spawned receives the task ID of every injected guardian created (the
+	// worker passed its pre-spawn checks).
+	spawned chan string
 }
 
 func newLedger() *procLedger {
-	return &procLedger{children: make(chan *fakeChild, 64), nextPID: 50000}
+	return &procLedger{children: make(chan *fakeChild, 64), nextPID: 50000, controls: make(chan string, 64), spawned: make(chan string, 64)}
 }
 
 // factory is the deps.taskGuardians of every task test.
@@ -68,6 +79,10 @@ func (l *procLedger) factory(spec guardianSpec) guardianProc {
 	g.child = &fakeChild{spec: spec.proc, pid: l.nextPID + 1, gpid: l.nextPID, exit: make(chan procExit, 1), stdin: make(chan []byte, 1),
 		done: make(chan struct{}), l: l}
 	l.guardians = append(l.guardians, g)
+	select {
+	case l.spawned <- spec.inv.TaskID:
+	default:
+	}
 	return g
 }
 
@@ -271,6 +286,50 @@ func (g *fakeGuardian) Stop() {
 			g.relOnce.Do(g.exit)
 		}
 	})
+}
+
+// Control is the injected guardian's cancel command: it is recorded;
+// unless the ledger drives it manually, a released guardian latches
+// cancelled (its stopping status) and its adapter exits on TERM, and an
+// unreleased one ends without an adapter.
+func (g *fakeGuardian) Control(stopID string) error {
+	g.l.mu.Lock()
+	manual := g.l.manualControl
+	fail := g.l.controlErrs > 0
+	if fail {
+		g.l.controlErrs--
+	}
+	g.l.mu.Unlock()
+	g.l.controls <- stopID
+	if fail {
+		return errors.New("injected control FIFO failure")
+	}
+	if manual {
+		return nil
+	}
+	g.mu.Lock()
+	released, exited := g.released, g.exited
+	if released && !exited {
+		c, id := contract.CauseCancelled, stopID
+		g.send(contract.GuardianStatus{Type: contract.GuardianStopping, Cause: &c, StopID: &id})
+	}
+	g.mu.Unlock()
+	if released {
+		g.child.signaled("SIGTERM")
+	} else {
+		g.relOnce.Do(g.exit)
+	}
+	return nil
+}
+
+// stopping sends a stopping status with cause (and stop ID) now.
+func (g *fakeGuardian) stopping(cause string, stopID *string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if !g.exited {
+		c := cause
+		g.send(contract.GuardianStatus{Type: contract.GuardianStopping, Cause: &c, StopID: stopID})
+	}
 }
 
 func (g *fakeGuardian) Wait() procExit {
@@ -681,10 +740,21 @@ func (c *fakeConn) inventory() []contract.TaskInventoryEntry {
 // the sidecar's acknowledgement write.
 func (c *fakeConn) reconcile(entries []contract.TaskInventoryEntry, actions map[string]string) {
 	c.t.Helper()
+	c.reconcileStops(entries, actions, nil)
+}
+
+// reconcileStops is reconcile with the durable stop intents of its
+// stop_control dispositions (iteration 06b).
+func (c *fakeConn) reconcileStops(entries []contract.TaskInventoryEntry, actions map[string]string, stops map[string]contract.StopIntent) {
+	c.t.Helper()
 	body := contract.TaskReconcileBody{Final: true}
 	for _, e := range entries {
 		if a, ok := actions[e.TaskID]; ok {
-			body.Entries = append(body.Entries, contract.TaskReconcileEntry{TaskID: e.TaskID, Execution: e.Execution, Action: a})
+			ent := contract.TaskReconcileEntry{TaskID: e.TaskID, Execution: e.Execution, Action: a}
+			if in, ok := stops[e.TaskID]; ok {
+				ent.Stop = &in
+			}
+			body.Entries = append(body.Entries, ent)
 		}
 	}
 	c.send(contract.ProtocolVersion, contract.FrameTaskReconcile, "r1", body)
@@ -728,11 +798,18 @@ func (tr *taskRun) connect(t *testing.T, gen, rev int, cfgs ...contract.RoleConf
 // inventory, reconciled with actions.
 func (tr *taskRun) reconnect(t *testing.T, gen, rev int, actions map[string]string, cfgs ...contract.RoleConfig) (*taskSession, []contract.TaskInventoryEntry) {
 	t.Helper()
+	return tr.reconnectStops(t, gen, rev, actions, nil, cfgs...)
+}
+
+// reconnectStops is reconnect with stop_control intents.
+func (tr *taskRun) reconnectStops(t *testing.T, gen, rev int, actions map[string]string, stops map[string]contract.StopIntent,
+	cfgs ...contract.RoleConfig) (*taskSession, []contract.TaskInventoryEntry) {
+	t.Helper()
 	c := tr.fp.accept(t)
 	c.helloOK(testID)
 	c.heartbeatAt(1, 0)
 	entries := c.inventory()
-	c.reconcile(entries, actions)
+	c.reconcileStops(entries, actions, stops)
 	s := &taskSession{c: c, tr: tr, b: 2, p: 1, gen: gen, cfgs: cfgs}
 	c.replace("p1", rev, cfgs...)
 	c.expectReplaceAck("p1", rev)

@@ -94,8 +94,14 @@ func (s *nodeService) shutdown(deadline time.Time) {
 		close(s.sweepStop)
 		<-s.sweepDone
 	}
+	if s.roles != nil && s.roles.rm != nil {
+		// The removal coordinator stops first: its durable fences resume
+		// on the next Run.
+		s.roles.rm.close()
+	}
 	if s.tasks != nil {
-		// Persistence writers stop after their current write.
+		// Persistence writers stop after their current write; bounded
+		// waits and cancel responses return (unavailable) at once.
 		defer s.tasks.close()
 	}
 	joined := make(chan struct{})

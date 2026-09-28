@@ -176,6 +176,13 @@ var nativeRequired = []string{
 	"TestControlNativeGroups/resistant",
 	"TestControlNativeGroups/orphan-restart",
 	"TestControlNativeGroups/plane-restart",
+	// Iteration 06b (task controls): the four control function parents,
+	// one per FP, each the conjunction of its delegated package contracts
+	// with their mandatory subcases.
+	"TestControlCancellation",
+	"TestControlExecutionTimeout",
+	"TestControlBoundedWait",
+	"TestControlForceRemove",
 }
 
 // NativeTaskProcessPackage and nativeTaskProcess are the separate native

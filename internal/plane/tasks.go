@@ -25,8 +25,10 @@ import (
 // task observation lock, never the gate.
 //
 // Lock order: mutation gate, task observation lock (taskService.mu), node
-// observation lock (nodeRegistry.mu), then the loss queue lock
-// (taskService.lossMu, innermost). No disk or network I/O is performed
+// observation lock (nodeRegistry.mu), then a node stream's lock
+// (nodeStream.mu) and the loss queue lock (taskService.lossMu, innermost);
+// the removal coordinator's lock (removalCoordinator.mu, iteration 06b) is
+// never held while taking any of them. No disk or network I/O is performed
 // under any of them; a per-task writer performs every document write
 // outside the locks and installs its outcome under the task lock after
 // revalidating the task's revision. Lease and startup-grace expiry
@@ -79,13 +81,15 @@ const (
 )
 
 // candKind is a terminal candidate's kind: the 06a writer's candidate set
-// is exactly natural result, lost decision and definite refusal.
+// is natural result, lost decision and definite refusal; iteration 06b
+// adds the control terminal (cancelled or timed_out).
 type candKind int
 
 const (
 	candNatural candKind = iota + 1 // a worker's natural outcome
 	candLost                        // a lost decision (plane's, or a worker's lost outcome)
 	candRefusal                     // a definite refusal (no adapter ever ran)
+	candControl                     // a control terminal: cancelled (under a stop intent or DW7) or timed_out
 )
 
 // terminalCand is the one latched terminal candidate of a task: its
@@ -171,6 +175,29 @@ type taskEntry struct {
 	writer bool
 	// contribution to counts and to the storage-blocked set.
 	contribHeld, contribRec bool
+
+	// Iteration 06b controls. pendingIntent is the selected stop intent not
+	// yet visible (the writer's stop-intent publication owns it);
+	// intentDurable: the visible intent's publication was confirmed (every
+	// later record carries it). ctlDue is the earliest (re)delivery of the
+	// control to the reporting attachment and ctlInflight its outstanding
+	// exchange. waiters are cancel responses woken at each confirmed
+	// publication; waitRegs the bounded wait registrations naming this
+	// task.
+	pendingIntent *contract.StopIntent
+	intentDurable bool
+	ctlDue        time.Time
+	ctlInflight   bool
+	waiters       []chan struct{}
+	waitRegs      []*waitReg
+}
+
+// intentLocked is e's selected stop intent (pending or visible), or nil.
+func (e *taskEntry) intentLocked() *contract.StopIntent {
+	if e.pendingIntent != nil {
+		return e.pendingIntent
+	}
+	return e.rec.StopIntent
 }
 
 func (e *taskEntry) terminal() bool { return contract.TaskTerminal(e.rec.State) }
@@ -221,12 +248,22 @@ type taskService struct {
 	losses   []lossFact
 	lossKick chan struct{}
 	admitted atomic.Uint64
+
+	// Iteration 06b: the bounded wait registrations (plus the capacity
+	// reserved by dispatches with a wait), the plane's per-call wait cap,
+	// the nodes with a pending control delivery, and onRelease, called
+	// (under mu, nonblocking) when an instance's reservation is released.
+	waits       map[*waitReg]bool
+	waitReserve int
+	maxWait     time.Duration
+	ctlNodes    map[string]map[string]bool
+	onRelease   func(instanceKey)
 }
 
 func newTaskService(st *taskStore, reg *nodeRegistry, roles *roleRegistry, gate *atomic.Bool, d *deps, logger *slog.Logger, loaded []loadedTask) (*taskService, error) {
 	ts := &taskService{st: st, reg: reg, roles: roles, clock: d.nodeClock, logger: logger, lookup: roleLookup, gate: gate, rand: d.rand,
 		tasks: map[string]*taskEntry{}, counts: map[instanceKey]*heldCount{}, blocked: map[*taskEntry]bool{}, stop: make(chan struct{}),
-		lossKick: make(chan struct{}, 1)}
+		lossKick: make(chan struct{}, 1), waits: map[*waitReg]bool{}, maxWait: contract.DefaultMaxTaskWait, ctlNodes: map[string]map[string]bool{}}
 	var b [16]byte
 	if _, err := io.ReadFull(d.rand, b[:]); err != nil {
 		return nil, wrapf(contract.CodeInternal, err, "cannot generate the plane run epoch: %v", err)
@@ -240,6 +277,7 @@ func newTaskService(st *taskStore, reg *nodeRegistry, roles *roleRegistry, gate 
 		// authority: a terminal one is confirmed and holds nothing.
 		e.released = e.terminal()
 		e.reconciling = !e.terminal()
+		e.intentDurable = rec.StopIntent != nil
 		ts.tasks[rec.TaskID] = e
 		ts.ids = append(ts.ids, rec.TaskID)
 		if e.held() {
@@ -295,9 +333,13 @@ func (ts *taskService) refreshLocked(e *taskEntry) {
 	if rec {
 		c.reconciling++
 	}
+	released := e.contribHeld && !held
 	e.contribHeld, e.contribRec = held, rec
 	if c.held == 0 && c.reconciling == 0 {
 		delete(ts.counts, e.key)
+	}
+	if released && ts.onRelease != nil {
+		ts.onRelease(e.key)
 	}
 	if !e.confirmed || e.fault || e.watchdog {
 		ts.blocked[e] = true
@@ -502,7 +544,7 @@ func (ts *taskService) admit(ctx context.Context, deadline time.Time, req contra
 	now := ts.clock.Now().UTC()
 	rec := contract.TaskRecord{Request: req, Role: role, RolesRevision: ob.roles.visible.revision, Effective: eff,
 		Execution: contract.ExecutionToken{Epoch: ts.epoch, Attachment: int(gen)}, State: contract.TaskPending, CreatedAt: now, Revision: 1,
-		TimeoutPolicy: contract.TimeoutPolicyLegacy, Schema: contract.TaskRecordSchemaVersion}
+		TimeoutPolicy: contract.TimeoutPolicyEnforced, Schema: contract.TaskRecordSchemaVersion}
 	ts.at("before-task-publication", goal, ctx)
 	// recheck is the authorization check: caller liveness, the registry
 	// revision, the attachment generation and lease, the capacity and the
@@ -649,8 +691,9 @@ func (ts *taskService) confirm(e *taskEntry, revision int) {
 	submit := e.rec.State == contract.TaskPending && e.send == sendNone && !e.loaded && e.cand == nil
 	ts.refreshLocked(e)
 	ts.wakeLocked(e)
+	id := e.rec.TaskID
 	ts.mu.Unlock()
-	ts.event("task-confirmed " + e.rec.TaskID)
+	ts.event("task-confirmed " + id)
 	if submit {
 		ts.submit(e)
 	}
@@ -701,7 +744,7 @@ func (ts *taskService) claimStart(id string) bool {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 	e := ts.tasks[id]
-	if e == nil || e.send != sendQueued || e.rec.State != contract.TaskPending || e.cand != nil {
+	if e == nil || e.send != sendQueued || e.rec.State != contract.TaskPending || e.cand != nil || e.intentLocked() != nil {
 		return false
 	}
 	e.send = sendSending
@@ -771,15 +814,23 @@ func (ts *taskService) startReplied(id string, gen uint64, refusal *contract.Err
 		e.startedAt = ts.clock.Now().UTC()
 		e.rgen, e.lateOK, e.reconciling = gen, false, false
 		ts.refreshLocked(e)
+		// A durable stop intent selected while the start was being written
+		// is delivered now, on the attachment that answered it.
+		ts.wantControlLocked(e)
 	}
 	ts.event("task-started " + id)
 	ts.wakeLocked(e)
 }
 
 // latchRefusalLocked latches a definite refusal (rejected) as e's terminal
-// candidate unless one is already latched.
+// candidate unless one is already latched. Under a selected stop intent
+// the definite no-start is a cancellation before start (iteration 06b).
 func (ts *taskService) latchRefusalLocked(e *taskEntry, reason *contract.TaskReason) {
 	if e.terminal() || e.cand != nil {
+		return
+	}
+	if e.intentLocked() != nil {
+		ts.latchCancelledBeforeStartLocked(e)
 		return
 	}
 	t := ts.clock.Now().UTC()
@@ -851,27 +902,21 @@ func (ts *taskService) close() {
 	ts.wg.Wait()
 }
 
-// removalCheck is role rm's reservation predicate for instance k: only an
-// instance holding no reservation may be removed (iteration 06a removed
-// 05's recovery-only exception: removal waits until every reservation is
-// durably terminal).
-func (ts *taskService) removalCheck(k instanceKey, force bool) error {
+// removalCheck is ordinary role rm's reservation predicate for instance
+// k: only an instance holding no reservation may be removed (iteration
+// 06a removed 05's recovery-only exception; a forced removal cancels the
+// held tasks first and deletes only after they are durably resolved).
+func (ts *taskService) removalCheck(k instanceKey) error {
 	ts.mu.Lock()
 	c := ts.heldLocked(k)
 	ts.mu.Unlock()
 	if c.held == 0 {
 		return nil
 	}
-	details := map[string]any{"role_id": k.id, "inflight": c.held, "reconciling_inflight": c.reconciling}
-	if force {
-		details["reason"] = contract.ReasonForceNotSupported
-		return &contract.Error{Code: contract.CodeConflict, Details: details,
-			Message: "role " + k.id + " has tasks in flight; --force cannot cancel them in this build (cancellation arrives in iteration 06b); nothing was removed"}
-	}
-	details["reason"] = contract.ReasonTasksInflight
-	msg := "role " + k.id + " has tasks in flight; wait for them to finish (see callsheet task ls); nothing was removed"
+	details := map[string]any{"role_id": k.id, "inflight": c.held, "reconciling_inflight": c.reconciling, "reason": contract.ReasonTasksInflight}
+	msg := "role " + k.id + " has tasks in flight; wait for them to finish (see callsheet task ls), or cancel them with role rm --force; nothing was removed"
 	if c.reconciling > 0 {
-		msg = "role " + k.id + " has tasks in flight, some awaiting reconciliation with their worker; they are resolved when the worker reconnects or its lease expires (see callsheet task ls); nothing was removed"
+		msg = "role " + k.id + " has tasks in flight, some awaiting reconciliation with their worker; they are resolved when the worker reconnects or its lease expires (see callsheet task ls), or role rm --force cancels them; nothing was removed"
 	}
 	return &contract.Error{Code: contract.CodeConflict, Details: details, Message: msg}
 }

@@ -119,29 +119,54 @@ func (c *Client) ShowRole(ctx context.Context, id string) (contract.RoleView, er
 	return roleResult(b, id)
 }
 
-// RemoveRole deletes role id. force is accepted for the future task
-// semantics; in this iteration both values remove identically.
-func (c *Client) RemoveRole(ctx context.Context, id string, force bool) error {
+// RemoveRole deletes role id. Without force a role holding tasks is
+// refused. With force (iteration 06b) the plane fences the role's current
+// instance, cancels its tasks and deletes it after their durable
+// resolution: Completed (HTTP 200) when the deletion is confirmed within
+// the plane's budget, else Pending (HTTP 202) with the operation ID. An
+// empty operationID starts or joins the current instance's removal; a
+// nonempty one (32 lowercase hex, force only) joins only that operation.
+// The DELETE is never retried automatically: after a lost response read
+// role show for the removal's operation ID.
+func (c *Client) RemoveRole(ctx context.Context, id string, force bool, operationID string) (contract.RoleRemoveResult, error) {
 	if !contract.ValidSlug(id) {
-		return contract.New(contract.CodeInvalidArgument, "invalid role ID; want a 1-63 character slug of lowercase letters, digits and internal hyphens")
+		return contract.RoleRemoveResult{}, contract.New(contract.CodeInvalidArgument, "invalid role ID; want a 1-63 character slug of lowercase letters, digits and internal hyphens")
 	}
-	body, err := encodeBody(contract.RoleRemoveRequest{Force: force})
+	if operationID != "" {
+		if err := contract.ValidateRemovalOperation(force, operationID); err != nil {
+			return contract.RoleRemoveResult{}, err
+		}
+	}
+	body, err := encodeBody(contract.RoleRemoveRequest{Force: force, OperationID: operationID})
 	if err != nil {
-		return err
+		return contract.RoleRemoveResult{}, err
 	}
 	status, b, err := c.request(ctx, http.MethodDelete, contract.PathRoles+"/"+id, body, contract.MaxRoleResponseBytes)
 	if err != nil {
-		return err
+		return contract.RoleRemoveResult{}, err
 	}
-	if status != http.StatusOK {
-		return invalidResponse("unexpected status for a role removal")
+	switch status {
+	case http.StatusOK:
+		removed, err := contract.ParseRoleRemoveResponse(b)
+		if err != nil {
+			return contract.RoleRemoveResult{}, err
+		}
+		if removed != id {
+			return contract.RoleRemoveResult{}, invalidResponse("it names another role")
+		}
+		return contract.RoleRemoveResult{Completed: &contract.RoleRemoveResponse{Version: contract.ProtocolVersion, Removed: removed}}, nil
+	case http.StatusAccepted:
+		if !force {
+			return contract.RoleRemoveResult{}, invalidResponse("unexpected status for a role removal without force")
+		}
+		p, err := contract.ParseRoleRemovePendingResponse(b)
+		if err != nil {
+			return contract.RoleRemoveResult{}, err
+		}
+		if p.RoleID != id || (operationID != "" && p.OperationID != operationID) {
+			return contract.RoleRemoveResult{}, invalidResponse("it names another role or operation")
+		}
+		return contract.RoleRemoveResult{Pending: &p}, nil
 	}
-	removed, err := contract.ParseRoleRemoveResponse(b)
-	if err != nil {
-		return err
-	}
-	if removed != id {
-		return invalidResponse("it names another role")
-	}
-	return nil
+	return contract.RoleRemoveResult{}, invalidResponse("unexpected status for a role removal")
 }

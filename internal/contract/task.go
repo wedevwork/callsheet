@@ -63,25 +63,34 @@ const (
 	MaxTaskListLimit     = 100
 
 	// TaskRecordSchemaVersion is tasks/<id>.json's schema written by this
-	// build (iteration 06a); LegacyTaskRecordSchemaVersion is iteration
-	// 05's, still decoded strictly and converted in memory.
-	TaskRecordSchemaVersion       = 2
+	// build (iteration 06b: stop intent and enforced timeout policy);
+	// TaskRecordSchema2 is iteration 06a's and LegacyTaskRecordSchemaVersion
+	// iteration 05's, both still decoded strictly with their exact wire
+	// structs and normalized in memory (never rewritten by a read).
+	TaskRecordSchemaVersion       = 3
+	TaskRecordSchema2             = 2
 	LegacyTaskRecordSchemaVersion = 1
 
-	// TimeoutPolicyLegacy is the only timeout policy of 06a: the recorded
-	// timeout is not enforced (timeout_enforced stays false).
-	TimeoutPolicyLegacy = "legacy_unenforced"
+	// TimeoutPolicyLegacy is 06a's (and earlier) history: the recorded
+	// timeout was never enforced and never acquires an execution timer.
+	// TimeoutPolicyEnforced (iteration 06b) is every new dispatch's: the
+	// task's guardian enforces its effective timeout (0: unlimited).
+	TimeoutPolicyLegacy   = "legacy_unenforced"
+	TimeoutPolicyEnforced = "enforced"
 
 	// ReconcilingNotice is the fixed text for tasks whose execution awaits
 	// reconciliation with its worker (iteration 06a).
 	ReconcilingNotice = "the task's execution awaits reconciliation with its worker; its reservation is held until it is resolved"
-	// TimeoutNotice is the fixed text about the recorded timeout.
-	TimeoutNotice = "the recorded timeout is not enforced in this build"
+	// TimeoutNotice is the fixed text about a historical task's recorded,
+	// unenforced timeout (timeout_policy legacy_unenforced).
+	TimeoutNotice = "this historical task predates timeout enforcement: its recorded timeout is not enforced"
 )
 
-// Task states. Iteration 06a produces pending, running, succeeded,
-// failed, rejected and lost; cancelled and timed_out are reserved product
-// states that protocol 4 records and results never accept.
+// ValidTimeoutPolicy reports whether p is a known timeout policy.
+func ValidTimeoutPolicy(p string) bool { return p == TimeoutPolicyLegacy || p == TimeoutPolicyEnforced }
+
+// Task states. Iteration 06b adds the control states cancelled and
+// timed_out (protocol 5), both terminal.
 const (
 	TaskPending   = "pending"
 	TaskRunning   = "running"
@@ -89,8 +98,6 @@ const (
 	TaskFailed    = "failed"
 	TaskRejected  = "rejected"
 	TaskLost      = "lost"
-
-	// Reserved, never accepted or produced by this build.
 	TaskCancelled = "cancelled"
 	TaskTimedOut  = "timed_out"
 )
@@ -98,7 +105,7 @@ const (
 // ValidTaskState reports whether s is a state this build produces.
 func ValidTaskState(s string) bool {
 	switch s {
-	case TaskPending, TaskRunning, TaskSucceeded, TaskFailed, TaskRejected, TaskLost:
+	case TaskPending, TaskRunning, TaskSucceeded, TaskFailed, TaskRejected, TaskLost, TaskCancelled, TaskTimedOut:
 		return true
 	}
 	return false
@@ -106,17 +113,29 @@ func ValidTaskState(s string) bool {
 
 // TaskTerminal reports whether s is a terminal state.
 func TaskTerminal(s string) bool {
-	return s == TaskSucceeded || s == TaskFailed || s == TaskRejected || s == TaskLost
+	switch s {
+	case TaskSucceeded, TaskFailed, TaskRejected, TaskLost, TaskCancelled, TaskTimedOut:
+		return true
+	}
+	return false
 }
 
 // Task error and diagnostic reasons (safe, fixed codes).
 const (
 	ReasonWorkspaceNotSupported = "workspace_not_supported"
-	ReasonWaitNotSupported      = "wait_not_supported"
 	ReasonNoCapacity            = "no_capacity"
 	ReasonTasksInflight         = "tasks_inflight"
-	ReasonForceNotSupported     = "force_cancel_not_supported"
 	ReasonStartNotSent          = "start_not_sent"
+
+	// Iteration 06b controls: a task cancelled before any start was sent
+	// or launched (the reason of a cancelled record without started_at);
+	// the plane-wide wait registration bound (unavailable details); a
+	// fenced role instance (candidate reason and conflict detail); a force
+	// removal token naming no fence on the role's current instance.
+	ReasonCancelledBeforeStart     = "cancelled_before_start"
+	ReasonWaitCapacity             = "wait_capacity"
+	ReasonRoleRemoving             = "role_removing"
+	ReasonRemovalOperationMismatch = "removal_operation_mismatch"
 
 	// Sidecar start refusals.
 	ReasonRoleMissing           = "role_missing"
@@ -183,10 +202,13 @@ func knownRefusal(r string) bool {
 }
 
 // taskReasonCode reports whether c may appear as a record's reason code
-// in state (a rejection's or a loss's).
+// in state (a rejection's, a loss's, or a cancellation's before start).
 func taskReasonCode(state, c string) bool {
-	if state == TaskLost {
+	switch state {
+	case TaskLost:
 		return knownLost(c)
+	case TaskCancelled:
+		return c == ReasonCancelledBeforeStart
 	}
 	return c == ReasonStartNotSent || knownRefusal(c)
 }
@@ -493,18 +515,72 @@ func (r *DispatchRequest) unmarshalStrict(raw json.RawMessage, what string) erro
 }
 
 func parseDispatch(data []byte, what string) (DispatchRequest, error) {
-	var r DispatchRequest
 	o, err := decodeObject(data, what)
 	if err != nil {
-		return r, err
+		return DispatchRequest{}, err
 	}
+	return parseDispatchObject(o, what)
+}
+
+// MaxDispatchEnvelopeBytes bounds a dispatch transport envelope: the
+// request plus its optional wait option (iteration 06b).
+const MaxDispatchEnvelopeBytes = MaxDispatchRequestBytes + 1<<10
+
+// ParseDispatchEnvelope strictly decodes POST /api/v1/tasks (iteration
+// 06b): a dispatch request plus the optional transport member "wait" (a Go
+// duration of at most MaxWait). The wait is a transport option, validated
+// before admission and never part of the stored request or its start
+// digest; nil means an ordinary asynchronous dispatch.
+func ParseDispatchEnvelope(data []byte) (DispatchRequest, *time.Duration, error) {
+	const what = "dispatch request"
+	if len(data) > MaxDispatchEnvelopeBytes {
+		return DispatchRequest{}, nil, taskErr(CodeInvalidArgument, "", "", "the dispatch request is larger than %d bytes", MaxDispatchEnvelopeBytes)
+	}
+	o, err := decodeObject(data, what)
+	if err != nil {
+		return DispatchRequest{}, nil, err
+	}
+	var wait *time.Duration
+	if v, ok := o.raw["wait"]; ok {
+		if isNull(v) {
+			return DispatchRequest{}, nil, taskErr(CodeInvalidArgument, "wait", "", "%s field %q must not be null", what, "wait")
+		}
+		s, err := strictString(bytes.TrimSpace(v), what+" field \"wait\"")
+		if err != nil {
+			return DispatchRequest{}, nil, taskErr(CodeInvalidArgument, "wait", "", "%s", err.(*Error).Message)
+		}
+		d, err := ParseWaitDuration(s)
+		if err != nil {
+			return DispatchRequest{}, nil, err
+		}
+		wait = &d
+		delete(o.raw, "wait")
+		keys := o.keys[:0:0]
+		for _, k := range o.keys {
+			if k != "wait" {
+				keys = append(keys, k)
+			}
+		}
+		o.keys = keys
+	}
+	r, err := parseDispatchObject(o, what)
+	if err != nil {
+		return r, nil, err
+	}
+	if err := r.Validate(); err != nil {
+		return r, nil, err
+	}
+	return r, wait, nil
+}
+
+// parseDispatchObject decodes an already split request object.
+func parseDispatchObject(o object, what string) (DispatchRequest, error) {
+	var r DispatchRequest
+	var err error
 	for _, k := range []string{"workspace", "base"} {
 		if _, ok := o.raw[k]; ok {
 			return r, taskErr(CodeInvalidArgument, k, ReasonWorkspaceNotSupported, "workspace and base are not supported in this build (iteration 10 adds workspaces); nothing was dispatched")
 		}
-	}
-	if _, ok := o.raw["wait"]; ok {
-		return r, taskErr(CodeInvalidArgument, "wait", ReasonWaitNotSupported, "waiting for a task is not supported in this build (iteration 06b adds it); nothing was dispatched")
 	}
 	if err := rejectUnknown(o, what, append(append([]string{}, dispatchFields...), "override")); err != nil {
 		return r, err
@@ -839,15 +915,30 @@ func DecodeTaskLogAck(body json.RawMessage) (TaskLogAckBody, error) {
 // Result outcomes (protocol 4): natural is the adapter's own exit; lost
 // is a worker that cannot report a trustworthy outcome (it restarted or
 // stopped while the execution was active, or no adapter ever ran).
+// Protocol 5 (iteration 06b) adds the control outcomes: cancelled (a
+// cleanup-confirmed control cause) and timed_out (the guardian's execution
+// deadline).
 const (
-	OutcomeNatural = "natural"
-	OutcomeLost    = "lost"
+	OutcomeNatural   = "natural"
+	OutcomeLost      = "lost"
+	OutcomeCancelled = "cancelled"
+	OutcomeTimedOut  = "timed_out"
 )
 
+// validOutcome reports whether o is a result outcome.
+func validOutcome(o string) bool {
+	return o == OutcomeNatural || o == OutcomeLost || o == OutcomeCancelled || o == OutcomeTimedOut
+}
+
+// ValidStopID reports whether id is a stop intent ID: 32 lowercase hex.
+func ValidStopID(id string) bool { return runIDRE.MatchString(id) }
+
 // TaskResultBody reports an execution's frozen outcome. The sidecar sends
-// no state: the plane derives succeeded, failed or lost. Digest is the
-// SHA-256 (lowercase hex) of the canonical encoding of every other field
-// (ResultDigest); a retry repeats the same body and digest.
+// no state: the plane derives the terminal state. Digest is the SHA-256
+// (lowercase hex) of the canonical encoding of every other field
+// (ResultDigest); a retry repeats the same body and digest. StopID
+// (protocol 5) names the plane stop intent a control outcome answers
+// (null otherwise); a null stop_id keeps the exact protocol 4 digest.
 type TaskResultBody struct {
 	TaskID                string         `json:"task_id"`
 	Execution             ExecutionToken `json:"execution"`
@@ -859,10 +950,12 @@ type TaskResultBody struct {
 	OutputBytes           int            `json:"output_bytes"`
 	LogIncomplete         bool           `json:"log_incomplete"`
 	CounterOverflow       bool           `json:"counter_overflow"`
+	StopID                *string        `json:"stop_id"`
 	Digest                string         `json:"digest"`
 }
 
-// resultDigestBody is TaskResultBody without its digest, in wire order.
+// resultDigestBody is TaskResultBody without its digest and stop_id, in
+// wire order: the exact protocol 4 field sequence.
 type resultDigestBody struct {
 	TaskID                string         `json:"task_id"`
 	Execution             ExecutionToken `json:"execution"`
@@ -876,10 +969,25 @@ type resultDigestBody struct {
 	CounterOverflow       bool           `json:"counter_overflow"`
 }
 
-// ResultDigest is the canonical digest of b's fields other than Digest.
+// resultDigestStop is resultDigestBody with a nonnull stop_id.
+type resultDigestStop struct {
+	resultDigestBody
+	StopID string `json:"stop_id"`
+}
+
+// ResultDigest is the canonical digest of b's fields other than Digest: a
+// null stop_id is omitted (the old field sequence), a nonnull one is
+// included last.
 func (b TaskResultBody) ResultDigest() string {
-	enc, err := compact(resultDigestBody{b.TaskID, b.Execution, b.Outcome, b.ExitCode, b.Signal, b.FinalMessage, b.FinalMessageTruncated,
-		b.OutputBytes, b.LogIncomplete, b.CounterOverflow})
+	base := resultDigestBody{b.TaskID, b.Execution, b.Outcome, b.ExitCode, b.Signal, b.FinalMessage, b.FinalMessageTruncated,
+		b.OutputBytes, b.LogIncomplete, b.CounterOverflow}
+	var enc []byte
+	var err error
+	if b.StopID == nil {
+		enc, err = compact(base)
+	} else {
+		enc, err = compact(resultDigestStop{base, *b.StopID})
+	}
 	if err != nil {
 		return ""
 	}
@@ -892,15 +1000,18 @@ func (b TaskResultBody) Sealed() TaskResultBody {
 	return b
 }
 
-// Validate checks the outcome, exit, final message and counter invariants
-// and that the digest covers the other fields.
+// Validate checks the outcome, exit, stop, final message and counter
+// invariants and that the digest covers the other fields. A natural
+// outcome has exactly one of exit_code and signal and no stop_id; lost and
+// control outcomes carry at most one; timed_out is the guardian's cause
+// and never names a plane stop intent.
 func (b TaskResultBody) Validate() error {
 	const what = "task_result body"
 	switch {
 	case !ValidTaskID(b.TaskID):
 		return errInvalid("%s task_id is not a task ID", what)
-	case b.Outcome != OutcomeNatural && b.Outcome != OutcomeLost:
-		return errInvalid("%s outcome must be %q or %q", what, OutcomeNatural, OutcomeLost)
+	case !validOutcome(b.Outcome):
+		return errInvalid("%s outcome must be %q, %q, %q or %q", what, OutcomeNatural, OutcomeLost, OutcomeCancelled, OutcomeTimedOut)
 	case b.Outcome == OutcomeNatural && (b.ExitCode == nil) == (b.Signal == nil):
 		return errInvalid("%s needs exactly one of exit_code and signal", what)
 	case b.ExitCode != nil && b.Signal != nil:
@@ -909,6 +1020,10 @@ func (b TaskResultBody) Validate() error {
 		return errInvalid("%s exit_code must be an integer from 0 to 255", what)
 	case b.Signal != nil && !ValidWireSignal(*b.Signal):
 		return errInvalid("%s signal is not a known signal name", what)
+	case b.StopID != nil && !ValidStopID(*b.StopID):
+		return errInvalid("%s stop_id must be null or 32 lowercase hex digits", what)
+	case b.StopID != nil && (b.Outcome == OutcomeNatural || b.Outcome == OutcomeTimedOut):
+		return errInvalid("%s: a %s outcome has no stop_id", what, b.Outcome)
 	case b.OutputBytes < 0 || b.OutputBytes > MaxSafeInteger:
 		return errInvalid("%s output_bytes must be an integer from 0 to %d", what, MaxSafeInteger)
 	case !ValidDigest(b.Digest):

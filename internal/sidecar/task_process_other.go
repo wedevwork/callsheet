@@ -37,6 +37,7 @@ func (g unsupportedGuardian) Status() <-chan contract.GuardianStatus { return g.
 func (unsupportedGuardian) Release()                                 {}
 func (unsupportedGuardian) Revoke()                                  {}
 func (unsupportedGuardian) Stop()                                    {}
+func (unsupportedGuardian) Control(string) error                     { return errUnsupportedTasks }
 func (unsupportedGuardian) Wait() procExit                           { return procExit{err: errUnsupportedTasks} }
 
 type realGroups struct{}

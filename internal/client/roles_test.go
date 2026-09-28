@@ -61,14 +61,14 @@ func TestRoleAPIContract(t *testing.T) {
 	t.Run("operations", func(t *testing.T) {
 		routes[contract.PathRoles] = func(w http.ResponseWriter, r *http.Request) {
 			if r.Method == http.MethodPost {
-				jsonRoute("4", 201, `{"version":4,"role":`+viewJSON(t, a, 1)+`}`)(w, r)
+				jsonRoute("5", 201, `{"version":5,"role":`+viewJSON(t, a, 1)+`}`)(w, r)
 				return
 			}
-			jsonRoute("4", 200, `{"version":4,"roles":[`+viewJSON(t, a, 1)+`,`+viewJSON(t, roleCfg("worker-b", "reviewer"), 2)+`]}`)(w, r)
+			jsonRoute("5", 200, `{"version":5,"roles":[`+viewJSON(t, a, 1)+`,`+viewJSON(t, roleCfg("worker-b", "reviewer"), 2)+`]}`)(w, r)
 		}
 		v, err := c.AddRole(bg, a)
 		if got := sent(); err != nil || v.ID != "worker-a" || v.Timeout != 2*time.Hour || got.method != "POST" || got.path != contract.PathRoles ||
-			got.ctype != "application/json" || got.version != "4" || got.body != `{"id":"worker-a","name":"coder","node":"`+nodeA+`","adapter":"fake","instruction":"/srv/i.md","runbook":"/srv/r.md","model":"example model","effort":"medium","concurrency":2}` {
+			got.ctype != "application/json" || got.version != "5" || got.body != `{"id":"worker-a","name":"coder","node":"`+nodeA+`","adapter":"fake","instruction":"/srv/i.md","runbook":"/srv/r.md","model":"example model","effort":"medium","concurrency":2}` {
 			t.Fatalf("add = %+v %v %+v", v, err, got)
 		}
 		list, err := c.ListRoles(bg)
@@ -78,9 +78,9 @@ func TestRoleAPIContract(t *testing.T) {
 		routes[one] = func(w http.ResponseWriter, r *http.Request) {
 			switch r.Method {
 			case http.MethodDelete:
-				jsonRoute("4", 200, `{"version":4,"removed":"worker-a"}`)(w, r)
+				jsonRoute("5", 200, `{"version":5,"removed":"worker-a"}`)(w, r)
 			default:
-				jsonRoute("4", 200, `{"version":4,"role":`+viewJSON(t, a, 1)+`}`)(w, r)
+				jsonRoute("5", 200, `{"version":5,"role":`+viewJSON(t, a, 1)+`}`)(w, r)
 			}
 		}
 		if v, err := c.ShowRole(bg, "worker-a"); err != nil || v.ID != "worker-a" || sent().method != "GET" {
@@ -91,7 +91,7 @@ func TestRoleAPIContract(t *testing.T) {
 			t.Fatalf("set = %v %+v", err, sent())
 		}
 		for _, force := range []bool{false, true} {
-			if err := c.RemoveRole(bg, "worker-a", force); err != nil || sent().method != "DELETE" || sent().body != `{"force":`+map[bool]string{false: "false", true: "true"}[force]+`}` {
+			if err := rmErr(c.RemoveRole(bg, "worker-a", force, "")); err != nil || sent().method != "DELETE" || sent().body != `{"force":`+map[bool]string{false: "false", true: "true"}[force]+`}` {
 				t.Fatalf("rm force=%v = %v %+v", force, err, sent())
 			}
 		}
@@ -113,7 +113,7 @@ func TestRoleAPIContract(t *testing.T) {
 		if _, err := c.SetRole(bg, "ok", contract.RolePatch{}); !contract.IsCode(err, contract.CodeInvalidArgument) {
 			t.Fatal("empty patch")
 		}
-		if err := c.RemoveRole(bg, "BAD", false); !contract.IsCode(err, contract.CodeInvalidArgument) {
+		if err := rmErr(c.RemoveRole(bg, "BAD", false, "")); !contract.IsCode(err, contract.CodeInvalidArgument) {
 			t.Fatal("bad rm ID")
 		}
 		if s.hits.Load() != before {
@@ -129,33 +129,33 @@ func TestRoleAPIContract(t *testing.T) {
 			code  contract.Code
 			want  string
 		}{
-			"add other id": {jsonRoute("4", 201, `{"version":4,"role":`+viewJSON(t, other, 1)+`}`), func() error { _, err := c.AddRole(bg, a); return err }, contract.CodeInvalidArgument, "another role"},
-			"add status":   {jsonRoute("4", 200, `{"version":4,"role":`+viewJSON(t, a, 1)+`}`), func() error { _, err := c.AddRole(bg, a); return err }, contract.CodeInvalidArgument, "unexpected status"},
-			"add error":    {jsonRoute("4", 409, `{"error":{"code":"conflict","message":"role worker-a already exists"}}`), func() error { _, err := c.AddRole(bg, a); return err }, contract.CodeConflict, "already exists"},
-			"add busy":     {jsonRoute("4", 503, `{"error":{"code":"unavailable","message":"busy","details":{"reason":"busy"}}}`), func() error { _, err := c.AddRole(bg, a); return err }, contract.CodeUnavailable, "busy"},
-			"add version":  {jsonRoute("5", 201, `{}`), func() error { _, err := c.AddRole(bg, a); return err }, contract.CodeProtocolMismatch, "local=4 remote=5"},
-			"add bad body": {jsonRoute("4", 201, `{"version":4,"role":{}}`), func() error { _, err := c.AddRole(bg, a); return err }, contract.CodeInvalidArgument, "required field"},
-			"add big":      {jsonRoute("4", 201, `{"version":4,"role":"`+strings.Repeat("x", contract.MaxRoleResponseBytes)+`"}`), func() error { _, err := c.AddRole(bg, a); return err }, contract.CodeInvalidArgument, "larger than"},
-			"list order":   {jsonRoute("4", 200, `{"version":4,"roles":[`+viewJSON(t, b, 2)+`,`+viewJSON(t, a, 1)+`]}`), func() error { _, err := c.ListRoles(bg); return err }, contract.CodeInvalidArgument, "not sorted"},
-			"list dup":     {jsonRoute("4", 200, `{"version":4,"roles":[`+viewJSON(t, a, 1)+`,`+viewJSON(t, a, 1)+`]}`), func() error { _, err := c.ListRoles(bg); return err }, contract.CodeInvalidArgument, "repeats"},
-			"list inflight": {jsonRoute("4", 200, `{"version":4,"roles":[`+strings.Replace(viewJSON(t, a, 1), `"inflight":0`, `"inflight":-1`, 1)+`]}`), func() error { _, err := c.ListRoles(bg); return err },
+			"add other id": {jsonRoute("5", 201, `{"version":5,"role":`+viewJSON(t, other, 1)+`}`), func() error { _, err := c.AddRole(bg, a); return err }, contract.CodeInvalidArgument, "another role"},
+			"add status":   {jsonRoute("5", 200, `{"version":5,"role":`+viewJSON(t, a, 1)+`}`), func() error { _, err := c.AddRole(bg, a); return err }, contract.CodeInvalidArgument, "unexpected status"},
+			"add error":    {jsonRoute("5", 409, `{"error":{"code":"conflict","message":"role worker-a already exists"}}`), func() error { _, err := c.AddRole(bg, a); return err }, contract.CodeConflict, "already exists"},
+			"add busy":     {jsonRoute("5", 503, `{"error":{"code":"unavailable","message":"busy","details":{"reason":"busy"}}}`), func() error { _, err := c.AddRole(bg, a); return err }, contract.CodeUnavailable, "busy"},
+			"add version":  {jsonRoute("6", 201, `{}`), func() error { _, err := c.AddRole(bg, a); return err }, contract.CodeProtocolMismatch, "local=5 remote=6"},
+			"add bad body": {jsonRoute("5", 201, `{"version":5,"role":{}}`), func() error { _, err := c.AddRole(bg, a); return err }, contract.CodeInvalidArgument, "required field"},
+			"add big":      {jsonRoute("5", 201, `{"version":5,"role":"`+strings.Repeat("x", contract.MaxRoleResponseBytes)+`"}`), func() error { _, err := c.AddRole(bg, a); return err }, contract.CodeInvalidArgument, "larger than"},
+			"list order":   {jsonRoute("5", 200, `{"version":5,"roles":[`+viewJSON(t, b, 2)+`,`+viewJSON(t, a, 1)+`]}`), func() error { _, err := c.ListRoles(bg); return err }, contract.CodeInvalidArgument, "not sorted"},
+			"list dup":     {jsonRoute("5", 200, `{"version":5,"roles":[`+viewJSON(t, a, 1)+`,`+viewJSON(t, a, 1)+`]}`), func() error { _, err := c.ListRoles(bg); return err }, contract.CodeInvalidArgument, "repeats"},
+			"list inflight": {jsonRoute("5", 200, `{"version":5,"roles":[`+strings.Replace(viewJSON(t, a, 1), `"inflight":0`, `"inflight":-1`, 1)+`]}`), func() error { _, err := c.ListRoles(bg); return err },
 				contract.CodeInvalidArgument, "inflight must be an integer from 0"},
-			"list test only": {jsonRoute("4", 200, `{"version":4,"roles":[`+strings.Replace(viewJSON(t, a, 1), `"adapter_test_only":true`, `"adapter_test_only":false`, 1)+`]}`), func() error { _, err := c.ListRoles(bg); return err },
+			"list test only": {jsonRoute("5", 200, `{"version":5,"roles":[`+strings.Replace(viewJSON(t, a, 1), `"adapter_test_only":true`, `"adapter_test_only":false`, 1)+`]}`), func() error { _, err := c.ListRoles(bg); return err },
 				contract.CodeInvalidArgument, "adapter_test_only"},
-			"list unknown adapter": {jsonRoute("4", 200, `{"version":4,"roles":[`+strings.Replace(viewJSON(t, a, 1), `"adapter":"fake"`, `"adapter":"codex"`, 1)+`]}`), func() error { _, err := c.ListRoles(bg); return err },
+			"list unknown adapter": {jsonRoute("5", 200, `{"version":5,"roles":[`+strings.Replace(viewJSON(t, a, 1), `"adapter":"fake"`, `"adapter":"codex"`, 1)+`]}`), func() error { _, err := c.ListRoles(bg); return err },
 				contract.CodeInvalidArgument, "unknown adapter"},
-			"list float": {jsonRoute("4", 200, `{"version":4,"roles":[`+strings.Replace(viewJSON(t, a, 1), `"concurrency":2`, `"concurrency":2.0`, 1)+`]}`), func() error { _, err := c.ListRoles(bg); return err },
+			"list float": {jsonRoute("5", 200, `{"version":5,"roles":[`+strings.Replace(viewJSON(t, a, 1), `"concurrency":2`, `"concurrency":2.0`, 1)+`]}`), func() error { _, err := c.ListRoles(bg); return err },
 				contract.CodeInvalidArgument, "integer"},
-			"list missing": {jsonRoute("4", 200, `{"version":4}`), func() error { _, err := c.ListRoles(bg); return err }, contract.CodeInvalidArgument, "required field"},
-			"list status":  {jsonRoute("4", 201, `{"version":4,"roles":[]}`), func() error { _, err := c.ListRoles(bg); return err }, contract.CodeInvalidArgument, "unexpected status"},
-			"show other":   {jsonRoute("4", 200, `{"version":4,"role":`+viewJSON(t, other, 1)+`}`), func() error { _, err := c.ShowRole(bg, "worker-a"); return err }, contract.CodeInvalidArgument, "another role"},
-			"show missing": {jsonRoute("4", 404, `{"error":{"code":"not_found","message":"role worker-a does not exist"}}`), func() error { _, err := c.ShowRole(bg, "worker-a"); return err }, contract.CodeNotFound, "does not exist"},
-			"show status":  {jsonRoute("4", 204, ``), func() error { _, err := c.ShowRole(bg, "worker-a"); return err }, contract.CodeInvalidArgument, "unexpected status"},
-			"set other":    {jsonRoute("4", 200, `{"version":4,"role":`+viewJSON(t, other, 1)+`}`), func() error { n := "x"; _, err := c.SetRole(bg, "worker-a", contract.RolePatch{Name: &n}); return err }, contract.CodeInvalidArgument, "another role"},
-			"set status":   {jsonRoute("4", 201, `{"version":4,"role":`+viewJSON(t, a, 1)+`}`), func() error { n := "x"; _, err := c.SetRole(bg, "worker-a", contract.RolePatch{Name: &n}); return err }, contract.CodeInvalidArgument, "unexpected status"},
-			"rm other":     {jsonRoute("4", 200, `{"version":4,"removed":"worker-z"}`), func() error { return c.RemoveRole(bg, "worker-a", false) }, contract.CodeInvalidArgument, "another role"},
-			"rm shape":     {jsonRoute("4", 200, `{"version":4,"removed":"worker-a","x":1}`), func() error { return c.RemoveRole(bg, "worker-a", false) }, contract.CodeInvalidArgument, "unknown field"},
-			"rm status":    {jsonRoute("4", 202, `{"version":4,"removed":"worker-a"}`), func() error { return c.RemoveRole(bg, "worker-a", false) }, contract.CodeInvalidArgument, "unexpected status"},
+			"list missing": {jsonRoute("5", 200, `{"version":5}`), func() error { _, err := c.ListRoles(bg); return err }, contract.CodeInvalidArgument, "required field"},
+			"list status":  {jsonRoute("5", 201, `{"version":5,"roles":[]}`), func() error { _, err := c.ListRoles(bg); return err }, contract.CodeInvalidArgument, "unexpected status"},
+			"show other":   {jsonRoute("5", 200, `{"version":5,"role":`+viewJSON(t, other, 1)+`}`), func() error { _, err := c.ShowRole(bg, "worker-a"); return err }, contract.CodeInvalidArgument, "another role"},
+			"show missing": {jsonRoute("5", 404, `{"error":{"code":"not_found","message":"role worker-a does not exist"}}`), func() error { _, err := c.ShowRole(bg, "worker-a"); return err }, contract.CodeNotFound, "does not exist"},
+			"show status":  {jsonRoute("5", 204, ``), func() error { _, err := c.ShowRole(bg, "worker-a"); return err }, contract.CodeInvalidArgument, "unexpected status"},
+			"set other":    {jsonRoute("5", 200, `{"version":5,"role":`+viewJSON(t, other, 1)+`}`), func() error { n := "x"; _, err := c.SetRole(bg, "worker-a", contract.RolePatch{Name: &n}); return err }, contract.CodeInvalidArgument, "another role"},
+			"set status":   {jsonRoute("5", 201, `{"version":5,"role":`+viewJSON(t, a, 1)+`}`), func() error { n := "x"; _, err := c.SetRole(bg, "worker-a", contract.RolePatch{Name: &n}); return err }, contract.CodeInvalidArgument, "unexpected status"},
+			"rm other":     {jsonRoute("5", 200, `{"version":5,"removed":"worker-z"}`), func() error { return rmErr(c.RemoveRole(bg, "worker-a", false, "")) }, contract.CodeInvalidArgument, "another role"},
+			"rm shape":     {jsonRoute("5", 200, `{"version":5,"removed":"worker-a","x":1}`), func() error { return rmErr(c.RemoveRole(bg, "worker-a", false, "")) }, contract.CodeInvalidArgument, "unknown field"},
+			"rm status":    {jsonRoute("5", 202, `{"version":5,"removed":"worker-a"}`), func() error { return rmErr(c.RemoveRole(bg, "worker-a", false, "")) }, contract.CodeInvalidArgument, "unexpected status"},
 		} {
 			routes[contract.PathRoles] = c2.route
 			routes[one] = c2.route
@@ -166,3 +166,6 @@ func TestRoleAPIContract(t *testing.T) {
 		}
 	})
 }
+
+// rmErr keeps a removal's error only.
+func rmErr(_ contract.RoleRemoveResult, err error) error { return err }

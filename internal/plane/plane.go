@@ -48,6 +48,11 @@ type RunOptions struct {
 	SANs     []string
 	SANsSet  bool
 	Logger   *slog.Logger
+	// MaxTaskWait (iteration 06b, plane run --max-task-wait) caps every
+	// bounded wait: effective wait = min(requested, MaxTaskWait). Zero is
+	// the 30 s default; otherwise 100 ms through 5 min inclusive. It is a
+	// runtime argument, never persisted, and no MCP-safe claim.
+	MaxTaskWait time.Duration
 }
 
 // ReissueOptions configures Reissue: SANs is the complete replacement list.

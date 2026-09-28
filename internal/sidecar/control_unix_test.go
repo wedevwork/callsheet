@@ -144,7 +144,8 @@ func newGuardianRig(t *testing.T, phase string) *guardianRig {
 	r := &guardianRig{p: newGuardianPipes(t), dir: dir, diag: newSyncLog(), group: &termGroup{scriptedGroup: scriptedGroup{alive: true, cooperative: true}},
 		started: make(chan *fakeRunAdapter, 1), code: make(chan int, 1)}
 	r.inv = contract.GuardianInvocation{Version: contract.GuardianInvocationVersion, TaskID: st.TaskID, Execution: st.Execution, StartDigest: st.StartDigestHex(),
-		TaskDir: dir, Nonce: ctlNonce, Path: "/opt/fake/adapter", Argv: []string{"run"}, Env: []string{"A=1"}, Dir: root}
+		TaskDir: dir, Nonce: ctlNonce, Path: "/opt/fake/adapter", Argv: []string{"run"}, Env: []string{"A=1"}, Dir: root, Timeout: "0s",
+		TimeoutPolicy: contract.TimeoutPolicyEnforced}
 	r.env = guardianEnv{
 		fds:     func() (guardianFDs, error) { return r.p.fds, nil },
 		getpid:  func() int { return rigPID },
@@ -338,6 +339,11 @@ func guardianEntrypoint(t *testing.T) {
 			t.Fatal("an invalid command signaled")
 		}
 		r.command(t, r.stopCommand(t, ctlNonce))
+		// A cause-less stop (06a's recovery form) latches lost (iteration
+		// 06b: reported before the group KILL), then the exit is forwarded.
+		if st := r.p.status(t); st.Type != contract.GuardianStopping || *st.Cause != contract.CauseLost || st.StopID != nil {
+			t.Fatalf("stopping %+v", st)
+		}
 		ex := r.p.status(t)
 		if ex.Type != contract.GuardianExit || ex.Signal == nil || *ex.Signal != "SIGTERM" {
 			t.Fatalf("exit %+v", ex)

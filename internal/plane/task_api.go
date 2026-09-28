@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/wedevwork/callsheet/internal/contract"
 )
@@ -68,10 +69,11 @@ func methodNotAllowed(w http.ResponseWriter, allow string) {
 	writeError(w, invalid("method not allowed; use "+strings.ReplaceAll(allow, ", ", " or ")))
 }
 
-// handleTasks serves /api/v1/tasks, /api/v1/tasks/{id} and
-// /api/v1/tasks/{id}/logs. The protocol header is checked first, then the
-// path, method, query, body and size; IDs use the task grammar before
-// any lookup, and encoded path aliases are refused.
+// handleTasks serves /api/v1/tasks, /api/v1/tasks/wait (iteration 06b,
+// matched before any task ID), /api/v1/tasks/{id}, /api/v1/tasks/{id}/logs
+// and /api/v1/tasks/{id}/cancel (iteration 06b). The protocol header is
+// checked first, then the path, method, query, body and size; IDs use the
+// task grammar before any lookup, and encoded path aliases are refused.
 func (s *nodeService) handleTasks(w http.ResponseWriter, r *http.Request) {
 	if !s.checkVersion(w, r) {
 		return
@@ -81,9 +83,21 @@ func (s *nodeService) handleTasks(w http.ResponseWriter, r *http.Request) {
 		writeError(w, invalid("encoded task paths are not accepted"))
 		return
 	}
+	if r.URL.Path == contract.PathTaskWait {
+		if r.Method != http.MethodPost {
+			methodNotAllowed(w, "POST")
+			return
+		}
+		if _, err := taskQuery(r); err != nil {
+			writeCodeError(w, err)
+			return
+		}
+		s.waitTasks(w, r, ts)
+		return
+	}
 	rest := strings.TrimPrefix(r.URL.Path, contract.PathTasks)
 	var id string
-	logs := false
+	logs, cancel := false, false
 	if rest != "" {
 		parts := strings.Split(strings.TrimPrefix(rest, "/"), "/")
 		switch {
@@ -91,6 +105,8 @@ func (s *nodeService) handleTasks(w http.ResponseWriter, r *http.Request) {
 			id = parts[0]
 		case len(parts) == 2 && parts[1] == "logs":
 			id, logs = parts[0], true
+		case len(parts) == 2 && parts[1] == "cancel":
+			id, cancel = parts[0], true
 		default:
 			writeError(w, contract.New(contract.CodeNotFound, "no such endpoint"))
 			return
@@ -101,6 +117,10 @@ func (s *nodeService) handleTasks(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	switch {
+	case cancel && r.Method != http.MethodPost:
+		methodNotAllowed(w, "POST")
+		return
+	case cancel:
 	case id == "" && r.Method != http.MethodGet && r.Method != http.MethodPost:
 		methodNotAllowed(w, "GET, POST")
 		return
@@ -113,6 +133,12 @@ func (s *nodeService) handleTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch {
+	case cancel:
+		if _, err := taskQuery(r); err != nil {
+			writeCodeError(w, err)
+			return
+		}
+		s.cancelTask(w, r, ts, id)
 	case r.Method == http.MethodPost:
 		if _, err := taskQuery(r); err != nil {
 			writeCodeError(w, err)
@@ -179,28 +205,122 @@ func (s *nodeService) handleTasks(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// dispatchTask serves POST /api/v1/tasks: a JSON DispatchRequest of at
-// most 256 KiB, admitted or refused at once. 202 means admission, not
-// execution.
-func (s *nodeService) dispatchTask(w http.ResponseWriter, r *http.Request, ts *taskService) {
+// readJSON reads a JSON request body of at most limit bytes.
+func readJSON(w http.ResponseWriter, r *http.Request, limit int, what string) ([]byte, bool) {
 	if !jsonContent(r) {
-		writeError(w, invalid("a dispatch must have Content-Type application/json"))
-		return
+		writeError(w, invalid(what+" must have Content-Type application/json"))
+		return nil, false
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, contract.MaxDispatchRequestBytes))
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, int64(limit)))
 	if err != nil {
-		writeError(w, invalid("the request body is unreadable or larger than "+strconv.Itoa(contract.MaxDispatchRequestBytes)+" bytes"))
+		writeError(w, invalid("the request body is unreadable or larger than "+strconv.Itoa(limit)+" bytes"))
+		return nil, false
+	}
+	return body, true
+}
+
+// extendWrite lets a bounded wait's response be written after the
+// ordinary 10 s server write bound: requested wait plus the ordinary
+// bound.
+func extendWrite(w http.ResponseWriter, wait time.Duration) {
+	http.NewResponseController(w).SetWriteDeadline(time.Now().Add(wait + writeTimeout))
+}
+
+// dispatchTask serves POST /api/v1/tasks: a JSON dispatch request of at
+// most 256 KiB with the optional transport wait (iteration 06b), admitted
+// or refused at once and never retried. 202 means admission, not
+// execution, whether a wait then answers terminal or still running. A
+// positive wait reserves its registration before admission, so a full
+// wait capacity refuses before anything is admitted.
+func (s *nodeService) dispatchTask(w http.ResponseWriter, r *http.Request, ts *taskService) {
+	body, ok := readJSON(w, r, contract.MaxDispatchEnvelopeBytes, "a dispatch")
+	if !ok {
 		return
 	}
-	req, err := contract.ParseDispatchRequest(body)
+	req, wait, err := contract.ParseDispatchEnvelope(body)
 	if err != nil {
 		writeCodeError(w, err)
 		return
+	}
+	var reserved *waitReservation
+	if wait != nil && ts.effectiveWait(*wait) > 0 {
+		if reserved, err = ts.reserveWait(); err != nil {
+			writeCodeError(w, err)
+			return
+		}
+		defer reserved.release()
+		extendWrite(w, ts.effectiveWait(*wait))
 	}
 	v, err := ts.dispatch(r.Context(), req)
 	if err != nil {
 		writeCodeError(w, err)
 		return
 	}
-	writeBounded(w, http.StatusAccepted, contract.DispatchResponse{Version: contract.ProtocolVersion, TaskID: v.TaskID, Task: v}, contract.MaxTaskViewBytes)
+	if wait == nil {
+		writeBounded(w, http.StatusAccepted, contract.DispatchResponse{Version: contract.ProtocolVersion, TaskID: v.TaskID, Task: &v}, contract.MaxTaskViewBytes)
+		return
+	}
+	wr, err := ts.wait(r.Context(), []string{v.TaskID}, *wait, reserved)
+	if err != nil {
+		writeCodeError(w, err)
+		return
+	}
+	limit := contract.MaxWaitResponseBytes
+	if wr.Status == contract.WaitStillRunning {
+		limit = contract.MaxStillRunningOneBytes
+	}
+	writeBounded(w, http.StatusAccepted, contract.DispatchResponse{Version: contract.ProtocolVersion, TaskID: v.TaskID, WaitResult: &wr}, limit)
+}
+
+// cancelTask serves POST /api/v1/tasks/{id}/cancel: a strict empty JSON
+// object; 202 accepted once the stop intent is durable, 200 not accepted
+// for an already durably terminal task.
+func (s *nodeService) cancelTask(w http.ResponseWriter, r *http.Request, ts *taskService, id string) {
+	body, ok := readJSON(w, r, contract.MaxControlBody, "a cancel")
+	if !ok {
+		return
+	}
+	if err := contract.ParseCancelRequest(body); err != nil {
+		writeCodeError(w, err)
+		return
+	}
+	v, accepted, err := ts.cancel(r.Context(), id)
+	if err != nil {
+		writeCodeError(w, err)
+		return
+	}
+	status := http.StatusOK
+	if accepted {
+		status = http.StatusAccepted
+	}
+	writeBounded(w, status, contract.CancelResponse{Version: contract.ProtocolVersion, TaskID: id, Accepted: accepted, Task: v}, contract.MaxWaitResponseBytes)
+}
+
+// waitTasks serves POST /api/v1/tasks/wait: {"task_ids":[...],"wait":D}
+// of at most 2 KiB; 200 with the wait union, its compact bound asserted
+// after encoding and before any byte is written.
+func (s *nodeService) waitTasks(w http.ResponseWriter, r *http.Request, ts *taskService) {
+	body, ok := readJSON(w, r, contract.MaxWaitRequestBytes, "a wait")
+	if !ok {
+		return
+	}
+	req, err := contract.ParseTaskWaitRequest(body)
+	if err != nil {
+		writeCodeError(w, err)
+		return
+	}
+	extendWrite(w, ts.effectiveWait(req.Wait))
+	wr, err := ts.wait(r.Context(), req.TaskIDs, req.Wait, nil)
+	if err != nil {
+		writeCodeError(w, err)
+		return
+	}
+	b, err := contract.EncodeWaitResponse(wr)
+	if err != nil {
+		writeCodeError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write(append(b, '\n'))
 }

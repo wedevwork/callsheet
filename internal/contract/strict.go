@@ -164,6 +164,9 @@ func decodeFields(o object, v reflect.Value, what string) error {
 	return nil
 }
 
+// reflectValue is the addressable struct a pointer v points to.
+func reflectValue(v any) reflect.Value { return reflect.ValueOf(v).Elem() }
+
 func strconvQuote(s string) string { return `"` + s + `"` }
 
 // strictString decodes one JSON string: the raw token must be valid UTF-8

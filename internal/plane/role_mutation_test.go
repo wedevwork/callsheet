@@ -84,7 +84,7 @@ func TestRoleMutationContract(t *testing.T) {
 			name := "other"
 			_, err = rp.cl.SetRole(bg, "x", contract.RolePatch{Name: &name})
 			wantReason(t, err, contract.CodeUnavailable, contract.ReasonBusy)
-			err = rp.cl.RemoveRole(bg, "x", true)
+			err = rmRole(rp.cl, bg, "x", true)
 			wantReason(t, err, contract.CodeUnavailable, contract.ReasonBusy)
 			p.reply("p2", nil)
 			if _, err := res.wait(t); err != nil {
@@ -109,7 +109,7 @@ func TestRoleMutationContract(t *testing.T) {
 			}
 			rp := startRolePlaneDoc(t, fast(testDeps(t)), docOf(1, 11, recs...), idA)
 			for _, id := range roleIDs(10) {
-				if err := rp.cl.RemoveRole(bg, id, false); err != nil {
+				if err := rmRole(rp.cl, bg, id, false); err != nil {
 					t.Fatalf("sequential rm %s: %v", id, err)
 				}
 			}
@@ -326,10 +326,10 @@ func TestRoleMutationContract(t *testing.T) {
 		wantReason(t, err, contract.CodeUnavailable, contract.ReasonNodeOffline)
 		for i, force := range []bool{false, true} {
 			id := []string{"a", "b"}[i]
-			if err := rp.cl.RemoveRole(bg, id, force); err != nil {
+			if err := rmRole(rp.cl, bg, id, force); err != nil {
 				t.Fatalf("rm %s force=%v: %v", id, force, err)
 			}
-			if err := rp.cl.RemoveRole(bg, id, force); !contract.IsCode(err, contract.CodeNotFound) {
+			if err := rmRole(rp.cl, bg, id, force); !contract.IsCode(err, contract.CodeNotFound) {
 				t.Fatalf("second rm %s = %v", id, err)
 			}
 		}
@@ -349,7 +349,7 @@ func TestRoleMutationContract(t *testing.T) {
 		p := rp.online(t, idA)
 		for i, force := range []bool{false, true} {
 			id := []string{"a", "b"}[i]
-			if err := rp.cl.RemoveRole(bg, id, force); err != nil {
+			if err := rmRole(rp.cl, bg, id, force); err != nil {
 				t.Fatal(err)
 			}
 			f := p.recv()
@@ -376,7 +376,7 @@ func TestRoleMutationContract(t *testing.T) {
 		rp := startRolePlaneDoc(t, fast(testDeps(t)), docOf(100, 101, recs...), idA)
 		_, err := rp.cl.AddRole(bg, roleCfg("extra", "coder", idA))
 		wantCode(t, err, contract.CodeConflict, "maximum of 100 roles")
-		if err := rp.cl.RemoveRole(bg, "role-100", false); err != nil {
+		if err := rmRole(rp.cl, bg, "role-100", false); err != nil {
 			t.Fatal(err)
 		}
 		// Below the limit again: the add now reaches the node check.

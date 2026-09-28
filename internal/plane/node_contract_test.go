@@ -470,7 +470,8 @@ func (p *peer) heartbeat(i int) {
 	var skipped []contract.NodeFrame
 	for {
 		f := p.recv()
-		if f.Type == contract.FrameRolesReplace || f.Type == contract.FrameRoleValidate || f.Type == contract.FrameTaskStart || f.Type == contract.FrameTaskReconcile {
+		if f.Type == contract.FrameRolesReplace || f.Type == contract.FrameRoleValidate || f.Type == contract.FrameTaskStart || f.Type == contract.FrameTaskReconcile ||
+			f.Type == contract.FrameTaskCancel {
 			skipped = append(skipped, f)
 			continue
 		}
@@ -624,20 +625,20 @@ func TestNodeAPI(t *testing.T) {
 	}{
 		{"GET", contract.PathNodes, "", nil, "", 400, contract.CodeInvalidArgument},
 		{"GET", contract.PathNodes, "x", nil, "", 400, contract.CodeInvalidArgument},
-		{"GET", contract.PathNodes, "4", map[string]string{contract.ProtocolHeader: "4"}, "", 400, contract.CodeInvalidArgument},
-		{"GET", contract.PathNodes, "5", nil, "", 409, contract.CodeProtocolMismatch},
-		{"GET", contract.PathNodes + "?all=SECRET-QUERY", "4", nil, "", 400, contract.CodeInvalidArgument},
-		{"GET", contract.PathNodes + "?", "4", nil, "", 400, contract.CodeInvalidArgument},
-		{"POST", contract.PathNodes, "4", nil, "SECRET-BODY", 400, contract.CodeInvalidArgument},
-		{"DELETE", contract.PathNodes + "/" + idA, "4", nil, "", 400, contract.CodeInvalidArgument},
-		{"GET", contract.PathNodes + "/SECRET-ID", "4", nil, "", 400, contract.CodeInvalidArgument},
-		{"GET", contract.PathNodes + "/", "4", nil, "", 400, contract.CodeInvalidArgument},
-		{"GET", contract.PathNodes + "/" + idA + "/x", "4", nil, "", 400, contract.CodeInvalidArgument},
-		{"GET", contract.PathNodes + "/n_ffffffffffffffffffffffffffffffff", "4", nil, "", 404, contract.CodeNotFound},
-		{"GET", contract.PathEnroll, "4", nil, "", 400, contract.CodeInvalidArgument},
-		{"POST", contract.PathEnroll, "4", nil, "SECRET-BODY", 400, contract.CodeInvalidArgument},
-		{"POST", contract.PathEnroll, "4", nil, `{"node_id":"` + idA + `","software_version":"v","x":"SECRET-BODY"}`, 400, contract.CodeInvalidArgument},
-		{"POST", contract.PathEnroll, "5", nil, `{}`, 409, contract.CodeProtocolMismatch},
+		{"GET", contract.PathNodes, "5", map[string]string{contract.ProtocolHeader: "4"}, "", 400, contract.CodeInvalidArgument},
+		{"GET", contract.PathNodes, "6", nil, "", 409, contract.CodeProtocolMismatch},
+		{"GET", contract.PathNodes + "?all=SECRET-QUERY", "5", nil, "", 400, contract.CodeInvalidArgument},
+		{"GET", contract.PathNodes + "?", "5", nil, "", 400, contract.CodeInvalidArgument},
+		{"POST", contract.PathNodes, "5", nil, "SECRET-BODY", 400, contract.CodeInvalidArgument},
+		{"DELETE", contract.PathNodes + "/" + idA, "5", nil, "", 400, contract.CodeInvalidArgument},
+		{"GET", contract.PathNodes + "/SECRET-ID", "5", nil, "", 400, contract.CodeInvalidArgument},
+		{"GET", contract.PathNodes + "/", "5", nil, "", 400, contract.CodeInvalidArgument},
+		{"GET", contract.PathNodes + "/" + idA + "/x", "5", nil, "", 400, contract.CodeInvalidArgument},
+		{"GET", contract.PathNodes + "/n_ffffffffffffffffffffffffffffffff", "5", nil, "", 404, contract.CodeNotFound},
+		{"GET", contract.PathEnroll, "5", nil, "", 400, contract.CodeInvalidArgument},
+		{"POST", contract.PathEnroll, "5", nil, "SECRET-BODY", 400, contract.CodeInvalidArgument},
+		{"POST", contract.PathEnroll, "5", nil, `{"node_id":"` + idA + `","software_version":"v","x":"SECRET-BODY"}`, 400, contract.CodeInvalidArgument},
+		{"POST", contract.PathEnroll, "6", nil, `{}`, 409, contract.CodeProtocolMismatch},
 		{"POST", contract.PathCA, "", nil, "", 400, contract.CodeInvalidArgument},
 		{"GET", "/api/v1/nodez", "4", nil, "", 404, contract.CodeNotFound},
 		{"GET", contract.PathNodeStream, "", map[string]string{"Origin": "https://evil.example"}, "", 400, contract.CodeInvalidArgument},
@@ -649,19 +650,19 @@ func TestNodeAPI(t *testing.T) {
 		if status != c.status || err != nil || e.Code != c.code || bytes.Contains([]byte(body), []byte("SECRET")) {
 			t.Fatalf("%s %s v=%q = %d %q (%v)", c.method, c.path, c.version, status, body, err)
 		}
-		if c.path != contract.PathCA && c.path != "/api/v1/nodez" && hdr != "4" {
+		if c.path != contract.PathCA && c.path != "/api/v1/nodez" && hdr != "5" {
 			t.Fatalf("%s %s: response protocol header %q", c.method, c.path, hdr)
 		}
 		if c.code == contract.CodeProtocolMismatch {
-			if e.Message != "protocol version mismatch: local=4 remote=5" {
+			if e.Message != "protocol version mismatch: local=5 remote=6" {
 				t.Fatalf("mismatch message %q", e.Message)
 			}
-			if l, _ := e.DetailInt("local_version"); l != 4 {
+			if l, _ := e.DetailInt("local_version"); l != 5 {
 				t.Fatal("details")
 			}
 		}
 	}
-	if !bytes.Contains([]byte(np.logs.String()), []byte(`"local_version":4,"remote_version":5`)) {
+	if !bytes.Contains([]byte(np.logs.String()), []byte(`"local_version":5,"remote_version":6`)) {
 		t.Fatalf("mismatch not logged: %s", np.logs.String())
 	}
 	// An oversized enrollment body is refused by the bounded reader (checked
@@ -669,7 +670,7 @@ func TestNodeAPI(t *testing.T) {
 	// connection before closing it).
 	svc := newNodeService(np.srvReg(t), np.clk, discardLogger(), nil, time.Second)
 	req, _ := newRequest("POST", contract.PathEnroll, `{"node_id":"`+idA+`","software_version":"`+strings.Repeat("v", 5000)+`"}`)
-	req.Header.Set(contract.ProtocolHeader, "4")
+	req.Header.Set(contract.ProtocolHeader, "5")
 	rec := httptest.NewRecorder()
 	svc.handleNodes(rec, req)
 	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "larger than 4096 bytes") {
@@ -686,17 +687,17 @@ func TestNodeAPI(t *testing.T) {
 		t.Fatalf("health = %d %q", status, body)
 	}
 	// Enrollment status codes: 201 new, 200 existing.
-	status, _, body = do("POST", contract.PathEnroll, "4", nil, `{"node_id":"n_dddddddddddddddddddddddddddddddd","software_version":"v"}`)
+	status, _, body = do("POST", contract.PathEnroll, "5", nil, `{"node_id":"n_dddddddddddddddddddddddddddddddd","software_version":"v"}`)
 	if status != 201 {
 		t.Fatalf("new enroll = %d %s", status, body)
 	}
-	status, _, _ = do("POST", contract.PathEnroll, "4", nil, `{"node_id":"n_dddddddddddddddddddddddddddddddd","software_version":"v"}`)
+	status, _, _ = do("POST", contract.PathEnroll, "5", nil, `{"node_id":"n_dddddddddddddddddddddddddddddddd","software_version":"v"}`)
 	if status != 200 {
 		t.Fatalf("repeat enroll = %d", status)
 	}
 	// The response JSON is exactly the envelope with a final LF.
-	status, _, body = do("GET", contract.PathNodes+"/"+idA, "4", nil, "")
-	if status != 200 || body != `{"version":4,"node":{"id":"`+idA+`","liveness":"offline","last_seen":null,"protocol_version":null,"software_version":null,"roles":[]}}`+"\n" {
+	status, _, body = do("GET", contract.PathNodes+"/"+idA, "5", nil, "")
+	if status != 200 || body != `{"version":5,"node":{"id":"`+idA+`","liveness":"offline","last_seen":null,"protocol_version":null,"software_version":null,"roles":[]}}`+"\n" {
 		t.Fatalf("show body %q", body)
 	}
 }
@@ -791,7 +792,7 @@ func TestNodeStreamProtocol(t *testing.T) {
 		f := p.recv()
 		e, err := contract.ParseErrorBody(f.Body)
 		if f.Version != contract.ProtocolVersion || f.Type != contract.FrameError || f.RequestID != "h9" || err != nil || e.Code != contract.CodeProtocolMismatch ||
-			e.Message != "protocol version mismatch: local=4 remote=1" {
+			e.Message != "protocol version mismatch: local=5 remote=1" {
 			t.Fatalf("mismatch = %+v %v %v", f, e, err)
 		}
 		if r, _ := e.DetailInt("remote_version"); r != 1 {
@@ -803,7 +804,7 @@ func TestNodeStreamProtocol(t *testing.T) {
 		if n := np.show(t, idA); n.Liveness != contract.LivenessOffline || n.SoftwareVersion != nil {
 			t.Fatalf("mismatch mutated the registry: %+v", n)
 		}
-		if !strings.Contains(np.logs.String(), `"msg":"protocol version mismatch","component":"plane","local_version":4,"remote_version":1,"path":"/api/v1/node-stream"`) {
+		if !strings.Contains(np.logs.String(), `"msg":"protocol version mismatch","component":"plane","local_version":5,"remote_version":1,"path":"/api/v1/node-stream"`) {
 			t.Fatalf("mismatch not logged with both versions: %s", np.logs.String())
 		}
 		// Nothing was attached: a correct hello succeeds at once.
@@ -821,7 +822,7 @@ func TestNodeStreamProtocol(t *testing.T) {
 		{"heartbeat-first", mustFrame(t, contract.FrameHeartbeat, "b1", contract.HeartbeatBody{}), "b1", contract.CodeInvalidArgument},
 		{"unknown-node", mustFrame(t, contract.FrameHello, "h1", contract.HelloBody{NodeID: idC, SoftwareVersion: "v"}), "h1", contract.CodeNotFound},
 		{"bad-hello", mustFrame(t, contract.FrameHello, "h1", map[string]any{"node_id": idA}), "h1", contract.CodeInvalidArgument},
-		{"malformed", []byte(`{"version":4,`), invalidRequestID, contract.CodeInvalidArgument},
+		{"malformed", []byte(`{"version":5,`), invalidRequestID, contract.CodeInvalidArgument},
 		{"wrong-direction", mustFrame(t, contract.FrameHelloOK, "h1", contract.HelloOKBody{HeartbeatIntervalMS: 5000, LeaseMS: 15000}), "h1", contract.CodeInvalidArgument},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -848,7 +849,7 @@ func TestNodeStreamProtocol(t *testing.T) {
 			}, "b1"},
 			{"hello-again", func(p *peer) { p.hello(idA) }, "h1"},
 			{"roles", func(p *peer) {
-				p.sendRaw([]byte(`{"version":4,"type":"heartbeat","request_id":"b1","body":{"roles_revision":0,"roles":[{"role_id":"r","inflight":0,"concurrency":1,"can_accept":true}]}}`))
+				p.sendRaw([]byte(`{"version":5,"type":"heartbeat","request_id":"b1","body":{"roles_revision":0,"roles":[{"role_id":"r","inflight":0,"concurrency":1,"can_accept":true}]}}`))
 			}, "b1"},
 			{"revision", func(p *peer) {
 				p.send(contract.ProtocolVersion, contract.FrameHeartbeat, "b1", contract.HeartbeatBody{RolesRevision: 7})
@@ -1059,7 +1060,7 @@ func TestNodeStreamLifecycle(t *testing.T) {
 		svc.shutdown(time.Now().Add(time.Second))
 		rec := &respRecorder{h: map[string][]string{}}
 		svc.handleStream(rec, newGet(t, contract.PathNodeStream))
-		if rec.code != 503 || rec.h.Get(contract.ProtocolHeader) != "4" {
+		if rec.code != 503 || rec.h.Get(contract.ProtocolHeader) != "5" {
 			t.Fatalf("stream after shutdown = %d, protocol header %q", rec.code, rec.h.Get(contract.ProtocolHeader))
 		}
 		if svc.admit(&nodeStream{}) {

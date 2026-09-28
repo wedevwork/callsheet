@@ -139,7 +139,7 @@ func TestFP1Foundation(t *testing.T) {
 		if contract.ExitCode(fmt.Errorf("wrap: %w", contract.New(contract.CodeConflict, "c"))) != 4 {
 			t.Fatal("wrapped mapping")
 		}
-		if contract.ProtocolVersion != 4 || contract.ExitInterrupted != 130 {
+		if contract.ProtocolVersion != 5 || contract.ExitInterrupted != 130 {
 			t.Fatal("constants")
 		}
 		e := &contract.Error{Code: contract.CodeNotFound, Message: "角色 missing", Details: map[string]any{"role": "coder"}, Cause: errors.New("SECRET")}

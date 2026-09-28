@@ -350,6 +350,10 @@ func TestControlCommit(t *testing.T) {
 		}
 		tp.admit(t, taskReq(contract.TargetID, "a", "unblocked"))
 	})
+	t.Run("stop-intent", func(t *testing.T) {
+		t.Parallel()
+		stopIntentDurability(t)
+	})
 	t.Run("bounded", func(t *testing.T) {
 		t.Parallel()
 		// Terminal confirmation drops the live ring, the latched candidate
