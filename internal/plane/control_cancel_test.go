@@ -5,6 +5,7 @@ import (
 	"context"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -420,7 +421,41 @@ func TestControlCancel(t *testing.T) {
 			t.Fatalf("budget %v", err)
 		}
 		w.beat()
+		// The budget's advances may have left an attempt in flight: the
+		// clock moves only once it failed and armed its retry.
+		tp.awaitWriterParked(t, st.TaskID)
+		// Regression (CI run 36454235765): the fault was cleared and the
+		// clock moved while a failing attempt had not stored its retry yet;
+		// it armed the retry an interval after that advance and the intent
+		// never committed. Here the next attempt is held after its failure
+		// and before its outcome is applied, while the clock moves (that
+		// order).
+		held, stall := make(chan struct{}), make(chan struct{})
+		var unstall sync.Once
+		t.Cleanup(func() { unstall.Do(func() { close(stall) }) })
+		tp.inj.onNextFailure(func() {
+			close(held)
+			<-stall
+		})
+		tp.clk.Advance(storageRetry)
+		select {
+		case <-held:
+		case <-time.After(testWait):
+			t.Fatal("the due retry never reached its rename")
+		}
+		if s := tp.writerState(t, st.TaskID); s.parked() {
+			t.Fatalf("an attempt in flight counts as parked: %+v", s)
+		}
 		tp.inj.set("", "")
+		tp.clk.Advance(storageRetry)
+		w.beat()
+		unstall.Do(func() { close(stall) })
+		// That advance fired nothing: the retry is a full interval ahead.
+		if s := tp.awaitWriterParked(t, st.TaskID); s.retryAt.Sub(s.now) != storageRetry || tp.log.seen("stop-intent-committed "+st.TaskID) {
+			t.Fatalf("after an advance during the failing attempt: %+v", s)
+		}
+		// Parked on the armed retry, with the fault cleared: one interval
+		// commits the same frozen intent.
 		tp.clk.Advance(storageRetry)
 		tp.log.awaitOnce(t, "stop-intent-committed "+st.TaskID)
 		id := tp.stopID(t, st.TaskID)
