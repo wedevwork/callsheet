@@ -332,7 +332,7 @@ func TestRoleCLI(t *testing.T) {
 				t.Fatalf("%v = %d %q %q", c.args, code, out, errOut)
 			}
 		}
-		// Transport failure: nothing listens.
+		// Transport failure: every connection is reset at once.
 		dead := "https://" + testkit.RefusingAddr(t)
 		if code, _, errOut := exec(t, "linux", "role", "ls", "--plane", dead, "--ca", sp.caFile); code != 5 || !strings.Contains(errOut, "cannot reach the plane") {
 			t.Fatalf("dead plane = %d %q", code, errOut)

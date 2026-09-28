@@ -301,6 +301,7 @@ func TestTaskExecutionContract(t *testing.T) {
 			}
 		}
 		tr.clk.Advance(heartbeatInterval)
+		cadence := tr.clk.Now() // the next ready-check cycle starts here
 		if hb := s.beat(t, 1); hb.Roles[0].Inflight != 0 || !hb.Roles[0].CanAccept {
 			t.Fatalf("after exits %+v", hb.Roles)
 		}
@@ -325,6 +326,10 @@ func TestTaskExecutionContract(t *testing.T) {
 		if r := s.result(t, st); *r.ExitCode != 0 {
 			t.Fatalf("unconfirmed cleanup result %+v", r)
 		}
+		// Readiness is fresh at the next heartbeat (the cycle started at
+		// the previous advance completed), so only the unconfirmed cleanup
+		// can make it false.
+		tr.ev.awaitCycleSince(t, 1, cadence)
 		tr.clk.Advance(heartbeatInterval)
 		if hb := s.beat(t, 1); hb.Roles[0].Inflight != 1 || hb.Roles[0].CanAccept {
 			t.Fatalf("after unconfirmed cleanup %+v", hb.Roles)

@@ -823,7 +823,14 @@ func TestControlRestart(t *testing.T) {
 			t.Fatalf("inventory %+v", inv)
 		}
 		rr.ev.awaitMatch(t, evCycleDone, nil)
+		// The ready-check cycle due at this advance is held until the
+		// cleanup was confirmed and its lost outcome sent: the worst
+		// ordering for the readiness read after the cleanup.
+		hold := make(chan struct{})
+		rr.script.set(nil, hold)
 		rr.clk.Advance(heartbeatInterval)
+		cadence := rr.clk.Now() // the held cycle started here
+		rr.script.awaitProbe(t)
 		if hb := s.beat(t, 1); hb.Roles[0].CanAccept || hb.Roles[0].Inflight != 1 {
 			t.Fatalf("ready before the cleanup: %+v", hb.Roles)
 		}
@@ -836,6 +843,12 @@ func TestControlRestart(t *testing.T) {
 		if r.Outcome != contract.OutcomeLost || r.OutputBytes != 9 || !r.LogIncomplete || string(out) != "partial" {
 			t.Fatalf("lost %+v %q", r, out)
 		}
+		// The next heartbeat's readiness comes from the held cycle: it
+		// completes before time moves on. A cycle still running when the
+		// clock jumps a heartbeat interval finishes past its budget (all
+		// false), and the first cycle is stale by then (freshness).
+		close(hold)
+		rr.ev.awaitCycleSince(t, 1, cadence)
 		rr.clk.Advance(heartbeatInterval)
 		if hb := s.beat(t, 1); !hb.Roles[0].CanAccept || hb.Roles[0].Inflight != 0 {
 			t.Fatalf("after the cleanup %+v", hb.Roles)

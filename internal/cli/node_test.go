@@ -257,8 +257,8 @@ func TestNodeCommands(t *testing.T) {
 	// Errors: exact codes, stderr only, nothing partial on stdout.
 	other := filepath.Join(t.TempDir(), "other.crt")
 	os.WriteFile(other, []byte(otherCA(t)), 0o644)
-	// Nothing accepts there for the whole test (a released ephemeral
-	// port could be taken by another listener).
+	// Every connection there fails at once for the whole test (a
+	// released ephemeral port could be taken by another listener).
 	gone := "https://" + testkit.RefusingAddr(t)
 	for _, c := range []struct {
 		args []string
