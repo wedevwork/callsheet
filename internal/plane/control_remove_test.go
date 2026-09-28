@@ -2,12 +2,15 @@ package plane
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/wedevwork/callsheet/internal/contract"
+	"github.com/wedevwork/callsheet/internal/testkit"
 )
 
 // Iteration 06b TestControlRemove (FP-4): role rm --force through the
@@ -50,6 +53,59 @@ func (tp *taskPlane) awaitRetryArmed(t *testing.T, failure string) {
 			t.Fatalf("no retry armed after %q in %v", failure, tp.log.all())
 		}
 	}
+}
+
+// awaitRearmed waits until the coordinator re-armed its retry timer
+// after the latest role gate release (exact "gate-released": a handler's
+// begin, which wakes the coordinator just after it when the resync
+// failed). Only then may the clock move across removalRetry: an arm that
+// happens after the advance is one interval in the future and nothing
+// fires it (CI run 36442787880). awaitRetryArmed is not enough once later
+// requests have woken the coordinator: it returns on the first failure's
+// arm, whose timer the next wake stopped. The coordinator publishes an arm
+// only with no wake pending, so this one is the timer it sleeps on, as
+// long as nothing else wakes it (the caller's requests have returned).
+func (tp *taskPlane) awaitRearmed(t *testing.T) {
+	t.Helper()
+	at := func() bool {
+		all := tp.log.all()
+		i := len(all) - 1
+		for i >= 0 && all[i] != "gate-released" {
+			i--
+		}
+		return i >= 0 && slices.Contains(all[i+1:], "removal-retry-armed")
+	}
+	deadline := time.After(testWait)
+	for !at() {
+		select {
+		case <-tp.log.sig:
+		case <-deadline:
+			if at() {
+				return
+			}
+			t.Fatalf("no retry armed after the latest gate release in %v", tp.log.all())
+		}
+	}
+}
+
+// removalSince returns the coordinator's removal events after the latest
+// exact "gate-released", through the first "removal-retry-armed".
+func (tp *taskPlane) removalSince() []string {
+	all := tp.log.all()
+	i := len(all) - 1
+	for i >= 0 && all[i] != "gate-released" {
+		i--
+	}
+	var out []string
+	for _, e := range all[i+1:] {
+		if strings.HasPrefix(e, "removal-") {
+			out = append(out, e)
+			if e == "removal-retry-armed" {
+				break
+			}
+		}
+	}
+	return out
 }
 
 // awaitPending advances the clock through exactly the 6 s mutation budget
@@ -323,11 +379,60 @@ func TestControlRemove(t *testing.T) {
 			if contract.CodeOf(err) != contract.CodeInternal || r.Pending != nil || r.Completed != nil {
 				t.Fatalf("retry %q of an unconfirmed fence: %+v %v", tok, r, err)
 			}
+			// The retry woke the coordinator: its pass ends (re-armed)
+			// before the next request, which would otherwise find the gate
+			// held by that pass's resync and answer busy.
+			tp.awaitRearmed(t)
 		}
 		if tp.log.seen("stop-intent-queued " + st.TaskID) {
 			t.Fatal("a retry drove a cancellation from an unconfirmed fence")
 		}
-		// Confirmed on the next pass, whose cancellation write fails.
+		// Regression (CI run 36442787880): the clock moved while a
+		// retry's wake was still in its pass, before the re-arm, so nothing
+		// was due and the confirming pass never ran. Here that pass is held
+		// in its roles/ sync while the clock moves (that order), and a
+		// request meanwhile finds the gate busy, buffering another wake.
+		held, stall := make(chan struct{}), make(chan struct{})
+		var unstall sync.Once
+		t.Cleanup(func() { unstall.Do(func() { close(stall) }) })
+		failed := errors.New("injected dirsync failure (held)")
+		tp.inj.onNextSyncOf(rolesName, func() error {
+			// This retry's own sync fails at once; the next roles/ sync is
+			// its wake's pass (the coordinator is idle, re-armed).
+			tp.inj.onNextSyncOf(rolesName, func() error {
+				close(held)
+				<-stall
+				return failed
+			})
+			return failed
+		})
+		if r, err := tp.forceAsync(bg, "a", "").wait(t); contract.CodeOf(err) != contract.CodeInternal || r.Pending != nil || r.Completed != nil {
+			t.Fatalf("held retry of an unconfirmed fence: %+v %v", r, err)
+		}
+		select {
+		case <-held:
+		case <-time.After(testWait):
+			t.Fatal("the retry's wake never reached its pass's registry sync")
+		}
+		if _, err := tp.cl.RemoveRole(bg, "a", true, ""); reason(err) != contract.ReasonBusy {
+			t.Fatalf("a retry during the coordinator's resync %v", err)
+		}
+		tp.clk.Advance(removalRetry)
+		w.beat()
+		unstall.Do(func() { close(stall) })
+		tp.awaitRearmed(t)
+		// The buffered wake's pass ran before the arm: an arm is never
+		// published for a timer the next iteration stops at once.
+		if got, want := tp.removalSince(), []string{"removal-resync-failed", "removal-resync-failed", "removal-retry-armed"}; !slices.Equal(got, want) {
+			t.Fatalf("coordinator after the held pass %v, want %v (log %v)", got, want, tp.log.all())
+		}
+		// The advance during the pass fired nothing.
+		if tp.log.seen("stop-intent-queued " + st.TaskID) {
+			t.Fatal("a pass ran for an advance made before its timer was armed")
+		}
+		// Confirmed on the next pass, whose cancellation write fails. The
+		// fault moves to the task file only after the arm, so the pass the
+		// clock enables is the first to find the registry sync clear.
 		tp.inj.set("rename", taskRel(st.TaskID))
 		tp.clk.Advance(removalRetry)
 		w.beat()
@@ -420,4 +525,53 @@ func TestControlRemove(t *testing.T) {
 			t.Fatalf("history %+v", v)
 		}
 	})
+}
+
+// TestRemovalCoordinatorShutdown: a closed coordinator stops after its
+// current pass even while wakes keep arriving during passes (review C1 of
+// the removal-flake fix): the drain of wakes buffered during a pass must
+// not starve shutdown, which joins the coordinator before the HTTP server
+// shuts down. Every pass resyncs a blocked registry whose roles/ sync
+// fails; the first pass closes the coordinator, and each pass buffers
+// another wake (bounded, so a regression fails instead of hanging).
+func TestRemovalCoordinatorShutdown(t *testing.T) {
+	t.Parallel()
+	const bound = 100
+	d := testDeps(t)
+	var rc *removalCoordinator
+	passes := 0
+	d.fail = func(op, name string) error {
+		if op != "dirsync" || name != rolesName {
+			return nil
+		}
+		// Only the coordinator's goroutine syncs roles/ here.
+		passes++
+		if passes == 1 {
+			rc.once.Do(func() { close(rc.stop) })
+		}
+		if passes <= bound {
+			rc.wake(instanceKey{})
+		}
+		return errors.New("injected dirsync failure")
+	}
+	reg := newRoleRegistry(layout{root: t.TempDir()}, d, roleLookup, emptyRoleDoc())
+	st := reg.load()
+	reg.state.Store(&roleState{visible: st.visible, confirmed: st.confirmed, blocked: true})
+	rs := newRoleService(reg, nil, testkit.NewFakeClock(time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)), discardLogger())
+	rc = newRemovalCoordinator(rs)
+	rs.rm = rc
+	rc.start()
+	done := make(chan struct{})
+	go func() {
+		rc.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(testWait):
+		t.Fatal("the coordinator never stopped")
+	}
+	if passes != 1 {
+		t.Fatalf("shutdown was ignored for %d passes while wakes kept arriving", passes-1)
+	}
 }

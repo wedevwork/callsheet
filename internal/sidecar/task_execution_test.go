@@ -49,13 +49,26 @@ type countingAdapter struct {
 	adapter.Adapter
 	mu     sync.Mutex
 	probes int
+	// last is the latest probe's returned error (diagnostics).
+	last error
 }
 
 func (a *countingAdapter) Probe(ctx context.Context, exe string) error {
 	a.mu.Lock()
 	a.probes++
 	a.mu.Unlock()
-	return a.Adapter.Probe(ctx, exe)
+	err := a.Adapter.Probe(ctx, exe)
+	a.mu.Lock()
+	a.last = err
+	a.mu.Unlock()
+	return err
+}
+
+// lastErr returns the latest probe's returned error.
+func (a *countingAdapter) lastErr() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.last
 }
 
 func (a *countingAdapter) count() int {
@@ -355,7 +368,10 @@ func TestTaskExecutionContract(t *testing.T) {
 		bin := fakeAdapterBinary(t)
 		cli := cliBinary(t)
 		probeDir := t.TempDir()
-		ca := &countingAdapter{Adapter: adapter.NewFake(probeDir)}
+		// The product fake, tracing its probe's instants for a failure's
+		// diagnostics (same prober, clock, deadline and outcome).
+		trace := &adapter.ProbeTrace{}
+		ca := &countingAdapter{Adapter: adapter.NewFakeTraced(probeDir, trace)}
 		reg, err := adapter.NewRegistry(ca)
 		if err != nil {
 			t.Fatal(err)
@@ -393,7 +409,10 @@ func TestTaskExecutionContract(t *testing.T) {
 		ins, run := manuals(t, tr.dir, "a", "instruction body")
 		s := tr.connect(t, 1, 1, roleConfig("a", ins, run))
 		if p := tr.ev.awaitMatch(t, evCycleDone, nil).passed; !p[0] {
-			t.Fatal("the real fake adapter did not pass its ready probe")
+			// Diagnostics (rca: the deadline or a late post-Wait sample):
+			// the probe's error, the deadline start to cmd.Start, and the
+			// child's state at the deadline check.
+			t.Fatalf("the real fake adapter did not pass its ready probe: probes %d, probe error: %v; %v", ca.count(), ca.lastErr(), trace.Last())
 		}
 		tr.clk.Advance(heartbeatInterval)
 		if hb := s.beat(t, 1); !hb.Roles[0].CanAccept {

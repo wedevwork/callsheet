@@ -117,9 +117,39 @@ func (rc *removalCoordinator) loop() {
 		}
 		stopTimer()
 		timer, stopTimer = nil, func() bool { return false }
-		if rc.pass() {
+		pending := rc.pass()
+		// A wake buffered during the pass (a request's failed resync or
+		// busy gate, a release) runs its pass now, before any arm: the next
+		// iteration would stop that arm's timer at once. Shutdown takes
+		// priority between passes, so wakes that keep arriving cannot
+		// starve it (the plane joins the coordinator on shutdown).
+		for drained := false; !drained; {
+			select {
+			case <-rc.stop:
+				return
+			default:
+			}
+			select {
+			case <-rc.kick:
+				pending = rc.pass()
+			default:
+				drained = true
+			}
+		}
+		if pending {
 			timer, stopTimer = clock.NewTimer(removalRetry)
-			rc.rs.event("removal-retry-armed")
+			// Published only with the timer registered and no wake
+			// buffered at that instant. It names the timer the coordinator
+			// sleeps on only if nothing wakes it after this check: a
+			// concurrent wake (a request, a release) can still arrive
+			// before the event, and the next iteration then stops this
+			// timer for a prompt pass. Tests that move the clock on this
+			// event rely on that: they wait for it with no request of
+			// theirs in flight and nothing else able to wake the
+			// coordinator.
+			if len(rc.kick) == 0 {
+				rc.rs.event("removal-retry-armed")
+			}
 		}
 	}
 }

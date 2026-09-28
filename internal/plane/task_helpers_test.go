@@ -82,16 +82,25 @@ type prefixInjector struct {
 	op     string
 	prefix string
 	count  int
-	// syncOnce, when set, runs in place of the next tasks/ directory
-	// sync's injection check (a slow or failing sync) and is cleared.
-	syncOnce func() error
+	// syncOnce holds, per directory (tasks/ or roles/), a function run in
+	// place of that directory's next sync's injection check (a slow, held
+	// or failing sync); it is cleared before it runs, so it may install
+	// the next one.
+	syncOnce map[string]func() error
 }
 
 // onNextSync makes the next tasks/ directory sync run f first and
 // return its error.
-func (i *prefixInjector) onNextSync(f func() error) {
+func (i *prefixInjector) onNextSync(f func() error) { i.onNextSyncOf(tasksName, f) }
+
+// onNextSyncOf makes the next sync of directory dir run f first and
+// return its error.
+func (i *prefixInjector) onNextSyncOf(dir string, f func() error) {
 	i.mu.Lock()
-	i.syncOnce = f
+	if i.syncOnce == nil {
+		i.syncOnce = map[string]func() error{}
+	}
+	i.syncOnce[dir] = f
 	i.mu.Unlock()
 }
 
@@ -103,8 +112,8 @@ func (i *prefixInjector) set(op, prefix string) {
 
 func (i *prefixInjector) fail(op, name string) error {
 	i.mu.Lock()
-	if f := i.syncOnce; f != nil && op == "dirsync" && name == tasksName {
-		i.syncOnce = nil
+	if f := i.syncOnce[name]; f != nil && op == "dirsync" {
+		delete(i.syncOnce, name)
 		i.mu.Unlock()
 		return f()
 	}
