@@ -406,7 +406,7 @@ func TestNodeTrust(t *testing.T) {
 			w.Header().Set(contract.ProtocolHeader, "1")
 			io.WriteString(w, `{"version":1,"nodes":[]}`)
 		}))
-		mustCode(t, p.run(t, "node", "ls", "--plane", v1, "--ca", caFile), 7, "callsheet: protocol_mismatch: protocol version mismatch: local=3 remote=1")
+		mustCode(t, p.run(t, "node", "ls", "--plane", v1, "--ca", caFile), 7, "callsheet: protocol_mismatch: protocol version mismatch: local=4 remote=1")
 		// Nothing was enrolled by any rejection.
 		nodes, err := np.client(t).ListNodes(context.Background())
 		if err != nil || len(nodes) != len(ids) {
@@ -542,6 +542,25 @@ func (s *streamPeer) send(version int, typ, rid string, body any) {
 	s.sendRaw(websocket.MessageText, b)
 }
 
+// reconcileEmpty reports an empty task inventory (one final page) and
+// acknowledges the plane's empty final reconcile page, as a protocol 4
+// sidecar with no executions does before any role snapshot.
+func (s *streamPeer) reconcileEmpty() {
+	s.t.Helper()
+	s.send(contract.ProtocolVersion, contract.FrameTaskInventory, "i1", contract.TaskInventoryBody{RunID: strings.Repeat("a", 32), Final: true})
+	if f, e := s.recv(); e != nil || f.Type != contract.FrameTaskInventoryAck || f.RequestID != "i1" {
+		s.t.Fatalf("inventory ack %+v %v", f, e)
+	}
+	f, e := s.recv()
+	if e != nil || f.Type != contract.FrameTaskReconcile || f.RequestID != "r1" {
+		s.t.Fatalf("reconcile %+v %v", f, e)
+	}
+	if b, err := contract.DecodeTaskReconcile(f.Body); err != nil || !b.Final || len(b.Entries) != 0 {
+		s.t.Fatalf("reconcile %s: %v", f.Body, err)
+	}
+	s.send(contract.ProtocolVersion, contract.FrameTaskReconcileAck, "r1", contract.TaskReconcileAckBody{Received: true})
+}
+
 // recv returns the next message's envelope and, for an error, its body.
 func (s *streamPeer) recv() (contract.NodeFrame, *contract.Error) {
 	s.t.Helper()
@@ -594,25 +613,27 @@ func TestNodeProtocol(t *testing.T) {
 			rid  string
 			code contract.Code
 		}{
-			{"first-not-hello", func(s *streamPeer) { s.send(3, contract.FrameHeartbeat, "b1", contract.HeartbeatBody{}) }, "b1", contract.CodeInvalidArgument},
+			{"first-not-hello", func(s *streamPeer) {
+				s.send(contract.ProtocolVersion, contract.FrameHeartbeat, "b1", contract.HeartbeatBody{})
+			}, "b1", contract.CodeInvalidArgument},
 			{"version", func(s *streamPeer) {
 				// An iteration 03 (protocol 1) sidecar.
 				s.send(1, contract.FrameHello, "h1", contract.HelloBody{NodeID: id, SoftwareVersion: "v1"})
 			}, "h1", contract.CodeProtocolMismatch},
 			{"unknown", func(s *streamPeer) {
-				s.send(3, contract.FrameHello, "h1", contract.HelloBody{NodeID: "n_" + strings.Repeat("0", 32), SoftwareVersion: "dev"})
+				s.send(contract.ProtocolVersion, contract.FrameHello, "h1", contract.HelloBody{NodeID: "n_" + strings.Repeat("0", 32), SoftwareVersion: "dev"})
 			}, "h1", contract.CodeNotFound},
 		} {
 			s := dialPeer(t, np)
 			c.send(s)
 			f, e := s.recv()
-			if e == nil || e.Code != c.code || f.RequestID != c.rid || f.Version != 3 {
+			if e == nil || e.Code != c.code || f.RequestID != c.rid || f.Version != 4 {
 				t.Fatalf("%s: %+v %v", c.name, f, e)
 			}
 			if c.code == contract.CodeProtocolMismatch {
 				l, _ := e.DetailInt("local_version")
 				r, _ := e.DetailInt("remote_version")
-				if e.Message != "protocol version mismatch: local=3 remote=1" || l != 3 || r != 1 {
+				if e.Message != "protocol version mismatch: local=4 remote=1" || l != 4 || r != 1 {
 					t.Fatalf("mismatch body %+v", e)
 				}
 			}
@@ -620,41 +641,44 @@ func TestNodeProtocol(t *testing.T) {
 				t.Fatalf("%s: close %v", c.name, st)
 			}
 		}
-		if !hasRecord(np.proc.logs.String(), "protocol version mismatch", map[string]any{"local_version": 3, "remote_version": 1}) {
+		if !hasRecord(np.proc.logs.String(), "protocol version mismatch", map[string]any{"local_version": 4, "remote_version": 1}) {
 			t.Fatalf("plane did not log both versions:\n%s", np.proc.logs.String())
 		}
 		// hello_ok carries the fixed values; hello alone is not liveness; a
 		// skipped counter is refused.
 		s := dialPeer(t, np)
-		s.send(3, contract.FrameHello, "h1", contract.HelloBody{NodeID: id, SoftwareVersion: "dev"})
+		s.send(contract.ProtocolVersion, contract.FrameHello, "h1", contract.HelloBody{NodeID: id, SoftwareVersion: "dev"})
 		f, _ := s.recv()
 		if b, err := contract.DecodeHelloOK(f.Body); err != nil || f.Type != contract.FrameHelloOK || f.RequestID != "h1" || b.LeaseMS != 15000 {
 			t.Fatalf("hello_ok %+v %v", f, err)
 		}
-		// The plane's first request is the full (here empty) role snapshot.
+		// Protocol 4: task reconciliation precedes the plane's first
+		// request, the full (here empty) role snapshot.
+		s.reconcileEmpty()
 		if f, e := s.recv(); e != nil || f.Type != contract.FrameRolesReplace || f.RequestID != "p1" {
 			t.Fatalf("initial snapshot %+v %v", f, e)
 		}
 		if n, err := np.client(t).ShowNode(context.Background(), id); err != nil || n.Liveness != contract.LivenessOffline || n.LastSeen != nil {
 			t.Fatalf("liveness before a heartbeat: %+v %v", n, err)
 		}
-		s.send(3, contract.FrameHeartbeat, "b2", contract.HeartbeatBody{})
+		s.send(contract.ProtocolVersion, contract.FrameHeartbeat, "b2", contract.HeartbeatBody{})
 		if _, e := s.recv(); e == nil || e.Code != contract.CodeInvalidArgument {
 			t.Fatalf("skipped counter accepted: %v", e)
 		}
 		s.closeStatus()
 		s = dialPeer(t, np)
-		s.send(3, contract.FrameHello, "h1", contract.HelloBody{NodeID: id, SoftwareVersion: "dev"})
+		s.send(contract.ProtocolVersion, contract.FrameHello, "h1", contract.HelloBody{NodeID: id, SoftwareVersion: "dev"})
 		s.recv()
+		s.reconcileEmpty()
 		if f, e := s.recv(); e != nil || f.Type != contract.FrameRolesReplace || f.RequestID != "p1" {
 			t.Fatalf("initial snapshot %+v %v", f, e)
 		}
-		s.send(3, contract.FrameRolesReplaceAck, "p1", contract.RolesReplaceAckBody{Revision: 0})
-		s.send(3, contract.FrameHeartbeat, "b1", contract.HeartbeatBody{})
+		s.send(contract.ProtocolVersion, contract.FrameRolesReplaceAck, "p1", contract.RolesReplaceAckBody{Revision: 0})
+		s.send(contract.ProtocolVersion, contract.FrameHeartbeat, "b1", contract.HeartbeatBody{})
 		if f, e := s.recv(); e != nil || f.Type != contract.FrameHeartbeatAck || f.RequestID != "b1" {
 			t.Fatalf("ack %+v %v", f, e)
 		}
-		if n, _ := np.client(t).ShowNode(context.Background(), id); n.Liveness != contract.LivenessOnline || *n.ProtocolVersion != 3 {
+		if n, _ := np.client(t).ShowNode(context.Background(), id); n.Liveness != contract.LivenessOnline || *n.ProtocolVersion != 4 {
 			t.Fatalf("after heartbeat %+v", n)
 		}
 		s.c.Close(websocket.StatusNormalClosure, "")
@@ -680,8 +704,8 @@ func TestNodeProtocol(t *testing.T) {
 		state := filepath.Join(t.TempDir(), "v2")
 		writeSidecarState(t, state, "n_"+strings.Repeat("3c", 16), v2, ca.CertPEM)
 		sc := startSidecar(t, p, state, "sidecar starting")
-		if code := sc.wait(t); code != 7 || !strings.Contains(sc.logs.String(), "callsheet: protocol_mismatch: protocol version mismatch: local=3 remote=1\n") ||
-			!sc.logs.has("connection failed permanently", map[string]any{"local_version": 3, "remote_version": 1}) {
+		if code := sc.wait(t); code != 7 || !strings.Contains(sc.logs.String(), "callsheet: protocol_mismatch: protocol version mismatch: local=4 remote=1\n") ||
+			!sc.logs.has("connection failed permanently", map[string]any{"local_version": 4, "remote_version": 1}) {
 			t.Fatalf("sidecar against v1 = %d\n%s", code, sc.logs.String())
 		}
 	})
@@ -698,7 +722,7 @@ func TestNodeProtocol(t *testing.T) {
 		}
 		// A peer that never reads is closed within the shutdown bound.
 		blocked := dialPeer(t, np)
-		blocked.send(3, contract.FrameHello, "h1", contract.HelloBody{NodeID: id, SoftwareVersion: "dev"})
+		blocked.send(contract.ProtocolVersion, contract.FrameHello, "h1", contract.HelloBody{NodeID: id, SoftwareVersion: "dev"})
 		start := time.Now()
 		if code := np.proc.stop(t, syscall.SIGTERM); code != 130 {
 			t.Fatalf("plane exit %d", code)
@@ -936,7 +960,7 @@ func TestNodeDiscovery(t *testing.T) {
 				t.Fatalf("row %q", lines[i+1])
 			}
 			if id == online {
-				if _, ok := contract.ParseTime(f[2]); !ok || f[1] != "online" || f[3] != "3" || f[4] != "dev" {
+				if _, ok := contract.ParseTime(f[2]); !ok || f[1] != "online" || f[3] != "4" || f[4] != "dev" {
 					t.Fatalf("online row %q", lines[i+1])
 				}
 			} else if f[1] != "offline" || f[2] != "-" || f[3] != "-" || f[4] != "-" {
@@ -946,7 +970,7 @@ func TestNodeDiscovery(t *testing.T) {
 		r = op.run(t, "node", "show", online, "--plane", np.url, "--ca-fingerprint", np.fp)
 		show := strings.Split(r.stdout, "\n")
 		if r.code != 0 || len(show) != 7 || show[0] != "id: "+online || show[1] != "liveness: online" || !strings.HasPrefix(show[2], "last_seen: ") ||
-			show[3] != "protocol_version: 3" || show[4] != "software_version: dev" || show[5] != "roles: []" {
+			show[3] != "protocol_version: 4" || show[4] != "software_version: dev" || show[5] != "roles: []" {
 			t.Fatalf("show = %+v", r)
 		}
 		if f := listTree(t, op.home); len(f) != 0 {
@@ -955,7 +979,7 @@ func TestNodeDiscovery(t *testing.T) {
 	})
 	t.Run("json", func(t *testing.T) {
 		r := op.run(t, "node", "ls", "--json", "--plane", empty.url, "--ca", empty.ca)
-		if r.code != 0 || r.stdout != `{"version":3,"nodes":[]}`+"\n" {
+		if r.code != 0 || r.stdout != `{"version":4,"nodes":[]}`+"\n" {
 			t.Fatalf("empty json = %+v", r)
 		}
 		r = op.run(t, "node", "ls", "--plane", np.url, "--ca", np.ca, "--json")
@@ -963,7 +987,7 @@ func TestNodeDiscovery(t *testing.T) {
 		if r.code != 0 || err != nil || strings.Count(r.stdout, "\n") != 1 || len(nodes) != 2 || nodes[0].ID != ids[0] || nodes[1].ID != ids[1] {
 			t.Fatalf("json = %+v %v", r, err)
 		}
-		again, _ := contract.Encode(contract.NodeListResponse{Version: 3, Nodes: nodes})
+		again, _ := contract.Encode(contract.NodeListResponse{Version: 4, Nodes: nodes})
 		if string(again)+"\n" != r.stdout {
 			t.Fatalf("not the compact ordered envelope: %q", r.stdout)
 		}
@@ -974,9 +998,7 @@ func TestNodeDiscovery(t *testing.T) {
 		}
 	})
 	t.Run("errors", func(t *testing.T) {
-		ln, _ := net.Listen("tcp", "127.0.0.1:0")
-		gone := "https://" + ln.Addr().String()
-		ln.Close()
+		gone := "https://" + testkit.RefusingAddr(t)
 		for _, c := range []struct {
 			args []string
 			code int
@@ -1016,15 +1038,32 @@ func TestNodePlatform(t *testing.T) {
 		const nodeFn = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestNodeEnrollment|TestNodeReconnect)$/^(locking|shutdown)$ ./tests/function"
 		for _, goos := range []string{"linux", "darwin"} {
 			// The client and contract node packages stay in the packages
-			// shard; the plane's node contracts repeat in the plane shard
+			// shard; the plane's node contracts repeat in the plane shards
 			// (iteration 05b) and the sidecar's reconnect contracts in the
-			// sidecar shard (its sidecar follow-up).
+			// sidecar shards (its sidecar follow-up): CPU 1 in plane-cpu1
+			// and sidecar-cpu1, CPU 2 and 4 in plane and sidecar (design
+			// 06a-perf). The functions shard, index 6, keeps its three
+			// steps and the node selector.
 			shards, err := devcheck.StressShards(goos)
-			if err != nil || len(shards) != 5 || len(shards[4].Steps) != 3 || strings.Join(shards[4].Steps[2].Argv, " ") != nodeFn ||
-				slices.Contains(shards[0].Steps[0].Argv, "./internal/sidecar") || !slices.Contains(shards[0].Steps[0].Argv, "./internal/client") || !slices.Contains(shards[0].Steps[0].Argv, "./internal/contract") ||
-				shards[1].Name != "plane" || len(shards[1].Steps) != 3 || !slices.Contains(shards[1].Steps[0].Argv, "./internal/plane") ||
-				shards[2].Name != "sidecar" || len(shards[2].Steps) != 3 || !slices.Contains(shards[2].Steps[0].Argv, "./internal/sidecar") {
+			if err != nil || len(shards) != 7 || shards[6].Name != "functions" || len(shards[6].Steps) != 3 || strings.Join(shards[6].Steps[2].Argv, " ") != nodeFn ||
+				slices.Contains(shards[0].Steps[0].Argv, "./internal/sidecar") || !slices.Contains(shards[0].Steps[0].Argv, "./internal/client") || !slices.Contains(shards[0].Steps[0].Argv, "./internal/contract") {
 				t.Fatalf("%s stress plan = %+v %v", goos, shards, err)
+			}
+			for _, c := range []struct {
+				i         int
+				name, pkg string
+				cpus      []string
+			}{{1, "plane-cpu1", "./internal/plane", []string{"-cpu=1"}}, {2, "plane", "./internal/plane", []string{"-cpu=2", "-cpu=4"}},
+				{3, "sidecar-cpu1", "./internal/sidecar", []string{"-cpu=1"}}, {4, "sidecar", "./internal/sidecar", []string{"-cpu=2", "-cpu=4"}}} {
+				sh := shards[c.i]
+				if sh.Name != c.name || !sh.Parallel || len(sh.Steps) != len(c.cpus) {
+					t.Fatalf("%s shard %d = %+v, want %s with %d steps", goos, c.i, sh, c.name, len(c.cpus))
+				}
+				for j, st := range sh.Steps {
+					if st.Argv[len(st.Argv)-1] != c.pkg || !slices.Contains(st.Argv, c.cpus[j]) {
+						t.Fatalf("%s %s step %d = %v, want %s at %s", goos, c.name, j, st.Argv, c.pkg, c.cpus[j])
+					}
+				}
 			}
 		}
 		if b := devcheck.BenchSteps(); len(b) != 5 || strings.Join(b[2].Argv, " ") != "go test ./internal/contract -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s" {

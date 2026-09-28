@@ -121,6 +121,21 @@ var taskRequired = []struct {
 // taskNames lists every required task name, parents before subtests.
 func taskNames() []string { return requiredNames(taskRequired) }
 
+// controlRequired are iteration 06a's native names: the eight control
+// function parents and the native group scenarios.
+var controlRequired = []struct {
+	test string
+	subs []string
+}{
+	{"TestControlDurability", nil}, {"TestControlReconnect", nil}, {"TestControlNodeLoss", nil}, {"TestControlLaunchSafety", nil},
+	{"TestControlWorkerRecovery", nil}, {"TestControlPlaneRecovery", nil}, {"TestControlLateResult", nil}, {"TestControlLegacy", nil},
+	{"TestControlNativeGroups", []string{"cooperative", "resistant", "orphan-restart", "plane-restart"}},
+}
+
+// controlNames lists every required control name, parents before
+// subtests.
+func controlNames() []string { return requiredNames(controlRequired) }
+
 // roleNames lists every required role name, parents before subtests.
 func roleNames() []string { return requiredNames(roleRequired) }
 
@@ -156,7 +171,7 @@ func qualification() []evt {
 		evs = append(evs, ev("pass", NativePackage, fp6+"/"+s))
 	}
 	evs = append(evs, ev("pass", NativePackage, fp6))
-	for _, p := range append(append(append(append(planeRequired[:0:0], planeRequired...), nodeRequired...), roleRequired...), taskRequired...) {
+	for _, p := range append(append(append(append(append(planeRequired[:0:0], planeRequired...), nodeRequired...), roleRequired...), taskRequired...), controlRequired...) {
 		evs = append(evs, ev("run", NativePackage, p.test))
 		for _, s := range p.subs {
 			evs = append(evs, ev("run", NativePackage, p.test+"/"+s), ev("pass", NativePackage, p.test+"/"+s))
@@ -251,7 +266,10 @@ func TestNativeStepsAndUnsupportedOS(t *testing.T) {
 		"TestTaskLogs,TestTaskLogs/retention,TestTaskLogs/backpressure,TestTaskLogs/final,TestTaskPersistence,TestTaskPersistence/durability,TestTaskPersistence/restore,"+
 		"TestTaskCommands,TestTaskCommands/dispatch,TestTaskCommands/ls,TestTaskCommands/show,TestTaskCommands/logs,TestTaskCommands/trust,"+
 		"TestTaskRoles,TestTaskRoles/counts,TestTaskRoles/mutation,TestTaskRoles/remaining-capacity,TestTaskRoles/recovery-remove,"+
-		"TestTaskRecoveryBoundary,TestTaskRecoveryBoundary/disconnect,TestTaskRecoveryBoundary/remaining-capacity,TestTaskRecoveryBoundary/recovery-remove" || len(req) != 128 {
+		"TestTaskRecoveryBoundary,TestTaskRecoveryBoundary/disconnect,TestTaskRecoveryBoundary/remaining-capacity,TestTaskRecoveryBoundary/recovery-remove,"+
+		"TestControlDurability,TestControlReconnect,TestControlNodeLoss,TestControlLaunchSafety,TestControlWorkerRecovery,TestControlPlaneRecovery,"+
+		"TestControlLateResult,TestControlLegacy,TestControlNativeGroups,TestControlNativeGroups/cooperative,TestControlNativeGroups/resistant,"+
+		"TestControlNativeGroups/orphan-restart,TestControlNativeGroups/plane-restart" || len(req) != 141 {
 		t.Fatalf("required = %v", req)
 	}
 	req[0] = "mutated"
@@ -456,7 +474,7 @@ func TestTailBuffer(t *testing.T) {
 // --- driver (UT-2 stage dispatch, UT-4 native execution) ---
 
 func TestStagesMatchDispatch(t *testing.T) {
-	want := "test coverage bench cross all native stress stress-packages stress-plane stress-sidecar stress-processgroup stress-functions"
+	want := "test coverage bench cross all native stress stress-packages stress-plane-cpu1 stress-plane stress-sidecar-cpu1 stress-sidecar stress-processgroup stress-functions"
 	got := Stages()
 	if strings.Join(got, " ") != want {
 		t.Fatalf("Stages = %v", got)
@@ -488,8 +506,27 @@ func TestStagesMatchDispatch(t *testing.T) {
 			os.RemoveAll(scratchFrom(out))
 		}
 	}
-	if code, _, errOut := runDriver(t, "linux", &fakeRunner{}, "natives"); code != 2 || !strings.Contains(errOut, "usage: devcheck test | coverage [-o profile] | bench | cross | all | native | stress | stress-packages | stress-plane | stress-sidecar | stress-processgroup | stress-functions") {
+	if code, _, errOut := runDriver(t, "linux", &fakeRunner{}, "natives"); code != 2 || !strings.HasSuffix(errOut, "\n"+usageLiteral) {
 		t.Fatalf("unknown stage = %d %s", code, errOut)
+	}
+}
+
+// usageLiteral is design 06a-perf's exact usage line, final newline
+// included, written independently of devcheck.go.
+const usageLiteral = "usage: devcheck test | coverage [-o profile] | bench | cross | all | native | stress | stress-packages | stress-plane-cpu1 | stress-plane | stress-sidecar-cpu1 | stress-sidecar | stress-processgroup | stress-functions\n"
+
+// TestUsageLiteral pins the usage constant and its stage order to the
+// fourteen advertised stages.
+func TestUsageLiteral(t *testing.T) {
+	if usage != usageLiteral {
+		t.Fatalf("usage = %q", usage)
+	}
+	if len(stageNames) != 14 {
+		t.Fatalf("%d stages advertised", len(stageNames))
+	}
+	var out, errOut bytes.Buffer
+	if code := runFor(context.Background(), "linux", nil, &out, &errOut, (&fakeRunner{}).run); code != 2 || errOut.String() != usageLiteral || out.Len() != 0 {
+		t.Fatalf("no arguments = %d %q", code, errOut.String())
 	}
 }
 

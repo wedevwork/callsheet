@@ -70,53 +70,46 @@ func (c *stepClock) After(d time.Duration) <-chan time.Time {
 	return ch
 }
 
-// realGroupsContract drives the production group wrapper (the reused
-// processgroup mechanics) through injected signals and time: cleanup of
-// an absent, cooperative, TERM-resistant, unkillable and permission-denied
-// group, run-shutdown termination with and without the child's exit, and
-// the direct child's wait classification. It starts no process.
+// realGroupsContract drives the production group watcher (the reused
+// processgroup mechanics) through injected signals and time. Since
+// iteration 06a only a task's guardian signals its group: the watcher
+// probes existence (signal 0) and polls disappearance, and never sends
+// TERM or KILL to a raw, possibly reused PGID, whether the group is
+// absent, present, resistant or permission-denied (EPERM is never
+// absence); pgid <= 1 is refused. It starts no process.
 func realGroupsContract(t *testing.T) {
 	clk := func() *stepClock { return &stepClock{now: time.Date(2026, 9, 27, 0, 0, 0, 0, time.UTC)} }
 	for name, c := range map[string]struct {
-		g      *scriptedGroup
-		ok     bool
-		term   bool
-		killed bool
+		g     *scriptedGroup
+		gone  bool
+		alive bool
+		perm  bool
 	}{
-		"absent":      {&scriptedGroup{}, true, false, false},
-		"cooperative": {&scriptedGroup{alive: true, cooperative: true}, true, true, false},
-		"resistant":   {&scriptedGroup{alive: true}, true, true, true},
-		"unkillable":  {&scriptedGroup{alive: true, unkillable: true}, false, true, true},
-		"denied":      {&scriptedGroup{alive: true, denied: true}, false, true, false},
+		"absent":  {&scriptedGroup{}, true, false, false},
+		"present": {&scriptedGroup{alive: true}, false, true, false},
+		"denied":  {&scriptedGroup{alive: true, denied: true}, false, false, true},
 	} {
 		g := c.g
-		err := realGroups{sig: g, clk: clk()}.cleanup(4242)
-		sent := g.signals()
-		if (err == nil) != c.ok || slices.Contains(sent, syscall.SIGTERM) != c.term || (c.killed && !slices.Contains(sent, syscall.SIGKILL)) {
-			t.Fatalf("%s cleanup: %v, signals %v", name, err, sent)
+		err := realGroups{sig: g, clk: clk()}.gone(4242)
+		alive, eerr := realGroups{sig: g, clk: clk()}.exists(4242)
+		for _, sig := range g.signals() {
+			if sig != 0 {
+				t.Fatalf("%s: the watcher sent %v to a raw group", name, sig)
+			}
 		}
-		if name == "denied" && !errors.Is(err, syscall.EPERM) {
-			t.Fatalf("denied cleanup error %v", err)
+		if (err == nil) != c.gone || alive != c.alive || (eerr != nil) != c.perm {
+			t.Fatalf("%s: gone %v, exists %v %v", name, err, alive, eerr)
+		}
+		if c.perm && (!errors.Is(err, syscall.EPERM) || !errors.Is(eerr, syscall.EPERM)) {
+			t.Fatalf("denied errors %v / %v", err, eerr)
 		}
 	}
-	// Run shutdown: TERM, then the child's exit ends it; without an exit
-	// the grace passes and the group is killed; pgid <= 1 is refused.
-	exited := make(chan struct{})
-	close(exited)
 	g := &scriptedGroup{alive: true}
-	realGroups{sig: g, clk: clk()}.terminate(4242, exited)
-	if s := g.signals(); len(s) == 0 || s[0] != syscall.SIGTERM {
-		t.Fatalf("terminate after exit sent %v", s)
+	if err := (realGroups{sig: g, clk: clk()}).gone(1); !errors.Is(err, processgroup.ErrInvalidGroup) || len(g.signals()) != 0 {
+		t.Fatalf("pgid 1: %v %v", err, g.signals())
 	}
-	g = &scriptedGroup{alive: true}
-	realGroups{sig: g, clk: clk()}.terminate(4242, make(chan struct{}))
-	if s := g.signals(); !slices.Equal(s, []syscall.Signal{syscall.SIGTERM, syscall.SIGKILL}) {
-		t.Fatalf("terminate without exit sent %v", s)
-	}
-	g = &scriptedGroup{alive: true}
-	realGroups{sig: g, clk: clk()}.terminate(1, make(chan struct{}))
-	if s := g.signals(); len(s) != 0 {
-		t.Fatalf("pgid 1 was signaled: %v", s)
+	if _, err := (realGroups{sig: g, clk: clk()}).exists(0); !errors.Is(err, processgroup.ErrInvalidGroup) {
+		t.Fatalf("pgid 0: %v", err)
 	}
 	if sig, clock := (realGroups{}).parts(); sig != (processgroup.SysSignaler{}) || clock != (processgroup.RealClock{}) {
 		t.Fatal("the production wrapper does not default to kill(2) and real time")

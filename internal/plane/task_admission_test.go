@@ -75,7 +75,7 @@ func gateRace(t *testing.T, first, second string) {
 	close(held[second].release)
 	_, err := calls[second].wait(t)
 	cs := wantAdmission(t, err, contract.CodeUnavailable, contract.ReasonBusy, "a:available")
-	if c := cs[0]; c.Inflight != 0 || c.Concurrency != 1 || !c.CanAccept || c.RecoveryInflight != 0 {
+	if c := cs[0]; c.Inflight != 0 || c.Concurrency != 1 || !c.CanAccept || c.ReconcilingInflight != 0 {
 		t.Fatalf("busy candidate %+v", c)
 	}
 	if !calls[first].pending() || tp.log.seen("gate-acquired "+second) || tp.log.seen("task-published "+second) {
@@ -186,7 +186,7 @@ func TestTaskAdmission(t *testing.T) {
 		close(hb.release)
 		_, err = b.wait(t)
 		cs := wantAdmission(t, err, contract.CodeUnavailable, contract.ReasonNoCapacity, "a:full")
-		if c := cs[0]; c.Inflight != 1 || c.Concurrency != 1 || c.CanAccept || c.RecoveryInflight != 0 {
+		if c := cs[0]; c.Inflight != 1 || c.Concurrency != 1 || c.CanAccept || c.ReconcilingInflight != 0 {
 			t.Fatalf("reserved-slot candidate %+v", c)
 		}
 		if !tp.log.seen("gate-acquired caller B") {
@@ -205,8 +205,9 @@ func TestTaskAdmission(t *testing.T) {
 	t.Run("candidates", func(t *testing.T) {
 		t.Parallel()
 		// Reason precedence: storage_unconfirmed, node_offline,
-		// node_detached, worker_unready, full, available; recovery counts
-		// are reported without disabling the rest of an instance.
+		// node_detached, worker_unready, full, available; reconciling
+		// counts are reported without disabling the rest of an instance,
+		// and the lease's expiry resolves the detached tasks lost.
 		tp := startTaskPlane(t, nil, []contract.RoleRecord{record(taskCfg("a", "coder", idA, 2), 1)}, idA)
 		w := tp.worker(t, idA)
 		w.ready["a"] = false
@@ -227,17 +228,18 @@ func TestTaskAdmission(t *testing.T) {
 		tp.log.await(t, "detached "+idA)
 		_, err = tp.cl.Dispatch(bg, taskReq(contract.TargetID, "a", "x"))
 		cs := wantAdmission(t, err, contract.CodeUnavailable, contract.ReasonNoCapacity, "a:node_detached")
-		if c := cs[0]; c.Inflight != 2 || c.RecoveryInflight != 2 || c.NodeLiveness != contract.LivenessOnline {
+		if c := cs[0]; c.Inflight != 2 || c.ReconcilingInflight != 2 || c.NodeLiveness != contract.LivenessOnline {
 			t.Fatalf("detached candidate %+v", c)
 		}
-		if !strings.Contains(err.Error(), contract.RecoveryNotice) {
-			t.Fatalf("no recovery notice: %v", err)
+		if !strings.Contains(err.Error(), contract.ReconcilingNotice) {
+			t.Fatalf("no reconciling notice: %v", err)
 		}
 		tp.clk.Advance(leaseDuration)
 		_, err = tp.cl.Dispatch(bg, taskReq(contract.TargetID, "a", "x"))
 		wantAdmission(t, err, contract.CodeUnavailable, contract.ReasonNoCapacity, "a:node_offline")
-		if tp.show(t, v.TaskID).State != contract.TaskRunning || tp.roleInflight(t, "a") != 2 {
-			t.Fatal("an offline lease released a reservation")
+		tp.log.awaitOnce(t, "terminal-committed "+v.TaskID)
+		if sv := tp.show(t, v.TaskID); sv.State != contract.TaskLost || sv.Reason.Code != contract.ReasonLeaseExpired {
+			t.Fatalf("the expired lease left %+v", sv)
 		}
 	})
 	t.Run("storage", func(t *testing.T) {
@@ -407,29 +409,29 @@ func TestTaskAdmission(t *testing.T) {
 		}{
 			{"GET", contract.PathTasks, "", "", "", 400, contract.CodeInvalidArgument},
 			{"GET", contract.PathTasks, "2", "", "", 409, contract.CodeProtocolMismatch},
-			{"GET", contract.PathTasks + "/t_%30000000000000000000000000000001", "3", "", "", 400, contract.CodeInvalidArgument},
-			{"GET", contract.PathTasks + "/" + id + "/logs/x", "3", "", "", 404, contract.CodeNotFound},
-			{"GET", contract.PathTasks + "/SECRET-ID", "3", "", "", 400, contract.CodeInvalidArgument},
-			{"PUT", contract.PathTasks, "3", js, "{}", 400, contract.CodeInvalidArgument},
-			{"POST", contract.PathTasks + "/" + id, "3", js, "{}", 400, contract.CodeInvalidArgument},
-			{"GET", contract.PathTasks, "3", "", "SECRET-BODY", 400, contract.CodeInvalidArgument},
-			{"POST", contract.PathTasks + "?x=1", "3", js, string(good), 400, contract.CodeInvalidArgument},
-			{"GET", contract.PathTasks + "?", "3", "", "", 400, contract.CodeInvalidArgument},
-			{"GET", contract.PathTasks + "?=1", "3", "", "", 400, contract.CodeInvalidArgument},
-			{"GET", contract.PathTasks + "?SECRET-KEY=1", "3", "", "", 400, contract.CodeInvalidArgument},
-			{"GET", contract.PathTasks + "?limit=", "3", "", "", 400, contract.CodeInvalidArgument},
-			{"GET", contract.PathTasks + "?limit=1&limit=2", "3", "", "", 400, contract.CodeInvalidArgument},
-			{"GET", contract.PathTasks + "?limit=0", "3", "", "", 400, contract.CodeInvalidArgument},
-			{"GET", contract.PathTasks + "?limit=101", "3", "", "", 400, contract.CodeInvalidArgument},
-			{"GET", contract.PathTasks + "?after=SECRET-AFTER", "3", "", "", 400, contract.CodeInvalidArgument},
-			{"GET", contract.PathTasks + "/" + id + "/logs?lines=1", "3", "", "", 400, contract.CodeInvalidArgument},
-			{"GET", contract.PathTasks + "/" + id + "/logs", "3", "", "", 404, contract.CodeNotFound},
-			{"GET", contract.PathTasks + "/" + id + "?lines=1001", "3", "", "", 400, contract.CodeInvalidArgument},
-			{"GET", contract.PathTasks + "/" + id + "?limit=1", "3", "", "", 400, contract.CodeInvalidArgument},
-			{"GET", contract.PathTasks + "/" + id, "3", "", "", 404, contract.CodeNotFound},
-			{"POST", contract.PathTasks, "3", "text/plain", string(good), 400, contract.CodeInvalidArgument},
-			{"POST", contract.PathTasks, "3", js, strings.Repeat(" ", contract.MaxDispatchRequestBytes+1), 400, contract.CodeInvalidArgument},
-			{"POST", contract.PathTasks, "3", js, `{"extra":"SECRET-VALUE"}`, 400, contract.CodeInvalidArgument},
+			{"GET", contract.PathTasks + "/t_%30000000000000000000000000000001", "4", "", "", 400, contract.CodeInvalidArgument},
+			{"GET", contract.PathTasks + "/" + id + "/logs/x", "4", "", "", 404, contract.CodeNotFound},
+			{"GET", contract.PathTasks + "/SECRET-ID", "4", "", "", 400, contract.CodeInvalidArgument},
+			{"PUT", contract.PathTasks, "4", js, "{}", 400, contract.CodeInvalidArgument},
+			{"POST", contract.PathTasks + "/" + id, "4", js, "{}", 400, contract.CodeInvalidArgument},
+			{"GET", contract.PathTasks, "4", "", "SECRET-BODY", 400, contract.CodeInvalidArgument},
+			{"POST", contract.PathTasks + "?x=1", "4", js, string(good), 400, contract.CodeInvalidArgument},
+			{"GET", contract.PathTasks + "?", "4", "", "", 400, contract.CodeInvalidArgument},
+			{"GET", contract.PathTasks + "?=1", "4", "", "", 400, contract.CodeInvalidArgument},
+			{"GET", contract.PathTasks + "?SECRET-KEY=1", "4", "", "", 400, contract.CodeInvalidArgument},
+			{"GET", contract.PathTasks + "?limit=", "4", "", "", 400, contract.CodeInvalidArgument},
+			{"GET", contract.PathTasks + "?limit=1&limit=2", "4", "", "", 400, contract.CodeInvalidArgument},
+			{"GET", contract.PathTasks + "?limit=0", "4", "", "", 400, contract.CodeInvalidArgument},
+			{"GET", contract.PathTasks + "?limit=101", "4", "", "", 400, contract.CodeInvalidArgument},
+			{"GET", contract.PathTasks + "?after=SECRET-AFTER", "4", "", "", 400, contract.CodeInvalidArgument},
+			{"GET", contract.PathTasks + "/" + id + "/logs?lines=1", "4", "", "", 400, contract.CodeInvalidArgument},
+			{"GET", contract.PathTasks + "/" + id + "/logs", "4", "", "", 404, contract.CodeNotFound},
+			{"GET", contract.PathTasks + "/" + id + "?lines=1001", "4", "", "", 400, contract.CodeInvalidArgument},
+			{"GET", contract.PathTasks + "/" + id + "?limit=1", "4", "", "", 400, contract.CodeInvalidArgument},
+			{"GET", contract.PathTasks + "/" + id, "4", "", "", 404, contract.CodeNotFound},
+			{"POST", contract.PathTasks, "4", "text/plain", string(good), 400, contract.CodeInvalidArgument},
+			{"POST", contract.PathTasks, "4", js, strings.Repeat(" ", contract.MaxDispatchRequestBytes+1), 400, contract.CodeInvalidArgument},
+			{"POST", contract.PathTasks, "4", js, `{"extra":"SECRET-VALUE"}`, 400, contract.CodeInvalidArgument},
 		} {
 			status, body := do(c.method, c.path, c.version, c.ctype, c.body)
 			e, err := contract.ParseErrorBody(bytes.TrimSpace([]byte(body)))
@@ -441,13 +443,13 @@ func TestTaskAdmission(t *testing.T) {
 			t.Fatalf("a refused request created %d tasks", n)
 		}
 		// The success envelopes: 202 dispatch, then show, logs and list.
-		status, body := do("POST", contract.PathTasks, "3", js, string(good))
+		status, body := do("POST", contract.PathTasks, "4", js, string(good))
 		v, err := contract.ParseDispatchResponse(bytes.TrimSpace([]byte(body)))
 		if status != http.StatusAccepted || err != nil || !strings.HasSuffix(body, "}\n") {
 			t.Fatalf("dispatch = %d %q %v", status, body, err)
 		}
 		for _, p := range []string{"/" + v.TaskID + "?lines=0", "/" + v.TaskID + "/logs", "?limit=1&after=" + id} {
-			if status, body := do("GET", contract.PathTasks+p, "3", "", ""); status != 200 || !strings.HasPrefix(body, `{"version":3,`) {
+			if status, body := do("GET", contract.PathTasks+p, "4", "", ""); status != 200 || !strings.HasPrefix(body, `{"version":4,`) {
 				t.Fatalf("GET %s = %d %q", p, status, body)
 			}
 		}

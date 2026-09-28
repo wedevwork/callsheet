@@ -66,8 +66,7 @@ func TestRoleStreamContract(t *testing.T) {
 			x, y, w := roleCfg("x", "coder", idA), roleCfg("y", "coder", idA), roleCfg("w", "coder", idA)
 			rp := startRolePlaneDoc(t, fast(testDeps(t)), docOf(3, 4, record(x, 1), record(y, 2), record(w, 3)), idA)
 			p := rp.dial(t)
-			p.hello(idA)
-			p.expect(contract.FrameHelloOK, "h1")
+			p.helloOK(idA)
 			if b := p.ackReplace("p1"); b.Revision != 3 || len(b.Roles) != 3 || b.Roles[0].ID != "x" || b.Roles[2].ID != "w" {
 				t.Fatalf("initial snapshot = %+v", b)
 			}
@@ -393,8 +392,7 @@ func TestRoleStreamContract(t *testing.T) {
 			rp.log.await(t, "detached "+idA)
 			rp.clk.Advance(2500 * time.Millisecond)
 			p := rp.dial(t)
-			p.hello(idA)
-			p.expect(contract.FrameHelloOK, "h1")
+			p.helloOK(idA)
 			p.readReplace("p1") // reserved at T0+2.5s: its deadline is T0+6.5s
 			rp.log.await(t, "replace-sent "+idA+" p1 0")
 			p.heartbeat(1)
@@ -433,8 +431,7 @@ func TestRoleStreamContract(t *testing.T) {
 			// leaves the stream attached.
 			rp := startRolePlane(t, idA)
 			p := rp.dial(t)
-			p.hello(idA)
-			p.expect(contract.FrameHelloOK, "h1")
+			p.helloOK(idA)
 			p.readReplace("p1")
 			p.heartbeat(1)
 			ctx, cancel := context.WithCancel(bg)
@@ -471,8 +468,7 @@ func TestRoleStreamContract(t *testing.T) {
 			d.roleHook = rp.hooks.fn
 			rp.nodePlane = startNodePlaneSetup(t, d, nil, idA)
 			p := rp.dial(t)
-			p.hello(idA)
-			p.expect(contract.FrameHelloOK, "h1")
+			p.helloOK(idA)
 			p.readReplace("p1") // the ack is withheld: the slot stays busy
 			p.heartbeat(1)
 			ctx, cancel := context.WithCancel(bg)
@@ -542,9 +538,9 @@ func TestRoleStreamContract(t *testing.T) {
 			// stream's own and is proven by TestNodeStreamProtocol/oversized.
 			p := rp.online(t, idA)
 			body := `{"roles_revision":0,"roles":[]` + strings.Repeat(" ", contract.MaxHeartbeatBody-len(`{"roles_revision":0,"roles":[]}`)) + `}`
-			p.sendRaw([]byte(`{"version":3,"type":"heartbeat","request_id":"b2","body":` + body + `}`))
+			p.sendRaw([]byte(`{"version":4,"type":"heartbeat","request_id":"b2","body":` + body + `}`))
 			p.expect(contract.FrameHeartbeatAck, "b2")
-			p.sendRaw([]byte(`{"version":3,"type":"heartbeat","request_id":"b3","body":` + body[:len(body)-1] + ` }` + `}`))
+			p.sendRaw([]byte(`{"version":4,"type":"heartbeat","request_id":"b3","body":` + body[:len(body)-1] + ` }` + `}`))
 			p.expectError("b3", contract.CodeInvalidArgument)
 			if st := p.closed(); st != websocket.StatusPolicyViolation {
 				t.Fatalf("oversized heartbeat close = %v", st)
@@ -565,8 +561,7 @@ func TestRoleStreamContract(t *testing.T) {
 			wantReason(t, err, contract.CodeUnavailable, contract.ReasonNodeDisconnected)
 			rp.log.await(t, "detached "+idA)
 			p2 := rp.dial(t)
-			p2.hello(idA)
-			p2.expect(contract.FrameHelloOK, "h1")
+			p2.helloOK(idA)
 			p2.readReplace("p1")
 			p2.reply("p2", nil)
 			p2.expectError("p2", contract.CodeInvalidArgument)
@@ -630,8 +625,7 @@ func TestRoleStreamContract(t *testing.T) {
 			// fails the mutation and joins every handler.
 			rp := startRolePlane(t, idA)
 			p := rp.dial(t)
-			p.hello(idA)
-			p.expect(contract.FrameHelloOK, "h1")
+			p.helloOK(idA)
 			p.readReplace("p1")
 			p.heartbeat(1)
 			res := rp.addAsync(bg, roleCfg("a", "coder", idA))

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -178,4 +179,64 @@ func TestOSSignalsAndNames(t *testing.T) {
 	if signalName(syscall.SIGTERM) != "SIGTERM" || signalName(syscall.SIGINT) != "SIGINT" || signalName(syscall.SIGHUP) == "" {
 		t.Fatal("signal names")
 	}
+}
+
+// TestGroupMode is the iteration 06a group task mode, with a real
+// descendant (this test binary as the fake): group.json names the leader
+// and a live descendant in the leader's process group; the trigger file
+// completes the leader with its PID in the output; the descendant is left
+// to the supervisor (killed and reaped here). Invalid settings exit 2
+// before any spawn.
+func TestGroupMode(t *testing.T) {
+	args := []string{TaskFlag, "--model", "example model", "--effort", "medium"}
+	good := prompt("example model", "medium")
+	run := func(vars map[string]string, stdout io.Writer) int {
+		var errOut strings.Builder
+		return Run(context.Background(), Env{Args: args, Stdout: stdout, Stderr: &errOut, Stdin: strings.NewReader(string(good)),
+			Getenv:     func(k string) string { return vars[k] },
+			Executable: os.Args[0], Environ: helperEnviron()})
+	}
+	for name, vars := range map[string]map[string]string{
+		"relative dir": {EnvTaskMode: "group", EnvTaskGroupDir: "rel"},
+		"term":         {EnvTaskMode: "group", EnvTaskGroupDir: t.TempDir(), EnvTaskDescendantTerm: "maybe"},
+	} {
+		if code := run(vars, io.Discard); code != 2 {
+			t.Fatalf("%s = %d", name, code)
+		}
+	}
+	// The group file cannot be published: the descendant is killed and
+	// reaped, exit 1.
+	if code := run(map[string]string{EnvTaskMode: "group", EnvTaskGroupDir: filepath.Join(t.TempDir(), "missing")}, io.Discard); code != 1 {
+		t.Fatalf("unpublished group = %d", code)
+	}
+	dir := t.TempDir()
+	var out strings.Builder
+	done := make(chan int, 1)
+	go func() {
+		done <- run(map[string]string{EnvTaskMode: "group", EnvTaskGroupDir: dir, EnvTaskDescendantTerm: TermIgnore}, &out)
+	}()
+	waitFile(t, filepath.Join(dir, GroupFile))
+	b, err := os.ReadFile(filepath.Join(dir, GroupFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var info GroupInfo
+	if err := json.Unmarshal(b, &info); err != nil || info.LeaderPID != os.Getpid() || !alive(info.DescendantPID) {
+		t.Fatalf("group %s %v", b, err)
+	}
+	if pg, err := syscall.Getpgid(info.DescendantPID); err != nil || pg != syscall.Getpgrp() {
+		t.Fatalf("descendant group %d %v", pg, err)
+	}
+	os.WriteFile(filepath.Join(dir, GroupTrigger), nil, 0o644)
+	select {
+	case code := <-done:
+		if code != 0 || out.String() != "native started pid="+strconv.Itoa(os.Getpid())+"\nnative output pid="+strconv.Itoa(os.Getpid())+"\n"+FinalMarker {
+			t.Fatalf("group = %d %q", code, out.String())
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the group leader did not complete")
+	}
+	syscall.Kill(info.DescendantPID, syscall.SIGKILL)
+	p, _ := os.FindProcess(info.DescendantPID)
+	p.Wait()
 }

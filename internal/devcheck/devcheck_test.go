@@ -21,8 +21,8 @@ type recorded struct {
 
 // fakeRunner records calls and scripts results: fail matches a substring of
 // the joined argv; coverTotal feeds "go tool cover -func" output. It is safe
-// for the concurrent calls of the plane, sidecar and processgroup stress
-// shards: mu guards
+// for the concurrent calls of the Parallel stress shards (the plane and
+// sidecar CPU1 singletons and CPU2/CPU4 pairs, and processgroup): mu guards
 // calls only and is never held while writing child output. Read calls only
 // after the driver has returned.
 type fakeRunner struct {

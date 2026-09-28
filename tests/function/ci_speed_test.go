@@ -118,6 +118,15 @@ var speedRoleNative = []string{
 }
 
 // speedTaskNative are iteration 05's 41 required task names.
+// speedControlNative are iteration 06a's native names: the eight
+// control function parents and the native group qualification.
+var speedControlNative = []string{
+	"TestControlDurability", "TestControlReconnect", "TestControlNodeLoss", "TestControlLaunchSafety", "TestControlWorkerRecovery",
+	"TestControlPlaneRecovery", "TestControlLateResult", "TestControlLegacy",
+	"TestControlNativeGroups", "TestControlNativeGroups/cooperative", "TestControlNativeGroups/resistant",
+	"TestControlNativeGroups/orphan-restart", "TestControlNativeGroups/plane-restart",
+}
+
 var speedTaskNative = []string{
 	"TestTaskModel", "TestTaskModel/envelope", "TestTaskModel/states",
 	"TestTaskDispatch", "TestTaskDispatch/selection", "TestTaskDispatch/gate-race", "TestTaskDispatch/reserved-slot",
@@ -152,9 +161,10 @@ func taskProcessEvents(drop string) []map[string]any {
 }
 
 // speedJobs is the table of ordinary jobs: the two main jobs (design 02b,
-// Workflow topology) and the ten stress workers that replaced its two
-// stress jobs (design 02c, with design 05b's plane workers and its sidecar
-// follow-up's sidecar workers). The two
+// Workflow topology) and the fourteen stress workers that replaced its two
+// stress jobs (design 02c, with design 05b's plane workers, its sidecar
+// follow-up's sidecar workers and design 06a-perf's plane and sidecar CPU1
+// workers). The two
 // summaries that keep the stress contexts are checked by
 // TestStressShardSummaries.
 var speedJobs = []struct {
@@ -164,12 +174,16 @@ var speedJobs = []struct {
 	{"linux", "ci-linux", "ubuntu-24.04", "45", []string{"go run ./cmd/devcheck test", "go run ./cmd/devcheck coverage", "go run ./cmd/devcheck bench", "go run ./cmd/devcheck cross"}},
 	{"macos", "ci-macos", "macos-15", "30", []string{"go run ./cmd/devcheck native"}},
 	{"linux-stress-packages", "ci-linux-stress-packages", "ubuntu-24.04", "20", []string{"go run ./cmd/devcheck stress-packages"}},
+	{"linux-stress-plane-cpu1", "ci-linux-stress-plane-cpu1", "ubuntu-24.04", "20", []string{"go run ./cmd/devcheck stress-plane-cpu1"}},
 	{"linux-stress-plane", "ci-linux-stress-plane", "ubuntu-24.04", "20", []string{"go run ./cmd/devcheck stress-plane"}},
+	{"linux-stress-sidecar-cpu1", "ci-linux-stress-sidecar-cpu1", "ubuntu-24.04", "20", []string{"go run ./cmd/devcheck stress-sidecar-cpu1"}},
 	{"linux-stress-sidecar", "ci-linux-stress-sidecar", "ubuntu-24.04", "20", []string{"go run ./cmd/devcheck stress-sidecar"}},
 	{"linux-stress-processgroup", "ci-linux-stress-processgroup", "ubuntu-24.04", "20", []string{"go run ./cmd/devcheck stress-processgroup"}},
 	{"linux-stress-functions", "ci-linux-stress-functions", "ubuntu-24.04", "20", []string{"go run ./cmd/devcheck stress-functions"}},
 	{"macos-stress-packages", "ci-macos-stress-packages", "macos-15", "20", []string{"go run ./cmd/devcheck stress-packages"}},
+	{"macos-stress-plane-cpu1", "ci-macos-stress-plane-cpu1", "macos-15", "20", []string{"go run ./cmd/devcheck stress-plane-cpu1"}},
 	{"macos-stress-plane", "ci-macos-stress-plane", "macos-15", "20", []string{"go run ./cmd/devcheck stress-plane"}},
+	{"macos-stress-sidecar-cpu1", "ci-macos-stress-sidecar-cpu1", "macos-15", "20", []string{"go run ./cmd/devcheck stress-sidecar-cpu1"}},
 	{"macos-stress-sidecar", "ci-macos-stress-sidecar", "macos-15", "20", []string{"go run ./cmd/devcheck stress-sidecar"}},
 	{"macos-stress-processgroup", "ci-macos-stress-processgroup", "macos-15", "20", []string{"go run ./cmd/devcheck stress-processgroup"}},
 	{"macos-stress-functions", "ci-macos-stress-functions", "macos-15", "20", []string{"go run ./cmd/devcheck stress-functions"}},
@@ -482,8 +496,8 @@ func runSelectorFixture(t *testing.T, selector string) (passed, logged []string)
 }
 
 // FP-2: the actual workflow's main jobs and, since iteration 02c, its
-// stress workers (ten since iteration 05b's sidecar follow-up) are
-// independent, with
+// stress workers (ten since iteration 05b's sidecar follow-up, fourteen
+// since design 06a-perf) are independent, with
 // identical pinned setup and exact check commands; the two summaries
 // follow them.
 func TestCISpeedJobs(t *testing.T) {
@@ -500,8 +514,9 @@ func TestCISpeedJobs(t *testing.T) {
 	for i := 0; i+1 < len(jobs.Content); i += 2 {
 		ids = append(ids, jobs.Content[i].Value)
 	}
-	if strings.Join(ids, " ") != "linux macos linux-stress-packages linux-stress-plane linux-stress-sidecar linux-stress-processgroup linux-stress-functions "+
-		"macos-stress-packages macos-stress-plane macos-stress-sidecar macos-stress-processgroup macos-stress-functions linux-stress macos-stress" {
+	if strings.Join(ids, " ") != "linux macos linux-stress-packages linux-stress-plane-cpu1 linux-stress-plane linux-stress-sidecar-cpu1 linux-stress-sidecar "+
+		"linux-stress-processgroup linux-stress-functions macos-stress-packages macos-stress-plane-cpu1 macos-stress-plane macos-stress-sidecar-cpu1 "+
+		"macos-stress-sidecar macos-stress-processgroup macos-stress-functions linux-stress macos-stress" || len(ids) != 18 {
 		t.Fatalf("job ids = %v", ids)
 	}
 	var names []string
@@ -550,7 +565,7 @@ func TestCISpeedJobs(t *testing.T) {
 			}
 		}
 	}
-	if strings.Join(names[:2], ",") != strings.Join(cicheck.RequiredChecks()[:2], ",") || len(names) != 12 {
+	if strings.Join(names[:2], ",") != strings.Join(cicheck.RequiredChecks()[:2], ",") || len(names) != 16 {
 		t.Fatalf("contexts %v, contract %v", names, cicheck.RequiredChecks())
 	}
 	for _, top := range []string{"concurrency", "env", "defaults"} {
@@ -584,7 +599,7 @@ func TestCISpeedJobs(t *testing.T) {
 func qualifyingStream(drop string) string {
 	pkg := devcheck.NativePackage
 	evs := []map[string]any{synth("start", pkg, "")}
-	for _, name := range append(append(append(slices.Clone(speedNative), speedNodeNative...), speedRoleNative...), speedTaskNative...) {
+	for _, name := range append(append(append(append(slices.Clone(speedNative), speedNodeNative...), speedRoleNative...), speedTaskNative...), speedControlNative...) {
 		if name != drop {
 			evs = append(evs, synth("run", pkg, name), synth("pass", pkg, name))
 		}
@@ -596,7 +611,8 @@ func qualifyingStream(drop string) string {
 // FP-3: validator, plans, native evidence and documentation agree.
 func TestCISpeedPolicy(t *testing.T) {
 	t.Run("native", func(t *testing.T) {
-		if got := devcheck.NativeRequiredTests(); len(got) != 128 || !slices.Equal(got[:28], speedNative) || !slices.Equal(got[28:58], speedNodeNative) || !slices.Equal(got[58:87], speedRoleNative) || !slices.Equal(got[87:], speedTaskNative) {
+		if got := devcheck.NativeRequiredTests(); len(got) != 141 || !slices.Equal(got[:28], speedNative) || !slices.Equal(got[28:58], speedNodeNative) || !slices.Equal(got[58:87], speedRoleNative) || !slices.Equal(got[87:128], speedTaskNative) ||
+			!slices.Equal(got[128:], speedControlNative) {
 			t.Fatalf("native required = %v", got)
 		}
 		if err := devcheck.CheckNativeResults("darwin", strings.NewReader(qualifyingStream(""))); err != nil {
@@ -651,12 +667,13 @@ func TestCISpeedPolicy(t *testing.T) {
 				t.Fatalf("%s: contract %+v, workflow %v, want %v", j.id, c, stages[j.id], want)
 			}
 		}
-		// The complete local stress stage dispatches the whole plan, with
-		// plane's, sidecar's and processgroup's three invocations concurrent
-		// (each compared as a set).
+		// The complete local stress stage dispatches the whole plan, with the
+		// plane and sidecar CPU1 singletons alone, their CPU2/CPU4 pairs and
+		// processgroup's three invocations concurrent (each compared as a
+		// set; design 06a-perf).
 		r := &ciRunner{}
 		if code, out, errOut := devcheckRun(t, r, "stress"); code != 0 || !strings.Contains(out, "stage stress ok") ||
-			!sameGroups(r.calls, [][]string{{speedPackages}, {speedPlane1, speedPlane2, speedPlane4}, {speedSidecar1, speedSidecar2, speedSidecar4},
+			!sameGroups(r.calls, [][]string{{speedPackages}, {speedPlane1}, {speedPlane2, speedPlane4}, {speedSidecar1}, {speedSidecar2, speedSidecar4},
 				{speedPG1, speedPG2, speedPG4}, {speedFunction}, {speedPlaneFunction}, {speedNodeFunction}}) {
 			t.Fatalf("stress dispatch = %d %v %s", code, r.calls, errOut)
 		}

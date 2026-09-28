@@ -41,34 +41,36 @@ func TestRoleStreamContract(t *testing.T) {
 			fp := startFakePlane(t)
 			rr := startRoleRun(t, fp, true)
 			c := fp.accept(t)
-			c.helloOK(testID)
-			c.readHeartbeat(1) // b1 outstanding
+			c.connect() // b1, then reconciliation (protocol 4)
+			rr.ev.awaitMatch(t, evAck, func(ev event) bool { return ev.acks == 1 })
+			rr.clk.Advance(heartbeatInterval)
+			c.readHeartbeat(2) // b2 outstanding
 			ins, run := manuals(t, rr.dir, "a", "x")
 			c.validate("p1", roleConfig("a", ins, run))
 			if e := c.result("p1"); e != nil {
 				t.Fatal(e)
 			}
-			c.send(contract.ProtocolVersion, contract.FrameHeartbeatAck, "b1", nil)
-			rr.ev.awaitMatch(t, evAck, func(ev event) bool { return ev.acks == 1 })
+			c.send(contract.ProtocolVersion, contract.FrameHeartbeatAck, "b2", nil)
+			rr.ev.awaitMatch(t, evAck, func(ev event) bool { return ev.acks == 2 })
 			// Now a validation is running when the next heartbeat falls due:
-			// b1 was written at T0, so b2 is due at T0+5s; the validation
-			// arrives at T0+4s (budget until T0+6s).
+			// b2 was written at T0+5s, so b3 is due at T0+10s; the
+			// validation arrives at T0+9s (budget until T0+11s).
 			block := make(chan struct{})
 			rr.script.set(nil, block)
 			rr.clk.Advance(4 * time.Second)
 			c.validate("p2", roleConfig("a", ins, run))
 			rr.script.awaitProbe(t)
 			rr.clk.Advance(time.Second)
-			b := c.readHeartbeat(2)
+			b := c.readHeartbeat(3)
 			if b.RolesRevision != 0 || len(b.Roles) != 0 {
-				t.Fatalf("b2 = %+v", b)
+				t.Fatalf("b3 = %+v", b)
 			}
 			close(block)
 			if e := c.result("p2"); e != nil {
 				t.Fatalf("p2 = %v", e)
 			}
-			c.send(contract.ProtocolVersion, contract.FrameHeartbeatAck, "b2", nil)
-			rr.ev.awaitMatch(t, evAck, func(ev event) bool { return ev.acks == 2 })
+			c.send(contract.ProtocolVersion, contract.FrameHeartbeatAck, "b3", nil)
+			rr.ev.awaitMatch(t, evAck, func(ev event) bool { return ev.acks == 3 })
 		})
 		t.Run("install-ordering", func(t *testing.T) {
 			t.Parallel()
@@ -81,6 +83,7 @@ func TestRoleStreamContract(t *testing.T) {
 			c := fp.accept(t)
 			c.helloOK(testID)
 			rr.beat(c, 1, 0)
+			c.reconcileEmpty()
 			ins, run := manuals(t, rr.dir, "a", "x")
 			a := roleConfig("a", ins, run)
 			// (1) Replacement with nothing due: installed, acked, then the
@@ -170,6 +173,7 @@ func TestRoleStreamContract(t *testing.T) {
 			if b := c2.heartbeatAt(1, 0); len(b.Roles) != 0 {
 				t.Fatalf("installed state survived the session: %+v", b)
 			}
+			c2.reconcileEmpty()
 			c2.replace("p1", 2, roleConfig("a", ins, run))
 			c2.expectReplaceAck("p1", 2)
 		})
@@ -211,10 +215,10 @@ func TestRoleStreamContract(t *testing.T) {
 					c.replace("p1", 1, a)
 				}, "p1", "another node"},
 				{"bad-snapshot", func(c *fakeConn, a contract.RoleConfig) {
-					c.sendRaw([]byte(`{"version":3,"type":"roles_replace","request_id":"p1","body":{"revision":1,"roles":[{"id":"a"}]}}`))
+					c.sendRaw([]byte(`{"version":4,"type":"roles_replace","request_id":"p1","body":{"revision":1,"roles":[{"id":"a"}]}}`))
 				}, "p1", "required field"},
 				{"bad-validate", func(c *fakeConn, a contract.RoleConfig) {
-					c.sendRaw([]byte(`{"version":3,"type":"role_validate","request_id":"p1","body":{"role":{},"x":1}}`))
+					c.sendRaw([]byte(`{"version":4,"type":"role_validate","request_id":"p1","body":{"role":{},"x":1}}`))
 				}, "p1", "unknown field"},
 				{"hello-again", func(c *fakeConn, a contract.RoleConfig) {
 					c.send(contract.ProtocolVersion, contract.FrameHelloOK, "h1", contract.HelloOKBody{HeartbeatIntervalMS: 5000, LeaseMS: 15000})
@@ -257,11 +261,12 @@ func TestRoleStreamContract(t *testing.T) {
 			c := fp.accept(t)
 			c.helloOK(testID)
 			ack := func(rid string, n int) {
-				c.sendRaw([]byte(`{"version":3,"type":"heartbeat_ack","request_id":"` + rid + `","body":{` + strings.Repeat(" ", n-2) + `}}`))
+				c.sendRaw([]byte(`{"version":4,"type":"heartbeat_ack","request_id":"` + rid + `","body":{` + strings.Repeat(" ", n-2) + `}}`))
 			}
 			c.readHeartbeat(1)
 			ack("b1", contract.MaxOtherBody)
 			rr.ev.awaitMatch(t, evAck, func(ev event) bool { return ev.acks == 1 })
+			c.reconcileEmpty()
 			rr.clk.Advance(heartbeatInterval)
 			c.readHeartbeat(2)
 			ack("b2", contract.MaxOtherBody+1)
@@ -282,6 +287,8 @@ func TestRoleStreamContract(t *testing.T) {
 			c.read(t)
 			c.send(t, contract.FrameHeartbeatAck, "b1", nil)
 			rr.ev.await(t, evAck)
+			c.reconcileEmpty(t)
+			rr.ev.awaitWritten(t, evReplied, "r1")
 			ins, run := manuals(t, rr.dir, "a", "x")
 			c.send(t, contract.FrameRoleValidate, "p1", contract.RoleValidateBody{Role: roleConfig("a", ins, run)})
 			rr.ev.await(t, evValidated)

@@ -10,12 +10,15 @@ import (
 	"github.com/wedevwork/callsheet/internal/contract"
 )
 
-// TestTaskInterruption is UT FP-9 on the worker: task workers belong to
-// Run, survive their attachment, never report on another one, and Run
-// shutdown tears down their groups; its disconnect, remaining-capacity and
+// TestTaskInterruption is UT FP-9 of iteration 05 on the worker, its
+// assertions replaced by iteration 06a's boundary: task workers belong to
+// Run and survive their attachment; the next attachment reconciles them
+// before anything of theirs is sent; Run shutdown asks every running
+// guardian to clean its group, joins every worker and journals the
+// interrupted execution lost. Its disconnect, remaining-capacity and
 // recovery-remove subtests are delegated from tests/function
-// (TestTaskRecoveryBoundary), together with the plane's. Do not rename or
-// skip them.
+// (TestTaskRecoveryBoundary), together with the plane's. Do not rename
+// or skip them.
 func TestTaskInterruption(t *testing.T) {
 	t.Parallel()
 	t.Run("disconnect", func(t *testing.T) {
@@ -23,11 +26,10 @@ func TestTaskInterruption(t *testing.T) {
 		t.Run("reconnect-and-shutdown", func(t *testing.T) { t.Parallel(); disconnectAndShutdown(t) })
 		t.Run("shutdown-during-start", func(t *testing.T) {
 			t.Parallel()
-			// Run shutdown while a worker's Start is authorized but has not
-			// returned: the child it then starts is terminated too (the
-			// launch completes without any lock held across Start), and
-			// Run joins it. With Start returned before shutdown, the scan
-			// terminates it. Either way exactly one termination per child.
+			// Run shutdown while a worker's launch is released but not yet
+			// confirmed (its guardian's release in progress): the guardian
+			// is asked to clean up exactly once, with the launch completing
+			// either before or after the shutdown began, and Run joins it.
 			for _, startFirst := range []bool{false, true} {
 				fp := startFakePlane(t)
 				block := make(chan struct{})
@@ -48,14 +50,16 @@ func TestTaskInterruption(t *testing.T) {
 					close(block)
 				}
 				tr.run.result(t)
-				var pids []int
 				tr.ledger.mu.Lock()
-				for pid := range tr.ledger.byPID {
-					pids = append(pids, pid)
-				}
+				gs := append([]*fakeGuardian(nil), tr.ledger.guardians...)
 				tr.ledger.mu.Unlock()
-				if sig := tr.groups.signals(); len(pids) != 1 || len(sig) != 1 || sig[0] != pids[0] {
-					t.Fatalf("start first %v: shutdown signals %v for children %v", startFirst, sig, pids)
+				if sig := tr.groups.signals(); len(gs) != 1 || len(sig) != 1 || sig[0] != gs[0].pid {
+					t.Fatalf("start first %v: shutdown stopped %v for guardians %d", startFirst, sig, len(gs))
+				}
+				// The interrupted execution is journaled lost for the next Run.
+				lj, err := layout{root: tr.root}.loadJournal(st.TaskID, tr.lookup())
+				if err != nil || lj.j.Phase != contract.JournalLost || lj.j.Result.Outcome != contract.OutcomeLost {
+					t.Fatalf("start first %v: journal %+v %v", startFirst, lj.j, err)
 				}
 			}
 		})
@@ -72,11 +76,13 @@ func TestTaskInterruption(t *testing.T) {
 
 // disconnectAndShutdown is the attachment-loss and shutdown contract.
 func disconnectAndShutdown(t *testing.T) {
-	// Loss while preparing (no reply ever sent; the child that starts
-	// is supervised), loss after the start reply (the child runs on
-	// across the reconnect; nothing of it is sent on the next
-	// attachment), and Run shutdown (the running group gets TERM, the
-	// worker is joined, no result is invented).
+	// Loss while preparing (no reply ever sent; the preparation completes
+	// and its adapter runs, supervised) and loss after the start reply
+	// (the child runs on across the reconnect): the next attachment's
+	// inventory reports both running and the plane continues them; their
+	// output flows there only after reconciliation. Run shutdown stops
+	// the still-running group through its guardian, joins its worker and
+	// journals it lost; nothing is invented on the wire.
 	fp := startFakePlane(t)
 	bo := &blockingOpen{arrived: make(chan struct{}), release: make(chan struct{})}
 	tr := startTaskRun(t, fp, taskOpts{adjust: func(d *deps) { d.openManual = bo.open }})
@@ -96,30 +102,43 @@ func disconnectAndShutdown(t *testing.T) {
 	close(bo.release)
 	chPrep := tr.child(t)
 	chPrep.prompt(t)
-	s = tr.connect(t, 2, 2, cfg)
+	tr.ev.awaitMatch(t, evChildStarted, func(ev event) bool { return ev.id == preparing.TaskID })
+	s, inv := tr.reconnect(t, 2, 2, map[string]string{after.TaskID: contract.ActionContinue, preparing.TaskID: contract.ActionContinue}, cfg)
+	if len(inv) != 2 || inv[0].Phase != contract.PhaseRunning || inv[1].Phase != contract.PhaseRunning {
+		t.Fatalf("inventory %+v", inv)
+	}
 	chAfter.out([]byte("after the reconnect\n"))
 	chAfter.exitCode(0)
 	tr.settled(t, after.TaskID)
+	if r, out := s.drain(t, after); string(out) != "after the reconnect\n" || *r.ExitCode != 0 {
+		t.Fatalf("reconciled result %+v %q", r, out)
+	}
 	tr.clk.Advance(heartbeatInterval)
 	if hb := s.beat(t, 2); hb.Roles[0].Inflight != 1 {
 		t.Fatalf("heartbeat %+v", hb.Roles)
 	}
-	// Shutdown: the still-running child's group is terminated and
-	// joined before Run returns; nothing is sent for it.
+	// Shutdown: the still-running child's group is stopped through its
+	// guardian and joined before Run returns; nothing is sent for it.
 	tr.run.cancel()
 	if err := tr.run.result(t); err == nil {
 		t.Fatal("Run returned no error on cancellation")
 	}
-	if sig := tr.groups.signals(); !slices.Contains(sig, chPrep.pid) {
-		t.Fatalf("shutdown signaled %v, want %d", sig, chPrep.pid)
+	if sig := tr.groups.signals(); !slices.Contains(sig, chPrep.gpid) {
+		t.Fatalf("shutdown stopped %v, want %d", sig, chPrep.gpid)
 	}
-	if w := tr.super(t).find(preparing.TaskID); w != nil {
+	if w := tr.super(t).find(preparing.TaskID); w == nil {
+		t.Fatal("the interrupted execution was forgotten")
+	} else {
 		w.mu.Lock()
 		done := w.done
 		w.mu.Unlock()
 		if !done {
 			t.Fatal("Run returned before joining its worker")
 		}
+	}
+	lj, err := layout{root: tr.root}.loadJournal(preparing.TaskID, tr.lookup())
+	if err != nil || lj.j.Phase != contract.JournalLost || lj.j.Result.Signal == nil || *lj.j.Result.Signal != "SIGTERM" {
+		t.Fatalf("interrupted journal %+v %v", lj.j, err)
 	}
 }
 

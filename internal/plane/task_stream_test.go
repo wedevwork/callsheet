@@ -14,7 +14,8 @@ import (
 	"github.com/wedevwork/callsheet/internal/contract"
 )
 
-// expectClosed requires the plane to close the peer's stream with 1008.
+// expectClosed requires the plane to close the peer's stream with 1008
+// and waits until the plane detached that session.
 func expectClosed(t *testing.T, w *worker, rid string) {
 	t.Helper()
 	for {
@@ -29,6 +30,7 @@ func expectClosed(t *testing.T, w *worker, rid string) {
 	if st := w.closed(); st != websocket.StatusPolicyViolation {
 		t.Fatalf("close = %v", st)
 	}
+	w.detached()
 }
 
 // TestTaskStream is UT FP-3/9 for the plane's task frames; its duplex,
@@ -48,7 +50,7 @@ func TestTaskStream(t *testing.T) {
 		w.beat()
 		w.answer("p2", st.TaskID, nil)
 		tp.log.awaitOnce(t, "published running "+st.TaskID)
-		if sv := tp.show(t, v.TaskID); sv.State != contract.TaskRunning || sv.StartedAt == nil || sv.RecoveryRequired {
+		if sv := tp.show(t, v.TaskID); sv.State != contract.TaskRunning || sv.StartedAt == nil || sv.Reconciling {
 			t.Fatalf("running view %+v", sv)
 		}
 		// Output and result share the b sequence with heartbeats.
@@ -74,8 +76,9 @@ func TestTaskStream(t *testing.T) {
 		if sv.State != contract.TaskSucceeded || *sv.Result.ExitCode != 0 || *sv.Result.FinalMessage != "done" || sv.LogTail != "hello\nworld\n" || sv.CompletionPending {
 			t.Fatalf("terminal view %+v", sv)
 		}
-		// Terminal: later callbacks change nothing; a different result is a
-		// protocol error that closes the stream, never a mutation.
+		// Terminal: later callbacks change nothing; a different result for
+		// the same execution is a conflict that closes the stream, never a
+		// mutation.
 		other := result(st, 3, 12, nil)
 		bad := w.sendResult(other)
 		expectClosed(t, w, bad)
@@ -97,15 +100,20 @@ func TestTaskStream(t *testing.T) {
 		if b := w.ackReplace("p4"); b.Roles[0].Name != "renamed" {
 			t.Fatalf("snapshot %+v", b)
 		}
-		// Fencing: output for another task, a stale token or a skipped b
-		// number closes the stream without touching any task.
+		// Fencing: output under a token that is not the task's stable
+		// identity, or a skipped b number, closes the stream without
+		// touching any task; the next attachment reconciles the running
+		// execution (continue), and its own attachment's end leaves it
+		// reconciling.
 		stale := st2
 		stale.Execution.Attachment = 1
 		expectClosed(t, w, w.sendLog(stale, 0, []byte("x")))
-		w = tp.worker(t, idA)
+		started := tp.clk.Now()
+		w = tp.workerInv(t, idA, map[string]string{st2.TaskID: contract.ActionContinue}, entry(st2, contract.PhaseRunning, &started, nil))
 		w.b++ // skip one number
 		expectClosed(t, w, w.sendLog(st2, 0, []byte("x")))
-		if sv := tp.show(t, st2.TaskID); sv.State != contract.TaskRunning || sv.Log.RetainedBytes != 0 || !sv.RecoveryRequired {
+		tp.log.await(t, "detached "+idA)
+		if sv := tp.show(t, st2.TaskID); sv.State != contract.TaskRunning || sv.Log.RetainedBytes != 0 || !sv.Reconciling {
 			t.Fatalf("fenced output reached the task: %+v", sv)
 		}
 	})
@@ -113,9 +121,9 @@ func TestTaskStream(t *testing.T) {
 		t.Parallel()
 		t.Run("start-deadline", func(t *testing.T) {
 			t.Parallel()
-			// A reply read strictly before the four-second start deadline
+			// A reply read strictly before the fifteen-second start deadline
 			// counts; at the deadline the in-flight start expires: the stream
-			// closes and the task stays pending, uncertain, slot held.
+			// closes and the task stays pending, reconciling, slot held.
 			tp := startTaskPlane(t, nil, []contract.RoleRecord{record(taskCfg("a", "coder", idA, 2), 1)}, idA)
 			w := tp.worker(t, idA)
 			v := tp.admit(t, taskReq(contract.TargetID, "a", "early"))
@@ -128,13 +136,23 @@ func TestTaskStream(t *testing.T) {
 			v2 := tp.admit(t, taskReq(contract.TargetID, "a", "late"))
 			tp.log.awaitOnce(t, "start-sent "+idA+" p3 "+v2.TaskID)
 			w.start("p3")
-			tp.clk.Advance(startControl)
+			// The lease (15 s, like the start deadline) is kept alive by
+			// heartbeats while the start is unanswered.
+			for i := 0; i < 2; i++ {
+				tp.clk.Advance(heartbeatInterval)
+				w.beat()
+			}
+			tp.clk.Advance(startControl - 2*heartbeatInterval)
 			tp.log.await(t, "request-expired "+idA+" p3")
 			if st := w.closed(); st != websocket.StatusPolicyViolation {
 				t.Fatalf("close = %v", st)
 			}
+			// The close frame is sent while the session is still ending:
+			// its uncertain start is recorded (reconciling) before the
+			// detach, not before the close reaches the worker.
+			w.detached()
 			sv := tp.show(t, v2.TaskID)
-			if sv.State != contract.TaskPending || !sv.RecoveryRequired || *sv.RecoveryReason != contract.RecoveryStartUnconfirmed || tp.roleInflight(t, "a") != 2 {
+			if sv.State != contract.TaskPending || !sv.Reconciling || tp.roleInflight(t, "a") != 2 {
 				t.Fatalf("expired start %+v", sv)
 			}
 		})
@@ -150,10 +168,15 @@ func TestTaskStream(t *testing.T) {
 			if err != nil || v.DurabilityConfirmed {
 				t.Fatalf("unconfirmed dispatch = %+v %v", v, err)
 			}
+			// One failed resync, then a heartbeat keeps the lease (15 s,
+			// like the start deadline) beyond the deadline.
+			tp.clk.Advance(storageRetry)
+			tp.log.await(t, "resync-failed")
+			w.beat()
 			tp.inj.set("", "")
 			// The deadline is anchored at the first visible publication and
 			// never resets for durability confirmation.
-			tp.clk.Advance(startControl)
+			tp.clk.Advance(startControl - storageRetry)
 			tp.log.awaitOnce(t, "task-confirmed "+v.TaskID)
 			tp.log.awaitOnce(t, "terminal-committed "+v.TaskID)
 			sv := tp.show(t, v.TaskID)
@@ -213,22 +236,33 @@ func TestTaskStream(t *testing.T) {
 		})
 		t.Run("anchor", func(t *testing.T) {
 			t.Parallel()
-			// The start deadline is four seconds from the link that made the
+			// The start deadline is fifteen seconds from the link that made the
 			// pending record visible: a slow directory sync after the link,
 			// successful or failed, counts against the window and never
 			// extends it.
 			for _, failSync := range []bool{false, true} {
 				tp := startTaskPlane(t, nil, []contract.RoleRecord{record(taskCfg("a", "coder", idA, 1), 1)}, idA)
-				tp.worker(t, idA)
+				w := tp.worker(t, idA)
 				linked := tp.clk.Now()
+				// The sync takes startControl + 1 s. The node's lease (15 s,
+				// like startControl) is renewed midway by a heartbeat, so the
+				// only expiry is the start's.
+				midway, resume := make(chan struct{}), make(chan struct{})
 				tp.inj.onNextSync(func() error {
-					tp.clk.Advance(5 * time.Second)
+					tp.clk.Advance(startControl / 2)
+					close(midway)
+					<-resume
+					tp.clk.Advance(startControl - startControl/2 + time.Second)
 					if failSync {
 						return errors.New("injected slow sync failure")
 					}
 					return nil
 				})
-				v, err := tp.cl.Dispatch(bg, taskReq(contract.TargetID, "a", "slow sync"))
+				dc := tp.dispatchAsync(taskReq(contract.TargetID, "a", "slow sync"))
+				<-midway
+				w.beat()
+				close(resume)
+				v, err := dc.wait(t)
 				if err != nil || v.DurabilityConfirmed == failSync {
 					t.Fatalf("dispatch (sync fails %v) = %+v %v", failSync, v, err)
 				}
@@ -249,8 +283,10 @@ func TestTaskStream(t *testing.T) {
 			// A frame the original stream delivered, still queued at the
 			// plane when that attachment's lease ended, is refused: task
 			// output and results count only on the node's current live
-			// attachment, checked atomically with acceptance. The task
-			// stays running and recovery-required with its slot held.
+			// attachment, checked atomically with acceptance. The lease's
+			// expiry resolves the task lost (iteration 06a), without the
+			// refused frame's output or result, and releases its slot once
+			// the loss is durable.
 			for _, kind := range []string{"result", "log"} {
 				tp := startTaskPlane(t, nil, []contract.RoleRecord{record(taskCfg("a", "coder", idA, 1), 1)}, idA)
 				w := tp.worker(t, idA)
@@ -268,8 +304,10 @@ func TestTaskStream(t *testing.T) {
 				}
 				close(call.release)
 				tp.log.await(t, "detached "+idA)
+				tp.log.awaitOnce(t, "lost-latched "+st.TaskID+" "+contract.ReasonLeaseExpired)
+				tp.log.awaitOnce(t, "terminal-committed "+st.TaskID)
 				v := tp.show(t, st.TaskID)
-				if v.CompletionPending || v.State != contract.TaskRunning || v.Log.ReceivedBytes != 0 || !v.RecoveryRequired || tp.roleInflight(t, "a") != 1 {
+				if v.State != contract.TaskLost || v.Reason.Code != contract.ReasonLeaseExpired || v.Log.ReceivedBytes != 0 || v.LateResult != nil || tp.roleInflight(t, "a") != 0 {
 					t.Fatalf("%s from the detached original attachment accepted: %+v", kind, v)
 				}
 			}
@@ -286,7 +324,7 @@ func TestTaskStream(t *testing.T) {
 			expectClosed(t, w, w.sendLog(st, 3, []byte("zzzzzz")))
 			w = tp.worker(t, idA)
 			rid := w.nextID()
-			w.sendRaw([]byte(`{"version":3,"type":"task_log","request_id":"` + rid + `","body":{"x":"` + strings.Repeat("a", contract.MaxTaskLogBody) + `"}}`))
+			w.sendRaw([]byte(`{"version":4,"type":"task_log","request_id":"` + rid + `","body":{"x":"` + strings.Repeat("a", contract.MaxTaskLogBody) + `"}}`))
 			expectClosed(t, w, rid)
 			w = tp.worker(t, idA)
 			w.answer("p9", st.TaskID, nil)
@@ -307,11 +345,12 @@ func TestTaskStream(t *testing.T) {
 		t.Parallel()
 		t.Run("slow-commit", func(t *testing.T) {
 			t.Parallel()
-			// Receipt is acknowledged from bounded memory while the terminal
-			// commit is held before any syscall: four seconds later the
-			// stream is attached, the other running task unaffected, the
-			// slot still held and completion pending. Releasing the disk
-			// publishes the terminal record and frees the slot together.
+			// Receipt is acknowledged from bounded memory (committed=false)
+			// while the terminal commit is held before any syscall: four
+			// seconds later the stream is attached, the other running task
+			// unaffected, the slot still held and completion pending.
+			// Releasing the disk publishes the terminal record and frees the
+			// slot together; the same result retried is then committed.
 			tp := startTaskPlane(t, nil, []contract.RoleRecord{record(taskCfg("a", "coder", idA, 2), 1)}, idA)
 			w := tp.worker(t, idA)
 			st1 := tp.run(t, w, "a", "one", "p2")
@@ -319,13 +358,15 @@ func TestTaskStream(t *testing.T) {
 			hold := tp.th.arm("terminal-commit-queued", st1.TaskID)
 			w.log(st1, 0, []byte("out\n"))
 			rid := w.sendResult(result(st1, 0, 4, nil))
-			w.resultAck(rid, st1.TaskID)
+			if w.resultAck(rid, st1.TaskID) {
+				t.Fatal("a receipt before durability was acknowledged as committed")
+			}
 			tp.log.await(t, "result-acked "+idA+" "+rid)
 			call := paused(t, hold, "terminal-commit-queued")
 			tp.clk.Advance(outputAckBound)
 			w.beat()
 			v1, v2 := tp.show(t, st1.TaskID), tp.show(t, st2.TaskID)
-			if v1.State != contract.TaskRunning || !v1.CompletionPending || v1.PersistenceReason != nil || v1.Result != nil || v1.RecoveryRequired || v2.RecoveryRequired {
+			if v1.State != contract.TaskRunning || !v1.CompletionPending || v1.PersistenceReason != nil || v1.Result != nil || v1.Reconciling || v2.Reconciling {
 				t.Fatalf("held commit: %+v / %+v", v1, v2)
 			}
 			if tp.roleInflight(t, "a") != 2 {
@@ -336,8 +377,11 @@ func TestTaskStream(t *testing.T) {
 			if v := tp.show(t, st1.TaskID); v.State != contract.TaskSucceeded || v.CompletionPending || v.LogTail != "out\n" || tp.roleInflight(t, "a") != 1 {
 				t.Fatalf("committed %+v", v)
 			}
-			if rec := tp.taskFile(t, st1.TaskID); rec.State != contract.TaskSucceeded || string(rec.Log.Data) != "out\n" {
+			if rec := tp.taskFile(t, st1.TaskID); rec.State != contract.TaskSucceeded || string(rec.Log.Data) != "out\n" || rec.ResultDigest == nil {
 				t.Fatalf("durable %+v", rec)
+			}
+			if !w.resultAck(w.sendResult(result(st1, 0, 4, nil)), st1.TaskID) {
+				t.Fatal("the durable result's retry was not acknowledged as committed")
 			}
 		})
 		t.Run("watchdog", func(t *testing.T) {
@@ -360,7 +404,7 @@ func TestTaskStream(t *testing.T) {
 			}
 			tp.log.awaitOnce(t, "commit-watchdog "+st.TaskID)
 			v := tp.show(t, st.TaskID)
-			if v.State != contract.TaskRunning || !v.CompletionPending || v.PersistenceReason == nil || *v.PersistenceReason != contract.ReasonResultStorageUnconfirmed || v.RecoveryRequired {
+			if v.State != contract.TaskRunning || !v.CompletionPending || v.PersistenceReason == nil || *v.PersistenceReason != contract.ReasonResultStorageUnconfirmed || v.Reconciling {
 				t.Fatalf("watchdog view %+v", v)
 			}
 			_, err := tp.cl.Dispatch(bg, taskReq(contract.TargetID, "a", "blocked"))
@@ -389,7 +433,7 @@ func TestTaskStream(t *testing.T) {
 			call := paused(t, hold, "terminal-commit-queued")
 			w.c.CloseNow()
 			tp.log.await(t, "detached "+idA)
-			if v := tp.show(t, st.TaskID); v.RecoveryRequired || !v.CompletionPending {
+			if v := tp.show(t, st.TaskID); v.Reconciling || !v.CompletionPending {
 				t.Fatalf("a captured result became uncertain: %+v", v)
 			}
 			close(call.release)
@@ -407,22 +451,26 @@ func TestTaskStream(t *testing.T) {
 		t.Run("not-received", func(t *testing.T) {
 			t.Parallel()
 			// No receipt was accepted before the attachment ended: the task
-			// stays running, recovery-required, slot held; the same result on
-			// the new attachment is an old-generation report and is refused.
+			// stays running, reconciling, slot held. A new attachment whose
+			// complete inventory omits it resolves it lost
+			// (execution_missing), and a result for an execution it did not
+			// reconcile is refused.
 			tp := startTaskPlane(t, nil, []contract.RoleRecord{record(taskCfg("a", "coder", idA, 1), 1)}, idA)
 			w := tp.worker(t, idA)
 			st := tp.run(t, w, "a", "lost", "p2")
 			w.c.CloseNow()
 			tp.log.await(t, "detached "+idA)
 			v := tp.show(t, st.TaskID)
-			if v.State != contract.TaskRunning || !v.RecoveryRequired || *v.RecoveryReason != contract.RecoveryAttachmentLost || !v.Log.LogMayBeIncomplete || tp.roleInflight(t, "a") != 1 {
+			if v.State != contract.TaskRunning || !v.Reconciling || !v.Log.LogMayBeIncomplete || tp.roleInflight(t, "a") != 1 {
 				t.Fatalf("lost receipt %+v", v)
 			}
 			w = tp.worker(t, idA)
+			tp.log.awaitOnce(t, "lost-latched "+st.TaskID+" "+contract.ReasonExecutionMissing)
 			rid := w.sendResult(result(st, 0, 0, nil))
 			expectClosed(t, w, rid)
-			if v := tp.show(t, st.TaskID); v.State != contract.TaskRunning || v.CompletionPending {
-				t.Fatalf("an old-generation result was accepted: %+v", v)
+			tp.log.awaitOnce(t, "terminal-committed "+st.TaskID)
+			if v := tp.show(t, st.TaskID); v.State != contract.TaskLost || v.Reason.Code != contract.ReasonExecutionMissing || v.LateResult != nil {
+				t.Fatalf("an unreconciled result was accepted: %+v", v)
 			}
 		})
 	})

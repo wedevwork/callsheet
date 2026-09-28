@@ -92,10 +92,16 @@ func (l layout) path(rel string) string {
 // scanResult describes validated state without reading file contents.
 type scanResult struct {
 	rootExists, hasIdentity, hasEnrollment bool
+	// journals are the task journal directories (iteration 06a), by ID.
+	journals []string
+	// journalLeftovers are interrupted task directory transactions
+	// (staged or deleting directories) that Run removes before recovery.
+	journalLeftovers []string
 }
 
 // scan checks the root and its entries: only .lock, identity.json,
-// enrollment.json and regular unpublished .tmp- siblings are allowed.
+// enrollment.json, the private tasks/ journal (iteration 06a, checked by
+// scanJournals) and regular unpublished .tmp- siblings are allowed.
 // Symlinks, nonregular files and unsafe modes are trust_failed; any other
 // entry is conflict. Nothing is repaired.
 func (l layout) scan() (scanResult, error) {
@@ -136,6 +142,10 @@ func (l layout) scan() (scanResult, error) {
 			} else {
 				s.hasEnrollment = true
 			}
+		case n == journalDir:
+			if err := checkDir(p, fi); err != nil {
+				return s, err
+			}
 		case strings.HasPrefix(n, tempPrefix) && fi.Mode().IsRegular():
 		default:
 			unexpected = append(unexpected, p)
@@ -143,9 +153,14 @@ func (l layout) scan() (scanResult, error) {
 	}
 	if len(unexpected) > 0 {
 		sort.Strings(unexpected)
-		return s, errf(contract.CodeConflict, "sidecar state directory %s holds unexpected %s; it may contain only identity.json, enrollment.json and .lock. Nothing was changed: move the unexpected entries out, or choose a fresh --state-dir",
+		return s, errf(contract.CodeConflict, "sidecar state directory %s holds unexpected %s; it may contain only identity.json, enrollment.json, tasks/ and .lock. Nothing was changed: move the unexpected entries out, or choose a fresh --state-dir",
 			l.root, strings.Join(unexpected, ", "))
 	}
+	ids, leftovers, err := l.scanJournalsFull()
+	if err != nil {
+		return s, err
+	}
+	s.journals, s.journalLeftovers = ids, leftovers
 	return s, nil
 }
 

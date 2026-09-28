@@ -119,9 +119,9 @@ func EncodeFrame(version int, typ, requestID string, b any) ([]byte, error) {
 
 var frameTypes = map[Direction]map[string]bool{
 	FromSidecar: {FrameHello: true, FrameHeartbeat: true, FrameError: true, FrameRoleValidateResult: true, FrameRolesReplaceAck: true,
-		FrameTaskStartResult: true, FrameTaskLog: true, FrameTaskResult: true},
+		FrameTaskStartResult: true, FrameTaskLog: true, FrameTaskResult: true, FrameTaskInventory: true, FrameTaskReconcileAck: true},
 	FromPlane: {FrameHelloOK: true, FrameHeartbeatAck: true, FrameError: true, FrameRoleValidate: true, FrameRolesReplace: true,
-		FrameTaskStart: true, FrameTaskLogAck: true, FrameTaskResultAck: true},
+		FrameTaskStart: true, FrameTaskLogAck: true, FrameTaskResultAck: true, FrameTaskInventoryAck: true, FrameTaskReconcile: true},
 }
 
 // DecodeFrame decodes one message sent by from. It reads the bounded

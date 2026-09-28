@@ -81,6 +81,12 @@ func BodyLimit(typ string) int {
 		return MaxTaskLogBody
 	case FrameTaskResult:
 		return MaxTaskResultBody
+	case FrameTaskInventory:
+		return MaxInventoryBody
+	case FrameTaskReconcile:
+		return MaxReconcileBody
+	case FrameTaskInventoryAck, FrameTaskReconcileAck, FrameTaskResultAck:
+		return MaxAckBody
 	}
 	return MaxOtherBody
 }
@@ -184,13 +190,13 @@ func (n Node) MarshalJSON() ([]byte, error) {
 	return compact(w)
 }
 
-// NodeResponse is {"version":3,"node":<Node>}.
+// NodeResponse is {"version":4,"node":<Node>}.
 type NodeResponse struct {
 	Version int  `json:"version"`
 	Node    Node `json:"node"`
 }
 
-// NodeListResponse is {"version":3,"nodes":[<Node>,...]}.
+// NodeListResponse is {"version":4,"nodes":[<Node>,...]}.
 type NodeListResponse struct {
 	Version int    `json:"version"`
 	Nodes   []Node `json:"nodes"`
@@ -500,7 +506,7 @@ func envelopeVersion(o object, what string) error {
 	return nil
 }
 
-// ParseNodeResponse strictly decodes {"version":3,"node":{...}}.
+// ParseNodeResponse strictly decodes {"version":4,"node":{...}}.
 func ParseNodeResponse(data []byte) (Node, error) {
 	const what = "node response"
 	o, err := decodeObject(data, what)
@@ -516,7 +522,7 @@ func ParseNodeResponse(data []byte) (Node, error) {
 	return ParseNode(o.raw["node"])
 }
 
-// ParseNodeListResponse strictly decodes {"version":3,"nodes":[...]} and
+// ParseNodeListResponse strictly decodes {"version":4,"nodes":[...]} and
 // requires IDs in strictly ascending order (sorted and unique).
 func ParseNodeListResponse(data []byte) ([]Node, error) {
 	const what = "node list response"

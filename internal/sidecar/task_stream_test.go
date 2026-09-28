@@ -2,7 +2,9 @@ package sidecar
 
 import (
 	"bytes"
+	"errors"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -144,7 +146,12 @@ func TestTaskStream(t *testing.T) {
 		sup := &taskSupervisor{workers: map[*taskWorker]bool{}}
 		tag := &attachTag{n: 1}
 		mk := func(n int, logs, exited bool) *taskWorker {
-			w := &taskWorker{start: contract.TaskStartBody{TaskID: taskID(n)}, tag: tag, ring: newOutputRing(1 << 20), replied: true, exited: exited}
+			w := &taskWorker{start: contract.TaskStartBody{TaskID: taskID(n)}, tag: tag, ring: newOutputRing(1 << 20), replied: true}
+			if exited {
+				zero := 0
+				res := contract.TaskResultBody{TaskID: taskID(n), Outcome: contract.OutcomeNatural, ExitCode: &zero}.Sealed()
+				w.outcome = &res
+			}
 			if logs {
 				w.ring.write([]byte("x"))
 			}
@@ -157,20 +164,33 @@ func TestTaskStream(t *testing.T) {
 		mk(4, false, true)
 		mk(5, true, true) // exited but not drained: logs only
 		rs := &roleSession{tasks: sup, tag: tag}
+		now := time.Date(2026, 9, 27, 0, 0, 0, 0, time.UTC)
 		var got []string
 		for i := 0; i < 6; i++ {
-			w, kind := rs.nextOutput()
+			w, kind, _ := rs.nextOutput(now)
 			got = append(got, map[reqKind]string{reqLog: "L", reqResult: "R"}[kind]+w.id()[len(w.id())-1:])
 		}
 		if want := "L1,R2,L3,R4,L5,R2"; strings.Join(got, ",") != want {
 			t.Fatalf("order %v, want %s", got, want)
 		}
-		// Fenced, unreplied or already-sent tasks never qualify.
+		// A result awaiting its uncommitted retry is not due before it; the
+		// earliest retry is reported.
 		for w := range sup.workers {
-			w.fenced = true
+			if w.outcome != nil {
+				w.nextSend = now.Add(resultRetry)
+			}
 		}
-		if w, _ := rs.nextOutput(); w != nil {
-			t.Fatal("a fenced task was picked")
+		for i := 0; i < 3; i++ {
+			if w, kind, retry := rs.nextOutput(now); kind != reqLog || !retry.Equal(now.Add(resultRetry)) {
+				t.Fatalf("retry pass %d picked %v %v (retry %v)", i, w, kind, retry)
+			}
+		}
+		// Unbound (fenced), unreplied or committed tasks never qualify.
+		for w := range sup.workers {
+			w.tag = nil
+		}
+		if w, _, _ := rs.nextOutput(now); w != nil {
+			t.Fatal("an unbound task was picked")
 		}
 	})
 	t.Run("bounds", func(t *testing.T) {
@@ -178,8 +198,10 @@ func TestTaskStream(t *testing.T) {
 		t.Run("output-exchange", func(t *testing.T) {
 			t.Parallel()
 			// A task_log receipt not acknowledged within four seconds of its
-			// slot reservation ends the session; the output is never resent
-			// on the next attachment. Chunks are at most 16 KiB.
+			// slot reservation ends the session. Chunks are at most 16 KiB.
+			// The next attachment reconciles the execution (continue) and
+			// resends exactly the unacknowledged chunk, then the rest, then
+			// the result.
 			fp := startFakePlane(t)
 			tr := startTaskRun(t, fp, taskOpts{})
 			ins, run := manuals(t, tr.dir, "a", "i")
@@ -201,23 +223,30 @@ func TestTaskStream(t *testing.T) {
 				t.Fatalf("ended with %v", ended.err)
 			}
 			tr.advanceBackoff(t, backoff(0, 0.5))
-			s = tr.connect(t, 2, 2, roleConfig("a", ins, run))
+			s, _ = tr.reconnect(t, 2, 2, map[string]string{st.TaskID: contract.ActionContinue}, roleConfig("a", ins, run))
+			rid = s.nextB()
+			again := s.c.expectLog(rid)
+			if again.Offset != lb.Offset || !bytes.Equal(again.Data, lb.Data) || again.LateDigest != nil {
+				t.Fatalf("resent chunk at %d of %d bytes", again.Offset, len(again.Data))
+			}
+			s.c.ackLog(rid, st.TaskID, again.Offset+len(again.Data))
 			ch.exitCode(0)
 			tr.settled(t, st.TaskID)
+			r, rest := s.drain(t, st)
+			if len(rest) != contract.MaxLogChunkBytes/2 || r.OutputBytes != 3*contract.MaxLogChunkBytes/2 {
+				t.Fatalf("after the resend: %d bytes, result %+v", len(rest), r)
+			}
 			tr.clk.Advance(heartbeatInterval)
 			if hb := s.beat(t, 2); hb.Roles[0].Inflight != 0 {
 				t.Fatalf("heartbeat %+v", hb.Roles)
 			}
-			// Nothing of the fenced task follows: the next frame is the
-			// next heartbeat.
-			tr.clk.Advance(heartbeatInterval)
-			s.beat(t, 2)
 		})
 		t.Run("preparation", func(t *testing.T) {
 			t.Parallel()
-			// Preparation is bounded to two seconds from receipt: a start
-			// still preparing then is refused (preparation_timeout) and its
-			// worker is never authorized afterwards; the stream stays up.
+			// Preparation is bounded to ten seconds from receipt (06a): a
+			// start still preparing then is refused (preparation_timeout)
+			// and its worker is never authorized afterwards; the stream
+			// stays up and keeps its heartbeats through the budget.
 			fp := startFakePlane(t)
 			bo := &blockingOpen{arrived: make(chan struct{}), release: make(chan struct{})}
 			tr := startTaskRun(t, fp, taskOpts{adjust: func(d *deps) { d.openManual = bo.open }})
@@ -230,8 +259,28 @@ func TestTaskStream(t *testing.T) {
 			st := startBody(1, s.cfgs[0], 1, 1, "stuck")
 			s.c.sendStart("p2", st)
 			<-bo.arrived
-			tr.clk.Advance(prepBudget)
-			r := s.c.startResult("p2")
+			tr.clk.Advance(heartbeatInterval)
+			s.beat(t, 1)
+			// At the budget the refusal and the next heartbeat are both due:
+			// read them in whichever order they were written.
+			tr.clk.Advance(prepBudget - heartbeatInterval)
+			var r *contract.TaskStartResult
+			for r == nil {
+				f := s.c.recv()
+				switch f.Type {
+				case contract.FrameHeartbeat:
+					s.c.send(contract.ProtocolVersion, contract.FrameHeartbeatAck, f.RequestID, nil)
+					s.b++
+				case contract.FrameTaskStartResult:
+					got, err := contract.DecodeTaskStartResult(f.Body)
+					if err != nil || f.RequestID != "p2" {
+						t.Fatalf("start result %s %v", f.Body, err)
+					}
+					r = &got
+				default:
+					t.Fatalf("unexpected %s", f.Type)
+				}
+			}
 			if r.Err == nil || r.Err.Details["reason"] != contract.ReasonPreparationTimeout {
 				t.Fatalf("stuck start = %+v", r)
 			}
@@ -239,9 +288,11 @@ func TestTaskStream(t *testing.T) {
 			close(bo.release)
 			tr.ev.awaitMatch(t, evTaskRefused, func(ev event) bool { return ev.id == st.TaskID })
 			tr.noChild(t)
-			tr.clk.Advance(heartbeatInterval - prepBudget)
-			if hb := s.beat(t, 1); hb.Roles[0].Inflight != 0 {
-				t.Fatalf("the timed-out start kept its slot: %+v", hb.Roles)
+			if w := tr.super(t).find(st.TaskID); w != nil {
+				tr.ev.awaitCollected(t, st.TaskID)
+			}
+			if _, err := os.Stat(filepath.Join(tr.root, "tasks", st.TaskID)); !os.IsNotExist(err) {
+				t.Fatalf("the refused start kept its journal: %v", err)
 			}
 		})
 		t.Run("authorization-collection", func(t *testing.T) {
@@ -282,9 +333,13 @@ func TestTaskStream(t *testing.T) {
 		})
 		t.Run("authorized", func(t *testing.T) {
 			t.Parallel()
-			// Start authorized but not returned at the bound: neither ok
-			// nor a refusal is truthful, so the exchange is fenced; the
-			// child that then starts is supervised and never reported.
+			// Launch authorized but not confirmed at the bound (DW6):
+			// neither ok nor a refusal is truthful, so no reply is sent and
+			// the WebSocket closes at once with 1001 and a reason distinct
+			// from a graceful shutdown's; the error is retryable. The
+			// worker, its slot and journal are kept: the next attachment's
+			// inventory reports it running, and after reconciliation its
+			// result flows there.
 			fp := startFakePlane(t)
 			block := make(chan struct{})
 			gate := &gatedFactory{block: block, arrived: make(chan struct{})}
@@ -294,15 +349,44 @@ func TestTaskStream(t *testing.T) {
 			st := startBody(1, s.cfgs[0], 1, 1, "slow start")
 			s.c.sendStart("p2", st)
 			<-gate.arrived
-			tr.clk.Advance(prepBudget)
+			// The heartbeat due mid-budget is answered first.
+			tr.clk.Advance(heartbeatInterval)
+			s.beat(t, 1)
+			tr.clk.Advance(prepBudget - heartbeatInterval)
+			var code websocket.StatusCode
+			var reason string
+			for {
+				r := s.c.next()
+				if r.err != nil {
+					var ce websocket.CloseError
+					if errors.As(r.err, &ce) {
+						code, reason = ce.Code, ce.Reason
+					}
+					break
+				}
+				if f, err := contract.DecodeFrame(r.data, contract.FromSidecar); err == nil && f.Type == contract.FrameTaskStartResult {
+					t.Fatalf("an unconfirmed launch was answered: %s", f.Body)
+				}
+			}
+			if code != websocket.StatusGoingAway || reason != prepOverrunReason || reason == "sidecar shutting down" {
+				t.Fatalf("closed with %v %q", code, reason)
+			}
 			ended := tr.ev.await(t, evEnded)
-			if !strings.Contains(ended.err.Error(), "authorized to start") {
+			if !strings.Contains(ended.err.Error(), "authorized to start") || contract.CodeOf(ended.err) != contract.CodeUnavailable || terminal(ended.err) {
 				t.Fatalf("ended with %v", ended.err)
+			}
+			tr.advanceBackoff(t, backoff(0, 0.5))
+			s, inv := tr.reconnect(t, 2, 2, map[string]string{st.TaskID: contract.ActionContinue}, roleConfig("a", ins, run))
+			if len(inv) != 1 || inv[0].Phase != contract.PhaseRunning || inv[0].StartedAt != nil {
+				t.Fatalf("inventory %+v", inv)
 			}
 			close(block)
 			ch := tr.child(t)
 			ch.exitCode(0)
 			tr.settled(t, st.TaskID)
+			if r, _ := s.drain(t, st); *r.ExitCode != 0 || r.Outcome != contract.OutcomeNatural {
+				t.Fatalf("reconciled result %+v", r)
+			}
 		})
 	})
 	t.Run("result-receipt", func(t *testing.T) {
@@ -356,8 +440,8 @@ func TestTaskStream(t *testing.T) {
 			// Collector B: the session applies the acknowledgement and
 			// collects (the worker is done and acknowledged).
 			rid := s.nextB()
-			s.c.expectResult(rid)
-			s.c.ackResult(rid, st.TaskID)
+			res := s.c.expectResult(rid)
+			s.c.ackResult(rid, st.TaskID, res.Digest, true)
 			collected, acked := false, false
 			deadline := time.After(testWait)
 			for !acked || !collected {
@@ -401,8 +485,8 @@ func TestTaskStream(t *testing.T) {
 		w1 = nil
 		c1.exitCode(0)
 		rid := s.nextB()
-		s.c.expectResult(rid)
-		s.c.ackResult(rid, st1.TaskID)
+		r1 := s.c.expectResult(rid)
+		s.c.ackResult(rid, st1.TaskID, r1.Digest, true)
 		// The acknowledgement and the worker's own completion are
 		// independent: GC is forced only after both the session applied
 		// the ack and the supervisor collected the finished worker.
@@ -432,10 +516,15 @@ func TestTaskStream(t *testing.T) {
 	})
 	t.Run("result-ack-loss", func(t *testing.T) {
 		t.Parallel()
-		// The receipt ack never arrives: after the result's write returned
-		// the clock moves four seconds, the session ends (fencing), the
-		// loss is recorded locally, the child was reaped and its slot
-		// released, and nothing is resent on the next attachment.
+		// The acknowledgement never arrives: after the result's write
+		// returned the clock moves four seconds, the session ends
+		// (fencing), the loss is recorded locally, the child was reaped and
+		// its slot released. A receipt never authorized deletion: the
+		// outbox is kept, the next attachment's inventory reports the
+		// frozen result (the same digest), the plane asks for it
+		// (send_result), and the same result is sent again until a
+		// committed acknowledgement deletes it; a receipt-only
+		// acknowledgement schedules a retry no sooner than one second.
 		fp := startFakePlane(t)
 		tr := startTaskRun(t, fp, taskOpts{})
 		ins, run := manuals(t, tr.dir, "a", "i")
@@ -443,46 +532,60 @@ func TestTaskStream(t *testing.T) {
 		st, ch := s.run(t, 1, 0, "lost ack")
 		ch.exitCode(3)
 		rid := s.nextB()
-		if r := s.c.expectResult(rid); *r.ExitCode != 3 {
-			t.Fatalf("result %+v", r)
+		first := s.c.expectResult(rid)
+		if *first.ExitCode != 3 {
+			t.Fatalf("result %+v", first)
 		}
 		tr.ev.awaitMatch(t, evOutputWritten, func(ev event) bool { return ev.id == rid })
 		tr.clk.Advance(outputExchange)
 		tr.ev.await(t, evEnded)
 		tr.logs.await(t, "result receipt unconfirmed", func(s string) bool { return strings.Contains(s, "result_receipt_unconfirmed") })
 		tr.advanceBackoff(t, backoff(0, 0.5))
-		s = tr.connect(t, 2, 2, roleConfig("a", ins, run))
+		s, inv := tr.reconnect(t, 2, 2, map[string]string{st.TaskID: contract.ActionSendResult}, roleConfig("a", ins, run))
+		if len(inv) != 1 || inv[0].Phase != contract.PhaseResult || *inv[0].ResultDigest != first.Digest {
+			t.Fatalf("inventory %+v", inv)
+		}
+		again := s.resultAck(t, st, false)
+		if again.Digest != first.Digest || *again.ExitCode != 3 {
+			t.Fatalf("resent %+v", again)
+		}
+		// Uncommitted: retried no sooner than a second later.
 		tr.clk.Advance(heartbeatInterval)
 		if hb := s.beat(t, 2); hb.Roles[0].Inflight != 0 {
 			t.Fatalf("slot after the lost ack: %+v", hb.Roles)
 		}
-		tr.clk.Advance(heartbeatInterval)
-		s.beat(t, 2)
+		if third := s.result(t, st); third.Digest != first.Digest {
+			t.Fatalf("retried %+v", third)
+		}
 		tr.ev.awaitCollected(t, st.TaskID)
 		if tr.super(t).find(st.TaskID) != nil {
-			t.Fatal("the unconfirmed result is still held for sending")
+			t.Fatal("the committed result is still held")
+		}
+		if _, err := os.Stat(filepath.Join(tr.root, "tasks", st.TaskID)); !os.IsNotExist(err) {
+			t.Fatalf("the committed outbox remains: %v", err)
 		}
 	})
 }
 
-// gatedFactory holds the next child's Start until released.
+// gatedFactory holds the next guardian's release (the adapter's launch
+// in progress) until released.
 type gatedFactory struct {
 	block   chan struct{}
 	arrived chan struct{}
 	once    sync.Once
 }
 
-func (g *gatedFactory) wrap(next procFactory) procFactory {
-	return func(spec procSpec) taskProc { return &gatedProc{taskProc: next(spec), g: g} }
+func (g *gatedFactory) wrap(next guardianFactory) guardianFactory {
+	return func(spec guardianSpec) guardianProc { return &gatedGuardian{guardianProc: next(spec), g: g} }
 }
 
-type gatedProc struct {
-	taskProc
+type gatedGuardian struct {
+	guardianProc
 	g *gatedFactory
 }
 
-func (p *gatedProc) Start() error {
+func (p *gatedGuardian) Release() {
 	p.g.once.Do(func() { close(p.g.arrived) })
 	<-p.g.block
-	return p.taskProc.Start()
+	p.guardianProc.Release()
 }

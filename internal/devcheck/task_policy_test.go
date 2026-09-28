@@ -74,9 +74,11 @@ var wantTaskSuffix = []string{
 // wantLaunchLedger is the design's per-test incremental task/probe-child
 // launch budget per stress repetition of the sidecar package (the packages
 // shard until design 05b's sidecar follow-up, the sidecar shard since):
-// exactly three OS children, all in the sidecar's process qualification.
+// exactly five OS children since iteration 06a (one probe plus two
+// sequential guardian/adapter pairs), all in the sidecar's process
+// qualification.
 var wantLaunchLedger = []string{
-	"sidecar TestTaskExecutionContract/process|3",
+	"sidecar TestTaskExecutionContract/process|5",
 	"sidecar TestTaskExecutionContract/compose,/exit|0",
 	"adapter TestTaskAdapter/invocation,/extraction,/signals|0",
 	"sidecar TestTaskPlatform/platforms|0",
@@ -180,11 +182,12 @@ func TestTaskPolicy(t *testing.T) {
 			t.Fatal("an unknown wrapper passed")
 		}
 		// Native: the 87 earlier names first and unchanged, then the literal
-		// 41-name suffix; plus the separate sidecar package tuple.
+		// 41-name task suffix (iteration 06a's 13 control names follow it);
+		// plus the separate sidecar package tuple.
 		req := NativeRequiredTests()
-		if len(req) != 128 || strings.Join(req[87:], ",") != strings.Join(wantTaskSuffix, ",") || strings.Join(req[58:87], ",") != strings.Join(roleNames(), ",") ||
+		if len(req) != 141 || strings.Join(req[87:128], ",") != strings.Join(wantTaskSuffix, ",") || strings.Join(req[58:87], ",") != strings.Join(roleNames(), ",") ||
 			strings.Join(taskNames(), ",") != strings.Join(wantTaskSuffix, ",") {
-			t.Fatalf("native required = %v", req[87:])
+			t.Fatalf("native required = %v", req[87:128])
 		}
 		if NativeTaskProcessPackage != "github.com/wedevwork/callsheet/internal/sidecar" ||
 			strings.Join(NativeTaskProcessTests(), ",") != "TestTaskExecutionContract,TestTaskExecutionContract/process" {
@@ -221,23 +224,27 @@ func TestTaskPolicy(t *testing.T) {
 		// the selection) and bench plan, the launch ledger's budget and the
 		// guards. The task children of TestTaskExecutionContract/process
 		// stay in the sidecar package, hence since the follow-up in the
-		// sidecar shard (three concurrent single-CPU invocations, the same
-		// 60 repetitions), and none remain in the packages shard.
+		// sidecar shards (single-CPU invocations: CPU1 alone in sidecar-cpu1
+		// since design 06a-perf, CPU2 and CPU4 concurrent in sidecar; the
+		// same 60 repetitions), and none remain in the packages shard.
 		for _, goos := range []string{"linux", "darwin"} {
 			shards, err := StressShards(goos)
-			if err != nil || len(shards) != 5 || strings.Join(shards[0].Steps[0].Argv, " ") != wantRoleStressPackages ||
+			if err != nil || len(shards) != 7 || strings.Join(shards[0].Steps[0].Argv, " ") != wantRoleStressPackages ||
 				strings.Contains(strings.Join(shards[0].Steps[0].Argv, " "), "./internal/sidecar") ||
-				strings.Join(argvOf(shards[1].Steps), "|") != wantStressPlane1+"|"+wantStressPlane2+"|"+wantStressPlane4 ||
-				shards[2].Name != "sidecar" || strings.Join(argvOf(shards[2].Steps), "|") != wantStressSidecar1+"|"+wantStressSidecar2+"|"+wantStressSidecar4 ||
-				strings.Join(argvOf(shards[3].Steps), "|") != wantStressPG1+"|"+wantStressPG2+"|"+wantStressPG4 ||
-				strings.Join(argvOf(shards[4].Steps), "|") != wantStressFunction+"|"+wantStressPlaneFunction+"|"+wantNodeStressFunction {
+				joinedArgv(shards, 1, 2) != wantStressPlane1+"|"+wantStressPlane2+"|"+wantStressPlane4 ||
+				joinedArgv(shards, 1) != wantStressPlane1 || joinedArgv(shards, 2) != wantStressPlane2+"|"+wantStressPlane4 ||
+				shards[3].Name != "sidecar-cpu1" || shards[4].Name != "sidecar" ||
+				joinedArgv(shards, 3, 4) != wantStressSidecar1+"|"+wantStressSidecar2+"|"+wantStressSidecar4 ||
+				joinedArgv(shards, 3) != wantStressSidecar1 || joinedArgv(shards, 4) != wantStressSidecar2+"|"+wantStressSidecar4 ||
+				joinedArgv(shards, 5) != wantStressPG1+"|"+wantStressPG2+"|"+wantStressPG4 ||
+				joinedArgv(shards, 6) != wantStressFunction+"|"+wantStressPlaneFunction+"|"+wantNodeStressFunction {
 				t.Fatalf("%s stress plan changed: %+v %v", goos, shards, err)
 			}
 		}
 		if got := strings.Join(argvOf(BenchSteps()), "|"); got != wantRoleBenchPlan {
 			t.Fatalf("bench plan = %s", got)
 		}
-		if len(wantLaunchLedger) != 7 || !strings.HasSuffix(wantLaunchLedger[0], "|3") {
+		if len(wantLaunchLedger) != 7 || !strings.HasSuffix(wantLaunchLedger[0], "|5") {
 			t.Fatal("the launch ledger changed")
 		}
 		root := repoRoot(t)
@@ -265,7 +272,7 @@ func TestTaskPolicy(t *testing.T) {
 			}
 		}
 		exe, _ := os.ReadFile(filepath.Join(root, "internal", "sidecar", "task_execution_test.go"))
-		if strings.Count(string(exe), "ledger.real = true") != 1 || !strings.Contains(string(exe), "want exactly 1 and 2") {
+		if strings.Count(string(exe), "ledger.real = true") != 1 || !strings.Contains(string(exe), "want exactly 1 and 4") {
 			t.Fatal("the process qualification lost its single real-child ledger assertion")
 		}
 		helpers, _ := os.ReadFile(filepath.Join(root, "internal", "sidecar", "task_helpers_test.go"))

@@ -36,6 +36,9 @@ type nodeService struct {
 	// helloRead, when non-nil, runs after a hello read returned a frame
 	// and before its deadline is released (tests only).
 	helloRead func(context.Context)
+	// helloArmed, when non-nil, runs after the hello deadline is armed and
+	// before the hello read starts (tests only).
+	helloArmed func(context.Context)
 
 	mu      sync.Mutex
 	closed  bool

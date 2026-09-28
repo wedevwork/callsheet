@@ -245,7 +245,7 @@ func TestTaskContract(t *testing.T) {
 			t.Fatal(err)
 		}
 		f, err := DecodeFrame(m, FromPlane)
-		if err != nil || f.Type != FrameTaskStart || f.Version != 3 {
+		if err != nil || f.Type != FrameTaskStart || f.Version != ProtocolVersion {
 			t.Fatalf("frame %+v %v", f, err)
 		}
 		got, err := DecodeTaskStart(f.Body, testLookup)
@@ -326,7 +326,7 @@ func TestTaskContract(t *testing.T) {
 			t.Fatalf("a full chunk must fit the body limit: %v", err)
 		}
 		logBody := func(data, offset string) string {
-			return `{"task_id":"` + testTaskID + `","execution":{"epoch":"` + testEpoch + `","attachment":1},"offset":` + offset + `,"data":` + data + `}`
+			return `{"task_id":"` + testTaskID + `","execution":{"epoch":"` + testEpoch + `","attachment":1},"offset":` + offset + `,"data":` + data + `,"late_digest":null}`
 		}
 		for name, body := range map[string]string{
 			"empty":        logBody(`""`, "0"),
@@ -355,11 +355,12 @@ func TestTaskContract(t *testing.T) {
 		zero, seven := 0, 7
 		msg := "done"
 		for _, b := range []TaskResultBody{
-			{TaskID: testTaskID, Execution: lb.Execution, ExitCode: &zero, FinalMessage: &msg, OutputBytes: 3},
-			{TaskID: testTaskID, Execution: lb.Execution, ExitCode: &seven},
-			{TaskID: testTaskID, Execution: lb.Execution, Signal: s("SIGKILL"), LogIncomplete: true},
+			{TaskID: testTaskID, Execution: lb.Execution, Outcome: OutcomeNatural, ExitCode: &zero, FinalMessage: &msg, OutputBytes: 3},
+			{TaskID: testTaskID, Execution: lb.Execution, Outcome: OutcomeNatural, ExitCode: &seven},
+			{TaskID: testTaskID, Execution: lb.Execution, Outcome: OutcomeNatural, Signal: s("SIGKILL"), LogIncomplete: true},
+			{TaskID: testTaskID, Execution: lb.Execution, Outcome: OutcomeLost, OutputBytes: 9},
 		} {
-			m, err := EncodeFrame(ProtocolVersion, FrameTaskResult, "b3", b)
+			m, err := EncodeFrame(ProtocolVersion, FrameTaskResult, "b3", b.Sealed())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -383,17 +384,19 @@ func TestTaskContract(t *testing.T) {
 			"invalid":    {TaskID: testTaskID, Execution: lb.Execution, ExitCode: &zero, FinalMessage: s("a\xffb")},
 			"output":     {TaskID: testTaskID, Execution: lb.Execution, ExitCode: &zero, OutputBytes: -1},
 		} {
-			if b.Validate() == nil {
+			b.Outcome = OutcomeNatural
+			if b.Sealed().Validate() == nil {
 				t.Fatalf("%s accepted", name)
 			}
 		}
-		if _, err := DecodeTaskResult([]byte(`{"task_id":"` + testTaskID + `","execution":{"epoch":"` + testEpoch + `","attachment":1},"exit_code":0,"signal":null,"final_message":null,"final_message_truncated":false,"output_bytes":0,"log_incomplete":false}`)); err == nil {
+		if _, err := DecodeTaskResult([]byte(`{"task_id":"` + testTaskID + `","execution":{"epoch":"` + testEpoch + `","attachment":1},"outcome":"natural","exit_code":0,"signal":null,"final_message":null,"final_message_truncated":false,"output_bytes":0,"log_incomplete":false,"digest":"` + strings.Repeat("0", 64) + `"}`)); err == nil {
 			t.Fatal("a result without counter_overflow was accepted")
 		}
-		if a, err := DecodeTaskResultAck([]byte(`{"task_id":"` + testTaskID + `","received":true}`)); err != nil || !a.Received {
+		dg := strings.Repeat("a", 64)
+		if a, err := DecodeTaskResultAck([]byte(`{"task_id":"` + testTaskID + `","digest":"` + dg + `","received":true,"committed":false}`)); err != nil || !a.Received || a.Committed {
 			t.Fatalf("result ack %v", err)
 		}
-		if _, err := DecodeTaskResultAck([]byte(`{"task_id":"` + testTaskID + `","received":false}`)); err == nil {
+		if _, err := DecodeTaskResultAck([]byte(`{"task_id":"` + testTaskID + `","digest":"` + dg + `","received":false,"committed":true}`)); err == nil {
 			t.Fatal("received:false accepted")
 		}
 		// Every wire signal is SIG-prefixed and unique; bare names fail.
@@ -411,15 +414,15 @@ func TestTaskContract(t *testing.T) {
 		}
 	})
 	t.Run("protocol", func(t *testing.T) {
-		if ProtocolVersion != 3 {
+		if ProtocolVersion != 4 {
 			t.Fatalf("protocol %d", ProtocolVersion)
 		}
-		// A protocol-2 peer is refused with both versions named, before its
+		// A protocol-3 peer is refused with both versions named, before its
 		// body is looked at.
-		_, err := DecodeFrame(frame(2, FrameTaskLog, "b1", `{"garbage":true}`), FromSidecar)
+		_, err := DecodeFrame(frame(3, FrameTaskLog, "b1", `{"garbage":true}`), FromSidecar)
 		var ce *Error
-		if !errors.As(err, &ce) || ce.Code != CodeProtocolMismatch || ce.Message != "protocol version mismatch: local=3 remote=2" {
-			t.Fatalf("protocol 2 frame: %v", err)
+		if !errors.As(err, &ce) || ce.Code != CodeProtocolMismatch || ce.Message != "protocol version mismatch: local=4 remote=3" {
+			t.Fatalf("protocol 3 frame: %v", err)
 		}
 		// Heartbeat inflight is 0..MaxConcurrency, may exceed a lowered
 		// concurrency, and forces can_accept false when full.
@@ -541,7 +544,7 @@ func TestTaskContract(t *testing.T) {
 		}
 		good2, _ := EncodeTaskRecord(base)
 		for name, raw := range map[string]string{
-			"schema":       strings.Replace(string(good2), `"schema_version": 1`, `"schema_version": 2`, 1),
+			"schema":       strings.Replace(string(good2), `"schema_version": 2`, `"schema_version": 3`, 1),
 			"enforced":     strings.Replace(string(good2), `"timeout_enforced": false`, `"timeout_enforced": true`, 1),
 			"bool number":  strings.Replace(string(good2), `"timeout_enforced": false`, `"timeout_enforced": 0`, 1),
 			"extra":        strings.Replace(string(good2), `"revision": 1`, `"revision": 1, "x": 1`, 1),
@@ -603,7 +606,7 @@ func TestTaskContract(t *testing.T) {
 			"no result":          {smallView, func(v *TaskView) { v.Result = nil }},
 			"state mismatch":     {smallView, func(v *TaskView) { v.Result.State = TaskFailed }},
 			"commit":             {smallView, func(v *TaskView) {}},
-			"recovery reason":    {smallView, func(v *TaskView) { v.RecoveryRequired = true }},
+			"reconciling final":  {smallView, func(v *TaskView) { v.Reconciling = true }},
 			"persistence reason": {smallView, func(v *TaskView) { v.PersistenceReason = s("other") }},
 			"enforced":           {smallView, func(v *TaskView) { v.TimeoutEnforced = true }},
 			"dropped":            {smallView, func(v *TaskView) { v.Log.DroppedBytes++ }},
@@ -611,7 +614,7 @@ func TestTaskContract(t *testing.T) {
 			"success candidates": {smallView, func(v *TaskView) { v.Candidates = smallRejected().Candidates }},
 			"candidate reason":   {smallRejected, func(v *TaskView) { v.Candidates[0].Reason = "odd" }},
 			"candidate accept":   {smallRejected, func(v *TaskView) { v.Candidates[0].CanAccept = false }},
-			"recovery count":     {smallRejected, func(v *TaskView) { v.Candidates[0].RecoveryInflight = v.Candidates[0].Inflight + 1 }},
+			"reconciling count":  {smallRejected, func(v *TaskView) { v.Candidates[0].ReconcilingInflight = v.Candidates[0].Inflight + 1 }},
 			"rejected reason":    {smallRejected, func(v *TaskView) { v.Reason = nil }},
 		} {
 			bad := c.base()
@@ -629,10 +632,10 @@ func TestTaskContract(t *testing.T) {
 				t.Fatalf("%s accepted", name)
 			}
 		}
-		// A protocol-2 envelope is a mismatch naming both versions.
+		// A protocol-3 envelope is a mismatch naming both versions.
 		small, _ := Encode(TaskShowResponse{Version: ProtocolVersion, Task: smallView()})
-		if _, err := ParseTaskShowResponse(bytes.Replace(small, []byte(`{"version":3`), []byte(`{"version":2`), 1)); !IsCode(err, CodeProtocolMismatch) {
-			t.Fatalf("version 2 view: %v", err)
+		if _, err := ParseTaskShowResponse(bytes.Replace(small, []byte(`{"version":4`), []byte(`{"version":3`), 1)); !IsCode(err, CodeProtocolMismatch) {
+			t.Fatalf("version 3 view: %v", err)
 		}
 		// Lists: ascending IDs, at most 100, next_after is the last ID.
 		sum := func(id string) TaskSummary {
@@ -645,21 +648,21 @@ func TestTaskContract(t *testing.T) {
 		if got, n, err := ParseTaskListResponse(lb); err != nil || len(got) != 2 || *n != next {
 			t.Fatalf("list %v", err)
 		}
-		if b, _ := Encode(TaskListResponse{Version: ProtocolVersion}); string(b) != `{"version":3,"tasks":[],"next_after":null}` {
+		if b, _ := Encode(TaskListResponse{Version: ProtocolVersion}); string(b) != `{"version":4,"tasks":[],"next_after":null}` {
 			t.Fatalf("empty page %s", b)
 		}
 		for name, r := range map[string]TaskListResponse{
-			"unsorted":  {Version: 3, Tasks: []TaskSummary{sum(ids[1]), sum(ids[0])}},
-			"duplicate": {Version: 3, Tasks: []TaskSummary{sum(ids[0]), sum(ids[0])}},
-			"cursor":    {Version: 3, Tasks: []TaskSummary{sum(ids[0])}, NextAfter: &next},
-			"empty cur": {Version: 3, NextAfter: &next},
+			"unsorted":  {Version: 4, Tasks: []TaskSummary{sum(ids[1]), sum(ids[0])}},
+			"duplicate": {Version: 4, Tasks: []TaskSummary{sum(ids[0]), sum(ids[0])}},
+			"cursor":    {Version: 4, Tasks: []TaskSummary{sum(ids[0])}, NextAfter: &next},
+			"empty cur": {Version: 4, NextAfter: &next},
 		} {
 			b, _ := Encode(r)
 			if _, _, err := ParseTaskListResponse(b); err == nil {
 				t.Fatalf("%s accepted", name)
 			}
 		}
-		many := TaskListResponse{Version: 3}
+		many := TaskListResponse{Version: 4}
 		for i := 0; i <= MaxTaskListLimit; i++ {
 			many.Tasks = append(many.Tasks, sum("t_"+strings.Repeat("0", 29)+strconv.FormatInt(int64(100+i), 10)))
 		}
@@ -672,13 +675,13 @@ func TestTaskContract(t *testing.T) {
 		}
 		// Logs: byte exact base64; counters consistent.
 		data := []byte{0, 1, 0xff, '\n', 0x1b}
-		lr := TaskLogsResponse{Version: 3, TaskID: testTaskID, Data: data, RetainedBytes: 5, SourceBytes: 9, DroppedBytes: 4, Truncated: true}
+		lr := TaskLogsResponse{Version: 4, TaskID: testTaskID, Data: data, RetainedBytes: 5, SourceBytes: 9, DroppedBytes: 4, Truncated: true}
 		b, _ = Encode(lr)
 		if got, err := ParseTaskLogsResponse(b); err != nil || !bytes.Equal(got.Data, data) {
 			t.Fatalf("logs %v", err)
 		}
 		// The spliced encoder renders exactly the generic encoder's form.
-		if generic, _ := json.Marshal(lr); string(b) != string(generic) || string(b) != `{"version":3,"task_id":"`+testTaskID+`","data":"AAH/Chs=","retained_bytes":5,"source_bytes":9,"dropped_bytes":4,"truncated":true,"incomplete":false,"counter_overflow":false,"log_may_be_incomplete":false}` {
+		if generic, _ := json.Marshal(lr); string(b) != string(generic) || string(b) != `{"version":4,"task_id":"`+testTaskID+`","data":"AAH/Chs=","retained_bytes":5,"source_bytes":9,"dropped_bytes":4,"truncated":true,"incomplete":false,"counter_overflow":false,"log_may_be_incomplete":false}` {
 			t.Fatalf("logs encoding %s", b)
 		}
 		for name, mut := range map[string]func(*TaskLogsResponse){
@@ -694,7 +697,7 @@ func TestTaskContract(t *testing.T) {
 				t.Fatalf("logs %s accepted", name)
 			}
 		}
-		full := TaskLogsResponse{Version: 3, TaskID: testTaskID, Data: make([]byte, MaxLogRetainedBytes), RetainedBytes: MaxLogRetainedBytes, SourceBytes: MaxLogRetainedBytes}
+		full := TaskLogsResponse{Version: 4, TaskID: testTaskID, Data: make([]byte, MaxLogRetainedBytes), RetainedBytes: MaxLogRetainedBytes, SourceBytes: MaxLogRetainedBytes}
 		if b, _ := Encode(full); len(b)+1 > MaxTaskLogsBytes || len(b) < base64.StdEncoding.EncodedLen(MaxLogRetainedBytes) {
 			t.Fatalf("a full log response is %d bytes", len(b))
 		}
@@ -789,7 +792,7 @@ func smallRejected() TaskView {
 	v := smallView()
 	for i := 0; i < 3; i++ {
 		v.Candidates = append(v.Candidates, TaskCandidate{RoleID: "role-" + strconv.Itoa(i), NodeID: testID, RegistrationOrder: i + 1, NodeLiveness: LivenessOnline,
-			Inflight: 5, RecoveryInflight: 1, Concurrency: MaxConcurrency, CanAccept: true, Reason: ReasonAvailable})
+			Inflight: 5, ReconcilingInflight: 1, Concurrency: MaxConcurrency, CanAccept: true, Reason: ReasonAvailable})
 	}
 	v.State, v.StartedAt = TaskRejected, nil
 	v.Result = &TaskResult{State: TaskRejected, LogTail: v.LogTail}
@@ -803,7 +806,7 @@ func maxRejected() TaskView {
 	var cands []TaskCandidate
 	for i := 0; i < MaxCandidates; i++ {
 		cands = append(cands, TaskCandidate{RoleID: "role-" + strconv.Itoa(i), NodeID: testID, RegistrationOrder: i + 1, NodeLiveness: LivenessOnline,
-			Inflight: 5, RecoveryInflight: 1, Concurrency: MaxConcurrency, CanAccept: true, Reason: ReasonAvailable})
+			Inflight: 5, ReconcilingInflight: 1, Concurrency: MaxConcurrency, CanAccept: true, Reason: ReasonAvailable})
 	}
 	v.Candidates = cands
 	v.State, v.StartedAt = TaskRejected, nil

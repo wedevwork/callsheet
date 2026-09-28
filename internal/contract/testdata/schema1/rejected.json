@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "task_id": "t_00000000000000000000000000000005",
+  "request": {
+    "target": {
+      "kind": "id",
+      "value": "worker-a"
+    },
+    "goal": "golden goal",
+    "payload": [
+      "repo://x"
+    ],
+    "acceptance": "tests pass",
+    "requested_by": {
+      "name": "callsheet",
+      "version": "0.5.0",
+      "hostname": "coord"
+    }
+  },
+  "role": {
+    "id": "worker-a",
+    "name": "implementer",
+    "node": "n_0123456789abcdef0123456789abcdef",
+    "adapter": "fake",
+    "instruction": "/srv/i.md",
+    "runbook": "/srv/r.md",
+    "model": "example",
+    "effort": "medium",
+    "concurrency": 2,
+    "timeout": "2h0m0s",
+    "registration_order": 1
+  },
+  "roles_revision": 3,
+  "effective": {
+    "model": "example",
+    "effort": "medium",
+    "timeout": "2h0m0s"
+  },
+  "timeout_enforced": false,
+  "execution": {
+    "epoch": "0123456789abcdef0123456789abcdef",
+    "attachment": 4
+  },
+  "state": "rejected",
+  "created_at": "2026-09-20T10:00:00Z",
+  "started_at": null,
+  "finished_at": "2026-09-20T10:01:00Z",
+  "exit_code": null,
+  "signal": null,
+  "final_message": null,
+  "final_message_truncated": false,
+  "reason": {
+    "code": "local_full",
+    "message": "the worker is full"
+  },
+  "candidates": [
+    {
+      "role_id": "worker-a",
+      "node_id": "n_0123456789abcdef0123456789abcdef",
+      "registration_order": 1,
+      "node_liveness": "online",
+      "inflight": 1,
+      "recovery_inflight": 0,
+      "concurrency": 2,
+      "can_accept": false,
+      "reason": "full"
+    }
+  ],
+  "log": {
+    "data": "",
+    "source_bytes": 0,
+    "received_bytes": 0,
+    "incomplete": false,
+    "counter_overflow": false
+  },
+  "revision": 2
+}

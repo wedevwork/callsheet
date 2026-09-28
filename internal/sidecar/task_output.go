@@ -42,10 +42,83 @@ type outputRing struct {
 	// drain bound) or the overflow.
 	incomplete bool
 	limit      int // the offset counter's bound (MaxSafeInteger)
+	// resend: the in-flight chunk's attachment ended before its receipt
+	// (iteration 06a); the next attachment resends exactly that chunk.
+	resend bool
+	// unloaded counts a recovered execution's retained tail bytes that are
+	// still only in its journal (starting at base); replay marks such a
+	// ring, whose storage is released once its replayed bytes are
+	// acknowledged (iteration 06a: recovery keeps metadata only).
+	unloaded int
+	replay   bool
 }
 
 func newOutputRing(max int) *outputRing {
 	return &outputRing{max: max, limit: contract.MaxSafeInteger}
+}
+
+// newOutputRingMeta is a recovered execution's ring holding only the
+// metadata of its journal's retained tail (ending at the log's source
+// count; everything before it was acknowledged by some plane): the bytes
+// stay on disk until load.
+func newOutputRingMeta(max int, lg contract.TaskLog) *outputRing {
+	r := &outputRing{max: max, limit: contract.MaxSafeInteger, incomplete: lg.Incomplete, overflow: lg.CounterOverflow, replay: true}
+	r.base = lg.SourceBytes - len(lg.Data)
+	r.end, r.acked, r.unloaded = lg.SourceBytes, r.base, len(lg.Data)
+	return r
+}
+
+// needsLoad reports a recovered tail still only in its journal.
+func (r *outputRing) needsLoad() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.unloaded > 0
+}
+
+// holding reports replayed bytes in memory (unsent or in flight).
+func (r *outputRing) holding() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.n > 0 || r.inflight != nil
+}
+
+// load installs a recovered tail read back from the journal. A tail that
+// does not match the recorded metadata (or could not be read: nil) is
+// dropped and the log marked incomplete.
+func (r *outputRing) load(data []byte) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.unloaded == 0 {
+		return
+	}
+	if len(data) != r.unloaded || len(data) > r.max {
+		r.unloaded, r.incomplete = 0, true
+		r.base = r.end
+		r.acked = max(r.acked, r.base)
+		return
+	}
+	r.unloaded = 0
+	r.grow(len(data))
+	copy(r.buf, data)
+	r.head, r.n = 0, len(data)
+}
+
+// journalLog is the journal's log: the unsent retained tail, ending at
+// the observed source end, and the flags.
+func (r *outputRing) journalLog() contract.TaskLog {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	data := make([]byte, r.n)
+	r.copyOut(data, 0, r.n)
+	return contract.TaskLog{Data: data, SourceBytes: r.end, ReceivedBytes: r.end, Incomplete: r.incomplete, CounterOverflow: r.overflow}
+}
+
+// unbind marks an in-flight chunk for an exact resend: its attachment
+// ended before its receipt, and the plane deduplicates whole chunks.
+func (r *outputRing) unbind() {
+	r.mu.Lock()
+	r.resend = r.inflight != nil
+	r.mu.Unlock()
 }
 
 // write appends p at the next absolute offset, evicting the oldest
@@ -123,6 +196,10 @@ func (r *outputRing) copyOut(dst []byte, from, k int) {
 func (r *outputRing) next() *outChunk {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.inflight != nil && r.resend {
+		r.resend = false
+		return r.inflight
+	}
 	if r.inflight != nil || r.n == 0 {
 		return nil
 	}
@@ -138,7 +215,7 @@ func (r *outputRing) next() *outChunk {
 func (r *outputRing) ack(end int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.inflight = nil
+	r.inflight, r.resend = nil, false
 	if end > r.acked {
 		r.acked = end
 	}
@@ -148,20 +225,24 @@ func (r *outputRing) ack(end int) {
 			r.base = r.acked
 		}
 	}
+	if r.replay && r.n == 0 {
+		r.buf, r.head = nil, 0 // a replayed tail leaves memory once sent
+	}
 }
 
-// drained reports that no unsent byte and no in-flight chunk remain.
+// drained reports that no unsent byte (in memory or still to load from
+// the journal) and no in-flight chunk remain.
 func (r *outputRing) drained() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.n == 0 && r.inflight == nil
+	return r.n == 0 && r.inflight == nil && r.unloaded == 0
 }
 
 // pending reports whether a new chunk could be sent now.
 func (r *outputRing) pending() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.inflight == nil && r.n > 0
+	return (r.inflight == nil && r.n > 0) || (r.inflight != nil && r.resend)
 }
 
 // totals reports the source byte count and the incomplete and overflow
@@ -232,6 +313,16 @@ func newPipes() (*pipes, error) {
 		return nil, err
 	}
 	return p, nil
+}
+
+// closeParent closes the supervisor's ends (the child's ends were handed
+// to the launcher).
+func (p *pipes) closeParent() {
+	for _, f := range []*os.File{p.stdinW, p.stdoutR, p.stderrR} {
+		if f != nil {
+			f.Close()
+		}
+	}
 }
 
 func (p *pipes) closeAll() {

@@ -159,16 +159,21 @@ func readSized(r io.Reader, hint, limit int64) ([]byte, error) {
 
 // loadTasks validates every task document (after scan admitted the
 // layout) against the loaded registry and the enrolled nodes, one at a
-// time. Each snapshot's node must be known and its registration order
-// below next_registration_order; an order that still exists must belong
-// to the same role ID and node, while a vanished order is accepted as
-// historical (recovery-only removal) for any state. Terminal logs are
-// dropped after validation; nonterminal ones are kept for recovery views.
+// time. Both schemas are decoded strictly (schema 1 with iteration 05's
+// exact validation, converted in memory; nothing is written). Each
+// snapshot's node must be known and its registration order below
+// next_registration_order; an order that still exists must belong to the
+// same role ID and node, while a vanished order is accepted as historical
+// (a removed role) for any state. Terminal logs are dropped after
+// validation; nonterminal ones are kept for reconciliation.
 // loadedTask is one validated document: a terminal record's log data is
 // dropped after validation, its retained length kept.
 type loadedTask struct {
 	rec      contract.TaskRecord
 	retained int
+	// lateRetained is the late evidence's retained tail length (its data
+	// is dropped after validation, like a terminal primary tail).
+	lateRetained int
 }
 
 func (l layout) loadTasks(lookup contract.AdapterLookup, doc *roleDoc, nodes map[string]bool) ([]loadedTask, error) {
@@ -207,6 +212,12 @@ func (l layout) loadTasks(lookup contract.AdapterLookup, doc *roleDoc, nodes map
 		lt := loadedTask{rec: rec, retained: len(rec.Log.Data)}
 		if contract.TaskTerminal(rec.State) {
 			lt.rec.Log.Data = nil
+		}
+		if rec.Late != nil {
+			late := *rec.Late
+			lt.lateRetained = len(late.Log.Data)
+			late.Log.Data = nil
+			lt.rec.Late = &late
 		}
 		out = append(out, lt)
 	}
@@ -342,3 +353,56 @@ func (st *taskStore) update(rec contract.TaskRecord) error {
 // publication in tasks/; it is never skipped because the bytes are
 // visible.
 func (st *taskStore) resync() error { return st.d.syncDir(st.l, tasksName) }
+
+// legacyPending counts the schema-1 nonterminal records a Run would
+// resolve lost (the read-only loaders' prospective migration diagnostic).
+func legacyPending(tasks []loadedTask) int {
+	n := 0
+	for _, t := range tasks {
+		if t.rec.Schema == contract.LegacyTaskRecordSchemaVersion && !contract.TaskTerminal(t.rec.State) {
+			n++
+		}
+	}
+	return n
+}
+
+// migrate resolves every schema-1 nonterminal record lost (FP-8): 05 had
+// no durable worker execution journal and protocol 3 cannot reconnect to
+// 4, so such an execution is unrecoverable. One file at a time it writes
+// schema 2 by atomic replacement: state lost with reason
+// legacy_execution_unrecoverable, started_at and output preserved,
+// finished_at at the migration decision. A visible but unconfirmed
+// replacement is resynced before the next record; any failure fails Run
+// before listening (no admission), deleting nothing and inventing no
+// registry entry, and a rerun converts only the records still in schema
+// 1. Terminal schema-1 history is never rewritten here. No PGID is
+// invented and nothing is signalled.
+func (st *taskStore) migrate(tasks []loadedTask, now time.Time, logger func(id string)) ([]loadedTask, error) {
+	for i, t := range tasks {
+		rec := t.rec
+		if rec.Schema != contract.LegacyTaskRecordSchemaVersion || contract.TaskTerminal(rec.State) {
+			continue
+		}
+		if rec.Revision >= contract.MaxSafeInteger {
+			return nil, errf(contract.CodeConflict, "legacy task %s cannot be migrated: its revision counter is exhausted; no task was admitted", rec.TaskID)
+		}
+		f := now.UTC()
+		rec.State, rec.FinishedAt, rec.Revision = contract.TaskLost, &f, rec.Revision+1
+		rec.Reason = &contract.TaskReason{Code: contract.ReasonLegacyUnrecoverable,
+			Message: "an iteration 05 execution cannot be reconciled after the upgrade; its outcome is unconfirmed"}
+		rec.Schema, rec.TimeoutPolicy = contract.TaskRecordSchemaVersion, contract.TimeoutPolicyLegacy
+		err := st.update(rec)
+		if errors.Is(err, errTaskUnconfirmed) {
+			err = st.resync()
+		}
+		if err != nil {
+			return nil, wrapf(contract.CodeInternal, err, "cannot migrate legacy task %s: %v; no task was admitted (a rerun of the plane retries the remaining legacy records)", rec.TaskID, err)
+		}
+		if logger != nil {
+			logger(rec.TaskID)
+		}
+		tasks[i] = loadedTask{rec: rec, retained: len(rec.Log.Data)}
+		tasks[i].rec.Log.Data = nil
+	}
+	return tasks, nil
+}

@@ -107,12 +107,22 @@ func (d *deps) run(ctx context.Context, o RunOptions) error {
 	// cancellation and completed filesystem checks return.
 	defer w.wg.Wait()
 	// Task workers belong to Run (iteration 05): at shutdown every running
-	// child's group is torn down and every worker joined.
-	w.tasks = d.newSupervisor(env, o.GOOS, logger)
+	// execution's guardian cleans its group and every worker is joined.
+	// Iteration 06a: the task journals are recovered first, under the
+	// state lock and before any role readiness or start (their cleanup
+	// continues in the background while the node stays nonaccepting).
+	w.tasks = d.newSupervisor(env, o.GOOS, logger, l)
 	if d.onSupervisor != nil {
 		d.onSupervisor(w.tasks)
 	}
 	defer w.tasks.shutdown()
+	if err := w.tasks.jr.dropLeftovers(s.journalLeftovers); err != nil {
+		return wrapf(contract.CodeInternal, err, "cannot finish an interrupted task journal transaction in %s: %v", l.path(journalDir), err)
+	}
+	if err := w.tasks.recoverJournals(s.journals, env.lookup()); err != nil {
+		return err
+	}
+	w.tasks.startLoops()
 	return d.loop(ctx, c, id, o.SoftwareVersion, env, w, logger)
 }
 

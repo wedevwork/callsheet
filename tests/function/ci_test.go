@@ -196,7 +196,8 @@ func qualifyingEvents(drop, skip string) string {
 	pkg := devcheck.NativePackage
 	evs := []map[string]any{synth("start", pkg, "")}
 	for _, name := range devcheck.NativeRequiredTests() {
-		if strings.HasPrefix(name, "TestPlane") || strings.HasPrefix(name, "TestNode") || strings.HasPrefix(name, "TestRole") || strings.HasPrefix(name, "TestTask") {
+		if strings.HasPrefix(name, "TestPlane") || strings.HasPrefix(name, "TestNode") || strings.HasPrefix(name, "TestRole") || strings.HasPrefix(name, "TestTask") ||
+			strings.HasPrefix(name, "TestControl") {
 			evs = append(evs, synth("run", pkg, name), synth("pass", pkg, name))
 		}
 	}
@@ -587,9 +588,10 @@ const ownerAddContexts = "gh api --method POST \\\n" +
 
 // FP-7: the owner-applied branch protection handoff.
 func TestCIProtectionHandoff(t *testing.T) {
-	// Checks names the four required contexts first, then only the ten
-	// stress workers (iteration 02c, plane since 05b, sidecar since its
-	// sidecar follow-up): no other check name.
+	// Checks names the four required contexts first, then only the
+	// fourteen stress workers (iteration 02c, plane since 05b, sidecar since
+	// its sidecar follow-up, the plane and sidecar CPU1 workers since
+	// 06a-perf): no other check name.
 	checks := docSection(t, "Checks")
 	contexts := regexp.MustCompile("`(ci-[a-z0-9-]+)`").FindAllStringSubmatch(checks, -1)
 	var listed []string
@@ -607,7 +609,7 @@ func TestCIProtectionHandoff(t *testing.T) {
 	sortedListed, sortedAll := slices.Clone(listed), slices.Clone(all)
 	slices.Sort(sortedListed)
 	slices.Sort(sortedAll)
-	if len(listed) < 4 || strings.Join(listed[:4], ",") != strings.Join(cicheck.RequiredChecks(), ",") || !slices.Equal(sortedListed, sortedAll) {
+	if len(listed) < 4 || strings.Join(listed[:4], ",") != strings.Join(cicheck.RequiredChecks(), ",") || !slices.Equal(sortedListed, sortedAll) || len(all) != 18 {
 		t.Fatalf("Checks lists %v, want the required %v first and then only the other jobs of %v", listed, cicheck.RequiredChecks(), all)
 	}
 	bp := docSection(t, "Branch protection")
@@ -673,13 +675,21 @@ func TestCIPRProcedure(t *testing.T) {
 	requireTerms(t, "green step", steps[green], "skipped, canceled, pending or unobserved check is not acceptable")
 	first := docSection(t, "First remote run")
 	requireTerms(t, "First remote run", first, "pending until observed", "run URL", "commit",
-		"conclusions of all fourteen jobs: all four checks, `ci-linux`, `ci-macos`, `ci-linux-stress` and `ci-macos-stress`", "native evidence", "native qualification passed on darwin",
+		"conclusions of all eighteen jobs: all four checks, `ci-linux`, `ci-macos`, `ci-linux-stress` and `ci-macos-stress`, and the fourteen stress workers",
+		"native evidence", "native qualification passed on darwin",
 		"branch protection verification",
 		"git ls-remote https://github.com/actions/checkout.git 'refs/tags/v6.0.2' 'refs/tags/v6.0.2^{}'",
 		"git ls-remote https://github.com/actions/setup-go.git 'refs/tags/v6.3.0' 'refs/tags/v6.3.0^{}'",
 		"peeled commit", "handoff blocker")
-	requireTerms(t, "First remote run", first, "stress evidence from the ten worker logs", "`devcheck: stage stress-packages ok`",
-		"`devcheck: stage stress-plane ok`", "`devcheck: stage stress-sidecar ok`", "`devcheck: stage stress-functions ok`", "elapsed time of each stress command")
+	requireTerms(t, "First remote run", first, "stress evidence from the fourteen worker logs", "`devcheck: stage stress-packages ok`",
+		"`devcheck: stage stress-plane-cpu1 ok`", "`devcheck: stage stress-plane ok`", "`devcheck: stage stress-sidecar-cpu1 ok`",
+		"`devcheck: stage stress-sidecar ok`", "`devcheck: stage stress-functions ok`", "elapsed time of each stress command",
+		"the actual job and step times of all eighteen jobs")
+	for _, stale := range []string{"conclusions of all fourteen jobs", "stress evidence from the ten worker logs", "the actual job and step times of all fourteen jobs"} {
+		if strings.Contains(strings.Join(strings.Fields(first), " "), stale) {
+			t.Fatalf("First remote run keeps the obsolete %q", stale)
+		}
+	}
 	local := docSection(t, "Local verification")
 	requireTerms(t, "Local verification", local, "go run ./cmd/devcheck all", "go run ./cmd/devcheck stress", "actionlint", "not a required dependency")
 }

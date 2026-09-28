@@ -84,8 +84,11 @@ func (d *deps) inspect(ctx context.Context, stateDir string) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	if _, _, err := l.loadState(roleLookup); err != nil {
+	_, tasks, err := l.loadState(roleLookup)
+	if err != nil {
 		return Status{}, err
 	}
-	return l.status(m, d.clock()), nil
+	st := l.status(m, d.clock())
+	st.PendingMigrations = legacyPending(tasks)
+	return st, nil
 }

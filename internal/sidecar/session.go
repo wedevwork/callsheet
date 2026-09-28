@@ -55,6 +55,7 @@ const (
 	reqHeartbeat reqKind = iota
 	reqLog
 	reqResult
+	reqInventory // iteration 06a: one task_inventory page (i1, i2, ...)
 )
 
 // outstanding is the one sidecar request awaiting its reply.
@@ -66,9 +67,12 @@ type outstanding struct {
 	expired  bool
 	kind     reqKind
 	// w and end are a task_log's worker and chunk end, or a task_result's
-	// worker.
-	w   *taskWorker
-	end int
+	// worker and digest; page and final an inventory page's.
+	w      *taskWorker
+	end    int
+	digest string
+	page   int
+	final  bool
 }
 
 // startEntry is one start of this attachment's deduplication table: the
@@ -107,6 +111,8 @@ type reply struct {
 	// started is a task start's worker whose ok:true this reply carries:
 	// its output may flow once the write completes.
 	started *taskWorker
+	// reconFinal: this is the final reconcile page's acknowledgement.
+	reconFinal bool
 }
 
 // snapshot is the installed role configuration of this session.
@@ -191,6 +197,18 @@ type roleSession struct {
 	lastLog    string
 	lastResult string
 	resultTurn bool
+
+	// Iteration 06a reconciliation: the inventory's task IDs frozen at
+	// attachment establishment, the next page, whether the final page was
+	// acknowledged, the last reconcile request number, whether
+	// reconciliation finished (its final acknowledgement written), and
+	// the next uncommitted result's retry.
+	invIDs     []string
+	invPage    int
+	invDone    bool
+	lastR      int
+	reconciled bool
+	retry      timerSlot
 }
 
 // cleanup stops every timer and cancels the session's worker jobs; the
@@ -212,6 +230,7 @@ func (rs *roleSession) cleanup(cancelJobs context.CancelFunc) {
 		rs.cyc.budget.clear()
 	}
 	rs.cadence.clear()
+	rs.retry.clear()
 	cancelJobs()
 }
 
@@ -233,6 +252,9 @@ func (rs *roleSession) run() error {
 			continue
 		}
 		if rs.out != nil && rs.out.expired {
+			if rs.out.kind == reqInventory {
+				return contract.New(contract.CodeUnavailable, "no task inventory acknowledgement within "+inventoryExchange.String())
+			}
 			if rs.out.kind != reqHeartbeat {
 				return contract.New(contract.CodeUnavailable, "no task output acknowledgement within "+outputExchange.String())
 			}
@@ -257,12 +279,23 @@ func (rs *roleSession) run() error {
 			}
 			continue
 		}
-		if !rs.fenced && rs.out == nil {
-			if w, kind := rs.nextOutput(); w != nil {
+		if !rs.fenced && rs.out == nil && !rs.invDone {
+			if err := rs.writeInventory(); err != nil {
+				return err
+			}
+			continue
+		}
+		rs.retry.clear()
+		if !rs.fenced && rs.out == nil && rs.reconciled {
+			w, kind, retry := rs.nextOutput(now)
+			if w != nil {
 				if err := rs.writeOutput(w, kind); err != nil {
 					return err
 				}
 				continue
+			}
+			if !retry.IsZero() {
+				rs.retry.set(rs.d.clock, retry)
 			}
 		}
 		if !rs.fenced && rs.out == nil {
@@ -307,6 +340,8 @@ func (rs *roleSession) run() error {
 		case <-rs.w.freed:
 		case <-startTimer:
 			rs.pend.timer.fired()
+		case <-rs.retry.ch():
+			rs.retry.fired()
 		case <-rs.tasks.notify:
 		case <-rs.ctx.Done():
 		}
@@ -320,9 +355,16 @@ func (rs *roleSession) handle(r readResult) error {
 		return err
 	}
 	switch f.Type {
-	case contract.FrameHeartbeatAck, contract.FrameTaskLogAck, contract.FrameTaskResultAck:
+	case contract.FrameHeartbeatAck, contract.FrameTaskLogAck, contract.FrameTaskResultAck, contract.FrameTaskInventoryAck:
 		return rs.onAck(f, r.at)
+	case contract.FrameTaskReconcile:
+		return rs.onReconcile(f)
 	case contract.FrameRoleValidate, contract.FrameRolesReplace, contract.FrameTaskStart:
+		if !rs.reconciled {
+			// Attachment order (DW5): nothing of the plane's but
+			// reconciliation before its final acknowledgement.
+			return invalid(f.RequestID, "the plane sent "+f.Type+" "+f.RequestID+" before reconciliation completed")
+		}
 		if rs.lastP >= contract.MaxSafeInteger {
 			return invalid(f.RequestID, "the plane request counter is exhausted")
 		}
@@ -352,9 +394,13 @@ func (rs *roleSession) onAck(f contract.NodeFrame, at time.Time) error {
 	if f.RequestID != rs.out.id {
 		return invalid(f.RequestID, "unknown or stale acknowledgement "+f.RequestID+" (want "+rs.out.id+")")
 	}
-	want := map[reqKind]string{reqHeartbeat: contract.FrameHeartbeatAck, reqLog: contract.FrameTaskLogAck, reqResult: contract.FrameTaskResultAck}[rs.out.kind]
+	want := map[reqKind]string{reqHeartbeat: contract.FrameHeartbeatAck, reqLog: contract.FrameTaskLogAck, reqResult: contract.FrameTaskResultAck,
+		reqInventory: contract.FrameTaskInventoryAck}[rs.out.kind]
 	if f.Type != want {
 		return invalid(f.RequestID, "the plane answered "+f.RequestID+" with "+f.Type+" (want "+want+")")
+	}
+	if rs.out.kind == reqInventory {
+		return rs.onInventoryAck(f, at)
 	}
 	if rs.out.kind != reqHeartbeat {
 		return rs.onOutputAck(f, at)
@@ -503,12 +549,20 @@ func (rs *roleSession) writeReply() error {
 			// Output and the result flow only after the start reply was
 			// written on this attachment.
 			w.mu.Lock()
-			if !w.fenced {
+			if w.tag == rs.tag {
 				w.replied = true
 			}
 			w.mu.Unlock()
 		}
 		rs.emit(event{kind: evStartReplied, id: r.body.(contract.TaskStartResult).TaskID})
+		return nil
+	}
+	if r.typ == contract.FrameTaskReconcileAck {
+		if r.reconFinal {
+			rs.reconciled = true
+			rs.emit(event{kind: evReconciled})
+		}
+		rs.emit(event{kind: evReplied, id: r.id})
 		return nil
 	}
 	if r.ack {
@@ -532,7 +586,7 @@ func (rs *roleSession) statuses(now time.Time) []contract.RoleStatus {
 	out := make([]contract.RoleStatus, len(rs.inst.roles))
 	for i, r := range rs.inst.roles {
 		n, blocked := rs.tasks.local(keyOf(r))
-		ok := rs.last != nil && rs.last.rev == rs.inst.rev && i < len(rs.last.passed) && rs.last.passed[i] &&
+		ok := rs.reconciled && rs.last != nil && rs.last.rev == rs.inst.rev && i < len(rs.last.passed) && rs.last.passed[i] &&
 			now.Before(rs.last.start.Add(freshness)) && n < r.Concurrency && !blocked
 		out[i] = contract.RoleStatus{RoleID: r.ID, Inflight: min(n, contract.MaxConcurrency), Concurrency: r.Concurrency, CanAccept: ok}
 	}
@@ -628,5 +682,5 @@ func (rs *roleSession) publish(res *cycleResult) {
 			rs.ready[r.ID] = ok
 		}
 	}
-	rs.emit(event{kind: evCycleDone, rev: res.rev, passed: append([]bool(nil), res.passed...)})
+	rs.emit(event{kind: evCycleDone, rev: res.rev, passed: append([]bool(nil), res.passed...), at: res.start})
 }

@@ -3,58 +3,167 @@
 package sidecar
 
 import (
-	"context"
 	"errors"
+	"fmt"
+	"os"
 	"os/exec"
+	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/wedevwork/callsheet/internal/adapter"
+	"github.com/wedevwork/callsheet/internal/contract"
 	"github.com/wedevwork/callsheet/internal/spikes/processgroup"
 )
 
-// Group teardown bounds (design 05, Execution): one-second TERM grace,
-// five-second disappearance bound polled every 5 ms.
+// Group teardown bounds (design 05, Execution; 06a keeps them): one-second
+// TERM grace in the guardian, five-second disappearance bound polled every
+// 5 ms by the sidecar.
 const (
 	groupGrace    = time.Second
 	groupGoneWait = 5 * time.Second
 	groupPoll     = 5 * time.Millisecond
+	// commandDeadline bounds one control FIFO request.
+	commandDeadline = time.Second
 )
 
-// execProc is a real child: exec with Setpgid, so its process group ID
-// equals its PID and never the supervisor's.
-type execProc struct {
-	cmd  *exec.Cmd
-	spec procSpec
+// execGuardian is a real guardian child: the callsheet binary with
+// GuardianToken, Setpgid (PGID = PID), no setsid, and exactly the fds 3-9
+// of its descriptor table.
+type execGuardian struct {
+	spec  guardianSpec
+	cmd   *exec.Cmd
+	invW  *os.File
+	lifeW *os.File
+	relW  *os.File
+	statR *os.File
+	msgs  chan contract.GuardianStatus
+	diag  *tailWriter
+
+	lifeOnce, relOnce sync.Once
 }
 
-func newExecProc(spec procSpec) taskProc {
-	cmd := &exec.Cmd{Path: spec.path, Args: append([]string{spec.path}, spec.argv...), Env: spec.env, Dir: spec.dir,
-		Stdin: spec.stdin, Stdout: spec.stdout, Stderr: spec.stderr, SysProcAttr: &syscall.SysProcAttr{Setpgid: true}}
-	return &execProc{cmd: cmd, spec: spec}
+func newExecGuardian(spec guardianSpec) guardianProc {
+	return &execGuardian{spec: spec, msgs: make(chan contract.GuardianStatus, 4), diag: &tailWriter{max: maxGuardianDiag * 4}}
 }
 
-func (p *execProc) Start() error {
-	err := p.cmd.Start()
+// tailWriter keeps the last max bytes written (bounded diagnostics).
+type tailWriter struct {
+	mu  sync.Mutex
+	max int
+	b   []byte
+}
+
+func (t *tailWriter) Write(p []byte) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.b = append(t.b, p...)
+	if len(t.b) > t.max {
+		t.b = t.b[len(t.b)-t.max:]
+	}
+	return len(p), nil
+}
+
+func (g *execGuardian) Start() error {
+	inv, err := contract.EncodeGuardianInvocation(g.spec.inv)
+	if err != nil {
+		g.spec.proc.closeEnds()
+		return err
+	}
+	var child []*os.File
+	pipe := func() (*os.File, *os.File, error) {
+		r, w, err := os.Pipe()
+		return r, w, err
+	}
+	invR, invW, err1 := pipe()
+	lifeR, lifeW, err2 := pipe()
+	relR, relW, err3 := pipe()
+	statR, statW, err4 := pipe()
+	if err := errors.Join(err1, err2, err3, err4); err != nil {
+		for _, f := range []*os.File{invR, invW, lifeR, lifeW, relR, relW, statR, statW} {
+			if f != nil {
+				f.Close()
+			}
+		}
+		g.spec.proc.closeEnds()
+		return err
+	}
+	child = []*os.File{invR, lifeR, relR, statW, g.spec.proc.stdin, g.spec.proc.stdout, g.spec.proc.stderr}
+	g.invW, g.lifeW, g.relW, g.statR = invW, lifeW, relW, statR
+	g.cmd = &exec.Cmd{Path: g.spec.exe, Args: []string{g.spec.exe, GuardianToken}, Env: []string{}, Stderr: g.diag,
+		ExtraFiles: child, SysProcAttr: &syscall.SysProcAttr{Setpgid: true}}
+	err = g.cmd.Start()
 	// The child holds its own copies now (or none exists): the parent's
-	// child ends close either way, so EOF follows the child's exit.
-	p.spec.stdin.Close()
-	p.spec.stdout.Close()
-	p.spec.stderr.Close()
-	return err
+	// child ends close either way.
+	for _, f := range child {
+		f.Close()
+	}
+	if err != nil {
+		for _, f := range []*os.File{invW, lifeW, relW, statR} {
+			f.Close()
+		}
+		close(g.msgs)
+		return err
+	}
+	go func() {
+		contract.WriteFramed(invW, inv)
+		invW.Close()
+	}()
+	go func() {
+		defer close(g.msgs)
+		for {
+			b, err := contract.ReadFramed(statR, contract.MaxGuardianStatusBytes)
+			if err != nil {
+				return
+			}
+			s, err := contract.ParseGuardianStatus(b)
+			if err != nil || s.TaskID != g.spec.inv.TaskID || s.Nonce != g.spec.inv.Nonce {
+				return
+			}
+			g.msgs <- s
+		}
+	}()
+	return nil
 }
 
-func (p *execProc) PID() int { return p.cmd.Process.Pid }
+func (g *execGuardian) PID() int                               { return g.cmd.Process.Pid }
+func (g *execGuardian) Status() <-chan contract.GuardianStatus { return g.msgs }
 
-func (p *execProc) Wait() procExit {
-	err := p.cmd.Wait()
+func (g *execGuardian) Release() {
+	g.relOnce.Do(func() {
+		g.relW.Write([]byte{0x01})
+		g.relW.Close()
+	})
+}
+
+func (g *execGuardian) Revoke() { g.relOnce.Do(func() { g.relW.Close() }) }
+func (g *execGuardian) Stop()   { g.lifeOnce.Do(func() { g.lifeW.Close() }) }
+
+func (g *execGuardian) Wait() procExit {
+	err := g.cmd.Wait()
+	g.Stop()
+	g.Revoke()
+	g.statR.Close()
 	var ws syscall.WaitStatus
 	ok := false
-	if p.cmd.ProcessState != nil {
-		ws, ok = p.cmd.ProcessState.Sys().(syscall.WaitStatus)
+	if g.cmd.ProcessState != nil {
+		ws, ok = g.cmd.ProcessState.Sys().(syscall.WaitStatus)
 	}
 	var ee *exec.ExitError
 	return waitOutcome(err, errors.As(err, &ee), ws, ok)
+}
+
+// closeEnds closes an adapter spec's pipe ends (a launch that failed
+// before handing them over).
+func (p procSpec) closeEnds() {
+	for _, f := range []*os.File{p.stdin, p.stdout, p.stderr} {
+		if f != nil {
+			f.Close()
+		}
+	}
 }
 
 // waitOutcome classifies a direct child's wait: a signal death, a normal
@@ -72,12 +181,10 @@ func waitOutcome(err error, exitStatus bool, ws syscall.WaitStatus, ok bool) pro
 	return procExit{err: errors.New("unrecognized wait status")}
 }
 
-// realGroups reuses the qualified process-group mechanics of
-// internal/spikes/processgroup (Escalate, WaitGone, Existence and the
-// kill(2) Signaler): run-owned group teardown only, never its experiment
-// helpers or Linux test subreaper.
-// Its signaler and clock are kill(2) and real time unless injected (the
-// wrapper's own tests drive them without any process).
+// realGroups observes run-owned task groups with the qualified
+// process-group mechanics of internal/spikes/processgroup (WaitGone and
+// Existence over kill(2) with signal 0): never TERM or KILL against a raw
+// PGID. Its signaler and clock are kill(2) and real time unless injected.
 type realGroups struct {
 	sig processgroup.Signaler
 	clk processgroup.Clock
@@ -94,28 +201,134 @@ func (g realGroups) parts() (processgroup.Signaler, processgroup.Clock) {
 	return sig, clk
 }
 
-func (g realGroups) cleanup(pgid int) error {
-	sig, clk := g.parts()
-	alive, err := processgroup.Existence(sig, -pgid)
-	if err == nil && !alive {
-		return nil
+func (g realGroups) gone(pgid int) error {
+	if pgid <= 1 {
+		return processgroup.ErrInvalidGroup
 	}
-	// Members remain, or EPERM (on macOS possibly a zombie-only group,
-	// never proof of absence): escalate while polling for disappearance.
-	gone := make(chan struct{})
-	polled := make(chan struct{})
-	go func() {
-		defer close(polled)
-		if processgroup.WaitGone(sig, clk, groupGrace, groupPoll, -pgid) == nil {
-			close(gone)
-		}
-	}()
-	processgroup.Escalate(context.Background(), processgroup.Plan{PGID: pgid, Grace: groupGrace, Sig: sig, Clock: clk, Done: gone})
-	<-polled
+	sig, clk := g.parts()
 	return processgroup.WaitGone(sig, clk, groupGoneWait, groupPoll, -pgid)
 }
 
-func (g realGroups) terminate(pgid int, exited <-chan struct{}) {
-	sig, clk := g.parts()
-	processgroup.Escalate(context.Background(), processgroup.Plan{PGID: pgid, Grace: groupGrace, Sig: sig, Clock: clk, Done: exited})
+func (g realGroups) exists(pgid int) (bool, error) {
+	if pgid <= 1 {
+		return false, processgroup.ErrInvalidGroup
+	}
+	sig, _ := g.parts()
+	return processgroup.Existence(sig, -pgid)
+}
+
+// sendCommand writes one control command to fifo: a nonblocking open
+// (ENXIO: no reader, so no guardian) and one write below PIPE_BUF within
+// commandDeadline.
+func sendCommand(fifo string, cmd []byte) error {
+	fd, err := unix.Open(fifo, unix.O_WRONLY|unix.O_NONBLOCK|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if errors.Is(err, unix.ENXIO) {
+		return errNoGuardian
+	}
+	if err != nil {
+		return err
+	}
+	f := os.NewFile(uintptr(fd), fifo)
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil || fi.Mode()&os.ModeNamedPipe == 0 {
+		return fmt.Errorf("%s is not a FIFO", fifo)
+	}
+	f.SetWriteDeadline(time.Now().Add(commandDeadline))
+	_, err = f.Write(cmd)
+	return err
+}
+
+// defaultGuardianEnv is the guardian's production OS seam.
+func defaultGuardianEnv() guardianEnv {
+	return guardianEnv{
+		fds:     inheritedFDs,
+		getpid:  os.Getpid,
+		getpgrp: unix.Getpgrp,
+		mkfifo:  func(p string) error { return unix.Mkfifo(p, 0o600) },
+		startAdapter: func(inv contract.GuardianInvocation, stdin, stdout, stderr *os.File) (adapterRun, error) {
+			// The adapter inherits the guardian's group: no Setpgid, no
+			// setsid; only its three stdio descriptors are passed.
+			cmd := &exec.Cmd{Path: inv.Path, Args: append([]string{inv.Path}, inv.Argv...), Env: inv.Env, Dir: inv.Dir,
+				Stdin: stdin, Stdout: stdout, Stderr: stderr}
+			if err := cmd.Start(); err != nil {
+				return nil, err
+			}
+			return execRun{cmd}, nil
+		},
+		notifyTerm: func(c chan<- os.Signal) func() {
+			signal.Notify(c, syscall.SIGTERM)
+			return func() { signal.Stop(c) }
+		},
+		sig:    processgroup.SysSignaler{},
+		clock:  processgroup.RealClock{},
+		grace:  groupGrace,
+		now:    func() time.Time { return time.Now().UTC() },
+		lookup: adapter.Lookup(),
+	}
+}
+
+// execRun is a started adapter.
+type execRun struct{ cmd *exec.Cmd }
+
+func (r execRun) PID() int { return r.cmd.Process.Pid }
+
+func (r execRun) Wait() procExit {
+	err := r.cmd.Wait()
+	var ws syscall.WaitStatus
+	ok := false
+	if r.cmd.ProcessState != nil {
+		ws, ok = r.cmd.ProcessState.Sys().(syscall.WaitStatus)
+	}
+	var ee *exec.ExitError
+	return waitOutcome(err, errors.As(err, &ee), ws, ok)
+}
+
+// guardianFDLayout is the fixed descriptor table: fd, direction (true:
+// the guardian's write end) and name.
+var guardianFDLayout = []struct {
+	fd    int
+	write bool
+	name  string
+}{{3, false, "invocation"}, {4, false, "lifetime"}, {5, false, "release"}, {6, true, "status"}, {7, false, "adapter stdin"},
+	{8, true, "adapter stdout"}, {9, true, "adapter stderr"}}
+
+// inheritedFDs validates and adopts fds 3-9: each open, a pipe, of the
+// right direction (the native access mode), and no two the same
+// underlying pipe; every one is made close-on-exec so the adapter inherits
+// only its explicit stdio.
+func inheritedFDs() (guardianFDs, error) {
+	return checkFDs(unix.FcntlInt, unix.Fstat, unix.CloseOnExec, os.NewFile)
+}
+
+// checkFDs is inheritedFDs over injectable primitives.
+func checkFDs(fcntl func(fd uintptr, cmd, arg int) (int, error), fstat func(fd int, st *unix.Stat_t) error, cloexec func(fd int),
+	newFile func(fd uintptr, name string) *os.File) (guardianFDs, error) {
+	seen := map[[2]uint64]bool{}
+	files := make([]*os.File, 0, len(guardianFDLayout))
+	for _, want := range guardianFDLayout {
+		flags, err := fcntl(uintptr(want.fd), unix.F_GETFL, 0)
+		if err != nil {
+			return guardianFDs{}, fmt.Errorf("fd %d (%s) is missing", want.fd, want.name)
+		}
+		mode := flags & unix.O_ACCMODE
+		if (want.write && mode != unix.O_WRONLY) || (!want.write && mode != unix.O_RDONLY) {
+			return guardianFDs{}, fmt.Errorf("fd %d (%s) is the wrong end of its pipe", want.fd, want.name)
+		}
+		var st unix.Stat_t
+		if err := fstat(want.fd, &st); err != nil {
+			return guardianFDs{}, fmt.Errorf("fd %d (%s) cannot be inspected", want.fd, want.name)
+		}
+		if uint32(st.Mode)&unix.S_IFMT != unix.S_IFIFO {
+			return guardianFDs{}, fmt.Errorf("fd %d (%s) is not a pipe", want.fd, want.name)
+		}
+		key := [2]uint64{uint64(st.Dev), uint64(st.Ino)}
+		if seen[key] {
+			return guardianFDs{}, fmt.Errorf("fd %d (%s) duplicates another descriptor's pipe", want.fd, want.name)
+		}
+		seen[key] = true
+		cloexec(want.fd)
+		files = append(files, newFile(uintptr(want.fd), want.name))
+	}
+	return guardianFDs{inv: files[0], life: files[1], release: files[2], status: files[3], stdin: files[4], stdout: files[5], stderr: files[6]}, nil
 }

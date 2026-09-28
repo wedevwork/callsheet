@@ -58,7 +58,18 @@ const (
 		"with backoff (1, 2, 4, 8, 16, then 30 s) and never exits for that reason. It exits on\n" +
 		"SIGINT or SIGTERM (130), or on a configuration error: protocol version mismatch (7),\n" +
 		"an invalid protocol exchange (2), a node unknown to the plane (3) or failed trust\n" +
-		"(6). Logs are JSON on stderr; stdout stays empty.\n"
+		"(6). Logs are JSON on stderr; stdout stays empty.\n\n" +
+		"Tasks belong to this process, not to one connection: each runs in its own process\n" +
+		"group led by an internal guardian, keeps running while the plane is away and is\n" +
+		"reconciled with the plane on the next connection (never started twice). On SIGINT\n" +
+		"or SIGTERM every running task's group is stopped (TERM, then KILL after 1 s) before\n" +
+		"exit. After a crash, the next run cleans the recorded groups through their\n" +
+		"guardians before it accepts a task; when their absence cannot be proved it accepts\n" +
+		"none and logs cleanup_unconfirmed until an operator repairs it.\n\n" +
+		"Upgrading from protocol 3: stop the old sidecar with SIGTERM and confirm that its\n" +
+		"task processes are gone before starting this version. After an abrupt protocol 3\n" +
+		"crash, stop any remaining task processes by hand first: they were never recorded and\n" +
+		"are not recovered automatically. Run the same callsheet version on the plane.\n"
 )
 
 // boolFlag is a boolean flag that may be given at most once.

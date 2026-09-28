@@ -322,9 +322,15 @@ func (d *deps) session(ctx context.Context, c planeClient, n int, id, sw string,
 	s := d.newSessionConn(ws)
 	defer func() {
 		var pe *protocolError
+		var po *prepOverrunError
 		switch {
 		case ctx.Err() != nil:
 			s.close(websocket.StatusGoingAway, "sidecar shutting down")
+		case errors.As(err, &po):
+			// DW6: no start reply; a 1001 close whose reason is distinct
+			// from a graceful shutdown's; the error stays retryable.
+			s.close(websocket.StatusGoingAway, prepOverrunReason)
+			err = po.err
 		case errors.As(err, &pe):
 			rid := pe.requestID
 			if !contract.ValidRequestID(rid) {
@@ -361,7 +367,7 @@ func (d *deps) session(ctx context.Context, c planeClient, n int, id, sw string,
 	d.emit(event{kind: evConnected, session: n})
 	jobs, cancelJobs := context.WithCancel(ctx)
 	rs := &roleSession{d: d, s: s, ctx: ctx, n: n, id: id, env: env, w: w, logger: logger, onStable: onStable, jobs: jobs,
-		tasks: w.tasks, tag: &attachTag{n: n}, starts: map[string]*startEntry{}}
+		tasks: w.tasks, tag: &attachTag{n: n}, starts: map[string]*startEntry{}, invIDs: w.tasks.ids()}
 	defer rs.cleanup(cancelJobs)
 	return rs.run()
 }

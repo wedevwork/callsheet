@@ -8,7 +8,8 @@ import (
 )
 
 // detachWorker ends w's attachment: by closing its stream, or by letting
-// its lease expire on the fake clock (no write in flight).
+// its lease expire on the fake clock (no write in flight); an expired
+// lease also resolves the node's undecided tasks lost (iteration 06a).
 func (tp *taskPlane) detachWorker(t *testing.T, w *worker, byLease bool) {
 	t.Helper()
 	if byLease {
@@ -21,34 +22,51 @@ func (tp *taskPlane) detachWorker(t *testing.T, w *worker, byLease bool) {
 	tp.log.await(t, "detached "+idA)
 }
 
-// remainingCapacity is the shared remaining-capacity contract: with one
-// started task fenced by the end of its attachment, the same instance's
-// other slot is admissible once the node reconnects, installs and
-// acknowledges its snapshot and reports ready; the old task stays
-// nonterminal and recovery-required; nothing is replayed.
+// remainingCapacity is the shared remaining-capacity contract (06a
+// boundary): with one started task whose attachment ended, the node's
+// return decides. Before its lease expires the new attachment reconciles
+// the running execution (continue, no replay) and the instance's other
+// slot is admissible with both reservations held. When the lease expired
+// first, the task is resolved lost and its slot released once the loss
+// is durable; the returning worker is told to stop it (stop_lost) and a
+// new task is admissible; the old start is never replayed.
 func remainingCapacity(t *testing.T, byLease bool) {
 	tp := startTaskPlane(t, nil, []contract.RoleRecord{record(taskCfg("a", "coder", idA, 2), 1)}, idA)
 	w := tp.worker(t, idA)
 	old := tp.run(t, w, "a", "old", "p2")
+	started := tp.clk.Now()
 	tp.detachWorker(t, w, byLease)
-	v := tp.show(t, old.TaskID)
-	if v.State != contract.TaskRunning || !v.RecoveryRequired || *v.RecoveryReason != contract.RecoveryAttachmentLost || tp.roleInflight(t, "a") != 1 {
+	want := contract.ActionContinue
+	if byLease {
+		tp.log.awaitOnce(t, "lost-latched "+old.TaskID+" "+contract.ReasonLeaseExpired)
+		tp.log.awaitOnce(t, "terminal-committed "+old.TaskID)
+		if v := tp.show(t, old.TaskID); v.State != contract.TaskLost || v.Reason.Code != contract.ReasonLeaseExpired || tp.roleInflight(t, "a") != 0 {
+			t.Fatalf("expired task %+v (inflight %d)", v, tp.roleInflight(t, "a"))
+		}
+		want = contract.ActionStopLost
+	} else if v := tp.show(t, old.TaskID); v.State != contract.TaskRunning || !v.Reconciling || tp.roleInflight(t, "a") != 1 {
 		t.Fatalf("fenced task %+v", v)
 	}
-	w = tp.worker(t, idA)
+	w = tp.workerInv(t, idA, map[string]string{old.TaskID: want}, entry(old, contract.PhaseRunning, &started, nil))
 	nv := tp.admit(t, taskReq(contract.TargetID, "a", "new"))
-	if nv.Role.RegistrationOrder != 1 || nv.Role.ID != "a" || tp.roleInflight(t, "a") != 2 {
+	held := 2
+	if byLease {
+		held = 1
+	}
+	if nv.Role.RegistrationOrder != 1 || nv.Role.ID != "a" || tp.roleInflight(t, "a") != held {
 		t.Fatalf("second task %+v (inflight %d)", nv.Role, tp.roleInflight(t, "a"))
 	}
 	if st := w.start("p2"); st.TaskID != nv.TaskID {
 		t.Fatalf("replayed %s", st.TaskID)
 	}
-	if v := tp.show(t, old.TaskID); !v.RecoveryRequired || v.State != contract.TaskRunning {
+	if v := tp.show(t, old.TaskID); v.Reconciling || (byLease != (v.State == contract.TaskLost)) {
 		t.Fatalf("old task after reuse %+v", v)
 	}
-	cs := wantAdmissionOK(t, tp, "a")
-	if cs.Inflight != 2 || cs.RecoveryInflight != 1 || cs.Reason != contract.ReasonFull {
-		t.Fatalf("candidate %+v", cs)
+	if !byLease {
+		cs := wantAdmissionOK(t, tp, "a")
+		if cs.Inflight != 2 || cs.ReconcilingInflight != 0 || cs.Reason != contract.ReasonFull {
+			t.Fatalf("candidate %+v", cs)
+		}
 	}
 }
 
@@ -62,11 +80,36 @@ func wantAdmissionOK(t *testing.T, tp *taskPlane, role string) contract.TaskCand
 	return candidatesOf(t, err)[0]
 }
 
-// recoveryRemove is the shared recovery-only removal contract: a fenced
-// task's reserved slot blocks dispatch; plain or forced rm removes only
-// the registry entry (the task's record, state, log and order unchanged,
-// no signal); the re-added role is a new instance that starts at zero;
-// the old task derives role_removed, also after a reload.
+// wantRemovalBusy requires both rm forms to be refused for role a with
+// the given held and reconciling counts.
+func wantRemovalBusy(t *testing.T, tp *taskPlane, held, reconciling int) {
+	t.Helper()
+	for _, force := range []bool{false, true} {
+		err := tp.cl.RemoveRole(bg, "a", force)
+		d, _ := err.(*contract.Error)
+		why := contract.ReasonTasksInflight
+		if force {
+			why = contract.ReasonForceNotSupported
+		}
+		if contract.CodeOf(err) != contract.CodeConflict || d == nil || d.Details["reason"] != why {
+			t.Fatalf("rm force=%v: %v", force, err)
+		}
+		h, _ := d.DetailInt("inflight")
+		r, _ := d.DetailInt("reconciling_inflight")
+		if h != held || r != reconciling {
+			t.Fatalf("rm force=%v counts %v", force, d.Details)
+		}
+	}
+}
+
+// recoveryRemove is the shared removal contract (06a replaced 05's
+// recovery-only exception): a task whose attachment ended holds its
+// reservation, so ordinary and forced rm stay busy; at lease expiry the
+// task is resolved lost, and rm stays busy until that loss is durably
+// published. Then rm (plain or forced) removes only the registry entry:
+// the lost record, its log and historical instance are unchanged and
+// reload unchanged; the re-added role is a new instance that starts at
+// zero.
 func recoveryRemove(t *testing.T, force bool) {
 	tp := startTaskPlane(t, nil, []contract.RoleRecord{record(taskCfg("a", "coder", idA, 1), 1)}, idA)
 	w := tp.worker(t, idA)
@@ -75,22 +118,25 @@ func recoveryRemove(t *testing.T, force bool) {
 	tp.clk.Advance(checkpointEvery)
 	tp.log.await(t, "published checkpoint "+old.TaskID)
 	tp.detachWorker(t, w, false)
-	w = tp.worker(t, idA)
-	if c := wantAdmissionOK(t, tp, "a"); c.Reason != contract.ReasonFull || c.RecoveryInflight != 1 {
-		t.Fatalf("reserved slot %+v", c)
-	}
+	wantRemovalBusy(t, tp, 1, 1)
+	hold := tp.th.arm("terminal-commit-queued", old.TaskID)
+	tp.clk.Advance(leaseDuration)
+	call := paused(t, hold, "terminal-commit-queued")
+	tp.log.awaitOnce(t, "lost-latched "+old.TaskID+" "+contract.ReasonLeaseExpired)
+	// Latched but not yet durable: still busy.
+	wantRemovalBusy(t, tp, 1, 0)
+	close(call.release)
+	tp.log.awaitOnce(t, "terminal-committed "+old.TaskID)
 	before := taskBytes(t, tp.root, old.TaskID)
 	if err := tp.cl.RemoveRole(bg, "a", force); err != nil {
-		t.Fatalf("recovery-only rm (force %v): %v", force, err)
-	}
-	if b := w.ackReplace("p2"); len(b.Roles) != 0 {
-		t.Fatalf("snapshot after rm %+v", b)
+		t.Fatalf("rm after the durable loss (force %v): %v", force, err)
 	}
 	v := tp.show(t, old.TaskID)
-	if v.State != contract.TaskRunning || *v.RecoveryReason != contract.RecoveryRoleRemoved || v.Role.RegistrationOrder != 1 {
+	if v.State != contract.TaskLost || v.Reason.Code != contract.ReasonLeaseExpired || v.Role.RegistrationOrder != 1 || v.LogTail != "kept\n" {
 		t.Fatalf("history %+v", v)
 	}
-	rv := tp.add(t, w.peer, "p3", "p4", taskCfg("a", "coder", idA, 1))
+	w = tp.worker(t, idA)
+	rv := tp.add(t, w.peer, "p2", "p3", taskCfg("a", "coder", idA, 1))
 	if rv.RegistrationOrder != 2 || rv.Inflight != 0 {
 		t.Fatalf("re-added %+v", rv)
 	}
@@ -100,12 +146,12 @@ func recoveryRemove(t *testing.T, force bool) {
 	if nv.Role.RegistrationOrder != 2 || tp.roleInflight(t, "a") != 1 {
 		t.Fatalf("new instance task %+v", nv.Role)
 	}
-	w.start("p5")
+	w.start("p4")
 	if !bytes.Equal(before, taskBytes(t, tp.root, old.TaskID)) {
 		t.Fatal("removal rewrote the old task")
 	}
 	tp.restart(t)
-	if v := tp.show(t, old.TaskID); *v.RecoveryReason != contract.RecoveryRoleRemoved || v.LogTail != "kept\n" {
+	if v := tp.show(t, old.TaskID); v.State != contract.TaskLost || v.LogTail != "kept\n" || v.Role.RegistrationOrder != 1 {
 		t.Fatalf("reloaded history %+v", v)
 	}
 	if !bytes.Equal(before, taskBytes(t, tp.root, old.TaskID)) {
@@ -181,7 +227,7 @@ func TestTaskRoleIntegration(t *testing.T) {
 			if contract.CodeOf(err) != contract.CodeConflict || reasonOf(err) != want {
 				t.Fatalf("rm force=%v: %v", force, err)
 			}
-			if d := err.(*contract.Error).Details; d["inflight"] == nil || d["recovery_inflight"] == nil {
+			if d := err.(*contract.Error).Details; d["inflight"] == nil || d["reconciling_inflight"] == nil {
 				t.Fatalf("rm details %v", d)
 			}
 		}
@@ -227,37 +273,36 @@ func TestTaskRoleIntegration(t *testing.T) {
 		// TestTaskInterruption/recovery-remove; here the refusal side.
 		t.Run("mixed", func(t *testing.T) {
 			t.Parallel()
-			// One uncertain and one current reservation: both rm forms are
-			// refused until the current task completes durably; then the
-			// all-uncertain role is removable.
+			// One reconciling and one current reservation: both rm forms are
+			// refused; the current task's durable completion leaves the
+			// reconciling one, still busy; its lease's expiry resolves it
+			// lost, and only then is the role removable.
 			tp := startTaskPlane(t, nil, []contract.RoleRecord{record(taskCfg("a", "coder", idA, 2), 1)}, idA)
 			w := tp.worker(t, idA)
-			tp.run(t, w, "a", "uncertain", "p2")
+			unc := tp.run(t, w, "a", "uncertain", "p2")
+			started := tp.clk.Now()
 			tp.detachWorker(t, w, false)
-			w = tp.worker(t, idA)
+			w = tp.workerInv(t, idA, map[string]string{unc.TaskID: contract.ActionContinue}, entry(unc, contract.PhaseRunning, &started, nil))
 			cur := tp.run(t, w, "a", "current", "p2")
-			for _, force := range []bool{false, true} {
-				err := tp.cl.RemoveRole(bg, "a", force)
-				d, _ := err.(*contract.Error)
-				if contract.CodeOf(err) != contract.CodeConflict {
-					t.Fatalf("mixed rm force=%v: %v", force, err)
-				}
-				held, _ := d.DetailInt("inflight")
-				rec, _ := d.DetailInt("recovery_inflight")
-				if held != 2 || rec != 1 {
-					t.Fatalf("mixed counts %v", d.Details)
-				}
-			}
+			w.c.CloseNow()
+			tp.log.await(t, "detached "+idA)
+			wantRemovalBusy(t, tp, 2, 2)
+			w = tp.workerInv(t, idA, map[string]string{unc.TaskID: contract.ActionContinue, cur.TaskID: contract.ActionContinue},
+				entry(unc, contract.PhaseRunning, &started, nil), entry(cur, contract.PhaseRunning, &started, nil))
 			tp.finish(t, w, cur, 0, 0)
+			wantRemovalBusy(t, tp, 1, 0)
+			w.c.CloseNow()
+			tp.log.await(t, "detached "+idA)
+			tp.clk.Advance(leaseDuration)
+			tp.log.awaitOnce(t, "terminal-committed "+unc.TaskID)
 			if err := tp.cl.RemoveRole(bg, "a", false); err != nil {
-				t.Fatalf("rm after the current task: %v", err)
+				t.Fatalf("rm after the durable loss: %v", err)
 			}
 		})
 		t.Run("mailbox", func(t *testing.T) {
 			t.Parallel()
-			// A captured result awaiting persistence is not
-			// recovery-required, even after detach: rm is refused until its
-			// commit completes.
+			// A captured result awaiting persistence is not reconciling,
+			// even after detach: rm is refused until its commit completes.
 			tp := startTaskPlane(t, nil, []contract.RoleRecord{record(taskCfg("a", "coder", idA, 1), 1)}, idA)
 			w := tp.worker(t, idA)
 			st := tp.run(t, w, "a", "captured", "p2")

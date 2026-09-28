@@ -41,14 +41,12 @@ func TestRoleDistributionContract(t *testing.T) {
 		a1, b1, a2 := roleCfg("a1", "coder", idA), roleCfg("b1", "coder", idB), roleCfg("a2", "coder", idA)
 		rp := startRolePlaneDoc(t, fast(testDeps(t)), docOf(5, 4, record(a1, 1), record(b1, 2), record(a2, 3)), idA, idB, idC)
 		pa := rp.dial(t)
-		pa.hello(idA)
-		pa.expect(contract.FrameHelloOK, "h1")
+		pa.helloOK(idA)
 		if b := pa.ackReplace("p1"); b.Revision != 5 || len(b.Roles) != 2 || b.Roles[0].ID != "a1" || b.Roles[1].ID != "a2" || b.Roles[1].RegistrationOrder != 3 {
 			t.Fatalf("node A snapshot = %+v", b)
 		}
 		pc := rp.dial(t)
-		pc.hello(idC)
-		pc.expect(contract.FrameHelloOK, "h1")
+		pc.helloOK(idC)
 		if b := pc.ackReplace("p1"); b.Revision != 5 || len(b.Roles) != 0 {
 			t.Fatalf("node C snapshot = %+v", b)
 		}
@@ -257,8 +255,7 @@ func TestRoleDistributionContract(t *testing.T) {
 			t.Fatal(err)
 		}
 		q := rp.dial(t)
-		q.hello(idA)
-		q.expect(contract.FrameHelloOK, "h1")
+		q.helloOK(idA)
 		if b := q.ackReplace("p1"); b.Revision != 3 || len(b.Roles) != 0 {
 			t.Fatalf("reconnect snapshot after rm = %+v", b)
 		}
@@ -274,8 +271,7 @@ func TestRoleDistributionContract(t *testing.T) {
 		q.c.CloseNow()
 		rp.log.await(t, "detached "+idA)
 		q2 := rp.dial(t)
-		q2.hello(idA)
-		q2.expect(contract.FrameHelloOK, "h1")
+		q2.helloOK(idA)
 		// A first heartbeat at revision 0 while the snapshot is in flight
 		// renews the lease only.
 		q2.heartbeat(1)
@@ -308,8 +304,7 @@ func TestRoleDistributionContract(t *testing.T) {
 			t.Fatalf("after restart = %+v", v)
 		}
 		r := rp2.dial(t)
-		r.hello(idA)
-		r.expect(contract.FrameHelloOK, "h1")
+		r.helloOK(idA)
 		if b := r.ackReplace("p1"); b.Revision != 3 || len(b.Roles) != 1 {
 			t.Fatalf("restored snapshot = %+v", b)
 		}

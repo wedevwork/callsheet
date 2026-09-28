@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -18,46 +19,56 @@ import (
 	"github.com/wedevwork/callsheet/internal/testkit"
 )
 
-// Iteration 05 task fixtures. Every new task test launches task children
-// only through the counted factory below: injected children are joined
-// goroutines on real OS pipes (zero OS processes), and only
+// Iteration 05 task fixtures, guardian-backed since iteration 06a. Every
+// task test launches task guardians only through the counted factory
+// below: injected guardians and their adapters are joined goroutines on
+// real OS pipes (zero OS processes), and only
 // TestTaskExecutionContract/process delegates to the real exec path. The
 // launch ledger is asserted per test at cleanup, zero included.
 
-// procLedger is a test's counted process factory.
+// procLedger is a test's counted guardian factory.
 type procLedger struct {
 	mu       sync.Mutex
 	real     bool
 	osStarts int
 	children chan *fakeChild
-	startErr error
-	// onStart, when set, runs after a real child started (the /process
-	// qualification observes its process group there).
-	onStart func(pid int)
-	nextPID int
-	// byPID is every injected child by PID (the group fake finds a child
-	// it was never shown, as a real group signal would).
-	byPID map[int]*fakeChild
+	// startErr fails an injected guardian's Start (no guardian); adapterErr
+	// makes an injected guardian report that its adapter failed to start.
+	startErr   error
+	adapterErr error
+	// holdReady, when set, delays every injected guardian's ready message
+	// until it is closed (a preparation that does not complete).
+	holdReady chan struct{}
+	// badReady makes an injected guardian's ready message name another
+	// group ("pgid"); "own" leaves it valid (the test makes it the
+	// sidecar's own group through deps.ownGroup).
+	badReady string
+	// onStart, when set, runs after a real adapter started with its
+	// guardian's and its own PID (the /process qualification observes
+	// the group there).
+	onStart   func(guardian, adapter int)
+	nextPID   int
+	guardians []*fakeGuardian
+	groups    *fakeGroups
 }
 
 func newLedger() *procLedger {
 	return &procLedger{children: make(chan *fakeChild, 64), nextPID: 50000}
 }
 
-// factory is the deps.taskProcs of every new task test.
-func (l *procLedger) factory(spec procSpec) taskProc {
+// factory is the deps.taskGuardians of every task test.
+func (l *procLedger) factory(spec guardianSpec) guardianProc {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.real {
-		return &countedProc{taskProc: newExecProc(spec), l: l}
+		return newCountedGuardian(newExecGuardian(spec), l)
 	}
-	l.nextPID++
-	c := &fakeChild{spec: spec, pid: l.nextPID, exit: make(chan procExit, 1), stdin: make(chan []byte, 1), done: make(chan struct{}), l: l}
-	if l.byPID == nil {
-		l.byPID = map[int]*fakeChild{}
-	}
-	l.byPID[c.pid] = c
-	return c
+	l.nextPID += 2
+	g := &fakeGuardian{l: l, spec: spec, pid: l.nextPID, msgs: make(chan contract.GuardianStatus, 8), done: make(chan struct{})}
+	g.child = &fakeChild{spec: spec.proc, pid: l.nextPID + 1, gpid: l.nextPID, exit: make(chan procExit, 1), stdin: make(chan []byte, 1),
+		done: make(chan struct{}), l: l}
+	l.guardians = append(l.guardians, g)
+	return g
 }
 
 func (l *procLedger) starts() int {
@@ -66,32 +77,215 @@ func (l *procLedger) starts() int {
 	return l.osStarts
 }
 
-// countedProc counts real starts.
-type countedProc struct {
-	taskProc
-	l *procLedger
+// countedGuardian counts a real guardian's start and its adapter's (from
+// its started message), forwarding its status messages.
+type countedGuardian struct {
+	guardianProc
+	l    *procLedger
+	msgs chan contract.GuardianStatus
 }
 
-func (p *countedProc) Start() error {
-	err := p.taskProc.Start()
-	if err == nil {
-		p.l.mu.Lock()
-		p.l.osStarts++
-		on := p.l.onStart
-		p.l.mu.Unlock()
-		if on != nil {
-			on(p.PID())
-		}
+func newCountedGuardian(g guardianProc, l *procLedger) *countedGuardian {
+	return &countedGuardian{guardianProc: g, l: l, msgs: make(chan contract.GuardianStatus, 8)}
+}
+
+func (p *countedGuardian) Start() error {
+	if err := p.guardianProc.Start(); err != nil {
+		close(p.msgs)
+		return err
 	}
-	return err
+	p.l.mu.Lock()
+	p.l.osStarts++
+	p.l.mu.Unlock()
+	go func() {
+		defer close(p.msgs)
+		for m := range p.guardianProc.Status() {
+			if m.Type == contract.GuardianStarted {
+				p.l.mu.Lock()
+				p.l.osStarts++
+				on := p.l.onStart
+				p.l.mu.Unlock()
+				if on != nil {
+					on(p.PID(), m.PID)
+				}
+			}
+			p.msgs <- m
+		}
+	}()
+	return nil
 }
 
-// fakeChild is an injected task child: a goroutine that reads the
-// prompt from its real stdin pipe and writes to its real output pipes as
-// the test directs; Wait returns the exit the test chooses.
+func (p *countedGuardian) Status() <-chan contract.GuardianStatus { return p.msgs }
+
+// fakeGuardian is an injected guardian: ready at once (or when the
+// ledger's hold is released), its adapter a fakeChild started by the
+// release byte, its exit forwarded; it "ends" (its status channel closes)
+// after its adapter's exit or without an adapter.
+type fakeGuardian struct {
+	l     *procLedger
+	spec  guardianSpec
+	pid   int
+	child *fakeChild
+	msgs  chan contract.GuardianStatus
+	done  chan struct{}
+
+	mu                        sync.Mutex
+	released, stopped, exited bool
+	relOnce, stopOnce, once   sync.Once
+}
+
+func (g *fakeGuardian) send(m contract.GuardianStatus) {
+	m.TaskID, m.Nonce = g.spec.inv.TaskID, g.spec.inv.Nonce
+	g.msgs <- m
+}
+
+func (g *fakeGuardian) Start() error {
+	g.l.mu.Lock()
+	err, hold, bad := g.l.startErr, g.l.holdReady, g.l.badReady
+	g.l.mu.Unlock()
+	if err != nil {
+		g.spec.proc.closeEnds()
+		close(g.msgs)
+		close(g.done)
+		return err
+	}
+	go func() {
+		if hold != nil {
+			select {
+			case <-hold:
+			case <-g.done:
+				return
+			}
+		}
+		g.mu.Lock()
+		if !g.exited {
+			pgid := g.pid
+			if bad == "pgid" {
+				pgid = g.pid + 100
+			}
+			g.send(contract.GuardianStatus{Type: contract.GuardianReady, PID: g.pid, PGID: pgid})
+		}
+		g.mu.Unlock()
+	}()
+	return nil
+}
+
+func (g *fakeGuardian) PID() int                               { return g.pid }
+func (g *fakeGuardian) Status() <-chan contract.GuardianStatus { return g.msgs }
+
+// exit ends the guardian once: a never-released adapter's pipe ends
+// close with it.
+func (g *fakeGuardian) exit() {
+	g.once.Do(func() {
+		g.mu.Lock()
+		g.exited = true
+		released := g.released
+		close(g.msgs)
+		g.mu.Unlock()
+		if !released {
+			g.spec.proc.closeEnds()
+		}
+		close(g.done)
+	})
+}
+
+func (g *fakeGuardian) Release() {
+	g.relOnce.Do(func() {
+		g.mu.Lock()
+		if g.stopped || g.exited {
+			g.mu.Unlock()
+			g.exit()
+			return
+		}
+		g.l.mu.Lock()
+		aerr := g.l.adapterErr
+		g.l.mu.Unlock()
+		if aerr != nil {
+			r := guardianStartFailed
+			g.send(contract.GuardianStatus{Type: contract.GuardianError, Reason: &r})
+			g.mu.Unlock()
+			g.exit()
+			return
+		}
+		g.released = true
+		g.mu.Unlock()
+		if err := g.child.Start(); err != nil {
+			r := guardianStartFailed
+			g.mu.Lock()
+			g.send(contract.GuardianStatus{Type: contract.GuardianError, Reason: &r})
+			g.mu.Unlock()
+			g.exit()
+			return
+		}
+		at := contract.FormatTime(time.Now().UTC())
+		g.mu.Lock()
+		g.send(contract.GuardianStatus{Type: contract.GuardianStarted, PID: g.child.pid, StartedAt: &at})
+		g.mu.Unlock()
+		go func() {
+			e := g.child.Wait()
+			s := contract.GuardianStatus{Type: contract.GuardianExit}
+			switch {
+			case e.signal != "":
+				sig := e.signal
+				s.Signal = &sig
+			case e.err != nil:
+				sig := contract.SignalUnknown
+				s.Signal = &sig
+			default:
+				code := e.code
+				s.ExitCode = &code
+			}
+			g.mu.Lock()
+			g.send(s)
+			g.mu.Unlock()
+			g.exit()
+		}()
+	})
+}
+
+func (g *fakeGuardian) Revoke() { g.relOnce.Do(g.exit) }
+
+// Stop is the parent-lifetime pipe's close: a running adapter gets TERM
+// (it exits signaled); a guardian that never released ends at once.
+func (g *fakeGuardian) Stop() {
+	g.stopOnce.Do(func() {
+		if gs := g.l.groups; gs != nil {
+			gs.mu.Lock()
+			gs.signaled = append(gs.signaled, g.pid)
+			ch := gs.stopped
+			gs.mu.Unlock()
+			if ch != nil {
+				select {
+				case ch <- struct{}{}:
+				default:
+				}
+			}
+		}
+		g.mu.Lock()
+		g.stopped = true
+		released := g.released
+		g.mu.Unlock()
+		if released {
+			g.child.signaled("SIGTERM")
+		} else {
+			g.relOnce.Do(g.exit)
+		}
+	})
+}
+
+func (g *fakeGuardian) Wait() procExit {
+	<-g.done
+	return procExit{signal: "SIGKILL"}
+}
+
+// fakeChild is an injected adapter: a goroutine that reads the prompt
+// from its real stdin pipe and writes to its real output pipes as the
+// test directs; Wait returns the exit the test chooses. gpid is its
+// guardian's PID (its process group).
 type fakeChild struct {
 	spec  procSpec
 	pid   int
+	gpid  int
 	l     *procLedger
 	exit  chan procExit
 	stdin chan []byte
@@ -100,15 +294,6 @@ type fakeChild struct {
 }
 
 func (c *fakeChild) Start() error {
-	c.l.mu.Lock()
-	err := c.l.startErr
-	c.l.mu.Unlock()
-	if err != nil {
-		c.spec.stdin.Close()
-		c.spec.stdout.Close()
-		c.spec.stderr.Close()
-		return err
-	}
 	go func() {
 		b, _ := io.ReadAll(c.spec.stdin)
 		c.spec.stdin.Close()
@@ -163,47 +348,84 @@ func (c *fakeChild) prompt(t *testing.T) []byte {
 	}
 }
 
-// fakeGroups is an injected group cleaner: cleanup returns err, and
-// terminate ends the known child as SIGTERM would.
+// fakeGroups is an injected group watcher: gone returns err (and records
+// the group), exists reports alive (by group) or existsErr; signaled
+// records the guardians whose cleanup was requested (Stop).
 type fakeGroups struct {
-	mu       sync.Mutex
-	err      error
-	cleaned  []int
-	signaled []int
-	children map[int]*fakeChild
-	l        *procLedger
+	mu        sync.Mutex
+	err       error
+	cleaned   []int
+	signaled  []int
+	alive     map[int]bool
+	existsErr error
+	gate      chan struct{}
+	l         *procLedger
+	// stopped is notified on every recorded Stop (awaitSignal).
+	stopped chan struct{}
 }
 
-func (g *fakeGroups) cleanup(pgid int) error {
+func (g *fakeGroups) gone(pgid int) error {
+	g.mu.Lock()
+	g.cleaned = append(g.cleaned, pgid)
+	gate := g.gate
+	g.mu.Unlock()
+	if gate != nil {
+		<-gate
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.cleaned = append(g.cleaned, pgid)
 	return g.err
 }
 
-func (g *fakeGroups) terminate(pgid int, exited <-chan struct{}) {
+// hold makes group disappearance checks wait until the returned release
+// runs (a cleanup still in progress).
+func (g *fakeGroups) hold() func() {
+	c := make(chan struct{})
 	g.mu.Lock()
-	g.signaled = append(g.signaled, pgid)
-	c, l := g.children[pgid], g.l
+	g.gate = c
 	g.mu.Unlock()
-	if c == nil && l != nil {
-		l.mu.Lock()
-		c = l.byPID[pgid]
-		l.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			g.mu.Lock()
+			g.gate = nil
+			g.mu.Unlock()
+			close(c)
+		})
 	}
-	if c != nil {
-		c.signaled("SIGTERM")
-	}
-	<-exited
 }
 
-func (g *fakeGroups) track(c *fakeChild) {
+func (g *fakeGroups) exists(pgid int) (bool, error) {
 	g.mu.Lock()
-	if g.children == nil {
-		g.children = map[int]*fakeChild{}
+	defer g.mu.Unlock()
+	return g.alive[pgid], g.existsErr
+}
+
+func (g *fakeGroups) track(c *fakeChild) {}
+
+// awaitSignal waits (bounded) until the guardian of group pgid was asked
+// to clean up (its Stop): stop requests reach the guardian from the
+// worker's goroutine, after the disposition that requested them.
+func (g *fakeGroups) awaitSignal(t *testing.T, pgid int) []int {
+	t.Helper()
+	deadline := time.After(testWait)
+	for {
+		g.mu.Lock()
+		sig, ch := slices.Clone(g.signaled), g.stopped
+		if ch == nil {
+			ch = make(chan struct{}, 1)
+			g.stopped = ch
+		}
+		g.mu.Unlock()
+		if slices.Contains(sig, pgid) {
+			return sig
+		}
+		select {
+		case <-ch:
+		case <-deadline:
+			t.Fatalf("the guardian of group %d was never stopped (stopped %v)", pgid, sig)
+		}
 	}
-	g.children[c.pid] = c
-	g.mu.Unlock()
 }
 
 func (g *fakeGroups) signals() []int {
@@ -217,15 +439,16 @@ func (g *fakeGroups) signals() []int {
 // the injected group cleaner.
 type taskRun struct {
 	*fakeRun
-	script *scriptAdapter
-	dir    string
-	ledger *procLedger
-	groups *fakeGroups
-	tmp    string
-	envMu  sync.Mutex
-	env    []string
-	sup    chan *taskSupervisor
-	cur    *taskSupervisor
+	script   *scriptAdapter
+	dir      string
+	ledger   *procLedger
+	groups   *fakeGroups
+	commands *fakeCommands
+	tmp      string
+	envMu    sync.Mutex
+	env      []string
+	sup      chan *taskSupervisor
+	cur      *taskSupervisor
 }
 
 // taskOpts adjust a task run before it starts.
@@ -237,28 +460,37 @@ type taskOpts struct {
 	// tmp, when set, replaces the injected temp root.
 	tmp string
 	// wrap, when set, wraps the counted factory.
-	wrap func(procFactory) procFactory
+	wrap func(guardianFactory) guardianFactory
+	// root, when set, is the state root (a restart reuses one).
+	root string
 }
 
 func startTaskRun(t *testing.T, fp *fakePlane, o taskOpts) *taskRun {
 	t.Helper()
 	ledger := newLedger()
 	tr := &taskRun{script: newScript(), dir: t.TempDir(), ledger: ledger, groups: &fakeGroups{l: ledger}, tmp: t.TempDir(), sup: make(chan *taskSupervisor, 1),
-		env: []string{"PATH=" + os.Getenv("PATH"), "PWD=/elsewhere", "CALLSHEET_FAKE_READY_FD=4", "KEEP=1", "CALLSHEET_FAKE_READY_FD=5"}}
+		commands: &fakeCommands{},
+		env:      []string{"PATH=" + os.Getenv("PATH"), "PWD=/elsewhere", "CALLSHEET_FAKE_READY_FD=4", "KEEP=1", "CALLSHEET_FAKE_READY_FD=5"}}
 	if o.tmp != "" {
 		tr.tmp = o.tmp
 	}
 	f := &fakeRun{fp: fp, clk: testkit.NewFakeClock(time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)), logs: newSyncLog(), root: newRoot(t)}
+	if o.root != "" {
+		f.root = o.root
+	}
 	f.d = testDeps(f.clk)
 	f.d.adapters = func(string) adapter.Registry { return tr.script.registry() }
 	if o.adapters != nil {
 		f.d.adapters = o.adapters
 	}
-	f.d.taskProcs = tr.ledger.factory
+	ledger.groups = tr.groups
+	f.d.taskGuardians = tr.ledger.factory
 	if o.wrap != nil {
-		f.d.taskProcs = o.wrap(tr.ledger.factory)
+		f.d.taskGuardians = o.wrap(tr.ledger.factory)
 	}
 	f.d.taskGroups = tr.groups
+	f.d.taskCommand = tr.commands.send
+	f.d.guardianExe = func() (string, error) { return "/injected/guardian", nil }
 	f.d.onSupervisor = func(s *taskSupervisor) { tr.sup <- s }
 	f.d.taskEnviron = func() []string {
 		tr.envMu.Lock()
@@ -271,7 +503,9 @@ func startTaskRun(t *testing.T, fp *fakePlane, o taskOpts) *taskRun {
 	}
 	f.ev = observe(f.d)
 	fp.ev = f.ev
-	writeState(t, f.root, testID, fp.url, fp.caPEM)
+	if o.root == "" {
+		writeState(t, f.root, testID, fp.url, fp.caPEM)
+	}
 	exe := o.exe
 	if exe == "" {
 		exe = fakeExeFile(t)
@@ -331,7 +565,6 @@ func (tr *taskRun) child(t *testing.T) *fakeChild {
 	t.Helper()
 	select {
 	case c := <-tr.ledger.children:
-		tr.groups.track(c)
 		return c
 	case <-time.After(testWait):
 		t.Fatal("no task child started")
@@ -416,10 +649,58 @@ func (c *fakeConn) expectResult(rid string) contract.TaskResultBody {
 	return b
 }
 
-// ackResult acknowledges receipt of task_result rid.
-func (c *fakeConn) ackResult(rid, id string) {
+// ackResult acknowledges task_result rid (digest d) as committed or only
+// received.
+func (c *fakeConn) ackResult(rid, id, d string, committed bool) {
 	c.t.Helper()
-	c.send(contract.ProtocolVersion, contract.FrameTaskResultAck, rid, contract.TaskResultAckBody{TaskID: id, Received: true})
+	c.send(contract.ProtocolVersion, contract.FrameTaskResultAck, rid, contract.TaskResultAckBody{TaskID: id, Digest: d, Received: true, Committed: committed})
+}
+
+// inventory reads the sidecar's inventory pages i1, i2, ... until the
+// final one, acknowledging each, and returns their entries.
+func (c *fakeConn) inventory() []contract.TaskInventoryEntry {
+	c.t.Helper()
+	var out []contract.TaskInventoryEntry
+	for n := 1; ; n++ {
+		rid := "i" + strconv.Itoa(n)
+		f := c.expect(contract.FrameTaskInventory, rid)
+		b, err := contract.DecodeTaskInventory(f.Body)
+		if err != nil || b.Page != n-1 {
+			c.t.Fatalf("inventory %s: %v", f.Body, err)
+		}
+		out = append(out, b.Entries...)
+		c.send(contract.ProtocolVersion, contract.FrameTaskInventoryAck, rid, contract.TaskInventoryAckBody{Page: b.Page, Received: true})
+		if b.Final {
+			return out
+		}
+	}
+}
+
+// reconcile answers the inventory with one final reconcile page r1 of
+// actions (task ID to action, for inventoried executions) and waits for
+// the sidecar's acknowledgement write.
+func (c *fakeConn) reconcile(entries []contract.TaskInventoryEntry, actions map[string]string) {
+	c.t.Helper()
+	body := contract.TaskReconcileBody{Final: true}
+	for _, e := range entries {
+		if a, ok := actions[e.TaskID]; ok {
+			body.Entries = append(body.Entries, contract.TaskReconcileEntry{TaskID: e.TaskID, Execution: e.Execution, Action: a})
+		}
+	}
+	c.send(contract.ProtocolVersion, contract.FrameTaskReconcile, "r1", body)
+	c.expect(contract.FrameTaskReconcileAck, "r1")
+	if c.ev != nil {
+		c.ev.awaitWritten(c.t, evReplied, "r1")
+	}
+}
+
+// reconcileEmpty requires an empty inventory and reconciles it.
+func (c *fakeConn) reconcileEmpty() {
+	c.t.Helper()
+	if es := c.inventory(); len(es) != 0 {
+		c.t.Fatalf("inventory %+v, want none", es)
+	}
+	c.reconcile(nil, nil)
 }
 
 // taskSession is one connected session with roles installed.
@@ -432,12 +713,26 @@ type taskSession struct {
 	cfgs []contract.RoleConfig
 }
 
-// connect accepts the next session, acknowledges b1 and installs cfgs as
-// revision rev (orders 1..n, or orders given by orders when non-nil).
+// connect accepts the next session, acknowledges b1, reconciles an empty
+// inventory and installs cfgs as revision rev (orders 1..n).
 func (tr *taskRun) connect(t *testing.T, gen, rev int, cfgs ...contract.RoleConfig) *taskSession {
 	t.Helper()
+	s, entries := tr.reconnect(t, gen, rev, nil, cfgs...)
+	if len(entries) != 0 {
+		t.Fatalf("inventory %+v, want none", entries)
+	}
+	return s
+}
+
+// reconnect is connect for a worker holding executions: it returns the
+// inventory, reconciled with actions.
+func (tr *taskRun) reconnect(t *testing.T, gen, rev int, actions map[string]string, cfgs ...contract.RoleConfig) (*taskSession, []contract.TaskInventoryEntry) {
+	t.Helper()
 	c := tr.fp.accept(t)
-	c.connect()
+	c.helloOK(testID)
+	c.heartbeatAt(1, 0)
+	entries := c.inventory()
+	c.reconcile(entries, actions)
 	s := &taskSession{c: c, tr: tr, b: 2, p: 1, gen: gen, cfgs: cfgs}
 	c.replace("p1", rev, cfgs...)
 	c.expectReplaceAck("p1", rev)
@@ -445,7 +740,7 @@ func (tr *taskRun) connect(t *testing.T, gen, rev int, cfgs ...contract.RoleConf
 	// is still in flight.
 	tr.ev.awaitMatch(t, evAckWritten, func(ev event) bool { return ev.rev == rev })
 	s.p = 2
-	return s
+	return s, entries
 }
 
 // awaitCollected waits until the supervisor collected task id's worker
@@ -556,15 +851,22 @@ func (s *taskSession) logs(t *testing.T, st contract.TaskStartBody, end int) []b
 	return out
 }
 
-// result reads and acknowledges st's task_result.
+// result reads st's task_result and acknowledges it as committed.
 func (s *taskSession) result(t *testing.T, st contract.TaskStartBody) contract.TaskResultBody {
+	t.Helper()
+	return s.resultAck(t, st, true)
+}
+
+// resultAck reads st's task_result and acknowledges it (committed or
+// received only).
+func (s *taskSession) resultAck(t *testing.T, st contract.TaskStartBody, committed bool) contract.TaskResultBody {
 	t.Helper()
 	rid := s.nextB()
 	r := s.c.expectResult(rid)
 	if r.TaskID != st.TaskID || r.Execution != st.Execution {
 		t.Fatalf("result %s for %s", rid, r.TaskID)
 	}
-	s.c.ackResult(rid, st.TaskID)
+	s.c.ackResult(rid, st.TaskID, r.Digest, committed)
 	s.tr.ev.awaitMatch(t, evResultAcked, func(ev event) bool { return ev.id == st.TaskID })
 	return r
 }
@@ -589,18 +891,6 @@ func (tr *taskRun) super(t *testing.T) *taskSupervisor {
 		}
 	}
 	return tr.cur
-}
-
-// find returns the live worker of task id (nil when forgotten).
-func (s *taskSupervisor) find(id string) *taskWorker {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for w := range s.workers {
-		if w.id() == id {
-			return w
-		}
-	}
-	return nil
 }
 
 // drain reads and acknowledges st's remaining task_log requests until its
@@ -628,11 +918,43 @@ func (s *taskSession) drain(t *testing.T, st contract.TaskStartBody) (contract.T
 			if err != nil || r.TaskID != st.TaskID {
 				t.Fatalf("result %s: %v", f.Body, err)
 			}
-			s.c.ackResult(rid, st.TaskID)
+			s.c.ackResult(rid, st.TaskID, r.Digest, true)
 			s.tr.ev.awaitMatch(t, evResultAcked, func(ev event) bool { return ev.id == st.TaskID })
 			return r, out
 		default:
 			t.Fatalf("got %s %s while draining", f.Type, rid)
 		}
 	}
+}
+
+// fakeCommands is the injected control FIFO sender: it records every
+// command and returns err (errNoGuardian models no reader), or delivers
+// the stop to deliver (a live guardian's cleanup).
+type fakeCommands struct {
+	mu      sync.Mutex
+	sent    []string
+	err     error
+	deliver func(fifo string)
+}
+
+func (c *fakeCommands) send(fifo string, cmd []byte) error {
+	c.mu.Lock()
+	c.sent = append(c.sent, fifo+" "+strings.TrimSpace(string(cmd)))
+	err, d := c.err, c.deliver
+	c.mu.Unlock()
+	if err == nil && d != nil {
+		d(fifo)
+	}
+	return err
+}
+
+func (c *fakeCommands) all() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.sent...)
+}
+
+// lookup is the run's adapter metadata (the scripted registry).
+func (tr *taskRun) lookup() contract.AdapterLookup {
+	return adapter.ContractLookup(tr.script.registry())
 }

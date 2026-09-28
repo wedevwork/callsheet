@@ -74,6 +74,10 @@ type Status struct {
 	ServerNotBefore time.Time `json:"server_not_before"`
 	ServerNotAfter  time.Time `json:"server_not_after"`
 	Warnings        []Warning `json:"warnings"`
+	// PendingMigrations counts iteration 05 (schema 1) nonterminal task
+	// records the next plane run resolves lost (iteration 06a's read-only
+	// migration diagnostic; status never writes or releases anything).
+	PendingMigrations int `json:"pending_migrations"`
 }
 
 // Warning is one certificate time condition: Certificate is "ca" or
@@ -131,6 +135,9 @@ type deps struct {
 	// streamHelloRead, when non-nil, runs after a hello read returned a
 	// frame, before its deadline is released (tests only).
 	streamHelloRead func(context.Context)
+	// streamHelloArmed, when non-nil, runs after the hello deadline is
+	// armed and before the hello read starts (tests only).
+	streamHelloArmed func(context.Context)
 	// roleHook, when non-nil, runs at named role mutation stages with the
 	// mutation's context (tests only; iteration 04).
 	roleHook func(stage string, ctx context.Context)

@@ -261,6 +261,8 @@ func TestRoleValidationContract(t *testing.T) {
 		}
 		c.send(t, contract.FrameHeartbeatAck, "b1", nil)
 		rr.ev.await(t, evAck) // T0: b2 is due at T0+5s
+		c.reconcileEmpty(t)
+		rr.ev.awaitWritten(t, evReplied, "r1")
 		ins, run := manuals(t, rr.dir, "a", "x")
 		block := make(chan struct{})
 		rr.script.set(nil, block)
@@ -304,6 +306,8 @@ func TestRoleValidationContract(t *testing.T) {
 		b := c.readHeartbeat(1)
 		wire += mustJSON(t, b)
 		c.send(contract.ProtocolVersion, contract.FrameHeartbeatAck, "b1", nil)
+		wire += mustJSON(t, c.inventory())
+		c.reconcile(nil, nil)
 		c.validate("p1", roleConfig("a", ins, run))
 		if e := c.result("p1"); e != nil {
 			t.Fatal(e)

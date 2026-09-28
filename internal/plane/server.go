@@ -80,7 +80,16 @@ func (d *deps) run(ctx context.Context, o RunOptions) error {
 	if err != nil {
 		return err
 	}
-	ts, err := newTaskService(&taskStore{l: layout{root: o.StateDir}, d: d}, reg, reg.roles, &atomic.Bool{}, d, logger, loaded)
+	// Migration (iteration 06a): schema-1 nonterminal records are resolved
+	// lost, one file at a time, under the state lock and before listening.
+	store := &taskStore{l: layout{root: o.StateDir}, d: d}
+	loaded, err = store.migrate(loaded, d.nodeClock.Now(), func(id string) {
+		logger.Warn("legacy task resolved lost", "task_id", id, "reason", contract.ReasonLegacyUnrecoverable)
+	})
+	if err != nil {
+		return err
+	}
+	ts, err := newTaskService(store, reg, reg.roles, &atomic.Bool{}, d, logger, loaded)
 	if err != nil {
 		return err
 	}
@@ -123,6 +132,7 @@ func (d *deps) serve(ctx context.Context, logger *slog.Logger, m *material, fp s
 	svc := newNodeService(reg, d.nodeClock, logger, certPEM(m.caCert.Raw), d.streamCloseGrace)
 	svc.events = d.streamEvents
 	svc.helloRead = d.streamHelloRead
+	svc.helloArmed = d.streamHelloArmed
 	if reg.roles != nil {
 		svc.roles = newRoleService(reg.roles, reg, d.nodeClock, logger)
 		svc.roles.events = d.streamEvents
@@ -154,6 +164,15 @@ func (d *deps) serve(ctx context.Context, logger *slog.Logger, m *material, fp s
 	logger.Info("listening", "bind", ln.Addr().String(), "ca_fingerprint", fp)
 	if d.ready != nil {
 		d.ready(ln.Addr())
+	}
+	if reg.tasks != nil {
+		// Iteration 06a: the loss worker runs, and each node holding loaded
+		// nonterminal tasks gets its one startup reconciliation grace,
+		// armed at listener readiness immediately before connections are
+		// accepted (slow state loading never consumes it).
+		reg.tasks.start()
+		reg.armGrace(d.nodeClock.Now(), reg.tasks.graceNodes())
+		reg.tasks.event("startup-grace-armed")
 	}
 	svc.startSweep()
 	done := make(chan error, 1)

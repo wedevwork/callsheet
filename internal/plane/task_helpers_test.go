@@ -227,21 +227,33 @@ type worker struct {
 	node string
 	// marks are the log positions before each sidecar request was sent.
 	marks map[string]int
+	// dialed is the log position before this worker's stream was dialed
+	// (set by worker and workerInv): its session's detach follows it.
+	dialed int
+}
+
+// detached waits until the plane detached this worker's session. A close
+// the worker observed is sent while the session is still ending: the
+// session's own state changes (an uncertain start, the detach) follow
+// it, and a new stream of the node is refused until the detach.
+func (w *worker) detached() {
+	w.t.Helper()
+	w.ev.awaitFrom(w.t, w.dialed, "detached "+w.node)
 }
 
 // online connects id's worker: hello, the initial snapshot acknowledged,
 // every role ready, and one heartbeat.
 func (tp *taskPlane) worker(t *testing.T, id string) *worker {
 	t.Helper()
+	dialed := tp.log.mark()
 	p := tp.dial(t)
 	p.ready = map[string]bool{}
-	p.hello(id)
-	p.expect(contract.FrameHelloOK, "h1")
+	p.helloOK(id)
 	b := p.ackReplace("p1")
 	for _, r := range b.Roles {
 		p.ready[r.ID] = true
 	}
-	w := &worker{peer: p, b: 1, ev: tp.log, node: id, marks: map[string]int{}}
+	w := &worker{peer: p, b: 1, ev: tp.log, node: id, marks: map[string]int{}, dialed: dialed}
 	tp.workers = append(tp.workers, w)
 	w.beat()
 	return w
@@ -261,7 +273,7 @@ func (w *worker) beat() {
 
 // isPlaneRequest reports frames the plane initiates.
 func isPlaneRequest(typ string) bool {
-	return typ == contract.FrameRolesReplace || typ == contract.FrameRoleValidate || typ == contract.FrameTaskStart
+	return typ == contract.FrameRolesReplace || typ == contract.FrameRoleValidate || typ == contract.FrameTaskStart || typ == contract.FrameTaskReconcile
 }
 
 // reply reads the plane's reply rid of type typ, holding plane requests
@@ -336,9 +348,10 @@ func (w *worker) log(st contract.TaskStartBody, off int, data []byte) int {
 	return w.logAck(w.sendLog(st, off, data))
 }
 
-// result builds a result body for st.
+// result builds a sealed natural result body for st.
 func result(st contract.TaskStartBody, exit int, out int, final *string) contract.TaskResultBody {
-	return contract.TaskResultBody{TaskID: st.TaskID, Execution: st.Execution, ExitCode: &exit, FinalMessage: final, OutputBytes: out}
+	return contract.TaskResultBody{TaskID: st.TaskID, Execution: st.Execution, Outcome: contract.OutcomeNatural, ExitCode: &exit, FinalMessage: final,
+		OutputBytes: out}.Sealed()
 }
 
 // sendResult sends a task_result and returns its request ID.
@@ -350,8 +363,9 @@ func (w *worker) sendResult(b contract.TaskResultBody) string {
 	return rid
 }
 
-// resultAck reads the receipt acknowledgement of rid.
-func (w *worker) resultAck(rid, id string) {
+// resultAck reads the acknowledgement of rid and reports whether it was
+// committed.
+func (w *worker) resultAck(rid, id string) bool {
 	w.t.Helper()
 	f := w.reply(contract.FrameTaskResultAck, rid)
 	a, err := contract.DecodeTaskResultAck(f.Body)
@@ -359,6 +373,7 @@ func (w *worker) resultAck(rid, id string) {
 		w.t.Fatalf("result ack %s: %v", f.Body, err)
 	}
 	w.ev.awaitFrom(w.t, w.marks[rid], "result-acked "+w.node+" "+rid)
+	return a.Committed
 }
 
 // taskReq is a valid dispatch request for a target.
@@ -518,4 +533,82 @@ func mustJSONOf(t *testing.T, v any) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+// entry is st's inventory entry in phase: started (running, launched),
+// digest (result or lost phases).
+func entry(st contract.TaskStartBody, phase string, started *time.Time, digest *string) contract.TaskInventoryEntry {
+	e := contract.TaskInventoryEntry{TaskID: st.TaskID, Execution: st.Execution, StartDigest: st.StartDigestHex(), Phase: phase, ResultDigest: digest}
+	if started != nil {
+		s := contract.FormatTime(*started)
+		e.StartedAt = &s
+	}
+	return e
+}
+
+// reconcile reports entries as one final inventory page i1 and returns
+// the plane's dispositions (every reconcile page acknowledged), by task.
+func (p *peer) reconcile(entries ...contract.TaskInventoryEntry) map[string]string {
+	p.t.Helper()
+	p.send(contract.ProtocolVersion, contract.FrameTaskInventory, "i1", contract.TaskInventoryBody{RunID: peerRunID, Final: true, Entries: entries})
+	p.expect(contract.FrameTaskInventoryAck, "i1")
+	out := map[string]string{}
+	for n := 1; ; n++ {
+		rid := "r" + strconv.Itoa(n)
+		f := p.expect(contract.FrameTaskReconcile, rid)
+		b, err := contract.DecodeTaskReconcile(f.Body)
+		if err != nil {
+			p.t.Fatalf("reconcile %s: %v", f.Body, err)
+		}
+		for _, e := range b.Entries {
+			out[e.TaskID] = e.Action
+		}
+		p.send(contract.ProtocolVersion, contract.FrameTaskReconcileAck, rid, contract.TaskReconcileAckBody{Received: true})
+		if b.Final {
+			return out
+		}
+	}
+}
+
+// workerInv connects id's worker like worker, reporting entries in its
+// inventory and requiring the dispositions want.
+func (tp *taskPlane) workerInv(t *testing.T, id string, want map[string]string, entries ...contract.TaskInventoryEntry) *worker {
+	t.Helper()
+	dialed := tp.log.mark()
+	p := tp.dial(t)
+	p.ready = map[string]bool{}
+	p.hello(id)
+	p.expect(contract.FrameHelloOK, "h1")
+	if got := p.reconcile(entries...); len(got) != len(want) {
+		t.Fatalf("dispositions %v, want %v", got, want)
+	} else {
+		for k, v := range want {
+			if got[k] != v {
+				t.Fatalf("dispositions %v, want %v", got, want)
+			}
+		}
+	}
+	tp.log.await(t, "reconciled "+id)
+	b := p.ackReplace("p1")
+	for _, r := range b.Roles {
+		p.ready[r.ID] = true
+	}
+	w := &worker{peer: p, b: 1, ev: tp.log, node: id, marks: map[string]int{}, dialed: dialed}
+	tp.workers = append(tp.workers, w)
+	w.beat()
+	return w
+}
+
+// sendLateLog sends one task_log tagged with digest (a replayed tail).
+func (w *worker) sendLateLog(st contract.TaskStartBody, off int, data []byte, digest string) string {
+	w.t.Helper()
+	rid := w.nextID()
+	w.marks[rid] = w.ev.mark()
+	w.send(contract.ProtocolVersion, contract.FrameTaskLog, rid, contract.TaskLogBody{TaskID: st.TaskID, Execution: st.Execution, Offset: off, Data: data, LateDigest: &digest})
+	return rid
+}
+
+// lostResult builds a sealed lost outcome for st.
+func lostResult(st contract.TaskStartBody, out int) contract.TaskResultBody {
+	return contract.TaskResultBody{TaskID: st.TaskID, Execution: st.Execution, Outcome: contract.OutcomeLost, OutputBytes: out}.Sealed()
 }
