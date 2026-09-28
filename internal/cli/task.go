@@ -27,7 +27,7 @@ const (
 	dispatchUsage = "(--role-id ID | --role-name NAME) --goal TEXT --acceptance TEXT [--payload POINTER ...] [--model MODEL] [--effort EFFORT] [--timeout DURATION] " + trustUsage + " [--json]"
 	taskLsUsage   = "[--limit N] [--after ID] " + trustUsage + " [--json]"
 	taskShowUsage = "ID [--lines N] " + trustUsage + " [--json]"
-	taskLogsUsage = "ID " + trustUsage + " [--json]"
+	taskLogsUsage = "ID [--late] " + trustUsage + " [--json]"
 
 	taskJSONHelp = "  --json             print the plane's response envelope as one JSON value\n"
 
@@ -60,22 +60,28 @@ const (
 		"  --after ID         start after this task ID (the previous page's next_after)\n" +
 		trustHelp + taskJSONHelp + "\n" +
 		"Lists tasks from every coordinator, ordered by task ID, as tab-separated columns\n" +
-		"TASK_ID, STATE, ROLE_ID, NODE, ELAPSED_MS and RECOVERY_REQUIRED, with a next_after\n" +
-		"line when more tasks exist. Tasks created after a page was read may sort before its\n" +
+		"TASK_ID, STATE, ROLE_ID, NODE, ELAPSED_MS and RECONCILING, with a next_after line\n" +
+		"when more tasks exist. Tasks created after a page was read may sort before its\n" +
 		"cursor: list again from the start to see them.\n"
 	taskShowDetails = "Flags:\n" +
 		"  --lines N          the last N lines of retained output (0-200, default 20)\n" +
 		trustHelp + taskJSONHelp + "\n" +
 		"Shows one task as label: value lines: request, role, effective settings, state,\n" +
-		"timestamps, result and the last lines of output, with warnings when the outcome is\n" +
-		"unconfirmed, durability is unconfirmed or output was truncated. Output is shown with\n" +
-		"terminal control bytes escaped. A task whose outcome is unconfirmed stays pending or\n" +
-		"running: automatic recovery is not available in this build (callsheet role rm can\n" +
-		"retire such an instance).\n"
-	taskLogsDetails = "Flags:\n" + trustHelp +
+		"timestamps, result, any late result and the last lines of output, with warnings when\n" +
+		"the execution awaits reconciliation, durability is unconfirmed or output was\n" +
+		"truncated. Output is shown with terminal control bytes escaped. A task whose worker\n" +
+		"disconnected stays pending or running while it is reconciling: its worker reconnects\n" +
+		"and reports it, or its node's lease expires and it becomes lost (outcome and cleanup\n" +
+		"unconfirmed). A lost task is final: a result the worker reports afterwards is kept as\n" +
+		"its late result and never changes its state.\n"
+	taskLogsDetails = "Flags:\n" +
+		"  --late             print the late result's separate output tail instead (a task\n" +
+		"                     without a late result is not_found)\n" + trustHelp +
 		"  --json             print the plane's response envelope (base64 data, byte exact)\n\n" +
 		"Prints the task's complete retained output (at most the last 10 MiB) with terminal\n" +
-		"control bytes escaped; truncation and incompleteness notices go to stderr.\n"
+		"control bytes escaped; truncation and incompleteness notices go to stderr. The\n" +
+		"ordinary output never changes after the task is final; output a worker reports with\n" +
+		"a late result is kept separately (--late).\n"
 )
 
 // taskFlags are the task leaves' own flags.
@@ -83,6 +89,7 @@ type taskFlags struct {
 	roleID, roleName, goal, acceptance, model, effort, timeout single
 	payload                                                    multi
 	limit, after, lines                                        single
+	late                                                       boolFlag
 }
 
 func (tf *taskFlags) dispatchFlags(fs *flag.FlagSet) {
@@ -273,7 +280,8 @@ func taskShow(ctx context.Context, goos string, c *Command, args []string, out, 
 }
 
 func taskLogs(ctx context.Context, goos string, c *Command, args []string, out, errOut io.Writer) int {
-	f, ops, code, ok := parseRemote(c, args, true, false, true, 1, errOut)
+	tf := &taskFlags{}
+	f, ops, code, ok := parseRemote(c, args, true, false, true, 1, errOut, func(fs *flag.FlagSet) { fs.Var(&tf.late, "late", "") })
 	if !ok {
 		return code
 	}
@@ -286,7 +294,13 @@ func taskLogs(ctx context.Context, goos string, c *Command, args []string, out, 
 		return code
 	}
 	defer cl.Close()
-	r, err := cl.TaskLogs(ctx, id)
+	var r contract.TaskLogsResponse
+	var err error
+	if tf.late.val {
+		r, err = cl.TaskLateLogs(ctx, id)
+	} else {
+		r, err = cl.TaskLogs(ctx, id)
+	}
 	if err != nil {
 		return planeFail(errOut, err)
 	}
@@ -363,8 +377,8 @@ func dash(p *string) string {
 func renderCandidates(prefix string, cs []contract.TaskCandidate) string {
 	var b strings.Builder
 	for _, c := range cs {
-		fmt.Fprintf(&b, "%srole_id=%s node=%s registration_order=%d node_liveness=%s inflight=%d recovery_inflight=%d concurrency=%d can_accept=%t reason=%s\n",
-			prefix, c.RoleID, c.NodeID, c.RegistrationOrder, c.NodeLiveness, c.Inflight, c.RecoveryInflight, c.Concurrency, c.CanAccept, c.Reason)
+		fmt.Fprintf(&b, "%srole_id=%s node=%s registration_order=%d node_liveness=%s inflight=%d reconciling_inflight=%d concurrency=%d can_accept=%t reason=%s\n",
+			prefix, c.RoleID, c.NodeID, c.RegistrationOrder, c.NodeLiveness, c.Inflight, c.ReconcilingInflight, c.Concurrency, c.CanAccept, c.Reason)
 	}
 	return b.String()
 }
@@ -388,7 +402,7 @@ func RenderDispatch(v contract.TaskView) string {
 }
 
 // TaskColumns is the text header of task ls.
-var TaskColumns = []string{"TASK_ID", "STATE", "ROLE_ID", "NODE", "ELAPSED_MS", "RECOVERY_REQUIRED"}
+var TaskColumns = []string{"TASK_ID", "STATE", "ROLE_ID", "NODE", "ELAPSED_MS", "RECONCILING"}
 
 // RenderTasks renders the header, one tab-separated row per task and a
 // next_after footer when more tasks exist.
@@ -396,7 +410,7 @@ func RenderTasks(tasks []contract.TaskSummary, next *string) string {
 	var b strings.Builder
 	b.WriteString(joinFields(TaskColumns))
 	for _, s := range tasks {
-		b.WriteString(joinFields([]string{s.TaskID, s.State, s.Role.ID, s.Role.Node, strconv.Itoa(s.ElapsedMS), strconv.FormatBool(s.RecoveryRequired)}))
+		b.WriteString(joinFields([]string{s.TaskID, s.State, s.Role.ID, s.Role.Node, strconv.Itoa(s.ElapsedMS), strconv.FormatBool(s.Reconciling)}))
 	}
 	if next != nil {
 		b.WriteString("next_after: " + *next + "\n")
@@ -432,8 +446,7 @@ func RenderTask(v contract.TaskView) string {
 	line("started_at", dash(v.StartedAt))
 	line("finished_at", dash(v.FinishedAt))
 	line("elapsed_ms", strconv.Itoa(v.ElapsedMS))
-	line("recovery_required", strconv.FormatBool(v.RecoveryRequired))
-	line("recovery_reason", dash(v.RecoveryReason))
+	line("reconciling", strconv.FormatBool(v.Reconciling))
 	line("completion_pending", strconv.FormatBool(v.CompletionPending))
 	line("persistence_reason", dash(v.PersistenceReason))
 	line("durability_confirmed", strconv.FormatBool(v.DurabilityConfirmed))
@@ -455,11 +468,34 @@ func RenderTask(v contract.TaskView) string {
 		line("final_message", msg)
 		line("final_message_truncated", strconv.FormatBool(r.FinalMessageTruncated))
 	}
+	if l := v.LateResult; l != nil {
+		exit := "-"
+		if l.ExitCode != nil {
+			exit = strconv.Itoa(*l.ExitCode)
+		}
+		msg := "null"
+		if l.FinalMessage != nil {
+			msg = jsonString(*l.FinalMessage)
+		}
+		line("late_result", "outcome="+l.Outcome+" digest="+l.Digest+" received_at="+l.ReceivedAt)
+		line("late_exit_code", exit)
+		line("late_signal", dash(l.Signal))
+		line("late_final_message", msg)
+		line("late_final_message_truncated", strconv.FormatBool(l.FinalMessageTruncated))
+		line("late_log", fmt.Sprintf("retained_bytes=%d source_bytes=%d received_bytes=%d truncated=%t incomplete=%t",
+			l.Log.RetainedBytes, l.Log.SourceBytes, l.Log.ReceivedBytes, l.Log.Truncated, l.Log.Incomplete))
+	}
 	m := v.Log
 	line("log", fmt.Sprintf("retained_bytes=%d source_bytes=%d received_bytes=%d dropped_bytes=%d truncated=%t incomplete=%t counter_overflow=%t",
 		m.RetainedBytes, m.SourceBytes, m.ReceivedBytes, m.DroppedBytes, m.Truncated, m.Incomplete, m.CounterOverflow))
-	if v.RecoveryRequired {
-		b.WriteString("warning: " + contract.RecoveryNotice + "\n")
+	if v.Reconciling {
+		b.WriteString("warning: " + contract.ReconcilingNotice + "\n")
+	}
+	if v.State == contract.TaskLost {
+		b.WriteString("warning: the execution's outcome and cleanup are unconfirmed (lost); it is never retried or rerouted\n")
+	}
+	if v.LateResult != nil {
+		b.WriteString("notice: a late result was recorded after the task became final; the state is unchanged (callsheet task logs --late prints its output)\n")
 	}
 	if !v.DurabilityConfirmed {
 		b.WriteString("warning: this task's durability is unconfirmed: the plane could not confirm its record on disk yet\n")

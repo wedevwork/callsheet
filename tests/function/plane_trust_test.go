@@ -354,7 +354,7 @@ func health(c *http.Client, addr string) error {
 	}
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != 200 || string(b) != "{\"status\":\"ok\",\"version\":3}\n" || resp.Header.Get("Content-Type") != "application/json" {
+	if resp.StatusCode != 200 || string(b) != "{\"status\":\"ok\",\"version\":4}\n" || resp.Header.Get("Content-Type") != "application/json" {
 		return fmt.Errorf("health = %d %q", resp.StatusCode, b)
 	}
 	return nil
@@ -1016,7 +1016,7 @@ func TestPlanePlatform(t *testing.T) {
 		"TestPlaneReissue", "TestPlaneReissue/process", "TestPlaneReissue/contracts", "TestPlaneStatus", "TestPlaneStatus/inspection", "TestPlaneStatus/expiry-warnings", "TestPlanePlatform"}
 	// The 28 iteration-02 names are preserved first; iteration 03 appends
 	// the node names (checked by TestNodePlatform).
-	if got := devcheck.NativeRequiredTests(); len(got) != 128 || !slices.Equal(got[:28], required) {
+	if got := devcheck.NativeRequiredTests(); len(got) != 141 || !slices.Equal(got[:28], required) {
 		t.Fatalf("native required = %v", got)
 	}
 	// Every required plane name exists as a top-level test or mandatory

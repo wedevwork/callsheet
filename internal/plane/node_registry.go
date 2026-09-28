@@ -32,6 +32,13 @@ const (
 	leaseDuration        = contract.LeaseMS * time.Millisecond
 	firstHeartbeatWindow = 5 * time.Second
 	sweepInterval        = time.Second
+	// startupGrace is the one plane-startup reconciliation grace of every
+	// node holding loaded nonterminal tasks (iteration 06a, D2): measured
+	// monotonically from listener readiness, it covers the sidecar's
+	// capped 30 s backoff, its 10 s dial, the 5 s hello write and 5 s
+	// hello_ok wait, one 5 s heartbeat interval and a 5 s margin. It is not
+	// a historical lease and never counts downtime.
+	startupGrace = 60 * time.Second
 )
 
 // nodeRel is the root-relative path of a node record.
@@ -292,6 +299,11 @@ type nodeState struct {
 	// heartbeat plus the lease); it is never serialized.
 	deadline time.Time
 	att      *attachment
+	// Startup grace (iteration 06a): armed at listener readiness for a
+	// node holding loaded nonterminal tasks, resolved once, by an
+	// attachment published strictly before its deadline or by its expiry.
+	graceArmed, graceDone bool
+	graceDeadline         time.Time
 }
 
 // attachment is the node's current stream. Only the attachment with the
@@ -314,6 +326,17 @@ type attachment struct {
 	desired roleSnap
 	acked   roleSnap
 	status  []bool
+	// reconciled: this attachment's final reconcile page was acknowledged
+	// (iteration 06a); before it the plane never admits on it, whatever
+	// its heartbeats report. graceWin: it resolved the node's startup
+	// grace, so its first-heartbeat window ending without a lease is a
+	// loss.
+	reconciled bool
+	graceWin   bool
+	// unknown: its inventory reported an execution this plane does not
+	// hold (a conflict, never authority to recreate a task): the node
+	// stays unready on this attachment while it keeps the evidence.
+	unknown bool
 }
 
 // loadNodeRegistry loads and validates every durable record; all nodes
@@ -438,26 +461,80 @@ func (r *nodeRegistry) ensureNodesDir(d *deps) error {
 
 // expireLocked samples nothing itself: at now it marks every lease with
 // now >= deadline offline and evicts attachments whose lease expired or
-// whose first-heartbeat window ended, except the attachment with
-// generation keep. It returns the close callbacks to run outside mu.
+// whose first-heartbeat window ended (the attachment with generation keep
+// keeps its first-heartbeat window: a heartbeat arriving at that instant
+// still counts). It returns the close callbacks to run outside mu.
+//
+// Iteration 06a: an expiring lease is a loss fact for the node's tasks,
+// and an expired lease generation is never revived (a heartbeat arriving
+// exactly at expiry finds its attachment evicted); an unresolved startup
+// grace that expires, or a grace-winning attachment that never
+// heartbeated, is a loss fact for the node's loaded tasks. Facts are
+// enqueued here, under mu, and applied under the task lock later.
 func (r *nodeRegistry) expireLocked(now time.Time, keep uint64) []func() {
 	var closers []func()
+	var seq uint64
+	if r.tasks != nil {
+		seq = r.tasks.admitted.Load()
+	}
 	for _, st := range r.nodes {
 		if st.online && !now.Before(st.deadline) {
 			st.online = false
+			r.tasks.enqueueLoss(lossFact{node: st.id, reason: contract.ReasonLeaseExpired, maxSeq: seq})
+		}
+		if st.graceArmed && !st.graceDone && !now.Before(st.graceDeadline) {
+			st.graceDone = true
+			r.tasks.enqueueLoss(lossFact{node: st.id, reason: contract.ReasonStartupGraceExpired, loadedOnly: true, maxSeq: seq})
 		}
 		a := st.att
-		if a == nil || a.gen == keep {
+		if a == nil {
 			continue
 		}
-		if (!a.heartbeated && !now.Before(a.firstDeadline)) || (a.heartbeated && !now.Before(st.deadline)) {
+		window := !a.heartbeated && !now.Before(a.firstDeadline) && a.gen != keep
+		if window || (a.heartbeated && !now.Before(st.deadline)) {
 			st.att = nil
 			if a.closeConn != nil {
 				closers = append(closers, a.closeConn)
 			}
+			if window && a.graceWin && !st.online {
+				r.tasks.enqueueLoss(lossFact{node: st.id, reason: contract.ReasonStartupGraceExpired, loadedOnly: true, maxSeq: seq})
+			}
 		}
 	}
 	return closers
+}
+
+// armGrace arms the one startup reconciliation grace of nodes at now (the
+// listener's readiness, immediately before accepting connections).
+func (r *nodeRegistry) armGrace(now time.Time, nodes map[string]bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for id := range nodes {
+		if st := r.nodes[id]; st != nil {
+			st.graceArmed, st.graceDone, st.graceDeadline = true, false, now.Add(startupGrace)
+		}
+	}
+}
+
+// markUnknown records that attachment generation of node reported an
+// execution unknown to this plane (its readiness stays false). The
+// caller may hold the task lock (lock order: task, then node).
+func (r *nodeRegistry) markUnknown(id string, generation uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if st := r.nodes[id]; st != nil && st.att != nil && st.att.gen == generation {
+		st.att.unknown = true
+	}
+}
+
+// markReconciled records that attachment generation of node completed its
+// reconciliation.
+func (r *nodeRegistry) markReconciled(id string, generation uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if st := r.nodes[id]; st != nil && st.att != nil && st.att.gen == generation {
+		st.att.reconciled = true
+	}
 }
 
 func runAll(fs []func()) {
@@ -482,13 +559,25 @@ func (r *nodeRegistry) attach(id, softwareVersion string, protocolVersion int, c
 	now := r.clock.Now()
 	closers := r.expireLocked(now, 0)
 	gen, err := r.attachLocked(now, id, softwareVersion, protocolVersion, closeConn)
+	graceWon := false
 	if err == nil {
-		a := r.nodes[id].att
+		n := r.nodes[id]
+		a := n.att
 		a.stream = st
 		a.desired = r.confirmedSnap(id)
+		// The startup-grace decision and the attachment's publication are
+		// one decision at one monotonic instant: strictly before the
+		// deadline the attachment wins (its lease governs from here); at
+		// the deadline expiry already won above.
+		if n.graceArmed && !n.graceDone && now.Before(n.graceDeadline) {
+			n.graceDone, a.graceWin, graceWon = true, true, true
+		}
 	}
 	r.mu.Unlock()
 	runAll(closers)
+	if graceWon {
+		r.tasks.event("grace-attached " + id)
+	}
 	return gen, err
 }
 
@@ -710,8 +799,11 @@ func (r *nodeRegistry) readinessLocked(rs *roleState, rec contract.RoleRecord) s
 		return contract.ReasonNodeDetached
 	}
 	a := st.att
-	if a.acked.rev != a.desired.rev {
+	if a.acked.rev != a.desired.rev || !a.reconciled {
 		return contract.ReasonRoleUnsynced
+	}
+	if a.unknown {
+		return contract.ReasonWorkerUnready
 	}
 	for i, ar := range a.acked.roles {
 		if ar.ID == rec.ID {
@@ -734,7 +826,7 @@ func (r *nodeRegistry) readinessLocked(rs *roleState, rec contract.RoleRecord) s
 // heartbeat lags and never optimistic from a heartbeat's zero.
 func (r *nodeRegistry) candidateLocked(rs *roleState, rec contract.RoleRecord, held heldCount, storageBlocked bool) (contract.TaskCandidate, *nodeStream, uint64) {
 	c := contract.TaskCandidate{RoleID: rec.ID, NodeID: rec.Node, RegistrationOrder: rec.RegistrationOrder, NodeLiveness: contract.LivenessOffline,
-		Inflight: held.held, RecoveryInflight: held.recovery, Concurrency: rec.Concurrency}
+		Inflight: held.held, ReconcilingInflight: held.reconciling, Concurrency: rec.Concurrency}
 	st := r.nodes[rec.Node]
 	if st != nil && st.online {
 		c.NodeLiveness = contract.LivenessOnline

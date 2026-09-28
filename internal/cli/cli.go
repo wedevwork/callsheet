@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/wedevwork/callsheet/internal/contract"
+	"github.com/wedevwork/callsheet/internal/sidecar"
 )
 
 // Version is the build version; builds may override it with
@@ -169,6 +170,10 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 
 // runFor is Run for an explicit goos. Input is currently unused: no command
 // reads stdin in this build.
+// guardianToken is the internal task guardian's reserved argv[1]:
+// rejected by the public CLI.
+const guardianToken = sidecar.GuardianToken
+
 func runFor(ctx context.Context, goos string, args []string, in io.Reader, out, errOut io.Writer) int {
 	return run(ctx, NewTree(goos), goos, args, out, errOut)
 }
@@ -181,6 +186,14 @@ func run(ctx context.Context, root *Command, goos string, args []string, out, er
 	if root == nil || !supportedOS(goos) {
 		e := contract.New(contract.CodeInvalidArgument,
 			fmt.Sprintf("unsupported operating system %q; supported: linux, darwin", goos))
+		diag(errOut, e)
+		return contract.ExitCode(e)
+	}
+	if len(args) > 0 && args[0] == guardianToken {
+		// The internal task guardian's reserved token (iteration 06a) is no
+		// public command and never listed in help; cmd/callsheet
+		// dispatches it before the CLI.
+		e := contract.New(contract.CodeInvalidArgument, "that argument is reserved for an internal-only command; see callsheet help")
 		diag(errOut, e)
 		return contract.ExitCode(e)
 	}

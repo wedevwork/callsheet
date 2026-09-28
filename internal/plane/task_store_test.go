@@ -70,7 +70,8 @@ func TestTaskStore(t *testing.T) {
 		tp.finish(t, w, f1, 7, 0)
 		f2 := tp.run(t, w, "a", "signal", "p4")
 		sig := "SIGKILL"
-		w.resultAck(w.sendResult(contract.TaskResultBody{TaskID: f2.TaskID, Execution: f2.Execution, Signal: &sig, LogIncomplete: true}), f2.TaskID)
+		w.resultAck(w.sendResult(contract.TaskResultBody{TaskID: f2.TaskID, Execution: f2.Execution, Outcome: contract.OutcomeNatural, Signal: &sig,
+			LogIncomplete: true}.Sealed()), f2.TaskID)
 		tp.log.awaitOnce(t, "terminal-committed "+f2.TaskID)
 		if r := tp.taskFile(t, f1.TaskID); r.State != contract.TaskFailed || *r.ExitCode != 7 || r.Signal != nil {
 			t.Fatalf("exit 7 record %+v", r)
@@ -273,32 +274,35 @@ func TestTaskStore(t *testing.T) {
 	t.Run("restore", func(t *testing.T) {
 		t.Parallel()
 		// A restart rebuilds reservations of pending and running records
-		// before listening, marks them recovery-required (plane_restarted,
-		// or role_removed for a removed instance's history), keeps
-		// terminal records without reservations, and replays no start.
+		// before listening and marks them reconciling (iteration 06a),
+		// keeps terminal records without reservations, and replays no
+		// start. Loading rewrites nothing. Ordinary removal of an instance
+		// holding a reservation stays busy. The returning worker's
+		// complete inventory reconciles: its running execution continues,
+		// its completed one sends its result, and the pending start it
+		// never received is lost (execution_missing); then the instance's
+		// remaining slot is usable and the resolved role removable; a
+		// re-added role is a new instance without history.
 		tp := startTaskPlane(t, nil, []contract.RoleRecord{record(taskCfg("a", "coder", idA, 3), 1), record(taskCfg("b", "coder", idA, 1), 2)}, idA)
 		w := tp.worker(t, idA)
 		done := tp.run(t, w, "a", "done", "p2")
 		w.log(done, 0, []byte("kept output\n"))
 		tp.finish(t, w, done, 0, 12)
 		running := tp.run(t, w, "a", "running", "p3")
+		started := tp.clk.Now()
 		w.log(running, 0, []byte("partial\n"))
 		tp.clk.Advance(checkpointEvery)
 		tp.log.await(t, "published checkpoint "+running.TaskID)
 		w.beat()
-		removed := tp.run(t, w, "b", "removed", "p4")
+		onB := tp.run(t, w, "b", "on b", "p4")
 		// The pending task's start is written and never answered: the
 		// control slot stays with it until the stream ends.
 		pending := tp.admit(t, taskReq(contract.TargetID, "a", "pending"))
 		w.start("p5")
 		w.c.CloseNow()
 		tp.log.await(t, "detached "+idA)
-		// Recovery-only removal of b: its only reservation is uncertain.
-		if err := tp.cl.RemoveRole(bg, "b", false); err != nil {
-			t.Fatalf("recovery-only rm: %v", err)
-		}
 		files := map[string][]byte{}
-		for _, id := range []string{done.TaskID, running.TaskID, pending.TaskID, removed.TaskID} {
+		for _, id := range []string{done.TaskID, running.TaskID, pending.TaskID, onB.TaskID} {
 			files[id] = taskBytes(t, tp.root, id)
 		}
 		tp.restart(t)
@@ -307,16 +311,16 @@ func TestTaskStore(t *testing.T) {
 				t.Fatalf("loading rewrote %s", id)
 			}
 		}
-		for id, want := range map[string]string{running.TaskID: contract.RecoveryPlaneRestarted, pending.TaskID: contract.RecoveryPlaneRestarted, removed.TaskID: contract.RecoveryRoleRemoved} {
+		for _, id := range []string{running.TaskID, pending.TaskID, onB.TaskID} {
 			v := tp.show(t, id)
-			if !v.RecoveryRequired || *v.RecoveryReason != want || !v.Log.LogMayBeIncomplete {
+			if !v.Reconciling || !v.Log.LogMayBeIncomplete {
 				t.Fatalf("restored %s = %+v", id, v)
 			}
 		}
 		if v := tp.show(t, running.TaskID); v.State != contract.TaskRunning || v.LogTail != "partial\n" {
 			t.Fatalf("restored running %+v", v)
 		}
-		if v := tp.show(t, done.TaskID); v.State != contract.TaskSucceeded || v.RecoveryRequired || v.LogTail != "kept output\n" {
+		if v := tp.show(t, done.TaskID); v.State != contract.TaskSucceeded || v.Reconciling || v.LogTail != "kept output\n" {
 			t.Fatalf("restored terminal %+v", v)
 		}
 		if logs, err := tp.cl.TaskLogs(bg, done.TaskID); err != nil || string(logs.Data) != "kept output\n" {
@@ -325,8 +329,14 @@ func TestTaskStore(t *testing.T) {
 		if n := tp.roleInflight(t, "a"); n != 2 {
 			t.Fatalf("rebuilt a reservations = %d", n)
 		}
-		w = tp.worker(t, idA)
-		w.beat()
+		if err := tp.cl.RemoveRole(bg, "b", false); contract.CodeOf(err) != contract.CodeConflict {
+			t.Fatalf("rm of an instance with a restored reservation: %v", err)
+		}
+		bres := result(onB, 0, 0, nil)
+		w = tp.workerInv(t, idA, map[string]string{running.TaskID: contract.ActionContinue, onB.TaskID: contract.ActionSendResult},
+			entry(running, contract.PhaseRunning, &started, nil), entry(onB, contract.PhaseResult, &started, &bres.Digest))
+		tp.log.awaitOnce(t, "lost-latched "+pending.TaskID+" "+contract.ReasonExecutionMissing)
+		tp.log.awaitOnce(t, "terminal-committed "+pending.TaskID)
 		// The remaining unreserved slot of a is usable; no start replays.
 		v := tp.admit(t, taskReq(contract.TargetID, "a", "fresh"))
 		if s := w.start("p2"); s.TaskID != v.TaskID {
@@ -334,13 +344,24 @@ func TestTaskStore(t *testing.T) {
 		}
 		w.answer("p2", v.TaskID, nil)
 		tp.log.awaitOnce(t, "published running "+v.TaskID)
+		// The completed execution's result, sent on the reconciled
+		// attachment, is the task's terminal result; then b is removable.
+		w.resultAck(w.sendResult(bres), onB.TaskID)
+		tp.log.awaitOnce(t, "terminal-committed "+onB.TaskID)
+		if !w.resultAck(w.sendResult(bres), onB.TaskID) {
+			t.Fatal("the durable result was not acknowledged as committed")
+		}
+		if err := tp.cl.RemoveRole(bg, "b", false); err != nil {
+			t.Fatalf("rm after resolution: %v", err)
+		}
+		w.ackReplace("p3")
 		// Re-adding b is a new instance with a new order and no history.
-		rv := tp.add(t, w.peer, "p3", "p4", taskCfg("b", "coder", idA, 1))
+		rv := tp.add(t, w.peer, "p4", "p5", taskCfg("b", "coder", idA, 1))
 		if rv.RegistrationOrder != 3 || rv.Inflight != 0 {
 			t.Fatalf("re-added b = %+v", rv)
 		}
 		tp.restart(t)
-		if v := tp.show(t, removed.TaskID); *v.RecoveryReason != contract.RecoveryRoleRemoved || v.Role.RegistrationOrder != 2 {
+		if v := tp.show(t, onB.TaskID); v.State != contract.TaskSucceeded || v.Role.RegistrationOrder != 2 {
 			t.Fatalf("history after re-add %+v", v)
 		}
 	})

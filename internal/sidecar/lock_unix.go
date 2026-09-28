@@ -33,3 +33,6 @@ func flockExclusive(f *os.File) error {
 		return err
 	}
 }
+
+// ownProcessGroup is this process's process group ID.
+func ownProcessGroup() int { return syscall.Getpgrp() }

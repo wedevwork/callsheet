@@ -76,7 +76,8 @@ func wantRefusal(t *testing.T, r contract.TaskStartResult, reason string) {
 // its compose, exit and process subtests are delegated from
 // tests/function (TestTaskExecution), and process is also required native
 // evidence. Only process starts OS children (exactly one probe and two
-// task children). Do not rename or skip them.
+// guardian/adapter pairs since iteration 06a). Do not rename or skip
+// them.
 func TestTaskExecutionContract(t *testing.T) {
 	t.Parallel()
 	t.Run("compose", func(t *testing.T) {
@@ -338,12 +339,16 @@ func TestTaskExecutionContract(t *testing.T) {
 	t.Run("process", func(t *testing.T) {
 		t.Parallel()
 		// The sole real-process qualification: one explicit ready probe of
-		// the built fixture, then two sequential task children (success,
-		// then exit 7) proving actual stdin/stdout/stderr, PGID = PID not
-		// the supervisor's, cwd and environment, private scratch
-		// permissions, cleanup and continued heartbeats. Launch ledger:
-		// exactly 1 probe + 2 task children.
+		// the built fixture, then two sequential guardian-backed tasks
+		// (success, then exit 7) proving actual stdin/stdout/stderr, the
+		// guardian's PGID equal to its PID and not the supervisor's, the
+		// adapter a distinct member of that group, cwd and environment,
+		// private scratch permissions, the guardian's whole-group cleanup,
+		// the journal's removal after the committed acknowledgement and
+		// continued heartbeats. Launch ledger: exactly 1 probe + 2
+		// guardians + 2 adapters.
 		bin := fakeAdapterBinary(t)
+		cli := cliBinary(t)
 		probeDir := t.TempDir()
 		ca := &countingAdapter{Adapter: adapter.NewFake(probeDir)}
 		reg, err := adapter.NewRegistry(ca)
@@ -351,20 +356,26 @@ func TestTaskExecutionContract(t *testing.T) {
 			t.Fatal(err)
 		}
 		fp := startFakePlane(t)
-		type seen struct{ pid, pgid int }
+		type seen struct{ guardian, gpgid, adapter, apgid int }
 		var mu sync.Mutex
 		var starts []seen
 		tr := startTaskRun(t, fp, taskOpts{exe: bin, adapters: func(string) adapter.Registry { return reg },
-			adjust: func(d *deps) { d.noCadence = true; d.taskGroups = nil }})
+			adjust: func(d *deps) {
+				d.noCadence = true
+				d.taskGroups = nil
+				d.guardianExe = func() (string, error) { return cli, nil }
+			}})
 		tr.ledger.mu.Lock()
 		tr.ledger.real = true
-		tr.ledger.onStart = func(pid int) {
-			// The child blocks reading stdin until the supervisor's copier
-			// runs, after Start returned: it is alive here. Getpgid works
-			// on Linux and Darwin alike.
-			pgid, _ := syscall.Getpgid(pid)
+		tr.ledger.onStart = func(guardian, adapter int) {
+			// The adapter blocks reading stdin until the supervisor's
+			// copier runs, after its started message: it and its guardian
+			// (the group anchor) are alive here. Getpgid works on Linux and
+			// Darwin alike.
+			gpgid, _ := syscall.Getpgid(guardian)
+			apgid, _ := syscall.Getpgid(adapter)
 			mu.Lock()
-			starts = append(starts, seen{pid: pid, pgid: pgid})
+			starts = append(starts, seen{guardian: guardian, gpgid: gpgid, adapter: adapter, apgid: apgid})
 			mu.Unlock()
 		}
 		tr.ledger.mu.Unlock()
@@ -434,6 +445,12 @@ func TestTaskExecutionContract(t *testing.T) {
 		if r := s.result(t, st2); *r.ExitCode != 7 || r.FinalMessage != nil {
 			t.Fatalf("child two: %+v", r)
 		}
+		for _, id := range []string{st.TaskID, st2.TaskID} {
+			tr.ev.awaitCollected(t, id)
+			if _, err := os.Stat(filepath.Join(tr.root, "tasks", id)); !os.IsNotExist(err) {
+				t.Fatalf("the committed task's journal %s remains: %v", id, err)
+			}
+		}
 		// Heartbeats continue after both exits with the slot free (its
 		// readiness then ages out: the cadence is disabled so no second
 		// probe runs).
@@ -443,22 +460,22 @@ func TestTaskExecutionContract(t *testing.T) {
 		}
 		mu.Lock()
 		defer mu.Unlock()
-		if len(starts) != 2 || starts[0].pid == starts[1].pid {
+		if len(starts) != 2 || starts[0].guardian == starts[1].guardian {
 			t.Fatalf("children %+v", starts)
 		}
 		for _, sn := range starts {
-			if sn.pgid != sn.pid || sn.pgid == syscall.Getpgrp() {
-				t.Fatalf("child %d in group %d (supervisor %d)", sn.pid, sn.pgid, syscall.Getpgrp())
+			if sn.gpgid != sn.guardian || sn.gpgid == syscall.Getpgrp() || sn.apgid != sn.guardian || sn.adapter == sn.guardian {
+				t.Fatalf("guardian %d in group %d, adapter %d in group %d (supervisor %d)", sn.guardian, sn.gpgid, sn.adapter, sn.apgid, syscall.Getpgrp())
 			}
-			if err := syscall.Kill(-sn.pgid, 0); !errors.Is(err, syscall.ESRCH) {
-				t.Fatalf("group %d still present: %v", sn.pgid, err)
+			if err := syscall.Kill(-sn.gpgid, 0); !errors.Is(err, syscall.ESRCH) {
+				t.Fatalf("group %d still present: %v", sn.gpgid, err)
 			}
 		}
 		if entries, _ := os.ReadDir(tr.tmp); len(entries) != 0 {
 			t.Fatalf("scratch left: %v", entries)
 		}
-		if ca.count() != 1 || tr.ledger.starts() != 2 {
-			t.Fatalf("launch ledger: %d probes, %d task children; want exactly 1 and 2", ca.count(), tr.ledger.starts())
+		if ca.count() != 1 || tr.ledger.starts() != 4 {
+			t.Fatalf("launch ledger: %d probes, %d guardian and adapter children; want exactly 1 and 4", ca.count(), tr.ledger.starts())
 		}
 	})
 }

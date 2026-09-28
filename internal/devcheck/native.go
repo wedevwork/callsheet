@@ -22,8 +22,9 @@ const NativePackage = "github.com/wedevwork/callsheet/tests/function"
 // separate process-boundary scenarios from delegated contracts
 // (iteration 02b), every node function test with its mandatory subtests
 // (iteration 03), every role function test with its mandatory subtests
-// (iteration 04), and every task function test with its mandatory
-// subtests (iteration 05).
+// (iteration 04), every task function test with its mandatory subtests
+// (iteration 05), and the control function tests and native groups
+// (iteration 06a).
 var nativeRequired = []string{
 	"TestFP6ProcessGroups",
 	"TestFP6ProcessGroups/cooperative",
@@ -159,6 +160,22 @@ var nativeRequired = []string{
 	"TestTaskRecoveryBoundary/disconnect",
 	"TestTaskRecoveryBoundary/remaining-capacity",
 	"TestTaskRecoveryBoundary/recovery-remove",
+	// Iteration 06a (resilient execution): the eight control function
+	// parents (one per FP, each a conjunction of its delegated package
+	// contracts) and the direct real-binary native group qualification.
+	"TestControlDurability",
+	"TestControlReconnect",
+	"TestControlNodeLoss",
+	"TestControlLaunchSafety",
+	"TestControlWorkerRecovery",
+	"TestControlPlaneRecovery",
+	"TestControlLateResult",
+	"TestControlLegacy",
+	"TestControlNativeGroups",
+	"TestControlNativeGroups/cooperative",
+	"TestControlNativeGroups/resistant",
+	"TestControlNativeGroups/orphan-restart",
+	"TestControlNativeGroups/plane-restart",
 }
 
 // NativeTaskProcessPackage and nativeTaskProcess are the separate native

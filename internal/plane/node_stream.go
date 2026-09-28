@@ -137,12 +137,15 @@ type planeRequest struct {
 	timer    <-chan time.Time
 	stop     func() bool
 	expired  bool
-	// Exactly one of v (role_validate), snap (roles_replace) and start
-	// (task_start, iteration 05) is used.
+	// Exactly one of v (role_validate), snap (roles_replace), start
+	// (task_start, iteration 05) and recon (a task_reconcile page,
+	// iteration 06a) is used.
 	v      *validation
 	snap   roleSnap
 	isSnap bool
 	start  *startItem
+	recon  bool
+	final  bool
 }
 
 // nodeStream is one upgraded node connection: the handler goroutine reads
@@ -177,6 +180,10 @@ type nodeStream struct {
 	// maxQueuedStarts.
 	starts []*startItem
 	tokens int
+	// recon is this attachment's reconciliation (iteration 06a), session
+	// state: no roles_replace, role_validate or task_start is sent before
+	// its final reconcile page is acknowledged.
+	recon *reconciliation
 }
 
 // handleStream serves GET /api/v1/node-stream. Browser origins, other
@@ -207,7 +214,8 @@ func (s *nodeService) handleStream(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	st := &nodeStream{svc: s, ws: ws, ctx: ctx, cancel: cancel, closed: make(chan struct{}), inbox: newInbox(s.clock), kick: make(chan struct{}, 1)}
+	st := &nodeStream{svc: s, ws: ws, ctx: ctx, cancel: cancel, closed: make(chan struct{}), inbox: newInbox(s.clock), kick: make(chan struct{}, 1),
+		recon: newReconciliation()}
 	st.raw, _ = r.Context().Value(connKey{}).(net.Conn)
 	if st.raw != nil {
 		// The ten-second HTTP bounds must not kill a healthy long-lived
@@ -604,7 +612,6 @@ func (st *nodeStream) takeDirty() bool {
 // a protocol error, a transport failure or an in-flight request's expiry.
 func (st *nodeStream) session() {
 	s := st.svc
-	st.markDirty() // the initial full snapshot, whatever its revision
 	var inflight *planeRequest
 	defer func() {
 		if inflight != nil {
@@ -620,6 +627,7 @@ func (st *nodeStream) session() {
 		}
 	}()
 	p := 0        // plane request counter: p1, p2, ... per connection
+	q := 0        // reconcile page counter: r1, r2, ... per connection
 	b := 1        // next sidecar request number (heartbeat, task_log, task_result)
 	sent := false // whether any snapshot was sent in this session
 	lastRev := 0  // revision of the last snapshot sent
@@ -655,7 +663,17 @@ func (st *nodeStream) session() {
 				queueTimer, stopQueue = s.clock.NewTimerAt(next)
 			}
 		}
-		if inflight == nil {
+		if inflight == nil && st.recon.final && !st.recon.done {
+			// Reconciliation first (attachment order DW5): every reconcile
+			// page, one at a time, before any role or task request.
+			r, ok := st.dispatchReconcile(&q)
+			if !ok {
+				return
+			}
+			inflight = r
+			continue
+		}
+		if inflight == nil && st.recon.done {
 			if v := st.takeWaiter(); v != nil {
 				r, ok := st.dispatchValidation(v, &p)
 				if !ok {
@@ -705,6 +723,26 @@ func (st *nodeStream) session() {
 			return
 		}
 	}
+}
+
+// dispatchReconcile sends the next reconcile page with its own
+// controlTimeout from now through write and acknowledgement.
+func (st *nodeStream) dispatchReconcile(q *int) (*planeRequest, bool) {
+	s := st.svc
+	rc := st.recon
+	if *q >= contract.MaxSafeInteger {
+		st.terminate(closePolicy, "request counter exhausted")
+		return nil, false
+	}
+	*q++
+	page := rc.pages[rc.acked]
+	r := &planeRequest{id: "r" + strconv.Itoa(*q), deadline: s.clock.Now().Add(controlTimeout), recon: true, final: page.Final}
+	s.event("reconcile-writing " + st.nodeID + " " + r.id)
+	if err := st.write(contract.FrameTaskReconcile, r.id, page, r.deadline); err != nil {
+		return nil, false
+	}
+	s.event("reconcile-sent " + st.nodeID + " " + r.id)
+	return st.arm(r), true
 }
 
 // peekDirty reports a pending snapshot signal without consuming it.
@@ -860,7 +898,15 @@ func (st *nodeStream) handleFrame(r readResult, inflight **planeRequest, hb *int
 		body, err := contract.DecodeTaskLog(f.Body)
 		if err == nil {
 			var next int
-			if next, err = s.tasks.receiveLog(st.nodeID, st.gen, body); err == nil {
+			if st.recon.unknown[body.TaskID] {
+				// An execution unknown to this plane: acknowledged, never
+				// recorded.
+				next = body.Offset + len(body.Data)
+				s.event("unknown-output " + st.nodeID + " " + body.TaskID)
+			} else {
+				next, err = s.tasks.receiveLog(st.nodeID, st.gen, body)
+			}
+			if err == nil {
 				s.event("log-received " + st.nodeID + " " + f.RequestID + " " + body.TaskID)
 				if err := st.write(contract.FrameTaskLogAck, f.RequestID, contract.TaskLogAckBody{TaskID: body.TaskID, NextOffset: next}, time.Time{}); err != nil {
 					return false
@@ -878,18 +924,76 @@ func (st *nodeStream) handleFrame(r readResult, inflight **planeRequest, hb *int
 		}
 		body, err := contract.DecodeTaskResult(f.Body)
 		if err == nil {
-			if err = s.tasks.receiveResult(st.nodeID, st.gen, body); err == nil {
+			var committed bool
+			if st.recon.unknown[body.TaskID] {
+				// Its outcome is received, never committed: the worker keeps
+				// its journal as local evidence.
+				s.event("unknown-output " + st.nodeID + " " + body.TaskID)
+			} else {
+				committed, err = s.tasks.receiveResult(st.nodeID, st.gen, body)
+			}
+			if err == nil {
 				s.event("result-acking " + st.nodeID + " " + f.RequestID + " " + body.TaskID)
-				if err := st.write(contract.FrameTaskResultAck, f.RequestID, contract.TaskResultAckBody{TaskID: body.TaskID, Received: true}, time.Time{}); err != nil {
+				ack := contract.TaskResultAckBody{TaskID: body.TaskID, Digest: body.Digest, Received: true, Committed: committed}
+				if err := st.write(contract.FrameTaskResultAck, f.RequestID, ack, time.Time{}); err != nil {
 					return false
 				}
 				s.event("result-acked " + st.nodeID + " " + f.RequestID)
+				if committed {
+					s.event("result-committed-acked " + st.nodeID + " " + f.RequestID)
+				}
 				*hb++
 				return true
 			}
 		}
 		st.reject(f.RequestID, err, "invalid message")
 		return false
+	case contract.FrameTaskInventory:
+		// Inventory pages carry their own strict sequence i1, i2, ...
+		// (page 0, 1, ...), in the sidecar's one request slot.
+		want := "i" + strconv.Itoa(st.recon.next+1)
+		if f.RequestID != want {
+			st.reject(f.RequestID, contract.New(contract.CodeInvalidArgument, f.Type+" request_id must be "+want), "invalid sequence")
+			return false
+		}
+		body, err := contract.DecodeTaskInventory(f.Body)
+		if err == nil {
+			err = s.tasks.inventory(st.nodeID, st.gen, body, st.recon)
+		}
+		if err != nil {
+			st.reject(f.RequestID, err, "invalid message")
+			return false
+		}
+		if err := st.write(contract.FrameTaskInventoryAck, f.RequestID, contract.TaskInventoryAckBody{Page: body.Page, Received: true}, time.Time{}); err != nil {
+			return false
+		}
+		s.event("inventory-acked " + st.nodeID + " " + f.RequestID)
+		return true
+	case contract.FrameTaskReconcileAck:
+		req := *inflight
+		if req == nil || !req.recon || req.id != f.RequestID {
+			st.reject(f.RequestID, contract.New(contract.CodeInvalidArgument, "unsolicited, stale or mismatched "+f.Type+" "+f.RequestID), "invalid sequence")
+			return false
+		}
+		if _, err := contract.DecodeTaskReconcileAck(f.Body); err != nil {
+			st.reject(f.RequestID, err, "invalid message")
+			return false
+		}
+		if !r.at.Before(req.deadline) {
+			req.expired = true
+			return true
+		}
+		req.stop()
+		*inflight = nil
+		st.recon.acked++
+		s.event("reconcile-acked " + st.nodeID + " " + f.RequestID)
+		if req.final {
+			st.recon.done = true
+			s.reg.markReconciled(st.nodeID, st.gen)
+			s.event("reconciled " + st.nodeID)
+			st.markDirty() // the initial full snapshot, whatever its revision
+		}
+		return true
 	case contract.FrameTaskStartResult:
 		req := *inflight
 		if req == nil || req.start == nil || req.id != f.RequestID {
@@ -911,7 +1015,7 @@ func (st *nodeStream) handleFrame(r readResult, inflight **planeRequest, hb *int
 		}
 		req.stop()
 		*inflight = nil
-		s.tasks.startReplied(req.start.id, res.Err)
+		s.tasks.startReplied(req.start.id, st.gen, res.Err)
 		req.start.res.release()
 		s.event("start-result " + st.nodeID + " " + f.RequestID)
 		return true
@@ -937,7 +1041,7 @@ func (st *nodeStream) handleFrame(r readResult, inflight **planeRequest, hb *int
 		return true
 	case contract.FrameRoleValidateResult, contract.FrameRolesReplaceAck:
 		req := *inflight
-		if req == nil || req.start != nil || req.id != f.RequestID || req.isSnap != (f.Type == contract.FrameRolesReplaceAck) {
+		if req == nil || req.start != nil || req.recon || req.id != f.RequestID || req.isSnap != (f.Type == contract.FrameRolesReplaceAck) {
 			st.reject(f.RequestID, contract.New(contract.CodeInvalidArgument, "unsolicited, stale or mismatched "+f.Type+" "+f.RequestID), "invalid sequence")
 			return false
 		}

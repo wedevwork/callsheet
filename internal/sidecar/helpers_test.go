@@ -57,6 +57,9 @@ func TestMain(m *testing.M) {
 	if root := os.Getenv(lockHelperEnv); root != "" {
 		os.Exit(lockHelper(root))
 	}
+	if cfg := os.Getenv(FixtureEnv); cfg != "" {
+		os.Exit(runFixture(cfg))
+	}
 	code := m.Run()
 	if fixtureDir != "" {
 		os.RemoveAll(fixtureDir)
@@ -254,9 +257,12 @@ type fakePlane struct {
 	// ev, when set (role runs), lets the connection helpers wait for the
 	// sidecar's write of a message they read to return.
 	ev *events
-	// refuse, when set, answers upgrades with that HTTP status.
-	mu     sync.Mutex
-	refuse int
+	// refuse, when set, answers upgrades with that HTTP status; onUpgrade,
+	// when set, runs in the handler before an upgrade is answered (the
+	// sidecar's dial is then in progress).
+	mu        sync.Mutex
+	refuse    int
+	onUpgrade func()
 }
 
 type fakeConn struct {
@@ -268,6 +274,10 @@ type fakeConn struct {
 	// in receives every message, then the terminal read error: like a
 	// real plane, the fake always reads, so close handshakes complete.
 	in chan readResult
+	// held are sidecar task frames read past while waiting for another
+	// reply (a reconciled attachment's output may precede the snapshot's
+	// acknowledgement); recv returns them first.
+	held []contract.NodeFrame
 }
 
 func (c *fakeConn) finish() { c.once.Do(func() { close(c.done) }) }
@@ -290,8 +300,11 @@ func startFakePlane(t *testing.T) *fakePlane {
 	fp.url = "https://" + ln.Addr().String()
 	srv := &http.Server{ErrorLog: log.New(io.Discard, "", 0), Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fp.mu.Lock()
-		refuse := fp.refuse
+		refuse, hook := fp.refuse, fp.onUpgrade
 		fp.mu.Unlock()
+		if hook != nil && refuse == 0 {
+			hook()
+		}
 		if refuse != 0 {
 			w.WriteHeader(refuse)
 			return
@@ -372,6 +385,11 @@ func (c *fakeConn) next() readResult {
 
 func (c *fakeConn) recv() contract.NodeFrame {
 	c.t.Helper()
+	if len(c.held) > 0 {
+		f := c.held[0]
+		c.held = c.held[1:]
+		return f
+	}
 	r := c.next()
 	if r.err != nil {
 		c.t.Fatalf("fake plane read: %v", r.err)
@@ -470,10 +488,14 @@ type events struct {
 	// time; gone remembers the IDs read from it (test goroutine only).
 	collected chan event
 	gone      map[string]bool
+	// cycles receives every completed ready-check cycle a second time
+	// (awaitCycleSince), without consuming the main stream.
+	cycles chan event
 }
 
 func observe(d *deps) *events {
-	e := &events{ch: make(chan event, 4096), written: make(chan event, 4096), collected: make(chan event, 4096), gone: map[string]bool{}}
+	e := &events{ch: make(chan event, 4096), written: make(chan event, 4096), collected: make(chan event, 4096), gone: map[string]bool{},
+		cycles: make(chan event, 4096)}
 	d.observe = func(ev event) {
 		e.ch <- ev
 		if ev.kind == evAckWritten || ev.kind == evReplied {
@@ -481,6 +503,9 @@ func observe(d *deps) *events {
 		}
 		if ev.kind == evTaskCollected {
 			e.collected <- ev
+		}
+		if ev.kind == evCycleDone {
+			e.cycles <- ev
 		}
 	}
 	return e
@@ -500,6 +525,23 @@ func (e *events) awaitWritten(t *testing.T, kind eventKind, id string) {
 			}
 		case <-deadline:
 			t.Fatalf("the %s write of %s did not return", kind, id)
+		}
+	}
+}
+
+// awaitCycleSince waits until a ready-check cycle of revision rev that
+// started at or after since completed (read from the cycles copy).
+func (e *events) awaitCycleSince(t *testing.T, rev int, since time.Time) event {
+	t.Helper()
+	deadline := time.After(testWait)
+	for {
+		select {
+		case ev := <-e.cycles:
+			if ev.rev == rev && !ev.at.Before(since) {
+				return ev
+			}
+		case <-deadline:
+			t.Fatalf("no ready-check cycle of revision %d since %v", rev, since)
 		}
 	}
 }

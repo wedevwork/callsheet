@@ -125,6 +125,23 @@ const (
 	evOutputWritten eventKind = "output-written"
 	evLogAcked      eventKind = "log-acked"
 	evResultAcked   eventKind = "result-acked"
+	// Iteration 06a events: a result's committed acknowledgement (id =
+	// task ID); a journal deleted after its commit (id = task ID); an
+	// inventory page's acknowledgement (rev = page); a reconcile page
+	// applied (id = request ID) and the attachment reconciled; a
+	// reconciliation disposition applied to a task (id = task ID,
+	// err = nil; the action in rev: see actionCode); a recovered
+	// execution's cleanup confirmed or blocked (id = task ID); the
+	// supervisor's recovery pass finished.
+	evResultCommitted   eventKind = "result-committed"
+	evTaskForgotten     eventKind = "task-forgotten"
+	evInventoryAcked    eventKind = "inventory-acked"
+	evReconciled        eventKind = "reconciled"
+	evDisposed          eventKind = "disposed"
+	evCleanupConfirmed  eventKind = "cleanup-confirmed"
+	evCleanupBlocked    eventKind = "cleanup-blocked"
+	evRecoveryDone      eventKind = "recovery-done"
+	evPreparationFenced eventKind = "preparation-fenced"
 )
 
 // event is one observed transition: the session number (1-based), the
@@ -141,6 +158,10 @@ type event struct {
 	id       string
 	statuses []contract.RoleStatus
 	passed   []bool
+	// action is a disposition's reconcile action (evDisposed).
+	action string
+	// at is a ready-check cycle's start instant (evCycleDone).
+	at time.Time
 }
 
 // deps are the injectable dependencies of Enroll and Run.
@@ -171,15 +192,21 @@ type deps struct {
 	adapters     func(dir string) adapter.Registry
 	openManual   func(p string) (*os.File, error)
 	observeCheck func(kind, name string)
-	// Iteration 05 task seams (nil: production): the child process
-	// factory, the process-group cleaner, the child environment source
-	// and the scratch temp root; noCadence disables the periodic
-	// ready-check cadence (a snapshot's first cycle still runs).
-	taskProcs   procFactory
-	taskGroups  groupCleaner
-	taskEnviron func() []string
-	taskTempDir func() string
-	noCadence   bool
+	// Iteration 05 task seams (nil: production), guardian-backed since
+	// 06a: the guardian factory, the process-group watcher, the control
+	// command sender, the guardian executable (the callsheet binary), the
+	// child environment source and the scratch temp root; noCadence
+	// disables the periodic ready-check cadence (a snapshot's first cycle
+	// still runs).
+	taskGuardians guardianFactory
+	taskGroups    groupWatcher
+	taskCommand   commandSender
+	guardianExe   func() (string, error)
+	taskEnviron   func() []string
+	taskTempDir   func() string
+	noCadence     bool
+	// ownGroup is this process's group (the guardian's must differ).
+	ownGroup func() int
 	// taskRingCap, when positive, replaces the 10 MiB retained-output
 	// cap (tests exercising eviction through a session).
 	taskRingCap int
@@ -211,6 +238,7 @@ func defaultDeps() *deps {
 		closeGrace: closeGrace,
 		adapters:   adapter.Builtin,
 		openManual: openManual,
+		ownGroup:   ownProcessGroup,
 	}
 }
 

@@ -74,6 +74,10 @@ type Status struct {
 	ServerNotBefore time.Time `json:"server_not_before"`
 	ServerNotAfter  time.Time `json:"server_not_after"`
 	Warnings        []Warning `json:"warnings"`
+	// PendingMigrations counts iteration 05 (schema 1) nonterminal task
+	// records the next plane run resolves lost (iteration 06a's read-only
+	// migration diagnostic; status never writes or releases anything).
+	PendingMigrations int `json:"pending_migrations"`
 }
 
 // Warning is one certificate time condition: Certificate is "ca" or

@@ -146,7 +146,7 @@ func TestTaskOutput(t *testing.T) {
 		w.log(st2, 0, []byte("partial"))
 		res := result(st2, 1, 100, nil)
 		res.LogIncomplete = true
-		rid := w.sendResult(res)
+		rid := w.sendResult(res.Sealed())
 		w.resultAck(rid, st2.TaskID)
 		expectClosed(t, w, w.sendLog(st2, 7, []byte("late")))
 		tp.log.awaitOnce(t, "terminal-committed "+st2.TaskID)

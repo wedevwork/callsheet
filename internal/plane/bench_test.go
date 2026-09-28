@@ -275,6 +275,8 @@ func BenchmarkRoleSnapshot(b *testing.B) {
 			if err != nil {
 				b.Fatal(err)
 			}
+			// Protocol 4: the attachment reconciled before readiness.
+			r.markReconciled(idA, gen)
 			snap := doc.snapshotFor(idA)
 			r.ackSnapshot(idA, gen, snap)
 			hb := contract.HeartbeatBody{RolesRevision: snap.rev}

@@ -18,9 +18,30 @@ type planeLog struct {
 	received   int
 	incomplete bool
 	overflow   bool
+	// late: a late-evidence staging ring (iteration 06a) that starts at
+	// its first chunk's offset; its bytes before that are not received,
+	// so its finalized log is incomplete unless it starts at zero.
+	late bool
 }
 
 func newPlaneLog() *planeLog { return &planeLog{} }
+
+// newPlaneLogFrom seeds a ring with a persisted nonterminal log (a loaded
+// task reconciled on this plane run): its retained tail and counters,
+// further output continuing at its source end.
+func newPlaneLogFrom(lg contract.TaskLog) *planeLog {
+	l := &planeLog{next: lg.SourceBytes, source: lg.SourceBytes, received: lg.ReceivedBytes, incomplete: lg.Incomplete, overflow: lg.CounterOverflow}
+	if len(lg.Data) > 0 {
+		l.push(lg.Data)
+	}
+	return l
+}
+
+// newPlaneLogAt is a late staging ring whose first expected byte is at
+// offset (a replayed tail's absolute start).
+func newPlaneLogAt(offset int) *planeLog {
+	return &planeLog{next: offset, source: offset, late: true}
+}
 
 // append accepts one chunk at an absolute offset and returns the next
 // offset to acknowledge. A range entirely below next is an idempotent
@@ -41,6 +62,18 @@ func (l *planeLog) append(offset int, data []byte) (int, error) {
 	l.next = end
 	l.source = max(l.source, end)
 	return end, nil
+}
+
+// appendReplay is append for a reconciled worker's replayed tail (a
+// tagged chunk): the worker cannot know how much of it arrived before its
+// attachment ended or it restarted, so a chunk straddling the next offset
+// keeps only its unreceived suffix (the bytes of one output stream are the
+// same at the same offsets); everything else is append's.
+func (l *planeLog) appendReplay(offset int, data []byte) (int, error) {
+	if end := offset + len(data); offset < l.next && end > l.next {
+		data, offset = data[l.next-offset:], l.next
+	}
+	return l.append(offset, data)
 }
 
 // push inserts data, evicting the oldest bytes beyond the retention cap.
@@ -120,7 +153,7 @@ func (l *planeLog) finalize(outputBytes int, incomplete, overflow bool) contract
 		l.incomplete = true
 	}
 	l.source = max(l.source, outputBytes)
-	l.incomplete = l.incomplete || incomplete || overflow
+	l.incomplete = l.incomplete || incomplete || overflow || (l.late && l.received < l.source)
 	l.overflow = l.overflow || overflow
 	return l.snapshot()
 }

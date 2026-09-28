@@ -199,10 +199,12 @@ func (p *inProcessPlane) client(t *testing.T) *client.Client {
 	return c
 }
 
-// simWorker is a simulated sidecar speaking protocol 3 over verified
-// WSS: it validates every role, acknowledges snapshots with a ready
-// heartbeat, accepts every task start and reports, one request at a time
-// on the shared b sequence, the output and exit its script chooses.
+// simWorker is a simulated sidecar speaking protocol 4 over verified
+// WSS: it reports an empty task inventory and acknowledges the plane's
+// empty reconciliation, validates every role, acknowledges snapshots with
+// a ready heartbeat, accepts every task start and reports, one request at
+// a time on the shared b sequence, the output and sealed exit its script
+// chooses, resending a result until the plane acknowledges it committed.
 type simWorker struct {
 	t      *testing.T
 	ws     *websocket.Conn
@@ -214,8 +216,10 @@ type simWorker struct {
 	mu     sync.Mutex
 	rev    int
 	roles  []contract.RoleRecord
-	events chan string
-	done   chan struct{}
+	// results are the sealed results reported, for resending.
+	results []contract.TaskResultBody
+	events  chan string
+	done    chan struct{}
 }
 
 func startSimWorker(t *testing.T, p *inProcessPlane, script func(contract.TaskStartBody) ([]byte, int)) *simWorker {
@@ -297,6 +301,14 @@ func (w *simWorker) loop() {
 		}
 		switch f.Type {
 		case contract.FrameHelloOK:
+			w.write(contract.FrameTaskInventory, "i1", contract.TaskInventoryBody{RunID: strings.Repeat("5", 32), Final: true})
+		case contract.FrameTaskInventoryAck:
+		case contract.FrameTaskReconcile:
+			if b, err := contract.DecodeTaskReconcile(f.Body); err != nil || !b.Final || len(b.Entries) != 0 {
+				w.events <- "bad reconcile"
+				return
+			}
+			w.write(contract.FrameTaskReconcileAck, f.RequestID, contract.TaskReconcileAckBody{Received: true})
 		case contract.FrameRoleValidate:
 			w.write(contract.FrameRoleValidateResult, f.RequestID, contract.RoleValidateResult{})
 		case contract.FrameRolesReplace:
@@ -324,13 +336,33 @@ func (w *simWorker) loop() {
 				})
 			}
 			msg := "fake task completed"
-			n := len(out)
-			w.request(func(string) (string, any) {
-				return contract.FrameTaskResult, contract.TaskResultBody{TaskID: st.TaskID, Execution: st.Execution, ExitCode: &exit, FinalMessage: &msg, OutputBytes: n}
-			})
-		case contract.FrameHeartbeatAck, contract.FrameTaskLogAck, contract.FrameTaskResultAck:
+			res := contract.TaskResultBody{TaskID: st.TaskID, Execution: st.Execution, Outcome: contract.OutcomeNatural, ExitCode: &exit, FinalMessage: &msg,
+				OutputBytes: len(out)}.Sealed()
+			w.results = append(w.results, res)
+			w.request(func(string) (string, any) { return contract.FrameTaskResult, res })
+		case contract.FrameTaskResultAck:
+			ack, err := contract.DecodeTaskResultAck(f.Body)
+			if err != nil {
+				w.events <- "bad result ack"
+				return
+			}
 			w.busy = false
-			w.events <- map[string]string{contract.FrameHeartbeatAck: "heartbeat-acked", contract.FrameTaskLogAck: "log-acked", contract.FrameTaskResultAck: "result-acked"}[f.Type]
+			if !ack.Committed {
+				// Received but not yet durable: the outbox keeps it and
+				// resends it (a real sidecar waits 1 s).
+				for _, res := range w.results {
+					if res.TaskID == ack.TaskID {
+						time.Sleep(20 * time.Millisecond)
+						w.request(func(string) (string, any) { return contract.FrameTaskResult, res })
+					}
+				}
+			} else {
+				w.events <- "result-acked"
+			}
+			w.pump()
+		case contract.FrameHeartbeatAck, contract.FrameTaskLogAck:
+			w.busy = false
+			w.events <- map[string]string{contract.FrameHeartbeatAck: "heartbeat-acked", contract.FrameTaskLogAck: "log-acked"}[f.Type]
 			w.pump()
 		default:
 			w.events <- "unexpected " + f.Type
@@ -440,7 +472,7 @@ func TestTaskCommands(t *testing.T) {
 	t.Run("ls", func(t *testing.T) {
 		r := runCLI(bg, append([]string{"task", "ls", "--limit", "1"}, p.trust()...)...)
 		lines := strings.Split(strings.TrimSuffix(r.stdout, "\n"), "\n")
-		if r.code != 0 || len(lines) != 3 || lines[0] != "TASK_ID\tSTATE\tROLE_ID\tNODE\tELAPSED_MS\tRECOVERY_REQUIRED" || !strings.HasPrefix(lines[2], "next_after: t_") {
+		if r.code != 0 || len(lines) != 3 || lines[0] != "TASK_ID\tSTATE\tROLE_ID\tNODE\tELAPSED_MS\tRECONCILING" || !strings.HasPrefix(lines[2], "next_after: t_") {
 			t.Fatalf("ls page 1 %+v", r)
 		}
 		cursor := strings.TrimPrefix(lines[2], "next_after: ")

@@ -28,6 +28,20 @@ const (
 	// directory, that directory's permissions and its environment (never
 	// the prompt). Fixture-only, for the native process qualification.
 	EnvTaskReport = "CALLSHEET_FAKE_TASK_REPORT"
+	// EnvTaskGroupDir and EnvTaskDescendantTerm drive the "group" task
+	// mode (iteration 06a native group qualification, fixture only): the
+	// task child spawns one descendant in its own process group (term mode
+	// exit or ignore), publishes group.json {leader_pid, descendant_pid}
+	// atomically in the absolute directory EnvTaskGroupDir, then waits
+	// until a file named "go" appears there to write one output line
+	// naming its PID and complete (it writes one "native started" line
+	// naming its PID first). It installs no signal handler: TERM
+	// ends it (the descendant follows its own term mode).
+	EnvTaskGroupDir       = "CALLSHEET_FAKE_TASK_GROUP_DIR"
+	EnvTaskDescendantTerm = "CALLSHEET_FAKE_TASK_DESCENDANT_TERM"
+	// GroupFile and GroupTrigger are the group mode's file names.
+	GroupFile    = "group.json"
+	GroupTrigger = "go"
 	// TaskFormat is the prompt envelope's format.
 	TaskFormat = "callsheet-task-v1"
 	// FinalMarker is the exact stdout line of a completed task.
@@ -130,7 +144,7 @@ func runTask(env Env, opts Options) int {
 	}
 	mode := getenv(EnvTaskMode)
 	switch mode {
-	case "", "success", "fail", "output":
+	case "", "success", "fail", "output", "group":
 	default:
 		fmt.Fprintf(stderr, "fake-adapter: unknown %s %q\n", EnvTaskMode, mode)
 		return 2
@@ -162,6 +176,8 @@ func runTask(env Env, opts Options) int {
 	case "fail":
 		io.WriteString(stderr, FailureLine)
 		return TaskFailExit
+	case "group":
+		return runGroup(env, stdout, stderr, getenv)
 	case "output":
 		w := bufio.NewWriterSize(stdout, 64<<10)
 		for n := 0; n < OutputBytes; {

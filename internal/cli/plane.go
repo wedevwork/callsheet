@@ -39,7 +39,12 @@ const (
 	runDetails = "Flags:\n" + stateDirHelp + bindHelp +
 		"  --san NAME        first-start SANs when the state is empty (as plane init)\n\n" +
 		"Serves HTTPS only, on the configured private bind, until interrupted (SIGINT or\n" +
-		"SIGTERM; exit 130). Logs are JSON on stderr; stdout stays empty.\n"
+		"SIGTERM; exit 130). Logs are JSON on stderr; stdout stays empty.\n\n" +
+		"Tasks survive a plane restart: their workers keep running and reconcile when they\n" +
+		"reconnect, and no start is ever repeated. A node that held unfinished tasks gets one\n" +
+		"60 s reconciliation grace from this start; if it does not reconnect in time those\n" +
+		"tasks become lost. Iteration 05 tasks still pending or running are resolved lost\n" +
+		"before the plane accepts connections (callsheet plane status reports how many).\n"
 	statusDetails = "Flags:\n" + stateDirHelp + "\n" +
 		"Prints paths, SANs, the CA fingerprint and certificate validity offline, and warns\n" +
 		"on stderr when either certificate expires within 30 days. It does not show whether\n" +
@@ -182,6 +187,10 @@ func planeStatus(ctx context.Context, goos string, c *Command, args []string, ou
 		return planeFail(errOut, err)
 	}
 	io.WriteString(errOut, RenderWarnings(st.Warnings))
+	if st.PendingMigrations > 0 {
+		fmt.Fprintf(errOut, "callsheet: notice: %d iteration 05 task(s) still pending or running cannot be reconciled after the upgrade; the next plane run resolves them lost (%s) before it accepts connections\n",
+			st.PendingMigrations, contract.ReasonLegacyUnrecoverable)
+	}
 	return writeReport(out, errOut, st)
 }
 

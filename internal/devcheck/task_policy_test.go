@@ -74,9 +74,11 @@ var wantTaskSuffix = []string{
 // wantLaunchLedger is the design's per-test incremental task/probe-child
 // launch budget per stress repetition of the sidecar package (the packages
 // shard until design 05b's sidecar follow-up, the sidecar shard since):
-// exactly three OS children, all in the sidecar's process qualification.
+// exactly five OS children since iteration 06a (one probe plus two
+// sequential guardian/adapter pairs), all in the sidecar's process
+// qualification.
 var wantLaunchLedger = []string{
-	"sidecar TestTaskExecutionContract/process|3",
+	"sidecar TestTaskExecutionContract/process|5",
 	"sidecar TestTaskExecutionContract/compose,/exit|0",
 	"adapter TestTaskAdapter/invocation,/extraction,/signals|0",
 	"sidecar TestTaskPlatform/platforms|0",
@@ -180,11 +182,12 @@ func TestTaskPolicy(t *testing.T) {
 			t.Fatal("an unknown wrapper passed")
 		}
 		// Native: the 87 earlier names first and unchanged, then the literal
-		// 41-name suffix; plus the separate sidecar package tuple.
+		// 41-name task suffix (iteration 06a's 13 control names follow it);
+		// plus the separate sidecar package tuple.
 		req := NativeRequiredTests()
-		if len(req) != 128 || strings.Join(req[87:], ",") != strings.Join(wantTaskSuffix, ",") || strings.Join(req[58:87], ",") != strings.Join(roleNames(), ",") ||
+		if len(req) != 141 || strings.Join(req[87:128], ",") != strings.Join(wantTaskSuffix, ",") || strings.Join(req[58:87], ",") != strings.Join(roleNames(), ",") ||
 			strings.Join(taskNames(), ",") != strings.Join(wantTaskSuffix, ",") {
-			t.Fatalf("native required = %v", req[87:])
+			t.Fatalf("native required = %v", req[87:128])
 		}
 		if NativeTaskProcessPackage != "github.com/wedevwork/callsheet/internal/sidecar" ||
 			strings.Join(NativeTaskProcessTests(), ",") != "TestTaskExecutionContract,TestTaskExecutionContract/process" {
@@ -237,7 +240,7 @@ func TestTaskPolicy(t *testing.T) {
 		if got := strings.Join(argvOf(BenchSteps()), "|"); got != wantRoleBenchPlan {
 			t.Fatalf("bench plan = %s", got)
 		}
-		if len(wantLaunchLedger) != 7 || !strings.HasSuffix(wantLaunchLedger[0], "|3") {
+		if len(wantLaunchLedger) != 7 || !strings.HasSuffix(wantLaunchLedger[0], "|5") {
 			t.Fatal("the launch ledger changed")
 		}
 		root := repoRoot(t)
@@ -265,7 +268,7 @@ func TestTaskPolicy(t *testing.T) {
 			}
 		}
 		exe, _ := os.ReadFile(filepath.Join(root, "internal", "sidecar", "task_execution_test.go"))
-		if strings.Count(string(exe), "ledger.real = true") != 1 || !strings.Contains(string(exe), "want exactly 1 and 2") {
+		if strings.Count(string(exe), "ledger.real = true") != 1 || !strings.Contains(string(exe), "want exactly 1 and 4") {
 			t.Fatal("the process qualification lost its single real-child ledger assertion")
 		}
 		helpers, _ := os.ReadFile(filepath.Join(root, "internal", "sidecar", "task_helpers_test.go"))

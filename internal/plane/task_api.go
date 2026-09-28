@@ -9,7 +9,7 @@ import (
 	"github.com/wedevwork/callsheet/internal/contract"
 )
 
-// The task API (iteration 05): dispatch and task ls/show/logs, typed so a
+// The task API (iteration 05; 06a adds ?late=true on logs): dispatch and task ls/show/logs, typed so a
 // future MCP server can mirror each operation one to one. Global task
 // reads expose goals, payload pointers, attribution and output to anyone
 // with network and trust access, matching v1's security model; manual
@@ -138,11 +138,22 @@ func (s *nodeService) handleTasks(w http.ResponseWriter, r *http.Request) {
 		tasks, next := ts.list(after, limit)
 		writeBounded(w, http.StatusOK, contract.TaskListResponse{Version: contract.ProtocolVersion, Tasks: tasks, NextAfter: next}, contract.MaxTaskListBytes)
 	case logs:
-		if _, err := taskQuery(r); err != nil {
+		// ?late=true selects the late-evidence tail (iteration 06a); the
+		// ordinary logs response is unchanged.
+		q, err := taskQuery(r, "late")
+		if err != nil {
 			writeCodeError(w, err)
 			return
 		}
-		resp, err := ts.logs(id)
+		late := false
+		if v, ok := q["late"]; ok {
+			if v != "true" {
+				writeError(w, invalid("late must be true"))
+				return
+			}
+			late = true
+		}
+		resp, err := ts.logs(id, late)
 		if err != nil {
 			writeCodeError(w, err)
 			return

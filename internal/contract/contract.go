@@ -18,7 +18,13 @@ import (
 // and the task API. Protocol 2 peers reject both, so this is a deliberate
 // incompatibility: there is no negotiation or fallback; plane, sidecars
 // and coordinators upgrade together.
-const ProtocolVersion = 3
+// Iteration 06a raised it to 4: executions keep a stable identity across
+// attachments (task_inventory and task_reconcile after hello), results
+// carry an outcome and a digest and are deleted by the worker only after a
+// committed acknowledgement (a receipt no longer authorizes deletion), and
+// task records gain the lost state and schema 2. A protocol 3 peer is
+// refused at the version gate naming both versions; upgrade together.
+const ProtocolVersion = 4
 
 // Code is a stable, machine-readable error code.
 type Code string

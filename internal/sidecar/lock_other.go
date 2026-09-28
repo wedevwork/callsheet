@@ -17,3 +17,6 @@ func rawFsync(*os.File) error {
 func flockExclusive(*os.File) error {
 	return errors.New("advisory state locking is supported on linux and darwin only")
 }
+
+// ownProcessGroup has no meaning outside the supported systems.
+func ownProcessGroup() int { return 0 }

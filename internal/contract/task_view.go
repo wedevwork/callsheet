@@ -10,32 +10,34 @@ import (
 	"unicode/utf8"
 )
 
-// TaskReason explains a rejection: a fixed safe code and a message of at
-// most MaxReasonMessageBytes.
+// TaskReason explains a rejection or a loss: a fixed safe code and a
+// message of at most MaxReasonMessageBytes.
 type TaskReason struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
 }
 
-func (r TaskReason) validate(what string) error {
-	if !taskReasonCode(r.Code) || !utf8.ValidString(r.Message) || len(r.Message) > MaxReasonMessageBytes {
+func (r TaskReason) validate(state, what string) error {
+	if !taskReasonCode(state, r.Code) || !utf8.ValidString(r.Message) || len(r.Message) > MaxReasonMessageBytes {
 		return errInvalid("%s reason must carry a known code and a message of at most %d bytes", what, MaxReasonMessageBytes)
 	}
 	return nil
 }
 
 // TaskCandidate is one instance considered for a dispatch, observed at
-// the decision instant. Inflight is the plane's held reservations.
+// the decision instant. Inflight is the plane's held reservations and
+// ReconcilingInflight how many of them await reconciliation with their
+// worker (iteration 06a).
 type TaskCandidate struct {
-	RoleID            string `json:"role_id"`
-	NodeID            string `json:"node_id"`
-	RegistrationOrder int    `json:"registration_order"`
-	NodeLiveness      string `json:"node_liveness"`
-	Inflight          int    `json:"inflight"`
-	RecoveryInflight  int    `json:"recovery_inflight"`
-	Concurrency       int    `json:"concurrency"`
-	CanAccept         bool   `json:"can_accept"`
-	Reason            string `json:"reason"`
+	RoleID              string `json:"role_id"`
+	NodeID              string `json:"node_id"`
+	RegistrationOrder   int    `json:"registration_order"`
+	NodeLiveness        string `json:"node_liveness"`
+	Inflight            int    `json:"inflight"`
+	ReconcilingInflight int    `json:"reconciling_inflight"`
+	Concurrency         int    `json:"concurrency"`
+	CanAccept           bool   `json:"can_accept"`
+	Reason              string `json:"reason"`
 }
 
 // CandidateReasons are the per-candidate reasons, in precedence order.
@@ -53,7 +55,7 @@ func (c TaskCandidate) validate(what string) error {
 		return errInvalid("%s candidate registration_order is out of range", what)
 	case c.NodeLiveness != LivenessOnline && c.NodeLiveness != LivenessOffline:
 		return errInvalid("%s candidate node_liveness is invalid", what)
-	case c.Inflight < 0 || c.Inflight > MaxSafeInteger || c.RecoveryInflight < 0 || c.RecoveryInflight > c.Inflight:
+	case c.Inflight < 0 || c.Inflight > MaxSafeInteger || c.ReconcilingInflight < 0 || c.ReconcilingInflight > c.Inflight:
 		return errInvalid("%s candidate inflight counts are invalid", what)
 	case c.Concurrency < 1 || c.Concurrency > MaxConcurrency:
 		return errInvalid("%s candidate concurrency is out of range", what)
@@ -212,27 +214,27 @@ func (r TaskResult) MarshalJSON() ([]byte, error) {
 
 // TaskView is the single-task operator view (show, dispatch).
 type TaskView struct {
-	TaskID              string          `json:"task_id"`
-	Request             DispatchRequest `json:"request"`
-	Role                TaskRole        `json:"role"`
-	Effective           TaskEffective   `json:"effective"`
-	TimeoutEnforced     bool            `json:"timeout_enforced"`
-	State               string          `json:"state"`
-	CreatedAt           string          `json:"created_at"`
-	StartedAt           *string         `json:"started_at"`
-	FinishedAt          *string         `json:"finished_at"`
-	ElapsedMS           int             `json:"elapsed_ms"`
-	RecoveryRequired    bool            `json:"recovery_required"`
-	RecoveryReason      *string         `json:"recovery_reason"`
-	CompletionPending   bool            `json:"completion_pending"`
-	PersistenceReason   *string         `json:"persistence_reason"`
-	DurabilityConfirmed bool            `json:"durability_confirmed"`
-	Reason              *TaskReason     `json:"reason"`
-	Candidates          []TaskCandidate `json:"candidates"`
-	Log                 TaskLogMeta     `json:"log"`
-	LogTail             string          `json:"log_tail"`
-	TailTruncated       bool            `json:"tail_truncated"`
-	Result              *TaskResult     `json:"result"`
+	TaskID              string           `json:"task_id"`
+	Request             DispatchRequest  `json:"request"`
+	Role                TaskRole         `json:"role"`
+	Effective           TaskEffective    `json:"effective"`
+	TimeoutEnforced     bool             `json:"timeout_enforced"`
+	State               string           `json:"state"`
+	CreatedAt           string           `json:"created_at"`
+	StartedAt           *string          `json:"started_at"`
+	FinishedAt          *string          `json:"finished_at"`
+	ElapsedMS           int              `json:"elapsed_ms"`
+	Reconciling         bool             `json:"reconciling"`
+	CompletionPending   bool             `json:"completion_pending"`
+	PersistenceReason   *string          `json:"persistence_reason"`
+	DurabilityConfirmed bool             `json:"durability_confirmed"`
+	Reason              *TaskReason      `json:"reason"`
+	Candidates          []TaskCandidate  `json:"candidates"`
+	Log                 TaskLogMeta      `json:"log"`
+	LogTail             string           `json:"log_tail"`
+	TailTruncated       bool             `json:"tail_truncated"`
+	Result              *TaskResult      `json:"result"`
+	LateResult          *TaskLateSummary `json:"late_result"`
 }
 
 // MarshalJSON renders the view with an empty (never null) candidate list.
@@ -258,8 +260,7 @@ type TaskSummary struct {
 	ElapsedMS           int           `json:"elapsed_ms"`
 	Effective           TaskEffective `json:"effective"`
 	RequestedBy         RequestedBy   `json:"requested_by"`
-	RecoveryRequired    bool          `json:"recovery_required"`
-	RecoveryReason      *string       `json:"recovery_reason"`
+	Reconciling         bool          `json:"reconciling"`
 	CompletionPending   bool          `json:"completion_pending"`
 	PersistenceReason   *string       `json:"persistence_reason"`
 	DurabilityConfirmed bool          `json:"durability_confirmed"`
@@ -286,8 +287,11 @@ func validLifecycle(state string, started, finished bool, exit *int, signal, fin
 	if !TaskTerminal(state) && (finished || exit != nil || signal != nil || final != nil || truncated) {
 		return bad("has no finish time, exit, signal or final message")
 	}
-	if state != TaskRejected && (reason || candidates > 0) {
-		return bad("has no reason or candidates")
+	if state != TaskRejected && candidates > 0 {
+		return bad("has no candidates")
+	}
+	if state != TaskRejected && state != TaskLost && reason {
+		return bad("has no reason")
 	}
 	switch state {
 	case TaskPending:
@@ -309,6 +313,13 @@ func validLifecycle(state string, started, finished bool, exit *int, signal, fin
 	case TaskRejected:
 		if started || !finished || exit != nil || signal != nil || final != nil || truncated || !reason {
 			return bad("has a finish time and a reason but no start, exit, signal or final message")
+		}
+	case TaskLost:
+		// Lost: outcome and cleanup unconfirmed. It may lack a start (a
+		// pending task), and an exit or signal when no trustworthy
+		// observation exists, but never both.
+		if !finished || !reason || (exit != nil && signal != nil) {
+			return bad("has a finish time and a reason, and at most one of exit code and signal")
 		}
 	default:
 		return errInvalid("%s state %q is not a state this build produces", what, SafeText(state, 32))
@@ -355,9 +366,20 @@ func (v TaskView) validate() error {
 		return errInvalid("%s result is inconsistent with the task", what)
 	}
 	if v.Reason != nil {
-		if err := v.Reason.validate(what); err != nil {
+		if err := v.Reason.validate(v.State, what); err != nil {
 			return err
 		}
+	}
+	if v.LateResult != nil {
+		if !TaskTerminal(v.State) {
+			return errInvalid("%s: a %s task has no late result", what, v.State)
+		}
+		if err := v.LateResult.validate(what); err != nil {
+			return err
+		}
+	}
+	if v.Reconciling && TaskTerminal(v.State) {
+		return errInvalid("%s: a terminal task is never reconciling", what)
 	}
 	return v.checkCommon(what)
 }
@@ -366,8 +388,6 @@ func (v TaskView) checkCommon(what string) error {
 	switch {
 	case v.ElapsedMS < 0:
 		return errInvalid("%s elapsed_ms must not be negative", what)
-	case v.RecoveryRequired != (v.RecoveryReason != nil):
-		return errInvalid("%s recovery_reason must be present exactly when recovery is required", what)
 	case v.PersistenceReason != nil && *v.PersistenceReason != ReasonResultStorageUnconfirmed:
 		return errInvalid("%s persistence_reason is not known", what)
 	case !utf8.ValidString(v.LogTail) || len(v.LogTail) > MaxTailBytes*3:
@@ -393,16 +413,16 @@ func (s TaskSummary) validate() error {
 	if err := validTimes(s.CreatedAt, s.StartedAt, s.FinishedAt, what); err != nil {
 		return err
 	}
-	if s.ElapsedMS < 0 || s.RecoveryRequired != (s.RecoveryReason != nil) || (s.PersistenceReason != nil && *s.PersistenceReason != ReasonResultStorageUnconfirmed) {
+	if s.ElapsedMS < 0 || (s.Reconciling && TaskTerminal(s.State)) || (s.PersistenceReason != nil && *s.PersistenceReason != ReasonResultStorageUnconfirmed) {
 		return errInvalid("%s derived fields are inconsistent", what)
 	}
 	if s.Reason != nil {
-		return s.Reason.validate(what)
+		return s.Reason.validate(s.State, what)
 	}
 	return nil
 }
 
-// DispatchResponse is 202 {"version":3,"task_id":ID,"task":TaskView}.
+// DispatchResponse is 202 {"version":4,"task_id":ID,"task":TaskView}.
 type DispatchResponse struct {
 	Version int      `json:"version"`
 	TaskID  string   `json:"task_id"`
@@ -426,7 +446,7 @@ func (r TaskListResponse) MarshalJSON() ([]byte, error) {
 	return compact(p)
 }
 
-// TaskShowResponse is {"version":3,"task":TaskView}.
+// TaskShowResponse is {"version":4,"task":TaskView}.
 type TaskShowResponse struct {
 	Version int      `json:"version"`
 	Task    TaskView `json:"task"`

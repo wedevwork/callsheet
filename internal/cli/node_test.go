@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"log/slog"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +16,7 @@ import (
 
 	"github.com/wedevwork/callsheet/internal/contract"
 	"github.com/wedevwork/callsheet/internal/plane"
+	"github.com/wedevwork/callsheet/internal/testkit"
 )
 
 var nodeLeaves = [][]string{{"sidecar", "enroll"}, {"sidecar", "run"}, {"node", "ls"}, {"node", "show"}}
@@ -216,7 +216,7 @@ func TestNodeCommands(t *testing.T) {
 	if code != 0 || errOut != "" || out != "ID\tLIVENESS\tLAST_SEEN\tPROTOCOL_VERSION\tSOFTWARE_VERSION\tROLES\n" {
 		t.Fatalf("empty ls = %d %q %q", code, out, errOut)
 	}
-	if _, out, _ := exec(t, "linux", "node", "ls", "--json", "--plane", url, "--ca-fingerprint", fp); out != `{"version":3,"nodes":[]}`+"\n" {
+	if _, out, _ := exec(t, "linux", "node", "ls", "--json", "--plane", url, "--ca-fingerprint", fp); out != `{"version":4,"nodes":[]}`+"\n" {
 		t.Fatalf("empty json = %q", out)
 	}
 	var ids []string
@@ -237,7 +237,7 @@ func TestNodeCommands(t *testing.T) {
 	node := func(id string) string {
 		return `{"id":"` + id + `","liveness":"offline","last_seen":null,"protocol_version":null,"software_version":null,"roles":[]}`
 	}
-	if out != `{"version":3,"nodes":[`+node(ids[0])+`,`+node(ids[1])+`]}`+"\n" {
+	if out != `{"version":4,"nodes":[`+node(ids[0])+`,`+node(ids[1])+`]}`+"\n" {
 		t.Fatalf("json ls = %q", out)
 	}
 	// Flags may surround the operand.
@@ -251,15 +251,15 @@ func TestNodeCommands(t *testing.T) {
 			t.Fatalf("%v = %d %q %q", args, code, out, errOut)
 		}
 	}
-	if _, out, _ := exec(t, "linux", "node", "show", ids[0], "--json", "--plane", url, "--ca", caFile); out != `{"version":3,"node":`+node(ids[0])+`}`+"\n" {
+	if _, out, _ := exec(t, "linux", "node", "show", ids[0], "--json", "--plane", url, "--ca", caFile); out != `{"version":4,"node":`+node(ids[0])+`}`+"\n" {
 		t.Fatalf("json show = %q", out)
 	}
 	// Errors: exact codes, stderr only, nothing partial on stdout.
 	other := filepath.Join(t.TempDir(), "other.crt")
 	os.WriteFile(other, []byte(otherCA(t)), 0o644)
-	ln, _ := net.Listen("tcp", "127.0.0.1:0")
-	gone := "https://" + ln.Addr().String()
-	ln.Close()
+	// Nothing accepts there for the whole test (a released ephemeral
+	// port could be taken by another listener).
+	gone := "https://" + testkit.RefusingAddr(t)
 	for _, c := range []struct {
 		args []string
 		code int

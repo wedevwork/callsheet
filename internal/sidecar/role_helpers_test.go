@@ -229,11 +229,14 @@ func (e *events) awaitMatch(t *testing.T, kind eventKind, match func(event) bool
 	}
 }
 
-// connect answers hello and acknowledges heartbeat b1 at revision 0.
+// connect answers hello, acknowledges heartbeat b1 at revision 0 and
+// reconciles an empty inventory (protocol 4: nothing else of the plane's
+// precedes it).
 func (c *fakeConn) connect() {
 	c.t.Helper()
 	c.helloOK(testID)
 	c.heartbeatAt(1, 0)
+	c.reconcileEmpty()
 }
 
 // heartbeatAt reads heartbeat k, checks its revision and acknowledges it.
@@ -277,10 +280,24 @@ func (c *fakeConn) replace(rid string, rev int, roles ...contract.RoleConfig) {
 	c.send(contract.ProtocolVersion, contract.FrameRolesReplace, rid, body)
 }
 
-// expectReplaceAck reads the acknowledgement of rid.
+// expectReplaceAck reads the acknowledgement of rid; task output and
+// results a reconciled attachment sent first are held for later reads.
 func (c *fakeConn) expectReplaceAck(rid string, rev int) {
 	c.t.Helper()
-	f := c.expect(contract.FrameRolesReplaceAck, rid)
+	var skipped []contract.NodeFrame
+	var f contract.NodeFrame
+	for {
+		f = c.recv()
+		if f.Type == contract.FrameTaskLog || f.Type == contract.FrameTaskResult {
+			skipped = append(skipped, f)
+			continue
+		}
+		break
+	}
+	c.held = append(skipped, c.held...)
+	if f.Type != contract.FrameRolesReplaceAck || f.RequestID != rid {
+		c.t.Fatalf("got %s %s (%s), want %s %s", f.Type, f.RequestID, f.Body, contract.FrameRolesReplaceAck, rid)
+	}
 	if got, err := contract.DecodeRolesReplaceAck(f.Body); err != nil || got != rev {
 		c.t.Fatalf("ack %s = %d %v, want %d", rid, got, err, rev)
 	}
@@ -422,4 +439,20 @@ func mustJSON(t *testing.T, v any) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+// reconcileEmpty acknowledges an empty final inventory page i1 and sends
+// the empty final reconcile page r1, reading its acknowledgement.
+func (c *pipeConn) reconcileEmpty(t *testing.T) {
+	t.Helper()
+	f := c.read(t)
+	b, err := contract.DecodeTaskInventory(f.Body)
+	if f.Type != contract.FrameTaskInventory || f.RequestID != "i1" || err != nil || !b.Final || len(b.Entries) != 0 {
+		t.Fatalf("inventory = %+v %v", f, err)
+	}
+	c.send(t, contract.FrameTaskInventoryAck, "i1", contract.TaskInventoryAckBody{Page: 0, Received: true})
+	c.send(t, contract.FrameTaskReconcile, "r1", contract.TaskReconcileBody{Final: true})
+	if f := c.read(t); f.Type != contract.FrameTaskReconcileAck || f.RequestID != "r1" {
+		t.Fatalf("reconcile ack = %+v", f)
+	}
 }

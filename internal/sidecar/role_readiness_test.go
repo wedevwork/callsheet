@@ -28,6 +28,7 @@ func TestRoleReadinessContract(t *testing.T) {
 		c := fp.accept(t)
 		c.helloOK(testID)
 		rr.beat(c, 1, 0) // T0; b2 due at T0+5s
+		c.reconcileEmpty()
 		insA, runA := manuals(t, rr.dir, "a", "x")
 		insB, runB := manuals(t, rr.dir, "b", "")
 		a, b := roleConfig("a", insA, runA), roleConfig("b", insB, runB)
@@ -151,6 +152,7 @@ func TestRoleReadinessContract(t *testing.T) {
 		c := fp.accept(t)
 		c.helloOK(testID)
 		rr.beat(c, 1, 0)
+		c.reconcileEmpty()
 		rr.script.set(&adapter.ProbeError{Reason: "exited unsuccessfully"}, nil)
 		ins, run := manuals(t, rr.dir, "a", "x")
 		c.replace("p1", 1, roleConfig("a", ins, run))
@@ -170,6 +172,7 @@ func TestRoleReadinessContract(t *testing.T) {
 		c2 := fp2.accept(t)
 		c2.helloOK(testID)
 		off.beat(c2, 1, 0)
+		c2.reconcileEmpty()
 		c2.replace("p1", 1, roleConfig("a", ins, run))
 		c2.expectReplaceAck("p1", 1)
 		if p := off.awaitCycle(t, 1); p[0] || off.script.count() != 0 {
@@ -187,6 +190,7 @@ func TestRoleReadinessContract(t *testing.T) {
 		c := fp.accept(t)
 		c.helloOK(testID)
 		rr.beat(c, 1, 0)
+		c.reconcileEmpty()
 		ins, run := manuals(t, rr.dir, "a", "x")
 		block := make(chan struct{})
 		rr.script.set(nil, block)
@@ -228,6 +232,7 @@ func TestRoleReadinessContract(t *testing.T) {
 		c := fp.accept(t)
 		c.helloOK(testID)
 		rr.beat(c, 1, 0)
+		c.reconcileEmpty()
 		ins, run := manuals(t, rr.dir, "a", "x")
 		block := make(chan struct{})
 		rr.script.set(nil, block)
@@ -254,7 +259,7 @@ func TestRoleReadinessContract(t *testing.T) {
 		// cycle is fresh strictly before its start + 10 s; a mismatched
 		// revision is false.
 		start := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
-		rs := &roleSession{inst: snapshot{any: true, rev: 3, roles: []contract.RoleRecord{{RoleConfig: roleConfig("a", "/i", "/r"), RegistrationOrder: 1}}}}
+		rs := &roleSession{inst: snapshot{any: true, rev: 3, roles: []contract.RoleRecord{{RoleConfig: roleConfig("a", "/i", "/r"), RegistrationOrder: 1}}}, reconciled: true}
 		rs.last = &cycleResult{rev: 3, start: start, passed: []bool{true}}
 		if !rs.statuses(start.Add(freshness - time.Nanosecond))[0].CanAccept {
 			t.Fatal("stale before start+10s")

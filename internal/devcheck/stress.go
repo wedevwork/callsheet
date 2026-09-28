@@ -69,7 +69,8 @@ var (
 	// after the plane split measured the sidecar binary over 300.0 s in
 	// the packages shard). Its reconnect contracts run real plane
 	// subprocesses and TestTaskExecutionContract/process launches the
-	// iteration 05 task and probe children (3 per repetition, 180 per
+	// probe and the guardian-backed task children (5 per repetition since
+	// iteration 06a: one probe and two guardian/adapter pairs, 300 per
 	// shard), so its three CPU settings run as three concurrent
 	// invocations (runConcurrentCPU), each StressCount times at one
 	// setting: the same 60 repetitions per test and the same children.

@@ -118,6 +118,15 @@ var speedRoleNative = []string{
 }
 
 // speedTaskNative are iteration 05's 41 required task names.
+// speedControlNative are iteration 06a's native names: the eight
+// control function parents and the native group qualification.
+var speedControlNative = []string{
+	"TestControlDurability", "TestControlReconnect", "TestControlNodeLoss", "TestControlLaunchSafety", "TestControlWorkerRecovery",
+	"TestControlPlaneRecovery", "TestControlLateResult", "TestControlLegacy",
+	"TestControlNativeGroups", "TestControlNativeGroups/cooperative", "TestControlNativeGroups/resistant",
+	"TestControlNativeGroups/orphan-restart", "TestControlNativeGroups/plane-restart",
+}
+
 var speedTaskNative = []string{
 	"TestTaskModel", "TestTaskModel/envelope", "TestTaskModel/states",
 	"TestTaskDispatch", "TestTaskDispatch/selection", "TestTaskDispatch/gate-race", "TestTaskDispatch/reserved-slot",
@@ -584,7 +593,7 @@ func TestCISpeedJobs(t *testing.T) {
 func qualifyingStream(drop string) string {
 	pkg := devcheck.NativePackage
 	evs := []map[string]any{synth("start", pkg, "")}
-	for _, name := range append(append(append(slices.Clone(speedNative), speedNodeNative...), speedRoleNative...), speedTaskNative...) {
+	for _, name := range append(append(append(append(slices.Clone(speedNative), speedNodeNative...), speedRoleNative...), speedTaskNative...), speedControlNative...) {
 		if name != drop {
 			evs = append(evs, synth("run", pkg, name), synth("pass", pkg, name))
 		}
@@ -596,7 +605,8 @@ func qualifyingStream(drop string) string {
 // FP-3: validator, plans, native evidence and documentation agree.
 func TestCISpeedPolicy(t *testing.T) {
 	t.Run("native", func(t *testing.T) {
-		if got := devcheck.NativeRequiredTests(); len(got) != 128 || !slices.Equal(got[:28], speedNative) || !slices.Equal(got[28:58], speedNodeNative) || !slices.Equal(got[58:87], speedRoleNative) || !slices.Equal(got[87:], speedTaskNative) {
+		if got := devcheck.NativeRequiredTests(); len(got) != 141 || !slices.Equal(got[:28], speedNative) || !slices.Equal(got[28:58], speedNodeNative) || !slices.Equal(got[58:87], speedRoleNative) || !slices.Equal(got[87:128], speedTaskNative) ||
+			!slices.Equal(got[128:], speedControlNative) {
 			t.Fatalf("native required = %v", got)
 		}
 		if err := devcheck.CheckNativeResults("darwin", strings.NewReader(qualifyingStream(""))); err != nil {

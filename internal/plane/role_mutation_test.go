@@ -214,8 +214,7 @@ func TestRoleMutationContract(t *testing.T) {
 		// nothing and releases the gate for the next mutation.
 		rp := startRolePlane(t, idA)
 		p := rp.dial(t)
-		p.hello(idA)
-		p.expect(contract.FrameHelloOK, "h1")
+		p.helloOK(idA)
 		snap := p.readReplace("p1")
 		p.heartbeat(1)
 		ctx, cancel := context.WithCancel(bg)

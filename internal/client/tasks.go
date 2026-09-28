@@ -136,3 +136,27 @@ func (c *Client) TaskLogs(ctx context.Context, id string) (contract.TaskLogsResp
 	}
 	return r, nil
 }
+
+// TaskLateLogs returns task id's late-evidence output tail (iteration
+// 06a), byte exact; a task without a late result is not_found with reason
+// no_late_result.
+func (c *Client) TaskLateLogs(ctx context.Context, id string) (contract.TaskLogsResponse, error) {
+	if !contract.ValidTaskID(id) {
+		return contract.TaskLogsResponse{}, invalidTaskID()
+	}
+	status, b, err := c.request(ctx, http.MethodGet, contract.PathTasks+"/"+id+"/logs?late=true", nil, contract.MaxTaskLogsBytes)
+	if err != nil {
+		return contract.TaskLogsResponse{}, err
+	}
+	if status != http.StatusOK {
+		return contract.TaskLogsResponse{}, invalidResponse("unexpected status for task logs")
+	}
+	r, err := contract.ParseTaskLogsResponse(b)
+	if err != nil {
+		return contract.TaskLogsResponse{}, err
+	}
+	if r.TaskID != id {
+		return contract.TaskLogsResponse{}, invalidResponse("it names another task")
+	}
+	return r, nil
+}

@@ -62,31 +62,43 @@ const (
 	DefaultTaskListLimit = 100
 	MaxTaskListLimit     = 100
 
-	// TaskRecordSchemaVersion is tasks/<id>.json's schema.
-	TaskRecordSchemaVersion = 1
+	// TaskRecordSchemaVersion is tasks/<id>.json's schema written by this
+	// build (iteration 06a); LegacyTaskRecordSchemaVersion is iteration
+	// 05's, still decoded strictly and converted in memory.
+	TaskRecordSchemaVersion       = 2
+	LegacyTaskRecordSchemaVersion = 1
 
-	// RecoveryNotice is the fixed text for tasks whose outcome is
-	// unconfirmed in this build (FP-9).
-	RecoveryNotice = "execution outcome unconfirmed; automatic recovery is not available in this build."
+	// TimeoutPolicyLegacy is the only timeout policy of 06a: the recorded
+	// timeout is not enforced (timeout_enforced stays false).
+	TimeoutPolicyLegacy = "legacy_unenforced"
+
+	// ReconcilingNotice is the fixed text for tasks whose execution awaits
+	// reconciliation with its worker (iteration 06a).
+	ReconcilingNotice = "the task's execution awaits reconciliation with its worker; its reservation is held until it is resolved"
 	// TimeoutNotice is the fixed text about the recorded timeout.
 	TimeoutNotice = "the recorded timeout is not enforced in this build"
 )
 
-// Task states. Only the first five are produced in iteration 05;
-// cancelled, timed_out and lost are reserved for iteration 06 and are
-// never accepted from a worker or written by this build.
+// Task states. Iteration 06a produces pending, running, succeeded,
+// failed, rejected and lost; cancelled and timed_out are reserved product
+// states that protocol 4 records and results never accept.
 const (
 	TaskPending   = "pending"
 	TaskRunning   = "running"
 	TaskSucceeded = "succeeded"
 	TaskFailed    = "failed"
 	TaskRejected  = "rejected"
+	TaskLost      = "lost"
+
+	// Reserved, never accepted or produced by this build.
+	TaskCancelled = "cancelled"
+	TaskTimedOut  = "timed_out"
 )
 
 // ValidTaskState reports whether s is a state this build produces.
 func ValidTaskState(s string) bool {
 	switch s {
-	case TaskPending, TaskRunning, TaskSucceeded, TaskFailed, TaskRejected:
+	case TaskPending, TaskRunning, TaskSucceeded, TaskFailed, TaskRejected, TaskLost:
 		return true
 	}
 	return false
@@ -94,7 +106,7 @@ func ValidTaskState(s string) bool {
 
 // TaskTerminal reports whether s is a terminal state.
 func TaskTerminal(s string) bool {
-	return s == TaskSucceeded || s == TaskFailed || s == TaskRejected
+	return s == TaskSucceeded || s == TaskFailed || s == TaskRejected || s == TaskLost
 }
 
 // Task error and diagnostic reasons (safe, fixed codes).
@@ -125,13 +137,33 @@ const (
 	ReasonFull               = "full"
 	ReasonAvailable          = "available"
 
-	// Recovery reasons (derived, public).
-	RecoveryPlaneRestarted         = "plane_restarted"
-	RecoveryRoleRemoved            = "role_removed"
-	RecoveryStartUnconfirmed       = "start_unconfirmed"
-	RecoveryAttachmentLost         = "attachment_lost"
 	ReasonResultStorageUnconfirmed = "result_storage_unconfirmed"
+
+	// Lost reasons (iteration 06a): why the plane resolved an execution
+	// lost. Lost means outcome and cleanup unconfirmed, never success.
+	ReasonLeaseExpired          = "lease_expired"
+	ReasonStartupGraceExpired   = "startup_grace_expired"
+	ReasonExecutionMissing      = "execution_missing"
+	ReasonLegacyUnrecoverable   = "legacy_execution_unrecoverable"
+	ReasonWorkerLost            = "worker_lost"
+	ReasonNoLateResult          = "no_late_result"
+	ReasonPreparationOverrun    = "preparation_overrun"
+	ReasonResultConflict        = "result_conflict"
+	ReasonUnknownExecution      = "unknown_execution"
+	ReasonReconciliationPending = "reconciliation_pending"
 )
+
+// LostReasons are the codes a lost record's reason may carry.
+var LostReasons = []string{ReasonLeaseExpired, ReasonStartupGraceExpired, ReasonExecutionMissing, ReasonLegacyUnrecoverable, ReasonWorkerLost}
+
+func knownLost(r string) bool {
+	for _, s := range LostReasons {
+		if s == r {
+			return true
+		}
+	}
+	return false
+}
 
 // StartRefusalReasons are the safe reasons a sidecar may give in a
 // task_start_result refusal.
@@ -150,8 +182,14 @@ func knownRefusal(r string) bool {
 	return false
 }
 
-// taskReasonCode reports whether c may appear as a record's reason code.
-func taskReasonCode(c string) bool { return c == ReasonStartNotSent || knownRefusal(c) }
+// taskReasonCode reports whether c may appear as a record's reason code
+// in state (a rejection's or a loss's).
+func taskReasonCode(state, c string) bool {
+	if state == TaskLost {
+		return knownLost(c)
+	}
+	return c == ReasonStartNotSent || knownRefusal(c)
+}
 
 var (
 	taskIDRE   = regexp.MustCompile(`^t_[0-9a-f]{32}$`)
@@ -466,7 +504,7 @@ func parseDispatch(data []byte, what string) (DispatchRequest, error) {
 		}
 	}
 	if _, ok := o.raw["wait"]; ok {
-		return r, taskErr(CodeInvalidArgument, "wait", ReasonWaitNotSupported, "waiting for a task is not supported in this build (iteration 06); nothing was dispatched")
+		return r, taskErr(CodeInvalidArgument, "wait", ReasonWaitNotSupported, "waiting for a task is not supported in this build (iteration 06b adds it); nothing was dispatched")
 	}
 	if err := rejectUnknown(o, what, append(append([]string{}, dispatchFields...), "override")); err != nil {
 		return r, err
@@ -748,12 +786,15 @@ func DecodeTaskStartResult(body json.RawMessage) (TaskStartResult, error) {
 }
 
 // TaskLogBody is one task_log request: at most MaxLogChunkBytes of raw
-// output at an absolute merged offset.
+// output at an absolute merged offset. LateDigest (protocol 4) is null
+// for primary output, or the digest of the frozen outcome whose retained
+// tail a reconciled worker replays as late evidence.
 type TaskLogBody struct {
-	TaskID    string         `json:"task_id"`
-	Execution ExecutionToken `json:"execution"`
-	Offset    int            `json:"offset"`
-	Data      []byte         `json:"data"`
+	TaskID     string         `json:"task_id"`
+	Execution  ExecutionToken `json:"execution"`
+	Offset     int            `json:"offset"`
+	Data       []byte         `json:"data"`
+	LateDigest *string        `json:"late_digest"`
 }
 
 // DecodeTaskLog decodes a task_log body.
@@ -770,6 +811,8 @@ func DecodeTaskLog(body json.RawMessage) (TaskLogBody, error) {
 		return b, errInvalid("%s data must hold 1 to %d bytes", what, MaxLogChunkBytes)
 	case b.Offset < 0 || b.Offset > MaxSafeInteger-len(b.Data):
 		return b, errInvalid("%s offset plus length must be at most %d", what, MaxSafeInteger)
+	case b.LateDigest != nil && !ValidDigest(*b.LateDigest):
+		return b, errInvalid("%s late_digest must be null or 64 lowercase hex digits", what)
 	}
 	return b, nil
 }
@@ -793,11 +836,37 @@ func DecodeTaskLogAck(body json.RawMessage) (TaskLogAckBody, error) {
 	return b, nil
 }
 
-// TaskResultBody reports a child's exit. The sidecar sends no state: the
-// plane derives succeeded or failed.
+// Result outcomes (protocol 4): natural is the adapter's own exit; lost
+// is a worker that cannot report a trustworthy outcome (it restarted or
+// stopped while the execution was active, or no adapter ever ran).
+const (
+	OutcomeNatural = "natural"
+	OutcomeLost    = "lost"
+)
+
+// TaskResultBody reports an execution's frozen outcome. The sidecar sends
+// no state: the plane derives succeeded, failed or lost. Digest is the
+// SHA-256 (lowercase hex) of the canonical encoding of every other field
+// (ResultDigest); a retry repeats the same body and digest.
 type TaskResultBody struct {
 	TaskID                string         `json:"task_id"`
 	Execution             ExecutionToken `json:"execution"`
+	Outcome               string         `json:"outcome"`
+	ExitCode              *int           `json:"exit_code"`
+	Signal                *string        `json:"signal"`
+	FinalMessage          *string        `json:"final_message"`
+	FinalMessageTruncated bool           `json:"final_message_truncated"`
+	OutputBytes           int            `json:"output_bytes"`
+	LogIncomplete         bool           `json:"log_incomplete"`
+	CounterOverflow       bool           `json:"counter_overflow"`
+	Digest                string         `json:"digest"`
+}
+
+// resultDigestBody is TaskResultBody without its digest, in wire order.
+type resultDigestBody struct {
+	TaskID                string         `json:"task_id"`
+	Execution             ExecutionToken `json:"execution"`
+	Outcome               string         `json:"outcome"`
 	ExitCode              *int           `json:"exit_code"`
 	Signal                *string        `json:"signal"`
 	FinalMessage          *string        `json:"final_message"`
@@ -807,20 +876,45 @@ type TaskResultBody struct {
 	CounterOverflow       bool           `json:"counter_overflow"`
 }
 
-// Validate checks the exit, final message and counter invariants.
+// ResultDigest is the canonical digest of b's fields other than Digest.
+func (b TaskResultBody) ResultDigest() string {
+	enc, err := compact(resultDigestBody{b.TaskID, b.Execution, b.Outcome, b.ExitCode, b.Signal, b.FinalMessage, b.FinalMessageTruncated,
+		b.OutputBytes, b.LogIncomplete, b.CounterOverflow})
+	if err != nil {
+		return ""
+	}
+	return HexDigest(sha256.Sum256(enc))
+}
+
+// Sealed returns b with its Digest set.
+func (b TaskResultBody) Sealed() TaskResultBody {
+	b.Digest = b.ResultDigest()
+	return b
+}
+
+// Validate checks the outcome, exit, final message and counter invariants
+// and that the digest covers the other fields.
 func (b TaskResultBody) Validate() error {
 	const what = "task_result body"
 	switch {
 	case !ValidTaskID(b.TaskID):
 		return errInvalid("%s task_id is not a task ID", what)
-	case (b.ExitCode == nil) == (b.Signal == nil):
+	case b.Outcome != OutcomeNatural && b.Outcome != OutcomeLost:
+		return errInvalid("%s outcome must be %q or %q", what, OutcomeNatural, OutcomeLost)
+	case b.Outcome == OutcomeNatural && (b.ExitCode == nil) == (b.Signal == nil):
 		return errInvalid("%s needs exactly one of exit_code and signal", what)
+	case b.ExitCode != nil && b.Signal != nil:
+		return errInvalid("%s has both exit_code and signal", what)
 	case b.ExitCode != nil && (*b.ExitCode < 0 || *b.ExitCode > 255):
 		return errInvalid("%s exit_code must be an integer from 0 to 255", what)
 	case b.Signal != nil && !ValidWireSignal(*b.Signal):
 		return errInvalid("%s signal is not a known signal name", what)
 	case b.OutputBytes < 0 || b.OutputBytes > MaxSafeInteger:
 		return errInvalid("%s output_bytes must be an integer from 0 to %d", what, MaxSafeInteger)
+	case !ValidDigest(b.Digest):
+		return errInvalid("%s digest must be 64 lowercase hex digits", what)
+	case b.Digest != b.ResultDigest():
+		return errInvalid("%s digest does not cover its fields", what)
 	}
 	return checkFinalMessage(b.FinalMessage, b.FinalMessageTruncated, what)
 }
@@ -847,11 +941,16 @@ func DecodeTaskResult(body json.RawMessage) (TaskResultBody, error) {
 	return b, b.Validate()
 }
 
-// TaskResultAckBody acknowledges receipt of a result into the plane's
-// bounded completion mailbox; it is not durability.
+// TaskResultAckBody acknowledges a result (protocol 4): received is
+// receipt into the plane's bounded memory; committed=true means the
+// outcome with this digest is durable (as the terminal result or as late
+// evidence), the only acknowledgement that authorizes the worker to
+// delete its outbox. committed=false means retry the same result later.
 type TaskResultAckBody struct {
-	TaskID   string `json:"task_id"`
-	Received bool   `json:"received"`
+	TaskID    string `json:"task_id"`
+	Digest    string `json:"digest"`
+	Received  bool   `json:"received"`
+	Committed bool   `json:"committed"`
 }
 
 // DecodeTaskResultAck decodes a task_result_ack body: received must be true.
@@ -861,8 +960,8 @@ func DecodeTaskResultAck(body json.RawMessage) (TaskResultAckBody, error) {
 	if err := decodeStrict(body, &b, what); err != nil {
 		return b, err
 	}
-	if !ValidTaskID(b.TaskID) || !b.Received {
-		return b, errInvalid("%s must name a task with received=true", what)
+	if !ValidTaskID(b.TaskID) || !b.Received || !ValidDigest(b.Digest) {
+		return b, errInvalid("%s must name a task and a digest with received=true", what)
 	}
 	return b, nil
 }

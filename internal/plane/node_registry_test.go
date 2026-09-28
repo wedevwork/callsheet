@@ -232,20 +232,23 @@ func TestLeaseAlgorithm(t *testing.T) {
 	if err := r.Heartbeat(idA, gen3, nil); err != nil {
 		t.Fatalf("heartbeat at the exact window end: %v", err)
 	}
-	// Exact lease boundary with the attachment current: offline for an
-	// instant is never observable; the renewal wins in one locked step.
-	clk.Advance(leaseDuration)
+	// One tick before the lease end the renewal wins.
+	clk.Advance(leaseDuration - time.Nanosecond)
 	if err := r.Heartbeat(idA, gen3, nil); err != nil {
-		t.Fatalf("heartbeat at the exact lease end: %v", err)
+		t.Fatalf("heartbeat a tick before the lease end: %v", err)
 	}
 	if n := show(t, r, idA); n.Liveness != contract.LivenessOnline || !n.LastSeen.Equal(clk.Now()) {
-		t.Fatalf("after boundary renewal = %+v", n)
+		t.Fatalf("after renewal = %+v", n)
 	}
-	// Once the sweep evicted it, reconnect is required.
+	// Exactly at the lease end expiry wins (iteration 06a): a heartbeat
+	// arriving at that instant cannot revive the expired generation; its
+	// attachment is evicted and a reconnect is required.
 	clk.Advance(leaseDuration)
-	r.Expire()
 	if err := r.Heartbeat(idA, gen3, nil); !contract.IsCode(err, contract.CodeUnavailable) || closes.count("a3") != 1 {
-		t.Fatalf("heartbeat after sweep eviction = %v (closes %d)", err, closes.count("a3"))
+		t.Fatalf("heartbeat at the exact lease end = %v (closes %d)", err, closes.count("a3"))
+	}
+	if n := show(t, r, idA); n.Liveness != contract.LivenessOffline {
+		t.Fatalf("after the exact lease end = %+v", n)
 	}
 	// Roles that are not exactly the acknowledged snapshot (here the
 	// empty revision 0 of a fresh attachment) are rejected, never silently

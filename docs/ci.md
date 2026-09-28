@@ -21,8 +21,8 @@ their names are unique diagnostic checks, not required contexts:
 
 | Check context | Runner | Timeout | Kind | Steps after setup |
 |---|---|---|---|---|
-| `ci-linux` | `ubuntu-24.04` | 45 min | required | `devcheck test` (native suite, then the same suite with `-race`), `devcheck coverage` (unit coverage must be greater than 80.0%), `devcheck bench` (git transport payload byte limits and commit/tree invariants, then the plane trust benchmarks: issuance, initialization and verified TLS health, the plane node benchmarks: heartbeat, snapshot of 100 nodes and durable enrollment, and the plane role benchmarks: role list and node views for 1 and 100 roles and durable add/set/rm transactions, then the node and role frame encode/decode benchmarks in `internal/contract`, then the sidecar ready-check benchmark (100 manual pairs, one shared probe) and the adapter's real fake-probe benchmark, then the task benchmarks: plane admission over 100 roles (first, last and no match, no filesystem), full-tail checkpoint writes of 0, 64 KiB and 10 MiB, the task envelope encode/decode at its maximum legal size in `internal/contract`, and the sidecar log-tail ring and maximum prompt composition, each checking its invariants; timings are reported, never gated), `devcheck cross` (linux/amd64, linux/arm64, darwin/amd64, darwin/arm64: 12 artifacts) |
-| `ci-macos` | `macos-15` | 30 min | required | `devcheck native`: the complete suite as `go test -json`, which must show passing run and pass events in `github.com/wedevwork/callsheet/tests/function` for `TestFP6ProcessGroups` and its `cooperative`, `resistant` and `leader-exits-first` scenarios, for the plane trust tests, the node tests, the role tests and the task tests, and in `github.com/wedevwork/callsheet/internal/sidecar` for `TestTaskExecutionContract` and its `process` subtest (see below) |
+| `ci-linux` | `ubuntu-24.04` | 45 min | required | `devcheck test` (native suite, then the same suite with `-race`), `devcheck coverage` (unit coverage must be greater than 80.0%), `devcheck bench` (git transport payload byte limits and commit/tree invariants, then the plane trust benchmarks: issuance, initialization and verified TLS health, the plane node benchmarks: heartbeat, snapshot of 100 nodes and durable enrollment, and the plane role benchmarks: role list and node views for 1 and 100 roles and durable add/set/rm transactions, then the node and role frame encode/decode benchmarks in `internal/contract`, then the sidecar ready-check benchmark (100 manual pairs, one shared probe) and the adapter's real fake-probe benchmark, then the task benchmarks: plane admission over 100 roles (first, last and no match, no filesystem), full-tail checkpoint writes of 0, 64 KiB and 10 MiB, the task envelope encode/decode at its maximum legal size in `internal/contract`, and the sidecar log-tail ring and maximum prompt composition, then the iteration 06a control benchmarks: the plane's per-task writer committing natural and lost terminal records and late evidence with 0, 64 KiB and 10 MiB tails (`BenchmarkControlCommit`: bytes written and bounded allocation), and one maximum sealed result, one maximum outbox and one 64-entry inventory page (`BenchmarkControlReplay` in `internal/contract` and `internal/sidecar`), each checking its invariants; timings are reported, never gated), `devcheck cross` (linux/amd64, linux/arm64, darwin/amd64, darwin/arm64: 12 artifacts) |
+| `ci-macos` | `macos-15` | 30 min | required | `devcheck native`: the complete suite as `go test -json`, which must show passing run and pass events in `github.com/wedevwork/callsheet/tests/function` for `TestFP6ProcessGroups` and its `cooperative`, `resistant` and `leader-exits-first` scenarios, for the plane trust tests, the node tests, the role tests, the task tests and the control tests (iteration 06a: the eight control function parents and the native group qualification), and in `github.com/wedevwork/callsheet/internal/sidecar` for `TestTaskExecutionContract` and its `process` subtest (see below) |
 | `ci-linux-stress-packages` | `ubuntu-24.04` | 20 min | worker | `devcheck stress-packages` on Linux (see Stress checks) |
 | `ci-linux-stress-plane` | `ubuntu-24.04` | 20 min | worker | `devcheck stress-plane` on Linux: `internal/plane`, its three CPU settings as concurrent invocations (iteration 05b) |
 | `ci-linux-stress-sidecar` | `ubuntu-24.04` | 20 min | worker | `devcheck stress-sidecar` on Linux: `internal/sidecar`, its three CPU settings as concurrent invocations (iteration 05b sidecar follow-up) |
@@ -182,7 +182,47 @@ heartbeats after exit, two sequential fresh children and group cleanup;
 the first child reports its actual working directory, that directory's
 permissions and its environment through the fixture-only
 `CALLSHEET_FAKE_TASK_REPORT` stderr line, asserted on both systems), so
-a function wrapper alone never qualifies Darwin task execution.
+a function wrapper alone never qualifies Darwin task execution. Since
+iteration 06a that qualification is guardian-backed: every task child is
+led by its internal guardian (the callsheet binary re-executed with the
+reserved `__callsheet_task_guardian_v1` argument), whose PID is the task
+group's PGID and differs from the supervisor's, while the adapter's PID is
+a distinct member of that group; the process subtest launches one probe
+and two sequential guardian/adapter pairs.
+
+The control tests required on `ci-macos` (iteration 06a, resilient
+execution, protocol 4) are one function parent per FP:
+`TestControlDurability`, `TestControlReconnect`, `TestControlNodeLoss`,
+`TestControlLaunchSafety`, `TestControlWorkerRecovery`,
+`TestControlPlaneRecovery`, `TestControlLateResult` and
+`TestControlLegacy`, plus the direct real-binary group qualification
+`TestControlNativeGroups` and its `cooperative`, `resistant`,
+`orphan-restart` and `plane-restart` scenarios. That is 13 more names, 141
+in all, with the 128 earlier names unchanged and first; no 06b name is
+required. Each parent delegates by the single control table in
+`internal/devcheck` (`ControlDelegations`, 14 rows for 8 wrappers) to the
+package contracts of its FP, as a conjunction over every listed package:
+`TestControlCommit` (plane), `TestControlProtocol` (contract, plane and
+sidecar), `TestControlLease` (plane and sidecar), `TestControlLaunch`
+(sidecar), `TestControlRestart` (sidecar), `TestControlPlaneRestart`
+(plane and sidecar), `TestControlLate` (plane and sidecar) and
+`TestControlMigration` (contract and plane). The delegation rules of the
+earlier tables apply unchanged. `TestControlNativeGroups` is not an FP: each
+scenario starts exactly one sidecar fixture (the sidecar package's compiled
+test binary running a production Run whose only change is a probe-free
+fake adapter), one guardian, one fake CLI leader and one fake descendant,
+four children per scenario and sixteen per invocation (asserted), with the
+plane in process. It asserts the guardian's PGID equals its PID and
+differs from the sidecar's, the leader and descendant in that group, no new
+session, TERM delivery and whole-group completion (`cooperative`), grace
+then KILL of a TERM-resistant descendant after the leader exits
+(`resistant`, triggered by the sidecar's cleanup, never a timeout), the
+guardian's reparenting and identity after the sidecar fixture is SIGKILLed
+and the recovery by this test process as the replacement sidecar
+(`orphan-restart`), and the same leader PID producing output and exiting
+across a plane restart (`plane-restart`), each ending with the group
+absent (ESRCH). It runs in the normal, race and native suites only, never
+in a stress shard.
 
 The main jobs and all ten workers check out the event's revision without
 persisted credentials, take the Go version from `go.mod` with module
@@ -300,6 +340,17 @@ their `locking` and `shutdown` subtests below them.
   `TestAdapterContract`) runs in its own package's shard, so the role
   function wrappers are not repeated: no new function selector exists and
   no delegated contract repeats twice.
+  Iteration 06a (resilient execution) adds no package, selector or shard
+  either: its contracts (`TestControlCommit`, `TestControlProtocol`,
+  `TestControlLease`, `TestControlLaunch`, `TestControlRestart`,
+  `TestControlPlaneRestart`, `TestControlLate`, `TestControlMigration`,
+  `TestControlJournalCodec` and devcheck's `TestControlPolicy`) run in
+  their packages' existing shards (plane and sidecar with their three CPU
+  settings concurrent, contract and client in the packages shard) with
+  injected guardians, groups and clocks and zero additional children; the
+  control function wrappers and `TestControlNativeGroups` are not
+  repeated. The only real-child change is the sidecar's existing process
+  qualification (below): five children per repetition instead of three.
   Iteration 05 (tasks) adds no package, selector or shard: the task
   contracts (`TestTaskContract`, `TestTaskAdmission`, `TestTaskStream` and
   `TestTaskOutput` of plane and sidecar, `TestTaskStore`,
@@ -308,12 +359,17 @@ their `locking` and `shutdown` subtests below them.
   client's `TestTaskClient`) already run in their own packages, and the
   task function wrappers are not repeated. Only
   `TestTaskExecutionContract/process` launches real operating-system
-  children: one probe and two sequential task children per repetition,
-  which is 3 × 20 × 3 = 180 additional children, in the sidecar shard since
-  the iteration 05b sidecar follow-up (with `internal/sidecar`; in the
-  packages shard before, the count unchanged), 60 in each of its three
-  concurrent CPU invocations, and none in the packages, plane, processgroup
-  or functions shards. Every other new task test
+  children: one probe and two sequential task children per repetition
+  in iteration 05, which was 3 × 20 × 3 = 180 additional children, in the
+  sidecar shard since the iteration 05b sidecar follow-up (with
+  `internal/sidecar`; in the packages shard before, the count unchanged);
+  since iteration 06a each task child is a guardian/adapter pair, so one
+  probe and two pairs are five per repetition, 5 × 20 × 3 = 300 in the
+  sidecar shard (two more per repetition, 120 more in all), 100 in each of
+  its three concurrent CPU invocations, and none in the packages, plane,
+  processgroup or functions shards. Each natural completion also charges
+  the guardian's one-second group cleanup grace (design 06a DW1), about
+  40 s per CPU invocation at count 20. Every other new task test
   uses a counted injected process factory and asserts zero launches
   (`TestTaskPolicy/policy` holds that ledger and a source guard over the
   new test files).

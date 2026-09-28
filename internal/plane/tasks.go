@@ -2,7 +2,6 @@ package plane
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"io"
@@ -19,24 +18,33 @@ import (
 	"github.com/wedevwork/callsheet/internal/contract"
 )
 
-// Task lifecycle and admission on the plane (iteration 05). The plane is
-// the only authority for admission and public task state. Dispatch
-// admission shares one nonblocking mutation gate with role add/set/rm;
-// child state and output use per-task serialization under the task
-// observation lock, never the gate. Lock order: gate, task observation
-// lock (taskService.mu), node observation lock (nodeRegistry.mu); no
-// disk or network I/O is performed under either lock.
+// Task lifecycle and admission on the plane (iterations 05 and 06a). The
+// plane is the only authority for admission and public task state.
+// Dispatch admission shares one nonblocking mutation gate with role
+// add/set/rm; child state and output use per-task serialization under the
+// task observation lock, never the gate.
+//
+// Lock order: mutation gate, task observation lock (taskService.mu), node
+// observation lock (nodeRegistry.mu), then the loss queue lock
+// (taskService.lossMu, innermost). No disk or network I/O is performed
+// under any of them; a per-task writer performs every document write
+// outside the locks and installs its outcome under the task lock after
+// revalidating the task's revision. Lease and startup-grace expiry
+// enqueue loss facts under the node lock; they are applied under the task
+// lock by the loss worker (or first by an inventory), never in reverse
+// lock order. A task completion writer never acquires the mutation gate.
 const (
 	// admissionTimeout bounds one dispatch, persistence included.
 	admissionTimeout = 6 * time.Second
 	// startControl is a start's deadline from its pending record's first
 	// visible publication: queue waiting, write and reply included; it
-	// never resets.
-	startControl = 4 * time.Second
+	// never resets. 06a raised it from 4 s to 15 s: the worker's durable
+	// launch barriers take up to its 10 s preparation budget.
+	startControl = 15 * time.Second
 	// maxQueuedStarts bounds the not-yet-sent starts per node.
 	maxQueuedStarts = 100
-	// commitWatchdog bounds how long a captured result's terminal commit
-	// may take before its storage condition becomes visible.
+	// commitWatchdog bounds how long a captured terminal candidate's
+	// commit may take before its storage condition becomes visible.
 	commitWatchdog = 30 * time.Second
 	// checkpointEvery is the ceiling on log checkpoint frequency.
 	checkpointEvery = time.Second
@@ -55,9 +63,9 @@ func keyOf(r contract.RoleRecord) instanceKey {
 	return instanceKey{id: r.ID, order: r.RegistrationOrder}
 }
 
-// heldCount is an instance's held reservations and how many of them are
-// recovery-required.
-type heldCount struct{ held, recovery int }
+// heldCount is an instance's held reservations and how many of them await
+// reconciliation with their worker.
+type heldCount struct{ held, reconciling int }
 
 // sendState is a task start's transport state.
 type sendState int
@@ -66,15 +74,37 @@ const (
 	sendNone    sendState = iota // not submitted (durability pending, or loaded)
 	sendQueued                   // queued on its attachment, never written
 	sendSending                  // its write began
-	sendReplied                  // the worker answered
+	sendReplied                  // the worker answered (or reconciled it)
 	sendUnsent                   // definitely never written
 )
 
-// completion is a captured result: the frozen terminal record (retained
-// log included) and its acceptance instant.
-type completion struct {
-	rec contract.TaskRecord
-	at  time.Time
+// candKind is a terminal candidate's kind: the 06a writer's candidate set
+// is exactly natural result, lost decision and definite refusal.
+type candKind int
+
+const (
+	candNatural candKind = iota + 1 // a worker's natural outcome
+	candLost                        // a lost decision (plane's, or a worker's lost outcome)
+	candRefusal                     // a definite refusal (no adapter ever ran)
+)
+
+// terminalCand is the one latched terminal candidate of a task: its
+// frozen terminal outcome (retained log included), its arrival instant at
+// the plane and the worker's result digest ("" for a plane decision).
+// Once latched it owns the commit attempt and is retried, never replaced.
+type terminalCand struct {
+	kind    candKind
+	outcome terminalOutcome
+	at      time.Time
+	digest  string
+}
+
+// lateCand is a worker outcome received after a different terminal
+// decision, awaiting its durable late-evidence write.
+type lateCand struct {
+	result contract.TaskResultBody
+	at     time.Time
+	log    contract.TaskLog
 }
 
 // taskEntry is one task's plane state. rec is the visible record; for a
@@ -83,21 +113,39 @@ type completion struct {
 type taskEntry struct {
 	rec      contract.TaskRecord
 	retained int
-	key      instanceKey
+	// lateRetained is the retained length of the late evidence's tail
+	// (its data lives in the document once published).
+	lateRetained int
+	key          instanceKey
 	// confirmed: the visible publication's directory sync succeeded.
 	confirmed bool
+	// released: a terminal record of this task was confirmed, so its
+	// reservation was released; it is never reacquired (a later
+	// late-evidence write that fails holds admissions, not the slot).
+	released bool
 	// fault: a publication failed before or after visibility; retryAt is
 	// the next coalesced retry.
 	fault   bool
 	retryAt time.Time
 	// loaded: read from disk at startup (another plane epoch).
 	loaded bool
-	// Live execution state of this plane run.
-	gen       uint64
+	// reconciling: the execution's outcome awaits reconciliation with its
+	// worker (loaded, or its attachment ended or its start was ambiguous).
+	reconciling bool
+	// Live execution state of this plane run: gen is the admission
+	// attachment; rgen the attachment currently authorized to report on
+	// this stable execution (its start reply, or a reconciliation), with
+	// lateOK when that reconciliation authorized late evidence; lateBound
+	// is the digest bound to the late staging ring; seen stamps the
+	// reconciliation (attachment) whose inventory reported the task.
+	gen, rgen uint64
+	seq       uint64
+	lateOK    bool
+	lateBound string
+	seen      uint64
 	send      sendState
 	started   bool
 	startedAt time.Time
-	recovery  string
 	visible   time.Time
 	deadline  time.Time
 	// res is the start's transport token (nil for a loaded task): owned
@@ -109,47 +157,35 @@ type taskEntry struct {
 	ring           *planeLog
 	logDirty       bool
 	lastCheckpoint time.Time
-	mailbox        *completion
-	// accepted is the digest of the result accepted on the task's
-	// attachment: an identical resubmission there is acknowledged again,
-	// before or after the commit.
-	accepted     [32]byte
-	watchdog     bool
+	// cand is the latched terminal candidate; late the pending late
+	// evidence and lateRing its staged tail.
+	cand     *terminalCand
+	late     *lateCand
+	lateRing *planeLog
+	watchdog bool
+	// commitFailed: the latched candidate's write failed at least once.
 	commitFailed bool
 	needRunning  bool
-	reject       *contract.TaskReason
 	// wake signals the task's persistence writer; writer reports it runs.
 	wake   chan struct{}
 	writer bool
 	// contribution to counts and to the storage-blocked set.
-	contribHeld, contribRecovery bool
+	contribHeld, contribRec bool
 }
 
 func (e *taskEntry) terminal() bool { return contract.TaskTerminal(e.rec.State) }
 
 // held reports whether the entry holds its instance's reservation:
-// nonterminal records, and terminal ones whose durability is unconfirmed.
-func (e *taskEntry) held() bool { return !e.terminal() || !e.confirmed }
+// nonterminal records, and terminal ones never confirmed.
+func (e *taskEntry) held() bool { return !e.terminal() || !e.released }
 
-// recoveryReason is the derived recovery reason ("" when none): a
-// nonterminal task whose attachment or plane run ended, whose start was
-// ambiguous or whose instance was removed, unless the plane already
-// captured a valid result.
-func (e *taskEntry) recoveryReason(removed bool) string {
-	if e.terminal() || e.mailbox != nil {
-		return ""
-	}
-	switch {
-	case removed:
-		return contract.RecoveryRoleRemoved
-	case e.loaded:
-		return contract.RecoveryPlaneRestarted
-	}
-	return e.recovery
-}
+// isReconciling is the derived public flag: a nonterminal task without a
+// latched terminal candidate whose execution awaits reconciliation.
+func (e *taskEntry) isReconciling() bool { return !e.terminal() && e.cand == nil && e.reconciling }
 
 // taskService owns tasks: admission, the start dispatcher callbacks,
-// receipt of output and results, persistence writers and reads.
+// reconciliation, receipt of output and results, persistence writers,
+// loss decisions and reads.
 type taskService struct {
 	st     *taskStore
 	reg    *nodeRegistry
@@ -173,11 +209,24 @@ type taskService struct {
 	closed  bool
 	stop    chan struct{}
 	wg      sync.WaitGroup
+
+	// lossMu guards the loss queue (innermost lock); lossKick wakes the
+	// loss worker. admitted is the admission sequence: a loss fact never
+	// affects a task admitted after it was captured.
+	// logCap, when positive, replaces the 10 MiB combined tail budget of
+	// late evidence (tests of the budget's arithmetic).
+	logCap int
+
+	lossMu   sync.Mutex
+	losses   []lossFact
+	lossKick chan struct{}
+	admitted atomic.Uint64
 }
 
 func newTaskService(st *taskStore, reg *nodeRegistry, roles *roleRegistry, gate *atomic.Bool, d *deps, logger *slog.Logger, loaded []loadedTask) (*taskService, error) {
 	ts := &taskService{st: st, reg: reg, roles: roles, clock: d.nodeClock, logger: logger, lookup: roleLookup, gate: gate, rand: d.rand,
-		tasks: map[string]*taskEntry{}, counts: map[instanceKey]*heldCount{}, blocked: map[*taskEntry]bool{}, stop: make(chan struct{})}
+		tasks: map[string]*taskEntry{}, counts: map[instanceKey]*heldCount{}, blocked: map[*taskEntry]bool{}, stop: make(chan struct{}),
+		lossKick: make(chan struct{}, 1)}
 	var b [16]byte
 	if _, err := io.ReadFull(d.rand, b[:]); err != nil {
 		return nil, wrapf(contract.CodeInternal, err, "cannot generate the plane run epoch: %v", err)
@@ -185,7 +234,12 @@ func newTaskService(st *taskStore, reg *nodeRegistry, roles *roleRegistry, gate 
 	ts.epoch = hex.EncodeToString(b[:])
 	for _, lt := range loaded {
 		rec := lt.rec
-		e := &taskEntry{rec: rec, retained: lt.retained, key: keyOf(rec.Role), confirmed: true, loaded: true}
+		e := &taskEntry{rec: rec, retained: lt.retained, lateRetained: lt.lateRetained, key: keyOf(rec.Role), confirmed: true, loaded: true,
+			wake: make(chan struct{}, 1)}
+		// A complete surviving file loaded on a new Run is the recovered
+		// authority: a terminal one is confirmed and holds nothing.
+		e.released = e.terminal()
+		e.reconciling = !e.terminal()
 		ts.tasks[rec.TaskID] = e
 		ts.ids = append(ts.ids, rec.TaskID)
 		if e.held() {
@@ -202,7 +256,7 @@ func newTaskService(st *taskStore, reg *nodeRegistry, roles *roleRegistry, gate 
 }
 
 func (ts *taskService) event(e string) {
-	if ts.events != nil {
+	if ts != nil && ts.events != nil {
 		ts.events(e)
 	}
 }
@@ -227,22 +281,22 @@ func (ts *taskService) count(k instanceKey) *heldCount {
 // state change that caused it.
 func (ts *taskService) refreshLocked(e *taskEntry) {
 	held := e.held()
-	rec := held && e.recoveryReason(false) != ""
+	rec := held && e.isReconciling()
 	c := ts.count(e.key)
 	if e.contribHeld {
 		c.held--
 	}
-	if e.contribRecovery {
-		c.recovery--
+	if e.contribRec {
+		c.reconciling--
 	}
 	if held {
 		c.held++
 	}
 	if rec {
-		c.recovery++
+		c.reconciling++
 	}
-	e.contribHeld, e.contribRecovery = held, rec
-	if c.held == 0 && c.recovery == 0 {
+	e.contribHeld, e.contribRec = held, rec
+	if c.held == 0 && c.reconciling == 0 {
 		delete(ts.counts, e.key)
 	}
 	if !e.confirmed || e.fault || e.watchdog {
@@ -264,11 +318,18 @@ func (ts *taskService) heldLocked(k instanceKey) heldCount {
 // unconfirmed or failed: admissions are refused until it clears.
 func (ts *taskService) storageBlockedLocked() bool { return len(ts.blocked) > 0 }
 
-// wakeLocked signals e's persistence writer.
+// wakeLocked signals e's persistence writer, starting one when none runs
+// (a loaded task, or a terminal task receiving late evidence, has none).
 func (ts *taskService) wakeLocked(e *taskEntry) {
-	if e.wake != nil {
-		notifyChan(e.wake)
+	if e.wake == nil {
+		e.wake = make(chan struct{}, 1)
 	}
+	if !e.writer && !ts.closed {
+		e.writer = true
+		ts.wg.Add(1)
+		go ts.writerLoop(e)
+	}
+	notifyChan(e.wake)
 }
 
 func notifyChan(c chan struct{}) {
@@ -284,8 +345,8 @@ func notifyChan(c chan struct{}) {
 func admissionError(code contract.Code, reason, msg string, cands []contract.TaskCandidate) error {
 	d := map[string]any{"reason": reason, "candidates": candidatesDetail(cands)}
 	for _, c := range cands {
-		if c.RecoveryInflight > 0 {
-			msg += "; " + contract.RecoveryNotice
+		if c.ReconcilingInflight > 0 {
+			msg += "; " + contract.ReconcilingNotice
 			break
 		}
 	}
@@ -296,7 +357,7 @@ func candidatesDetail(cs []contract.TaskCandidate) []any {
 	out := make([]any, 0, len(cs))
 	for _, c := range cs {
 		out = append(out, map[string]any{"role_id": c.RoleID, "node_id": c.NodeID, "registration_order": c.RegistrationOrder,
-			"node_liveness": c.NodeLiveness, "inflight": c.Inflight, "recovery_inflight": c.RecoveryInflight, "concurrency": c.Concurrency,
+			"node_liveness": c.NodeLiveness, "inflight": c.Inflight, "reconciling_inflight": c.ReconcilingInflight, "concurrency": c.Concurrency,
 			"can_accept": c.CanAccept, "reason": c.Reason})
 	}
 	return out
@@ -440,7 +501,8 @@ func (ts *taskService) admit(ctx context.Context, deadline time.Time, req contra
 	release := res.release
 	now := ts.clock.Now().UTC()
 	rec := contract.TaskRecord{Request: req, Role: role, RolesRevision: ob.roles.visible.revision, Effective: eff,
-		Execution: contract.ExecutionToken{Epoch: ts.epoch, Attachment: int(gen)}, State: contract.TaskPending, CreatedAt: now, Revision: 1}
+		Execution: contract.ExecutionToken{Epoch: ts.epoch, Attachment: int(gen)}, State: contract.TaskPending, CreatedAt: now, Revision: 1,
+		TimeoutPolicy: contract.TimeoutPolicyLegacy, Schema: contract.TaskRecordSchemaVersion}
 	ts.at("before-task-publication", goal, ctx)
 	// recheck is the authorization check: caller liveness, the registry
 	// revision, the attachment generation and lease, the capacity and the
@@ -466,6 +528,10 @@ func (ts *taskService) admit(ctx context.Context, deadline time.Time, req contra
 			return contract.TaskView{}, nil, wrapf(contract.CodeInternal, err, "cannot generate a task ID: %v", err)
 		}
 		rec.TaskID = id
+		// The stable execution identity: the canonical digest of the start
+		// this record will send (it never changes).
+		sd := startBody(rec).StartDigestHex()
+		rec.StartDigest = &sd
 		if err := recheck(); err != nil {
 			release()
 			return contract.TaskView{}, nil, err
@@ -497,6 +563,7 @@ func (ts *taskService) admit(ctx context.Context, deadline time.Time, req contra
 		break
 	}
 	ts.mu.Lock()
+	e.seq = ts.admitted.Add(1)
 	ts.tasks[rec.TaskID] = e
 	i := sort.SearchStrings(ts.ids, rec.TaskID)
 	ts.ids = append(ts.ids, "")
@@ -509,8 +576,15 @@ func (ts *taskService) admit(ctx context.Context, deadline time.Time, req contra
 	ts.mu.Unlock()
 	ts.logger.Info("task admitted", "task_id", rec.TaskID, "role_id", role.ID, "node_id", role.Node, "registration_order", role.RegistrationOrder)
 	ts.event("task-published " + goal)
-	go ts.writerLoop(e, st)
+	go ts.writerLoop(e)
 	return view, e, nil
+}
+
+// startBody is the task_start rec's execution sends: its digest is the
+// record's stable start digest.
+func startBody(rec contract.TaskRecord) contract.TaskStartBody {
+	return contract.TaskStartBody{TaskID: rec.TaskID, Execution: rec.Execution, RolesRevision: rec.RolesRevision, Role: rec.Role,
+		Request: rec.Request, Effective: rec.Effective}
 }
 
 // afterCommit transfers the committed task to the dispatcher: a confirmed
@@ -572,7 +646,7 @@ func (ts *taskService) confirm(e *taskEntry, revision int) {
 	}
 	e.confirmed, e.fault = true, false
 	ts.finishPublicationLocked(e)
-	submit := e.rec.State == contract.TaskPending && e.send == sendNone && !e.loaded
+	submit := e.rec.State == contract.TaskPending && e.send == sendNone && !e.loaded && e.cand == nil
 	ts.refreshLocked(e)
 	ts.wakeLocked(e)
 	ts.mu.Unlock()
@@ -584,17 +658,17 @@ func (ts *taskService) confirm(e *taskEntry, revision int) {
 
 // submit queues e's sole start attempt on its captured attachment, or
 // rejects it as definitely unsent when the attachment is gone or its
-// deadline passed before anything was written.
+// deadline passed before anything was written. A task already resolved
+// (a loss latched at expiry) is never sent.
 func (ts *taskService) submit(e *taskEntry) {
 	ts.mu.Lock()
-	if e.send != sendNone || e.rec.State != contract.TaskPending {
+	if e.send != sendNone || e.rec.State != contract.TaskPending || e.cand != nil {
 		ts.mu.Unlock()
 		return
 	}
 	expired := !ts.clock.Now().Before(e.deadline)
 	e.send = sendQueued
-	body := contract.TaskStartBody{TaskID: e.rec.TaskID, Execution: e.rec.Execution, RolesRevision: e.rec.RolesRevision, Role: e.rec.Role,
-		Request: e.rec.Request, Effective: e.rec.Effective}
+	body := startBody(e.rec)
 	res := e.res
 	ts.mu.Unlock()
 	if expired || !ts.reg.enqueueStart(e.rec.Role.Node, e.gen, &startItem{id: e.rec.TaskID, body: body, deadline: e.deadline, res: res}) {
@@ -618,7 +692,8 @@ type startItem struct {
 }
 
 // claimStart moves a queued start to sending immediately before its write
-// begins; a start that is no longer queued (already rejected) is dropped.
+// begins; a start that is no longer queued (already rejected or resolved)
+// is dropped.
 func (ts *taskService) claimStart(id string) bool {
 	if ts == nil {
 		return false
@@ -626,14 +701,16 @@ func (ts *taskService) claimStart(id string) bool {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 	e := ts.tasks[id]
-	if e == nil || e.send != sendQueued || e.rec.State != contract.TaskPending {
+	if e == nil || e.send != sendQueued || e.rec.State != contract.TaskPending || e.cand != nil {
 		return false
 	}
 	e.send = sendSending
 	return true
 }
 
-// startUnsent rejects a start the plane can prove was never written.
+// startUnsent rejects a start the plane can prove was never written: only
+// this Run's in-memory transport state is such proof (a loaded task never
+// takes this path).
 func (ts *taskService) startUnsent(id string) {
 	if ts == nil {
 		return
@@ -641,17 +718,18 @@ func (ts *taskService) startUnsent(id string) {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 	e := ts.tasks[id]
-	if e == nil || e.rec.State != contract.TaskPending || e.send == sendSending || e.send == sendReplied || e.reject != nil {
+	if e == nil || e.loaded || e.rec.State != contract.TaskPending || e.send == sendSending || e.send == sendReplied || e.cand != nil {
 		return
 	}
 	e.send = sendUnsent
-	e.reject = &contract.TaskReason{Code: contract.ReasonStartNotSent, Message: "the start was never sent to the worker (its stream ended or its start deadline passed first)"}
-	ts.wakeLocked(e)
+	ts.latchRefusalLocked(e, &contract.TaskReason{Code: contract.ReasonStartNotSent,
+		Message: "the start was never sent to the worker (its stream ended or its start deadline passed first)"})
 	ts.event("start-unsent " + id)
 }
 
 // startUncertain records an ambiguous start: its write began and no
-// conclusive reply arrived. The task stays pending and holds its slot.
+// conclusive reply arrived. The task stays pending, holds its slot and
+// awaits reconciliation (or its node's lease expiry).
 func (ts *taskService) startUncertain(id string) {
 	if ts == nil {
 		return
@@ -662,17 +740,16 @@ func (ts *taskService) startUncertain(id string) {
 	if e == nil || e.terminal() {
 		return
 	}
-	if e.recovery == "" {
-		e.recovery = contract.RecoveryStartUnconfirmed
-	}
+	e.reconciling = true
 	ts.refreshLocked(e)
 	ts.event("start-uncertain " + id)
 }
 
 // startReplied applies the worker's answer: ok records the observed start
-// (running is published durably before any terminal record); a refusal
-// becomes rejected with its safe reason.
-func (ts *taskService) startReplied(id string, refusal *contract.Error) {
+// (running is published durably before any terminal record) and
+// authorizes the attachment to report; a refusal becomes rejected with
+// its safe reason.
+func (ts *taskService) startReplied(id string, gen uint64, refusal *contract.Error) {
 	if ts == nil {
 		return
 	}
@@ -685,18 +762,36 @@ func (ts *taskService) startReplied(id string, refusal *contract.Error) {
 	e.send = sendReplied
 	if refusal != nil {
 		reason, _ := refusal.Details["reason"].(string)
-		e.reject = &contract.TaskReason{Code: reason, Message: sanitizeReason(refusal.Message)}
+		ts.latchRefusalLocked(e, &contract.TaskReason{Code: reason, Message: sanitizeReason(refusal.Message)})
 		ts.event("start-refused " + id + " " + reason)
-	} else {
+		return
+	}
+	if e.cand == nil && !e.terminal() {
 		e.started, e.needRunning = true, true
 		e.startedAt = ts.clock.Now().UTC()
-		ts.event("task-started " + id)
+		e.rgen, e.lateOK, e.reconciling = gen, false, false
+		ts.refreshLocked(e)
 	}
+	ts.event("task-started " + id)
 	ts.wakeLocked(e)
 }
 
-// detached latches the interruption of every task started on the ended
-// attachment gen of node without a captured result.
+// latchRefusalLocked latches a definite refusal (rejected) as e's terminal
+// candidate unless one is already latched.
+func (ts *taskService) latchRefusalLocked(e *taskEntry, reason *contract.TaskReason) {
+	if e.terminal() || e.cand != nil {
+		return
+	}
+	t := ts.clock.Now().UTC()
+	e.cand = &terminalCand{kind: candRefusal, at: t, outcome: terminalOutcome{state: contract.TaskRejected, finished: t, reason: reason}}
+	e.needRunning = false
+	ts.refreshLocked(e)
+	ts.wakeLocked(e)
+}
+
+// detached marks every nonterminal task reporting on (or ambiguously
+// started on) the ended attachment gen of node as awaiting
+// reconciliation. Closing a stream alone never declares a task lost.
 func (ts *taskService) detached(node string, gen uint64) {
 	if ts == nil {
 		return
@@ -704,21 +799,24 @@ func (ts *taskService) detached(node string, gen uint64) {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 	for _, e := range ts.tasks {
-		if e.gen == gen && e.rec.Role.Node == node && !e.terminal() && e.mailbox == nil && e.started && e.recovery == "" {
-			e.recovery = contract.RecoveryAttachmentLost
+		if e.rec.Role.Node != node || e.terminal() || e.cand != nil {
+			continue
+		}
+		if e.rgen == gen || (e.gen == gen && e.send == sendSending) {
+			e.reconciling = true
 			ts.refreshLocked(e)
 		}
 	}
 }
 
-// liveTaskLocked returns the task a sidecar request names when it may
-// report on attachment gen of node: this plane run's epoch and the
-// attachment the start was sent on, still the node's current live
+// authorizedLocked returns the task a sidecar request names when it may
+// report on attachment gen of node: gen is the node's current live
 // attachment at this instant (a frame queued before a detach or lease
-// eviction is refused), and an observed start. The caller holds the task
-// lock, so acceptance and the attachment check are one decision; a
-// result captured before the attachment ended stays captured.
-func (ts *taskService) liveTaskLocked(node string, gen uint64, id string, tok contract.ExecutionToken) (*taskEntry, error) {
+// eviction is refused), the stable execution identity matches the stored
+// task's node and token, and this attachment is authorized to report on it
+// (its start reply, or reconciliation). The caller holds the task lock, so
+// acceptance and the attachment check are one decision.
+func (ts *taskService) authorizedLocked(node string, gen uint64, id string, tok contract.ExecutionToken) (*taskEntry, error) {
 	e := ts.tasks[id]
 	switch {
 	case !ts.reg.currentAttachment(node, gen):
@@ -727,265 +825,22 @@ func (ts *taskService) liveTaskLocked(node string, gen uint64, id string, tok co
 		return nil, errf(contract.CodeInvalidArgument, "task %s is not known to this plane", id)
 	case e.rec.Role.Node != node:
 		return nil, errf(contract.CodeInvalidArgument, "task %s belongs to another node", id)
-	case tok.Epoch != ts.epoch || uint64(tok.Attachment) != gen || e.gen != gen || e.rec.Execution != tok:
-		return nil, errf(contract.CodeInvalidArgument, "task %s's execution token is not this attachment's", id)
-	case !e.started:
-		return nil, errf(contract.CodeInvalidArgument, "task %s has no observed start on this attachment", id)
+	case e.rec.Execution != tok:
+		return nil, errf(contract.CodeInvalidArgument, "task %s's execution token is not its stable execution identity", id)
+	case e.rgen != gen:
+		return nil, errf(contract.CodeInvalidArgument, "task %s is not authorized on this attachment (no start reply or reconciliation)", id)
 	}
 	return e, nil
 }
 
-// receiveLog accepts one output chunk into bounded memory and returns
-// the acknowledged next offset. It never waits for disk.
-func (ts *taskService) receiveLog(node string, gen uint64, b contract.TaskLogBody) (int, error) {
-	if ts == nil {
-		return 0, errNoTasks
-	}
-	ts.at("log-received", b.TaskID, context.Background())
-	ts.mu.Lock()
-	defer ts.mu.Unlock()
-	e, err := ts.liveTaskLocked(node, gen, b.TaskID, b.Execution)
-	if err != nil {
-		return 0, err
-	}
-	if e.mailbox != nil || e.terminal() || e.ring == nil {
-		return 0, errf(contract.CodeInvalidArgument, "task %s already reported its result; no further output is accepted", b.TaskID)
-	}
-	next, err := e.ring.append(b.Offset, b.Data)
-	if err != nil {
-		return 0, err
-	}
-	e.logDirty = true
-	return next, nil
+// removed reports whether e's instance no longer exists.
+func removed(doc *roleDoc, k instanceKey) bool {
+	r, _, ok := doc.find(k.id)
+	return !ok || r.RegistrationOrder != k.order
 }
 
-// receiveResult captures a result into the task's completion mailbox:
-// the acceptance instant. It derives the state from the exit, freezes the
-// retained log, sets completion_pending and schedules the terminal
-// commit; receipt never publishes a terminal state or releases a slot.
-// An identical resubmission on the same attachment is acknowledged again.
-func (ts *taskService) receiveResult(node string, gen uint64, b contract.TaskResultBody) error {
-	if ts == nil {
-		return errNoTasks
-	}
-	ts.at("result-received", b.TaskID, context.Background())
-	ts.mu.Lock()
-	defer ts.mu.Unlock()
-	e, err := ts.liveTaskLocked(node, gen, b.TaskID, b.Execution)
-	if err != nil {
-		return err
-	}
-	digest := resultDigest(b)
-	if e.mailbox != nil || e.terminal() {
-		if e.accepted != ([32]byte{}) && e.accepted == digest {
-			return nil
-		}
-		return errf(contract.CodeInvalidArgument, "task %s's result differs from the one already received, or it is already final", b.TaskID)
-	}
-	if e.ring == nil {
-		return errf(contract.CodeInvalidArgument, "task %s is already final", b.TaskID)
-	}
-	if b.OutputBytes < e.ring.next {
-		return errf(contract.CodeInvalidArgument, "task %s reports %d output bytes, fewer than the %d received", b.TaskID, b.OutputBytes, e.ring.next)
-	}
-	now := ts.clock.Now()
-	lg := e.ring.finalize(b.OutputBytes, b.LogIncomplete, b.CounterOverflow)
-	rec := e.rec
-	t, started := now.UTC(), e.startedAt
-	rec.StartedAt = &started
-	rec.FinishedAt, rec.ExitCode, rec.Signal, rec.FinalMessage, rec.FinalMessageTruncated, rec.Log = &t, b.ExitCode, b.Signal, b.FinalMessage, b.FinalMessageTruncated, lg
-	rec.State = contract.TaskFailed
-	if b.ExitCode != nil && *b.ExitCode == 0 {
-		rec.State = contract.TaskSucceeded
-	}
-	e.mailbox = &completion{rec: rec, at: now}
-	e.accepted = digest
-	ts.refreshLocked(e)
-	ts.wakeLocked(e)
-	ts.event("result-captured " + b.TaskID)
-	return nil
-}
-
-// resultDigest is the SHA-256 of a result's canonical encoding.
-func resultDigest(b contract.TaskResultBody) [32]byte {
-	x, err := contract.Encode(b)
-	if err != nil {
-		return [32]byte{}
-	}
-	return sha256.Sum256(x)
-}
-
-// tick is the sweep's once-per-second storage duty: it expires commit
-// watchdogs and wakes writers whose retry or checkpoint is due.
-func (ts *taskService) tick() {
-	if ts == nil {
-		return
-	}
-	now := ts.clock.Now()
-	var resync bool
-	ts.mu.Lock()
-	for _, e := range ts.tasks {
-		if e.mailbox != nil && !e.watchdog && !now.Before(e.mailbox.at.Add(commitWatchdog)) {
-			e.watchdog = true
-			ts.refreshLocked(e)
-			ts.logger.Error("task result commit unconfirmed", "task_id", e.rec.TaskID, "reason", contract.ReasonResultStorageUnconfirmed)
-			ts.event("commit-watchdog " + e.rec.TaskID)
-		}
-		if !e.confirmed && !now.Before(e.retryAt) {
-			resync = true
-		}
-		if e.writer && ((e.fault && !now.Before(e.retryAt)) || (e.logDirty && !now.Before(e.lastCheckpoint.Add(checkpointEvery)))) {
-			ts.wakeLocked(e)
-		}
-	}
-	ts.mu.Unlock()
-	if resync {
-		ts.resyncStore()
-	}
-}
-
-// ---- Persistence writer ----
-
-// publication is one prepared document write.
-type publication struct {
-	kind string // running, checkpoint, terminal, rejected
-	rec  contract.TaskRecord
-	live int // retained bytes of rec (for the in-memory metadata)
-}
-
-// nextJobLocked selects e's next publication: nothing while its visible
-// record is unconfirmed or a retry is not due; then running before any
-// terminal record; then the terminal (captured result or rejection);
-// then a due checkpoint.
-func (ts *taskService) nextJobLocked(e *taskEntry, now time.Time) (*publication, bool) {
-	if e.terminal() && e.confirmed {
-		return nil, true
-	}
-	if !e.confirmed || (e.fault && now.Before(e.retryAt)) || e.rec.Revision >= contract.MaxSafeInteger {
-		return nil, false
-	}
-	next := e.rec
-	next.Revision++
-	switch {
-	case e.needRunning:
-		started := e.startedAt
-		next.State, next.StartedAt = contract.TaskRunning, &started
-		next.Log = e.ring.snapshot()
-		return &publication{kind: "running", rec: next, live: len(next.Log.Data)}, false
-	case e.mailbox != nil:
-		rec := e.mailbox.rec
-		rec.Revision = next.Revision
-		return &publication{kind: "terminal", rec: rec, live: len(rec.Log.Data)}, false
-	case e.reject != nil:
-		t := ts.clock.Now().UTC()
-		next.State, next.FinishedAt, next.Reason = contract.TaskRejected, &t, e.reject
-		next.Log = contract.TaskLog{}
-		next.Candidates = ts.observeLocked(e.rec.Request.Target).cands
-		return &publication{kind: "rejected", rec: next}, false
-	case e.logDirty && e.rec.State == contract.TaskRunning && !now.Before(e.lastCheckpoint.Add(checkpointEvery)):
-		next.Log = e.ring.snapshot()
-		e.logDirty = false
-		e.lastCheckpoint = now
-		return &publication{kind: "checkpoint", rec: next, live: len(next.Log.Data)}, false
-	}
-	return nil, false
-}
-
-// writerLoop is e's task-specific persistence writer: it serializes the
-// running publication, checkpoints and the terminal commit, one document
-// at a time, without holding the gate or a node lock.
-func (ts *taskService) writerLoop(e *taskEntry, st *nodeStream) {
-	defer ts.wg.Done()
-	for {
-		now := ts.clock.Now()
-		ts.mu.Lock()
-		job, done := ts.nextJobLocked(e, now)
-		if done {
-			e.writer = false
-			ts.mu.Unlock()
-			return
-		}
-		ts.mu.Unlock()
-		if job == nil {
-			select {
-			case <-e.wake:
-				continue
-			case <-ts.stop:
-				ts.mu.Lock()
-				e.writer = false
-				ts.mu.Unlock()
-				return
-			}
-		}
-		// Named events before any syscall of the write (tests hold them).
-		ts.at(job.kind+"-queued", e.rec.TaskID, context.Background())
-		if job.kind == "terminal" || job.kind == "rejected" {
-			ts.at("terminal-commit-queued", e.rec.TaskID, context.Background())
-		}
-		err := ts.st.update(job.rec)
-		ts.mu.Lock()
-		ts.applyLocked(e, job, err)
-		ts.mu.Unlock()
-	}
-}
-
-// applyLocked publishes a write's outcome atomically for readers: a
-// confirmed document and its derived reservation change together; a
-// visible but unconfirmed one is adopted with its reservation held and
-// admissions blocked; a failure before visibility leaves the old record
-// authoritative and schedules a coalesced retry.
-func (ts *taskService) applyLocked(e *taskEntry, job *publication, err error) {
-	now := ts.clock.Now()
-	switch {
-	case err == nil || errors.Is(err, errTaskUnconfirmed):
-		e.rec = job.rec
-		e.retained = job.live
-		e.confirmed = err == nil
-		e.fault = err != nil
-		if err != nil {
-			e.retryAt = now.Add(storageRetry)
-			ts.logger.Error("task durability unconfirmed", "task_id", e.rec.TaskID, "error", err)
-		}
-		switch job.kind {
-		case "running":
-			e.needRunning = false
-		case "terminal", "rejected":
-			e.reject = nil
-		}
-		if e.confirmed {
-			ts.finishPublicationLocked(e)
-		}
-		ts.event("published " + job.kind + " " + e.rec.TaskID)
-	default:
-		e.fault, e.retryAt = true, now.Add(storageRetry)
-		if job.kind == "terminal" {
-			e.commitFailed = true
-		}
-		if job.kind == "checkpoint" {
-			e.logDirty = true
-		}
-		ts.logger.Error("task publication failed", "task_id", e.rec.TaskID, "kind", job.kind, "error", err)
-		ts.event("publish-failed " + job.kind + " " + e.rec.TaskID)
-	}
-	ts.refreshLocked(e)
-}
-
-// finishPublicationLocked completes a confirmed publication: a terminal
-// record drops the live ring and the captured mailbox and releases the
-// reservation (refreshLocked) in the same critical section; the log data
-// of any record leaves memory (the ring or the document holds it).
-func (ts *taskService) finishPublicationLocked(e *taskEntry) {
-	if e.terminal() {
-		e.mailbox, e.ring, e.watchdog, e.commitFailed = nil, nil, false, false
-		e.rec.Log.Data = nil
-		ts.event("terminal-committed " + e.rec.TaskID)
-	} else if e.ring != nil {
-		e.rec.Log.Data = nil
-	}
-}
-
-// close stops the writers and waits for them (plane shutdown); a writer
-// inside a filesystem call finishes that call first.
+// close stops the writers and the loss worker and waits for them (plane
+// shutdown); a writer inside a filesystem call finishes that call first.
 func (ts *taskService) close() {
 	ts.mu.Lock()
 	if !ts.closed {
@@ -996,186 +851,29 @@ func (ts *taskService) close() {
 	ts.wg.Wait()
 }
 
-// ---- Reads ----
-
-// logOf returns e's current log (data may be nil for a terminal record
-// whose tail is on disk) and its retained byte count.
-func (ts *taskService) logOfLocked(e *taskEntry) (contract.TaskLog, int) {
-	switch {
-	case e.mailbox != nil:
-		return e.mailbox.rec.Log, len(e.mailbox.rec.Log.Data)
-	case e.ring != nil:
-		return e.ring.meta()
-	}
-	return e.rec.Log, e.retained
-}
-
-// removedLocked reports whether e's instance no longer exists.
-func removed(doc *roleDoc, k instanceKey) bool {
-	r, _, ok := doc.find(k.id)
-	return !ok || r.RegistrationOrder != k.order
-}
-
-// viewLocked builds e's TaskView at now; lines selects the tail. A
-// terminal task's tail is read from its document by the caller when its
-// data is not in memory (fillTail).
-func (ts *taskService) viewLocked(e *taskEntry, lines int, doc *roleDoc, now time.Time) contract.TaskView {
-	// A captured result is published only once durable: the view keeps
-	// the visible nonterminal state, with completion_pending.
-	rec := e.rec
-	v := contract.TaskView{TaskID: rec.TaskID, Request: rec.Request, Role: contract.PublicRole(rec.Role), Effective: rec.Effective,
-		State: rec.State, CreatedAt: contract.FormatTime(rec.CreatedAt), DurabilityConfirmed: e.confirmed, Reason: rec.Reason,
-		Candidates: rec.Candidates, CompletionPending: e.mailbox != nil}
-	if rec.StartedAt != nil {
-		s := contract.FormatTime(*rec.StartedAt)
-		v.StartedAt = &s
-	}
-	end := now
-	if rec.FinishedAt != nil {
-		s := contract.FormatTime(*rec.FinishedAt)
-		v.FinishedAt = &s
-		end = *rec.FinishedAt
-	}
-	v.ElapsedMS = int(max(0, end.Sub(rec.CreatedAt).Milliseconds()))
-	if r := e.recoveryReason(removed(doc, e.key)); r != "" {
-		v.RecoveryRequired, v.RecoveryReason = true, &r
-	}
-	if e.mailbox != nil && (e.watchdog || e.commitFailed) {
-		r := contract.ReasonResultStorageUnconfirmed
-		v.PersistenceReason = &r
-	}
-	lg, retained := ts.logOfLocked(e)
-	meta := contract.MetaOf(contract.TaskLog{SourceBytes: lg.SourceBytes, ReceivedBytes: lg.ReceivedBytes, Incomplete: lg.Incomplete, CounterOverflow: lg.CounterOverflow}, v.RecoveryRequired)
-	meta.RetainedBytes = retained
-	meta.DroppedBytes = max(0, lg.SourceBytes-retained)
-	meta.Truncated = lg.ReceivedBytes > retained || lg.Incomplete
-	v.Log = meta
-	switch {
-	case e.ring != nil && e.mailbox == nil:
-		v.LogTail, v.TailTruncated = contract.LogTail(e.ring.tail(contract.MaxTailBytes), lines)
-		v.TailTruncated = v.TailTruncated || (lines > 0 && retained > contract.MaxTailBytes)
-	case lg.Data != nil || retained == 0:
-		v.LogTail, v.TailTruncated = contract.LogTail(lg.Data, lines)
-	}
-	if v.RecoveryRequired {
-		v.Log.LogMayBeIncomplete = true
-	}
-	if contract.TaskTerminal(rec.State) {
-		v.Result = &contract.TaskResult{State: rec.State, ExitCode: rec.ExitCode, Signal: rec.Signal, FinalMessage: rec.FinalMessage,
-			FinalMessageTruncated: rec.FinalMessageTruncated, LogTail: v.LogTail}
-	}
-	return v
-}
-
-// needsFileTail reports that e's tail must come from its document.
-func (ts *taskService) needsFileTailLocked(e *taskEntry) bool {
-	lg, retained := ts.logOfLocked(e)
-	return lg.Data == nil && retained > 0 && e.ring == nil
-}
-
-// show returns id's view (tail lines), reading a terminal tail from its
-// validated document outside the locks.
-func (ts *taskService) show(id string, lines int) (contract.TaskView, error) {
-	ts.mu.Lock()
-	e := ts.tasks[id]
-	if e == nil {
-		ts.mu.Unlock()
-		return contract.TaskView{}, errf(contract.CodeNotFound, "task %s does not exist", id)
-	}
-	v := ts.viewLocked(e, lines, ts.roles.load().visible, ts.clock.Now())
-	file := ts.needsFileTailLocked(e)
-	ts.mu.Unlock()
-	if file {
-		rec, err := ts.st.l.readTaskFile(id, ts.lookup)
-		if err != nil {
-			return contract.TaskView{}, err
-		}
-		v.LogTail, v.TailTruncated = contract.LogTail(rec.Log.Data, lines)
-		if v.Result != nil {
-			v.Result.LogTail = v.LogTail
-		}
-	}
-	return v, nil
-}
-
-// logs returns id's complete retained output snapshot.
-func (ts *taskService) logs(id string) (contract.TaskLogsResponse, error) {
-	ts.mu.Lock()
-	e := ts.tasks[id]
-	if e == nil {
-		ts.mu.Unlock()
-		return contract.TaskLogsResponse{}, errf(contract.CodeNotFound, "task %s does not exist", id)
-	}
-	lg, retained := ts.logOfLocked(e)
-	var data []byte
-	switch {
-	case e.ring != nil && e.mailbox == nil:
-		data = e.ring.tail(contract.MaxLogRetainedBytes)
-	case lg.Data != nil:
-		data = append([]byte(nil), lg.Data...)
-	}
-	file := data == nil && retained > 0
-	rr := e.recoveryReason(removed(ts.roles.load().visible, e.key)) != ""
-	ts.mu.Unlock()
-	if file {
-		rec, err := ts.st.l.readTaskFile(id, ts.lookup)
-		if err != nil {
-			return contract.TaskLogsResponse{}, err
-		}
-		data, lg = rec.Log.Data, rec.Log
-	}
-	if data == nil {
-		data = []byte{}
-	}
-	m := contract.MetaOf(contract.TaskLog{Data: data, SourceBytes: lg.SourceBytes, ReceivedBytes: lg.ReceivedBytes, Incomplete: lg.Incomplete, CounterOverflow: lg.CounterOverflow}, rr)
-	return contract.TaskLogsResponse{Version: contract.ProtocolVersion, TaskID: id, Data: data, RetainedBytes: m.RetainedBytes, SourceBytes: m.SourceBytes,
-		DroppedBytes: m.DroppedBytes, Truncated: m.Truncated, Incomplete: m.Incomplete, CounterOverflow: m.CounterOverflow, LogMayBeIncomplete: rr}, nil
-}
-
-// list returns up to limit summaries after the exclusive cursor, ordered
-// by task ID, with next_after when more rows exist in this snapshot.
-func (ts *taskService) list(after string, limit int) ([]contract.TaskSummary, *string) {
-	ts.mu.Lock()
-	defer ts.mu.Unlock()
-	doc, now := ts.roles.load().visible, ts.clock.Now()
-	i := sort.SearchStrings(ts.ids, after)
-	if i < len(ts.ids) && ts.ids[i] == after {
-		i++
-	}
-	var out []contract.TaskSummary
-	for ; i < len(ts.ids) && len(out) < limit; i++ {
-		e := ts.tasks[ts.ids[i]]
-		v := ts.viewLocked(e, 0, doc, now)
-		out = append(out, contract.TaskSummary{TaskID: v.TaskID, Target: e.rec.Request.Target, Role: v.Role, State: v.State, CreatedAt: v.CreatedAt,
-			StartedAt: v.StartedAt, FinishedAt: v.FinishedAt, ElapsedMS: v.ElapsedMS, Effective: v.Effective, RequestedBy: e.rec.Request.RequestedBy,
-			RecoveryRequired: v.RecoveryRequired, RecoveryReason: v.RecoveryReason, CompletionPending: v.CompletionPending,
-			PersistenceReason: v.PersistenceReason, DurabilityConfirmed: v.DurabilityConfirmed, Reason: v.Reason})
-	}
-	if i < len(ts.ids) && len(out) > 0 {
-		next := out[len(out)-1].TaskID
-		return out, &next
-	}
-	return out, nil
-}
-
-// removalCheckLocked is role rm's reservation predicate for instance k:
-// none held, or every held reservation recovery-required, allows removal.
+// removalCheck is role rm's reservation predicate for instance k: only an
+// instance holding no reservation may be removed (iteration 06a removed
+// 05's recovery-only exception: removal waits until every reservation is
+// durably terminal).
 func (ts *taskService) removalCheck(k instanceKey, force bool) error {
 	ts.mu.Lock()
 	c := ts.heldLocked(k)
 	ts.mu.Unlock()
-	if c.held == 0 || c.recovery == c.held {
+	if c.held == 0 {
 		return nil
 	}
-	details := map[string]any{"role_id": k.id, "inflight": c.held, "recovery_inflight": c.recovery}
+	details := map[string]any{"role_id": k.id, "inflight": c.held, "reconciling_inflight": c.reconciling}
 	if force {
 		details["reason"] = contract.ReasonForceNotSupported
 		return &contract.Error{Code: contract.CodeConflict, Details: details,
-			Message: "role " + k.id + " has tasks in flight; --force cannot cancel them in this build (cancellation arrives in iteration 06); nothing was removed"}
+			Message: "role " + k.id + " has tasks in flight; --force cannot cancel them in this build (cancellation arrives in iteration 06b); nothing was removed"}
 	}
 	details["reason"] = contract.ReasonTasksInflight
-	return &contract.Error{Code: contract.CodeConflict, Details: details,
-		Message: "role " + k.id + " has tasks in flight; wait for them to finish (see callsheet task ls); nothing was removed"}
+	msg := "role " + k.id + " has tasks in flight; wait for them to finish (see callsheet task ls); nothing was removed"
+	if c.reconciling > 0 {
+		msg = "role " + k.id + " has tasks in flight, some awaiting reconciliation with their worker; they are resolved when the worker reconnects or its lease expires (see callsheet task ls); nothing was removed"
+	}
+	return &contract.Error{Code: contract.CodeConflict, Details: details, Message: msg}
 }
 
 // removeFile removes an unpublished temporary.
