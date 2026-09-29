@@ -385,8 +385,10 @@ func TestDeliveryOnTimeBothReady(t *testing.T) {
 	r.complete(t)
 	r.h.await(StageWritten, "n1")
 	r.h.clock.Advance(time.Nanosecond)
-	r.h.await(StageTimed, "n1") // either select path: responded or the held D
+	// StageTimed is recorded only once D's held StageDeadline hook returns,
+	// so release before waiting for it on either select path.
 	release()
+	r.h.await(StageTimed, "n1")
 	r.running(t)
 }
 
