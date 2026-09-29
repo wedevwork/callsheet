@@ -35,7 +35,7 @@ import (
 // follow-up ./internal/sidecar.
 const (
 	hardeningStressCount    = 20
-	hardeningStressPackages = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/contract ./internal/adapter ./internal/mcp"
+	hardeningStressPackages = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/contract ./internal/adapter ./internal/mcp ./internal/mcpqual"
 	hardeningStressPlane1   = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/plane"
 	hardeningStressPlane2   = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/plane"
 	hardeningStressPlane4   = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/plane"
@@ -196,7 +196,8 @@ func TestHardeningPlatformSeams(t *testing.T) {
 }
 
 // validGuardTree is a complete miniature source tree satisfying the fixed
-// production guard policy: the five wrappers and the four exempt files.
+// production guard policy: the six wrappers (iteration 07b added
+// cmd/mcpqual's) and the four exempt files.
 func validGuardTree() map[string]string {
 	return map[string]string{
 		"internal/cli/cli.go": "package cli\n\nimport (\n\t\"context\"\n\t\"io\"\n\t\"runtime\"\n)\n\n" +
@@ -208,6 +209,9 @@ func validGuardTree() map[string]string {
 			"func RunHelper(getenv func(string) string) int {\n\treturn runHelperFor(getenv, runtime.GOOS, runtime.GOARCH)\n}\n",
 		"internal/testkit/fakeadapter/fakeadapter.go": "package fakeadapter\n\nimport \"runtime\"\n\n" +
 			"func Parse(args []string) (Options, error) {\n\treturn parseFor(args, runtime.GOOS, signalsSupported)\n}\n",
+		"cmd/mcpqual/main.go": "package main\n\nimport (\n\t\"io\"\n\t\"runtime\"\n)\n\n" +
+			"func run(args []string, getenv func(string) string, stdin io.Reader, stdout, stderr io.Writer) int {\n" +
+			"\treturn runFor(runtime.GOOS, runtime.GOARCH, args, getenv, stdin, stdout, stderr)\n}\n",
 		"internal/spikes/processgroup/sys_linux.go":     "//go:build linux\n\npackage processgroup\n",
 		"internal/spikes/processgroup/sys_darwin.go":    "//go:build darwin\n\npackage processgroup\n",
 		"internal/testkit/fakeadapter/signals_unix.go":  "//go:build linux || darwin\n\npackage fakeadapter\n",

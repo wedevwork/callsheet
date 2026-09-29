@@ -73,7 +73,7 @@ func TestValidationRejections(t *testing.T) {
 		setFact(es, "grok", "model", func(f *Fact) { f.Value = "" })
 		return es
 	})
-	mutate("bad iteration", "must be 08 or 11", func(es []Entry) []Entry {
+	mutate("bad iteration", "must be 07b, 08 or 11", func(es []Entry) []Entry {
 		setFact(es, "grok", "model", func(f *Fact) { f.VerificationIteration = "09" })
 		return es
 	})
@@ -145,5 +145,92 @@ func TestCheckDocLinks(t *testing.T) {
 	}
 	if err := CheckDocLinks(filepath.Join(dir, "none.md")); err == nil {
 		t.Fatal("missing doc")
+	}
+}
+
+// TestCatalogQualificationIteration pins the per-key ownership rule
+// (iteration 07b, FP-14): Owner against a literal table (never derived from
+// Owner itself), including its fallbacks, and the validator's use of it.
+func TestCatalogQualificationIteration(t *testing.T) {
+	timeout := map[string]bool{"mcp_timeout": true, "mcp_timeout_override": true, "mcp_progress_extension": true}
+	vendorOwner := map[string]string{"claude": "08", "codex": "08", "grok": "11", "cursor": "11"}
+	keys := []string{"headless", "model", "effort", "approval", "sandbox_linux", "sandbox_macos", "final_message", "exit_codes",
+		"mcp_config", "mcp_timeout", "mcp_timeout_override", "mcp_progress_extension", "runbook"}
+	if strings.Join(keys, ",") != strings.Join(RequiredFacts, ",") {
+		t.Fatal("RequiredFacts changed")
+	}
+	for _, id := range []string{"claude", "codex", "grok", "cursor"} {
+		for _, key := range keys {
+			want := vendorOwner[id]
+			if timeout[key] {
+				want = "07b"
+			}
+			if got := Owner(id, key); got != want {
+				t.Errorf("Owner(%s, %s) = %q, want %q", id, key, got, want)
+			}
+		}
+	}
+	// Fallbacks: the timeout keys are 07b even for an unknown vendor; any
+	// other key of an unknown vendor has no owner.
+	for key, want := range map[string]string{"mcp_timeout": "07b", "mcp_timeout_override": "07b", "mcp_progress_extension": "07b", "model": "", "mcp_config": ""} {
+		if got := Owner("unknown", key); got != want {
+			t.Errorf("Owner(unknown, %s) = %q, want %q", key, got, want)
+		}
+	}
+	if Owner("claude", "no_such_key") != "08" {
+		t.Error("an unknown key does not fall back to the vendor's owner")
+	}
+
+	root, good := realCatalog(t)
+	if err := Validate(root, good); err != nil {
+		t.Fatalf("the exact mapping is rejected: %v", err)
+	}
+	set := func(id, key string, fn func(*Fact)) []Entry {
+		es := clone(t, good)
+		for i := range es {
+			if es[i].ID == id {
+				f := es[i].Facts[key]
+				fn(&f)
+				es[i].Facts[key] = f
+			}
+		}
+		return es
+	}
+	expectErr := func(what string, es []Entry, want string) {
+		t.Helper()
+		if err := Validate(root, es); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: want %q, got %v", what, want, err)
+		}
+	}
+	for _, id := range []string{"claude", "codex", "grok", "cursor"} {
+		for _, key := range keys {
+			var wrong []string
+			if timeout[key] {
+				wrong = []string{"08", "11"}
+			} else {
+				wrong = []string{"07b", map[string]string{"08": "11", "11": "08"}[vendorOwner[id]]}
+			}
+			for _, w := range wrong {
+				expectErr(id+"."+key+"="+w, set(id, key, func(f *Fact) { f.VerificationIteration = w }), "verification_iteration "+w+", want "+Owner(id, key)+" for this vendor")
+			}
+		}
+	}
+	// UNVERIFIED work references: missing, mismatched, and matching 07b.
+	expectErr("missing reference", set("grok", "mcp_timeout", func(f *Fact) { f.Value = "Unknown." }), "must name its qualification work (iteration 07b/08/11)")
+	expectErr("mismatched reference", set("grok", "mcp_timeout_override", func(f *Fact) { f.Value = "Unknown; iteration 11 must find it." }),
+		"value names iteration 11 but verification_iteration is 07b")
+	expectErr("07b text on an 08 fact", set("codex", "mcp_config", func(f *Fact) { f.Value = "Candidate only; iteration 07b validates it." }),
+		"value names iteration 07b but verification_iteration is 08")
+	if err := Validate(root, set("cursor", "mcp_progress_extension", func(f *Fact) { f.Value = "Unknown; ITERATION 07b local qualification must test it." })); err != nil {
+		t.Errorf("matching iteration 07b text rejected: %v", err)
+	}
+	// VERIFIED keeps its mixed-content and evidence rules.
+	expectErr("mixed verified", set("claude", "mcp_timeout", func(f *Fact) { f.Status, f.Value = Verified, "Measured: an unknown maximum." }), "mixes unverified")
+	expectErr("verified without evidence", set("claude", "mcp_timeout_override", func(f *Fact) { f.Status, f.Value, f.Evidence = Verified, "Measured.", nil }),
+		"VERIFIED fact without evidence")
+	if err := Validate(root, set("claude", "mcp_timeout", func(f *Fact) {
+		f.Status, f.Value = Verified, "Measured on linux/amd64: a 5000 ms silent call completed."
+	})); err != nil {
+		t.Errorf("a clean VERIFIED timeout fact rejected: %v", err)
 	}
 }

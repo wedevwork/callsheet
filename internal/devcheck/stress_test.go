@@ -31,7 +31,7 @@ import (
 // and sidecar shards); it is compared against StressShards and StressSteps,
 // never derived from them.
 const (
-	wantStressPackages      = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/contract ./internal/adapter ./internal/mcp"
+	wantStressPackages      = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/contract ./internal/adapter ./internal/mcp ./internal/mcpqual"
 	wantStressPlane1        = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/plane"
 	wantStressPlane2        = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/plane"
 	wantStressPlane4        = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/plane"
@@ -70,6 +70,13 @@ var want04Additions = []string{
 // selector or count changes.
 var want07aAdditions = []string{
 	"go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/mcp",
+}
+
+// want07bAdditions is iteration 07b's literal addition (design 07b, CI
+// plan): the qualification harness package, complete, in the packages
+// shard only; no selector, count, shard or CPU1 changes.
+var want07bAdditions = []string{
+	"go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/mcpqual",
 }
 
 // want02bSelection is iteration 02b's literal stress selection, the
@@ -359,6 +366,17 @@ func TestStressShardUnion(t *testing.T) {
 	if len(want) != (5+2+3+1+1+1)*3 {
 		t.Fatalf("07a selection has %d tuples", len(want))
 	}
+	for _, argv := range want07bAdditions {
+		for _, s := range normalize(t, argv) {
+			if want[s] != 0 {
+				t.Fatalf("07b addition %v overlaps", s)
+			}
+			want[s]++
+		}
+	}
+	if len(want) != (5+2+3+1+1+1+1)*3 {
+		t.Fatalf("07b selection has %d tuples", len(want))
+	}
 	for _, goos := range []string{"linux", "darwin"} {
 		shards, err := StressShards(goos)
 		if err != nil {
@@ -384,7 +402,7 @@ func TestStressShardUnion(t *testing.T) {
 		}
 		for s := range got {
 			if want[s] == 0 {
-				t.Errorf("%s: %v is not in the 02b, 03, 04 or 07a selection", goos, s)
+				t.Errorf("%s: %v is not in the 02b, 03, 04, 07a or 07b selection", goos, s)
 			}
 		}
 		for s, sh := range owner {
@@ -582,8 +600,8 @@ func TestStressStageDispatch(t *testing.T) {
 	}
 	// all stays test, coverage, bench, cross: stress is explicit.
 	f := &fakeRunner{coverTotal: "81%", cmdList: cmdList, profile: goodProfile}
-	// test(2) + coverage(3) + bench(6, iteration 07a) + cross(12).
-	if code, _, errOut := runDriver(t, "linux", f, "all"); code != 0 || len(f.calls) != 23 {
+	// test(2) + coverage(3) + bench(7, iteration 07b) + cross(12).
+	if code, _, errOut := runDriver(t, "linux", f, "all"); code != 0 || len(f.calls) != 24 {
 		t.Fatalf("all = %d with %d calls %s", code, len(f.calls), errOut)
 	}
 	for _, c := range f.argvs() {

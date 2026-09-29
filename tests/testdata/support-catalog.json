@@ -79,27 +79,27 @@
       },
       "mcp_timeout": {
         "status": "UNVERIFIED",
-        "value": "MCP tool-call timeout is unknown (distinct from startup timeout); iteration 08 must measure it with a local deterministic MCP test server. Owner-authorized interim exception: iteration 07a ships task_wait and dispatch-with-wait with an UNVERIFIED 10s outer call budget, shorter plane waits reserve transport/admission/response time, and any increase requires local timeout qualification with an explicit response margin.",
+        "value": "MCP tool-call timeout is unknown (distinct from startup timeout); iteration 07b must measure it with a local deterministic MCP test server. Owner-authorized interim exception: iteration 07a ships task_wait and dispatch-with-wait with an UNVERIFIED 10s outer call budget, shorter plane waits reserve transport/admission/response time, and any increase requires local timeout qualification with an explicit response margin.",
         "evidence": [
           "tests/testdata/cli-help/claude-help.txt"
         ],
-        "verification_iteration": "08"
+        "verification_iteration": "07b"
       },
       "mcp_timeout_override": {
         "status": "UNVERIFIED",
-        "value": "How to raise the tool-call timeout is unknown; `MCP_TOOL_TIMEOUT` is a candidate to investigate, not an endorsed setting or value. Iteration 08 must verify syntax and effect.",
+        "value": "How to raise the tool-call timeout is unknown; `MCP_TOOL_TIMEOUT` is a candidate to investigate, not an endorsed setting or value. Iteration 07b must verify syntax and effect.",
         "evidence": [
           "tests/testdata/cli-help/claude-help.txt"
         ],
-        "verification_iteration": "08"
+        "verification_iteration": "07b"
       },
       "mcp_progress_extension": {
         "status": "UNVERIFIED",
-        "value": "Whether progress notifications extend a call is unknown; iteration 08 must test a delayed tool with progress on and off and check for a hard deadline.",
+        "value": "Whether progress notifications extend a call is unknown; iteration 07b must test a delayed tool with progress on and off and check for a hard deadline.",
         "evidence": [
           "tests/testdata/cli-help/claude-help.txt"
         ],
-        "verification_iteration": "08"
+        "verification_iteration": "07b"
       },
       "runbook": {
         "status": "UNVERIFIED",
@@ -193,27 +193,27 @@
       },
       "mcp_timeout": {
         "status": "UNVERIFIED",
-        "value": "MCP tool-call timeout is unknown; iteration 08 must measure it with a local deterministic MCP test server. Owner-authorized interim exception: iteration 07a ships task_wait and dispatch-with-wait with an UNVERIFIED 10s outer call budget, shorter plane waits reserve transport/admission/response time, and any increase requires local timeout qualification with an explicit response margin.",
+        "value": "MCP tool-call timeout is unknown; iteration 07b must measure it with a local deterministic MCP test server. Owner-authorized interim exception: iteration 07a ships task_wait and dispatch-with-wait with an UNVERIFIED 10s outer call budget, shorter plane waits reserve transport/admission/response time, and any increase requires local timeout qualification with an explicit response margin.",
         "evidence": [
           "tests/testdata/cli-help/codex-help.txt"
         ],
-        "verification_iteration": "08"
+        "verification_iteration": "07b"
       },
       "mcp_timeout_override": {
         "status": "UNVERIFIED",
-        "value": "Candidate `mcp_servers.callsheet.tool_timeout_sec` lacks schema/runtime evidence; iteration 08 must verify it before any value ships.",
+        "value": "Candidate `mcp_servers.callsheet.tool_timeout_sec` lacks schema/runtime evidence; iteration 07b must verify it before any value ships.",
         "evidence": [
           "tests/testdata/cli-help/codex-help.txt"
         ],
-        "verification_iteration": "08"
+        "verification_iteration": "07b"
       },
       "mcp_progress_extension": {
         "status": "UNVERIFIED",
-        "value": "Whether progress extends calls is unknown; iteration 08 must test idle timeout and absolute timeout separately.",
+        "value": "Whether progress extends calls is unknown; iteration 07b must test idle timeout and absolute timeout separately.",
         "evidence": [
           "tests/testdata/cli-help/codex-help.txt"
         ],
-        "verification_iteration": "08"
+        "verification_iteration": "07b"
       },
       "runbook": {
         "status": "UNVERIFIED",
@@ -306,27 +306,27 @@
       },
       "mcp_timeout": {
         "status": "UNVERIFIED",
-        "value": "MCP tool-call timeout is unknown; iteration 11 must measure it with a local deterministic MCP test server. Owner-authorized interim exception: iteration 07a ships task_wait and dispatch-with-wait with an UNVERIFIED 10s outer call budget, shorter plane waits reserve transport/admission/response time, and any increase requires local timeout qualification with an explicit response margin.",
+        "value": "MCP tool-call timeout is unknown; iteration 07b must measure it with a local deterministic MCP test server. Owner-authorized interim exception: iteration 07a ships task_wait and dispatch-with-wait with an UNVERIFIED 10s outer call budget, shorter plane waits reserve transport/admission/response time, and any increase requires local timeout qualification with an explicit response margin.",
         "evidence": [
           "tests/testdata/cli-help/grok-help.txt"
         ],
-        "verification_iteration": "11"
+        "verification_iteration": "07b"
       },
       "mcp_timeout_override": {
         "status": "UNVERIFIED",
-        "value": "No candidate key is established in local help; iteration 11 must find and verify one.",
+        "value": "No candidate key is established in local help; iteration 07b must find and verify one.",
         "evidence": [
           "tests/testdata/cli-help/grok-help.txt"
         ],
-        "verification_iteration": "11"
+        "verification_iteration": "07b"
       },
       "mcp_progress_extension": {
         "status": "UNVERIFIED",
-        "value": "Whether progress extends calls is unknown; iteration 11 must test it.",
+        "value": "Whether progress extends calls is unknown; iteration 07b must test it.",
         "evidence": [
           "tests/testdata/cli-help/grok-help.txt"
         ],
-        "verification_iteration": "11"
+        "verification_iteration": "07b"
       },
       "runbook": {
         "status": "UNVERIFIED",
@@ -418,27 +418,27 @@
       },
       "mcp_timeout": {
         "status": "UNVERIFIED",
-        "value": "MCP tool-call timeout is unknown; iteration 11 must measure it with a local deterministic MCP test server. Owner-authorized interim exception: iteration 07a ships task_wait and dispatch-with-wait with an UNVERIFIED 10s outer call budget, shorter plane waits reserve transport/admission/response time, and any increase requires local timeout qualification with an explicit response margin.",
+        "value": "MCP tool-call timeout is unknown; iteration 07b must measure it with a local deterministic MCP test server. Owner-authorized interim exception: iteration 07a ships task_wait and dispatch-with-wait with an UNVERIFIED 10s outer call budget, shorter plane waits reserve transport/admission/response time, and any increase requires local timeout qualification with an explicit response margin.",
         "evidence": [
           "tests/testdata/cli-help/cursor-mcp.txt"
         ],
-        "verification_iteration": "11"
+        "verification_iteration": "07b"
       },
       "mcp_timeout_override": {
         "status": "UNVERIFIED",
-        "value": "How to raise the timeout is unknown; iteration 11 must find and verify a setting.",
+        "value": "How to raise the timeout is unknown; iteration 07b must find and verify a setting.",
         "evidence": [
           "tests/testdata/cli-help/cursor-mcp.txt"
         ],
-        "verification_iteration": "11"
+        "verification_iteration": "07b"
       },
       "mcp_progress_extension": {
         "status": "UNVERIFIED",
-        "value": "The installed bundle contains `resetTimeoutOnProgress` in protocol code, which does not establish the option used at the call site or any maximum timeout; iteration 11 must test progress behaviour.",
+        "value": "The installed bundle contains `resetTimeoutOnProgress` in protocol code, which does not establish the option used at the call site or any maximum timeout; iteration 07b must test progress behaviour.",
         "evidence": [
           "tests/testdata/cli-help/cursor-installed-excerpts.json"
         ],
-        "verification_iteration": "11"
+        "verification_iteration": "07b"
       },
       "runbook": {
         "status": "UNVERIFIED",

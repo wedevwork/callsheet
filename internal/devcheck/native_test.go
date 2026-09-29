@@ -159,6 +159,27 @@ var mcpRequired = []struct {
 // children.
 func mcpNames() []string { return requiredNames(mcpRequired) }
 
+// qualRequired are iteration 07b's eight coordinator setup and timeout
+// qualification function parents and their mandatory direct children
+// (design 07b, Function tests), in FP order (FP-9..FP-16).
+var qualRequired = []struct {
+	test string
+	subs []string
+}{
+	{"TestMCPSetup", []string{"claude", "codex", "grok", "cursor", "runbook-ownership", "client-info"}},
+	{"TestMCPQualificationProbe", []string{"immediate", "slow", "progress", "no-token", "cancellation"}},
+	{"TestMCPQualificationSchema", []string{"plan", "report", "limits", "paths"}},
+	{"TestMCPQualificationDecoders", []string{"claude", "codex", "grok", "cursor", "unknown-version", "non-tool-error"}},
+	{"TestMCPQualificationMeasurements", []string{"default", "override", "progress", "absolute", "lower-bound", "partial", "budget"}},
+	{"TestMCPQualificationPublish", []string{"verified", "partial", "redaction", "hashes", "refuse-conflict", "worker-facts"}},
+	{"TestMCPQualificationReaping", []string{"cooperative", "resistant", "parent-exits-first", "interrupt", "cleanup-failure"}},
+	{"TestMCPQualificationInvocation", []string{"denied", "allowed", "model-free", "ci-denied"}},
+}
+
+// qualNames lists every required 07b name, each parent before its
+// children.
+func qualNames() []string { return requiredNames(qualRequired) }
+
 // roleNames lists every required role name, parents before subtests.
 func roleNames() []string { return requiredNames(roleRequired) }
 
@@ -194,7 +215,7 @@ func qualification() []evt {
 		evs = append(evs, ev("pass", NativePackage, fp6+"/"+s))
 	}
 	evs = append(evs, ev("pass", NativePackage, fp6))
-	for _, p := range append(append(append(append(append(append(planeRequired[:0:0], planeRequired...), nodeRequired...), roleRequired...), taskRequired...), controlRequired...), mcpRequired...) {
+	for _, p := range append(append(append(append(append(append(append(planeRequired[:0:0], planeRequired...), nodeRequired...), roleRequired...), taskRequired...), controlRequired...), mcpRequired...), qualRequired...) {
 		evs = append(evs, ev("run", NativePackage, p.test))
 		for _, s := range p.subs {
 			evs = append(evs, ev("run", NativePackage, p.test+"/"+s), ev("pass", NativePackage, p.test+"/"+s))
@@ -293,7 +314,7 @@ func TestNativeStepsAndUnsupportedOS(t *testing.T) {
 		"TestControlDurability,TestControlReconnect,TestControlNodeLoss,TestControlLaunchSafety,TestControlWorkerRecovery,TestControlPlaneRecovery,"+
 		"TestControlLateResult,TestControlLegacy,TestControlNativeGroups,TestControlNativeGroups/cooperative,TestControlNativeGroups/resistant,"+
 		"TestControlNativeGroups/orphan-restart,TestControlNativeGroups/plane-restart,"+
-		"TestControlCancellation,TestControlExecutionTimeout,TestControlBoundedWait,TestControlForceRemove,"+strings.Join(mcpNames(), ",") || len(req) != 222 {
+		"TestControlCancellation,TestControlExecutionTimeout,TestControlBoundedWait,TestControlForceRemove,"+strings.Join(mcpNames(), ",")+","+strings.Join(qualNames(), ",") || len(req) != 273 {
 		t.Fatalf("required = %v", req)
 	}
 	req[0] = "mutated"
@@ -789,4 +810,46 @@ func TestNativeMCPEvidence(t *testing.T) {
 	// never satisfies a required one.
 	q = replacing(qualification(), "pass", "TestMCPWaitCancel/cancel-wait-only", ev("pass", NativePackage, "TestMCPWaitCancel/cancel-accepted"))
 	mustFail(t, "substitute", stream(q...), "TestMCPWaitCancel/cancel-wait-only has no pass event")
+}
+
+// TestNativeQualificationEvidence (iteration 07b): the eight setup and
+// qualification parents and every mandatory child are required by exact
+// name, after the unchanged 222 earlier names. A missing, failed or
+// skipped child fails naming it, and a vacuous parent fails naming every
+// child it lacks.
+func TestNativeQualificationEvidence(t *testing.T) {
+	if err := check(stream(qualification()...)); err != nil {
+		t.Fatalf("complete evidence: %v", err)
+	}
+	req := NativeRequiredTests()
+	if n := len(qualNames()); n != 8+43 || len(req) != 222+n || strings.Join(req[222:], ",") != strings.Join(qualNames(), ",") ||
+		strings.Join(req[145:222], ",") != strings.Join(mcpNames(), ",") {
+		t.Fatalf("%d 07b names; native suffix %v", n, req[222:])
+	}
+	for _, name := range []string{"TestMCPSetup/runbook-ownership", "TestMCPQualificationProbe/no-token", "TestMCPQualificationDecoders/non-tool-error",
+		"TestMCPQualificationMeasurements/budget", "TestMCPQualificationPublish/worker-facts", "TestMCPQualificationReaping/cleanup-failure",
+		"TestMCPQualificationInvocation/ci-denied", "TestMCPQualificationSchema"} {
+		q := qualification()
+		mustFail(t, "missing "+name, stream(without(without(q, "run", name), "pass", name)...), name+" has no run event", unobserved)
+		mustFail(t, "no pass "+name, stream(without(q, "pass", name)...), name+" has no pass event", unobserved)
+		mustFail(t, "skipped "+name, stream(replacing(q, "pass", name, ev("skip", NativePackage, name))...), "test "+name+" in "+NativePackage+" skipped: "+unobserved)
+		mustFail(t, "failed "+name, stream(replacing(q, "pass", name, ev("fail", NativePackage, name))...), "test "+name+" in "+NativePackage+" failed")
+	}
+	q := qualification()
+	for _, sub := range qualRequired[6].subs {
+		name := "TestMCPQualificationReaping/" + sub
+		q = without(without(q, "run", name), "pass", name)
+	}
+	err := check(stream(q...))
+	if err == nil {
+		t.Fatal("a vacuous TestMCPQualificationReaping qualified")
+	}
+	for _, sub := range qualRequired[6].subs {
+		if !strings.Contains(err.Error(), "TestMCPQualificationReaping/"+sub+" has no run event") {
+			t.Fatalf("vacuous parent error lacks %s: %v", sub, err)
+		}
+	}
+	// A child of another parent never substitutes for a required one.
+	q = replacing(qualification(), "pass", "TestMCPQualificationDecoders/claude", ev("pass", NativePackage, "TestMCPSetup/claude"))
+	mustFail(t, "substitute", stream(q...), "TestMCPQualificationDecoders/claude has no pass event")
 }

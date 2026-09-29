@@ -142,14 +142,16 @@ func (r *ciRunner) run(_ context.Context, argv, env []string, _ string, stdout, 
 			os.WriteFile(p, []byte("mode: atomic\n"+
 				"github.com/wedevwork/callsheet/cmd/callsheet/main.go:1.1,2.2 1 1\n"+
 				"github.com/wedevwork/callsheet/cmd/devcheck/main.go:1.1,2.2 1 1\n"+
-				"github.com/wedevwork/callsheet/cmd/fake-adapter/main.go:1.1,2.2 1 1\n"), 0o600)
+				"github.com/wedevwork/callsheet/cmd/fake-adapter/main.go:1.1,2.2 1 1\n"+
+				"github.com/wedevwork/callsheet/cmd/mcpqual/main.go:1.1,2.2 1 1\n"), 0o600)
 		}
 	}
 	switch {
 	case strings.HasPrefix(joined, "go tool cover"):
 		fmt.Fprintf(stdout, "total:\t\t\t(statements)\t%s\n", r.coverTotal)
 	case strings.HasPrefix(joined, "go list"):
-		io.WriteString(stdout, "github.com/wedevwork/callsheet/cmd/callsheet|1\ngithub.com/wedevwork/callsheet/cmd/devcheck|1\ngithub.com/wedevwork/callsheet/cmd/fake-adapter|1\n")
+		io.WriteString(stdout, "github.com/wedevwork/callsheet/cmd/callsheet|1\ngithub.com/wedevwork/callsheet/cmd/devcheck|1\ngithub.com/wedevwork/callsheet/cmd/fake-adapter|1\n"+
+			"github.com/wedevwork/callsheet/cmd/mcpqual|1\n")
 	case strings.HasPrefix(joined, "go test -json"):
 		io.WriteString(stdout, r.stdout)
 	}

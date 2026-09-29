@@ -21,6 +21,7 @@ import (
 //	internal/spikes/processgroup/experiment.go    evaluate   evaluateFor(r, runtime.GOOS)
 //	internal/spikes/processgroup/experiment.go    RunHelper  return runHelperFor(getenv, runtime.GOOS, runtime.GOARCH)
 //	internal/testkit/fakeadapter/fakeadapter.go   Parse      return parseFor(args, runtime.GOOS, signalsSupported)
+//	cmd/mcpqual/main.go                           run        return runFor(runtime.GOOS, runtime.GOARCH, args, getenv, stdin, stdout, stderr)
 //
 //	exempt native file                              //go:build
 //	internal/spikes/processgroup/sys_linux.go       linux
@@ -104,6 +105,21 @@ func Parse(args []string) (Options, error) {
 func parseFor(args []string, goos string, supported bool) (Options, error) {
 	runtime.KeepAlive(args)
 	return Options{}, nil
+}
+`,
+		"cmd/mcpqual/main.go": `package main
+
+import (
+	"io"
+	"runtime"
+)
+
+func run(args []string, getenv func(string) string, stdin io.Reader, stdout, stderr io.Writer) int {
+	return runFor(runtime.GOOS, runtime.GOARCH, args, getenv, stdin, stdout, stderr)
+}
+
+func runFor(goos, goarch string, args []string, getenv func(string) string, stdin io.Reader, stdout, stderr io.Writer) int {
+	return 0
 }
 `,
 		"internal/spikes/processgroup/sys_linux.go":     "//go:build linux\n\npackage processgroup\n",

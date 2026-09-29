@@ -1,0 +1,226 @@
+//go:build linux || darwin
+
+package procexec
+
+import (
+	"bufio"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
+	"testing"
+	"time"
+
+	"github.com/wedevwork/callsheet/internal/mcpqual"
+	"github.com/wedevwork/callsheet/internal/spikes/processgroup"
+)
+
+// The helper process modes (this test binary re-executed).
+const helperEnv = "PROCEXEC_HELPER"
+
+// barrierReleased is the barrier helper's exit code after its release.
+const barrierReleased = 4
+
+func TestMain(m *testing.M) {
+	switch os.Getenv(helperEnv) {
+	case "":
+		os.Exit(m.Run())
+	case "echo":
+		fmt.Printf("pgrp %d pid %d\n", syscall.Getpgrp(), os.Getpid())
+		fmt.Fprintln(os.Stderr, "to stderr")
+		os.Exit(3)
+	case "term-self":
+		syscall.Kill(os.Getpid(), syscall.SIGTERM)
+		time.Sleep(time.Minute)
+	case "parent-exits-first":
+		// A descendant keeps stdout open after the leader exits.
+		d := exec.Command(os.Args[0])
+		d.Env = append(os.Environ(), helperEnv+"=hold")
+		d.Stdout = os.Stdout
+		d.Start()
+		fmt.Printf("descendant %d\n", d.Process.Pid)
+		os.Exit(0)
+	case "hold":
+		time.Sleep(time.Minute)
+	case "barrier":
+		// Blocks until the test opens the FIFO for writing and closes it,
+		// then exits barrierReleased; a barrier that cannot be opened exits
+		// 2. (A nonzero code also skips the race runtime's exit sleep.)
+		f, err := os.Open(os.Getenv("PROCEXEC_BARRIER"))
+		if err != nil {
+			os.Exit(2)
+		}
+		io.Copy(io.Discard, f)
+		f.Close()
+		os.Exit(barrierReleased)
+	}
+}
+
+func spec(t *testing.T, mode string) mcpqual.ProcSpec {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return mcpqual.ProcSpec{Path: exe, Env: []string{helperEnv + "=" + mode}, Dir: t.TempDir(), StderrPath: filepath.Join(t.TempDir(), "stderr")}
+}
+
+func waitExited(t *testing.T, p mcpqual.Proc) {
+	t.Helper()
+	select {
+	case <-p.Exited():
+	case <-time.After(30 * time.Second):
+		t.Fatal("the leader was not reaped")
+	}
+}
+
+func TestLauncherExitStdoutStderr(t *testing.T) {
+	s := spec(t, "echo")
+	p, err := Launcher{}.Start(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The child may already have exited and been reaped here; only the
+	// final status is checked (TestLauncherStatusPending covers the pending
+	// state with a barrier the child cannot pass).
+	out, err := io.ReadAll(p.Stdout())
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitExited(t, p)
+	p.CloseStdout()
+	// The launch leads its own group: its process group is its PID.
+	if want := fmt.Sprintf("pgrp %d pid %d\n", p.PGID(), p.PGID()); string(out) != want {
+		t.Fatalf("stdout %q, want %q", out, want)
+	}
+	if code, sig := p.Status(); code == nil || *code != 3 || sig != nil {
+		t.Fatalf("status %v %v", code, sig)
+	}
+	// A coverage-instrumented helper may append its own GOCOVERDIR warning.
+	if b, _ := os.ReadFile(s.StderrPath); !strings.HasPrefix(string(b), "to stderr\n") {
+		t.Fatalf("stderr %q", b)
+	}
+}
+
+func TestLauncherSignalStatus(t *testing.T) {
+	s := spec(t, "term-self")
+	s.StderrPath = ""
+	p, err := Launcher{}.Start(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitExited(t, p)
+	if code, sig := p.Status(); code != nil || sig == nil || *sig != syscall.SIGTERM.String() {
+		t.Fatalf("status %v %v", code, sig)
+	}
+	p.CloseStdout()
+}
+
+// The leader's reaping never waits for a descendant holding stdout; the
+// group is then stopped and proven gone.
+func TestLauncherParentExitsFirst(t *testing.T) {
+	p, err := Launcher{}.Start(spec(t, "parent-exits-first"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	line, err := bufio.NewReader(p.Stdout()).ReadString('\n')
+	if err != nil || !strings.HasPrefix(line, "descendant ") {
+		t.Fatalf("%q %v", line, err)
+	}
+	desc, _ := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(line, "descendant ")))
+	waitExited(t, p)
+	if alive, err := processgroup.Existence(processgroup.SysSignaler{}, -p.PGID()); err != nil || !alive {
+		t.Fatalf("the descendant's group is gone already (%v, %v)", alive, err)
+	}
+	syscall.Kill(-p.PGID(), syscall.SIGKILL)
+	if err := processgroup.WaitGone(processgroup.SysSignaler{}, processgroup.RealClock{}, 10*time.Second, 10*time.Millisecond, -p.PGID(), desc); err != nil {
+		t.Fatal(err)
+	}
+	p.CloseStdout()
+}
+
+func TestLauncherStartErrors(t *testing.T) {
+	_, err := Launcher{}.Start(mcpqual.ProcSpec{Path: filepath.Join(t.TempDir(), "missing")})
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("missing executable: %v", err)
+	}
+	s := spec(t, "echo")
+	s.StderrPath = filepath.Join(t.TempDir(), "no", "such", "dir", "stderr")
+	if _, err := (Launcher{}).Start(s); err == nil {
+		t.Fatal("an unwritable stderr path was accepted")
+	}
+}
+
+// Status stays pending while the leader cannot exit: the child blocks on a
+// FIFO until the test releases it, so the ordering is established by the
+// barrier, not by scheduling.
+func TestLauncherStatusPending(t *testing.T) {
+	fifo := filepath.Join(t.TempDir(), "barrier")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := spec(t, "barrier")
+	s.Env = append(s.Env, "PROCEXEC_BARRIER="+fifo)
+	p, err := Launcher{}.Start(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-p.Exited():
+		t.Fatal("the leader exited before its barrier was released")
+	default:
+	}
+	if code, sig := p.Status(); code != nil || sig != nil {
+		t.Fatal("a status before the leader was reaped")
+	}
+	// Opening for writing blocks until the child has opened for reading,
+	// then releases it. Exited may be ready together with the release, or
+	// alone when the helper never reached its barrier: a reader of our own
+	// lets a pending open complete, and the final status (barrierReleased
+	// only after a release) tells the two apart, so a dead helper cannot
+	// hang the test.
+	opened := make(chan error, 1)
+	go func() {
+		w, err := os.OpenFile(fifo, os.O_WRONLY, 0)
+		if err == nil {
+			err = w.Close()
+		}
+		opened <- err
+	}()
+	select {
+	case err := <-opened:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-p.Exited():
+		r, err := os.OpenFile(fifo, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = <-opened
+		r.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitExited(t, p)
+	if code, sig := p.Status(); code == nil || *code != barrierReleased || sig != nil {
+		t.Fatalf("status %s, want exit %d after the barrier's release (2: the helper could not open it)", statusText(code, sig), barrierReleased)
+	}
+	p.CloseStdout()
+}
+
+func statusText(code *int, sig *string) string {
+	switch {
+	case code != nil:
+		return "exit " + strconv.Itoa(*code)
+	case sig != nil:
+		return "signal " + *sig
+	}
+	return "pending"
+}
