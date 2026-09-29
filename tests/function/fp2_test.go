@@ -41,7 +41,7 @@ func TestFP2CommandTree(t *testing.T) {
 			"callsheet sidecar enroll": true, "callsheet sidecar run": true, "callsheet node ls": true, "callsheet node show": true,
 			"callsheet role add": true, "callsheet role set": true, "callsheet role ls": true, "callsheet role show": true, "callsheet role rm": true,
 			"callsheet dispatch": true, "callsheet task ls": true, "callsheet task show": true, "callsheet task logs": true,
-			"callsheet task cancel": true, "callsheet task wait": true}
+			"callsheet task cancel": true, "callsheet task wait": true, "callsheet mcp": true}
 		for _, leaf := range leaves {
 			args := argsOf(leaf)
 			if implemented[leaf.Path()] {
@@ -135,9 +135,11 @@ func TestFP2CommandTree(t *testing.T) {
 		}
 	})
 
-	t.Run("mcp stub keeps stdout clean", func(t *testing.T) {
+	t.Run("mcp keeps stdout clean", func(t *testing.T) {
+		// Implemented in iteration 07a: with no input the server ends at
+		// EOF (exit 0) without output and without contacting the plane.
 		r := run("mcp", "--plane", "https://127.0.0.1:1", "--ca", "ca.pem")
-		if r.code != 8 || r.stdout != "" || !strings.Contains(r.stderr, "not implemented yet") {
+		if r.code != 0 || r.stdout != "" || r.stderr != "" {
 			t.Fatalf("mcp = %+v", r)
 		}
 	})

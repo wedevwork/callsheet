@@ -233,7 +233,8 @@ func TestSteps(goos string) []Step {
 // enrollment; iteration 04 roles: snapshot views and durable mutations),
 // then the wire-contract frame benchmarks (iteration 03 nodes, iteration 04
 // role frames), then the sidecar ready checks and the adapter's fake probe
-// (iteration 04). Timings are reported, never gated.
+// (iteration 04), then the MCP codec, relay and wait-budget benchmarks
+// (iteration 07a). Timings are reported, never gated.
 func BenchSteps() []Step {
 	pkg := func(name, dir string) Step {
 		return Step{Name: name, Argv: []string{"go", "test", dir, "-run=^$", "-bench=.", "-benchmem", "-benchtime=3x", "-count=1", "-timeout=180s"}}
@@ -244,6 +245,7 @@ func BenchSteps() []Step {
 		pkg("bench contract", "./internal/contract"),
 		pkg("bench sidecar", "./internal/sidecar"),
 		pkg("bench adapter", "./internal/adapter"),
+		pkg("bench mcp", "./internal/mcp"),
 	}
 }
 

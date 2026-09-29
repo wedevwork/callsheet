@@ -54,7 +54,7 @@ var shardPlan = []struct {
 	parallel bool
 	steps    [][2]string
 }{
-	{"packages", false, [][2]string{{"stress packages", "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/contract ./internal/adapter"}}},
+	{"packages", false, [][2]string{{"stress packages", "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/contract ./internal/adapter ./internal/mcp"}}},
 	{"plane-cpu1", true, [][2]string{
 		{"stress plane cpu1", "go test -race -count=20 -cpu=1 -timeout=6m ./internal/plane"},
 	}},
@@ -91,6 +91,12 @@ var shard03 = []string{
 // shard04 is iteration 04's literal addition: the adapter package.
 var shard04 = []string{
 	"go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/adapter",
+}
+
+// shard07a is iteration 07a's literal addition: the MCP server package,
+// in the packages shard only.
+var shard07a = []string{
+	"go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/mcp",
 }
 
 // shardArgv returns the literal commands of the named shards, in order.
@@ -178,7 +184,7 @@ func tuples(t *testing.T, argv string) []tuple {
 
 // FP-1: both OS plans are exactly the seven literal shards (thirteen
 // steps), and their normalized union is the 02b multiset plus the literal
-// additions of iterations 03 and 04 (36 tuples, each exactly once), with
+// additions of iterations 03, 04 and 07a (39 tuples, each exactly once), with
 // nothing duplicated or lost; the complete plane and sidecar packages run
 // exactly once per CPU setting: CPU1 only in plane-cpu1 and sidecar-cpu1,
 // CPU2 and CPU4 only in plane and sidecar (design 06a-perf).
@@ -213,6 +219,17 @@ func TestStressShardSelection(t *testing.T) {
 	}
 	if len(want) != 36 {
 		t.Fatalf("04 selection = %d tuples, want 03 plus 1 package at 3 CPU settings", len(want))
+	}
+	for _, argv := range shard07a {
+		for _, tp := range tuples(t, argv) {
+			if want[tp] != 0 {
+				t.Fatalf("07a addition %+v overlaps", tp)
+			}
+			want[tp]++
+		}
+	}
+	if len(want) != 39 {
+		t.Fatalf("07a selection = %d tuples, want 04 plus 1 package at 3 CPU settings", len(want))
 	}
 	for _, goos := range []string{"linux", "darwin"} {
 		shards, err := devcheck.StressShards(goos)
@@ -249,11 +266,11 @@ func TestStressShardSelection(t *testing.T) {
 		}
 		for tp, n := range got {
 			if want[tp] != n {
-				t.Errorf("%s: %+v selected %d times, 02b and 03 selected it %d times", goos, tp, n, want[tp])
+				t.Errorf("%s: %+v selected %d times, 02b, 03, 04 and 07a selected it %d times", goos, tp, n, want[tp])
 			}
 		}
-		if len(got) != 36 {
-			t.Fatalf("%s: %d distinct tuples, want 36", goos, len(got))
+		if len(got) != 39 {
+			t.Fatalf("%s: %d distinct tuples, want 39", goos, len(got))
 		}
 		ownerOf := map[string]string{"1": "-cpu1", "2": "", "4": ""}
 		for _, pkg := range []string{"plane", "sidecar"} {

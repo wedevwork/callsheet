@@ -124,3 +124,32 @@ func TestProtocolVersion(t *testing.T) {
 		t.Fatal("protocol version must be 5 (iteration 06b)")
 	}
 }
+
+// TestDecodeStrict (iteration 07a): the exported wrapper applies the
+// contract's strict rules to an outside DTO: required and optional
+// fields, exact integers and booleans, arrays never null, no unknown or
+// duplicate key, valid UTF-8 and paired surrogates.
+func TestDecodeStrict(t *testing.T) {
+	type dto struct {
+		ID    string   `json:"id"`
+		N     int      `json:"n"`
+		Flag  *bool    `json:"flag,omitempty"`
+		Items []string `json:"items,omitempty"`
+		Opt   *string  `json:"opt,omitempty"`
+	}
+	var d dto
+	if err := DecodeStrict([]byte(`{"id":"a","n":3,"flag":true,"items":["x"]}`), &d, "args"); err != nil || d.ID != "a" || d.N != 3 || !*d.Flag || d.Items[0] != "x" || d.Opt != nil {
+		t.Fatalf("decode %+v %v", d, err)
+	}
+	for _, bad := range []string{`{"n":1}`, `{"id":"a","n":1.5}`, `{"id":"a","n":"1"}`, `{"id":"a","n":1,"x":1}`, `{"id":"a","id":"b","n":1}`,
+		`{"id":"a","n":1,"flag":"yes"}`, `{"id":"a","n":1,"items":null}`, `{"id":"\ud800","n":1}`, `[]`, `{"id":"a","n":1} x`} {
+		var d dto
+		err := DecodeStrict([]byte(bad), &d, "args")
+		if err == nil || CodeOf(err) != CodeInvalidArgument || !strings.Contains(err.Error(), "args") && !strings.Contains(err.Error(), "JSON") {
+			t.Fatalf("%s: %v", bad, err)
+		}
+	}
+	if err := DecodeStrict([]byte(`{}`), dto{}, "args"); err == nil {
+		t.Fatal("a non-pointer target was accepted")
+	}
+}
