@@ -32,6 +32,26 @@ var RequiredFacts = []string{
 // Vendors maps each first-wave vendor id to its verifying iteration.
 var Vendors = map[string]string{"claude": "08", "codex": "08", "grok": "11", "cursor": "11"}
 
+// TimeoutQualification is the iteration that owns the three coordinator
+// timeout facts of every vendor (iteration 07b's local MCP timeout
+// qualification).
+const TimeoutQualification = "07b"
+
+// Owner is the single per-key ownership rule shared by the validator and
+// the function tests: "07b" for exactly mcp_timeout, mcp_timeout_override
+// and mcp_progress_extension, whatever the vendor (even an unknown one);
+// otherwise Vendors[vendor] (claude/codex 08, grok/cursor 11), which is
+// the empty string for an unknown vendor. It selects ownership only, not
+// validity: unknown vendors and keys still fail Validate's membership
+// checks. Evidence added to mcp_config never transfers its ownership.
+func Owner(vendor, key string) string {
+	switch key {
+	case "mcp_timeout", "mcp_timeout_override", "mcp_progress_extension":
+		return TimeoutQualification
+	}
+	return Vendors[vendor]
+}
+
 // Fact is one field-level claim.
 type Fact struct {
 	Status                string   `json:"status"`
@@ -86,7 +106,7 @@ func CheckEvidencePath(p string) error {
 	return nil
 }
 
-var iterationRef = regexp.MustCompile(`(?i)\biteration (08|11)\b`)
+var iterationRef = regexp.MustCompile(`(?i)\biteration (07b|08|11)\b`)
 
 // Validate checks entries against the catalog contract, resolving evidence
 // against root (the repository root). It returns every problem found.
@@ -99,7 +119,7 @@ func Validate(root string, entries []Entry) error {
 	seen := map[string]bool{}
 	for i, e := range entries {
 		where := fmt.Sprintf("entry %d (%s)", i, e.ID)
-		want, known := Vendors[e.ID]
+		_, known := Vendors[e.ID]
 		if !known {
 			add("%s: unknown vendor id", where)
 		}
@@ -127,7 +147,7 @@ func Validate(root string, entries []Entry) error {
 				add("%s: missing fact %s", where, key)
 				continue
 			}
-			validateFact(root, where+"."+key, f, want, known, add)
+			validateFact(root, where+"."+key, f, Owner(e.ID, key), known, add)
 		}
 	}
 	for id := range Vendors {
@@ -138,12 +158,13 @@ func Validate(root string, entries []Entry) error {
 	return errors.Join(errs...)
 }
 
+// validateFact checks one fact; want is its expected owner (Owner).
 func validateFact(root, where string, f Fact, want string, known bool, add func(string, ...any)) {
 	if strings.TrimSpace(f.Value) == "" {
 		add("%s: empty value", where)
 	}
-	if f.VerificationIteration != "08" && f.VerificationIteration != "11" {
-		add("%s: verification_iteration %q must be 08 or 11", where, f.VerificationIteration)
+	if f.VerificationIteration != TimeoutQualification && f.VerificationIteration != "08" && f.VerificationIteration != "11" {
+		add("%s: verification_iteration %q must be 07b, 08 or 11", where, f.VerificationIteration)
 	} else if known && f.VerificationIteration != want {
 		add("%s: verification_iteration %s, want %s for this vendor", where, f.VerificationIteration, want)
 	}
@@ -168,7 +189,7 @@ func validateFact(root, where string, f Fact, want string, known bool, add func(
 	case Unverified:
 		m := iterationRef.FindStringSubmatch(f.Value)
 		if m == nil {
-			add("%s: UNVERIFIED fact must name its qualification work (iteration 08/11)", where)
+			add("%s: UNVERIFIED fact must name its qualification work (iteration 07b/08/11)", where)
 		} else if m[1] != f.VerificationIteration {
 			add("%s: value names iteration %s but verification_iteration is %s", where, m[1], f.VerificationIteration)
 		}

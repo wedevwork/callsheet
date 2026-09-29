@@ -1066,7 +1066,7 @@ func TestNodePlatform(t *testing.T) {
 				}
 			}
 		}
-		if b := devcheck.BenchSteps(); len(b) != 6 || strings.Join(b[2].Argv, " ") != "go test ./internal/contract -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s" {
+		if b := devcheck.BenchSteps(); len(b) != 7 || strings.Join(b[2].Argv, " ") != "go test ./internal/contract -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s" {
 			t.Fatalf("bench plan = %+v", b)
 		}
 		// Every required node name is defined here, as a top-level test or

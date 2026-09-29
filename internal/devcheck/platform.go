@@ -75,7 +75,7 @@ type platformPolicy struct {
 	exemptions []platformExemption
 }
 
-// platformGuardPolicy is the fixed production policy: the only five approved
+// platformGuardPolicy is the fixed production policy: the only six approved
 // wrappers and the only four exempt native files.
 var platformGuardPolicy = platformPolicy{
 	wrappers: []platformWrapper{
@@ -89,6 +89,10 @@ var platformGuardPolicy = platformPolicy{
 			args: []wrapperArg{paramArg("getenv"), hostArg("GOOS"), hostArg("GOARCH")}},
 		{file: "internal/testkit/fakeadapter/fakeadapter.go", fn: "Parse", ret: true, callee: "parseFor",
 			args: []wrapperArg{paramArg("args"), hostArg("GOOS"), packageArg("signalsSupported")}},
+		// Iteration 07b: the developer-only qualification command selects
+		// its linux/darwin cleanup policy and records the host platform.
+		{file: "cmd/mcpqual/main.go", fn: "run", ret: true, callee: "runFor",
+			args: []wrapperArg{hostArg("GOOS"), hostArg("GOARCH"), paramArg("args"), paramArg("getenv"), paramArg("stdin"), paramArg("stdout"), paramArg("stderr")}},
 	},
 	exemptions: []platformExemption{
 		{file: "internal/spikes/processgroup/sys_linux.go", build: "linux"},

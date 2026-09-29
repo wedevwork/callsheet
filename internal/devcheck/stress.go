@@ -61,6 +61,11 @@ var (
 		// Iteration 07a: the MCP server's lifecycle, deadline and
 		// concurrency unit tests (event-armed fake clocks), complete.
 		"./internal/mcp",
+		// Iteration 07b: the qualification harness, complete, for its
+		// event-armed cancellation/completion, progress/completion and
+		// deadline/result races (injected runners and fake clocks: no real
+		// subprocess or grace per repetition).
+		"./internal/mcpqual",
 	}
 	// stressPlanePackage is the internal/plane package of the plane shards,
 	// distinct from the plane function-test selector in the functions shard

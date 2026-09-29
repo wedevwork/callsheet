@@ -919,6 +919,12 @@ type mcpResponse struct {
 // startMCPProc starts "callsheet mcp args..." without a dispatcher (raw).
 func startMCPProc(t *testing.T, args ...string) *mcpProc {
 	t.Helper()
+	return startMCPProcEnv(t, nil, args...)
+}
+
+// startMCPProcEnv is startMCPProc with extra environment entries.
+func startMCPProcEnv(t *testing.T, extraEnv []string, args ...string) *mcpProc {
+	t.Helper()
 	inR, inW, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -930,7 +936,7 @@ func startMCPProc(t *testing.T, args ...string) *mcpProc {
 	m := &mcpProc{t: t, stdin: inW, stdout: outR, stderr: &safeBuffer{}, exited: make(chan struct{}), waiters: map[string]chan mcpResponse{}}
 	m.cmd = exec.Command(nodeBinary(t), append([]string{"mcp"}, args...)...)
 	home := t.TempDir()
-	m.cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home}
+	m.cmd.Env = append([]string{"PATH=" + os.Getenv("PATH"), "HOME=" + home}, extraEnv...)
 	m.cmd.Dir = home
 	m.cmd.Stdin, m.cmd.Stdout, m.cmd.Stderr = inR, outW, m.stderr
 	m.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

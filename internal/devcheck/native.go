@@ -24,8 +24,9 @@ const NativePackage = "github.com/wedevwork/callsheet/tests/function"
 // (iteration 03), every role function test with its mandatory subtests
 // (iteration 04), every task function test with its mandatory subtests
 // (iteration 05), the control function tests and native groups
-// (iteration 06a) and the MCP function tests with their mandatory
-// subtests (iteration 07a).
+// (iteration 06a), the MCP function tests with their mandatory subtests
+// (iteration 07a) and the coordinator setup and timeout qualification
+// function tests with their mandatory subtests (iteration 07b).
 var nativeRequired = []string{
 	"TestFP6ProcessGroups",
 	"TestFP6ProcessGroups/cooperative",
@@ -264,6 +265,61 @@ var nativeRequired = []string{
 	"TestMCPLifetime/outstanding-wait",
 	"TestMCPLifetime/task-survives",
 	"TestMCPLifetime/reaping",
+	// Iteration 07b (coordinator setup and timeout qualification): the
+	// eight function parents in FP order (FP-9..FP-16), each followed by
+	// its mandatory direct children in listed order; every name needs its
+	// own run and pass event.
+	"TestMCPSetup",
+	"TestMCPSetup/claude",
+	"TestMCPSetup/codex",
+	"TestMCPSetup/grok",
+	"TestMCPSetup/cursor",
+	"TestMCPSetup/runbook-ownership",
+	"TestMCPSetup/client-info",
+	"TestMCPQualificationProbe",
+	"TestMCPQualificationProbe/immediate",
+	"TestMCPQualificationProbe/slow",
+	"TestMCPQualificationProbe/progress",
+	"TestMCPQualificationProbe/no-token",
+	"TestMCPQualificationProbe/cancellation",
+	"TestMCPQualificationSchema",
+	"TestMCPQualificationSchema/plan",
+	"TestMCPQualificationSchema/report",
+	"TestMCPQualificationSchema/limits",
+	"TestMCPQualificationSchema/paths",
+	"TestMCPQualificationDecoders",
+	"TestMCPQualificationDecoders/claude",
+	"TestMCPQualificationDecoders/codex",
+	"TestMCPQualificationDecoders/grok",
+	"TestMCPQualificationDecoders/cursor",
+	"TestMCPQualificationDecoders/unknown-version",
+	"TestMCPQualificationDecoders/non-tool-error",
+	"TestMCPQualificationMeasurements",
+	"TestMCPQualificationMeasurements/default",
+	"TestMCPQualificationMeasurements/override",
+	"TestMCPQualificationMeasurements/progress",
+	"TestMCPQualificationMeasurements/absolute",
+	"TestMCPQualificationMeasurements/lower-bound",
+	"TestMCPQualificationMeasurements/partial",
+	"TestMCPQualificationMeasurements/budget",
+	"TestMCPQualificationPublish",
+	"TestMCPQualificationPublish/verified",
+	"TestMCPQualificationPublish/partial",
+	"TestMCPQualificationPublish/redaction",
+	"TestMCPQualificationPublish/hashes",
+	"TestMCPQualificationPublish/refuse-conflict",
+	"TestMCPQualificationPublish/worker-facts",
+	"TestMCPQualificationReaping",
+	"TestMCPQualificationReaping/cooperative",
+	"TestMCPQualificationReaping/resistant",
+	"TestMCPQualificationReaping/parent-exits-first",
+	"TestMCPQualificationReaping/interrupt",
+	"TestMCPQualificationReaping/cleanup-failure",
+	"TestMCPQualificationInvocation",
+	"TestMCPQualificationInvocation/denied",
+	"TestMCPQualificationInvocation/allowed",
+	"TestMCPQualificationInvocation/model-free",
+	"TestMCPQualificationInvocation/ci-denied",
 }
 
 // NativeTaskProcessPackage and nativeTaskProcess are the separate native

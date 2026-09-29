@@ -1151,7 +1151,7 @@ func checkInterimCatalog(doc string, raw []byte) error {
 	}
 	for _, e := range entries {
 		f := e.Facts["mcp_timeout"]
-		if f.Status != catalog.Unverified || !strings.HasSuffix(f.Value, " "+interimSentence) || len(f.Evidence) == 0 || f.VerificationIteration != catalog.Vendors[e.ID] {
+		if f.Status != catalog.Unverified || !strings.HasSuffix(f.Value, " "+interimSentence) || len(f.Evidence) == 0 || f.VerificationIteration != catalog.Owner(e.ID, "mcp_timeout") {
 			return fmt.Errorf("%s mcp_timeout %+v", e.ID, f)
 		}
 		for _, k := range []string{"mcp_timeout_override", "mcp_progress_extension"} {

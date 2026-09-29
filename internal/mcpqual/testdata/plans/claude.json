@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "limits": {
+    "max_sessions_per_client": 12,
+    "max_case_ms": 900000,
+    "max_client_ms": 5400000
+  },
+  "clients": [
+    {
+      "id": "claude",
+      "executable": "<absolute-path-to-claude>",
+      "expected_version": "2.1.282 (Claude Code)",
+      "version_argv": [
+        "--version"
+      ],
+      "help_argv": [
+        "--help"
+      ],
+      "driver": "model",
+      "model": "<model>",
+      "decoder": "claude-json",
+      "decoder_fixture": "claude-json/synthetic",
+      "session": {
+        "argv": [
+          "-p",
+          "{prompt}",
+          "--output-format",
+          "json",
+          "--verbose",
+          "--model",
+          "<model>",
+          "--mcp-config",
+          "{config}",
+          "--strict-mcp-config",
+          "--allowed-tools",
+          "mcp__probe__slow"
+        ]
+      },
+      "config": {
+        "default": {
+          "path": "probe-mcp.json",
+          "content": "{\"mcpServers\":{\"probe\":{\"command\":\"{server}\",\"args\":[\"serve\",\"--case-file\",\"{case_file}\",\"--events\",\"{events}\"]}}}"
+        },
+        "raised": {
+          "path": "probe-mcp.json",
+          "content": "{\"mcpServers\":{\"probe\":{\"command\":\"{server}\",\"args\":[\"serve\",\"--case-file\",\"{case_file}\",\"--events\",\"{events}\"]}}}",
+          "env": {
+            "MCP_TOOL_TIMEOUT": "<raised-timeout-ms>"
+          }
+        }
+      },
+      "override": {
+        "setting": "MCP_TOOL_TIMEOUT",
+        "value": "<raised-timeout-ms>",
+        "explanation": "candidate environment variable for the MCP tool-call timeout, still a candidate until this phase proves it",
+        "evidence": [
+          "tests/testdata/cli-help/claude-help.txt"
+        ]
+      },
+      "phases": {
+        "default": {},
+        "override": {
+          "delay_ms": 720000
+        },
+        "progress": {},
+        "absolute": {
+          "delay_ms": 840000
+        }
+      }
+    }
+  ]
+}

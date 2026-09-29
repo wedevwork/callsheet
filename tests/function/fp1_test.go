@@ -90,11 +90,15 @@ func TestFP1Foundation(t *testing.T) {
 				t.Errorf("internal/contract imports non-stdlib %s", imp)
 			}
 		}
-		// Across the module: only test tooling may import testkit or spikes;
-		// the sidecar's import of the process-group spike is the one
-		// production exception.
+		// Across the module: only test and developer tooling may import
+		// testkit or spikes; the sidecar's import of the process-group spike
+		// is the one production exception. The iteration 07b qualification
+		// harness (internal/mcpqual and its developer command cmd/mcpqual)
+		// is developer tooling that reuses the spike's escalation and the
+		// catalog validator; no production package may import it.
 		allowed := func(p string) bool {
-			for _, pre := range []string{module + "/internal/testkit", module + "/internal/spikes", module + "/internal/devcheck", module + "/cmd/fake-adapter", module + "/cmd/devcheck", module + "/tests/"} {
+			for _, pre := range []string{module + "/internal/testkit", module + "/internal/spikes", module + "/internal/devcheck", module + "/cmd/fake-adapter", module + "/cmd/devcheck",
+				module + "/internal/mcpqual", module + "/cmd/mcpqual", module + "/tests/"} {
 				if strings.HasPrefix(p, pre) {
 					return true
 				}
@@ -110,7 +114,7 @@ func TestFP1Foundation(t *testing.T) {
 				if f[0] == module+"/internal/sidecar" && imp == groupSpike {
 					continue
 				}
-				if strings.HasPrefix(imp, module+"/internal/testkit") || strings.HasPrefix(imp, module+"/internal/spikes") {
+				if strings.HasPrefix(imp, module+"/internal/testkit") || strings.HasPrefix(imp, module+"/internal/spikes") || imp == module+"/internal/mcpqual" {
 					t.Errorf("production package %s imports %s", f[0], imp)
 				}
 			}

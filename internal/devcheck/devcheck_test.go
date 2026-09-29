@@ -74,9 +74,13 @@ func (f *fakeRunner) argvs() []string {
 const goodProfile = "mode: atomic\n" +
 	"github.com/wedevwork/callsheet/cmd/callsheet/main.go:13.13,15.2 1 1\n" +
 	"github.com/wedevwork/callsheet/cmd/devcheck/main.go:13.13,15.2 1 1\n" +
-	"github.com/wedevwork/callsheet/cmd/fake-adapter/main.go:13.13,15.2 1 1\n"
+	"github.com/wedevwork/callsheet/cmd/fake-adapter/main.go:13.13,15.2 1 1\n" +
+	"github.com/wedevwork/callsheet/cmd/mcpqual/main.go:13.13,15.2 1 1\n"
 
-const cmdList = "github.com/wedevwork/callsheet/cmd/callsheet|1\ngithub.com/wedevwork/callsheet/cmd/devcheck|1\ngithub.com/wedevwork/callsheet/cmd/fake-adapter|1\n"
+// cmdList is the cmd-package inventory (iteration 07b added the developer
+// command cmd/mcpqual, covered like the others).
+const cmdList = "github.com/wedevwork/callsheet/cmd/callsheet|1\ngithub.com/wedevwork/callsheet/cmd/devcheck|1\ngithub.com/wedevwork/callsheet/cmd/fake-adapter|1\n" +
+	"github.com/wedevwork/callsheet/cmd/mcpqual|1\n"
 
 func TestMatrixAndValidation(t *testing.T) {
 	if len(Matrix) != 4 {
@@ -241,7 +245,7 @@ func TestMissingCmdPackages(t *testing.T) {
 	}
 	profile := "mode: atomic\ngithub.com/wedevwork/callsheet/cmd/callsheet/main.go:1.1,2.2 1 1\n"
 	m := MissingCmdPackages(cmdList+"github.com/wedevwork/callsheet/cmd/empty|0\nbad line\n", profile)
-	if strings.Join(m, ",") != "github.com/wedevwork/callsheet/cmd/devcheck,github.com/wedevwork/callsheet/cmd/fake-adapter" {
+	if strings.Join(m, ",") != "github.com/wedevwork/callsheet/cmd/devcheck,github.com/wedevwork/callsheet/cmd/fake-adapter,github.com/wedevwork/callsheet/cmd/mcpqual" {
 		t.Fatalf("missing = %v", m)
 	}
 	if m := MissingCmdPackages("github.com/x/cmd/a|1", "github.com/x/cmd/a/main.go:1.1,2.2 1 1"); len(m) != 0 {
@@ -296,7 +300,8 @@ func TestStagePlanning(t *testing.T) {
 		"go test ./internal/contract -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s|"+
 		"go test ./internal/sidecar -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s|"+
 		"go test ./internal/adapter -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s|"+
-		"go test ./internal/mcp -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s" {
+		"go test ./internal/mcp -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s|"+
+		"go test ./internal/mcpqual -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s" {
 		t.Fatalf("bench = %s", got)
 	}
 	f = &fakeRunner{}
@@ -381,12 +386,12 @@ func TestAllStopsAtFirstFailure(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("all = %d %s", code, errOut)
 	}
-	// test(2) + coverage(3) + bench(6) + cross(12), in that order.
+	// test(2) + coverage(3) + bench(7) + cross(12), in that order.
 	a := f.argvs()
-	if len(a) != 23 || !strings.Contains(a[0], "go test -count=1") || !strings.Contains(a[2], "-coverprofile") || !strings.Contains(a[5], "-bench") ||
+	if len(a) != 24 || !strings.Contains(a[0], "go test -count=1") || !strings.Contains(a[2], "-coverprofile") || !strings.Contains(a[5], "-bench") ||
 		!strings.Contains(a[6], "./internal/plane -run=^$ -bench=.") || !strings.Contains(a[7], "./internal/contract -run=^$ -bench=.") ||
 		!strings.Contains(a[8], "./internal/sidecar -run=^$ -bench=.") || !strings.Contains(a[9], "./internal/adapter -run=^$ -bench=.") ||
-		!strings.Contains(a[10], "./internal/mcp -run=^$ -bench=.") || !strings.Contains(a[11], "go build") {
+		!strings.Contains(a[10], "./internal/mcp -run=^$ -bench=.") || !strings.Contains(a[11], "./internal/mcpqual -run=^$ -bench=.") || !strings.Contains(a[12], "go build") {
 		t.Fatalf("all order = %v", a)
 	}
 	f = &fakeRunner{fail: "-bench", coverTotal: "81%", cmdList: cmdList, profile: goodProfile}

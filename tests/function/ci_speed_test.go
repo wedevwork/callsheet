@@ -36,7 +36,7 @@ import (
 // ./internal/sidecar by its sidecar follow-up; the function commands are
 // unchanged.
 const (
-	speedPackages      = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/contract ./internal/adapter ./internal/mcp"
+	speedPackages      = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/contract ./internal/adapter ./internal/mcp ./internal/mcpqual"
 	speedPlane1        = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/plane"
 	speedPlane2        = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/plane"
 	speedPlane4        = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/plane"
@@ -151,6 +151,26 @@ var speedMCPNative = []string{
 	"TestMCPLifetime", "TestMCPLifetime/eof", "TestMCPLifetime/sigterm", "TestMCPLifetime/sigint", "TestMCPLifetime/closed-stdout",
 	"TestMCPLifetime/stalled-reader", "TestMCPLifetime/slow-reader-max-logs", "TestMCPLifetime/outstanding-wait", "TestMCPLifetime/task-survives",
 	"TestMCPLifetime/reaping",
+}
+
+// speedQualNative are iteration 07b's 51 required names: the eight setup
+// and qualification function parents, each followed by its mandatory
+// children, after the unchanged 07a block.
+var speedQualNative = []string{
+	"TestMCPSetup", "TestMCPSetup/claude", "TestMCPSetup/codex", "TestMCPSetup/grok", "TestMCPSetup/cursor", "TestMCPSetup/runbook-ownership", "TestMCPSetup/client-info",
+	"TestMCPQualificationProbe", "TestMCPQualificationProbe/immediate", "TestMCPQualificationProbe/slow", "TestMCPQualificationProbe/progress",
+	"TestMCPQualificationProbe/no-token", "TestMCPQualificationProbe/cancellation",
+	"TestMCPQualificationSchema", "TestMCPQualificationSchema/plan", "TestMCPQualificationSchema/report", "TestMCPQualificationSchema/limits", "TestMCPQualificationSchema/paths",
+	"TestMCPQualificationDecoders", "TestMCPQualificationDecoders/claude", "TestMCPQualificationDecoders/codex", "TestMCPQualificationDecoders/grok",
+	"TestMCPQualificationDecoders/cursor", "TestMCPQualificationDecoders/unknown-version", "TestMCPQualificationDecoders/non-tool-error",
+	"TestMCPQualificationMeasurements", "TestMCPQualificationMeasurements/default", "TestMCPQualificationMeasurements/override", "TestMCPQualificationMeasurements/progress",
+	"TestMCPQualificationMeasurements/absolute", "TestMCPQualificationMeasurements/lower-bound", "TestMCPQualificationMeasurements/partial", "TestMCPQualificationMeasurements/budget",
+	"TestMCPQualificationPublish", "TestMCPQualificationPublish/verified", "TestMCPQualificationPublish/partial", "TestMCPQualificationPublish/redaction",
+	"TestMCPQualificationPublish/hashes", "TestMCPQualificationPublish/refuse-conflict", "TestMCPQualificationPublish/worker-facts",
+	"TestMCPQualificationReaping", "TestMCPQualificationReaping/cooperative", "TestMCPQualificationReaping/resistant", "TestMCPQualificationReaping/parent-exits-first",
+	"TestMCPQualificationReaping/interrupt", "TestMCPQualificationReaping/cleanup-failure",
+	"TestMCPQualificationInvocation", "TestMCPQualificationInvocation/denied", "TestMCPQualificationInvocation/allowed", "TestMCPQualificationInvocation/model-free",
+	"TestMCPQualificationInvocation/ci-denied",
 }
 
 var speedTaskNative = []string{
@@ -625,7 +645,7 @@ func TestCISpeedJobs(t *testing.T) {
 func qualifyingStream(drop string) string {
 	pkg := devcheck.NativePackage
 	evs := []map[string]any{synth("start", pkg, "")}
-	for _, name := range append(append(append(append(append(slices.Clone(speedNative), speedNodeNative...), speedRoleNative...), speedTaskNative...), speedControlNative...), speedMCPNative...) {
+	for _, name := range append(append(append(append(append(append(slices.Clone(speedNative), speedNodeNative...), speedRoleNative...), speedTaskNative...), speedControlNative...), speedMCPNative...), speedQualNative...) {
 		if name != drop {
 			evs = append(evs, synth("run", pkg, name), synth("pass", pkg, name))
 		}
@@ -637,8 +657,8 @@ func qualifyingStream(drop string) string {
 // FP-3: validator, plans, native evidence and documentation agree.
 func TestCISpeedPolicy(t *testing.T) {
 	t.Run("native", func(t *testing.T) {
-		if got := devcheck.NativeRequiredTests(); len(got) != 222 || !slices.Equal(got[:28], speedNative) || !slices.Equal(got[28:58], speedNodeNative) || !slices.Equal(got[58:87], speedRoleNative) || !slices.Equal(got[87:128], speedTaskNative) ||
-			!slices.Equal(got[128:145], speedControlNative) || !slices.Equal(got[145:], speedMCPNative) {
+		if got := devcheck.NativeRequiredTests(); len(got) != 273 || len(speedQualNative) != 51 || !slices.Equal(got[:28], speedNative) || !slices.Equal(got[28:58], speedNodeNative) || !slices.Equal(got[58:87], speedRoleNative) || !slices.Equal(got[87:128], speedTaskNative) ||
+			!slices.Equal(got[128:145], speedControlNative) || !slices.Equal(got[145:222], speedMCPNative) || !slices.Equal(got[222:], speedQualNative) {
 			t.Fatalf("native required = %v", got)
 		}
 		if err := devcheck.CheckNativeResults("darwin", strings.NewReader(qualifyingStream(""))); err != nil {

@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "limits": {
+    "max_sessions_per_client": 12,
+    "max_case_ms": 900000,
+    "max_client_ms": 5400000
+  },
+  "clients": [
+    {
+      "id": "cursor",
+      "executable": "<absolute-path-to-cursor-agent>",
+      "expected_version": "2026.09.23-86fc751",
+      "version_argv": [
+        "--version"
+      ],
+      "help_argv": [
+        "--help"
+      ],
+      "driver": "model",
+      "model": "<model>",
+      "decoder": "cursor-jsonl",
+      "decoder_fixture": "cursor-jsonl/synthetic",
+      "session": {
+        "argv": [
+          "-p",
+          "{prompt}",
+          "--output-format",
+          "stream-json",
+          "--model",
+          "<model>"
+        ]
+      },
+      "config": {
+        "default": {
+          "path": ".cursor/mcp.json",
+          "content": "{\"mcpServers\":{\"probe\":{\"command\":\"{server}\",\"args\":[\"serve\",\"--case-file\",\"{case_file}\",\"--events\",\"{events}\"]}}}",
+          "prerequisite": "the .cursor/mcp.json entry shape is a candidate and the probe server may need the owner's one-time approval through cursor-agent mcp enable probe; never --approve-mcps"
+        }
+      },
+      "phases": {
+        "default": {},
+        "progress": {},
+        "absolute": {
+          "delay_ms": 840000
+        }
+      }
+    }
+  ]
+}

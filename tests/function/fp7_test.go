@@ -23,7 +23,11 @@ func TestFP7CatalogContract(t *testing.T) {
 	if err := catalog.Validate(root, entries); err != nil {
 		t.Fatal(err)
 	}
+	// Per-key ownership (iteration 07b): 07b for mcp_timeout,
+	// mcp_timeout_override and mcp_progress_extension, the vendor's 08/11
+	// for the other ten; catalog.Owner is the one rule the validator shares.
 	owners := map[string]string{"claude": "08", "codex": "08", "grok": "11", "cursor": "11"}
+	timeoutKeys := map[string]bool{"mcp_timeout": true, "mcp_timeout_override": true, "mcp_progress_extension": true}
 	verified, unverified := 0, 0
 	for _, e := range entries {
 		// The recorded version is backed by the captured --version output.
@@ -36,7 +40,11 @@ func TestFP7CatalogContract(t *testing.T) {
 		}
 		for _, key := range catalog.RequiredFacts {
 			f := e.Facts[key]
-			if f.VerificationIteration != owners[e.ID] {
+			want := owners[e.ID]
+			if timeoutKeys[key] {
+				want = "07b"
+			}
+			if f.VerificationIteration != catalog.Owner(e.ID, key) || f.VerificationIteration != want {
 				t.Fatalf("%s.%s owner = %s", e.ID, key, f.VerificationIteration)
 			}
 			for _, ev := range f.Evidence {
