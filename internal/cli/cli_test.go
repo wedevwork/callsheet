@@ -140,7 +140,8 @@ func TestGroupAndLeafHelp(t *testing.T) {
 		}
 	}
 	code, out, _ = exec(t, "linux", "mcp", "-h")
-	if code != 0 || !strings.HasPrefix(out, "Usage: callsheet mcp\n") {
+	if code != 0 || !strings.HasPrefix(out, "Usage: callsheet mcp --plane URL (--ca FILE | --ca-fingerprint SHA256) [--wait-call-budget DURATION]\n") ||
+		!strings.Contains(out, "Status: implemented.") {
 		t.Fatalf("mcp -h: %d %q", code, out)
 	}
 	code, out, _ = exec(t, "linux", "help", "version")
@@ -173,8 +174,9 @@ func TestStubLeaves(t *testing.T) {
 	// version, the four plane leaves (iteration 02), sidecar enroll and run
 	// and node ls and show (iteration 03), the five role leaves (iteration
 	// 04), dispatch and task ls, show and logs (iteration 05) and task
-	// cancel and wait (iteration 06b) are implemented; 12 stubs remain.
-	if stubs != 12 {
+	// cancel and wait (iteration 06b) and mcp (iteration 07a) are
+	// implemented; 11 stubs remain.
+	if stubs != 11 {
 		t.Fatalf("stubs = %d", stubs)
 	}
 	// The role group lists its five leaves as implemented, each leaf's help
@@ -307,9 +309,12 @@ func TestInterruptedAndPublicRun(t *testing.T) {
 	}
 }
 
-func TestMcpStubStdoutClean(t *testing.T) {
+// TestMCPLeafStdoutClean: the implemented mcp leaf (iteration 07a) with
+// no input ends at once (EOF, exit 0) and writes nothing to stdout or
+// stderr; it never contacts the plane.
+func TestMCPLeafStdoutClean(t *testing.T) {
 	code, out, errOut := exec(t, "linux", "mcp", "--plane", "https://x", "--ca", "y")
-	if code != 8 || out != "" || !strings.Contains(errOut, "not implemented yet") {
+	if code != 0 || out != "" || errOut != "" {
 		t.Fatalf("%d %q %q", code, out, errOut)
 	}
 }

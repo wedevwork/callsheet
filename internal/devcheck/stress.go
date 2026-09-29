@@ -58,6 +58,9 @@ var (
 		// contracts of plane, sidecar, client and contract already run in
 		// their packages (plane and sidecar in their own shards).
 		"./internal/adapter",
+		// Iteration 07a: the MCP server's lifecycle, deadline and
+		// concurrency unit tests (event-armed fake clocks), complete.
+		"./internal/mcp",
 	}
 	// stressPlanePackage is the internal/plane package of the plane shards,
 	// distinct from the plane function-test selector in the functions shard

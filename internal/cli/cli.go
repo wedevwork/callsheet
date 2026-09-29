@@ -2,8 +2,8 @@
 // implemented leaves (version, since iteration 02 the four plane commands,
 // since iteration 03 sidecar enroll and run and node ls and show, since
 // iteration 04 role add, set, ls, show and rm, since iteration 05 dispatch
-// and task ls, show and logs, since iteration 06b task cancel and wait)
-// and the
+// and task ls, show and logs, since iteration 06b task cancel and wait,
+// since iteration 07a the mcp stdio server) and the
 // deterministic outcomes of reserved (not yet implemented) commands. Reserved commands never contact a plane, create
 // state or invoke a vendor CLI.
 package cli
@@ -34,7 +34,10 @@ type Command struct {
 	builtin bool
 	// run implements an implemented leaf other than version; usage and
 	// details extend its help.
-	run     leafFunc
+	run leafFunc
+	// runIO implements a leaf that owns the process's standard input
+	// (iteration 07a: mcp); it receives the reader threaded through Run.
+	runIO   ioLeafFunc
 	usage   string
 	details string
 }
@@ -42,8 +45,11 @@ type Command struct {
 // leafFunc executes an implemented leaf with the arguments after its name.
 type leafFunc func(ctx context.Context, goos string, c *Command, args []string, out, errOut io.Writer) int
 
+// ioLeafFunc is a leafFunc that also receives the process's input.
+type ioLeafFunc func(ctx context.Context, goos string, c *Command, args []string, in io.Reader, out, errOut io.Writer) int
+
 // implemented reports whether c is an implemented leaf.
-func (c *Command) implemented() bool { return c.builtin || c.run != nil }
+func (c *Command) implemented() bool { return c.builtin || c.run != nil || c.runIO != nil }
 
 // Path returns the space-separated command path, e.g. "callsheet task ls".
 func (c *Command) Path() string {
@@ -156,7 +162,7 @@ func NewTree(goos string) *Command {
 				node("set", "Set a workspace ref"),
 			),
 		),
-		node("mcp", "Run the local MCP server (stdio)"),
+		{Name: "mcp", Summary: "Run the local MCP server (stdio)", usage: mcpUsage, details: mcpDetails, runIO: mcpServe},
 	}
 	return node("callsheet", "Callsheet coordinates AI coding agents across machines", children...)
 }
@@ -169,17 +175,22 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 	return runFor(ctx, runtime.GOOS, args, in, out, errOut)
 }
 
-// runFor is Run for an explicit goos. Input is currently unused: no command
-// reads stdin in this build.
+// runFor is Run for an explicit goos. Input reaches only the mcp leaf
+// (iteration 07a), the one command that reads stdin.
 // guardianToken is the internal task guardian's reserved argv[1]:
 // rejected by the public CLI.
 const guardianToken = sidecar.GuardianToken
 
 func runFor(ctx context.Context, goos string, args []string, in io.Reader, out, errOut io.Writer) int {
-	return run(ctx, NewTree(goos), goos, args, out, errOut)
+	return runIn(ctx, NewTree(goos), goos, args, in, out, errOut)
 }
 
+// run is runIn without input (every leaf but mcp).
 func run(ctx context.Context, root *Command, goos string, args []string, out, errOut io.Writer) int {
+	return runIn(ctx, root, goos, args, nil, out, errOut)
+}
+
+func runIn(ctx context.Context, root *Command, goos string, args []string, in io.Reader, out, errOut io.Writer) int {
 	if ctx.Err() != nil {
 		fmt.Fprintf(errOut, "callsheet: interrupted\n")
 		return contract.ExitInterrupted
@@ -218,7 +229,7 @@ func run(ctx context.Context, root *Command, goos string, args []string, out, er
 		}
 		cur = next
 		if cur.IsLeaf() {
-			return runLeaf(ctx, goos, cur, args[i+1:], out, errOut)
+			return runLeaf(ctx, goos, cur, args[i+1:], in, out, errOut)
 		}
 	}
 	writeHelp(out, cur)
@@ -245,7 +256,7 @@ func helpPath(root *Command, path []string, out, errOut io.Writer) int {
 	return 0
 }
 
-func runLeaf(ctx context.Context, goos string, c *Command, rest []string, out, errOut io.Writer) int {
+func runLeaf(ctx context.Context, goos string, c *Command, rest []string, in io.Reader, out, errOut io.Writer) int {
 	for _, tok := range rest {
 		if tok == "--" {
 			break
@@ -260,6 +271,9 @@ func runLeaf(ctx context.Context, goos string, c *Command, rest []string, out, e
 	}
 	if c.run != nil {
 		return c.run(ctx, goos, c, rest, out, errOut)
+	}
+	if c.runIO != nil {
+		return c.runIO(ctx, goos, c, rest, in, out, errOut)
 	}
 	diag(errOut, contract.New(contract.CodeNotImplemented, fmt.Sprintf("%q is not implemented yet", c.Path())))
 	return contract.ExitCode(contract.New(contract.CodeNotImplemented, ""))

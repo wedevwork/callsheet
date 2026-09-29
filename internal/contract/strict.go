@@ -31,6 +31,15 @@ func decodeStrict(raw json.RawMessage, v any, what string) error {
 	return decodeValue(bytes.TrimSpace(raw), rv.Elem(), what)
 }
 
+// DecodeStrict is decodeStrict for callers outside the contract package
+// (iteration 07a): the MCP server decodes its tool argument DTOs with it
+// instead of duplicating the integer, unknown-key, duplicate-key and
+// string rules. v must be a non-nil pointer to a struct of the supported
+// field kinds; what names the value in the invalid_argument message. A
+// pointer field accepts null, so a caller that forbids null (MCP optional
+// arguments are absent, never null) checks it before decoding.
+func DecodeStrict(raw []byte, v any, what string) error { return decodeStrict(raw, v, what) }
+
 var (
 	strictType = reflect.TypeFor[strictUnmarshaler]()
 	bytesType  = reflect.TypeFor[[]byte]()

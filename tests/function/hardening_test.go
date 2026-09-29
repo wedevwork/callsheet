@@ -35,7 +35,7 @@ import (
 // follow-up ./internal/sidecar.
 const (
 	hardeningStressCount    = 20
-	hardeningStressPackages = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/contract ./internal/adapter"
+	hardeningStressPackages = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/contract ./internal/adapter ./internal/mcp"
 	hardeningStressPlane1   = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/plane"
 	hardeningStressPlane2   = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/plane"
 	hardeningStressPlane4   = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/plane"

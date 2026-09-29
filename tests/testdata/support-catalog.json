@@ -79,7 +79,7 @@
       },
       "mcp_timeout": {
         "status": "UNVERIFIED",
-        "value": "MCP tool-call timeout is unknown (distinct from startup timeout); iteration 08 must measure it with a local deterministic MCP test server.",
+        "value": "MCP tool-call timeout is unknown (distinct from startup timeout); iteration 08 must measure it with a local deterministic MCP test server. Owner-authorized interim exception: iteration 07a ships task_wait and dispatch-with-wait with an UNVERIFIED 10s outer call budget, shorter plane waits reserve transport/admission/response time, and any increase requires local timeout qualification with an explicit response margin.",
         "evidence": [
           "tests/testdata/cli-help/claude-help.txt"
         ],
@@ -193,7 +193,7 @@
       },
       "mcp_timeout": {
         "status": "UNVERIFIED",
-        "value": "MCP tool-call timeout is unknown; iteration 08 must measure it with a local deterministic MCP test server.",
+        "value": "MCP tool-call timeout is unknown; iteration 08 must measure it with a local deterministic MCP test server. Owner-authorized interim exception: iteration 07a ships task_wait and dispatch-with-wait with an UNVERIFIED 10s outer call budget, shorter plane waits reserve transport/admission/response time, and any increase requires local timeout qualification with an explicit response margin.",
         "evidence": [
           "tests/testdata/cli-help/codex-help.txt"
         ],
@@ -306,7 +306,7 @@
       },
       "mcp_timeout": {
         "status": "UNVERIFIED",
-        "value": "MCP tool-call timeout is unknown; iteration 11 must measure it with a local deterministic MCP test server.",
+        "value": "MCP tool-call timeout is unknown; iteration 11 must measure it with a local deterministic MCP test server. Owner-authorized interim exception: iteration 07a ships task_wait and dispatch-with-wait with an UNVERIFIED 10s outer call budget, shorter plane waits reserve transport/admission/response time, and any increase requires local timeout qualification with an explicit response margin.",
         "evidence": [
           "tests/testdata/cli-help/grok-help.txt"
         ],
@@ -418,7 +418,7 @@
       },
       "mcp_timeout": {
         "status": "UNVERIFIED",
-        "value": "MCP tool-call timeout is unknown; iteration 11 must measure it with a local deterministic MCP test server.",
+        "value": "MCP tool-call timeout is unknown; iteration 11 must measure it with a local deterministic MCP test server. Owner-authorized interim exception: iteration 07a ships task_wait and dispatch-with-wait with an UNVERIFIED 10s outer call budget, shorter plane waits reserve transport/admission/response time, and any increase requires local timeout qualification with an explicit response margin.",
         "evidence": [
           "tests/testdata/cli-help/cursor-mcp.txt"
         ],

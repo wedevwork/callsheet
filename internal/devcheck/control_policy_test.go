@@ -170,11 +170,12 @@ func TestControlPolicy(t *testing.T) {
 	})
 	t.Run("native", func(t *testing.T) {
 		// The 128 earlier names first and unchanged, then exactly the 06a
-		// suffix, then exactly the four 06b parents (145); no 06b name
-		// before them; the sidecar process tuple is unchanged.
+		// suffix, then exactly the four 06b parents (145), then only the
+		// 07a MCP names; no 06b name before them; the sidecar process
+		// tuple is unchanged.
 		req := NativeRequiredTests()
-		if len(req) != 145 || strings.Join(req[128:141], ",") != strings.Join(wantControlNative, ",") || strings.Join(req[87:128], ",") != strings.Join(wantTaskSuffix, ",") ||
-			strings.Join(req[141:], ",") != strings.Join(wantTaskControlNative, ",") {
+		if len(req) != 145+len(mcpNames()) || strings.Join(req[128:141], ",") != strings.Join(wantControlNative, ",") || strings.Join(req[87:128], ",") != strings.Join(wantTaskSuffix, ",") ||
+			strings.Join(req[141:145], ",") != strings.Join(wantTaskControlNative, ",") || strings.Join(req[145:], ",") != strings.Join(mcpNames(), ",") {
 			t.Fatalf("native suffix %v", req[128:])
 		}
 		for _, n := range req[:141] {

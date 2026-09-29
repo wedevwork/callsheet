@@ -36,7 +36,7 @@ import (
 // ./internal/sidecar by its sidecar follow-up; the function commands are
 // unchanged.
 const (
-	speedPackages      = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/contract ./internal/adapter"
+	speedPackages      = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/contract ./internal/adapter ./internal/mcp"
 	speedPlane1        = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/plane"
 	speedPlane2        = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/plane"
 	speedPlane4        = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/plane"
@@ -127,6 +127,30 @@ var speedControlNative = []string{
 	"TestControlNativeGroups/orphan-restart", "TestControlNativeGroups/plane-restart",
 	// Iteration 06b: the four task-control function parents.
 	"TestControlCancellation", "TestControlExecutionTimeout", "TestControlBoundedWait", "TestControlForceRemove",
+}
+
+// speedMCPNative are iteration 07a's 77 required MCP names: the eight
+// function parents, each followed by its mandatory children.
+var speedMCPNative = []string{
+	"TestMCPProtocol", "TestMCPProtocol/initialize", "TestMCPProtocol/version", "TestMCPProtocol/discovery", "TestMCPProtocol/framing",
+	"TestMCPProtocol/concurrency", "TestMCPProtocol/cancellation",
+	"TestMCPRelay", "TestMCPRelay/ca", "TestMCPRelay/pin", "TestMCPRelay/trust-errors", "TestMCPRelay/protocol-mismatch", "TestMCPRelay/contract-errors",
+	"TestMCPRelay/no-cache", "TestMCPRelay/recovery",
+	"TestMCPNodes", "TestMCPNodes/node-ls", "TestMCPNodes/node-show", "TestMCPNodes/shared-roster",
+	"TestMCPRoles", "TestMCPRoles/role-add", "TestMCPRoles/role-set", "TestMCPRoles/role-ls", "TestMCPRoles/role-show", "TestMCPRoles/role-rm",
+	"TestMCPRoles/global-slots", "TestMCPRoles/force-pending", "TestMCPRoles/force-completed", "TestMCPRoles/operation-rejoin", "TestMCPRoles/instance-reuse",
+	"TestMCPDispatch", "TestMCPDispatch/target-id", "TestMCPDispatch/target-name", "TestMCPDispatch/overrides", "TestMCPDispatch/async",
+	"TestMCPDispatch/attribution", "TestMCPDispatch/invalid-attribution", "TestMCPDispatch/last-slot", "TestMCPDispatch/wait-fast", "TestMCPDispatch/wait-slow",
+	"TestMCPDispatch/lost-response",
+	"TestMCPTaskReads", "TestMCPTaskReads/task-ls", "TestMCPTaskReads/task-show", "TestMCPTaskReads/task-logs", "TestMCPTaskReads/pagination",
+	"TestMCPTaskReads/tails", "TestMCPTaskReads/binary-logs", "TestMCPTaskReads/late-logs", "TestMCPTaskReads/late-not-found", "TestMCPTaskReads/output-bounds",
+	"TestMCPWaitCancel", "TestMCPWaitCancel/cancel-accepted", "TestMCPWaitCancel/cancel-terminal", "TestMCPWaitCancel/cancel-errors",
+	"TestMCPWaitCancel/wait-one", "TestMCPWaitCancel/wait-many", "TestMCPWaitCancel/any-terminal", "TestMCPWaitCancel/snapshot",
+	"TestMCPWaitCancel/interim-default", "TestMCPWaitCancel/budget-deadline", "TestMCPWaitCancel/delivery-deadline", "TestMCPWaitCancel/plane-cap",
+	"TestMCPWaitCancel/restart-budget", "TestMCPWaitCancel/own-deadline", "TestMCPWaitCancel/cancel-wait-only", "TestMCPWaitCancel/catalog-interim",
+	"TestMCPLifetime", "TestMCPLifetime/eof", "TestMCPLifetime/sigterm", "TestMCPLifetime/sigint", "TestMCPLifetime/closed-stdout",
+	"TestMCPLifetime/stalled-reader", "TestMCPLifetime/slow-reader-max-logs", "TestMCPLifetime/outstanding-wait", "TestMCPLifetime/task-survives",
+	"TestMCPLifetime/reaping",
 }
 
 var speedTaskNative = []string{
@@ -601,7 +625,7 @@ func TestCISpeedJobs(t *testing.T) {
 func qualifyingStream(drop string) string {
 	pkg := devcheck.NativePackage
 	evs := []map[string]any{synth("start", pkg, "")}
-	for _, name := range append(append(append(append(slices.Clone(speedNative), speedNodeNative...), speedRoleNative...), speedTaskNative...), speedControlNative...) {
+	for _, name := range append(append(append(append(append(slices.Clone(speedNative), speedNodeNative...), speedRoleNative...), speedTaskNative...), speedControlNative...), speedMCPNative...) {
 		if name != drop {
 			evs = append(evs, synth("run", pkg, name), synth("pass", pkg, name))
 		}
@@ -613,8 +637,8 @@ func qualifyingStream(drop string) string {
 // FP-3: validator, plans, native evidence and documentation agree.
 func TestCISpeedPolicy(t *testing.T) {
 	t.Run("native", func(t *testing.T) {
-		if got := devcheck.NativeRequiredTests(); len(got) != 145 || !slices.Equal(got[:28], speedNative) || !slices.Equal(got[28:58], speedNodeNative) || !slices.Equal(got[58:87], speedRoleNative) || !slices.Equal(got[87:128], speedTaskNative) ||
-			!slices.Equal(got[128:], speedControlNative) {
+		if got := devcheck.NativeRequiredTests(); len(got) != 222 || !slices.Equal(got[:28], speedNative) || !slices.Equal(got[28:58], speedNodeNative) || !slices.Equal(got[58:87], speedRoleNative) || !slices.Equal(got[87:128], speedTaskNative) ||
+			!slices.Equal(got[128:145], speedControlNative) || !slices.Equal(got[145:], speedMCPNative) {
 			t.Fatalf("native required = %v", got)
 		}
 		if err := devcheck.CheckNativeResults("darwin", strings.NewReader(qualifyingStream(""))); err != nil {

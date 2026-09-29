@@ -138,6 +138,27 @@ var controlRequired = []struct {
 // subtests.
 func controlNames() []string { return requiredNames(controlRequired) }
 
+// mcpRequired are iteration 07a's eight MCP function parents and their
+// mandatory direct children (design 07a, Function tests), in FP order.
+var mcpRequired = []struct {
+	test string
+	subs []string
+}{
+	{"TestMCPProtocol", []string{"initialize", "version", "discovery", "framing", "concurrency", "cancellation"}},
+	{"TestMCPRelay", []string{"ca", "pin", "trust-errors", "protocol-mismatch", "contract-errors", "no-cache", "recovery"}},
+	{"TestMCPNodes", []string{"node-ls", "node-show", "shared-roster"}},
+	{"TestMCPRoles", []string{"role-add", "role-set", "role-ls", "role-show", "role-rm", "global-slots", "force-pending", "force-completed", "operation-rejoin", "instance-reuse"}},
+	{"TestMCPDispatch", []string{"target-id", "target-name", "overrides", "async", "attribution", "invalid-attribution", "last-slot", "wait-fast", "wait-slow", "lost-response"}},
+	{"TestMCPTaskReads", []string{"task-ls", "task-show", "task-logs", "pagination", "tails", "binary-logs", "late-logs", "late-not-found", "output-bounds"}},
+	{"TestMCPWaitCancel", []string{"cancel-accepted", "cancel-terminal", "cancel-errors", "wait-one", "wait-many", "any-terminal", "snapshot", "interim-default",
+		"budget-deadline", "delivery-deadline", "plane-cap", "restart-budget", "own-deadline", "cancel-wait-only", "catalog-interim"}},
+	{"TestMCPLifetime", []string{"eof", "sigterm", "sigint", "closed-stdout", "stalled-reader", "slow-reader-max-logs", "outstanding-wait", "task-survives", "reaping"}},
+}
+
+// mcpNames lists every required MCP name, each parent before its
+// children.
+func mcpNames() []string { return requiredNames(mcpRequired) }
+
 // roleNames lists every required role name, parents before subtests.
 func roleNames() []string { return requiredNames(roleRequired) }
 
@@ -173,7 +194,7 @@ func qualification() []evt {
 		evs = append(evs, ev("pass", NativePackage, fp6+"/"+s))
 	}
 	evs = append(evs, ev("pass", NativePackage, fp6))
-	for _, p := range append(append(append(append(append(planeRequired[:0:0], planeRequired...), nodeRequired...), roleRequired...), taskRequired...), controlRequired...) {
+	for _, p := range append(append(append(append(append(append(planeRequired[:0:0], planeRequired...), nodeRequired...), roleRequired...), taskRequired...), controlRequired...), mcpRequired...) {
 		evs = append(evs, ev("run", NativePackage, p.test))
 		for _, s := range p.subs {
 			evs = append(evs, ev("run", NativePackage, p.test+"/"+s), ev("pass", NativePackage, p.test+"/"+s))
@@ -272,7 +293,7 @@ func TestNativeStepsAndUnsupportedOS(t *testing.T) {
 		"TestControlDurability,TestControlReconnect,TestControlNodeLoss,TestControlLaunchSafety,TestControlWorkerRecovery,TestControlPlaneRecovery,"+
 		"TestControlLateResult,TestControlLegacy,TestControlNativeGroups,TestControlNativeGroups/cooperative,TestControlNativeGroups/resistant,"+
 		"TestControlNativeGroups/orphan-restart,TestControlNativeGroups/plane-restart,"+
-		"TestControlCancellation,TestControlExecutionTimeout,TestControlBoundedWait,TestControlForceRemove" || len(req) != 145 {
+		"TestControlCancellation,TestControlExecutionTimeout,TestControlBoundedWait,TestControlForceRemove,"+strings.Join(mcpNames(), ",") || len(req) != 222 {
 		t.Fatalf("required = %v", req)
 	}
 	req[0] = "mutated"
@@ -726,4 +747,46 @@ func TestUnsupportedNativeCreatesNoScratch(t *testing.T) {
 			t.Fatalf("%q native created %v", goos, entries)
 		}
 	}
+}
+
+// TestNativeMCPEvidence (iteration 07a): the eight MCP parents and every
+// mandatory child are required by exact name. Complete evidence
+// qualifies; a missing, failed or skipped child fails naming that child,
+// and a vacuous parent (its own run and pass without its children's)
+// fails naming every child it lacks.
+func TestNativeMCPEvidence(t *testing.T) {
+	if err := check(stream(qualification()...)); err != nil {
+		t.Fatalf("complete evidence: %v", err)
+	}
+	if n := len(mcpNames()); n != 8+69 {
+		t.Fatalf("%d MCP names, want 8 parents and 69 children", n)
+	}
+	for _, name := range []string{"TestMCPProtocol/cancellation", "TestMCPRelay/contract-errors", "TestMCPRoles/operation-rejoin",
+		"TestMCPDispatch/invalid-attribution", "TestMCPTaskReads/late-not-found", "TestMCPWaitCancel/catalog-interim", "TestMCPLifetime/closed-stdout",
+		"TestMCPLifetime/slow-reader-max-logs", "TestMCPNodes", "TestMCPWaitCancel"} {
+		q := qualification()
+		mustFail(t, "missing "+name, stream(without(without(q, "run", name), "pass", name)...), name+" has no run event", unobserved)
+		mustFail(t, "no pass "+name, stream(without(q, "pass", name)...), name+" has no pass event", unobserved)
+		mustFail(t, "skipped "+name, stream(replacing(q, "pass", name, ev("skip", NativePackage, name))...), "test "+name+" in "+NativePackage+" skipped: "+unobserved)
+		mustFail(t, "failed "+name, stream(replacing(q, "pass", name, ev("fail", NativePackage, name))...), "test "+name+" in "+NativePackage+" failed")
+	}
+	// A vacuous parent: TestMCPLifetime runs and passes without any child.
+	q := qualification()
+	for _, sub := range mcpRequired[7].subs {
+		name := "TestMCPLifetime/" + sub
+		q = without(without(q, "run", name), "pass", name)
+	}
+	err := check(stream(q...))
+	if err == nil {
+		t.Fatal("a vacuous TestMCPLifetime qualified")
+	}
+	for _, sub := range mcpRequired[7].subs {
+		if !strings.Contains(err.Error(), "TestMCPLifetime/"+sub+" has no run event") {
+			t.Fatalf("vacuous parent error lacks %s: %v", sub, err)
+		}
+	}
+	// A substitute name (a child of another parent, or a renamed child)
+	// never satisfies a required one.
+	q = replacing(qualification(), "pass", "TestMCPWaitCancel/cancel-wait-only", ev("pass", NativePackage, "TestMCPWaitCancel/cancel-accepted"))
+	mustFail(t, "substitute", stream(q...), "TestMCPWaitCancel/cancel-wait-only has no pass event")
 }
