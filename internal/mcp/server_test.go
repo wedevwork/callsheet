@@ -290,6 +290,23 @@ func TestProtocolCallEnvelope(t *testing.T) {
 	}
 }
 
+// A client that waits for each answer before sending the next call must
+// not be refused for capacity. The slot is freed as the answer is
+// written, including for calls that never reach the plane.
+func TestSequentialCallsReuseTheSlot(t *testing.T) {
+	h := start(t)
+	h.ready()
+	for i := range 50 {
+		e := h.ask(toolRoleAdd, `{}`).errorOf(t)
+		if e.Code != contract.CodeInvalidArgument || e.Details["reason"] == ReasonCapacity {
+			t.Fatalf("call %d: %+v", i, e)
+		}
+	}
+	if h.factory.Load() != 0 {
+		t.Fatalf("invalid calls resolved trust %d times", h.factory.Load())
+	}
+}
+
 // FP-1: two calls at most; a third is refused at once without contacting
 // the plane; lifecycle and ping stay responsive; released slots are reused.
 func TestProtocolSaturation(t *testing.T) {

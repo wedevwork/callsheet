@@ -651,10 +651,15 @@ func (c *call) run() {
 		c.cl.Close()
 	}
 	c.s.hook(StageDecoded, c.id.key)
-	c.settle(res, err)
+	// The tool and its client are finished. Mark that before queueing so
+	// the writer frees the slot while delivering the answer. A client that
+	// reads the answer and sends the next call then finds the slot free;
+	// leaving this until after settle lets two delivered calls still count
+	// as active and refuses the third with mcp_capacity.
 	c.mu.Lock()
 	c.handlerDone = true
 	c.mu.Unlock()
+	c.settle(res, err)
 	c.maybeRelease()
 }
 
