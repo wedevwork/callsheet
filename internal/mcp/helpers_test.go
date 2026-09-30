@@ -63,6 +63,9 @@ type fakeClient struct {
 	taskLateLogs func(context.Context, string) (contract.TaskLogsResponse, error)
 	cancelTask   func(context.Context, string) (contract.CancelResponse, error)
 	waitTasks    func(context.Context, []string, time.Duration) (contract.WaitResponse, error)
+	// ws scripts every workspace operation (iteration 09a): it receives
+	// the method name and its arguments after the context.
+	ws func(ctx context.Context, method string, args ...any) (any, error)
 }
 
 var errUnscripted = errors.New("fake: unscripted operation")

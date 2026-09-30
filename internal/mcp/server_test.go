@@ -210,7 +210,7 @@ func TestProtocolLifecycle(t *testing.T) {
 	}
 }
 
-// FP-1: discovery lists the thirteen tools in order with materialized
+// FP-1: discovery lists the twenty-one tools in order with materialized
 // local schemas and truthful annotations; there is one page.
 func TestProtocolDiscovery(t *testing.T) {
 	for _, b := range []time.Duration{DefaultBudget, time.Second, 90 * time.Second, 5 * time.Minute} {
@@ -248,7 +248,8 @@ func TestProtocolDiscovery(t *testing.T) {
 				waiting != strings.Contains(tl.Description, UnverifiedNotice) || strings.Contains(tl.Description, "ends within it") {
 				t.Fatalf("%s budget description %q", tl.Name, tl.Description)
 			}
-			mutating := map[string]bool{toolRoleAdd: true, toolRoleSet: true, toolRoleRm: true, toolDispatch: true, toolTaskCancel: true}[tl.Name]
+			mutating := map[string]bool{toolRoleAdd: true, toolRoleSet: true, toolRoleRm: true, toolDispatch: true, toolTaskCancel: true,
+				toolWsCreate: true, toolWsRm: true, toolWsPrune: true, toolWsRefSet: true}[tl.Name]
 			if tl.Annotations["readOnlyHint"] == mutating || tl.Annotations["openWorldHint"] {
 				t.Fatalf("%s annotations %v", tl.Name, tl.Annotations)
 			}
@@ -256,7 +257,7 @@ func TestProtocolDiscovery(t *testing.T) {
 				t.Fatalf("%s idempotence %v", tl.Name, tl.Annotations)
 			}
 		}
-		if strings.Join(names, ",") != strings.Join(ToolNames, ",") || len(names) != 13 {
+		if strings.Join(names, ",") != strings.Join(ToolNames, ",") || len(names) != 21 {
 			t.Fatalf("tools %v", names)
 		}
 		for i, bad := range []string{`{"cursor":"page2"}`, `{"cursor":1}`, `{"limit":1}`, `{"_meta":[]}`} {

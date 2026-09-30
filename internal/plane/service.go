@@ -55,6 +55,11 @@ func (d *deps) open(ctx context.Context, now time.Time, stateDir, bind string, b
 	if err := canceled(ctx); err != nil {
 		return nil, nil, false, err
 	}
+	// Iteration 09a: the state root and its canonical form are bounded
+	// before anything is created, locked, recovered or served.
+	if _, err := checkRoot(stateDir); err != nil {
+		return nil, nil, false, err
+	}
 	r, err := d.validate(stateDir, bind, bindSet, sans, sansSet)
 	if err != nil {
 		return nil, nil, false, err

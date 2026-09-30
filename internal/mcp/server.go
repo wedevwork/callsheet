@@ -2,7 +2,8 @@
 // MCP server behind "callsheet mcp". It speaks the bounded MCP 2025-06-18
 // subset on the standard library (newline-delimited JSON-RPC 2.0,
 // initialization, tools/list and tools/call, ping and cancellation) and
-// relays thirteen operator tools to the verified plane client. It is a
+// relays the thirteen operator tools and (iteration 09a) the eight
+// workspace tools to the verified plane client. It is a
 // stateless relay: registry and task truth stay on the plane, nothing is
 // cached between calls, and stdout carries the protocol only.
 //
@@ -479,7 +480,7 @@ func (s *session) toolsList(id requestID, params json.RawMessage) {
 			case "cursor":
 				c, ok := contract.JSONString(bytes.TrimSpace(v))
 				if !ok || c != "" {
-					s.control(protocolError(&id, codeInvalidParams, "invalid params: all thirteen tools fit one page; there is no cursor"), &id)
+					s.control(protocolError(&id, codeInvalidParams, "invalid params: all tools fit one page; there is no cursor"), &id)
 					return
 				}
 			default:

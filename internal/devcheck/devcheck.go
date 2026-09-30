@@ -247,7 +247,8 @@ func TestSteps(goos string) []Step {
 // role frames), then the sidecar ready checks and the adapter's fake probe
 // (iteration 04), then the MCP codec, relay and wait-budget benchmarks
 // (iteration 07a), then the qualification harness's transcript and probe
-// benchmarks (iteration 07b). Timings are reported, never gated.
+// benchmarks (iteration 07b), then the workspace hub (iteration 09a).
+// Timings are reported, never gated.
 func BenchSteps() []Step {
 	pkg := func(name, dir string) Step {
 		return Step{Name: name, Argv: []string{"go", "test", dir, "-run=^$", "-bench=.", "-benchmem", "-benchtime=3x", "-count=1", "-timeout=180s"}}
@@ -260,11 +261,20 @@ func BenchSteps() []Step {
 		pkg("bench adapter", "./internal/adapter"),
 		pkg("bench mcp", "./internal/mcp"),
 		pkg("bench mcpqual", "./internal/mcpqual"),
+		// Iteration 09a: the workspace hub's transfer, transaction,
+		// pagination, accounting, diff and prune benchmarks.
+		WorkspaceBenchStep(),
 		// Iteration 08: the tagged final-file helper benchmark (the vendor
 		// extractor and invocation benchmarks run in "bench adapter").
 		{Name: "bench sidecar " + RealAdapterTag, Argv: []string{"go", "test", "./internal/sidecar", "-tags=" + RealAdapterTag, "-run=^$",
 			"-bench=^BenchmarkRealAdapterFile$", "-benchmem", "-benchtime=3x", "-count=1", "-timeout=180s"}},
 	}
+}
+
+// WorkspaceBenchStep is the workspace hub's benchmark step (iteration
+// 09a), shared by the bench stage and the native driver.
+func WorkspaceBenchStep() Step {
+	return Step{Name: "bench workspace", Argv: []string{"go", "test", "./internal/workspace", "-run=^$", "-bench=.", "-benchmem", "-benchtime=3x", "-count=1", "-timeout=180s"}}
 }
 
 // CoverageSteps returns the profile run, the func report and the cmd
@@ -349,7 +359,14 @@ func (d *driver) coverage(outPath string) error {
 	if missing := MissingCmdPackages(lst.String(), string(prof)); len(missing) > 0 {
 		return fmt.Errorf("devcheck: cmd packages absent from coverage profile: %s", strings.Join(missing, ", "))
 	}
-	return nil
+	// Iteration 09a: the new and changed production code of the manifest,
+	// per group, from the same profile.
+	groups, err := CheckCoverageManifest(string(prof), WorkspaceCoverageManifest)
+	for _, g := range groups {
+		fmt.Fprintf(d.out, "devcheck: new/changed coverage %s %.1f%% (%d/%d statements, %d blocks, %d files) (bar: > %.1f%%)\n",
+			g.Group, g.Percent, g.Hit, g.Statements, g.Blocks, g.Files, CoverageThreshold)
+	}
+	return err
 }
 
 func (d *driver) cross() error {

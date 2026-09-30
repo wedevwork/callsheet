@@ -36,7 +36,7 @@ import (
 // ./internal/sidecar by its sidecar follow-up; the function commands are
 // unchanged.
 const (
-	speedPackages      = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/contract ./internal/adapter ./internal/mcp ./internal/mcpqual"
+	speedPackages      = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/contract ./internal/adapter ./internal/mcp ./internal/mcpqual ./internal/workspace"
 	speedPlane1        = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/plane"
 	speedPlane2        = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/plane"
 	speedPlane4        = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/plane"
@@ -203,6 +203,13 @@ var speedRealNative = []string{
 	"TestRealAdapterCatalog", "TestRealAdapterCatalog/recipes", "TestRealAdapterCatalog/evidence", "TestRealAdapterCatalog/ownership",
 	"TestRealAdapterDispatch", "TestRealAdapterDispatch/claude", "TestRealAdapterDispatch/codex", "TestRealAdapterDispatch/no-vendors",
 	"TestRealAdapterSmokeGate", "TestRealAdapterSmokeGate/default-off", "TestRealAdapterSmokeGate/ci-off", "TestRealAdapterSmokeGate/absent", "TestRealAdapterSmokeGate/enabled",
+}
+
+// speedWorkspaceNative are iteration 09a's ten workspace function tests
+// and the D1 maximum-path subcase, in FP order.
+var speedWorkspaceNative = []string{
+	"TestWorkspaceCreate", "TestWorkspaceList", "TestWorkspaceShow", "TestWorkspaceRemove", "TestWorkspacePrune", "TestWorkspaceTransport",
+	"TestWorkspaceRefSet", "TestWorkspaceRefSet/max-path", "TestWorkspaceStatus", "TestWorkspaceDiff", "TestWorkspaceNoGit",
 }
 
 // taskProcessEvents is a passing sidecar-package stream for the tuple
@@ -662,7 +669,7 @@ func TestCISpeedJobs(t *testing.T) {
 func qualifyingStream(drop string) string {
 	pkg := devcheck.NativePackage
 	evs := []map[string]any{synth("start", pkg, "")}
-	for _, name := range append(append(append(append(append(append(append(slices.Clone(speedNative), speedNodeNative...), speedRoleNative...), speedTaskNative...), speedControlNative...), speedMCPNative...), speedQualNative...), speedRealNative...) {
+	for _, name := range append(append(append(append(append(append(append(append(slices.Clone(speedNative), speedNodeNative...), speedRoleNative...), speedTaskNative...), speedControlNative...), speedMCPNative...), speedQualNative...), speedRealNative...), speedWorkspaceNative...) {
 		if name != drop {
 			evs = append(evs, synth("run", pkg, name), synth("pass", pkg, name))
 		}
@@ -674,8 +681,9 @@ func qualifyingStream(drop string) string {
 // FP-3: validator, plans, native evidence and documentation agree.
 func TestCISpeedPolicy(t *testing.T) {
 	t.Run("native", func(t *testing.T) {
-		if got := devcheck.NativeRequiredTests(); len(got) != 312 || len(speedQualNative) != 51 || len(speedRealNative) != 39 || !slices.Equal(got[:28], speedNative) || !slices.Equal(got[28:58], speedNodeNative) || !slices.Equal(got[58:87], speedRoleNative) || !slices.Equal(got[87:128], speedTaskNative) ||
-			!slices.Equal(got[128:145], speedControlNative) || !slices.Equal(got[145:222], speedMCPNative) || !slices.Equal(got[222:273], speedQualNative) || !slices.Equal(got[273:], speedRealNative) {
+		if got := devcheck.NativeRequiredTests(); len(got) != 323 || len(speedQualNative) != 51 || len(speedRealNative) != 39 || !slices.Equal(got[:28], speedNative) || !slices.Equal(got[28:58], speedNodeNative) || !slices.Equal(got[58:87], speedRoleNative) || !slices.Equal(got[87:128], speedTaskNative) ||
+			!slices.Equal(got[128:145], speedControlNative) || !slices.Equal(got[145:222], speedMCPNative) || !slices.Equal(got[222:273], speedQualNative) || !slices.Equal(got[273:312], speedRealNative) ||
+			!slices.Equal(got[312:], speedWorkspaceNative) {
 			t.Fatalf("native required = %v", got)
 		}
 		if err := devcheck.CheckNativeResults("darwin", strings.NewReader(qualifyingStream(""))); err != nil {

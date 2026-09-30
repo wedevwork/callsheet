@@ -46,9 +46,23 @@ func (f *fakeRunner) run(_ context.Context, argv, env []string, dir string, stdo
 		fmt.Fprint(stderr, "boom from child")
 		return errors.New("exit status 1")
 	}
+	// Iteration 09a: the native driver also runs the coverage stage; a
+	// runner that scripts no coverage answers a passing one.
+	profile, total, list := f.profile, f.coverTotal, f.cmdList
+	if f.native != "" {
+		if profile == "" {
+			profile = goodProfile
+		}
+		if total == "" {
+			total = "85.0%"
+		}
+		if list == "" {
+			list = cmdList
+		}
+	}
 	for _, a := range argv {
 		if p, ok := strings.CutPrefix(a, "-coverprofile="); ok {
-			os.WriteFile(p, []byte(f.profile), 0o600)
+			os.WriteFile(p, []byte(profile), 0o600)
 		}
 	}
 	switch {
@@ -56,9 +70,9 @@ func (f *fakeRunner) run(_ context.Context, argv, env []string, dir string, stdo
 		io.WriteString(stdout, f.native)
 		io.WriteString(stderr, f.nativeErr)
 	case strings.HasPrefix(joined, "go tool cover"):
-		fmt.Fprintf(stdout, "github.com/wedevwork/callsheet/internal/cli/cli.go:10:\tRun\t100.0%%\ntotal:\t\t\t(statements)\t%s\n", f.coverTotal)
+		fmt.Fprintf(stdout, "github.com/wedevwork/callsheet/internal/cli/cli.go:10:\tRun\t100.0%%\ntotal:\t\t\t(statements)\t%s\n", total)
 	case strings.HasPrefix(joined, "go list"):
-		io.WriteString(stdout, f.cmdList)
+		io.WriteString(stdout, list)
 	}
 	return nil
 }
@@ -71,11 +85,28 @@ func (f *fakeRunner) argvs() []string {
 	return out
 }
 
-const goodProfile = "mode: atomic\n" +
+// goodProfile covers every cmd package and (iteration 09a) one covered
+// block per coverage manifest selection.
+var goodProfile = "mode: atomic\n" +
 	"github.com/wedevwork/callsheet/cmd/callsheet/main.go:13.13,15.2 1 1\n" +
 	"github.com/wedevwork/callsheet/cmd/devcheck/main.go:13.13,15.2 1 1\n" +
 	"github.com/wedevwork/callsheet/cmd/fake-adapter/main.go:13.13,15.2 1 1\n" +
-	"github.com/wedevwork/callsheet/cmd/mcpqual/main.go:13.13,15.2 1 1\n"
+	"github.com/wedevwork/callsheet/cmd/mcpqual/main.go:13.13,15.2 1 1\n" + manifestProfile(WorkspaceCoverageManifest, 1)
+
+// manifestProfile renders one block per manifest selection with count.
+func manifestProfile(m []CoverageEntry, count int) string {
+	var b strings.Builder
+	for _, e := range m {
+		ranges := e.Ranges
+		if len(ranges) == 0 {
+			ranges = [][2]int{{1, 1}}
+		}
+		for _, r := range ranges {
+			fmt.Fprintf(&b, "%s:%d.1,%d.2 1 %d\n", e.File, r[0], r[1], count)
+		}
+	}
+	return b.String()
+}
 
 // cmdList is the cmd-package inventory (iteration 07b added the developer
 // command cmd/mcpqual, covered like the others).
@@ -303,6 +334,7 @@ func TestStagePlanning(t *testing.T) {
 		"go test ./internal/adapter -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s|"+
 		"go test ./internal/mcp -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s|"+
 		"go test ./internal/mcpqual -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s|"+
+		"go test ./internal/workspace -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s|"+
 		"go test ./internal/sidecar -tags=realadaptercheck -run=^$ -bench=^BenchmarkRealAdapterFile$ -benchmem -benchtime=3x -count=1 -timeout=180s" {
 		t.Fatalf("bench = %s", got)
 	}
@@ -388,14 +420,15 @@ func TestAllStopsAtFirstFailure(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("all = %d %s", code, errOut)
 	}
-	// test(4) + coverage(3) + bench(8) + cross(12), in that order.
+	// test(4) + coverage(3) + bench(9) + cross(12), in that order.
 	a := f.argvs()
-	if len(a) != 27 || !strings.Contains(a[0], "go test -count=1") || !strings.Contains(a[2], "-tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$") ||
+	if len(a) != 28 || !strings.Contains(a[0], "go test -count=1") || !strings.Contains(a[2], "-tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$") ||
 		!strings.Contains(a[4], "-coverprofile") || !strings.Contains(a[7], "-bench") ||
 		!strings.Contains(a[8], "./internal/plane -run=^$ -bench=.") || !strings.Contains(a[9], "./internal/contract -run=^$ -bench=.") ||
 		!strings.Contains(a[10], "./internal/sidecar -run=^$ -bench=.") || !strings.Contains(a[11], "./internal/adapter -run=^$ -bench=.") ||
 		!strings.Contains(a[12], "./internal/mcp -run=^$ -bench=.") || !strings.Contains(a[13], "./internal/mcpqual -run=^$ -bench=.") ||
-		!strings.Contains(a[14], "-bench=^BenchmarkRealAdapterFile$") || !strings.Contains(a[15], "go build") {
+		!strings.Contains(a[14], "./internal/workspace -run=^$ -bench=.") ||
+		!strings.Contains(a[15], "-bench=^BenchmarkRealAdapterFile$") || !strings.Contains(a[16], "go build") {
 		t.Fatalf("all order = %v", a)
 	}
 	f = &fakeRunner{fail: "-bench", coverTotal: "81%", cmdList: cmdList, profile: goodProfile}

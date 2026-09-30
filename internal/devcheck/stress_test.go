@@ -31,7 +31,7 @@ import (
 // and sidecar shards); it is compared against StressShards and StressSteps,
 // never derived from them.
 const (
-	wantStressPackages      = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/contract ./internal/adapter ./internal/mcp ./internal/mcpqual"
+	wantStressPackages      = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/contract ./internal/adapter ./internal/mcp ./internal/mcpqual ./internal/workspace"
 	wantStressPlane1        = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/plane"
 	wantStressPlane2        = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/plane"
 	wantStressPlane4        = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/plane"
@@ -77,6 +77,13 @@ var want07aAdditions = []string{
 // shard only; no selector, count, shard or CPU1 changes.
 var want07bAdditions = []string{
 	"go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/mcpqual",
+}
+
+// want09aAdditions is iteration 09a's literal addition (design 09a, CI
+// plan): the workspace hub package, complete, in the packages shard only;
+// no selector, count, shard or CPU1 changes.
+var want09aAdditions = []string{
+	"go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/workspace",
 }
 
 // want02bSelection is iteration 02b's literal stress selection, the
@@ -377,6 +384,17 @@ func TestStressShardUnion(t *testing.T) {
 	if len(want) != (5+2+3+1+1+1+1)*3 {
 		t.Fatalf("07b selection has %d tuples", len(want))
 	}
+	for _, argv := range want09aAdditions {
+		for _, s := range normalize(t, argv) {
+			if want[s] != 0 {
+				t.Fatalf("09a addition %v overlaps", s)
+			}
+			want[s]++
+		}
+	}
+	if len(want) != (5+2+3+1+1+1+1+1)*3 {
+		t.Fatalf("09a selection has %d tuples", len(want))
+	}
 	for _, goos := range []string{"linux", "darwin"} {
 		shards, err := StressShards(goos)
 		if err != nil {
@@ -402,7 +420,7 @@ func TestStressShardUnion(t *testing.T) {
 		}
 		for s := range got {
 			if want[s] == 0 {
-				t.Errorf("%s: %v is not in the 02b, 03, 04, 07a or 07b selection", goos, s)
+				t.Errorf("%s: %v is not in the 02b, 03, 04, 07a, 07b or 09a selection", goos, s)
 			}
 		}
 		for s, sh := range owner {
@@ -600,8 +618,8 @@ func TestStressStageDispatch(t *testing.T) {
 	}
 	// all stays test, coverage, bench, cross: stress is explicit.
 	f := &fakeRunner{coverTotal: "81%", cmdList: cmdList, profile: goodProfile}
-	// test(4, iteration 08) + coverage(3) + bench(8, iteration 08) + cross(12).
-	if code, _, errOut := runDriver(t, "linux", f, "all"); code != 0 || len(f.calls) != 27 {
+	// test(4, iteration 08) + coverage(3) + bench(9, iteration 09a) + cross(12).
+	if code, _, errOut := runDriver(t, "linux", f, "all"); code != 0 || len(f.calls) != 28 {
 		t.Fatalf("all = %d with %d calls %s", code, len(f.calls), errOut)
 	}
 	for _, c := range f.argvs() {
@@ -2094,8 +2112,14 @@ func TestPlatformSeamContract(t *testing.T) {
 			if serr != nil || len(stress) != 13 || sherr != nil || len(shards) != 7 {
 				t.Fatalf("StressSteps(%s) = %v %v, shards %v %v", goos, stress, serr, shards, sherr)
 			}
+			// Iteration 09a: a qualified native run adds the coverage stage
+			// (3 children) and the workspace benchmark step.
+			nativeCalls := len(native)
+			if goos == "darwin" {
+				nativeCalls += 4
+			}
 			for stage, want := range map[string]int{"test": wantTest, "stress": 13, "stress-packages": 1, "stress-plane-cpu1": 1, "stress-plane": 2,
-				"stress-sidecar-cpu1": 1, "stress-sidecar": 2, "stress-processgroup": 3, "stress-functions": 3, "native": len(native)} {
+				"stress-sidecar-cpu1": 1, "stress-sidecar": 2, "stress-processgroup": 3, "stress-functions": 3, "native": nativeCalls} {
 				f := &fakeRunner{native: stream(qualification()...)}
 				code, out, errOut := runDriver(t, goos, f, stage)
 				wantCode := 0

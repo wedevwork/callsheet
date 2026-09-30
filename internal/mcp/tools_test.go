@@ -623,6 +623,7 @@ func validate(s map[string]any, v any, where string) error {
 func TestSchemas(t *testing.T) {
 	h := start(t)
 	happy(h.fake)
+	h.fake.ws = happyWs
 	h.ready()
 	h.send(`{"jsonrpc":"2.0","id":"l","method":"tools/list"}`)
 	var list struct {
@@ -692,6 +693,8 @@ func TestSchemas(t *testing.T) {
 		{toolTaskWait, `{"task_ids":["` + taskA + `","` + taskA + `"]}`, false, false},
 		{toolTaskWait, `{"task_ids":["` + taskA + `"],"wait":"-1s"}`, true, false},
 	}
+	// Iteration 09a: the eight workspace tools.
+	cases = append(cases, wsSchemaCases()...)
 	covered := map[string]bool{}
 	for _, c := range cases {
 		covered[c.tool] = true

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/wedevwork/callsheet/internal/contract"
+	"github.com/wedevwork/callsheet/internal/workspace"
 )
 
 // HealthPath proves the real TLS listener and exposes no state. Since
@@ -103,10 +104,21 @@ func (d *deps) run(ctx context.Context, o RunOptions) error {
 	if d.onTasks != nil {
 		d.onTasks(ts)
 	}
+	// Workspaces (iteration 09a): every workspace is validated and its
+	// recognized leftovers removed under the state lock, before listening.
+	canon, err := checkRoot(o.StateDir)
+	if err != nil {
+		return err
+	}
+	wm, err := workspace.Open(ctx, canon)
+	if err != nil {
+		return err
+	}
+	defer wm.Close()
 	if err := canceled(ctx); err != nil {
 		return err
 	}
-	return d.serve(ctx, logger, m, fp, reg)
+	return d.serve(ctx, logger, m, fp, reg, wm)
 }
 
 // checkMaxTaskWait validates plane run's wait cap (zero: the default).
@@ -136,7 +148,7 @@ func logWarning(logger *slog.Logger, w Warning) {
 // bounded by what remains of shutdownTimeout, then Close), and joins Serve
 // and every in-flight handler before returning. The caller keeps the state
 // lock until then.
-func (d *deps) serve(ctx context.Context, logger *slog.Logger, m *material, fp string, reg *nodeRegistry) error {
+func (d *deps) serve(ctx context.Context, logger *slog.Logger, m *material, fp string, reg *nodeRegistry, wm *workspace.Manager) error {
 	ln, err := d.listen("tcp", m.bind.String())
 	if err != nil {
 		return wrapf(contract.CodeUnavailable, err, "cannot listen on %s: %v", m.bind, err)
@@ -146,6 +158,7 @@ func (d *deps) serve(ctx context.Context, logger *slog.Logger, m *material, fp s
 	cert := tls.Certificate{Certificate: [][]byte{m.serverCert.Raw, m.caCert.Raw}, PrivateKey: m.serverKey, Leaf: m.serverCert}
 	tlsLn := tls.NewListener(ln, &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert}})
 	svc := newNodeService(reg, d.nodeClock, logger, certPEM(m.caCert.Raw), d.streamCloseGrace)
+	svc.ws = wm
 	svc.events = d.streamEvents
 	svc.helloRead = d.streamHelloRead
 	svc.helloArmed = d.streamHelloArmed
@@ -205,6 +218,11 @@ func (d *deps) serve(ctx context.Context, logger *slog.Logger, m *material, fp s
 	select {
 	case <-ctx.Done():
 		deadline := time.Now().Add(d.shutdownTimeout)
+		// Workspace transfers and mutations are cancelled at once; the
+		// tracker joins their handlers.
+		if wm != nil {
+			wm.Close()
+		}
 		svc.shutdown(deadline)
 		sctx, cancel := context.WithDeadline(context.Background(), deadline)
 		if err := srv.Shutdown(sctx); err != nil {
@@ -213,6 +231,9 @@ func (d *deps) serve(ctx context.Context, logger *slog.Logger, m *material, fp s
 		cancel()
 		serveErr = <-done
 	case serveErr = <-done:
+		if wm != nil {
+			wm.Close()
+		}
 		svc.shutdown(time.Now().Add(d.shutdownTimeout))
 		srv.Close()
 	}
@@ -255,6 +276,10 @@ func newServiceHandler(svc *nodeService) http.Handler {
 			svc.handleRoles(w, r)
 		case svc.tasks != nil && (p == contract.PathTasks || strings.HasPrefix(p, contract.PathTasks+"/")):
 			svc.handleTasks(w, r)
+		case svc.ws != nil && (p == contract.PathWorkspaces || strings.HasPrefix(p, contract.PathWorkspaces+"/")):
+			svc.handleWorkspaces(w, r)
+		case svc.ws != nil && strings.HasPrefix(p, contract.WorkspaceGitPrefix):
+			svc.ws.ServeGit(w, r)
 		default:
 			writeError(w, contract.New(contract.CodeNotFound, "no such endpoint"))
 		}

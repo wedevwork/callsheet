@@ -32,11 +32,21 @@ const (
 	toolTaskLogs   = "task_logs"
 	toolTaskCancel = "task_cancel"
 	toolTaskWait   = "task_wait"
+	// Iteration 09a: the workspace hub tools.
+	toolWsCreate = "ws_create"
+	toolWsLs     = "ws_ls"
+	toolWsShow   = "ws_show"
+	toolWsRm     = "ws_rm"
+	toolWsPrune  = "ws_prune"
+	toolWsRefSet = "ws_ref_set"
+	toolWsStatus = "ws_status"
+	toolWsDiff   = "ws_diff"
 )
 
 // ToolNames lists the tools in their fixed discovery order.
 var ToolNames = []string{toolNodeLs, toolNodeShow, toolRoleAdd, toolRoleSet, toolRoleLs, toolRoleShow, toolRoleRm,
-	toolDispatch, toolTaskLs, toolTaskShow, toolTaskLogs, toolTaskCancel, toolTaskWait}
+	toolDispatch, toolTaskLs, toolTaskShow, toolTaskLogs, toolTaskCancel, toolTaskWait,
+	toolWsCreate, toolWsLs, toolWsShow, toolWsRm, toolWsPrune, toolWsRefSet, toolWsStatus, toolWsDiff}
 
 // Client is the narrow plane client the tools use; *client.Client
 // implements it.
@@ -56,6 +66,14 @@ type Client interface {
 	TaskLateLogs(ctx context.Context, id string) (contract.TaskLogsResponse, error)
 	CancelTask(ctx context.Context, id string) (contract.CancelResponse, error)
 	WaitTasks(ctx context.Context, ids []string, wait time.Duration) (contract.WaitResponse, error)
+	CreateWorkspace(ctx context.Context, name string) (contract.WorkspaceView, error)
+	ListWorkspaces(ctx context.Context, after string, limit int) (contract.WorkspaceListResponse, error)
+	ShowWorkspace(ctx context.Context, name string) (contract.WorkspaceView, error)
+	RemoveWorkspace(ctx context.Context, name, instance string) (contract.WorkspaceRemoveResponse, error)
+	PruneWorkspace(ctx context.Context, name, instance, before string) (contract.WorkspacePruneResponse, error)
+	SetWorkspaceRef(ctx context.Context, name string, req contract.WorkspaceRefSetRequest) (contract.WorkspaceRefSetResponse, error)
+	WorkspaceStatus(ctx context.Context, name string, p client.StatusPage) (contract.WorkspaceStatusResponse, error)
+	WorkspaceDiff(ctx context.Context, name string, p client.DiffPage) (contract.WorkspaceDiffResponse, error)
 	Close()
 }
 
@@ -112,10 +130,12 @@ func mutation(destructive, idempotent bool) map[string]any {
 	return map[string]any{"readOnlyHint": false, "destructiveHint": destructive, "idempotentHint": idempotent, "openWorldHint": false}
 }
 
-// newTools builds the thirteen definitions for budget b.
+// newTools builds the twenty-one definitions for budget b (thirteen
+// operator tools, iteration 07a, and eight workspace tools, iteration
+// 09a).
 func newTools(b Budget) []*tool {
 	budgetNote := " This server's call budget is B=" + b.String() + ". " + BudgetDeferralNote + " " + UnverifiedNotice
-	return []*tool{
+	tools := []*tool{
 		{name: toolNodeLs, annotations: readOnly(), run: runNodeLs,
 			description: "List every node the plane knows, sorted by ID: the same global roster as callsheet node ls --json (liveness, last_seen, versions and roles)." + readOnlyNote + freshNote},
 		{name: toolNodeShow, annotations: readOnly(), run: runNodeShow,
@@ -143,6 +163,325 @@ func newTools(b Budget) []*tool {
 		{name: toolTaskWait, annotations: readOnly(), run: runTaskWait,
 			description: "Wait for the first of 1 to 16 tasks to end durably: terminal with the winner's view, or still_running with one compact row per task in the given order. The plane may answer sooner (its own wait cap). A failed task is a successful observation. Repeat task_wait after still_running." + readOnlyNote + freshNote + budgetNote},
 	}
+	return append(tools, workspaceTools()...)
+}
+
+// workspaceTools are the eight workspace hub tools (iteration 09a). They
+// operate on the plane's stored workspaces only: none reads or writes a
+// coordinator file, and no argument or result carries file content,
+// patches, blobs, repository configuration or shell commands.
+func workspaceTools() []*tool {
+	const plane = " This tool operates on the plane's stored workspace (a bare git repository on the plane), never on a local repository, working tree or file of this coordinator."
+	const pinned = " Every workspace-specific call names its workspace explicitly; there is no default workspace."
+	return []*tool{
+		{name: toolWsCreate, annotations: mutation(false, false), run: runWsCreate,
+			description: "Create an empty, durable workspace (no commit; main is unborn) and return its identity, generation, size and retention. Names are unique: repeating a create conflicts; after an ambiguous answer read ws_show." + plane + mutationNote + freshNote},
+		{name: toolWsLs, annotations: readOnly(), run: runWsLs,
+			description: "List workspaces sorted by name, one page per call (limit 1-100, default 100; after: the previous page's next_after). Each page is a fresh observation, not a snapshot across concurrent create and remove; all pages are never fetched automatically." + plane + readOnlyNote + freshNote},
+		{name: toolWsShow, annotations: readOnly(), run: runWsShow,
+			description: "Show a workspace's name, instance token (required by ws_rm, ws_prune and ws_ref_set), creation time, current generation, default branch, retention and size_bytes (the logical size of every regular file the plane owns for it)." + plane + pinned + readOnlyNote + freshNote},
+		{name: toolWsRm, annotations: mutation(true, false), run: runWsRm,
+			description: "Remove a whole workspace of the given instance after its current readers and writer finish; a stale instance never removes a recreated name. A lost answer may still mean the name disappeared: read ws_ls before acting again (never retried)." + plane + pinned + mutationNote + freshNote},
+		{name: toolWsPrune, annotations: mutation(true, false), run: runWsPrune,
+			description: "Prune task refs whose plane publication time is strictly before the RFC3339 cutoff (a zone is required) and collect every object no surviving ref reaches; branches and their history are always kept. Returns counts and sizes, never ref lists." + plane + pinned + mutationNote + freshNote},
+		{name: toolWsRefSet, annotations: mutation(false, false), run: runWsRefSet,
+			description: "Create, move or delete one branch with compare-and-swap: expected is the branch's current full hash, or absent to create it; exactly one of target (a reachable full commit hash, a branch or a complete refs/callsheet/tasks/ ref) and delete=true. No merge or fast-forward requirement; no other branch moves; a stale expected conflicts. Branch names are byte-exact lowercase ASCII (never repaired)." + plane + pinned + mutationNote + freshNote},
+		{name: toolWsStatus, annotations: readOnly(), run: runWsStatus,
+			description: "Return one page of a workspace's stored refs on the plane sorted by name (task refs with their publication time, branches with published_at null; an unborn main has no row). Continue with after, instance and generation from the previous page; a changed generation conflicts (restart). It never inspects a local working tree." + plane + pinned + readOnlyNote + freshNote},
+		{name: toolWsDiff, annotations: readOnly(), run: runWsDiff,
+			description: "Compare two stored snapshots (base, or empty for the empty tree, and target) and return one page of changed-path metadata only: path_base64 (raw path bytes, never contents), kind, modes and blob sizes. No file content, patch or commit message is returned. Continue with the returned full hashes, after, instance and generation." + plane + pinned + readOnlyNote + freshNote},
+	}
+}
+
+// wsGuidance is appended to a workspace mutation's lost answer.
+const wsGuidance = "the change may have taken effect: inspect with ws_show or ws_status before repeating it (never retried)"
+
+func invalidWsName() error { return contract.InvalidWorkspaceName() }
+
+type wsNameArgs struct {
+	Name string `json:"name"`
+}
+
+func runWsCreate(c *call, raw json.RawMessage) (toolResult, error) {
+	var a wsNameArgs
+	if err := decodeArgs(raw, &a); err != nil {
+		return toolResult{}, err
+	}
+	if !contract.ValidWorkspaceName(a.Name) {
+		return toolResult{}, invalidWsName()
+	}
+	cl, err := c.client()
+	if err != nil {
+		return toolResult{}, err
+	}
+	v, err := cl.CreateWorkspace(c.opCtx, a.Name)
+	if err != nil {
+		return toolResult{}, withGuidance(err, wsGuidance)
+	}
+	return encodeJSON(v)
+}
+
+func runWsLs(c *call, raw json.RawMessage) (toolResult, error) {
+	var a struct {
+		After *string `json:"after,omitempty"`
+		Limit *int    `json:"limit,omitempty"`
+	}
+	if err := decodeArgs(raw, &a); err != nil {
+		return toolResult{}, err
+	}
+	after, limit := "", contract.DefaultWorkspaceLimit
+	if a.After != nil {
+		if *a.After == "" || len(*a.After) > 63 {
+			return toolResult{}, invalid("after", "after must be a workspace name of 1-63 bytes (the previous page's next_after)")
+		}
+		after = *a.After
+	}
+	if a.Limit != nil {
+		if *a.Limit < 1 || *a.Limit > contract.MaxWorkspaceLimit {
+			return toolResult{}, invalid("limit", "limit must be an integer from 1 to %d", contract.MaxWorkspaceLimit)
+		}
+		limit = *a.Limit
+	}
+	cl, err := c.client()
+	if err != nil {
+		return toolResult{}, err
+	}
+	r, err := cl.ListWorkspaces(c.opCtx, after, limit)
+	if err != nil {
+		return toolResult{}, err
+	}
+	return encodeJSON(r)
+}
+
+func runWsShow(c *call, raw json.RawMessage) (toolResult, error) {
+	var a wsNameArgs
+	if err := decodeArgs(raw, &a); err != nil {
+		return toolResult{}, err
+	}
+	if !contract.ValidWorkspaceName(a.Name) {
+		return toolResult{}, invalidWsName()
+	}
+	cl, err := c.client()
+	if err != nil {
+		return toolResult{}, err
+	}
+	v, err := cl.ShowWorkspace(c.opCtx, a.Name)
+	if err != nil {
+		return toolResult{}, err
+	}
+	return encodeJSON(v)
+}
+
+func runWsRm(c *call, raw json.RawMessage) (toolResult, error) {
+	var a struct {
+		Name     string `json:"name"`
+		Instance string `json:"instance"`
+	}
+	if err := decodeArgs(raw, &a); err != nil {
+		return toolResult{}, err
+	}
+	if !contract.ValidWorkspaceName(a.Name) {
+		return toolResult{}, invalidWsName()
+	}
+	if err := contract.ValidateInstance(a.Instance); err != nil {
+		return toolResult{}, err
+	}
+	cl, err := c.client()
+	if err != nil {
+		return toolResult{}, err
+	}
+	r, err := cl.RemoveWorkspace(c.opCtx, a.Name, a.Instance)
+	if err != nil {
+		return toolResult{}, withGuidance(err, wsGuidance)
+	}
+	return encodeJSON(r)
+}
+
+func runWsPrune(c *call, raw json.RawMessage) (toolResult, error) {
+	var a struct {
+		Name     string `json:"name"`
+		Instance string `json:"instance"`
+		Before   string `json:"before"`
+	}
+	if err := decodeArgs(raw, &a); err != nil {
+		return toolResult{}, err
+	}
+	if !contract.ValidWorkspaceName(a.Name) {
+		return toolResult{}, invalidWsName()
+	}
+	if err := contract.ValidateInstance(a.Instance); err != nil {
+		return toolResult{}, err
+	}
+	if _, err := contract.ParseCutoff(a.Before); err != nil {
+		return toolResult{}, err
+	}
+	cl, err := c.client()
+	if err != nil {
+		return toolResult{}, err
+	}
+	r, err := cl.PruneWorkspace(c.opCtx, a.Name, a.Instance, a.Before)
+	if err != nil {
+		return toolResult{}, withGuidance(err, wsGuidance)
+	}
+	return encodeJSON(r)
+}
+
+func runWsRefSet(c *call, raw json.RawMessage) (toolResult, error) {
+	var a struct {
+		Name     string  `json:"name"`
+		Instance string  `json:"instance"`
+		Branch   string  `json:"branch"`
+		Expected string  `json:"expected"`
+		Target   *string `json:"target,omitempty"`
+		Delete   *bool   `json:"delete,omitempty"`
+	}
+	if err := decodeArgs(raw, &a); err != nil {
+		return toolResult{}, err
+	}
+	if !contract.ValidWorkspaceName(a.Name) {
+		return toolResult{}, invalidWsName()
+	}
+	req := contract.WorkspaceRefSetRequest{Instance: a.Instance, Branch: a.Branch, Expected: a.Expected, Target: a.Target, Delete: a.Delete}
+	if _, err := contract.ValidateRefSet(req); err != nil {
+		return toolResult{}, err
+	}
+	cl, err := c.client()
+	if err != nil {
+		return toolResult{}, err
+	}
+	r, err := cl.SetWorkspaceRef(c.opCtx, a.Name, req)
+	if err != nil {
+		return toolResult{}, withGuidance(err, wsGuidance)
+	}
+	return encodeJSON(r)
+}
+
+type wsPageArgs struct {
+	After      *string `json:"after,omitempty"`
+	Instance   *string `json:"instance,omitempty"`
+	Generation *string `json:"generation,omitempty"`
+	Limit      *int    `json:"limit,omitempty"`
+}
+
+// page returns the continuation and limit of paged workspace reads.
+func (a wsPageArgs) page() (after, instance, generation string, limit int, err error) {
+	str := func(p *string) string {
+		if p == nil {
+			return ""
+		}
+		return *p
+	}
+	after, instance, generation = str(a.After), str(a.Instance), str(a.Generation)
+	if (a.After == nil) != (a.Instance == nil) || (a.After == nil) != (a.Generation == nil) {
+		return "", "", "", 0, invalid("after", "a continuation needs after, instance and generation together; the first page omits all three")
+	}
+	if a.After != nil && (!contract.ValidWorkspaceToken(instance) || !contract.ValidWorkspaceToken(generation) || after == "") {
+		return "", "", "", 0, invalid("after", "after, instance and generation must come from the previous page")
+	}
+	limit = contract.DefaultWorkspaceLimit
+	if a.Limit != nil {
+		if *a.Limit < 1 || *a.Limit > contract.MaxWorkspaceLimit {
+			return "", "", "", 0, invalid("limit", "limit must be an integer from 1 to %d", contract.MaxWorkspaceLimit)
+		}
+		limit = *a.Limit
+	}
+	return after, instance, generation, limit, nil
+}
+
+func runWsStatus(c *call, raw json.RawMessage) (toolResult, error) {
+	var name string
+	var p wsPageArgs
+	if err := decodeWsArgs(raw, &name, &p, nil, nil); err != nil {
+		return toolResult{}, err
+	}
+	if !contract.ValidWorkspaceName(name) {
+		return toolResult{}, invalidWsName()
+	}
+	after, instance, generation, limit, err := p.page()
+	if err != nil {
+		return toolResult{}, err
+	}
+	if after != "" && !contract.ValidStatusCursor(after) {
+		return toolResult{}, invalid("after", "after must be a complete portable branch ref (refs/heads/...) or task ref (refs/callsheet/tasks/...) from the previous page")
+	}
+	cl, err := c.client()
+	if err != nil {
+		return toolResult{}, err
+	}
+	r, err := cl.WorkspaceStatus(c.opCtx, name, client.StatusPage{After: after, Instance: instance, Generation: generation, Limit: limit})
+	if err != nil {
+		return toolResult{}, err
+	}
+	return encodeJSON(r)
+}
+
+func runWsDiff(c *call, raw json.RawMessage) (toolResult, error) {
+	var name, base, target string
+	var p wsPageArgs
+	if err := decodeWsArgs(raw, &name, &p, &base, &target); err != nil {
+		return toolResult{}, err
+	}
+	if !contract.ValidWorkspaceName(name) {
+		return toolResult{}, invalidWsName()
+	}
+	after, instance, generation, limit, err := p.page()
+	if err != nil {
+		return toolResult{}, err
+	}
+	if _, err := contract.ParseSelector(base, "base", true); err != nil {
+		return toolResult{}, err
+	}
+	if _, err := contract.ParseSelector(target, "target", false); err != nil {
+		return toolResult{}, err
+	}
+	if after != "" {
+		if _, err := contract.ParsePathCursor(after); err != nil {
+			return toolResult{}, err
+		}
+	}
+	cl, err := c.client()
+	if err != nil {
+		return toolResult{}, err
+	}
+	r, err := cl.WorkspaceDiff(c.opCtx, name, client.DiffPage{Base: base, Target: target, After: after, Instance: instance, Generation: generation, Limit: limit})
+	if err != nil {
+		return toolResult{}, err
+	}
+	return encodeJSON(r)
+}
+
+// decodeWsArgs strictly decodes status (base == nil) or diff arguments
+// into flat fields (the strict decoder has no embedded-struct support).
+func decodeWsArgs(raw json.RawMessage, name *string, p *wsPageArgs, base, target *string) error {
+	if base == nil {
+		var a struct {
+			Name       string  `json:"name"`
+			After      *string `json:"after,omitempty"`
+			Instance   *string `json:"instance,omitempty"`
+			Generation *string `json:"generation,omitempty"`
+			Limit      *int    `json:"limit,omitempty"`
+		}
+		if err := decodeArgs(raw, &a); err != nil {
+			return err
+		}
+		*name, *p = a.Name, wsPageArgs{After: a.After, Instance: a.Instance, Generation: a.Generation, Limit: a.Limit}
+		return nil
+	}
+	var a struct {
+		Name       string  `json:"name"`
+		Base       string  `json:"base"`
+		Target     string  `json:"target"`
+		After      *string `json:"after,omitempty"`
+		Instance   *string `json:"instance,omitempty"`
+		Generation *string `json:"generation,omitempty"`
+		Limit      *int    `json:"limit,omitempty"`
+	}
+	if err := decodeArgs(raw, &a); err != nil {
+		return err
+	}
+	*name, *base, *target = a.Name, a.Base, a.Target
+	*p = wsPageArgs{After: a.After, Instance: a.Instance, Generation: a.Generation, Limit: a.Limit}
+	return nil
 }
 
 // ---- Argument decoding ----

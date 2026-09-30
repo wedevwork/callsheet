@@ -60,7 +60,7 @@ const (
 	// stream contracts) to the plane shard, one invocation per CPU setting,
 	// and its sidecar follow-up moved ./internal/sidecar (the reconnect
 	// contracts) to the sidecar shard likewise.
-	wantNodeStressPackages = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/contract ./internal/adapter ./internal/mcp ./internal/mcpqual"
+	wantNodeStressPackages = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/contract ./internal/adapter ./internal/mcp ./internal/mcpqual ./internal/workspace"
 	wantNodeStressFunction = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestNodeEnrollment|TestNodeReconnect)$/^(locking|shutdown)$ ./tests/function"
 )
 
@@ -96,7 +96,7 @@ func TestNodeVerificationPolicyContract(t *testing.T) {
 			}
 			os.RemoveAll(scratchFrom(out))
 			req := NativeRequiredTests()
-			if len(req) != 145+len(mcpNames())+len(qualNames())+len(realNames()) || strings.Join(req[28:58], ",") != strings.Join(nodeNames(), ",") {
+			if len(req) != 145+len(mcpNames())+len(qualNames())+len(realNames())+len(wsNames()) || strings.Join(req[28:58], ",") != strings.Join(nodeNames(), ",") {
 				t.Fatalf("native required = %v", req)
 			}
 			if goos == "darwin" {
