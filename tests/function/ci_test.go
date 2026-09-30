@@ -526,10 +526,16 @@ func TestCINativeEvidence(t *testing.T) {
 		}
 		return
 	}
-	r := &ciRunner{stdout: valid}
+	// Qualification, then the coverage stage (profile, func report, cmd list)
+	// and the workspace benchmark. An empty cover total is parsed as the
+	// literal "(statements)" and fails the stage.
+	r := &ciRunner{stdout: valid, coverTotal: "91.7%"}
 	code, out, errOut := devcheckRun(t, r, "native")
-	if code != 0 || len(r.calls) != 1 || !strings.Contains(out, "native qualification passed on darwin/"+runtime.GOARCH) {
-		t.Fatalf("darwin native = %d %s", code, errOut)
+	if code != 0 || len(r.calls) != 5 ||
+		strings.Join(r.calls[0], " ") != "go test -json -tags=realadaptercheck -count=1 -timeout=180s ./..." ||
+		strings.Join(r.calls[4], " ") != strings.Join(devcheck.WorkspaceBenchStep().Argv, " ") ||
+		!strings.Contains(out, "native qualification passed on darwin/"+runtime.GOARCH) {
+		t.Fatalf("darwin native = %d calls=%d %s", code, len(r.calls), errOut)
 	}
 	if code, _, errOut := devcheckRun(t, &ciRunner{failOn: "-json"}, "native"); code != 1 || !strings.Contains(errOut, "injected child failure") {
 		t.Fatalf("child error = %d %s", code, errOut)
