@@ -1,0 +1,1 @@
+codex -a never exec --model gpt-6.1-sol -c model_reasoning_effort=\"low\" --json --output-last-message /tmp/callsheet-08-qual/isolated/codex-forbidden-tmp/final.txt - 

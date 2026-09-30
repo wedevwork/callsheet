@@ -1,0 +1,1 @@
+Reply with exactly the single word pong. Do not call any tools.

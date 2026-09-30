@@ -1,0 +1,1 @@
+codex -a never exec --model callsheet-no-such-model -c model_reasoning_effort=\"low\" --json --output-last-message /tmp/callsheet-08-qual/isolated/codex-fail-model/final.txt - 

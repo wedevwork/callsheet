@@ -1,0 +1,6 @@
+{"type":"thread.started","thread_id":"01a0f0dd-3924-7193-b330-23f5d6a10027"}
+{"type":"item.completed","item":{"id":"item_0","type":"error","message":"clamping SessionEnd hook timeout to 3s in /home/max/.codex/plugins/cache/openai-codex/codex/1.0.6/hooks/hooks.json"}}
+{"type":"item.completed","item":{"id":"item_1","type":"error","message":"clamping SessionEnd hook timeout to 3s in /home/max/.codex/plugins/cache/xai-grok-build/grok-build/0.2.1/hooks/hooks.json"}}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"pong"}}
+{"type":"turn.completed","usage":{"input_tokens":23726,"cached_input_tokens":12288,"cache_write_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0}}

@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -180,6 +181,33 @@ var qualRequired = []struct {
 // children.
 func qualNames() []string { return requiredNames(qualRequired) }
 
+// realRequired are iteration 08's nine real-adapter function parents and
+// their mandatory direct children (design 08, Function tests), in FP
+// order (FP-1..FP-9).
+var realRequired = []struct {
+	test string
+	subs []string
+}{
+	{"TestRealAdapterRegistration", []string{"registry", "paths", "selection"}},
+	{"TestRealAdapterProbe", []string{"claude", "codex", "refusal"}},
+	{"TestRealAdapterInvocation", []string{"claude", "codex", "stdin"}},
+	{"TestRealAdapterClaudeFinal", []string{"success", "failure", "malformed"}},
+	{"TestRealAdapterCodexFinal", []string{"success", "absent", "unsafe", "cleanup"}},
+	{"TestRealAdapterOutcomes", []string{"exits", "denials", "controls", "replay"}},
+	{"TestRealAdapterCatalog", []string{"recipes", "evidence", "ownership"}},
+	{"TestRealAdapterDispatch", []string{"claude", "codex", "no-vendors"}},
+	{"TestRealAdapterSmokeGate", []string{"default-off", "ci-off", "absent", "enabled"}},
+}
+
+// realNames lists every required iteration 08 name, each parent before
+// its children.
+func realNames() []string { return requiredNames(realRequired) }
+
+// realLocal is iteration 08's tagged sidecar contract with its five
+// subtests, required in the sidecar package (NativeTaskProcessPackage).
+var realLocal = []string{"TestRealAdapterLocal", "TestRealAdapterLocal/selection", "TestRealAdapterLocal/file", "TestRealAdapterLocal/ordering",
+	"TestRealAdapterLocal/diagnostic", "TestRealAdapterLocal/restart"}
+
 // roleNames lists every required role name, parents before subtests.
 func roleNames() []string { return requiredNames(roleRequired) }
 
@@ -215,7 +243,7 @@ func qualification() []evt {
 		evs = append(evs, ev("pass", NativePackage, fp6+"/"+s))
 	}
 	evs = append(evs, ev("pass", NativePackage, fp6))
-	for _, p := range append(append(append(append(append(append(append(planeRequired[:0:0], planeRequired...), nodeRequired...), roleRequired...), taskRequired...), controlRequired...), mcpRequired...), qualRequired...) {
+	for _, p := range append(append(append(append(append(append(append(append(planeRequired[:0:0], planeRequired...), nodeRequired...), roleRequired...), taskRequired...), controlRequired...), mcpRequired...), qualRequired...), realRequired...) {
 		evs = append(evs, ev("run", NativePackage, p.test))
 		for _, s := range p.subs {
 			evs = append(evs, ev("run", NativePackage, p.test+"/"+s), ev("pass", NativePackage, p.test+"/"+s))
@@ -224,10 +252,15 @@ func qualification() []evt {
 	}
 	evs = append(evs, ev("output", NativePackage, "").with("Output", "ok\n"), ev("pass", NativePackage, ""))
 	// The sidecar's own package stream carries the real task-process
-	// qualification (iteration 05).
+	// qualification (iteration 05) and, in the same single package start,
+	// the tagged real-adapter contract (iteration 08).
 	sc := NativeTaskProcessPackage
-	return append(evs, ev("start", sc, ""), ev("run", sc, "TestTaskExecutionContract"), ev("run", sc, "TestTaskExecutionContract/process"),
-		ev("pass", sc, "TestTaskExecutionContract/process"), ev("pass", sc, "TestTaskExecutionContract"), ev("pass", sc, ""))
+	evs = append(evs, ev("start", sc, ""), ev("run", sc, "TestTaskExecutionContract"), ev("run", sc, "TestTaskExecutionContract/process"),
+		ev("pass", sc, "TestTaskExecutionContract/process"), ev("pass", sc, "TestTaskExecutionContract"), ev("run", sc, realLocal[0]))
+	for _, s := range realLocal[1:] {
+		evs = append(evs, ev("run", sc, s), ev("pass", sc, s))
+	}
+	return append(evs, ev("pass", sc, realLocal[0]), ev("pass", sc, ""))
 }
 
 // without drops events matching action and test.
@@ -273,10 +306,74 @@ type countingReader struct{ reads int }
 
 func (c *countingReader) Read([]byte) (int, error) { c.reads++; return 0, io.EOF }
 
+// TestNativeRealAdapterEvidence (iteration 08): the single tagged native
+// stream qualifies with the nine function parents and their children in
+// tests/function and the tagged sidecar contract in internal/sidecar;
+// omitting any of those, moving the sidecar names to another package
+// (tests/function included), a second start of the sidecar package or a
+// skipped name fails. The native command compiles the tag and never runs a
+// second sidecar invocation or enables the real smoke's tag.
+func TestNativeRealAdapterEvidence(t *testing.T) {
+	steps, _ := NativeSteps("darwin")
+	if len(steps) != 1 || !slices.Contains(steps[0].Argv, "-tags=realadaptercheck") || slices.Contains(steps[0].Argv, "./internal/sidecar") ||
+		strings.Contains(strings.Join(steps[0].Argv, " "), "realadaptersmoke") {
+		t.Fatalf("native plan %+v", steps)
+	}
+	q := qualification()
+	if err := check(stream(q...)); err != nil {
+		t.Fatalf("complete single-start stream: %v", err)
+	}
+	if n := len(realNames()); n != 9+30 || len(NativeTaskProcessTests()) != 8 {
+		t.Fatalf("%d iteration 08 names, %d sidecar names", n, len(NativeTaskProcessTests()))
+	}
+	for _, name := range realNames() {
+		mustFail(t, "missing "+name, stream(without(without(q, "run", name), "pass", name)...), name+" has no run event", unobserved)
+		mustFail(t, "no pass "+name, stream(without(q, "pass", name)...), name+" has no pass event", unobserved)
+		mustFail(t, "skipped "+name, stream(replacing(q, "pass", name, ev("skip", NativePackage, name))...), "test "+name+" in "+NativePackage+" skipped: "+unobserved)
+	}
+	sc := NativeTaskProcessPackage
+	for _, name := range realLocal {
+		mustFail(t, "sidecar missing "+name, stream(without(without(q, "run", name), "pass", name)...), name+" in "+sc+" has no run event", unobserved)
+		mustFail(t, "sidecar no pass "+name, stream(without(q, "pass", name)...), name+" in "+sc+" has no pass event", unobserved)
+		mustFail(t, "sidecar skipped "+name, stream(replacing(q, "pass", name, ev("skip", sc, name))...), "test "+name+" in "+sc+" skipped: "+unobserved)
+	}
+	// The sidecar names under the wrong package: omitted from the sidecar
+	// stream, then passing in tests/function or another package, fail.
+	for _, pkg := range []string{NativePackage, "github.com/wedevwork/callsheet/internal/adapter"} {
+		var moved []evt
+		for _, e := range q {
+			if name, _ := e["Test"].(string); e["Package"] == sc && slices.Contains(realLocal, name) {
+				continue
+			}
+			moved = append(moved, e)
+		}
+		extra := []evt{}
+		if pkg != NativePackage {
+			extra = append(extra, ev("start", pkg, ""))
+		}
+		for _, name := range realLocal {
+			extra = append(extra, ev("run", pkg, name), ev("pass", pkg, name))
+		}
+		if pkg != NativePackage {
+			extra = append(extra, ev("pass", pkg, ""))
+			moved = append(moved, extra...)
+		} else {
+			// Inside the function package's own stream, before its pass.
+			i := slices.IndexFunc(moved, func(e evt) bool { return e["Package"] == NativePackage && e["Action"] == "pass" && e["Test"] == nil })
+			moved = append(moved[:i], append(extra, moved[i:]...)...)
+		}
+		mustFail(t, "sidecar names in "+pkg, stream(moved...), "TestRealAdapterLocal in "+sc+" has no run event", unobserved)
+	}
+	// A second start of the sidecar package (a separate tagged invocation
+	// appended to the stream) is rejected.
+	second := append(append([]evt(nil), q...), ev("start", sc, ""), ev("run", sc, realLocal[0]), ev("pass", sc, realLocal[0]), ev("pass", sc, ""))
+	mustFail(t, "second sidecar start", stream(second...), "package "+sc+" started twice")
+}
+
 func TestNativeStepsAndUnsupportedOS(t *testing.T) {
 	steps, err := NativeSteps("darwin")
 	if err != nil || len(steps) != 1 || steps[0].Name != "native" || len(steps[0].Env) != 0 ||
-		strings.Join(steps[0].Argv, " ") != "go test -json -count=1 -timeout=180s ./..." {
+		strings.Join(steps[0].Argv, " ") != "go test -json -tags=realadaptercheck -count=1 -timeout=180s ./..." {
 		t.Fatalf("darwin plan = %+v %v", steps, err)
 	}
 	for _, goos := range []string{"linux", "windows", "freebsd", ""} {
@@ -314,7 +411,8 @@ func TestNativeStepsAndUnsupportedOS(t *testing.T) {
 		"TestControlDurability,TestControlReconnect,TestControlNodeLoss,TestControlLaunchSafety,TestControlWorkerRecovery,TestControlPlaneRecovery,"+
 		"TestControlLateResult,TestControlLegacy,TestControlNativeGroups,TestControlNativeGroups/cooperative,TestControlNativeGroups/resistant,"+
 		"TestControlNativeGroups/orphan-restart,TestControlNativeGroups/plane-restart,"+
-		"TestControlCancellation,TestControlExecutionTimeout,TestControlBoundedWait,TestControlForceRemove,"+strings.Join(mcpNames(), ",")+","+strings.Join(qualNames(), ",") || len(req) != 273 {
+		"TestControlCancellation,TestControlExecutionTimeout,TestControlBoundedWait,TestControlForceRemove,"+strings.Join(mcpNames(), ",")+","+strings.Join(qualNames(), ",")+
+		","+strings.Join(realNames(), ",") || len(req) != 312 {
 		t.Fatalf("required = %v", req)
 	}
 	req[0] = "mutated"
@@ -364,7 +462,7 @@ func TestNativeHostFixture(t *testing.T) {
 	msg := err.Error()
 	if !strings.HasPrefix(msg, "devcheck: native: required evidence missing ("+unobserved+")") ||
 		!strings.Contains(msg, "package "+NativePackage+" has no start event") || !strings.Contains(msg, "TestFP6ProcessGroups/leader-exits-first has no run event") ||
-		strings.Contains(msg, "Action") || strings.Contains(msg, "malformed") || strings.Contains(msg, "internal/cli") {
+		strings.Contains(msg, "Action") || strings.Contains(msg, "malformed event") || strings.Contains(msg, "internal/cli") {
 		t.Fatalf("fixture must fail only for missing qualification, got: %v", err)
 	}
 	full := string(raw) + stream(qualification()...)
@@ -594,7 +692,7 @@ func TestNativeStageRunFor(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("native = %d %s", code, errOut)
 	}
-	if len(f.calls) != 1 || strings.Join(f.calls[0].argv, " ") != "go test -json -count=1 -timeout=180s ./..." || f.calls[0].dir != "" {
+	if len(f.calls) != 1 || strings.Join(f.calls[0].argv, " ") != "go test -json -tags=realadaptercheck -count=1 -timeout=180s ./..." || f.calls[0].dir != "" {
 		t.Fatalf("calls = %+v", f.calls)
 	}
 	if !strings.Contains(strings.Join(f.calls[0].env, "\n"), "PATH=") {
@@ -630,7 +728,7 @@ func TestNativeStageFailuresRetainScratch(t *testing.T) {
 	f := &fakeRunner{fail: "-json"}
 	code, out, errOut := runDriver(t, "darwin", f, "native")
 	scratch := scratchFrom(out)
-	if code != 1 || !strings.Contains(errOut, "native failed: go test -json -count=1 -timeout=180s ./...: exit status 1") ||
+	if code != 1 || !strings.Contains(errOut, "native failed: go test -json -tags=realadaptercheck -count=1 -timeout=180s ./...: exit status 1") ||
 		!strings.Contains(errOut, "boom from child") || !strings.Contains(errOut, "logs retained in "+scratch) {
 		t.Fatalf("child failure = %d %s", code, errOut)
 	}
@@ -822,7 +920,7 @@ func TestNativeQualificationEvidence(t *testing.T) {
 		t.Fatalf("complete evidence: %v", err)
 	}
 	req := NativeRequiredTests()
-	if n := len(qualNames()); n != 8+43 || len(req) != 222+n || strings.Join(req[222:], ",") != strings.Join(qualNames(), ",") ||
+	if n := len(qualNames()); n != 8+43 || len(req) != 222+n+len(realNames()) || strings.Join(req[222:273], ",") != strings.Join(qualNames(), ",") ||
 		strings.Join(req[145:222], ",") != strings.Join(mcpNames(), ",") {
 		t.Fatalf("%d 07b names; native suffix %v", n, req[222:])
 	}

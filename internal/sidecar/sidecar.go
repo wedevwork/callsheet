@@ -57,6 +57,12 @@ type RunOptions struct {
 	SoftwareVersion string
 	Logger          *slog.Logger
 	FakeAdapterPath string
+	// ClaudeAdapterPath and CodexAdapterPath (iteration 08) enable the real
+	// vendor adapters with explicit absolute executable paths, used
+	// literally (spaces allowed), never persisted or sent to the plane;
+	// empty disables that vendor on this node whatever is installed.
+	ClaudeAdapterPath string
+	CodexAdapterPath  string
 	// GOOS is the host OS the CLI's runtime entrypoint supplies
 	// (iteration 05): task execution decisions take it explicitly; an
 	// empty or unsupported value refuses every task start.
@@ -229,6 +235,13 @@ type deps struct {
 	// barriers).
 	taskAuthHook func(id string)
 	taskGCHook   func()
+	// taskDrainHook, when non-nil, runs at the start of each of a
+	// supervised execution's pipe drains, before it reads (tests only: a
+	// drain scheduled late).
+	taskDrainHook func()
+	// taskFinalRead, when non-nil, replaces the final-file reader
+	// (iteration 08; tests injecting read faults).
+	taskFinalRead func(*finalSource, adapter.FinalExtractor) (adapter.FinalMessage, error)
 }
 
 // closeGrace is the production bound of a graceful stream close.

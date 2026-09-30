@@ -30,6 +30,10 @@ const (
 // the fake adapter enabled.
 const FakeAdapterWarning = "fake adapter enabled: test/demo adapter; never calls a model"
 
+// DarwinVendorWarning is the fixed warning logged once when a sidecar on
+// macOS starts with the Claude or Codex adapter enabled (iteration 08).
+const DarwinVendorWarning = "claude/codex adapter enabled on macOS: the worker recipe is Linux-qualified and macOS vendor sandbox and exit behavior are UNVERIFIED; consult the support catalog before production use"
+
 // roleEnv is the worker's role configuration for one Run: the adapter
 // registry and the enabled executables (adapter ID to absolute path),
 // never sent to the plane.
@@ -111,7 +115,7 @@ func openManual(p string) (*os.File, error) {
 func (d *deps) probe(ctx context.Context, env roleEnv, adapterID string) error {
 	exe, ok := env.executables[adapterID]
 	if !ok {
-		return checkError("adapter", contract.ReasonAdapterDisabled, "%s adapter is disabled on node; start sidecar with --fake-adapter ABSOLUTE_PATH", adapterID)
+		return checkError("adapter", contract.ReasonAdapterDisabled, "%s adapter is disabled on node; start sidecar with --%s-adapter ABSOLUTE_PATH", adapterID, adapterID)
 	}
 	a, ok := env.adapters.Lookup(adapterID)
 	if !ok {
@@ -135,7 +139,8 @@ func (d *deps) probe(ctx context.Context, env roleEnv, adapterID string) error {
 }
 
 // checkCandidate is a registration validation's worker checks, in order:
-// instruction, runbook, then the adapter executable.
+// instruction, runbook, the qualified model/effort selection (iteration
+// 08, pure: never a paid probe), then the adapter executable.
 func (d *deps) checkCandidate(ctx context.Context, env roleEnv, c contract.RoleConfig) error {
 	if err := d.checkManual(ctx, "instruction", c.Instruction); err != nil {
 		return err
@@ -143,13 +148,32 @@ func (d *deps) checkCandidate(ctx context.Context, env roleEnv, c contract.RoleC
 	if err := d.checkManual(ctx, "runbook", c.Runbook); err != nil {
 		return err
 	}
+	if err := checkSelection(c.Adapter, c.Model, c.Effort); err != nil {
+		return err
+	}
 	return d.probe(ctx, env, c.Adapter)
+}
+
+// checkSelection maps a refused model/effort selection to the role error:
+// invalid_argument, field model or effort, reason probe_failed, the
+// adapter's fixed safe message naming its supported pair.
+func checkSelection(adapterID, model, effort string) error {
+	err := adapter.ValidateSelection(adapterID, model, effort)
+	if err == nil {
+		return nil
+	}
+	var se *adapter.SelectionError
+	field := "model"
+	if errors.As(err, &se) {
+		field = se.Field
+	}
+	return checkError(field, contract.ReasonProbeFailed, "%s", err.Error())
 }
 
 // checkCycle is one ready-check cycle over an installed snapshot: each
 // distinct enabled adapter executable is probed once and its result
-// shared; each role's two manuals are checked. A failed file check makes
-// only that role false.
+// shared; each role's selection is revalidated and its two manuals are
+// checked. A failed selection or file check makes only that role false.
 func (d *deps) checkCycle(ctx context.Context, env roleEnv, roles []contract.RoleRecord) []bool {
 	probes := map[string]bool{}
 	for _, r := range roles {
@@ -166,7 +190,8 @@ func (d *deps) checkCycle(ctx context.Context, env roleEnv, roles []contract.Rol
 		if ctx.Err() != nil {
 			return make([]bool, len(roles))
 		}
-		out[i] = probes[r.Adapter] && d.checkManual(ctx, "instruction", r.Instruction) == nil && d.checkManual(ctx, "runbook", r.Runbook) == nil
+		out[i] = probes[r.Adapter] && checkSelection(r.Adapter, r.Model, r.Effort) == nil &&
+			d.checkManual(ctx, "instruction", r.Instruction) == nil && d.checkManual(ctx, "runbook", r.Runbook) == nil
 	}
 	return out
 }

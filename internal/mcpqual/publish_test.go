@@ -45,12 +45,42 @@ func tempRepo(t *testing.T) string {
 	// the setup guide are read-only links to the real repository.
 	copyFile(CatalogJSONPath)
 	copyFile(CatalogMDPath)
-	for _, rel := range []string{SetupDocPath, filepath.Join("tests", "testdata", "cli-help")} {
+	// docs/real-adapters.md and the iteration 08 evidence are linked from
+	// the catalog's Markdown and JSON (read-only links too).
+	for _, rel := range []string{SetupDocPath, filepath.Join("docs", "real-adapters.md"), filepath.Join("tests", "testdata", "cli-help"),
+		filepath.Join("tests", "testdata", "real-adapters")} {
 		if err := os.Symlink(filepath.Join(root, rel), filepath.Join(repo, rel)); err != nil {
 			t.Fatal(err)
 		}
 	}
+	alignVersions(t, repo, map[string]string{"claude": "2.1.282 (Claude Code)", "codex": "codex-cli 0.156.1"})
 	return repo
+}
+
+// alignVersions records the fake vendors' versions (the 07b help-capture
+// versions the fixture runs observe) as the scratch catalog's versions,
+// canonically rendered: publication compares a run's observed version with
+// the catalog's, and the real catalog's Claude/Codex versions are the
+// iteration 08 worker qualification's, which these fakes do not report.
+func alignVersions(t *testing.T, repo string, versions map[string]string) {
+	t.Helper()
+	p := filepath.Join(repo, CatalogJSONPath)
+	es, err := catalog.Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range es {
+		if v, ok := versions[es[i].ID]; ok {
+			es[i].Version = v
+		}
+	}
+	b, err := RenderCatalog(es)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func qualifiedRegistry() Registry {
@@ -525,7 +555,10 @@ func TestPublishConflictsAndRetry(t *testing.T) {
 	}
 	t.Run("unrelated-json-edit", func(t *testing.T) {
 		defer reset()
-		edited := bytes.Replace(baseJSON, []byte("Candidate worker use"), []byte("Candidate worker usage"), 1)
+		edited := bytes.Replace(baseJSON, []byte("prints the response to stdout and exits"), []byte("prints its response to stdout and exits"), 1)
+		if bytes.Equal(edited, baseJSON) {
+			t.Fatal("the unrelated edit's phrase is not in the catalog")
+		}
 		os.WriteFile(filepath.Join(repo, CatalogJSONPath), edited, 0o644)
 		refused(t, "changed since the run started", edited, baseMD)
 		noEvidence(t)

@@ -1008,7 +1008,7 @@ func TestPlanePlatform(t *testing.T) {
 		}
 	}
 	bench := devcheck.BenchSteps()
-	if len(bench) != 7 || strings.Join(bench[1].Argv, " ") != benchPlane {
+	if len(bench) != 8 || strings.Join(bench[1].Argv, " ") != benchPlane {
 		t.Fatalf("bench plan = %+v", bench)
 	}
 	if _, err := devcheck.NativeSteps("linux"); err == nil {
@@ -1021,7 +1021,7 @@ func TestPlanePlatform(t *testing.T) {
 		"TestPlaneReissue", "TestPlaneReissue/process", "TestPlaneReissue/contracts", "TestPlaneStatus", "TestPlaneStatus/inspection", "TestPlaneStatus/expiry-warnings", "TestPlanePlatform"}
 	// The 28 iteration-02 names are preserved first; iteration 03 appends
 	// the node names (checked by TestNodePlatform).
-	if got := devcheck.NativeRequiredTests(); len(got) != 273 || !slices.Equal(got[:28], required) {
+	if got := devcheck.NativeRequiredTests(); len(got) != 312 || !slices.Equal(got[:28], required) {
 		t.Fatalf("native required = %v", got)
 	}
 	// Every required plane name exists as a top-level test or mandatory

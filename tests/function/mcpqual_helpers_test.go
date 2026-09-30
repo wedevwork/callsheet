@@ -285,12 +285,35 @@ func qualRepo(t *testing.T) string {
 			t.Fatal(err)
 		}
 	}
-	for _, rel := range []string{mcpqual.CatalogJSONPath, mcpqual.CatalogMDPath, mcpqual.SetupDocPath} {
+	// docs/real-adapters.md (iteration 08) is linked from the catalog's
+	// Markdown, whose links the publication tests resolve.
+	for _, rel := range []string{mcpqual.CatalogJSONPath, mcpqual.CatalogMDPath, mcpqual.SetupDocPath, "docs/real-adapters.md"} {
 		copyFile(rel)
 	}
 	entries, _ := os.ReadDir(filepath.Join(root, "tests", "testdata", "cli-help"))
 	for _, e := range entries {
 		copyFile(filepath.Join("tests", "testdata", "cli-help", e.Name()))
+	}
+	// The iteration 08 worker evidence is linked read-only; the fake
+	// vendors report their fixture versions, which the scratch catalog
+	// records (publication compares a run's observed version with it).
+	if err := os.Symlink(filepath.Join(root, "tests", "testdata", "real-adapters"), filepath.Join(repo, "tests", "testdata", "real-adapters")); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(repo, mcpqual.CatalogJSONPath)
+	es, err := catalog.Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range es {
+		es[i].Version = fakeVersions[es[i].ID]
+	}
+	b, err := mcpqual.RenderCatalog(es)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, b, 0o644); err != nil {
+		t.Fatal(err)
 	}
 	return repo
 }

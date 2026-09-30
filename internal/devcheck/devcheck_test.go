@@ -279,18 +279,19 @@ func TestStagePlanning(t *testing.T) {
 	if code != 0 {
 		t.Fatal(code)
 	}
-	if got := strings.Join(f.argvs(), "|"); got != "go test -count=1 -timeout=180s ./...|go test -race -count=1 -timeout=180s ./..." {
+	if got := strings.Join(f.argvs(), "|"); got != "go test -count=1 -timeout=180s ./...|go test -race -count=1 -timeout=180s ./..."+
+		"|go test -tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$ -count=1|go test -race -tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$ -count=1" {
 		t.Fatalf("linux test = %s", got)
 	}
-	if !strings.Contains(strings.Join(f.calls[1].env, " "), "CGO_ENABLED=1") {
-		t.Fatal("race run needs CGO_ENABLED=1")
+	if !strings.Contains(strings.Join(f.calls[1].env, " "), "CGO_ENABLED=1") || !strings.Contains(strings.Join(f.calls[3].env, " "), "CGO_ENABLED=1") {
+		t.Fatal("race runs need CGO_ENABLED=1")
 	}
 	if _, err := os.Stat(scratchFrom(out)); !os.IsNotExist(err) {
 		t.Fatal("successful scratch not deleted")
 	}
 	f = &fakeRunner{}
 	runDriver(t, "darwin", f, "test")
-	if len(f.calls) != 1 {
+	if len(f.calls) != 2 || !strings.Contains(f.argvs()[1], "-tags=realadaptercheck ./internal/sidecar") || strings.Contains(f.argvs()[1], "-race") {
 		t.Fatalf("darwin test = %v", f.argvs())
 	}
 	f = &fakeRunner{}
@@ -301,7 +302,8 @@ func TestStagePlanning(t *testing.T) {
 		"go test ./internal/sidecar -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s|"+
 		"go test ./internal/adapter -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s|"+
 		"go test ./internal/mcp -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s|"+
-		"go test ./internal/mcpqual -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s" {
+		"go test ./internal/mcpqual -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s|"+
+		"go test ./internal/sidecar -tags=realadaptercheck -run=^$ -bench=^BenchmarkRealAdapterFile$ -benchmem -benchtime=3x -count=1 -timeout=180s" {
 		t.Fatalf("bench = %s", got)
 	}
 	f = &fakeRunner{}
@@ -318,7 +320,7 @@ func TestCoverageStage(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("coverage = %d %s", code, errOut)
 	}
-	want := "go test -count=1 -covermode=atomic -coverpkg=./internal/...,./cmd/... -coverprofile=" + outPath + " ./internal/... ./cmd/..."
+	want := "go test -count=1 -tags=realadaptercheck -covermode=atomic -coverpkg=./internal/...,./cmd/... -coverprofile=" + outPath + " ./internal/... ./cmd/..."
 	if f.argvs()[0] != want || f.argvs()[1] != "go tool cover -func="+outPath || !strings.HasPrefix(f.argvs()[2], "go list -f") {
 		t.Fatalf("coverage plan = %v", f.argvs())
 	}
@@ -386,12 +388,14 @@ func TestAllStopsAtFirstFailure(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("all = %d %s", code, errOut)
 	}
-	// test(2) + coverage(3) + bench(7) + cross(12), in that order.
+	// test(4) + coverage(3) + bench(8) + cross(12), in that order.
 	a := f.argvs()
-	if len(a) != 24 || !strings.Contains(a[0], "go test -count=1") || !strings.Contains(a[2], "-coverprofile") || !strings.Contains(a[5], "-bench") ||
-		!strings.Contains(a[6], "./internal/plane -run=^$ -bench=.") || !strings.Contains(a[7], "./internal/contract -run=^$ -bench=.") ||
-		!strings.Contains(a[8], "./internal/sidecar -run=^$ -bench=.") || !strings.Contains(a[9], "./internal/adapter -run=^$ -bench=.") ||
-		!strings.Contains(a[10], "./internal/mcp -run=^$ -bench=.") || !strings.Contains(a[11], "./internal/mcpqual -run=^$ -bench=.") || !strings.Contains(a[12], "go build") {
+	if len(a) != 27 || !strings.Contains(a[0], "go test -count=1") || !strings.Contains(a[2], "-tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$") ||
+		!strings.Contains(a[4], "-coverprofile") || !strings.Contains(a[7], "-bench") ||
+		!strings.Contains(a[8], "./internal/plane -run=^$ -bench=.") || !strings.Contains(a[9], "./internal/contract -run=^$ -bench=.") ||
+		!strings.Contains(a[10], "./internal/sidecar -run=^$ -bench=.") || !strings.Contains(a[11], "./internal/adapter -run=^$ -bench=.") ||
+		!strings.Contains(a[12], "./internal/mcp -run=^$ -bench=.") || !strings.Contains(a[13], "./internal/mcpqual -run=^$ -bench=.") ||
+		!strings.Contains(a[14], "-bench=^BenchmarkRealAdapterFile$") || !strings.Contains(a[15], "go build") {
 		t.Fatalf("all order = %v", a)
 	}
 	f = &fakeRunner{fail: "-bench", coverTotal: "81%", cmdList: cmdList, profile: goodProfile}

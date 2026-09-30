@@ -688,7 +688,7 @@ func CheckEffort(adapterID, effort string, lookup AdapterLookup) error {
 	}
 	info, ok := lookup(adapterID)
 	if !ok {
-		return fieldErr("adapter", "unknown adapter; registered adapters: fake")
+		return fieldErr("adapter", "unknown adapter; registered adapters: claude, codex, fake")
 	}
 	for _, e := range info.Efforts {
 		if e == effort {

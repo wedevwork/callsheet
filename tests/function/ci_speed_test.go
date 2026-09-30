@@ -185,8 +185,25 @@ var speedTaskNative = []string{
 	"TestTaskRecoveryBoundary", "TestTaskRecoveryBoundary/disconnect", "TestTaskRecoveryBoundary/remaining-capacity", "TestTaskRecoveryBoundary/recovery-remove",
 }
 
-// speedTaskProcess is the sidecar package's native tuple (iteration 05).
-var speedTaskProcess = []string{"TestTaskExecutionContract", "TestTaskExecutionContract/process"}
+// speedTaskProcess is the sidecar package's native tuple (iteration 05),
+// with iteration 08's tagged contract and its five subtests appended.
+var speedTaskProcess = []string{"TestTaskExecutionContract", "TestTaskExecutionContract/process",
+	"TestRealAdapterLocal", "TestRealAdapterLocal/selection", "TestRealAdapterLocal/file", "TestRealAdapterLocal/ordering",
+	"TestRealAdapterLocal/diagnostic", "TestRealAdapterLocal/restart"}
+
+// speedRealNative are iteration 08's nine function parents, each followed
+// by its mandatory children.
+var speedRealNative = []string{
+	"TestRealAdapterRegistration", "TestRealAdapterRegistration/registry", "TestRealAdapterRegistration/paths", "TestRealAdapterRegistration/selection",
+	"TestRealAdapterProbe", "TestRealAdapterProbe/claude", "TestRealAdapterProbe/codex", "TestRealAdapterProbe/refusal",
+	"TestRealAdapterInvocation", "TestRealAdapterInvocation/claude", "TestRealAdapterInvocation/codex", "TestRealAdapterInvocation/stdin",
+	"TestRealAdapterClaudeFinal", "TestRealAdapterClaudeFinal/success", "TestRealAdapterClaudeFinal/failure", "TestRealAdapterClaudeFinal/malformed",
+	"TestRealAdapterCodexFinal", "TestRealAdapterCodexFinal/success", "TestRealAdapterCodexFinal/absent", "TestRealAdapterCodexFinal/unsafe", "TestRealAdapterCodexFinal/cleanup",
+	"TestRealAdapterOutcomes", "TestRealAdapterOutcomes/exits", "TestRealAdapterOutcomes/denials", "TestRealAdapterOutcomes/controls", "TestRealAdapterOutcomes/replay",
+	"TestRealAdapterCatalog", "TestRealAdapterCatalog/recipes", "TestRealAdapterCatalog/evidence", "TestRealAdapterCatalog/ownership",
+	"TestRealAdapterDispatch", "TestRealAdapterDispatch/claude", "TestRealAdapterDispatch/codex", "TestRealAdapterDispatch/no-vendors",
+	"TestRealAdapterSmokeGate", "TestRealAdapterSmokeGate/default-off", "TestRealAdapterSmokeGate/ci-off", "TestRealAdapterSmokeGate/absent", "TestRealAdapterSmokeGate/enabled",
+}
 
 // taskProcessEvents is a passing sidecar-package stream for the tuple
 // except drop.
@@ -645,7 +662,7 @@ func TestCISpeedJobs(t *testing.T) {
 func qualifyingStream(drop string) string {
 	pkg := devcheck.NativePackage
 	evs := []map[string]any{synth("start", pkg, "")}
-	for _, name := range append(append(append(append(append(append(slices.Clone(speedNative), speedNodeNative...), speedRoleNative...), speedTaskNative...), speedControlNative...), speedMCPNative...), speedQualNative...) {
+	for _, name := range append(append(append(append(append(append(append(slices.Clone(speedNative), speedNodeNative...), speedRoleNative...), speedTaskNative...), speedControlNative...), speedMCPNative...), speedQualNative...), speedRealNative...) {
 		if name != drop {
 			evs = append(evs, synth("run", pkg, name), synth("pass", pkg, name))
 		}
@@ -657,8 +674,8 @@ func qualifyingStream(drop string) string {
 // FP-3: validator, plans, native evidence and documentation agree.
 func TestCISpeedPolicy(t *testing.T) {
 	t.Run("native", func(t *testing.T) {
-		if got := devcheck.NativeRequiredTests(); len(got) != 273 || len(speedQualNative) != 51 || !slices.Equal(got[:28], speedNative) || !slices.Equal(got[28:58], speedNodeNative) || !slices.Equal(got[58:87], speedRoleNative) || !slices.Equal(got[87:128], speedTaskNative) ||
-			!slices.Equal(got[128:145], speedControlNative) || !slices.Equal(got[145:222], speedMCPNative) || !slices.Equal(got[222:], speedQualNative) {
+		if got := devcheck.NativeRequiredTests(); len(got) != 312 || len(speedQualNative) != 51 || len(speedRealNative) != 39 || !slices.Equal(got[:28], speedNative) || !slices.Equal(got[28:58], speedNodeNative) || !slices.Equal(got[58:87], speedRoleNative) || !slices.Equal(got[87:128], speedTaskNative) ||
+			!slices.Equal(got[128:145], speedControlNative) || !slices.Equal(got[145:222], speedMCPNative) || !slices.Equal(got[222:273], speedQualNative) || !slices.Equal(got[273:], speedRealNative) {
 			t.Fatalf("native required = %v", got)
 		}
 		if err := devcheck.CheckNativeResults("darwin", strings.NewReader(qualifyingStream(""))); err != nil {

@@ -399,6 +399,24 @@ func TestControlProtocol(t *testing.T) {
 	})
 }
 
+// TestControlLeaseDelayedDrain is the regression for review C4: the
+// lease's local-slot contract with every pipe drain starting 50 ms late,
+// so the stopped child's "tail" is still in its OS pipe when the child
+// exits. The fixture must not move the fake clock (which could expire the
+// one-second drain bound and mark the log incomplete) until both drains
+// finished, whichever way the session ended.
+func TestControlLeaseDelayedDrain(t *testing.T) {
+	t.Parallel()
+	for _, byAck := range []bool{false, true} {
+		t.Run(map[bool]string{false: "closed", true: "unacknowledged"}[byAck], func(t *testing.T) {
+			t.Parallel()
+			sidecarRecoveryRemoveOpts(t, byAck, taskOpts{adjust: func(d *deps) {
+				d.taskDrainHook = func() { time.Sleep(50 * time.Millisecond) }
+			}})
+		})
+	}
+}
+
 // TestControlLease is UT FP-3 on the sidecar, delegated from
 // tests/function (TestControlNodeLoss) with the plane's: after the plane
 // reclaimed an expired node's reservation, the returning worker keeps its

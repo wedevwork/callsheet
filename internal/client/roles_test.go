@@ -142,7 +142,7 @@ func TestRoleAPIContract(t *testing.T) {
 				contract.CodeInvalidArgument, "inflight must be an integer from 0"},
 			"list test only": {jsonRoute("5", 200, `{"version":5,"roles":[`+strings.Replace(viewJSON(t, a, 1), `"adapter_test_only":true`, `"adapter_test_only":false`, 1)+`]}`), func() error { _, err := c.ListRoles(bg); return err },
 				contract.CodeInvalidArgument, "adapter_test_only"},
-			"list unknown adapter": {jsonRoute("5", 200, `{"version":5,"roles":[`+strings.Replace(viewJSON(t, a, 1), `"adapter":"fake"`, `"adapter":"codex"`, 1)+`]}`), func() error { _, err := c.ListRoles(bg); return err },
+			"list unknown adapter": {jsonRoute("5", 200, `{"version":5,"roles":[`+strings.Replace(viewJSON(t, a, 1), `"adapter":"fake"`, `"adapter":"nosuch-adapter"`, 1)+`]}`), func() error { _, err := c.ListRoles(bg); return err },
 				contract.CodeInvalidArgument, "unknown adapter"},
 			"list float": {jsonRoute("5", 200, `{"version":5,"roles":[`+strings.Replace(viewJSON(t, a, 1), `"concurrency":2`, `"concurrency":2.0`, 1)+`]}`), func() error { _, err := c.ListRoles(bg); return err },
 				contract.CodeInvalidArgument, "integer"},

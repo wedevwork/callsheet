@@ -401,7 +401,7 @@ func checkAdapter(c RoleConfig, lookup AdapterLookup) error {
 	// the allowed values.
 	info, ok := lookup(c.Adapter)
 	if !ok {
-		return fieldErr("adapter", "unknown adapter; registered adapters: fake")
+		return fieldErr("adapter", "unknown adapter; registered adapters: claude, codex, fake")
 	}
 	for _, e := range info.Efforts {
 		if e == c.Effort {

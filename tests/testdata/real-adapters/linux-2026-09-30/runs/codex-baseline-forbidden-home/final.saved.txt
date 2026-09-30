@@ -1,0 +1,1 @@
+Ran the exact command. It failed with exit code 1: `Read-only file system`. The file was not written.

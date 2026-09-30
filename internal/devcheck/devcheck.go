@@ -224,6 +224,18 @@ func TestSteps(goos string) []Step {
 		steps = append(steps, Step{Name: "test -race", Env: []string{"CGO_ENABLED=1"},
 			Argv: []string{"go", "test", "-race", "-count=1", "-timeout=180s", "./..."}})
 	}
+	// Iteration 08: the ordinary-only tagged sidecar contract, as its own
+	// step (and its race counterpart where the suite has one), on the task
+	// platforms only.
+	if goos != "linux" && goos != "darwin" {
+		return steps
+	}
+	tagged := []string{"-tags=" + RealAdapterTag, "./internal/sidecar", "-run=^TestRealAdapterLocal$", "-count=1"}
+	steps = append(steps, Step{Name: "test " + RealAdapterTag, Argv: append([]string{"go", "test"}, tagged...)})
+	if goos == "linux" {
+		steps = append(steps, Step{Name: "test " + RealAdapterTag + " -race", Env: []string{"CGO_ENABLED=1"},
+			Argv: append([]string{"go", "test", "-race"}, tagged...)})
+	}
 	return steps
 }
 
@@ -248,12 +260,19 @@ func BenchSteps() []Step {
 		pkg("bench adapter", "./internal/adapter"),
 		pkg("bench mcp", "./internal/mcp"),
 		pkg("bench mcpqual", "./internal/mcpqual"),
+		// Iteration 08: the tagged final-file helper benchmark (the vendor
+		// extractor and invocation benchmarks run in "bench adapter").
+		{Name: "bench sidecar " + RealAdapterTag, Argv: []string{"go", "test", "./internal/sidecar", "-tags=" + RealAdapterTag, "-run=^$",
+			"-bench=^BenchmarkRealAdapterFile$", "-benchmem", "-benchtime=3x", "-count=1", "-timeout=180s"}},
 	}
 }
 
-// CoverageSteps returns the profile run, the func report and the cmd listing.
+// CoverageSteps returns the profile run, the func report and the cmd
+// listing. The profile run compiles the realadaptercheck tag (iteration 08)
+// so its single profile includes the tagged sidecar contract.
 func CoverageSteps(profile string) (test, report, list Step) {
-	test = Step{Name: "coverage", Argv: []string{"go", "test", "-count=1", "-covermode=atomic", "-coverpkg=./internal/...,./cmd/...", "-coverprofile=" + profile, "./internal/...", "./cmd/..."}}
+	test = Step{Name: "coverage", Argv: []string{"go", "test", "-count=1", "-tags=" + RealAdapterTag, "-covermode=atomic", "-coverpkg=./internal/...,./cmd/...",
+		"-coverprofile=" + profile, "./internal/...", "./cmd/..."}}
 	report = Step{Name: "coverage report", Argv: []string{"go", "tool", "cover", "-func=" + profile}}
 	list = Step{Name: "list cmd packages", Argv: []string{"go", "list", "-f", "{{.ImportPath}}|{{len .GoFiles}}", "./cmd/..."}}
 	return

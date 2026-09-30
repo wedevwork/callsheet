@@ -175,8 +175,10 @@ func TestControlPolicy(t *testing.T) {
 		// names; no 06b name before them; the sidecar process tuple is
 		// unchanged.
 		req := NativeRequiredTests()
-		if len(req) != 145+len(mcpNames())+len(qualNames()) || strings.Join(req[128:141], ",") != strings.Join(wantControlNative, ",") || strings.Join(req[87:128], ",") != strings.Join(wantTaskSuffix, ",") ||
-			strings.Join(req[141:145], ",") != strings.Join(wantTaskControlNative, ",") || strings.Join(req[145:222], ",") != strings.Join(mcpNames(), ",") || strings.Join(req[222:], ",") != strings.Join(qualNames(), ",") {
+		if len(req) != 145+len(mcpNames())+len(qualNames())+len(realNames()) || strings.Join(req[128:141], ",") != strings.Join(wantControlNative, ",") ||
+			strings.Join(req[87:128], ",") != strings.Join(wantTaskSuffix, ",") || strings.Join(req[141:145], ",") != strings.Join(wantTaskControlNative, ",") ||
+			strings.Join(req[145:222], ",") != strings.Join(mcpNames(), ",") || strings.Join(req[222:273], ",") != strings.Join(qualNames(), ",") ||
+			strings.Join(req[273:], ",") != strings.Join(realNames(), ",") {
 			t.Fatalf("native suffix %v", req[128:])
 		}
 		for _, n := range req[:141] {
@@ -184,7 +186,9 @@ func TestControlPolicy(t *testing.T) {
 				t.Fatalf("a 06b name %s is required before the 06b suffix", n)
 			}
 		}
-		if strings.Join(NativeTaskProcessTests(), ",") != "TestTaskExecutionContract,TestTaskExecutionContract/process" {
+		// The sidecar tuple keeps its iteration 05 pair first; iteration 08
+		// appends only its tagged contract's six names.
+		if strings.Join(NativeTaskProcessTests(), ",") != "TestTaskExecutionContract,TestTaskExecutionContract/process,"+strings.Join(realLocal, ",") {
 			t.Fatal("the sidecar native tuple changed")
 		}
 		// Missing, failed or skipped native control evidence fails the
@@ -279,9 +283,15 @@ func TestControlPolicy(t *testing.T) {
 		if StressCount != 20 || stressTestTimeout != "6m" || maxConcurrentCPU != 3 || len(stressWaves) != 0 {
 			t.Fatal("the stress budget policy changed")
 		}
+		// The complete suite (with tests/function) keeps its shared 180 s
+		// bound; iteration 08's tagged step runs internal/sidecar's one
+		// contract only.
 		for _, st := range TestSteps("linux") {
-			if !slices.Contains(st.Argv, "-timeout=180s") {
+			if slices.Contains(st.Argv, "./...") && !slices.Contains(st.Argv, "-timeout=180s") {
 				t.Fatalf("the function package timeout changed: %v", st.Argv)
+			}
+			if !slices.Contains(st.Argv, "./...") && !slices.Equal(st.Argv[len(st.Argv)-3:], []string{"./internal/sidecar", "-run=^TestRealAdapterLocal$", "-count=1"}) {
+				t.Fatalf("a partial test step other than the tagged sidecar contract: %v", st.Argv)
 			}
 		}
 	})

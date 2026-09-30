@@ -21,7 +21,7 @@ import (
 const (
 	trustUsage   = "--plane URL (--ca FILE | --ca-fingerprint SHA256)"
 	enrollUsage  = trustUsage + " [--state-dir PATH]"
-	sidecarUsage = "[--state-dir PATH] [--fake-adapter PATH]"
+	sidecarUsage = "[--state-dir PATH] [--claude-adapter PATH] [--codex-adapter PATH] [--fake-adapter PATH]"
 
 	trustHelp = "  --plane URL        the plane's https origin, e.g. https://plane.example:8443; a DNS name\n" +
 		"                     or IP address the plane's certificate names (callsheet plane status)\n" +
@@ -45,11 +45,24 @@ const (
 		"    --ca-fingerprint sha256:<fingerprint from callsheet plane status>\n" +
 		"  callsheet sidecar run\n"
 	sidecarRunDetails = "Flags:\n" + sidecarStateHelp +
+		"  --claude-adapter PATH\n" +
+		"                     enable the claude worker adapter with this absolute path to the\n" +
+		"                     Claude Code executable (qualified: version 2.1.285 (Claude Code),\n" +
+		"                     model sonnet, effort low)\n" +
+		"  --codex-adapter PATH\n" +
+		"                     enable the codex worker adapter with this absolute path to the\n" +
+		"                     Codex CLI executable (qualified: version codex-cli 0.159.0, model\n" +
+		"                     gpt-6.1-sol, effort low)\n" +
 		"  --fake-adapter PATH\n" +
 		"                     enable the fake adapter with this absolute executable path:\n" +
 		"                     test/demo adapter; never calls a model. Without it roles using\n" +
 		"                     the fake adapter fail validation on this node. Not persisted:\n" +
-		"                     give it on every start\n\n" +
+		"                     give it on every start\n" +
+		"An adapter flag is used literally (no PATH lookup; spaces allowed), never sent to the\n" +
+		"plane and never persisted: give it on every start. Without it roles using that\n" +
+		"adapter fail validation on this node, whatever is installed. The claude and codex\n" +
+		"recipes are qualified on Linux only; on macOS they run with a warning that vendor\n" +
+		"sandbox and exit behavior are unverified (see docs/support-catalog.md).\n\n" +
 		"Connects out to the enrolled plane over verified TLS (it listens on nothing), proves\n" +
 		"the protocol version and heartbeats every 5 s, reporting each configured role's\n" +
 		"readiness (its manuals readable and its adapter executable invocable, checked locally\n" +
@@ -195,22 +208,39 @@ func sidecarEnroll(ctx context.Context, goos string, c *Command, args []string, 
 }
 
 func sidecarRun(ctx context.Context, goos string, c *Command, args []string, out, errOut io.Writer) int {
-	var fake single
-	f, _, code, ok := parseRemote(c, args, false, true, false, 0, errOut, func(fs *flag.FlagSet) { fs.Var(&fake, "fake-adapter", "") })
+	var fake, claude, codex single
+	f, _, code, ok := parseRemote(c, args, false, true, false, 0, errOut, func(fs *flag.FlagSet) {
+		fs.Var(&claude, "claude-adapter", "")
+		fs.Var(&codex, "codex-adapter", "")
+		fs.Var(&fake, "fake-adapter", "")
+	})
 	if !ok {
 		return code
 	}
 	if fake.set && (fake.val == "" || !filepath.IsAbs(fake.val)) {
 		return usageError(errOut, c, "--fake-adapter must be an absolute path to the fake adapter executable")
 	}
+	for _, v := range []struct {
+		id string
+		f  *single
+	}{{"claude", &claude}, {"codex", &codex}} {
+		if v.f.set && (v.f.val == "" || !filepath.IsAbs(v.f.val)) {
+			return usageError(errOut, c, "--"+v.id+"-adapter must be an absolute path to the "+v.id+" executable")
+		}
+	}
 	dir, err := f.resolveSidecar(goos)
 	if err != nil {
 		return planeFail(errOut, err)
 	}
 	logger := logging.Component(logging.New(errOut, slog.LevelInfo), "sidecar")
-	err = sidecar.Run(ctx, sidecar.RunOptions{StateDir: dir, SoftwareVersion: Version, Logger: logger, FakeAdapterPath: fake.val, GOOS: goos})
+	err = runSidecar(ctx, sidecar.RunOptions{StateDir: dir, SoftwareVersion: Version, Logger: logger, FakeAdapterPath: fake.val,
+		ClaudeAdapterPath: claude.val, CodexAdapterPath: codex.val, GOOS: goos})
 	return planeFail(errOut, err)
 }
+
+// runSidecar is sidecar run's entry point (replaced by the CLI option
+// tests only, to observe the options without starting a sidecar).
+var runSidecar = sidecar.Run
 
 // joinFields renders one tab-separated row.
 func joinFields(fields []string) string { return strings.Join(fields, "\t") + "\n" }

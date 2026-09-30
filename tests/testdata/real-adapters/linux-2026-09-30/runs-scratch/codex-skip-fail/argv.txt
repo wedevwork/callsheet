@@ -1,0 +1,1 @@
+codex -a never exec --model callsheet-no-such-model -c model_reasoning_effort=\"low\" --json --skip-git-repo-check --output-last-message /tmp/callsheet-08-qual/scratch-cwd/codex-skip-fail/final.txt - 
