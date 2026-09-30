@@ -26,7 +26,8 @@ const (
 		"go test ./internal/sidecar -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s|" +
 		"go test ./internal/adapter -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s|" +
 		"go test ./internal/mcp -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s|" +
-		"go test ./internal/mcpqual -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s"
+		"go test ./internal/mcpqual -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s|" +
+		"go test ./internal/sidecar -tags=realadaptercheck -run=^$ -bench=^BenchmarkRealAdapterFile$ -benchmem -benchtime=3x -count=1 -timeout=180s"
 )
 
 // wantRoleDelegations is the design's four-column table, literally.
@@ -115,7 +116,7 @@ func TestRolePolicy(t *testing.T) {
 		// role tests and their 20 subtests (iteration 05's 41 task names
 		// and iteration 06a's 13 control names follow them).
 		req := NativeRequiredTests()
-		if len(req) != 145+len(mcpNames())+len(qualNames()) || strings.Join(req[58:87], ",") != strings.Join(roleNames(), ",") || len(roleNames()) != 29 {
+		if len(req) != 145+len(mcpNames())+len(qualNames())+len(realNames()) || strings.Join(req[58:87], ",") != strings.Join(roleNames(), ",") || len(roleNames()) != 29 {
 			t.Fatalf("native required = %v", req)
 		}
 		f := &fakeRunner{native: stream(qualification()...)}

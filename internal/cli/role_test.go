@@ -211,7 +211,7 @@ func TestRoleCLI(t *testing.T) {
 			{with("--timeout", ""), "--timeout must be a Go duration", true},
 			{with("--timeout", "-1m"), "must not be negative", false},
 			{mut("--effort", "max"), "effort is not allowed for adapter fake", false},
-			{mut("--adapter", "codex"), "unknown adapter", false},
+			{mut("--adapter", "nosuch-adapter"), "unknown adapter", false},
 			{mut("--model", "  "), "model must be nonblank", false},
 			{mut("--instruction", "manuals/i.md"), "instruction must be an absolute", false},
 			{mut("--instruction", fifo), "", false},
@@ -251,7 +251,7 @@ func TestRoleCLI(t *testing.T) {
 			{[]string{"role", "set", "worker-a"}, "at least one field flag"},
 			{[]string{"role", "set", "worker-a", "--node", roleNode}, "flag provided but not defined"},
 			{[]string{"role", "set", "worker-a", "--name", ""}, "name must be a 1-63 character slug"},
-			{[]string{"role", "set", "worker-a", "--adapter", "codex"}, "unknown adapter"},
+			{[]string{"role", "set", "worker-a", "--adapter", "nosuch-adapter"}, "unknown adapter"},
 			{[]string{"role", "set", "worker-a", "--concurrency", "x"}, "--concurrency must be an integer"},
 		} {
 			if code, _, errOut := exec(t, "linux", append(c.args, trust...)...); code != 2 || !strings.Contains(errOut, c.msg) {
@@ -385,7 +385,7 @@ func TestRoleCLI(t *testing.T) {
 	})
 	t.Run("help", func(t *testing.T) {
 		for leaf, wants := range map[string][]string{
-			"add":  {"Usage: callsheet role add ID --name NAME --node NODE --adapter fake", "test/demo adapter; never calls a model", "manual contents never leave the node", "[--timeout DURATION]", "--ca-fingerprint"},
+			"add":  {"Usage: callsheet role add ID --name NAME --node NODE --adapter ADAPTER", "test/demo adapter; never calls a model", "manual contents never leave the node", "[--timeout DURATION]", "--ca-fingerprint"},
 			"set":  {"Usage: callsheet role set ID [--name NAME]", "omitted fields keep their values", "node must be online"},
 			"ls":   {"NAME, ID, NODE, NODE_LIVENESS, ADAPTER", "sorted by name"},
 			"show": {"Usage: callsheet role show ID"},

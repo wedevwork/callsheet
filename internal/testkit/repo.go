@@ -117,6 +117,15 @@ func BuildTestBinaryAt(dir, pkg, name string) (string, error) {
 	return out, goCommand("test", "-c", "-o", out, pkg)
 }
 
+// BuildTaggedTestBinaryAt compiles pkg's tests with the build tags into
+// dir/name.test (iteration 08: the function suite's prebuilt
+// realadaptercheck sidecar binary; the tag reaches compilation, so its
+// tagged tests exist in the binary).
+func BuildTaggedTestBinaryAt(dir, pkg, name, tags string) (string, error) {
+	out := filepath.Join(dir, name+".test")
+	return out, goCommand("test", "-c", "-tags="+tags, "-o", out, pkg)
+}
+
 // EnvWithout returns environ minus the named variables (case-sensitive),
 // followed by extra.
 func EnvWithout(environ []string, names []string, extra ...string) []string {

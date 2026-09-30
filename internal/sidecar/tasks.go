@@ -574,16 +574,37 @@ func (s *taskSupervisor) waitStatus(w *taskWorker, g guardianProc, bounded bool)
 // then supervises it.
 func (s *taskSupervisor) run(w *taskWorker) {
 	s.event(evTaskPreparing, w)
-	inv, a, exe, reason := s.prepare(w)
+	prep, reason := s.prepare(w)
 	if reason != "" {
 		s.refuseStart(w, reason, nil, "", false)
 		return
 	}
+	a, exe := prep.a, prep.exe
 	scratch, err := s.plat.scratch(s.tmpRoot(), w.id())
 	if err != nil {
 		s.refuseStart(w, contract.ReasonScratchUnavailable, nil, "", false)
 		return
 	}
+	// Iteration 08: the invocation is built once the scratch directory
+	// exists (Codex names its final file there), then the declared final
+	// file's ownership is established; either failure is a definite
+	// refusal before any journal or guardian.
+	inv, err := a.Invocation(adapter.TaskInput{TaskID: w.id(), Model: w.start.Effective.Model, Effort: w.start.Effective.Effort, Prompt: prep.prompt,
+		ScratchDir: scratch})
+	if err != nil {
+		s.logger.Warn("task invocation refused", "task_id", w.id(), "adapter", w.start.Role.Adapter, "reason", "invalid_invocation")
+		s.refuseStart(w, contract.ReasonStartFailed, nil, scratch, false)
+		return
+	}
+	fin, err := ownFinal(inv, scratch)
+	if err != nil {
+		s.logger.Warn("task final-message file unavailable", "task_id", w.id(), "adapter", w.start.Role.Adapter, "reason", "final_file_setup")
+		s.refuseStart(w, contract.ReasonStartFailed, nil, scratch, false)
+		return
+	}
+	// The retained directory handle lives until extraction or cleanup
+	// finishes; every start, refusal, cancellation or error path closes it.
+	defer fin.close()
 	// Barrier 1: the durable task directory and prepared journal, before
 	// anything is spawned.
 	if err := s.writeJournal(w, s.journalOf(w, contract.JournalPrepared, nil), true); err != nil {
@@ -720,46 +741,58 @@ func (s *taskSupervisor) run(w *taskWorker) {
 	default:
 		// The guardian ended without confirming a launch: an adapter may
 		// have run. Never a definite refusal: the outcome is lost.
-		s.supervise(w, g, a, inv, p, scratch, nil, true)
+		s.supervise(w, g, a, inv, p, scratch, fin, nil, true)
 		return
 	}
 	s.event(evChildStarted, w)
 	s.signal()
-	s.supervise(w, g, a, inv, p, scratch, g.Status(), false)
+	s.supervise(w, g, a, inv, p, scratch, fin, g.Status(), false)
 }
 
-// prepare reads both manuals completely, composes the prompt and resolves
-// the enabled executable and invocation. A nonempty reason is a refusal.
-func (s *taskSupervisor) prepare(w *taskWorker) (adapter.Invocation, adapter.Adapter, string, string) {
+// preparation is a start's prelaunch resolution: the composed prompt and
+// the enabled adapter and executable (the invocation follows the scratch
+// directory).
+type preparation struct {
+	prompt []byte
+	a      adapter.Adapter
+	exe    string
+}
+
+// prepare reads both manuals completely, composes the prompt, resolves the
+// enabled executable and validates the effective model/effort selection
+// (iteration 08: a per-task override the worker has not qualified is
+// refused start_failed, with a safe local diagnostic). A nonempty reason
+// is a refusal.
+func (s *taskSupervisor) prepare(w *taskWorker) (preparation, string) {
 	if s.platErr != nil {
-		return adapter.Invocation{}, nil, "", contract.ReasonStartFailed
+		return preparation{}, contract.ReasonStartFailed
 	}
 	role := w.start.Role
 	ins, reason := s.readManual(role.Instruction)
 	if reason != "" {
-		return adapter.Invocation{}, nil, "", reason
+		return preparation{}, reason
 	}
 	run, reason := s.readManual(role.Runbook)
 	if reason != "" {
-		return adapter.Invocation{}, nil, "", reason
+		return preparation{}, reason
 	}
 	prompt, err := composePrompt(ins, run, w.start, contract.MaxPromptBytes)
 	if err != nil {
-		return adapter.Invocation{}, nil, "", contract.ReasonManualTooLarge
+		return preparation{}, contract.ReasonManualTooLarge
 	}
 	a, ok := s.env.adapters.Lookup(role.Adapter)
 	exe, enabled := s.env.executables[role.Adapter]
 	if !ok || !enabled {
-		return adapter.Invocation{}, nil, "", contract.ReasonAdapterDisabled
+		return preparation{}, contract.ReasonAdapterDisabled
 	}
 	if fi, err := os.Stat(exe); err != nil || !fi.Mode().IsRegular() || fi.Mode().Perm()&0o111 == 0 {
-		return adapter.Invocation{}, nil, "", contract.ReasonExecutableUnavailable
+		return preparation{}, contract.ReasonExecutableUnavailable
 	}
-	inv, err := a.Invocation(adapter.TaskInput{TaskID: w.id(), Model: w.start.Effective.Model, Effort: w.start.Effective.Effort, Prompt: prompt})
-	if err != nil {
-		return adapter.Invocation{}, nil, "", contract.ReasonStartFailed
+	if err := adapter.ValidateSelection(role.Adapter, w.start.Effective.Model, w.start.Effective.Effort); err != nil {
+		s.logger.Warn("task model/effort selection not qualified", "task_id", w.id(), "adapter", role.Adapter, "reason", "selection_not_qualified")
+		return preparation{}, contract.ReasonStartFailed
 	}
-	return inv, a, exe, ""
+	return preparation{prompt: prompt, a: a, exe: exe}, ""
 }
 
 // refuseStart releases w's local slot (and any prepared pipes, scratch
@@ -982,8 +1015,14 @@ func composePrompt(instruction, runbook []byte, st contract.TaskStartBody, limit
 // decides a natural outcome; an interrupted or unobserved execution is
 // lost. Nothing here retries an execution.
 func (s *taskSupervisor) supervise(w *taskWorker, g guardianProc, a adapter.Adapter, inv adapter.Invocation, p *pipes, scratch string,
-	status <-chan contract.GuardianStatus, unobserved bool) {
+	fin *finalSource, status <-chan contract.GuardianStatus, unobserved bool) {
 	ext := a.NewFinalExtractor()
+	// The extractor reads the declared source only: stdout, or (Codex) the
+	// final file after the group is gone; stdout still streams to the log.
+	var feed func([]byte)
+	if fin == nil {
+		feed = ext.Feed
+	}
 	var copier, drains sync.WaitGroup
 	if !unobserved {
 		copier.Add(1)
@@ -994,8 +1033,12 @@ func (s *taskSupervisor) supervise(w *taskWorker, g guardianProc, a adapter.Adap
 		}()
 	}
 	drains.Add(2)
-	go func() { defer drains.Done(); drain(p.stdoutR, w.ring, ext.Feed, s.signal) }()
-	go func() { defer drains.Done(); drain(p.stderrR, w.ring, nil, s.signal) }()
+	drainStart := s.d.taskDrainHook
+	if drainStart == nil {
+		drainStart = func() {}
+	}
+	go func() { defer drains.Done(); drainStart(); drain(p.stdoutR, w.ring, feed, s.signal) }()
+	go func() { defer drains.Done(); drainStart(); drain(p.stderrR, w.ring, nil, s.signal) }()
 	var exit *procExit
 	stopCh, stopAll, ctlCh := w.stopCh, s.stopAll, w.ctlCh
 	if unobserved {
@@ -1086,6 +1129,14 @@ func (s *taskSupervisor) supervise(w *taskWorker, g guardianProc, a adapter.Adap
 	if cleanupErr == nil {
 		s.event(evGroupGone, w)
 	}
+	// Iteration 08: finalize the answer's source while the scratch
+	// directory still exists (the final file only once no group member can
+	// still write it), and log any extraction failure as one diagnostic
+	// line, before the cleanup and the ring's final totals.
+	fm := s.finalMessage(ext, fin, cleanupErr)
+	if fm.Error != "" {
+		s.extractionFailed(w, fm.Error)
+	}
 	if cleanupErr != nil {
 		s.logger.Error("task process group cleanup unconfirmed", "task_id", w.id(), "role_id", w.key.id, "reason", cleanupUnconfirmed)
 		w.mu.Lock()
@@ -1106,7 +1157,6 @@ func (s *taskSupervisor) supervise(w *taskWorker, g guardianProc, a adapter.Adap
 			}
 		}
 	}
-	fm := ext.Finish()
 	end, incomplete, overflow := w.ring.totals()
 	res := contract.TaskResultBody{TaskID: w.id(), Execution: w.start.Execution, Outcome: contract.OutcomeNatural, FinalMessage: fm.Message,
 		FinalMessageTruncated: fm.Truncated, OutputBytes: end, LogIncomplete: incomplete, CounterOverflow: overflow}
@@ -1183,6 +1233,43 @@ func (s *taskSupervisor) supervise(w *taskWorker, g guardianProc, a adapter.Adap
 	s.freeze(w, res.Sealed())
 	s.event(evTaskExited, w)
 	s.signal()
+}
+
+// finalMessage seals the task's extraction: stdout's extractor as it is,
+// or (a final-file source) the file read through the retained directory
+// handle when the group's absence was confirmed; unconfirmed cleanup leaves
+// the answer null (final_output_unavailable). The handle is closed here.
+func (s *taskSupervisor) finalMessage(ext adapter.FinalExtractor, fin *finalSource, cleanupErr error) adapter.FinalMessage {
+	if fin == nil {
+		return ext.Finish()
+	}
+	defer fin.close()
+	if cleanupErr != nil {
+		return adapter.FinalMessage{Error: adapter.FinalUnavailable}
+	}
+	read := s.d.taskFinalRead
+	if read == nil {
+		read = readFinalFile
+	}
+	fm, _ := read(fin, ext)
+	return fm
+}
+
+// extractionFailed reports a real vendor's failed extraction once: one
+// structured warning and one fixed line on the task's stderr log stream
+// (through the drained output's ring, so its bytes are counted and
+// journaled with the sealed outcome, never appended again on a retry). The
+// line is never the final message.
+func (s *taskSupervisor) extractionFailed(w *taskWorker, code string) {
+	id := w.start.Role.Adapter
+	s.logger.Warn("task final-message extraction failed", "task_id", w.id(), "adapter", id, "classification", code)
+	w.ring.write([]byte(extractionDiagnostic(id, code)))
+	s.signal()
+}
+
+// extractionDiagnostic is the fixed task-log line of a failed extraction.
+func extractionDiagnostic(adapterID, code string) string {
+	return "callsheet: " + adapterID + " final-message extraction failed (" + code + ")\n"
 }
 
 func (s *taskSupervisor) isClosing() bool {

@@ -4,9 +4,11 @@
 // invocability probe run by the sidecar on the worker. Iteration 05 adds
 // the task boundary: explicit model and effort argv with the prompt on
 // stdin, incremental final-message extraction, and the native signal
-// names a failed task reports. Only the fake
-// adapter exists; it is a test/demo adapter that never calls a model and is
-// enabled only by an explicit absolute executable path on the worker.
+// names a failed task reports. The fake adapter is a test/demo adapter
+// that never calls a model. Iteration 08 adds the production Claude and
+// Codex adapters with their qualified versions and model/effort pairs.
+// Every adapter is enabled only by an explicit absolute executable path on
+// the worker.
 //
 // The package imports neither plane, sidecar, devcheck nor testkit. Its
 // process and clock dependencies are private and injectable for package
@@ -121,13 +123,14 @@ func ContractLookup(r Registry) contract.AdapterLookup {
 	}
 }
 
-// Builtin is the product registry: exactly the fake adapter, whose probe
-// runs in the given working directory (the sidecar state root; the plane
-// and coordinators, which never probe, pass "").
+// Builtin is the product registry: claude, codex and the fake adapter
+// (sorted by ID), whose probes run in the given working directory (the
+// sidecar state root; the plane and coordinators, which never probe, pass
+// ""). Construction performs no I/O.
 func Builtin(dir string) Registry {
-	r, err := NewRegistry(NewFake(dir))
+	r, err := NewRegistry(NewClaude(dir), NewCodex(dir), NewFake(dir))
 	if err != nil {
-		panic(err) // unreachable: the fake descriptor is valid
+		panic(err) // unreachable: the built-in descriptors are valid
 	}
 	return r
 }

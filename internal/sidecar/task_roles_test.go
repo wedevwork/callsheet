@@ -115,8 +115,14 @@ func sidecarRemainingCapacity(t *testing.T, byAck bool) {
 // zero, and the stopped execution's outcome is sent as late evidence
 // (lost, its tail tagged with its digest).
 func sidecarRecoveryRemove(t *testing.T, byAck bool) {
+	sidecarRecoveryRemoveOpts(t, byAck, taskOpts{})
+}
+
+// sidecarRecoveryRemoveOpts is sidecarRecoveryRemove on a task run
+// adjusted by o (a delayed drain: TestControlLeaseDelayedDrain).
+func sidecarRecoveryRemoveOpts(t *testing.T, byAck bool, o taskOpts) {
 	fp := startFakePlane(t)
-	tr := startTaskRun(t, fp, taskOpts{})
+	tr := startTaskRun(t, fp, o)
 	ins, run := manuals(t, tr.dir, "a", "m")
 	cfg := roleConfig("a", ins, run)
 	cfg.Concurrency = 1
@@ -134,6 +140,11 @@ func sidecarRecoveryRemove(t *testing.T, byAck bool) {
 	if sig := tr.groups.awaitSignal(t, ch1.gpid); len(sig) != 1 || sig[0] != ch1.gpid {
 		t.Fatalf("stop_lost signaled %v, want the old guardian %d", sig, ch1.gpid)
 	}
+	// The TERMed child's "tail" may still be in its pipe: the supervisor
+	// reaches the (held) group check only after both drains finished, so
+	// moving the clock before that could fire the drain bound and mark
+	// the log incomplete.
+	tr.groups.awaitGone(t, ch1.gpid)
 	tr.clk.Advance(heartbeatInterval)
 	if hb := s.beat(t, 2); len(hb.Roles) != 0 {
 		t.Fatalf("the removed instance is still reported: %+v", hb.Roles)

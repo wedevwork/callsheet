@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"slices"
 	"unicode/utf8"
 
 	"github.com/wedevwork/callsheet/internal/contract"
@@ -23,36 +22,72 @@ const (
 )
 
 // TaskInput is one task's adapter input: the task ID, the explicit model
-// and effort, and the composed prompt (at most contract.MaxPromptBytes).
+// and effort, the composed prompt (at most contract.MaxPromptBytes) and
+// (iteration 08) the task's private scratch directory, the child's working
+// directory: an absolute clean path the sidecar created. Only Codex uses
+// it (its final-message file); fake and Claude ignore it.
 type TaskInput struct {
-	TaskID string
-	Model  string
-	Effort string
-	Prompt []byte
+	TaskID     string
+	Model      string
+	Effort     string
+	Prompt     []byte
+	ScratchDir string
 }
 
 // Invocation is how to run one task: argument vector (arguments only; the
-// executable is sidecar-local) and the finite stdin.
+// executable is sidecar-local) and the finite stdin. FinalFile (iteration
+// 08) declares the final-message source: empty means the child's stdout;
+// nonempty is the exact absolute path of the task-private file the sidecar
+// reads after the child's group is gone. It is sidecar-local, never a
+// guardian or task protocol field.
 type Invocation struct {
-	Argv  []string
-	Stdin []byte
+	Argv      []string
+	Stdin     []byte
+	FinalFile string
 }
 
 // FinalMessage is an extracted final message: Message nil means no valid
-// marker, not an inferred success or failure.
+// final message, not an inferred success or failure. Error (iteration 08)
+// is empty on successful extraction, otherwise one fixed classification
+// (the Final* codes); it never carries a parser error, file contents or
+// output. It is local to the sidecar, not a wire field.
 type FinalMessage struct {
 	Message   *string
 	Truncated bool
+	Error     string
 }
 
-// FinalExtractor incrementally recognizes a task's final message in its
-// stdout. Feed consumes bytes synchronously and retains no caller slice;
-// it accepts arbitrary chunk boundaries and reports no error for
-// malformed output. Finish handles the unterminated last line, seals the
-// extractor and returns an owned value; repeated Finish returns the same
-// value and Feed after Finish is a no-op. One goroutine feeds it.
+// Final-message extraction classifications (iteration 08): the one fixed
+// code a failed extraction reports, in FinalMessage.Error, the sidecar's
+// structured warning and the task's stderr diagnostic line alike. The
+// extractors report the first two; the sidecar's final-file reader the
+// others.
+const (
+	FinalInvalid     = "invalid_final_output"
+	FinalTooLarge    = "final_output_too_large"
+	FinalMissing     = "final_output_missing"
+	FinalUnsafe      = "final_output_unsafe"
+	FinalUnreadable  = "final_output_unreadable"
+	FinalUnavailable = "final_output_unavailable"
+)
+
+// MaxVendorFinalBytes bounds the bytes a vendor final-message extractor
+// buffers or checks (Claude's stdout JSON, Codex's final file): an
+// input-format safety limit, distinct from the 64 KiB published answer
+// cap, not a promise that vendor outputs are smaller.
+const MaxVendorFinalBytes = 8 << 20
+
+// FinalExtractor incrementally recognizes a task's final message. Feed
+// receives bytes from the source the Invocation declares: stdout for fake
+// and Claude, the final-message file for Codex (whose stdout still streams
+// to the task log, never to its extractor). Feed consumes bytes
+// synchronously and retains no caller slice; it accepts arbitrary chunk
+// boundaries and reports no error for malformed input. Finish handles the
+// unterminated end, seals the extractor and returns an owned value;
+// repeated Finish returns the same value and Feed after Finish is a no-op.
+// One goroutine feeds it.
 type FinalExtractor interface {
-	Feed(stdout []byte)
+	Feed(b []byte)
 	Finish() FinalMessage
 }
 
@@ -64,14 +99,13 @@ func errInvocation(msg string) error { return errors.New("adapter: " + msg) }
 // --callsheet-task --model MODEL --effort EFFORT, the prompt on stdin. No
 // shell, splitting, environment expansion or vendor default.
 func (f *fake) Invocation(in TaskInput) (Invocation, error) {
-	switch {
-	case !contract.ValidTaskID(in.TaskID):
+	if !contract.ValidTaskID(in.TaskID) {
 		return Invocation{}, errInvocation("invalid task ID")
-	case !contract.ValidModel(in.Model):
-		return Invocation{}, errInvocation("invalid model")
-	case !slices.Contains(fakeEfforts, in.Effort):
-		return Invocation{}, errInvocation("effort is not allowed for adapter fake")
-	case len(in.Prompt) > contract.MaxPromptBytes:
+	}
+	if err := ValidateSelection(FakeID, in.Model, in.Effort); err != nil {
+		return Invocation{}, err
+	}
+	if len(in.Prompt) > contract.MaxPromptBytes {
 		return Invocation{}, errInvocation("the prompt exceeds 16 MiB")
 	}
 	return Invocation{Argv: []string{TaskArg, "--model", in.Model, "--effort", in.Effort}, Stdin: bytes.Clone(in.Prompt)}, nil

@@ -57,11 +57,23 @@ var (
 
 func TestMain(m *testing.M) {
 	code := m.Run()
+	// Process-lifetime rigs (iteration 08's shared replay deployment) stop
+	// before their binaries are removed.
+	fixtureMu.Lock()
+	after := afterSuite
+	fixtureMu.Unlock()
+	for _, f := range after {
+		f()
+	}
 	if fixtureRoot != "" {
 		os.RemoveAll(fixtureRoot)
 	}
 	os.Exit(code)
 }
+
+// afterSuite are process-lifetime teardowns TestMain runs after the tests
+// (guarded by fixtureMu).
+var afterSuite []func()
 
 func fixture(t *testing.T, key string, build func(dir string) (string, error)) string {
 	t.Helper()
@@ -1066,7 +1078,7 @@ func TestNodePlatform(t *testing.T) {
 				}
 			}
 		}
-		if b := devcheck.BenchSteps(); len(b) != 7 || strings.Join(b[2].Argv, " ") != "go test ./internal/contract -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s" {
+		if b := devcheck.BenchSteps(); len(b) != 8 || strings.Join(b[2].Argv, " ") != "go test ./internal/contract -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s" {
 			t.Fatalf("bench plan = %+v", b)
 		}
 		// Every required node name is defined here, as a top-level test or

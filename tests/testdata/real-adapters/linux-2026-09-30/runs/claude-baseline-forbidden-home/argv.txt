@@ -1,0 +1,1 @@
+claude -p Run\ this\ exact\ shell\ command\ and\ do\ not\ skip\ it:\ printf\ outside\ \>\ /home/max/callsheet-qual-escape/claude-outside.txt --model sonnet --effort low --output-format json 

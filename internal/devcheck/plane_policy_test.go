@@ -12,7 +12,7 @@ import (
 const (
 	wantTestNative = "go test -count=1 -timeout=180s ./..."
 	wantTestRace   = "go test -race -count=1 -timeout=180s ./..."
-	wantNative     = "go test -json -count=1 -timeout=180s ./..."
+	wantNative     = "go test -json -tags=realadaptercheck -count=1 -timeout=180s ./..."
 	wantBenchGit   = "go test ./internal/spikes/gittransport -run ^$ -bench . -benchmem -benchtime=3x -count=1 -timeout=180s"
 	wantBenchPlane = "go test ./internal/plane -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s"
 	// wantBenchContract is iteration 03's frame benchmark command.
@@ -26,8 +26,18 @@ const (
 	// wantBenchMCPQual is iteration 07b's appended qualification-harness
 	// benchmark command.
 	wantBenchMCPQual = "go test ./internal/mcpqual -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s"
+	// wantBenchRealAdapter is iteration 08's appended tagged final-file
+	// benchmark command.
+	wantBenchRealAdapter = "go test ./internal/sidecar -tags=realadaptercheck -run=^$ -bench=^BenchmarkRealAdapterFile$ -benchmem -benchtime=3x -count=1 -timeout=180s"
 	// wantBenchPlan is the complete bench plan in order.
-	wantBenchPlan = wantBenchGit + "|" + wantBenchPlane + "|" + wantBenchContract + "|" + wantBenchSidecar + "|" + wantBenchAdapter + "|" + wantBenchMCP + "|" + wantBenchMCPQual
+	wantBenchPlan = wantBenchGit + "|" + wantBenchPlane + "|" + wantBenchContract + "|" + wantBenchSidecar + "|" + wantBenchAdapter + "|" + wantBenchMCP + "|" +
+		wantBenchMCPQual + "|" + wantBenchRealAdapter
+	// wantTestTagged and wantTestTaggedRace are iteration 08's tagged
+	// ordinary sidecar contract steps (race on Linux only, like the suite).
+	wantTestTagged     = "go test -tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$ -count=1"
+	wantTestTaggedRace = "go test -race -tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$ -count=1"
+	// wantTestPlanLinux is the complete Linux test plan in order.
+	wantTestPlanLinux = wantTestNative + "|" + wantTestRace + "|" + wantTestTagged + "|" + wantTestTaggedRace
 )
 
 func argvOf(steps []Step) []string {
@@ -45,7 +55,7 @@ func argvOf(steps []Step) []string {
 // its subtests.
 func TestPlaneVerificationPolicyContract(t *testing.T) {
 	t.Run("linux", func(t *testing.T) {
-		if got := strings.Join(argvOf(TestSteps("linux")), "|"); got != wantTestNative+"|"+wantTestRace {
+		if got := strings.Join(argvOf(TestSteps("linux")), "|"); got != wantTestPlanLinux {
 			t.Fatalf("test plan = %s", got)
 		}
 		if got := strings.Join(argvOf(BenchSteps()), "|"); got != wantBenchPlan {
@@ -59,7 +69,7 @@ func TestPlaneVerificationPolicyContract(t *testing.T) {
 			t.Fatal("linux native plan accepted")
 		}
 		for stage, want := range map[string][][]string{
-			"bench":               {{wantBenchGit}, {wantBenchPlane}, {wantBenchContract}, {wantBenchSidecar}, {wantBenchAdapter}, {wantBenchMCP}, {wantBenchMCPQual}},
+			"bench":               {{wantBenchGit}, {wantBenchPlane}, {wantBenchContract}, {wantBenchSidecar}, {wantBenchAdapter}, {wantBenchMCP}, {wantBenchMCPQual}, {wantBenchRealAdapter}},
 			"stress":              wantStageGroups["stress"],
 			"stress-packages":     wantStageGroups["stress-packages"],
 			"stress-plane-cpu1":   wantStageGroups["stress-plane-cpu1"],
@@ -68,7 +78,7 @@ func TestPlaneVerificationPolicyContract(t *testing.T) {
 			"stress-sidecar":      wantStageGroups["stress-sidecar"],
 			"stress-processgroup": wantStageGroups["stress-processgroup"],
 			"stress-functions":    wantStageGroups["stress-functions"],
-			"test":                {{wantTestNative}, {wantTestRace}},
+			"test":                {{wantTestNative}, {wantTestRace}, {wantTestTagged}, {wantTestTaggedRace}},
 		} {
 			f := &fakeRunner{}
 			code, out, errOut := runDriver(t, "linux", f, stage)
@@ -87,7 +97,7 @@ func TestPlaneVerificationPolicyContract(t *testing.T) {
 		if err != nil || strings.Join(argvOf(stress), "|") != wantStressPlan {
 			t.Fatalf("stress plan = %v %v", argvOf(stress), err)
 		}
-		if got := strings.Join(argvOf(TestSteps("darwin")), "|"); got != wantTestNative {
+		if got := strings.Join(argvOf(TestSteps("darwin")), "|"); got != wantTestNative+"|"+wantTestTagged {
 			t.Fatalf("darwin test plan = %s", got)
 		}
 		req := NativeRequiredTests()
@@ -95,7 +105,7 @@ func TestPlaneVerificationPolicyContract(t *testing.T) {
 		// The 28 iteration-02 names are preserved first; iteration 03 appends
 		// the node names, iteration 04 the role names, iteration 05 the
 		// task names, iteration 06a the control names.
-		if strings.Join(req[:28], ",") != strings.Join(want, ",") || len(req) != 28+len(nodeNames())+len(roleNames())+len(taskNames())+len(controlNames())+len(mcpNames())+len(qualNames()) || strings.Join(req[28:58], ",") != strings.Join(nodeNames(), ",") {
+		if strings.Join(req[:28], ",") != strings.Join(want, ",") || len(req) != 28+len(nodeNames())+len(roleNames())+len(taskNames())+len(controlNames())+len(mcpNames())+len(qualNames())+len(realNames()) || strings.Join(req[28:58], ",") != strings.Join(nodeNames(), ",") {
 			t.Fatalf("required = %v", req)
 		}
 		if err := check(stream(qualification()...)); err != nil {

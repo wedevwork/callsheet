@@ -22,8 +22,8 @@ their names are unique diagnostic checks, not required contexts:
 
 | Check context | Runner | Timeout | Kind | Steps after setup |
 |---|---|---|---|---|
-| `ci-linux` | `ubuntu-24.04` | 45 min | required | `devcheck test` (native suite, then the same suite with `-race`), `devcheck coverage` (unit coverage must be greater than 80.0%), `devcheck bench` (git transport payload byte limits and commit/tree invariants, then the plane trust benchmarks: issuance, initialization and verified TLS health, the plane node benchmarks: heartbeat, snapshot of 100 nodes and durable enrollment, and the plane role benchmarks: role list and node views for 1 and 100 roles and durable add/set/rm transactions, then the node and role frame encode/decode benchmarks in `internal/contract`, then the sidecar ready-check benchmark (100 manual pairs, one shared probe) and the adapter's real fake-probe benchmark, then the task benchmarks: plane admission over 100 roles (first, last and no match, no filesystem), full-tail checkpoint writes of 0, 64 KiB and 10 MiB, the task envelope encode/decode at its maximum legal size in `internal/contract`, and the sidecar log-tail ring and maximum prompt composition, then the iteration 06a control benchmarks: the plane's per-task writer committing natural and lost terminal records and late evidence with 0, 64 KiB and 10 MiB tails (`BenchmarkControlCommit`: bytes written and bounded allocation; since iteration 06b also a stop intent's publication followed by its cancelled terminal record and a timed_out late append at the same tails), and one maximum sealed result, one maximum outbox and one 64-entry inventory page (`BenchmarkControlReplay` in `internal/contract` and `internal/sidecar`), then the iteration 06b bounded-wait benchmark (`BenchmarkControlWait` in `internal/plane`: registering and unregistering 1 and 16 IDs, waking 1 and 1,000 waiters; every waiter woken and no registration retained), then the iteration 07a MCP benchmarks in `internal/mcp` (`BenchmarkMCPCodec`: the discovery frame, the maximum 10 MiB log and the maximum 100-role list, bytes encoded and exact round trips; `BenchmarkMCPRelay`: `node_show` end to end over a real local TLS plane; `BenchmarkMCPWaitBudget`: `task_wait` of 1 and 16 IDs with a fake clock and client, nothing retained), then the iteration 07b qualification-harness benchmarks in `internal/mcpqual` (`BenchmarkMCPQualificationTranscript`: each vendor decoder over its fixture at 1 KiB and at the 8 MiB per-file limit, exact event correlation, no model-prose timeout and an oversized transcript unqualified; `BenchmarkMCPQualificationProbe`: small-frame probe throughput on a fake clock with nonce and progress correlation and nothing retained), each checking its invariants; timings are reported, never gated), `devcheck cross` (linux/amd64, linux/arm64, darwin/amd64, darwin/arm64: 12 artifacts) |
-| `ci-macos` | `macos-15` | 30 min | required | `devcheck native`: the complete suite as `go test -json`, which must show passing run and pass events in `github.com/wedevwork/callsheet/tests/function` for `TestFP6ProcessGroups` and its `cooperative`, `resistant` and `leader-exits-first` scenarios, for the plane trust tests, the node tests, the role tests, the task tests the control tests (iteration 06a: the eight control function parents and the native group qualification; iteration 06b: the four task-control function parents) the MCP tests (iteration 07a: the eight MCP function parents and their mandatory subtests) and the coordinator setup and timeout qualification tests (iteration 07b: the eight function parents and their mandatory subtests), and in `github.com/wedevwork/callsheet/internal/sidecar` for `TestTaskExecutionContract` and its `process` subtest (see below) |
+| `ci-linux` | `ubuntu-24.04` | 45 min | required | `devcheck test` (native suite, then the same suite with `-race`, then iteration 08's `realadaptercheck`-tagged sidecar contract `TestRealAdapterLocal` and its `-race` counterpart), `devcheck coverage` (unit coverage must be greater than 80.0%; the profile run compiles the `realadaptercheck` tag), `devcheck bench` (git transport payload byte limits and commit/tree invariants, then the plane trust benchmarks: issuance, initialization and verified TLS health, the plane node benchmarks: heartbeat, snapshot of 100 nodes and durable enrollment, and the plane role benchmarks: role list and node views for 1 and 100 roles and durable add/set/rm transactions, then the node and role frame encode/decode benchmarks in `internal/contract`, then the sidecar ready-check benchmark (100 manual pairs, one shared probe) and the adapter's real fake-probe benchmark, then the task benchmarks: plane admission over 100 roles (first, last and no match, no filesystem), full-tail checkpoint writes of 0, 64 KiB and 10 MiB, the task envelope encode/decode at its maximum legal size in `internal/contract`, and the sidecar log-tail ring and maximum prompt composition, then the iteration 06a control benchmarks: the plane's per-task writer committing natural and lost terminal records and late evidence with 0, 64 KiB and 10 MiB tails (`BenchmarkControlCommit`: bytes written and bounded allocation; since iteration 06b also a stop intent's publication followed by its cancelled terminal record and a timed_out late append at the same tails), and one maximum sealed result, one maximum outbox and one 64-entry inventory page (`BenchmarkControlReplay` in `internal/contract` and `internal/sidecar`), then the iteration 06b bounded-wait benchmark (`BenchmarkControlWait` in `internal/plane`: registering and unregistering 1 and 16 IDs, waking 1 and 1,000 waiters; every waiter woken and no registration retained), then the iteration 07a MCP benchmarks in `internal/mcp` (`BenchmarkMCPCodec`: the discovery frame, the maximum 10 MiB log and the maximum 100-role list, bytes encoded and exact round trips; `BenchmarkMCPRelay`: `node_show` end to end over a real local TLS plane; `BenchmarkMCPWaitBudget`: `task_wait` of 1 and 16 IDs with a fake clock and client, nothing retained), then the iteration 07b qualification-harness benchmarks in `internal/mcpqual` (`BenchmarkMCPQualificationTranscript`: each vendor decoder over its fixture at 1 KiB and at the 8 MiB per-file limit, exact event correlation, no model-prose timeout and an oversized transcript unqualified; `BenchmarkMCPQualificationProbe`: small-frame probe throughput on a fake clock with nonce and progress correlation and nothing retained), then the iteration 08 real-adapter benchmarks (`BenchmarkVendorFinal` and `BenchmarkVendorInvocation` in the `internal/adapter` step: both vendor extractors over the captured outputs, near-8-MiB and oversized inputs at chunk sizes 1, 4096 and 65536, and invocations with the smallest and the maximum legal prompt; then the tagged step `BenchmarkRealAdapterFile` in `internal/sidecar`, `-bench=^BenchmarkRealAdapterFile$`: the final-file reader over a real 8 MiB and an oversized file, at most 8 MiB + 1 bytes consumed), each checking its invariants; timings are reported, never gated), `devcheck cross` (linux/amd64, linux/arm64, darwin/amd64, darwin/arm64: 12 artifacts) |
+| `ci-macos` | `macos-15` | 30 min | required | `devcheck native`: the complete suite as one `go test -json -tags=realadaptercheck` invocation, which must show passing run and pass events in `github.com/wedevwork/callsheet/tests/function` for `TestFP6ProcessGroups` and its `cooperative`, `resistant` and `leader-exits-first` scenarios, for the plane trust tests, the node tests, the role tests, the task tests the control tests (iteration 06a: the eight control function parents and the native group qualification; iteration 06b: the four task-control function parents) the MCP tests (iteration 07a: the eight MCP function parents and their mandatory subtests) and the coordinator setup and timeout qualification tests (iteration 07b: the eight function parents and their mandatory subtests) and the real-adapter tests (iteration 08: the nine function parents and their mandatory subtests), and in `github.com/wedevwork/callsheet/internal/sidecar` for `TestTaskExecutionContract` and its `process` subtest and for the tagged `TestRealAdapterLocal` and its five subtests (see below) |
 | `ci-linux-stress-packages` | `ubuntu-24.04` | 20 min | worker | `devcheck stress-packages` on Linux (see Stress checks) |
 | `ci-linux-stress-plane-cpu1` | `ubuntu-24.04` | 20 min | worker | `devcheck stress-plane-cpu1` on Linux: `internal/plane` at CPU 1, one invocation alone on its worker (iteration 06a-perf) |
 | `ci-linux-stress-plane` | `ubuntu-24.04` | 20 min | worker | `devcheck stress-plane` on Linux: `internal/plane` CPU 2 and CPU 4 as two concurrent invocations (iteration 05b; CPU 1 on its own worker since iteration 06a-perf) |
@@ -339,6 +339,52 @@ clears `CI` in the launched `mcpqual` process's environment; that child
 sets it and proves exit 2 with no launch. Real one-second cleanup graces are limited to
 `resistant` and `parent-exits-first` (two per invocation); they run in the
 normal, race and native suites only, never in a stress shard.
+
+Iteration 08 (real adapters: Claude and Codex) appends one function parent
+per FP (FP-1 to FP-9), each followed by its mandatory direct subtests in the
+design's order, 39 more names, 312 in all, with the 273 earlier names
+unchanged and first: `TestRealAdapterRegistration` (`registry`, `paths`,
+`selection`), `TestRealAdapterProbe` (`claude`, `codex`, `refusal`),
+`TestRealAdapterInvocation` (`claude`, `codex`, `stdin`),
+`TestRealAdapterClaudeFinal` (`success`, `failure`, `malformed`),
+`TestRealAdapterCodexFinal` (`success`, `absent`, `unsafe`, `cleanup`),
+`TestRealAdapterOutcomes` (`exits`, `denials`, `controls`, `replay`),
+`TestRealAdapterCatalog` (`recipes`, `evidence`, `ownership`),
+`TestRealAdapterDispatch` (`claude`, `codex`, `no-vendors`) and
+`TestRealAdapterSmokeGate` (`default-off`,
+`TestRealAdapterSmokeGate/ci-off`, `absent`, `enabled`).
+The same run/pass rule applies. Separately, the sidecar tuple
+(`NativeTaskProcessPackage`) appends `TestRealAdapterLocal` and its
+`selection`, `file`, `ordering`, `diagnostic` and `restart` subtests after
+`TestTaskExecutionContract` and its `process` subtest: those six names must
+run and pass in `internal/sidecar` itself, and the same names in
+`tests/function` or any other package never satisfy them. That contract is
+in a `realadaptercheck`-tagged file, so the native stage is one invocation
+of `go test -json -tags=realadaptercheck -count=1 -timeout=180s ./...`
+(the tag reaches compilation, one package start per package: a second
+sidecar invocation would be a duplicate start and fails), `devcheck test`
+runs it as `go test -tags=realadaptercheck ./internal/sidecar
+-run=^TestRealAdapterLocal$ -count=1` and, on Linux, the same with `-race`,
+and `devcheck coverage` compiles the tag into its single profile. No stress
+shard passes the tag, so the tagged contract never enters the sidecar CPU1
+or CPU2/CPU4 workers. The function parents drive real Callsheet processes
+(plane, sidecars, guardians and `callsheet mcp`) against a replay stub
+(`tests/function/testdata/worker-replay`, built once per test process)
+enabled only through the product's `--claude-adapter` and `--codex-adapter`
+options, with an isolated `HOME` and a `PATH` of launch-recording `claude`
+and `codex` traps (asserted unused): no job installs or runs a vendor CLI,
+calls a model or needs credentials. The stub copies the byte-identical
+Linux captures of `tests/testdata/real-adapters/linux-2026-09-30/`; replay
+proves Callsheet's handling of the captured contract, not vendor stability,
+and no macOS vendor behavior is claimed. The opt-in real smoke
+(`tests/smoke`) exists only with the `realadaptersmoke` tag, which no
+devcheck command or job enables, so neither `./...` nor the tagged native
+stream contains it or a skip event from it; `TestRealAdapterSmokeGate`
+proves its gate decisions without calling `t.Skip`. The new adapter unit
+tests (pure extractors and argv, and the version probe on an injected
+runner and clock) run in the packages shard with the rest of
+`internal/adapter`; the function parents run in the normal, race and native
+suites only, never in a stress shard.
 
 The main jobs and all fourteen workers check out the event's revision without
 persisted credentials, take the Go version from `go.mod` with module
@@ -1030,9 +1076,34 @@ Budgets:
   change needs a design revision, and exceeding an allocation needs
   investigation and a revised allocation, never weaker assertions or
   skipped cases.
+- Iteration 08 (design 08 and its sign-off reading of DW3: the shared
+  180 s function timeout and the stress allowances are not raised). The
+  nine real-adapter parents share one replay deployment (a plane and three
+  sidecars) started once per test process and run as parallel parents; the
+  tagged sidecar contract adds well under a second to each tagged test and
+  race step; no stress shard, count, CPU setting or timeout changes. The
+  new `internal/adapter` unit tests are pure or on an injected runner and
+  clock (about 0.3 s per repetition under the race detector, far below the
+  packages shard's slowest binary). The first hosted run records the
+  function package time in the normal, race and native invocations against
+  the unchanged 180 s bound; a miss is investigated (fixture sharing first),
+  never answered by a raised timeout, a weaker assertion or a skipped case.
 
 Measurements, newest first. Hosted and local figures come from different
 machines and are never combined into one number.
+
+- Measured with iteration 08 (real adapters): Linux, go1.26.4 linux/amd64
+  on the same 16-thread developer workstation as 07b below, warm build
+  cache, 2026-09-30. Local execution evidence only, not a hosted estimate
+  or qualification:
+  - `tests/function` 77.4 s plain and 89.3 s under the race detector
+    (92 s wall) within its 180 s bound, against 68.5 s and 79.9 s before
+    iteration 08 on the same host. The nine `TestRealAdapter*` parents take
+    about 14 s together when run alone, most of it the shared rig's first
+    readiness heartbeat and the smoke gate's two stub-backed deployments.
+    A first version that ran the cancellation on the shared worker, waiting
+    out the node's post-cleanup heartbeat in a sequential parent, took 27 s.
+  - Hosted iteration 08 times: pending (see First remote run).
 
 - Measured with iteration 07b (coordinator setup and timeout
   qualification, after code review r1): Linux, go1.26.4 linux/amd64 on the
@@ -1608,6 +1679,17 @@ build-selected (`internal/mcpqual/proc_unix.go` and
 developer fault variable `MCPQUAL_TEST_FAULT` is read only by that entrypoint
 and never by `callsheet`.
 
+Iteration 08 adds no wrapper and no exemption. The sidecar's macOS warning
+for enabled Claude/Codex adapters is decided by `RunOptions.GOOS` (fed by
+`cli.Run`'s wrapper) and unit-tested for both values; the Codex final-file
+reader (`openat` relative to a retained no-follow directory descriptor,
+`O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC`, `fstat` regular file with one link) is
+build-selected in `internal/sidecar/finalfile_unix.go` (`linux || darwin`,
+the existing `golang.org/x/sys/unix` dependency) with the refusing
+`internal/sidecar/finalfile_other.go` (`!linux && !darwin`), and makes no
+host decision. `internal/adapter`'s Claude and Codex adapters import only
+`internal/contract`, and the replay stub lives under `testdata`.
+
 The plane package (iteration 02) resolves its default state directory in
 the pure `plane.ResolveStateDir(goos, ...)`, fed by `cli.Run`'s existing
 wrapper, and adds no `runtime.GOOS` read. Its advisory state lock
@@ -1854,6 +1936,7 @@ handoff:
 - for iteration 06a-perf, the owner's pre-decided post-push qualification (not the local code-review bar): record all eighteen job conclusions and step and job times, setup and queue costs, the runner's architecture and core count, and every plane and sidecar CPU-labelled `devcheck` outcome. Use `devcheck: stress <package> cpu1: ok in Xs` as each CPU 1 invocation's elapsed value (it includes the command's build), and keep the binary's own time separately. Evaluate all four CPU1 invocations, Linux and macOS, plane and sidecar. If every CPU1 invocation passes and is ≤300.0 seconds, and all ordinary correctness, coverage and CI gates pass, this slice is done. A value above 250 but at or below 300 succeeds under the owner's rule; record that the aspirational target was missed. Otherwise report the measured values and failures to the owner. Missing, cancelled or timed-out invocations do not count as passes. In that case make no automatic further change to topology, waves, flags, counts, timeouts, workload tests or fixtures. Do not discard a failed first run by retrying until green. The ≤250-second macOS CPU1 goal is a first-run hypothesis, not an additional acceptance gate. There is no two-run requirement. All CPU 2 and CPU 4 invocations and every other job must still pass their unchanged gates, and until that run exists hosted qualification is pending, not passed.
 - for iteration 06b (owner decision on DW6, 2026-09-28: build with the current matrix and measure on the pull request): native evidence for the four task-control parents (145 names) on `ci-macos`, and all four CPU1 invocations' `devcheck: stress <package> cpu1: ok in Xs` values, Linux and macOS, plane and sidecar, against the screening estimates in Budgets. A value strictly greater than 300.0 s, or that invocation's timeout, triggers the pre-authorised CPU1 split for that package on both platforms, through the light flow (a fix brief preserving the triggering log, implementation and review), without another design round; exactly 300.0 s does not trigger. An assertion failure is a correctness failure, never cured by splitting. Until that run exists hosted qualification is pending, not passed.
 - for iteration 07a: native evidence for the eight MCP parents and their 69 mandatory subtests (222 names) on `ci-macos`, notably `TestMCPLifetime/closed-stdout` (exit 5, not signaled, on Darwin), `stalled-reader` and `slow-reader-max-logs`; the `stress packages` step with `internal/mcp` and its binary time on both platforms; the `bench mcp` step; the `tests/function` package time in the normal and race invocations against its 180 s bound; and the unchanged plane and sidecar CPU1 invocation times. Until that run exists hosted qualification is pending, not passed.
+- for iteration 08: native evidence for the nine real-adapter parents and their 30 mandatory subtests (312 names) on `ci-macos`, and for `TestRealAdapterLocal` and its five subtests in `internal/sidecar` from the single tagged native stream (no duplicate package start, no skip event from this iteration, no `tests/smoke` package); the tagged `test`, `test -race` and `bench sidecar realadaptercheck` steps and the tagged coverage profile on `ci-linux`; the `tests/function` package time in the normal, race and native invocations against its unchanged 180 s bound; and the `stress packages` step with the grown `internal/adapter` binary on both platforms. No vendor CLI or model is involved; M3's remote acceptance is a separate manual record (see [real adapters](real-adapters.md)).
 - for iteration 07b: native evidence for the eight setup and qualification parents and their 43 mandatory subtests (273 names) on `ci-macos`, notably `TestMCPQualificationReaping/parent-exits-first` (a surviving descendant, then ESRCH, on Darwin) and `cleanup-failure`; the `stress packages` step with `internal/mcpqual` and its binary time on both platforms against the 10 s (Linux) and 15 s (macOS) allocation; the `bench mcpqual` step; the `tests/function` package time in the normal, race and native invocations against its 180 s bound and the 10 s / 15 s allocation; and the unchanged plane and sidecar CPU1 invocation times, with OS, architecture and cache state. Until that run exists hosted qualification is pending, not passed.
 
 The local validator checks action identity and full-SHA format only, not that
@@ -1888,7 +1971,13 @@ go test -count=1 -run '^TestTask' -v ./tests/function
 go test -race -covermode=atomic -count=20 -cpu=1,2,4 -timeout=6m -run '^TestTask' ./internal/plane ./internal/sidecar ./internal/adapter ./internal/client ./internal/contract
 go test -count=1 -run '^TestControl(Cancellation|ExecutionTimeout|BoundedWait|ForceRemove|NativeGroups)$' -v ./tests/function
 go test -race -count=20 -cpu=1,2,4 -timeout=6m -run '^TestControl(Cancel|Timeout|Wait|Remove)$' ./internal/plane ./internal/sidecar ./internal/client ./internal/cli ./internal/contract
+go test -count=1 -run '^TestRealAdapter' -v ./tests/function
+go test -tags=realadaptercheck -count=1 -run '^TestRealAdapterLocal$' -v ./internal/sidecar
 ```
+
+The real worker smoke is never part of these commands or of CI; it needs
+the `realadaptersmoke` tag, installed CLIs and an explicit opt-in (see
+[real adapters](real-adapters.md)).
 
 A single shard, as one CI worker runs it, is also available on its own:
 

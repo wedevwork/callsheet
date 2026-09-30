@@ -320,14 +320,67 @@ var nativeRequired = []string{
 	"TestMCPQualificationInvocation/allowed",
 	"TestMCPQualificationInvocation/model-free",
 	"TestMCPQualificationInvocation/ci-denied",
+	// Iteration 08 (real adapters): the nine function parents in FP order
+	// (FP-1..FP-9), each followed by its mandatory direct children in listed
+	// order; every name needs its own run and pass event.
+	"TestRealAdapterRegistration",
+	"TestRealAdapterRegistration/registry",
+	"TestRealAdapterRegistration/paths",
+	"TestRealAdapterRegistration/selection",
+	"TestRealAdapterProbe",
+	"TestRealAdapterProbe/claude",
+	"TestRealAdapterProbe/codex",
+	"TestRealAdapterProbe/refusal",
+	"TestRealAdapterInvocation",
+	"TestRealAdapterInvocation/claude",
+	"TestRealAdapterInvocation/codex",
+	"TestRealAdapterInvocation/stdin",
+	"TestRealAdapterClaudeFinal",
+	"TestRealAdapterClaudeFinal/success",
+	"TestRealAdapterClaudeFinal/failure",
+	"TestRealAdapterClaudeFinal/malformed",
+	"TestRealAdapterCodexFinal",
+	"TestRealAdapterCodexFinal/success",
+	"TestRealAdapterCodexFinal/absent",
+	"TestRealAdapterCodexFinal/unsafe",
+	"TestRealAdapterCodexFinal/cleanup",
+	"TestRealAdapterOutcomes",
+	"TestRealAdapterOutcomes/exits",
+	"TestRealAdapterOutcomes/denials",
+	"TestRealAdapterOutcomes/controls",
+	"TestRealAdapterOutcomes/replay",
+	"TestRealAdapterCatalog",
+	"TestRealAdapterCatalog/recipes",
+	"TestRealAdapterCatalog/evidence",
+	"TestRealAdapterCatalog/ownership",
+	"TestRealAdapterDispatch",
+	"TestRealAdapterDispatch/claude",
+	"TestRealAdapterDispatch/codex",
+	"TestRealAdapterDispatch/no-vendors",
+	"TestRealAdapterSmokeGate",
+	"TestRealAdapterSmokeGate/default-off",
+	"TestRealAdapterSmokeGate/ci-off",
+	"TestRealAdapterSmokeGate/absent",
+	"TestRealAdapterSmokeGate/enabled",
 }
 
 // NativeTaskProcessPackage and nativeTaskProcess are the separate native
 // tuple (iteration 05): the real task-process qualification must run and
 // pass in the sidecar's own package within the same full-suite stream.
+// Iteration 08 appends its realadaptercheck-tagged sidecar contract and its
+// five subtests: the native command compiles the tag, and names passing in
+// tests/function never satisfy these.
 const NativeTaskProcessPackage = "github.com/wedevwork/callsheet/internal/sidecar"
 
-var nativeTaskProcess = []string{"TestTaskExecutionContract", "TestTaskExecutionContract/process"}
+var nativeTaskProcess = []string{"TestTaskExecutionContract", "TestTaskExecutionContract/process",
+	"TestRealAdapterLocal", "TestRealAdapterLocal/selection", "TestRealAdapterLocal/file", "TestRealAdapterLocal/ordering",
+	"TestRealAdapterLocal/diagnostic", "TestRealAdapterLocal/restart"}
+
+// RealAdapterTag is iteration 08's ordinary-only build tag: it adds the
+// sidecar's TestRealAdapterLocal and BenchmarkRealAdapterFile to the
+// tagged test, coverage, bench and native commands, never to a stress
+// shard. It does not enable the opt-in real smoke (realadaptersmoke).
+const RealAdapterTag = "realadaptercheck"
 
 // NativeTaskProcessTests returns a fresh copy of the sidecar tuple.
 func NativeTaskProcessTests() []string { return append([]string(nil), nativeTaskProcess...) }
@@ -350,7 +403,9 @@ func NativeSteps(goos string) ([]Step, error) {
 	if goos != "darwin" {
 		return nil, unsupportedNative(goos)
 	}
-	return []Step{{Name: "native", Argv: []string{"go", "test", "-json", "-count=1", "-timeout=180s", "./..."}}}, nil
+	// One invocation (one package start each): the tag compiles and runs the
+	// sidecar's tagged contract within the complete suite (iteration 08).
+	return []Step{{Name: "native", Argv: []string{"go", "test", "-json", "-tags=" + RealAdapterTag, "-count=1", "-timeout=180s", "./..."}}}, nil
 }
 
 // acceptedActions is the exact go test -json Action set the parser accepts.

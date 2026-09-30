@@ -1,0 +1,1 @@
+claude -p Run\ this\ exact\ shell\ command\ and\ do\ not\ skip\ it:\ printf\ permitted\ \>\ canary-ok.txt --model sonnet --effort low --permission-prompts none --output-format json 

@@ -199,7 +199,7 @@ func qualifyingEvents(drop, skip string) string {
 	evs := []map[string]any{synth("start", pkg, "")}
 	for _, name := range devcheck.NativeRequiredTests() {
 		if strings.HasPrefix(name, "TestPlane") || strings.HasPrefix(name, "TestNode") || strings.HasPrefix(name, "TestRole") || strings.HasPrefix(name, "TestTask") ||
-			strings.HasPrefix(name, "TestControl") || strings.HasPrefix(name, "TestMCP") {
+			strings.HasPrefix(name, "TestControl") || strings.HasPrefix(name, "TestMCP") || strings.HasPrefix(name, "TestRealAdapter") {
 			evs = append(evs, synth("run", pkg, name), synth("pass", pkg, name))
 		}
 	}
@@ -347,8 +347,10 @@ func TestCILinuxBar(t *testing.T) {
 		t.Fatalf("linux stages = %q", got)
 	}
 	plan := devcheck.TestSteps("linux")
-	if len(plan) != 2 || strings.Join(plan[0].Argv, " ") != "go test -count=1 -timeout=180s ./..." ||
-		strings.Join(plan[1].Argv, " ") != "go test -race -count=1 -timeout=180s ./..." || strings.Join(plan[1].Env, " ") != "CGO_ENABLED=1" {
+	if len(plan) != 4 || strings.Join(plan[0].Argv, " ") != "go test -count=1 -timeout=180s ./..." ||
+		strings.Join(plan[1].Argv, " ") != "go test -race -count=1 -timeout=180s ./..." || strings.Join(plan[1].Env, " ") != "CGO_ENABLED=1" ||
+		strings.Join(plan[2].Argv, " ") != "go test -tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$ -count=1" ||
+		strings.Join(plan[3].Argv, " ") != "go test -race -tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$ -count=1" || strings.Join(plan[3].Env, " ") != "CGO_ENABLED=1" {
 		t.Fatalf("linux test plan = %+v", plan)
 	}
 	r := &ciRunner{}
@@ -364,7 +366,7 @@ func TestCILinuxBar(t *testing.T) {
 			t.Fatalf("call %d = %v", i, r.calls[i])
 		}
 	}
-	if runtime.GOOS == "linux" && (len(r.calls) != 2 || r.calls[1][2] != "-race") {
+	if runtime.GOOS == "linux" && (len(r.calls) != 4 || r.calls[1][2] != "-race" || r.calls[3][2] != "-race") {
 		t.Fatalf("linux must run test then race: %v", r.calls)
 	}
 	// Coverage: exactly 80.0% fails, anything above passes.
@@ -403,7 +405,7 @@ func TestCIDarwinQualification(t *testing.T) {
 		t.Fatalf("macos stages = %v %v", stages, err)
 	}
 	steps, err := devcheck.NativeSteps("darwin")
-	if err != nil || len(steps) != 1 || strings.Join(steps[0].Argv, " ") != "go test -json -count=1 -timeout=180s ./..." {
+	if err != nil || len(steps) != 1 || strings.Join(steps[0].Argv, " ") != "go test -json -tags=realadaptercheck -count=1 -timeout=180s ./..." {
 		t.Fatalf("native plan = %+v %v", steps, err)
 	}
 	if got := strings.Join(devcheck.NativeRequiredTests()[:4], ","); got != "TestFP6ProcessGroups,TestFP6ProcessGroups/cooperative,TestFP6ProcessGroups/resistant,TestFP6ProcessGroups/leader-exits-first" {

@@ -30,9 +30,16 @@ func TestFP7CatalogContract(t *testing.T) {
 	timeoutKeys := map[string]bool{"mcp_timeout": true, "mcp_timeout_override": true, "mcp_progress_extension": true}
 	verified, unverified := 0, 0
 	for _, e := range entries {
-		// The recorded version is backed by the captured --version output.
-		vb, err := os.ReadFile(filepath.Join(root, "tests", "testdata", "cli-help", e.ID+"-version.txt"))
-		if err != nil || !strings.Contains(string(vb), e.Version) {
+		// The recorded version is backed by the captured --version output:
+		// iteration 08's worker qualification host capture for Claude and
+		// Codex, the offline help captures for Grok and Cursor.
+		evidence := filepath.Join(root, "tests", "testdata", "cli-help", e.ID+"-version.txt")
+		want := e.Version
+		if e.ID == "claude" || e.ID == "codex" {
+			evidence, want = filepath.Join(root, "tests", "testdata", "real-adapters", "linux-2026-09-30", "host.txt"), e.ID+": "+e.Version+"\n"
+		}
+		vb, err := os.ReadFile(evidence)
+		if err != nil || !strings.Contains(string(vb), want) {
 			t.Fatalf("%s version %q not in captured evidence (%v)", e.ID, e.Version, err)
 		}
 		if e.Platform != "linux/amd64" {

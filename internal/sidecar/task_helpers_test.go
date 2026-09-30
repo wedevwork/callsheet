@@ -421,13 +421,21 @@ type fakeGroups struct {
 	l         *procLedger
 	// stopped is notified on every recorded Stop (awaitSignal).
 	stopped chan struct{}
+	// entered is notified on every recorded gone (awaitGone).
+	entered chan struct{}
 }
 
 func (g *fakeGroups) gone(pgid int) error {
 	g.mu.Lock()
 	g.cleaned = append(g.cleaned, pgid)
-	gate := g.gate
+	gate, ch := g.gate, g.entered
 	g.mu.Unlock()
+	if ch != nil {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
 	if gate != nil {
 		<-gate
 	}
@@ -487,6 +495,32 @@ func (g *fakeGroups) awaitSignal(t *testing.T, pgid int) []int {
 	}
 }
 
+// awaitGone waits (bounded) until the supervisor asked whether group
+// pgid is gone: its guardian was reaped and both of its pipe drains
+// finished (or their bound fired) before that. With the group held, the
+// execution's output is then final while nothing depends on the clock.
+func (g *fakeGroups) awaitGone(t *testing.T, pgid int) {
+	t.Helper()
+	deadline := time.After(testWait)
+	for {
+		g.mu.Lock()
+		cleaned, ch := slices.Clone(g.cleaned), g.entered
+		if ch == nil {
+			ch = make(chan struct{}, 1)
+			g.entered = ch
+		}
+		g.mu.Unlock()
+		if slices.Contains(cleaned, pgid) {
+			return
+		}
+		select {
+		case <-ch:
+		case <-deadline:
+			t.Fatalf("group %d's disappearance was never checked (checked %v)", pgid, cleaned)
+		}
+	}
+}
+
 func (g *fakeGroups) signals() []int {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -522,6 +556,9 @@ type taskOpts struct {
 	wrap func(guardianFactory) guardianFactory
 	// root, when set, is the state root (a restart reuses one).
 	root string
+	// options, when set, adjusts the Run's options (iteration 08: the
+	// vendor executable paths).
+	options func(o *RunOptions)
 }
 
 func startTaskRun(t *testing.T, fp *fakePlane, o taskOpts) *taskRun {
@@ -573,8 +610,11 @@ func startTaskRun(t *testing.T, fp *fakePlane, o taskOpts) *taskRun {
 	if goos == "" {
 		goos = runtime.GOOS
 	}
-	f.run = startRunOpts(t, f.d, RunOptions{StateDir: f.root, SoftwareVersion: "test-1", Logger: slog.New(slog.NewJSONHandler(f.logs, nil)),
-		FakeAdapterPath: exe, GOOS: goos})
+	ro := RunOptions{StateDir: f.root, SoftwareVersion: "test-1", Logger: slog.New(slog.NewJSONHandler(f.logs, nil)), FakeAdapterPath: exe, GOOS: goos}
+	if o.options != nil {
+		o.options(&ro)
+	}
+	f.run = startRunOpts(t, f.d, ro)
 	tr.fakeRun = f
 	t.Cleanup(func() {
 		// Launch ledger: injected task tests start no OS task child (the

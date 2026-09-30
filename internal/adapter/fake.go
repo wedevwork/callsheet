@@ -3,6 +3,7 @@ package adapter
 import (
 	"context"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -65,6 +66,8 @@ func (realClock) NewTimerAt(at time.Time) (<-chan time.Time, func() bool) {
 }
 
 // prober runs one executable probe: private, injectable dependencies.
+// args and check generalize the fake's probe (iteration 08): nil args is
+// the fake's ProbeArg and nil check its exact stdout/no-stderr predicate.
 type prober struct {
 	dir     string
 	environ func() []string
@@ -72,6 +75,61 @@ type prober struct {
 	// started and waited, when non-nil, observe the direct child (tests).
 	started func(pid int)
 	waited  func(*os.ProcessState)
+	// runner, when non-nil, replaces the real process start (vendor probe
+	// tests only; the fake keeps its real-process coverage).
+	runner procRunner
+	// args is the probe argv after the executable; check decides the
+	// captured output of a zero exit, returning a fixed failure reason or
+	// "".
+	args  []string
+	check func(stdout, stderr string) string
+}
+
+// procRunner starts one probe child (injectable for vendor probe tests).
+type procRunner interface {
+	start(ctx context.Context, exe string, args []string, dir string, env []string, stdout, stderr io.Writer, waitDelay time.Duration) (probeProc, error)
+}
+
+// probeProc is a started probe child: Wait is called exactly once.
+type probeProc interface {
+	pid() int
+	wait() (error, *os.ProcessState)
+}
+
+// execRunner is the real procRunner (exec.CommandContext, no shell).
+type execRunner struct{}
+
+type execProc struct{ cmd *exec.Cmd }
+
+func (execRunner) start(ctx context.Context, exe string, args []string, dir string, env []string, stdout, stderr io.Writer, waitDelay time.Duration) (probeProc, error) {
+	cmd := exec.CommandContext(ctx, exe, args...)
+	cmd.Dir = dir
+	cmd.Env = env
+	cmd.WaitDelay = waitDelay
+	cmd.Stdout, cmd.Stderr = stdout, stderr
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	return execProc{cmd: cmd}, nil
+}
+
+func (p execProc) pid() int { return p.cmd.Process.Pid }
+
+func (p execProc) wait() (error, *os.ProcessState) {
+	err := p.cmd.Wait()
+	return err, p.cmd.ProcessState
+}
+
+// fakeCheck is the fake's exact probe predicate: nothing on stderr and
+// exactly ProbeOutput on stdout.
+func fakeCheck(out, errOut string) string {
+	switch {
+	case errOut != "":
+		return "wrote to stderr during the probe"
+	case out != ProbeOutput:
+		return "is not the callsheet fake adapter (unexpected probe output)"
+	}
+	return ""
 }
 
 type fake struct{ p *prober }
@@ -179,22 +237,28 @@ func (p *prober) run(ctx context.Context, executable string) error {
 		}
 	}()
 	defer func() { cancel(); <-watchDone }()
-	cmd := exec.CommandContext(pctx, executable, ProbeArg)
-	cmd.Dir = p.dir
-	cmd.Env = filterEnv(p.environ())
-	cmd.WaitDelay = probeWaitDelay
+	args, check, run := p.args, p.check, p.runner
+	if args == nil {
+		args = []string{ProbeArg}
+	}
+	if check == nil {
+		check = fakeCheck
+	}
+	if run == nil {
+		run = execRunner{}
+	}
 	stdout, stderr := &capture{max: probeCapture}, &capture{max: probeCapture}
-	cmd.Stdout, cmd.Stderr = stdout, stderr
-	if err := cmd.Start(); err != nil {
+	proc, err := run.start(pctx, executable, append([]string(nil), args...), p.dir, filterEnv(p.environ()), stdout, stderr, probeWaitDelay)
+	if err != nil {
 		return probeErr("cannot be executed")
 	}
 	if p.started != nil {
-		p.started(cmd.Process.Pid)
+		p.started(proc.pid())
 	}
-	werr := cmd.Wait()
+	werr, state := proc.wait()
 	done := p.clock.Now()
 	if p.waited != nil {
-		p.waited(cmd.ProcessState)
+		p.waited(state)
 	}
 	// Precedence: the caller's cancellation, then the probe deadline, then
 	// the child's own result.
@@ -213,10 +277,9 @@ func (p *prober) run(ctx context.Context, executable string) error {
 		return probeErr("exited unsuccessfully")
 	case outOver || errOver:
 		return probeErr("wrote more output than a probe allows")
-	case errOut != "":
-		return probeErr("wrote to stderr during the probe")
-	case out != ProbeOutput:
-		return probeErr("is not the callsheet fake adapter (unexpected probe output)")
+	}
+	if reason := check(out, errOut); reason != "" {
+		return probeErr(reason)
 	}
 	return nil
 }

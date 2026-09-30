@@ -17,7 +17,7 @@ import (
 // verified client. Nothing is cached locally; manual paths and the adapter
 // executable are never opened or resolved on the coordinator.
 const (
-	roleAddUsage  = "ID --name NAME --node NODE --adapter fake --instruction PATH --runbook PATH --model MODEL --effort EFFORT --concurrency N [--timeout DURATION] " + trustUsage + " [--json]"
+	roleAddUsage  = "ID --name NAME --node NODE --adapter ADAPTER --instruction PATH --runbook PATH --model MODEL --effort EFFORT --concurrency N [--timeout DURATION] " + trustUsage + " [--json]"
 	roleSetUsage  = "ID [--name NAME] [--adapter ID] [--instruction PATH] [--runbook PATH] [--model MODEL] [--effort EFFORT] [--concurrency N] [--timeout DURATION] " + trustUsage + " [--json]"
 	roleLsUsage   = trustUsage + " [--json]"
 	roleShowUsage = "ID " + trustUsage + " [--json]"
@@ -25,11 +25,16 @@ const (
 
 	roleNameHelp = "  --name NAME        logical role name (a slug; several roles may share it)\n"
 	roleNodeHelp = "  --node NODE        the worker node ID (n_ + 32 hex digits; see callsheet node ls)\n"
-	roleRestHelp = "  --adapter ID       the adapter: fake (test/demo adapter; never calls a model)\n" +
+	roleRestHelp = "  --adapter ID       the adapter: claude (Claude Code), codex (Codex CLI) or fake\n" +
+		"                     (test/demo adapter; never calls a model)\n" +
 		"  --instruction PATH absolute path of the instruction manual on the worker node\n" +
 		"  --runbook PATH     absolute path of the runbook manual on the worker node\n" +
-		"  --model MODEL      model name passed to the adapter (free text, never inferred)\n" +
-		"  --effort EFFORT    effort, one of the adapter's efforts (fake: low, medium, high)\n" +
+		"  --model MODEL      model name passed to the adapter (never inferred or defaulted);\n" +
+		"                     claude and codex accept only their qualified pair: claude model\n" +
+		"                     sonnet, effort low; codex model gpt-6.1-sol, effort low (the node\n" +
+		"                     refuses any other); fake: free text\n" +
+		"  --effort EFFORT    effort, one of the adapter's efforts (claude, codex: low; fake:\n" +
+		"                     low, medium, high)\n" +
 		"  --concurrency N    concurrent tasks for this role, shared by all coordinators (1 or more)\n" +
 		"  --timeout DURATION task timeout, e.g. 2h or 90m; 0 is unlimited (default 2h)\n"
 	roleJSONHelp = "  --json             print the plane's response envelope as one JSON value\n"
@@ -240,7 +245,7 @@ func roleSet(ctx context.Context, goos string, c *Command, args []string, out, e
 	}
 	if p.Adapter != nil {
 		if _, known := adapter.Lookup()(*p.Adapter); !known {
-			return planeFail(errOut, contract.RoleError(contract.CodeInvalidArgument, id, "", "adapter", "", "unknown adapter; registered adapters: fake"))
+			return planeFail(errOut, contract.RoleError(contract.CodeInvalidArgument, id, "", "adapter", "", "unknown adapter; registered adapters: claude, codex, fake"))
 		}
 	}
 	if _, err := f.trustSyntax(); err != nil {

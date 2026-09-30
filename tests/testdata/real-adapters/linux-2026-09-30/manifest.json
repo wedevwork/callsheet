@@ -1,0 +1,1266 @@
+{
+  "provenance": "Byte-identical copies of the owner's Linux qualification captures of 2026-09-30 (iteration 08); this manifest records provenance, not a new run.",
+  "source_root": "design/iterations/08-real-adapters/design-check/linux-2026-09-30",
+  "files": [
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/NOTES.md",
+      "source": "NOTES.md",
+      "bytes": 8794,
+      "sha256": "5d7577a2b2e5e3a0798579efb5fa471f8c2f13f7f5ad87e0527881975a4e655d"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/claude-sandbox-status.json",
+      "source": "claude-sandbox-status.json",
+      "bytes": 387,
+      "sha256": "9427ddd695c28dd0d482d61bcac00e4fda194581d1951c5075b5eab820a6afa0"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/host.txt",
+      "source": "host.txt",
+      "bytes": 193,
+      "sha256": "94f0c559faec92d51dd887b65c702da596c8875890bcdb6604efdc8c8f765a98"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/claude-stdin-fail/argv.txt",
+      "source": "runs-scratch/claude-stdin-fail/argv.txt",
+      "bytes": 103,
+      "sha256": "f9ef404dbbc148dc0df1e90fc532f9922b8cb6c2ef3361cd8d230ab45f180182"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/claude-stdin-fail/exit.txt",
+      "source": "runs-scratch/claude-stdin-fail/exit.txt",
+      "bytes": 2,
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/claude-stdin-fail/prompt.txt",
+      "source": "runs-scratch/claude-stdin-fail/prompt.txt",
+      "bytes": 63,
+      "sha256": "1e4002841ee6e85c753e1fda233d30cb83b2263b67b0bb977ae440fd8a8bfee8"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/claude-stdin-fail/pwd.txt",
+      "source": "runs-scratch/claude-stdin-fail/pwd.txt",
+      "bytes": 53,
+      "sha256": "ea95a0cd2daf0af160a0d623539e5e2344901658cc3f1e880892114230717f26"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/claude-stdin-fail/stderr.bin",
+      "source": "runs-scratch/claude-stdin-fail/stderr.bin",
+      "bytes": 90,
+      "sha256": "e0214c95d1e94239c4811d94b72f82ee667fd8ab6909aefb75fe08ea0f5bdcfe"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/claude-stdin-fail/stdin.txt",
+      "source": "runs-scratch/claude-stdin-fail/stdin.txt",
+      "bytes": 63,
+      "sha256": "1e4002841ee6e85c753e1fda233d30cb83b2263b67b0bb977ae440fd8a8bfee8"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/claude-stdin-fail/stdout.bin",
+      "source": "runs-scratch/claude-stdin-fail/stdout.bin",
+      "bytes": 1319,
+      "sha256": "06469ee96e4b2629fd3e4fd37d43c450b079ac2a22c4535dae9dc0c534f06d50"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/claude-stdin-success/argv.txt",
+      "source": "runs-scratch/claude-stdin-success/argv.txt",
+      "bytes": 86,
+      "sha256": "f3b8fa316bc8c59233462e9d9ec0042c3c5db019237c56fc23c0fbbf4f7c318d"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/claude-stdin-success/exit.txt",
+      "source": "runs-scratch/claude-stdin-success/exit.txt",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/claude-stdin-success/prompt.txt",
+      "source": "runs-scratch/claude-stdin-success/prompt.txt",
+      "bytes": 63,
+      "sha256": "1e4002841ee6e85c753e1fda233d30cb83b2263b67b0bb977ae440fd8a8bfee8"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/claude-stdin-success/pwd.txt",
+      "source": "runs-scratch/claude-stdin-success/pwd.txt",
+      "bytes": 56,
+      "sha256": "d7b7134e4d76ba428525aacf5e2c3b62c1e52adb6a8533473744855010416339"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/claude-stdin-success/stderr.bin",
+      "source": "runs-scratch/claude-stdin-success/stderr.bin",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/claude-stdin-success/stdin.txt",
+      "source": "runs-scratch/claude-stdin-success/stdin.txt",
+      "bytes": 63,
+      "sha256": "1e4002841ee6e85c753e1fda233d30cb83b2263b67b0bb977ae440fd8a8bfee8"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/claude-stdin-success/stdout.bin",
+      "source": "runs-scratch/claude-stdin-success/stdout.bin",
+      "bytes": 1799,
+      "sha256": "081061f309362333b9f8926494bafdaa1dcbe69bb03dc41e962954023986fd08"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-empty-success/argv.txt",
+      "source": "runs-scratch/codex-empty-success/argv.txt",
+      "bytes": 171,
+      "sha256": "550004151ea17c3470ee92b114a99e9276d05add98e3dc092e72e1c4246be27d"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-empty-success/exit.txt",
+      "source": "runs-scratch/codex-empty-success/exit.txt",
+      "bytes": 2,
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-empty-success/final-presence.txt",
+      "source": "runs-scratch/codex-empty-success/final-presence.txt",
+      "bytes": 7,
+      "sha256": "7925d3e9a9613a093e5eb4054b32aa39de910d2b03ba7e8046c3b4550b8de1e4"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-empty-success/prompt.txt",
+      "source": "runs-scratch/codex-empty-success/prompt.txt",
+      "bytes": 63,
+      "sha256": "1e4002841ee6e85c753e1fda233d30cb83b2263b67b0bb977ae440fd8a8bfee8"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-empty-success/pwd.txt",
+      "source": "runs-scratch/codex-empty-success/pwd.txt",
+      "bytes": 55,
+      "sha256": "3cc1bb9393f739eff9cdfcf0d4195e14217a6a1e7d2910a494b93e42ba449a63"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-empty-success/stderr.bin",
+      "source": "runs-scratch/codex-empty-success/stderr.bin",
+      "bytes": 76,
+      "sha256": "dd701e712037bba81445e9a92376e3d3af69acac5f0187ec904e9ed3c401324d"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-empty-success/stdin.txt",
+      "source": "runs-scratch/codex-empty-success/stdin.txt",
+      "bytes": 63,
+      "sha256": "1e4002841ee6e85c753e1fda233d30cb83b2263b67b0bb977ae440fd8a8bfee8"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-empty-success/stdout.bin",
+      "source": "runs-scratch/codex-empty-success/stdout.bin",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-baseline-forbidden-home/argv.txt",
+      "source": "runs-scratch/codex-skip-baseline-forbidden-home/argv.txt",
+      "bytes": 199,
+      "sha256": "643fa951e8043cb2eeaee17dd87ac6d01d16f8b0b3b9fa04bce8bc3bcb93a006"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-baseline-forbidden-home/exit.txt",
+      "source": "runs-scratch/codex-skip-baseline-forbidden-home/exit.txt",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-baseline-forbidden-home/final-presence.txt",
+      "source": "runs-scratch/codex-skip-baseline-forbidden-home/final-presence.txt",
+      "bytes": 8,
+      "sha256": "14bca160a84ec9e8e5b25cb86ec8b0945f870b8781c8e94ef883b58d27b508db"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-baseline-forbidden-home/final.saved.txt",
+      "source": "runs-scratch/codex-skip-baseline-forbidden-home/final.saved.txt",
+      "bytes": 102,
+      "sha256": "0fdd8461336ebd6fc2beb3e4841f7a7087519cca182e2be2c25946a3105fee4c"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-baseline-forbidden-home/prompt.txt",
+      "source": "runs-scratch/codex-skip-baseline-forbidden-home/prompt.txt",
+      "bytes": 123,
+      "sha256": "8f1784a522391df2c7e3bc7a40b2d818c76038a5b749690a94f86422534bf3c1"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-baseline-forbidden-home/pwd.txt",
+      "source": "runs-scratch/codex-skip-baseline-forbidden-home/pwd.txt",
+      "bytes": 70,
+      "sha256": "c2c11338f0cad21d546f7d3c87a51f19f1062edfe739f7df0aaad55e67bd0f15"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-baseline-forbidden-home/sentinel.txt",
+      "source": "runs-scratch/codex-skip-baseline-forbidden-home/sentinel.txt",
+      "bytes": 7,
+      "sha256": "7925d3e9a9613a093e5eb4054b32aa39de910d2b03ba7e8046c3b4550b8de1e4"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-baseline-forbidden-home/stderr.bin",
+      "source": "runs-scratch/codex-skip-baseline-forbidden-home/stderr.bin",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-baseline-forbidden-home/stdin.txt",
+      "source": "runs-scratch/codex-skip-baseline-forbidden-home/stdin.txt",
+      "bytes": 123,
+      "sha256": "8f1784a522391df2c7e3bc7a40b2d818c76038a5b749690a94f86422534bf3c1"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-baseline-forbidden-home/stdout.bin",
+      "source": "runs-scratch/codex-skip-baseline-forbidden-home/stdout.bin",
+      "bytes": 1003,
+      "sha256": "9923554cc644b1606fe23cf97b1c5809f11068dad50db8ac639d216eac3d797f"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-baseline-permitted/argv.txt",
+      "source": "runs-scratch/codex-skip-baseline-permitted/argv.txt",
+      "bytes": 194,
+      "sha256": "cd418a697307e857a1aa0753a41e295b70b3244f715d9569f3c6eb68ac479092"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-baseline-permitted/exit.txt",
+      "source": "runs-scratch/codex-skip-baseline-permitted/exit.txt",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-baseline-permitted/final-presence.txt",
+      "source": "runs-scratch/codex-skip-baseline-permitted/final-presence.txt",
+      "bytes": 8,
+      "sha256": "14bca160a84ec9e8e5b25cb86ec8b0945f870b8781c8e94ef883b58d27b508db"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-baseline-permitted/final.saved.txt",
+      "source": "runs-scratch/codex-skip-baseline-permitted/final.saved.txt",
+      "bytes": 73,
+      "sha256": "67a34c7ebf92a6b97a6e349dc7b4414b9ccf12a487ccb81e2ab3b7327e4162c3"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-baseline-permitted/prompt.txt",
+      "source": "runs-scratch/codex-skip-baseline-permitted/prompt.txt",
+      "bytes": 81,
+      "sha256": "ad46704bddbce392e9415ba3fb4676f6687c6517db6ca1c2cabf98e9aeb45975"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-baseline-permitted/pwd.txt",
+      "source": "runs-scratch/codex-skip-baseline-permitted/pwd.txt",
+      "bytes": 65,
+      "sha256": "5fc8a15e659c4bb4370ae2ab5275789683eca4701bbfa4cf82cf53bb9ef4ee0e"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-baseline-permitted/sentinel.txt",
+      "source": "runs-scratch/codex-skip-baseline-permitted/sentinel.txt",
+      "bytes": 21,
+      "sha256": "fcd48e1e9139ae5a0d9dfc6b1a596e48cfde73eabcb71b7afa5f6ae24a132026"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-baseline-permitted/stderr.bin",
+      "source": "runs-scratch/codex-skip-baseline-permitted/stderr.bin",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-baseline-permitted/stdin.txt",
+      "source": "runs-scratch/codex-skip-baseline-permitted/stdin.txt",
+      "bytes": 81,
+      "sha256": "ad46704bddbce392e9415ba3fb4676f6687c6517db6ca1c2cabf98e9aeb45975"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-baseline-permitted/stdout.bin",
+      "source": "runs-scratch/codex-skip-baseline-permitted/stdout.bin",
+      "bytes": 1314,
+      "sha256": "50d22f7520fc5c59d219e3bf00dec1fca6b502f27761096c7207c2fd13b613e9"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-fail/argv.txt",
+      "source": "runs-scratch/codex-skip-fail/argv.txt",
+      "bytes": 201,
+      "sha256": "fff4e5573189e6f5b2f7eaf9eec22a4183676cb4e880fc987e49a5e6026a6d93"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-fail/exit.txt",
+      "source": "runs-scratch/codex-skip-fail/exit.txt",
+      "bytes": 2,
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-fail/final-presence.txt",
+      "source": "runs-scratch/codex-skip-fail/final-presence.txt",
+      "bytes": 7,
+      "sha256": "7925d3e9a9613a093e5eb4054b32aa39de910d2b03ba7e8046c3b4550b8de1e4"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-fail/prompt.txt",
+      "source": "runs-scratch/codex-skip-fail/prompt.txt",
+      "bytes": 63,
+      "sha256": "1e4002841ee6e85c753e1fda233d30cb83b2263b67b0bb977ae440fd8a8bfee8"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-fail/pwd.txt",
+      "source": "runs-scratch/codex-skip-fail/pwd.txt",
+      "bytes": 51,
+      "sha256": "efd8f2f0418399e4008ce8c878e705778c3fe83f165d85858a38f61cf98a88c5"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-fail/stderr.bin",
+      "source": "runs-scratch/codex-skip-fail/stderr.bin",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-fail/stdin.txt",
+      "source": "runs-scratch/codex-skip-fail/stdin.txt",
+      "bytes": 63,
+      "sha256": "1e4002841ee6e85c753e1fda233d30cb83b2263b67b0bb977ae440fd8a8bfee8"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-fail/stdout.bin",
+      "source": "runs-scratch/codex-skip-fail/stdout.bin",
+      "bytes": 1162,
+      "sha256": "2bfc0d3cce498623b3adb8661b698ed5d9005da2ec83a8841896a9c2c1f72528"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-forbidden-home/argv.txt",
+      "source": "runs-scratch/codex-skip-forbidden-home/argv.txt",
+      "bytes": 199,
+      "sha256": "82888ecbb4effd3c31c60936cea84b32f0e296dc9ddda5039018b140ed04f365"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-forbidden-home/exit.txt",
+      "source": "runs-scratch/codex-skip-forbidden-home/exit.txt",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-forbidden-home/final-presence.txt",
+      "source": "runs-scratch/codex-skip-forbidden-home/final-presence.txt",
+      "bytes": 8,
+      "sha256": "14bca160a84ec9e8e5b25cb86ec8b0945f870b8781c8e94ef883b58d27b508db"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-forbidden-home/final.saved.txt",
+      "source": "runs-scratch/codex-skip-forbidden-home/final.saved.txt",
+      "bytes": 88,
+      "sha256": "8c2d9c01c2718933e57c70c08f9ec51a51173a1ece370f0fd15b2f4345dadd30"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-forbidden-home/prompt.txt",
+      "source": "runs-scratch/codex-skip-forbidden-home/prompt.txt",
+      "bytes": 123,
+      "sha256": "8f1784a522391df2c7e3bc7a40b2d818c76038a5b749690a94f86422534bf3c1"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-forbidden-home/pwd.txt",
+      "source": "runs-scratch/codex-skip-forbidden-home/pwd.txt",
+      "bytes": 61,
+      "sha256": "2040fe92a3b0b85b4c751e9072ed3e4d15aca6d9dfa4d944c708ae87279213ea"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-forbidden-home/sentinel.txt",
+      "source": "runs-scratch/codex-skip-forbidden-home/sentinel.txt",
+      "bytes": 7,
+      "sha256": "7925d3e9a9613a093e5eb4054b32aa39de910d2b03ba7e8046c3b4550b8de1e4"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-forbidden-home/stderr.bin",
+      "source": "runs-scratch/codex-skip-forbidden-home/stderr.bin",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-forbidden-home/stdin.txt",
+      "source": "runs-scratch/codex-skip-forbidden-home/stdin.txt",
+      "bytes": 123,
+      "sha256": "8f1784a522391df2c7e3bc7a40b2d818c76038a5b749690a94f86422534bf3c1"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-forbidden-home/stdout.bin",
+      "source": "runs-scratch/codex-skip-forbidden-home/stdout.bin",
+      "bytes": 990,
+      "sha256": "ea64391d41e000078627b4d1920bc78d8e41117629b6d0b95e67e63aa50b38c3"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-forbidden-tmp/argv.txt",
+      "source": "runs-scratch/codex-skip-forbidden-tmp/argv.txt",
+      "bytes": 198,
+      "sha256": "3f71bdf059c4362a196def54d7f93a925f06682701319bc7668f1546fa03a71d"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-forbidden-tmp/exit.txt",
+      "source": "runs-scratch/codex-skip-forbidden-tmp/exit.txt",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-forbidden-tmp/final-presence.txt",
+      "source": "runs-scratch/codex-skip-forbidden-tmp/final-presence.txt",
+      "bytes": 8,
+      "sha256": "14bca160a84ec9e8e5b25cb86ec8b0945f870b8781c8e94ef883b58d27b508db"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-forbidden-tmp/final.saved.txt",
+      "source": "runs-scratch/codex-skip-forbidden-tmp/final.saved.txt",
+      "bytes": 49,
+      "sha256": "33c37ba634846eb74a1b57a07961c76285d66d930442c9ceed5701a36cec8bf4"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-forbidden-tmp/prompt.txt",
+      "source": "runs-scratch/codex-skip-forbidden-tmp/prompt.txt",
+      "bytes": 115,
+      "sha256": "3b1cc318df056c056ccb8e1527075059be917fc4558aa3776103ce1bc470bbc3"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-forbidden-tmp/pwd.txt",
+      "source": "runs-scratch/codex-skip-forbidden-tmp/pwd.txt",
+      "bytes": 60,
+      "sha256": "91b46934f6b2165fa6d317adb780e368a2332bb956312b37ec4c68cce0d21e00"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-forbidden-tmp/sentinel.txt",
+      "source": "runs-scratch/codex-skip-forbidden-tmp/sentinel.txt",
+      "bytes": 19,
+      "sha256": "e4a5336c1970de68963afd5c0f5789f6e50d12bb60835d6073a111dc2822fb74"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-forbidden-tmp/stderr.bin",
+      "source": "runs-scratch/codex-skip-forbidden-tmp/stderr.bin",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-forbidden-tmp/stdin.txt",
+      "source": "runs-scratch/codex-skip-forbidden-tmp/stdin.txt",
+      "bytes": 115,
+      "sha256": "3b1cc318df056c056ccb8e1527075059be917fc4558aa3776103ce1bc470bbc3"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-forbidden-tmp/stdout.bin",
+      "source": "runs-scratch/codex-skip-forbidden-tmp/stdout.bin",
+      "bytes": 1367,
+      "sha256": "e1e8c6bd1c5069d3cd19466bb03924a0586f678f546899f173725c39c64a9015"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-permitted/argv.txt",
+      "source": "runs-scratch/codex-skip-permitted/argv.txt",
+      "bytes": 194,
+      "sha256": "94cbca53dd5b38939b1f0c1ccd763950513e7b7d92c0eceaef0e3f803faf0ffb"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-permitted/exit.txt",
+      "source": "runs-scratch/codex-skip-permitted/exit.txt",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-permitted/final-presence.txt",
+      "source": "runs-scratch/codex-skip-permitted/final-presence.txt",
+      "bytes": 8,
+      "sha256": "14bca160a84ec9e8e5b25cb86ec8b0945f870b8781c8e94ef883b58d27b508db"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-permitted/final.saved.txt",
+      "source": "runs-scratch/codex-skip-permitted/final.saved.txt",
+      "bytes": 52,
+      "sha256": "cb2ae3c899103d56a4061c431d4190c032bda89c29b058a178d963e345fa26ca"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-permitted/prompt.txt",
+      "source": "runs-scratch/codex-skip-permitted/prompt.txt",
+      "bytes": 81,
+      "sha256": "ad46704bddbce392e9415ba3fb4676f6687c6517db6ca1c2cabf98e9aeb45975"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-permitted/pwd.txt",
+      "source": "runs-scratch/codex-skip-permitted/pwd.txt",
+      "bytes": 56,
+      "sha256": "2e6ac58824c420e6a0d23bc3093f1c91b13d729e13af4d9d59f3365ee4808c51"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-permitted/sentinel.txt",
+      "source": "runs-scratch/codex-skip-permitted/sentinel.txt",
+      "bytes": 21,
+      "sha256": "fcd48e1e9139ae5a0d9dfc6b1a596e48cfde73eabcb71b7afa5f6ae24a132026"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-permitted/stderr.bin",
+      "source": "runs-scratch/codex-skip-permitted/stderr.bin",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-permitted/stdin.txt",
+      "source": "runs-scratch/codex-skip-permitted/stdin.txt",
+      "bytes": 81,
+      "sha256": "ad46704bddbce392e9415ba3fb4676f6687c6517db6ca1c2cabf98e9aeb45975"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-permitted/stdout.bin",
+      "source": "runs-scratch/codex-skip-permitted/stdout.bin",
+      "bytes": 1293,
+      "sha256": "1c506b8de33254e2f0670d3fef2ecab5b95cfc2544eef56110598999ddd0dc7d"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-success/argv.txt",
+      "source": "runs-scratch/codex-skip-success/argv.txt",
+      "bytes": 192,
+      "sha256": "4c12593e7cc67e3687f893eef2168a5ae089f57ec0dd3bfff7787234997d0479"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-success/exit.txt",
+      "source": "runs-scratch/codex-skip-success/exit.txt",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-success/final-presence.txt",
+      "source": "runs-scratch/codex-skip-success/final-presence.txt",
+      "bytes": 8,
+      "sha256": "14bca160a84ec9e8e5b25cb86ec8b0945f870b8781c8e94ef883b58d27b508db"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-success/final.saved.txt",
+      "source": "runs-scratch/codex-skip-success/final.saved.txt",
+      "bytes": 4,
+      "sha256": "9795c5ff8937f23526ccb207a5684c1fc94a7854e19c021b39d944e51f5baef2"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-success/prompt.txt",
+      "source": "runs-scratch/codex-skip-success/prompt.txt",
+      "bytes": 63,
+      "sha256": "1e4002841ee6e85c753e1fda233d30cb83b2263b67b0bb977ae440fd8a8bfee8"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-success/pwd.txt",
+      "source": "runs-scratch/codex-skip-success/pwd.txt",
+      "bytes": 54,
+      "sha256": "534ff64ca092ca2d49dd4bcd27e98eb673f19b35e45d29d36e9fa0dd45941f8b"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-success/stderr.bin",
+      "source": "runs-scratch/codex-skip-success/stderr.bin",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-success/stdin.txt",
+      "source": "runs-scratch/codex-skip-success/stdin.txt",
+      "bytes": 63,
+      "sha256": "1e4002841ee6e85c753e1fda233d30cb83b2263b67b0bb977ae440fd8a8bfee8"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-success/stdout.bin",
+      "source": "runs-scratch/codex-skip-success/stdout.bin",
+      "bytes": 736,
+      "sha256": "e7d15784a5972890f6e25c7a3ee0fac3929e3ee3ece1473da1a05aa604aeb4d0"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-baseline-forbidden-home/argv.txt",
+      "source": "runs/claude-baseline-forbidden-home/argv.txt",
+      "bytes": 191,
+      "sha256": "0a761602d3002fc472f5bfc18de0e4e206c5bcb18a7b9323abb69f9bc871ff0f"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-baseline-forbidden-home/exit.txt",
+      "source": "runs/claude-baseline-forbidden-home/exit.txt",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-baseline-forbidden-home/prompt.txt",
+      "source": "runs/claude-baseline-forbidden-home/prompt.txt",
+      "bytes": 117,
+      "sha256": "d93ec1f8ee6ac0ea6666acaead3fb8ff54e06d72ace8776a011ba77db4e41962"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-baseline-forbidden-home/pwd.txt",
+      "source": "runs/claude-baseline-forbidden-home/pwd.txt",
+      "bytes": 63,
+      "sha256": "c0a86b47beb3af35a9f6bd3817e93a7dd148e9abfc356e3fdde0f54f10e925f1"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-baseline-forbidden-home/sentinel.txt",
+      "source": "runs/claude-baseline-forbidden-home/sentinel.txt",
+      "bytes": 7,
+      "sha256": "7925d3e9a9613a093e5eb4054b32aa39de910d2b03ba7e8046c3b4550b8de1e4"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-baseline-forbidden-home/stderr.bin",
+      "source": "runs/claude-baseline-forbidden-home/stderr.bin",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-baseline-forbidden-home/stdin.txt",
+      "source": "runs/claude-baseline-forbidden-home/stdin.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-baseline-forbidden-home/stdout.bin",
+      "source": "runs/claude-baseline-forbidden-home/stdout.bin",
+      "bytes": 2357,
+      "sha256": "3ad520f83e3f21459a1429877d0d2866f604cd18b475177a67409f103e2bdb7d"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-baseline-permitted/argv.txt",
+      "source": "runs/claude-baseline-permitted/argv.txt",
+      "bytes": 156,
+      "sha256": "5b1682139523b4c378add23e3bfad9785f3fe1cd3f1ba83e47eb418183c00a9a"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-baseline-permitted/exit.txt",
+      "source": "runs/claude-baseline-permitted/exit.txt",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-baseline-permitted/prompt.txt",
+      "source": "runs/claude-baseline-permitted/prompt.txt",
+      "bytes": 82,
+      "sha256": "6a96058a230aceebe753a3559ded641bb8cb96b1275f5d96899980843827f106"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-baseline-permitted/pwd.txt",
+      "source": "runs/claude-baseline-permitted/pwd.txt",
+      "bytes": 58,
+      "sha256": "f008abec19d3e4c650f806c25420a4610601e34d0765cb506bc92ea064eef37e"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-baseline-permitted/sentinel.txt",
+      "source": "runs/claude-baseline-permitted/sentinel.txt",
+      "bytes": 8,
+      "sha256": "14bca160a84ec9e8e5b25cb86ec8b0945f870b8781c8e94ef883b58d27b508db"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-baseline-permitted/stderr.bin",
+      "source": "runs/claude-baseline-permitted/stderr.bin",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-baseline-permitted/stdin.txt",
+      "source": "runs/claude-baseline-permitted/stdin.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-baseline-permitted/stdout.bin",
+      "source": "runs/claude-baseline-permitted/stdout.bin",
+      "bytes": 1952,
+      "sha256": "2ebe9a06c621258d9e2676abcfab5b162c16f60476e51ff9e7f1c76760646421"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-fail-model/argv.txt",
+      "source": "runs/claude-fail-model/argv.txt",
+      "bytes": 178,
+      "sha256": "c4fa4ff179f9685718056985a2a42dd5a4ffaf098c3baa537f75ae5735615fe6"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-fail-model/exit.txt",
+      "source": "runs/claude-fail-model/exit.txt",
+      "bytes": 2,
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-fail-model/prompt.txt",
+      "source": "runs/claude-fail-model/prompt.txt",
+      "bytes": 64,
+      "sha256": "a76fb89be99c292560739968f312370a68bbe922e53605742dd4ff8c6c545cac"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-fail-model/pwd.txt",
+      "source": "runs/claude-fail-model/pwd.txt",
+      "bytes": 50,
+      "sha256": "8ac6297abf6d84368fb7ddc951d99fa851c46c5203c1d3f5b16bd85db35ea09d"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-fail-model/stderr.bin",
+      "source": "runs/claude-fail-model/stderr.bin",
+      "bytes": 90,
+      "sha256": "e0214c95d1e94239c4811d94b72f82ee667fd8ab6909aefb75fe08ea0f5bdcfe"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-fail-model/stdin.txt",
+      "source": "runs/claude-fail-model/stdin.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-fail-model/stdout.bin",
+      "source": "runs/claude-fail-model/stdout.bin",
+      "bytes": 1319,
+      "sha256": "f789cbffebe215b95799e623e556be62f886654d108b6ccf765e984f86a5cfb3"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-forbidden-home/argv.txt",
+      "source": "runs/claude-forbidden-home/argv.txt",
+      "bytes": 217,
+      "sha256": "3c19085a9d49ba6ab5794609cdf4c2694f460acfc7c661d14a1728d9d8288273"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-forbidden-home/exit.txt",
+      "source": "runs/claude-forbidden-home/exit.txt",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-forbidden-home/prompt.txt",
+      "source": "runs/claude-forbidden-home/prompt.txt",
+      "bytes": 117,
+      "sha256": "d93ec1f8ee6ac0ea6666acaead3fb8ff54e06d72ace8776a011ba77db4e41962"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-forbidden-home/pwd.txt",
+      "source": "runs/claude-forbidden-home/pwd.txt",
+      "bytes": 54,
+      "sha256": "95013d4b0c60c44a80ee459c154b5c26435b6606e3a0069cb094e76a0c0b931b"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-forbidden-home/sentinel.txt",
+      "source": "runs/claude-forbidden-home/sentinel.txt",
+      "bytes": 7,
+      "sha256": "7925d3e9a9613a093e5eb4054b32aa39de910d2b03ba7e8046c3b4550b8de1e4"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-forbidden-home/stderr.bin",
+      "source": "runs/claude-forbidden-home/stderr.bin",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-forbidden-home/stdin.txt",
+      "source": "runs/claude-forbidden-home/stdin.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-forbidden-home/stdout.bin",
+      "source": "runs/claude-forbidden-home/stdout.bin",
+      "bytes": 2393,
+      "sha256": "8e3843d5fc130042a732230421131d6f1f9f1372d37e6789594dbdf32519fed4"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-permitted/argv.txt",
+      "source": "runs/claude-permitted/argv.txt",
+      "bytes": 182,
+      "sha256": "888324c7a7078b21a3e467acc909971176b688dc8561d2096cc762e110d508ee"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-permitted/exit.txt",
+      "source": "runs/claude-permitted/exit.txt",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-permitted/prompt.txt",
+      "source": "runs/claude-permitted/prompt.txt",
+      "bytes": 82,
+      "sha256": "6a96058a230aceebe753a3559ded641bb8cb96b1275f5d96899980843827f106"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-permitted/pwd.txt",
+      "source": "runs/claude-permitted/pwd.txt",
+      "bytes": 49,
+      "sha256": "30ddff7ded932b381a42f22303a1bf6f9a199d9d5db89fbe155fdd794c429f3e"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-permitted/sentinel.txt",
+      "source": "runs/claude-permitted/sentinel.txt",
+      "bytes": 21,
+      "sha256": "fcd48e1e9139ae5a0d9dfc6b1a596e48cfde73eabcb71b7afa5f6ae24a132026"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-permitted/stderr.bin",
+      "source": "runs/claude-permitted/stderr.bin",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-permitted/stdin.txt",
+      "source": "runs/claude-permitted/stdin.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-permitted/stdout.bin",
+      "source": "runs/claude-permitted/stdout.bin",
+      "bytes": 1995,
+      "sha256": "62bbe1008607750d9343d04beaa46b8e18458b9772ca9b7277bead4356676d8e"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-success/argv.txt",
+      "source": "runs/claude-success/argv.txt",
+      "bytes": 161,
+      "sha256": "9d194c904f677ad4eab886d23faf6aef0a90af77cc69c9c672096bba08307f14"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-success/exit.txt",
+      "source": "runs/claude-success/exit.txt",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-success/prompt.txt",
+      "source": "runs/claude-success/prompt.txt",
+      "bytes": 64,
+      "sha256": "a76fb89be99c292560739968f312370a68bbe922e53605742dd4ff8c6c545cac"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-success/pwd.txt",
+      "source": "runs/claude-success/pwd.txt",
+      "bytes": 47,
+      "sha256": "d257bf44aef8e3f2683254cd3e504c44a078cf3b219b6f364cad663915c761fb"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-success/stderr.bin",
+      "source": "runs/claude-success/stderr.bin",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-success/stdin.txt",
+      "source": "runs/claude-success/stdin.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-success/stdout.bin",
+      "source": "runs/claude-success/stdout.bin",
+      "bytes": 1821,
+      "sha256": "28c90bd8da1d0fbba332dc8f6eebb38a0c7dff9897e4240aa9ee25926d0c1c33"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-baseline-forbidden-home/argv.txt",
+      "source": "runs/codex-baseline-forbidden-home/argv.txt",
+      "bytes": 169,
+      "sha256": "de4da879566e33893715287a72947ddb1ba27cbde00fc3b0163606d46fc36b79"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-baseline-forbidden-home/exit.txt",
+      "source": "runs/codex-baseline-forbidden-home/exit.txt",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-baseline-forbidden-home/final-presence.txt",
+      "source": "runs/codex-baseline-forbidden-home/final-presence.txt",
+      "bytes": 8,
+      "sha256": "14bca160a84ec9e8e5b25cb86ec8b0945f870b8781c8e94ef883b58d27b508db"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-baseline-forbidden-home/final.saved.txt",
+      "source": "runs/codex-baseline-forbidden-home/final.saved.txt",
+      "bytes": 101,
+      "sha256": "dbdea216c104852b5d0dd0368b372dc8156159bb1c3da420b541039f7b74170b"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-baseline-forbidden-home/prompt.txt",
+      "source": "runs/codex-baseline-forbidden-home/prompt.txt",
+      "bytes": 116,
+      "sha256": "e7af79164579a54427eee6c0b3ba456649ddafd3684c5c92eaf422253d6e4197"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-baseline-forbidden-home/pwd.txt",
+      "source": "runs/codex-baseline-forbidden-home/pwd.txt",
+      "bytes": 62,
+      "sha256": "c7649b5cf676483f782194ce1560943a0bd59e6dcae86bdce43fd1996d2af821"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-baseline-forbidden-home/sentinel.txt",
+      "source": "runs/codex-baseline-forbidden-home/sentinel.txt",
+      "bytes": 7,
+      "sha256": "7925d3e9a9613a093e5eb4054b32aa39de910d2b03ba7e8046c3b4550b8de1e4"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-baseline-forbidden-home/stderr.bin",
+      "source": "runs/codex-baseline-forbidden-home/stderr.bin",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-baseline-forbidden-home/stdin.txt",
+      "source": "runs/codex-baseline-forbidden-home/stdin.txt",
+      "bytes": 116,
+      "sha256": "e7af79164579a54427eee6c0b3ba456649ddafd3684c5c92eaf422253d6e4197"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-baseline-forbidden-home/stdout.bin",
+      "source": "runs/codex-baseline-forbidden-home/stdout.bin",
+      "bytes": 1014,
+      "sha256": "a454f50bb6a1a1db2ed5cca7fcbea28a03f66bd587d2a6c928062f67d80757e4"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-baseline-permitted/argv.txt",
+      "source": "runs/codex-baseline-permitted/argv.txt",
+      "bytes": 164,
+      "sha256": "30514c753b75a75f96b28616e5a041e1cd865c0fb6fe5c7ce059977fe2f6c279"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-baseline-permitted/exit.txt",
+      "source": "runs/codex-baseline-permitted/exit.txt",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-baseline-permitted/final-presence.txt",
+      "source": "runs/codex-baseline-permitted/final-presence.txt",
+      "bytes": 8,
+      "sha256": "14bca160a84ec9e8e5b25cb86ec8b0945f870b8781c8e94ef883b58d27b508db"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-baseline-permitted/final.saved.txt",
+      "source": "runs/codex-baseline-permitted/final.saved.txt",
+      "bytes": 52,
+      "sha256": "cb2ae3c899103d56a4061c431d4190c032bda89c29b058a178d963e345fa26ca"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-baseline-permitted/prompt.txt",
+      "source": "runs/codex-baseline-permitted/prompt.txt",
+      "bytes": 82,
+      "sha256": "6a96058a230aceebe753a3559ded641bb8cb96b1275f5d96899980843827f106"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-baseline-permitted/pwd.txt",
+      "source": "runs/codex-baseline-permitted/pwd.txt",
+      "bytes": 57,
+      "sha256": "8f139063756c2ed9458fefc604bc5d0e45f6fbf85183af64cf3af431b849613b"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-baseline-permitted/sentinel.txt",
+      "source": "runs/codex-baseline-permitted/sentinel.txt",
+      "bytes": 8,
+      "sha256": "14bca160a84ec9e8e5b25cb86ec8b0945f870b8781c8e94ef883b58d27b508db"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-baseline-permitted/stderr.bin",
+      "source": "runs/codex-baseline-permitted/stderr.bin",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-baseline-permitted/stdin.txt",
+      "source": "runs/codex-baseline-permitted/stdin.txt",
+      "bytes": 82,
+      "sha256": "6a96058a230aceebe753a3559ded641bb8cb96b1275f5d96899980843827f106"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-baseline-permitted/stdout.bin",
+      "source": "runs/codex-baseline-permitted/stdout.bin",
+      "bytes": 1306,
+      "sha256": "abd55c84b60ff1102589814ef93a6b560580ea7abf10eb5a496808f57db2771c"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-fail-model/argv.txt",
+      "source": "runs/codex-fail-model/argv.txt",
+      "bytes": 177,
+      "sha256": "edea283f01e12bb8ffbbce6c4cd856ca08fee1dc49ccf1caf2574c095fe89dc2"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-fail-model/exit.txt",
+      "source": "runs/codex-fail-model/exit.txt",
+      "bytes": 2,
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-fail-model/final-presence.txt",
+      "source": "runs/codex-fail-model/final-presence.txt",
+      "bytes": 7,
+      "sha256": "7925d3e9a9613a093e5eb4054b32aa39de910d2b03ba7e8046c3b4550b8de1e4"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-fail-model/prompt.txt",
+      "source": "runs/codex-fail-model/prompt.txt",
+      "bytes": 64,
+      "sha256": "a76fb89be99c292560739968f312370a68bbe922e53605742dd4ff8c6c545cac"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-fail-model/pwd.txt",
+      "source": "runs/codex-fail-model/pwd.txt",
+      "bytes": 49,
+      "sha256": "3b234b0d33f85a993b32ecdac778f1fead9a52add6aeef5c66cfc6d3dd943073"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-fail-model/stderr.bin",
+      "source": "runs/codex-fail-model/stderr.bin",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-fail-model/stdin.txt",
+      "source": "runs/codex-fail-model/stdin.txt",
+      "bytes": 64,
+      "sha256": "a76fb89be99c292560739968f312370a68bbe922e53605742dd4ff8c6c545cac"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-fail-model/stdout.bin",
+      "source": "runs/codex-fail-model/stdout.bin",
+      "bytes": 1162,
+      "sha256": "07fedc09c6c3120ab0fab8a46d439ee9f40e1a21b09f010b8c9f2115a53a7ac7"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-forbidden-home/argv.txt",
+      "source": "runs/codex-forbidden-home/argv.txt",
+      "bytes": 169,
+      "sha256": "01041691b6b9ac63a8c52d694f4e6494ebeebc7e0e9618e34866fe2d09f99290"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-forbidden-home/exit.txt",
+      "source": "runs/codex-forbidden-home/exit.txt",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-forbidden-home/final-presence.txt",
+      "source": "runs/codex-forbidden-home/final-presence.txt",
+      "bytes": 8,
+      "sha256": "14bca160a84ec9e8e5b25cb86ec8b0945f870b8781c8e94ef883b58d27b508db"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-forbidden-home/final.saved.txt",
+      "source": "runs/codex-forbidden-home/final.saved.txt",
+      "bytes": 101,
+      "sha256": "dbdea216c104852b5d0dd0368b372dc8156159bb1c3da420b541039f7b74170b"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-forbidden-home/prompt.txt",
+      "source": "runs/codex-forbidden-home/prompt.txt",
+      "bytes": 116,
+      "sha256": "e7af79164579a54427eee6c0b3ba456649ddafd3684c5c92eaf422253d6e4197"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-forbidden-home/pwd.txt",
+      "source": "runs/codex-forbidden-home/pwd.txt",
+      "bytes": 53,
+      "sha256": "f29dae89766cdf4391e17e13188f2020b2c142ec6c12f3f5fbffab8b91f8dfd4"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-forbidden-home/sentinel.txt",
+      "source": "runs/codex-forbidden-home/sentinel.txt",
+      "bytes": 7,
+      "sha256": "7925d3e9a9613a093e5eb4054b32aa39de910d2b03ba7e8046c3b4550b8de1e4"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-forbidden-home/stderr.bin",
+      "source": "runs/codex-forbidden-home/stderr.bin",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-forbidden-home/stdin.txt",
+      "source": "runs/codex-forbidden-home/stdin.txt",
+      "bytes": 116,
+      "sha256": "e7af79164579a54427eee6c0b3ba456649ddafd3684c5c92eaf422253d6e4197"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-forbidden-home/stdout.bin",
+      "source": "runs/codex-forbidden-home/stdout.bin",
+      "bytes": 969,
+      "sha256": "f3e850ffa10c3716da7a37fbffd873365e9561ba7bb82aeb1253371c8a0765b8"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-forbidden-tmp/argv.txt",
+      "source": "runs/codex-forbidden-tmp/argv.txt",
+      "bytes": 168,
+      "sha256": "996b5f81732a9cbfb432998f2eeecf768ee1cd959f5a36ed5f6c6221afcd97a5"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-forbidden-tmp/exit.txt",
+      "source": "runs/codex-forbidden-tmp/exit.txt",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-forbidden-tmp/final-presence.txt",
+      "source": "runs/codex-forbidden-tmp/final-presence.txt",
+      "bytes": 8,
+      "sha256": "14bca160a84ec9e8e5b25cb86ec8b0945f870b8781c8e94ef883b58d27b508db"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-forbidden-tmp/final.saved.txt",
+      "source": "runs/codex-forbidden-tmp/final.saved.txt",
+      "bytes": 49,
+      "sha256": "d8c60b04f6d36c1b8b67b8161ba25ca70def0dd0438ae4645e52af26603269b7"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-forbidden-tmp/prompt.txt",
+      "source": "runs/codex-forbidden-tmp/prompt.txt",
+      "bytes": 108,
+      "sha256": "1ce2fdd90756c3eb3ca090eea50644b25953217635f0c6ee1fac0946b14276ce"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-forbidden-tmp/pwd.txt",
+      "source": "runs/codex-forbidden-tmp/pwd.txt",
+      "bytes": 52,
+      "sha256": "5e0cc9ad19ea249676223705e6f61f3ad78f76e1ddde7d58443429aa10fb7ade"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-forbidden-tmp/sentinel.txt",
+      "source": "runs/codex-forbidden-tmp/sentinel.txt",
+      "bytes": 19,
+      "sha256": "e4a5336c1970de68963afd5c0f5789f6e50d12bb60835d6073a111dc2822fb74"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-forbidden-tmp/stderr.bin",
+      "source": "runs/codex-forbidden-tmp/stderr.bin",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-forbidden-tmp/stdin.txt",
+      "source": "runs/codex-forbidden-tmp/stdin.txt",
+      "bytes": 108,
+      "sha256": "1ce2fdd90756c3eb3ca090eea50644b25953217635f0c6ee1fac0946b14276ce"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-forbidden-tmp/stdout.bin",
+      "source": "runs/codex-forbidden-tmp/stdout.bin",
+      "bytes": 1351,
+      "sha256": "a407e2362633ce2d4bff2b9b3752f09838a745e11f60521133130d516f57e709"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-permitted/argv.txt",
+      "source": "runs/codex-permitted/argv.txt",
+      "bytes": 164,
+      "sha256": "928fb0ae488188ab80849a190483214b84e8adcff2dab04a4caa068189bffc16"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-permitted/exit.txt",
+      "source": "runs/codex-permitted/exit.txt",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-permitted/final-presence.txt",
+      "source": "runs/codex-permitted/final-presence.txt",
+      "bytes": 8,
+      "sha256": "14bca160a84ec9e8e5b25cb86ec8b0945f870b8781c8e94ef883b58d27b508db"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-permitted/final.saved.txt",
+      "source": "runs/codex-permitted/final.saved.txt",
+      "bytes": 49,
+      "sha256": "33c37ba634846eb74a1b57a07961c76285d66d930442c9ceed5701a36cec8bf4"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-permitted/prompt.txt",
+      "source": "runs/codex-permitted/prompt.txt",
+      "bytes": 82,
+      "sha256": "6a96058a230aceebe753a3559ded641bb8cb96b1275f5d96899980843827f106"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-permitted/pwd.txt",
+      "source": "runs/codex-permitted/pwd.txt",
+      "bytes": 48,
+      "sha256": "fa1d60b0d72f119edf768f1136bb93d15755dba8ab95d724a927784679ad4a65"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-permitted/sentinel.txt",
+      "source": "runs/codex-permitted/sentinel.txt",
+      "bytes": 21,
+      "sha256": "fcd48e1e9139ae5a0d9dfc6b1a596e48cfde73eabcb71b7afa5f6ae24a132026"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-permitted/stderr.bin",
+      "source": "runs/codex-permitted/stderr.bin",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-permitted/stdin.txt",
+      "source": "runs/codex-permitted/stdin.txt",
+      "bytes": 82,
+      "sha256": "6a96058a230aceebe753a3559ded641bb8cb96b1275f5d96899980843827f106"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-permitted/stdout.bin",
+      "source": "runs/codex-permitted/stdout.bin",
+      "bytes": 1305,
+      "sha256": "62299ce45072731ed047efb360b5d398d6d9f875d79e265eb8eb5a0c3ae6fa42"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-success/argv.txt",
+      "source": "runs/codex-success/argv.txt",
+      "bytes": 162,
+      "sha256": "d5326afb67a169433a929d670c4b01a8d05653a9a0ba6183cfdbfc15c8b7037a"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-success/exit.txt",
+      "source": "runs/codex-success/exit.txt",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-success/final-presence.txt",
+      "source": "runs/codex-success/final-presence.txt",
+      "bytes": 8,
+      "sha256": "14bca160a84ec9e8e5b25cb86ec8b0945f870b8781c8e94ef883b58d27b508db"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-success/final.saved.txt",
+      "source": "runs/codex-success/final.saved.txt",
+      "bytes": 4,
+      "sha256": "9795c5ff8937f23526ccb207a5684c1fc94a7854e19c021b39d944e51f5baef2"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-success/prompt.txt",
+      "source": "runs/codex-success/prompt.txt",
+      "bytes": 64,
+      "sha256": "a76fb89be99c292560739968f312370a68bbe922e53605742dd4ff8c6c545cac"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-success/pwd.txt",
+      "source": "runs/codex-success/pwd.txt",
+      "bytes": 46,
+      "sha256": "622f8a12bee3661b4013f449dd76ec231170a82bf566afbafaa1db862a8b306f"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-success/stderr.bin",
+      "source": "runs/codex-success/stderr.bin",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-success/stdin.txt",
+      "source": "runs/codex-success/stdin.txt",
+      "bytes": 64,
+      "sha256": "a76fb89be99c292560739968f312370a68bbe922e53605742dd4ff8c6c545cac"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-09-30/runs/codex-success/stdout.bin",
+      "source": "runs/codex-success/stdout.bin",
+      "bytes": 736,
+      "sha256": "6ee8a667392e32bbfef58b435d07f1c1cfcb748da27249ef4611ab7b8989f71c"
+    }
+  ],
+  "absent": [
+    "runs-scratch/claude-stdin-fail/final-presence.txt",
+    "runs-scratch/claude-stdin-fail/final.saved.txt",
+    "runs-scratch/claude-stdin-fail/sentinel.txt",
+    "runs-scratch/claude-stdin-success/final-presence.txt",
+    "runs-scratch/claude-stdin-success/final.saved.txt",
+    "runs-scratch/claude-stdin-success/sentinel.txt",
+    "runs-scratch/codex-empty-success/final.saved.txt",
+    "runs-scratch/codex-empty-success/sentinel.txt",
+    "runs-scratch/codex-skip-fail/final.saved.txt",
+    "runs-scratch/codex-skip-fail/sentinel.txt",
+    "runs-scratch/codex-skip-success/sentinel.txt",
+    "runs/claude-baseline-forbidden-home/final-presence.txt",
+    "runs/claude-baseline-forbidden-home/final.saved.txt",
+    "runs/claude-baseline-permitted/final-presence.txt",
+    "runs/claude-baseline-permitted/final.saved.txt",
+    "runs/claude-fail-model/final-presence.txt",
+    "runs/claude-fail-model/final.saved.txt",
+    "runs/claude-fail-model/sentinel.txt",
+    "runs/claude-forbidden-home/final-presence.txt",
+    "runs/claude-forbidden-home/final.saved.txt",
+    "runs/claude-permitted/final-presence.txt",
+    "runs/claude-permitted/final.saved.txt",
+    "runs/claude-success/final-presence.txt",
+    "runs/claude-success/final.saved.txt",
+    "runs/claude-success/sentinel.txt",
+    "runs/codex-fail-model/final.saved.txt",
+    "runs/codex-fail-model/sentinel.txt",
+    "runs/codex-success/sentinel.txt"
+  ]
+}

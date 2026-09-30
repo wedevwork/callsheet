@@ -76,11 +76,11 @@ func schemaFor(name string) schema {
 			"id":          slug("The new role's unique ID (a slug of lowercase letters, digits and internal hyphens, 1-63 bytes)."),
 			"name":        slug("The logical role name; several roles may share it."),
 			"node":        nodeID("The worker node ID (see node_ls)."),
-			"adapter":     slug("A registered adapter ID (currently fake: a test/demo adapter that never calls a model)."),
+			"adapter":     slug("A registered adapter ID: claude (Claude Code), codex (Codex CLI) or fake (a test/demo adapter that never calls a model)."),
 			"instruction": roleText("Absolute path of the instruction manual on the worker node (never opened by the coordinator)."),
 			"runbook":     roleText("Absolute path of the runbook manual on the worker node (never opened by the coordinator)."),
-			"model":       roleText("Model name passed to the adapter (free text, never inferred)."),
-			"effort":      slug("Effort, one of the adapter's efforts (fake: low, medium, high)."),
+			"model":       roleText("Model name passed to the adapter (never inferred or defaulted); claude accepts only sonnet and codex only gpt-6.1-sol (their qualified pairs, checked by the worker node); fake: free text."),
+			"effort":      slug("Effort, one of the adapter's efforts (claude, codex: low; fake: low, medium, high)."),
 			"concurrency": integer("Concurrent tasks for this role, shared by all coordinators.", 1, contract.MaxConcurrency, 0, false),
 			"timeout":     duration("Task execution timeout; 0 is unlimited; omitted keeps the role default (2h)."),
 		}, "id", "name", "node", "adapter", "instruction", "runbook", "model", "effort", "concurrency")
@@ -88,7 +88,7 @@ func schemaFor(name string) schema {
 		s := object(schema{
 			"id":          slug("The role ID to change (it, the node and the registration order never change)."),
 			"name":        slug("New logical role name."),
-			"adapter":     slug("New registered adapter ID (currently fake)."),
+			"adapter":     slug("New registered adapter ID: claude, codex or fake."),
 			"instruction": roleText("New absolute instruction manual path on the worker node."),
 			"runbook":     roleText("New absolute runbook manual path on the worker node."),
 			"model":       roleText("New model name."),

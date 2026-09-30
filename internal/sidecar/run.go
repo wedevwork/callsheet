@@ -40,6 +40,14 @@ func terminal(err error) bool {
 	return false
 }
 
+// vendorPath is one real vendor's enablement option.
+type vendorPath struct{ id, path string }
+
+// vendorPaths returns the real vendors' configured paths in ID order.
+func (o RunOptions) vendorPaths() []vendorPath {
+	return []vendorPath{{adapter.ClaudeID, o.ClaudeAdapterPath}, {adapter.CodexID, o.CodexAdapterPath}}
+}
+
 // run is Run: it validates the enrollment under the state lock, which it
 // holds for its whole lifetime, and keeps one outbound connection.
 func (d *deps) run(ctx context.Context, o RunOptions) error {
@@ -55,6 +63,11 @@ func (d *deps) run(ctx context.Context, o RunOptions) error {
 	}
 	if o.FakeAdapterPath != "" && !filepath.IsAbs(o.FakeAdapterPath) {
 		return errf(contract.CodeInvalidArgument, "--fake-adapter must be an absolute path to the fake adapter executable")
+	}
+	for _, v := range o.vendorPaths() {
+		if v.path != "" && !filepath.IsAbs(v.path) {
+			return errf(contract.CodeInvalidArgument, "--%s-adapter must be an absolute path to the %s executable", v.id, v.id)
+		}
 	}
 	l := layout{root: o.StateDir}
 	pre, err := l.scan()
@@ -97,9 +110,21 @@ func (d *deps) run(ctx context.Context, o RunOptions) error {
 	if o.FakeAdapterPath != "" {
 		env.executables[adapter.FakeID] = o.FakeAdapterPath
 	}
+	vendors := false
+	for _, v := range o.vendorPaths() {
+		if v.path != "" {
+			env.executables[v.id] = v.path
+			vendors = true
+		}
+	}
 	logger.Info("sidecar starting", "plane_url", e.PlaneURL, "state_dir", l.root)
 	if o.FakeAdapterPath != "" {
 		logger.Warn(FakeAdapterWarning)
+	}
+	// The recipes are Linux-qualified: explicit enablement permits use on
+	// macOS without claiming qualification (decided by the explicit GOOS).
+	if vendors && o.GOOS == "darwin" {
+		logger.Warn(DarwinVendorWarning)
 	}
 	d.emit(event{kind: evStarted})
 	w := newWorkers()

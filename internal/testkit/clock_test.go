@@ -112,4 +112,7 @@ func TestBuildAtHelpers(t *testing.T) {
 	if _, err := BuildTestBinaryAt(dir, "./cmd/nonexistent", "x"); err == nil {
 		t.Fatal("building missing tests succeeded")
 	}
+	if _, err := BuildTaggedTestBinaryAt(dir, "./cmd/nonexistent", "x", "realadaptercheck"); err == nil {
+		t.Fatal("building missing tagged tests succeeded")
+	}
 }

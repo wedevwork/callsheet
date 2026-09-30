@@ -287,7 +287,7 @@ func TestRoleMutationContract(t *testing.T) {
 		if len(list) != 2 || list[0].ID != "a" || list[1].ID != "b" {
 			t.Fatalf("order after set = %+v", list)
 		}
-		bad, fx := "max", "codex"
+		bad, fx := "max", "nosuch-adapter"
 		for name, c := range map[string]struct {
 			id    string
 			patch contract.RolePatch

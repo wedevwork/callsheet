@@ -1,0 +1,7 @@
+{"type":"thread.started","thread_id":"01a0f0dd-4c9a-7f12-beba-a84e04dba865"}
+{"type":"item.completed","item":{"id":"item_0","type":"error","message":"clamping SessionEnd hook timeout to 3s in /home/max/.codex/plugins/cache/openai-codex/codex/1.0.6/hooks/hooks.json"}}
+{"type":"item.completed","item":{"id":"item_1","type":"error","message":"clamping SessionEnd hook timeout to 3s in /home/max/.codex/plugins/cache/xai-grok-build/grok-build/0.2.1/hooks/hooks.json"}}
+{"type":"item.completed","item":{"id":"item_2","type":"error","message":"Model metadata for `callsheet-no-such-model` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."}}
+{"type":"turn.started"}
+{"type":"error","message":"{\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The 'callsheet-no-such-model' model is not supported when using Codex with a ChatGPT account.\"}}"}
+{"type":"turn.failed","error":{"message":"{\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The 'callsheet-no-such-model' model is not supported when using Codex with a ChatGPT account.\"}}"}}

@@ -24,7 +24,7 @@ For each vendor below, the timeout rows are `UNVERIFIED; no supported override i
 
 ## Claude Code
 
-Captured version `2.1.282 (Claude Code)` ([version](../tests/testdata/cli-help/claude-version.txt), [help](../tests/testdata/cli-help/claude-help.txt)). Registration command syntax is VERIFIED by [mcp add help](../tests/testdata/cli-help/claude-mcp-add.txt); whether the registered server loads in a session is UNVERIFIED until local qualification.
+Captured version `2.1.282 (Claude Code)` ([version](../tests/testdata/cli-help/claude-version.txt), [help](../tests/testdata/cli-help/claude-help.txt)). Registration command syntax is VERIFIED by [mcp add help](../tests/testdata/cli-help/claude-mcp-add.txt); whether the registered server loads in a session is UNVERIFIED until local qualification. The catalog's version is now the worker adapter's qualified `2.1.285 (Claude Code)` ([host capture](../tests/testdata/real-adapters/linux-2026-09-30/host.txt), iteration 08); this coordinator help was not recaptured from it, and a local timeout qualification must observe the catalog's version before it can publish.
 
 Register:
 
@@ -50,7 +50,7 @@ Timeouts: call timeout, override and progress extension are UNVERIFIED; no suppo
 
 ## OpenAI Codex
 
-Captured version `codex-cli 0.156.1` ([version](../tests/testdata/cli-help/codex-version.txt), [help](../tests/testdata/cli-help/codex-help.txt)). Registration command syntax is VERIFIED by [mcp add help](../tests/testdata/cli-help/codex-mcp-add.txt); the manual TOML table shape is a candidate.
+Captured version `codex-cli 0.156.1` ([version](../tests/testdata/cli-help/codex-version.txt), [help](../tests/testdata/cli-help/codex-help.txt)). Registration command syntax is VERIFIED by [mcp add help](../tests/testdata/cli-help/codex-mcp-add.txt); the manual TOML table shape is a candidate. The catalog's version is now the worker adapter's qualified `codex-cli 0.159.0` ([host capture](../tests/testdata/real-adapters/linux-2026-09-30/host.txt), iteration 08); this coordinator help was not recaptured from it, and a local timeout qualification must observe the catalog's version before it can publish.
 
 Register:
 

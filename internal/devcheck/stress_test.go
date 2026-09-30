@@ -600,8 +600,8 @@ func TestStressStageDispatch(t *testing.T) {
 	}
 	// all stays test, coverage, bench, cross: stress is explicit.
 	f := &fakeRunner{coverTotal: "81%", cmdList: cmdList, profile: goodProfile}
-	// test(2) + coverage(3) + bench(7, iteration 07b) + cross(12).
-	if code, _, errOut := runDriver(t, "linux", f, "all"); code != 0 || len(f.calls) != 24 {
+	// test(4, iteration 08) + coverage(3) + bench(8, iteration 08) + cross(12).
+	if code, _, errOut := runDriver(t, "linux", f, "all"); code != 0 || len(f.calls) != 27 {
 		t.Fatalf("all = %d with %d calls %s", code, len(f.calls), errOut)
 	}
 	for _, c := range f.argvs() {
@@ -2079,7 +2079,9 @@ func TestPlatformSeamContract(t *testing.T) {
 	for _, goos := range []string{"linux", "darwin"} {
 		t.Run(goos, func(t *testing.T) {
 			test := TestSteps(goos)
-			wantTest := map[string]int{"linux": 2, "darwin": 1}[goos]
+			// Iteration 08 adds the tagged sidecar contract step (and its race
+			// counterpart on Linux).
+			wantTest := map[string]int{"linux": 4, "darwin": 2}[goos]
 			if len(test) != wantTest {
 				t.Fatalf("TestSteps(%s) = %d steps", goos, len(test))
 			}

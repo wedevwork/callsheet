@@ -185,12 +185,13 @@ func TestTaskPolicy(t *testing.T) {
 		// 41-name task suffix (iteration 06a's 13 control names follow it);
 		// plus the separate sidecar package tuple.
 		req := NativeRequiredTests()
-		if len(req) != 145+len(mcpNames())+len(qualNames()) || strings.Join(req[87:128], ",") != strings.Join(wantTaskSuffix, ",") || strings.Join(req[58:87], ",") != strings.Join(roleNames(), ",") ||
+		if len(req) != 145+len(mcpNames())+len(qualNames())+len(realNames()) || strings.Join(req[87:128], ",") != strings.Join(wantTaskSuffix, ",") || strings.Join(req[58:87], ",") != strings.Join(roleNames(), ",") ||
 			strings.Join(taskNames(), ",") != strings.Join(wantTaskSuffix, ",") {
 			t.Fatalf("native required = %v", req[87:128])
 		}
 		if NativeTaskProcessPackage != "github.com/wedevwork/callsheet/internal/sidecar" ||
-			strings.Join(NativeTaskProcessTests(), ",") != "TestTaskExecutionContract,TestTaskExecutionContract/process" {
+			strings.Join(NativeTaskProcessTests()[:2], ",") != "TestTaskExecutionContract,TestTaskExecutionContract/process" ||
+			strings.Join(NativeTaskProcessTests()[2:], ",") != strings.Join(realLocal, ",") {
 			t.Fatal("the sidecar native tuple changed")
 		}
 		q := qualification()
