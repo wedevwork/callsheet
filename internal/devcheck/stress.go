@@ -66,6 +66,11 @@ var (
 		// deadline/result races (injected runners and fake clocks: no real
 		// subprocess or grace per repetition).
 		"./internal/mcpqual",
+		// Iteration 09a: the workspace hub, complete, for its lock
+		// cancellation, reader/writer, CAS winner, registry race and
+		// cancellation-before-publication tests (deterministic barriers
+		// and hooks; no real subprocess).
+		"./internal/workspace",
 	}
 	// stressPlanePackage is the internal/plane package of the plane shards,
 	// distinct from the plane function-test selector in the functions shard

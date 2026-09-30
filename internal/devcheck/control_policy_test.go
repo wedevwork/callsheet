@@ -175,10 +175,11 @@ func TestControlPolicy(t *testing.T) {
 		// names; no 06b name before them; the sidecar process tuple is
 		// unchanged.
 		req := NativeRequiredTests()
-		if len(req) != 145+len(mcpNames())+len(qualNames())+len(realNames()) || strings.Join(req[128:141], ",") != strings.Join(wantControlNative, ",") ||
+		real := len(realNames())
+		if len(req) != 145+len(mcpNames())+len(qualNames())+real+len(wsNames()) || strings.Join(req[128:141], ",") != strings.Join(wantControlNative, ",") ||
 			strings.Join(req[87:128], ",") != strings.Join(wantTaskSuffix, ",") || strings.Join(req[141:145], ",") != strings.Join(wantTaskControlNative, ",") ||
 			strings.Join(req[145:222], ",") != strings.Join(mcpNames(), ",") || strings.Join(req[222:273], ",") != strings.Join(qualNames(), ",") ||
-			strings.Join(req[273:], ",") != strings.Join(realNames(), ",") {
+			strings.Join(req[273:273+real], ",") != strings.Join(realNames(), ",") || strings.Join(req[273+real:], ",") != strings.Join(wsNames(), ",") {
 			t.Fatalf("native suffix %v", req[128:])
 		}
 		for _, n := range req[:141] {

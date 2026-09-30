@@ -150,5 +150,85 @@ func schemaFor(name string) schema {
 			"wait": duration("Wait at most this long (0 to 5m; 0 is an immediate snapshot), capped by the call budget; omitted: the whole available budget."),
 		}, "task_ids")
 	}
+	return workspaceSchema(name)
+}
+
+// Workspace grammars (iteration 09a). A branch is byte-exact lowercase
+// ASCII: slash-separated components of 1-200 bytes, at most 512 bytes as
+// refs/heads/... (the validators also refuse "..", ".lock" suffixes and a
+// trailing "."). Selectors add full hashes, complete task refs and, for a
+// diff base, empty.
+const (
+	tokenPattern    = `^[0-9a-f]{32}$`
+	branchPattern   = `^(refs/heads/)?[a-z0-9][a-z0-9._-]{0,199}(/[a-z0-9][a-z0-9._-]{0,199})*$`
+	selectorPattern = `^([0-9a-f]{40}|refs/callsheet/tasks/t_[0-9a-f]{32}|(refs/heads/)?[a-z0-9][a-z0-9._-]{0,199}(/[a-z0-9][a-z0-9._-]{0,199})*)$`
+	basePattern     = `^(empty|[0-9a-f]{40}|refs/callsheet/tasks/t_[0-9a-f]{32}|(refs/heads/)?[a-z0-9][a-z0-9._-]{0,199}(/[a-z0-9][a-z0-9._-]{0,199})*)$`
+	cursorPattern   = `^(refs/heads/[a-z0-9][a-z0-9._-]{0,199}(/[a-z0-9][a-z0-9._-]{0,199})*|refs/callsheet/tasks/t_[0-9a-f]{32})$`
+)
+
+func wsName() schema {
+	return slug("The workspace name (a slug of lowercase letters, digits and internal hyphens, 1-63 bytes), named explicitly on every call.")
+}
+
+func wsInstance() schema {
+	return pattern("The workspace's instance token from ws_show (32 lowercase hex digits); it prevents acting on a recreated name.", tokenPattern)
+}
+
+func wsLimit() schema {
+	return integer("At most this many rows.", 1, contract.MaxWorkspaceLimit, contract.DefaultWorkspaceLimit, true)
+}
+
+func bounded(desc, p string, maxLen int) schema {
+	s := pattern(desc, p)
+	s["maxLength"] = maxLen
+	return s
+}
+
+func workspaceSchema(name string) schema {
+	cont := func() schema {
+		return schema{
+			"instance":   pattern("Continuation only (with after and generation): the previous page's instance.", tokenPattern),
+			"generation": pattern("Continuation only (with after and instance): the previous page's generation; a changed generation conflicts.", tokenPattern),
+			"limit":      wsLimit(),
+		}
+	}
+	switch name {
+	case toolWsCreate, toolWsShow:
+		return object(schema{"name": wsName()}, "name")
+	case toolWsLs:
+		return object(schema{
+			"after": text("Start after this name (the previous page's next_after).", 63),
+			"limit": wsLimit(),
+		})
+	case toolWsRm:
+		return object(schema{"name": wsName(), "instance": wsInstance()}, "name", "instance")
+	case toolWsPrune:
+		return object(schema{
+			"name":     wsName(),
+			"instance": wsInstance(),
+			"before":   str("Prune task refs published strictly before this RFC3339 time; a zone is required, e.g. 2026-09-30T12:00:00Z."),
+		}, "name", "instance", "before")
+	case toolWsRefSet:
+		return object(schema{
+			"name":     wsName(),
+			"instance": wsInstance(),
+			"branch":   bounded("The branch: a short name (main) or refs/heads/...; byte-exact lowercase ASCII, never repaired.", branchPattern, contract.MaxFullRef),
+			"expected": schema{"type": "string", "pattern": `^([0-9a-f]{40}|absent)$`, "description": "The branch's current full commit hash, or absent to create it (compare-and-swap)."},
+			"target":   bounded("The new value (omit with delete): a full commit hash reachable from a current ref, a branch or a complete refs/callsheet/tasks/ ref.", selectorPattern, contract.MaxFullRef),
+			"delete":   boolean("Delete the branch instead (expected must be its current hash)."),
+		}, "name", "instance", "branch", "expected")
+	case toolWsStatus:
+		props := cont()
+		props["after"] = bounded("Continuation only (with instance and generation): the previous page's next_after, a complete ref.", cursorPattern, contract.MaxFullRef)
+		props["name"] = wsName()
+		return object(props, "name")
+	case toolWsDiff:
+		props := cont()
+		props["after"] = pattern("Continuation only (with instance and generation): the previous page's next_after, base64 of a raw path.", `^[A-Za-z0-9+/]+={0,2}$`)
+		props["name"] = wsName()
+		props["base"] = bounded("The base snapshot: a selector, or empty for the empty tree (a continuation uses the returned base_commit or empty).", basePattern, contract.MaxFullRef)
+		props["target"] = bounded("The target snapshot: a full reachable commit hash, a branch or a complete refs/callsheet/tasks/ ref (a continuation uses the returned target_commit).", selectorPattern, contract.MaxFullRef)
+		return object(props, "name", "base", "target")
+	}
 	return nil
 }

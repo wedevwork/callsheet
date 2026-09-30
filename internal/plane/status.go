@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/wedevwork/callsheet/internal/contract"
+	"github.com/wedevwork/callsheet/internal/workspace"
 )
 
 // warnWindow is the inclusive expiry warning window (Q14).
@@ -86,6 +87,15 @@ func (d *deps) inspect(ctx context.Context, stateDir string) (Status, error) {
 	}
 	_, tasks, err := l.loadState(roleLookup)
 	if err != nil {
+		return Status{}, err
+	}
+	// Iteration 09a: workspace state is validated read-only; malformed
+	// state is never reported as an empty registry.
+	canon, err := canonicalRoot(stateDir)
+	if err != nil {
+		return Status{}, wrapf(contract.CodeInternal, err, "cannot resolve the plane state root %s: %v", stateDir, err)
+	}
+	if _, err := workspace.Inspect(ctx, canon); err != nil {
 		return Status{}, err
 	}
 	st := l.status(m, d.clock())

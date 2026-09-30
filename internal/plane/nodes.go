@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/wedevwork/callsheet/internal/contract"
+	"github.com/wedevwork/callsheet/internal/workspace"
 )
 
 // nodeService serves the node API (iteration 03): CA bootstrap, enrollment,
@@ -24,7 +25,10 @@ type nodeService struct {
 	roles *roleService
 	// tasks serves the task API and the stream's task frames (iteration
 	// 05); nil serves none.
-	tasks  *taskService
+	tasks *taskService
+	// ws serves the workspace control API and git transport (iteration
+	// 09a); nil serves neither.
+	ws     *workspace.Manager
 	clock  nodeClock
 	logger *slog.Logger
 	caPEM  []byte

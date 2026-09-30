@@ -210,7 +210,7 @@ func TestProtocolLifecycle(t *testing.T) {
 	}
 }
 
-// FP-1: discovery lists the thirteen tools in order with materialized
+// FP-1: discovery lists the twenty-one tools in order with materialized
 // local schemas and truthful annotations; there is one page.
 func TestProtocolDiscovery(t *testing.T) {
 	for _, b := range []time.Duration{DefaultBudget, time.Second, 90 * time.Second, 5 * time.Minute} {
@@ -248,7 +248,8 @@ func TestProtocolDiscovery(t *testing.T) {
 				waiting != strings.Contains(tl.Description, UnverifiedNotice) || strings.Contains(tl.Description, "ends within it") {
 				t.Fatalf("%s budget description %q", tl.Name, tl.Description)
 			}
-			mutating := map[string]bool{toolRoleAdd: true, toolRoleSet: true, toolRoleRm: true, toolDispatch: true, toolTaskCancel: true}[tl.Name]
+			mutating := map[string]bool{toolRoleAdd: true, toolRoleSet: true, toolRoleRm: true, toolDispatch: true, toolTaskCancel: true,
+				toolWsCreate: true, toolWsRm: true, toolWsPrune: true, toolWsRefSet: true}[tl.Name]
 			if tl.Annotations["readOnlyHint"] == mutating || tl.Annotations["openWorldHint"] {
 				t.Fatalf("%s annotations %v", tl.Name, tl.Annotations)
 			}
@@ -256,7 +257,7 @@ func TestProtocolDiscovery(t *testing.T) {
 				t.Fatalf("%s idempotence %v", tl.Name, tl.Annotations)
 			}
 		}
-		if strings.Join(names, ",") != strings.Join(ToolNames, ",") || len(names) != 13 {
+		if strings.Join(names, ",") != strings.Join(ToolNames, ",") || len(names) != 21 {
 			t.Fatalf("tools %v", names)
 		}
 		for i, bad := range []string{`{"cursor":"page2"}`, `{"cursor":1}`, `{"limit":1}`, `{"_meta":[]}`} {
@@ -283,6 +284,23 @@ func TestProtocolCallEnvelope(t *testing.T) {
 	h.send(`{"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"node_show","arguments":{"id":"nope"},"_meta":{"progressToken":"p"}}}`)
 	if e := h.answer().errorOf(t); e.Code != contract.CodeInvalidArgument {
 		t.Fatalf("bad argument %+v", e)
+	}
+	if h.factory.Load() != 0 {
+		t.Fatalf("invalid calls resolved trust %d times", h.factory.Load())
+	}
+}
+
+// A client that waits for each answer before sending the next call must
+// not be refused for capacity. The slot is freed as the answer is
+// written, including for calls that never reach the plane.
+func TestSequentialCallsReuseTheSlot(t *testing.T) {
+	h := start(t)
+	h.ready()
+	for i := range 50 {
+		e := h.ask(toolRoleAdd, `{}`).errorOf(t)
+		if e.Code != contract.CodeInvalidArgument || e.Details["reason"] == ReasonCapacity {
+			t.Fatalf("call %d: %+v", i, e)
+		}
 	}
 	if h.factory.Load() != 0 {
 		t.Fatalf("invalid calls resolved trust %d times", h.factory.Load())

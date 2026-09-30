@@ -203,6 +203,20 @@ var realRequired = []struct {
 // its children.
 func realNames() []string { return requiredNames(realRequired) }
 
+// wsRequired are iteration 09a's ten workspace function tests in FP order
+// (FP-1..FP-10) with FP-7's D1 maximum-path subcase.
+var wsRequired = []struct {
+	test string
+	subs []string
+}{
+	{"TestWorkspaceCreate", nil}, {"TestWorkspaceList", nil}, {"TestWorkspaceShow", nil}, {"TestWorkspaceRemove", nil},
+	{"TestWorkspacePrune", nil}, {"TestWorkspaceTransport", nil}, {"TestWorkspaceRefSet", []string{"max-path"}},
+	{"TestWorkspaceStatus", nil}, {"TestWorkspaceDiff", nil}, {"TestWorkspaceNoGit", nil},
+}
+
+// wsNames lists every required iteration 09a name.
+func wsNames() []string { return requiredNames(wsRequired) }
+
 // realLocal is iteration 08's tagged sidecar contract with its five
 // subtests, required in the sidecar package (NativeTaskProcessPackage).
 var realLocal = []string{"TestRealAdapterLocal", "TestRealAdapterLocal/selection", "TestRealAdapterLocal/file", "TestRealAdapterLocal/ordering",
@@ -243,7 +257,7 @@ func qualification() []evt {
 		evs = append(evs, ev("pass", NativePackage, fp6+"/"+s))
 	}
 	evs = append(evs, ev("pass", NativePackage, fp6))
-	for _, p := range append(append(append(append(append(append(append(append(planeRequired[:0:0], planeRequired...), nodeRequired...), roleRequired...), taskRequired...), controlRequired...), mcpRequired...), qualRequired...), realRequired...) {
+	for _, p := range append(append(append(append(append(append(append(append(append(planeRequired[:0:0], planeRequired...), nodeRequired...), roleRequired...), taskRequired...), controlRequired...), mcpRequired...), qualRequired...), realRequired...), wsRequired...) {
 		evs = append(evs, ev("run", NativePackage, p.test))
 		for _, s := range p.subs {
 			evs = append(evs, ev("run", NativePackage, p.test+"/"+s), ev("pass", NativePackage, p.test+"/"+s))
@@ -412,7 +426,7 @@ func TestNativeStepsAndUnsupportedOS(t *testing.T) {
 		"TestControlLateResult,TestControlLegacy,TestControlNativeGroups,TestControlNativeGroups/cooperative,TestControlNativeGroups/resistant,"+
 		"TestControlNativeGroups/orphan-restart,TestControlNativeGroups/plane-restart,"+
 		"TestControlCancellation,TestControlExecutionTimeout,TestControlBoundedWait,TestControlForceRemove,"+strings.Join(mcpNames(), ",")+","+strings.Join(qualNames(), ",")+
-		","+strings.Join(realNames(), ",") || len(req) != 312 {
+		","+strings.Join(realNames(), ",")+","+strings.Join(wsNames(), ",") || len(req) != 312+11 {
 		t.Fatalf("required = %v", req)
 	}
 	req[0] = "mutated"
@@ -692,8 +706,11 @@ func TestNativeStageRunFor(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("native = %d %s", code, errOut)
 	}
-	if len(f.calls) != 1 || strings.Join(f.calls[0].argv, " ") != "go test -json -tags=realadaptercheck -count=1 -timeout=180s ./..." || f.calls[0].dir != "" {
-		t.Fatalf("calls = %+v", f.calls)
+	// Iteration 09a: the qualification, then the coverage stage and the
+	// workspace benchmarks.
+	if len(f.calls) != 5 || strings.Join(f.calls[0].argv, " ") != "go test -json -tags=realadaptercheck -count=1 -timeout=180s ./..." || f.calls[0].dir != "" ||
+		strings.Join(f.calls[4].argv, " ") != strings.Join(WorkspaceBenchStep().Argv, " ") {
+		t.Fatalf("calls = %+v", f.argvs())
 	}
 	if !strings.Contains(strings.Join(f.calls[0].env, "\n"), "PATH=") {
 		t.Fatal("child env must extend the parent environment")
@@ -766,7 +783,13 @@ func newDriver(t *testing.T, run Runner) (*driver, *bytes.Buffer, *bytes.Buffer)
 func TestNativeDriverStreams(t *testing.T) {
 	// stderr carrying a JSON failure event must never reach the parser.
 	bogus := `{"Action":"fail","Package":"x"}` + "\n"
-	run := func(_ context.Context, _, _ []string, _ string, stdout, stderr io.Writer) error {
+	cover := &fakeRunner{native: "x"}
+	run := func(ctx context.Context, argv, env []string, dir string, stdout, stderr io.Writer) error {
+		if strings.Join(argv[:3], " ") != "go test -json" {
+			// Iteration 09a: the coverage stage and benchmarks that follow
+			// a qualified native run.
+			return cover.run(ctx, argv, env, dir, stdout, stderr)
+		}
 		io.WriteString(stdout, stream(qualification()...))
 		io.WriteString(stderr, bogus)
 		return nil
@@ -920,7 +943,7 @@ func TestNativeQualificationEvidence(t *testing.T) {
 		t.Fatalf("complete evidence: %v", err)
 	}
 	req := NativeRequiredTests()
-	if n := len(qualNames()); n != 8+43 || len(req) != 222+n+len(realNames()) || strings.Join(req[222:273], ",") != strings.Join(qualNames(), ",") ||
+	if n := len(qualNames()); n != 8+43 || len(req) != 222+n+len(realNames())+len(wsNames()) || strings.Join(req[222:273], ",") != strings.Join(qualNames(), ",") ||
 		strings.Join(req[145:222], ",") != strings.Join(mcpNames(), ",") {
 		t.Fatalf("%d 07b names; native suffix %v", n, req[222:])
 	}

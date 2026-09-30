@@ -362,6 +362,20 @@ var nativeRequired = []string{
 	"TestRealAdapterSmokeGate/ci-off",
 	"TestRealAdapterSmokeGate/absent",
 	"TestRealAdapterSmokeGate/enabled",
+	// Iteration 09a (workspace hub): the ten function tests in FP order
+	// (FP-1..FP-10) and the D1 maximum-path subcase of FP-7; absence or a
+	// skip never satisfies native qualification.
+	"TestWorkspaceCreate",
+	"TestWorkspaceList",
+	"TestWorkspaceShow",
+	"TestWorkspaceRemove",
+	"TestWorkspacePrune",
+	"TestWorkspaceTransport",
+	"TestWorkspaceRefSet",
+	"TestWorkspaceRefSet/max-path",
+	"TestWorkspaceStatus",
+	"TestWorkspaceDiff",
+	"TestWorkspaceNoGit",
 }
 
 // NativeTaskProcessPackage and nativeTaskProcess are the separate native
@@ -674,7 +688,9 @@ func (t *tailBuffer) Write(p []byte) (int, error) {
 // native runs the native plan with separate stdout and stderr: stdout goes
 // to the user and a scratch JSON file (the only parser input), stderr to a
 // scratch log and the user's diagnostics. It stops at the first child
-// failure and validates the JSON only after every child succeeded.
+// failure and validates the JSON only after every child succeeded; only
+// then (iteration 09a) does it run the coverage stage and the workspace
+// benchmark step.
 func (d *driver) native(steps []Step) error {
 	jsonPath := filepath.Join(d.scratch, "native-events.jsonl")
 	errPath := filepath.Join(d.scratch, "native-stderr.log")
@@ -705,7 +721,13 @@ func (d *driver) native(steps []Step) error {
 	}
 	fmt.Fprintf(d.out, "devcheck: native qualification passed on %s/%s: %s: %s\n",
 		d.goos, runtime.GOARCH, NativePackage, strings.Join(nativeRequired, ", "))
-	return nil
+	// Iteration 09a: after the qualification succeeded, and outside its
+	// parsed JSON event stream, the coverage gates (project-wide and the
+	// new/changed manifest) and the workspace benchmarks run natively.
+	if err := d.coverage(""); err != nil {
+		return err
+	}
+	return d.steps([]Step{WorkspaceBenchStep()})
 }
 
 func (d *driver) nativeChildren(steps []Step, events, stderrLog io.Writer) error {

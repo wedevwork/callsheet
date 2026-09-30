@@ -59,7 +59,14 @@ func TestFP1Foundation(t *testing.T) {
 	})
 
 	t.Run("dependency boundaries", func(t *testing.T) {
-		forbidden := []string{module + "/internal/testkit", module + "/internal/spikes", module + "/internal/devcheck", "github.com/go-git/"}
+		// Since iteration 09a the pinned go-git is a production dependency
+		// of the workspace hub only (below); its root package and its
+		// client, file, SSH, git and HTTP transports never are, so no
+		// product path can reach a git process, remote or helper.
+		forbidden := []string{module + "/internal/testkit", module + "/internal/spikes", module + "/internal/devcheck",
+			"github.com/go-git/go-git/v5/plumbing/transport/client", "github.com/go-git/go-git/v5/plumbing/transport/file",
+			"github.com/go-git/go-git/v5/plumbing/transport/ssh", "github.com/go-git/go-git/v5/plumbing/transport/git",
+			"github.com/go-git/go-git/v5/plumbing/transport/http"}
 		// Since iteration 05 the sidecar reuses the process-group spike's
 		// exported teardown mechanics (execution.md); that one package is
 		// the only spike the product graph may reach.
@@ -70,6 +77,25 @@ func TestFP1Foundation(t *testing.T) {
 					if strings.HasPrefix(dep, f) && dep != groupSpike {
 						t.Errorf("production package %s depends on %s", pkg, dep)
 					}
+				}
+				if dep == "github.com/go-git/go-git/v5" {
+					t.Errorf("production package %s depends on the go-git root package", pkg)
+				}
+			}
+		}
+		for _, pkg := range []string{"./internal/contract", "./internal/logging"} {
+			for _, dep := range strings.Fields(goList(t, root, "-deps", "-f", "{{.ImportPath}}", pkg)) {
+				if strings.HasPrefix(dep, "github.com/go-git/") {
+					t.Errorf("production package %s depends on %s", pkg, dep)
+				}
+			}
+		}
+		// Only the workspace hub imports go-git directly.
+		for _, line := range strings.Split(strings.TrimSpace(goList(t, root, "-f", `{{.ImportPath}} {{join .Imports " "}}`, "./cmd/...", "./internal/cli/...", "./internal/client/...", "./internal/plane/...", "./internal/sidecar/...", "./internal/contract/...", "./internal/logging/...", "./internal/mcp/...", "./internal/workspace/...")), "\n") {
+			f := strings.Fields(line)
+			for _, imp := range f[1:] {
+				if strings.HasPrefix(imp, "github.com/go-git/") && f[0] != module+"/internal/workspace" {
+					t.Errorf("production package %s imports %s directly", f[0], imp)
 				}
 			}
 		}

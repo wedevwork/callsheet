@@ -101,7 +101,8 @@ func TestMCPProtocol(t *testing.T) {
 				t.Fatalf("%s description %q", tl.Name, tl.Description)
 			}
 		}
-		if strings.Join(names, " ") != "node_ls node_show role_add role_set role_ls role_show role_rm dispatch task_ls task_show task_logs task_cancel task_wait" {
+		if strings.Join(names, " ") != "node_ls node_show role_add role_set role_ls role_show role_rm dispatch task_ls task_show task_logs task_cancel task_wait "+
+			"ws_create ws_ls ws_show ws_rm ws_prune ws_ref_set ws_status ws_diff" {
 			t.Fatalf("tools %v", names)
 		}
 	})

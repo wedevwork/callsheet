@@ -27,11 +27,12 @@ func TestRunWrapper(t *testing.T) {
 	// iteration 03 node and iteration 04 role benchmarks), the frame
 	// contract (iterations 03 and 04), then the sidecar ready checks and
 	// the adapter probe (iteration 04), then the MCP server (iteration
-	// 07a), then the qualification harness (iteration 07b), then the tagged
-	// real-adapter final-file helper (iteration 08).
-	if len(calls) != 8 || calls[0][0] != "go" || calls[0][1] != "test" || calls[1][2] != "./internal/plane" || calls[2][2] != "./internal/contract" ||
+	// 07a), then the qualification harness (iteration 07b), then the
+	// workspace hub (iteration 09a), then the tagged real-adapter
+	// final-file helper (iteration 08).
+	if len(calls) != 9 || calls[0][0] != "go" || calls[0][1] != "test" || calls[1][2] != "./internal/plane" || calls[2][2] != "./internal/contract" ||
 		calls[3][2] != "./internal/sidecar" || calls[4][2] != "./internal/adapter" || calls[5][2] != "./internal/mcp" || calls[6][2] != "./internal/mcpqual" ||
-		calls[7][2] != "./internal/sidecar" || calls[7][3] != "-tags=realadaptercheck" {
+		calls[7][2] != "./internal/workspace" || calls[8][2] != "./internal/sidecar" || calls[8][3] != "-tags=realadaptercheck" {
 		t.Fatalf("calls = %v", calls)
 	}
 	// The stress shard stages (iteration 02c, stress-plane since 05b,

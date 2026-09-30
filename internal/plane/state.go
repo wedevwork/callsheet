@@ -119,6 +119,10 @@ type scanResult struct {
 	rolesPresent bool
 	// tasksPresent reports the optional tasks/ directory (iteration 05).
 	tasksPresent bool
+	// workspacesPresent reports the optional workspaces/ directory
+	// (iteration 09a); its contents are validated by the workspace
+	// manager.
+	workspacesPresent bool
 }
 
 // scan checks the root, managed directories, lock and durable files for
@@ -155,7 +159,7 @@ func (l layout) scan() (scanResult, error) {
 	}
 	for _, e := range rootEntries {
 		switch n := e.Name(); {
-		case n == pkiName, n == tmpName, n == lockName, n == configName, n == nodesName, n == rolesName, n == tasksName, strings.HasPrefix(n, tempPrefix):
+		case n == pkiName, n == tmpName, n == lockName, n == configName, n == nodesName, n == rolesName, n == tasksName, n == workspacesName, strings.HasPrefix(n, tempPrefix):
 		default:
 			unexpected = append(unexpected, filepath.Join(l.root, n))
 		}
@@ -201,6 +205,9 @@ func (l layout) scan() (scanResult, error) {
 	}
 	s.tasksPresent = tasksPresent
 	unexpected = append(unexpected, taskUnexpected...)
+	if s.workspacesPresent, err = l.scanWorkspaces(); err != nil {
+		return s, err
+	}
 	if fi, err := os.Lstat(l.path(lockName)); err == nil {
 		if err := checkPublic(l.path(lockName), fi); err != nil {
 			return s, err
@@ -228,7 +235,7 @@ func (l layout) scan() (scanResult, error) {
 	}
 	if len(unexpected) > 0 {
 		sort.Strings(unexpected)
-		return s, errf(contract.CodeConflict, "state directory %s holds unexpected %s; plane state may contain only config.json, pki/ (the four PKI files), tmp/, nodes/ (node records), roles/ (the role registry), tasks/ (task records) and .lock. Nothing was changed: move the unexpected entries out of the state directory, or choose a fresh --state-dir",
+		return s, errf(contract.CodeConflict, "state directory %s holds unexpected %s; plane state may contain only config.json, pki/ (the four PKI files), tmp/, nodes/ (node records), roles/ (the role registry), tasks/ (task records), workspaces/ (workspace repositories) and .lock. Nothing was changed: move the unexpected entries out of the state directory, or choose a fresh --state-dir",
 			l.root, strings.Join(unexpected, ", "))
 	}
 	switch len(s.missing) {
@@ -236,9 +243,9 @@ func (l layout) scan() (scanResult, error) {
 		s.kind = kindComplete
 	case len(durable):
 		s.kind = kindEmpty
-		if s.nodesPresent || s.rolesPresent || s.tasksPresent {
-			// A roster, role registry or task record without its trust is
-			// never a reason to bootstrap a new CA around it.
+		if s.nodesPresent || s.rolesPresent || s.tasksPresent || s.workspacesPresent {
+			// A roster, role registry, task record or workspace without its
+			// trust is never a reason to bootstrap a new CA around it.
 			s.kind = kindPartial
 		}
 	default:
@@ -262,14 +269,16 @@ func (l layout) partialError(s scanResult) error {
 	for i, rel := range s.missing {
 		paths[i] = l.path(rel)
 	}
-	if (s.nodesPresent || s.rolesPresent || s.tasksPresent) && len(s.missing) == len(durable) {
+	if (s.nodesPresent || s.rolesPresent || s.tasksPresent || s.workspacesPresent) && len(s.missing) == len(durable) {
 		what, reg := "node registry", l.path(nodesName)
 		switch {
 		case s.nodesPresent:
 		case s.rolesPresent:
 			what, reg = "role registry", l.path(rolesName)
-		default:
+		case s.tasksPresent:
 			what, reg = "task history", l.path(tasksName)
+		default:
+			what, reg = "workspace store", l.path(workspacesName)
 		}
 		return errf(contract.CodeConflict, "plane state in %s holds a %s (%s) but no plane trust or configuration (missing %s); a new CA is never bootstrapped around an existing roster. Preserve the directory and restore a complete stopped backup, or choose a fresh --state-dir",
 			l.root, what, reg, strings.Join(paths, ", "))

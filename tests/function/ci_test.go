@@ -127,6 +127,22 @@ type ciRunner struct {
 	stdout     string
 }
 
+// manifestBlocks is one covered profile block per iteration 09a coverage
+// manifest selection (the synthetic profile must satisfy that gate too).
+func manifestBlocks() string {
+	var b strings.Builder
+	for _, e := range devcheck.WorkspaceCoverageManifest {
+		ranges := e.Ranges
+		if len(ranges) == 0 {
+			ranges = [][2]int{{1, 1}}
+		}
+		for _, r := range ranges {
+			fmt.Fprintf(&b, "%s:%d.1,%d.2 1 1\n", e.File, r[0], r[1])
+		}
+	}
+	return b.String()
+}
+
 func (r *ciRunner) run(_ context.Context, argv, env []string, _ string, stdout, stderr io.Writer) error {
 	r.mu.Lock()
 	r.calls = append(r.calls, argv)
@@ -143,7 +159,7 @@ func (r *ciRunner) run(_ context.Context, argv, env []string, _ string, stdout, 
 				"github.com/wedevwork/callsheet/cmd/callsheet/main.go:1.1,2.2 1 1\n"+
 				"github.com/wedevwork/callsheet/cmd/devcheck/main.go:1.1,2.2 1 1\n"+
 				"github.com/wedevwork/callsheet/cmd/fake-adapter/main.go:1.1,2.2 1 1\n"+
-				"github.com/wedevwork/callsheet/cmd/mcpqual/main.go:1.1,2.2 1 1\n"), 0o600)
+				"github.com/wedevwork/callsheet/cmd/mcpqual/main.go:1.1,2.2 1 1\n"+manifestBlocks()), 0o600)
 		}
 	}
 	switch {
@@ -199,7 +215,7 @@ func qualifyingEvents(drop, skip string) string {
 	evs := []map[string]any{synth("start", pkg, "")}
 	for _, name := range devcheck.NativeRequiredTests() {
 		if strings.HasPrefix(name, "TestPlane") || strings.HasPrefix(name, "TestNode") || strings.HasPrefix(name, "TestRole") || strings.HasPrefix(name, "TestTask") ||
-			strings.HasPrefix(name, "TestControl") || strings.HasPrefix(name, "TestMCP") || strings.HasPrefix(name, "TestRealAdapter") {
+			strings.HasPrefix(name, "TestControl") || strings.HasPrefix(name, "TestMCP") || strings.HasPrefix(name, "TestRealAdapter") || strings.HasPrefix(name, "TestWorkspace") {
 			evs = append(evs, synth("run", pkg, name), synth("pass", pkg, name))
 		}
 	}
@@ -510,10 +526,16 @@ func TestCINativeEvidence(t *testing.T) {
 		}
 		return
 	}
-	r := &ciRunner{stdout: valid}
+	// Qualification, then the coverage stage (profile, func report, cmd list)
+	// and the workspace benchmark. An empty cover total is parsed as the
+	// literal "(statements)" and fails the stage.
+	r := &ciRunner{stdout: valid, coverTotal: "91.7%"}
 	code, out, errOut := devcheckRun(t, r, "native")
-	if code != 0 || len(r.calls) != 1 || !strings.Contains(out, "native qualification passed on darwin/"+runtime.GOARCH) {
-		t.Fatalf("darwin native = %d %s", code, errOut)
+	if code != 0 || len(r.calls) != 5 ||
+		strings.Join(r.calls[0], " ") != "go test -json -tags=realadaptercheck -count=1 -timeout=180s ./..." ||
+		strings.Join(r.calls[4], " ") != strings.Join(devcheck.WorkspaceBenchStep().Argv, " ") ||
+		!strings.Contains(out, "native qualification passed on darwin/"+runtime.GOARCH) {
+		t.Fatalf("darwin native = %d calls=%d %s", code, len(r.calls), errOut)
 	}
 	if code, _, errOut := devcheckRun(t, &ciRunner{failOn: "-json"}, "native"); code != 1 || !strings.Contains(errOut, "injected child failure") {
 		t.Fatalf("child error = %d %s", code, errOut)
