@@ -377,7 +377,7 @@ The same run/pass rule applies. Separately, the sidecar tuple
 run and pass in `internal/sidecar` itself, and the same names in
 `tests/function` or any other package never satisfy them. That contract is
 in a `realadaptercheck`-tagged file, so the native stage is one invocation
-of `go test -json -tags=realadaptercheck -count=1 -timeout=180s ./...`
+of `go test -json -tags=realadaptercheck -count=1 -timeout=300s ./...`
 (the tag reaches compilation, one package start per package: a second
 sidecar invocation would be a duplicate start and fails), `devcheck test`
 runs it as `go test -tags=realadaptercheck ./internal/sidecar
@@ -402,6 +402,12 @@ tests (pure extractors and argv, and the version probe on an injected
 runner and clock) run in the packages shard with the rest of
 `internal/adapter`; the function parents run in the normal, race and native
 suites only, never in a stress shard.
+Its per-package timeout is 300 s (iteration 09b, raised from 180 s by the
+owner's decision of 2026-10-01; Linux `devcheck test`, coverage and every
+stress stage keep their own limits, and the `ci-macos` job keeps its
+30-minute limit): the macOS function package takes about 110–146 s on a
+normal hosted runner, and runners up to 1.6–2× slower were observed, so a
+180 s bound left no headroom.
 
 The main jobs and all fourteen workers check out the event's revision without
 persisted credentials, take the Go version from `go.mod` with module

@@ -401,7 +401,7 @@ func TestNativeRealAdapterEvidence(t *testing.T) {
 func TestNativeStepsAndUnsupportedOS(t *testing.T) {
 	steps, err := NativeSteps("darwin")
 	if err != nil || len(steps) != 1 || steps[0].Name != "native" || len(steps[0].Env) != 0 ||
-		strings.Join(steps[0].Argv, " ") != "go test -json -tags=realadaptercheck -count=1 -timeout=180s ./..." {
+		strings.Join(steps[0].Argv, " ") != "go test -json -tags=realadaptercheck -count=1 -timeout=300s ./..." {
 		t.Fatalf("darwin plan = %+v %v", steps, err)
 	}
 	for _, goos := range []string{"linux", "windows", "freebsd", ""} {
@@ -722,7 +722,7 @@ func TestNativeStageRunFor(t *testing.T) {
 	}
 	// Iteration 09a: the qualification, then the coverage stage and the
 	// workspace benchmarks; iteration 09b: then the transfer benchmarks.
-	if len(f.calls) != 6 || strings.Join(f.calls[0].argv, " ") != "go test -json -tags=realadaptercheck -count=1 -timeout=180s ./..." || f.calls[0].dir != "" ||
+	if len(f.calls) != 6 || strings.Join(f.calls[0].argv, " ") != "go test -json -tags=realadaptercheck -count=1 -timeout=300s ./..." || f.calls[0].dir != "" ||
 		strings.Join(f.calls[4].argv, " ") != strings.Join(WorkspaceBenchStep().Argv, " ") ||
 		strings.Join(f.calls[5].argv, " ") != strings.Join(TransferBenchStep().Argv, " ") {
 		t.Fatalf("calls = %+v", f.argvs())
@@ -760,7 +760,7 @@ func TestNativeStageFailuresRetainScratch(t *testing.T) {
 	f := &fakeRunner{fail: "-json"}
 	code, out, errOut := runDriver(t, "darwin", f, "native")
 	scratch := scratchFrom(out)
-	if code != 1 || !strings.Contains(errOut, "native failed: go test -json -tags=realadaptercheck -count=1 -timeout=180s ./...: exit status 1") ||
+	if code != 1 || !strings.Contains(errOut, "native failed: go test -json -tags=realadaptercheck -count=1 -timeout=300s ./...: exit status 1") ||
 		!strings.Contains(errOut, "boom from child") || !strings.Contains(errOut, "logs retained in "+scratch) {
 		t.Fatalf("child failure = %d %s", code, errOut)
 	}

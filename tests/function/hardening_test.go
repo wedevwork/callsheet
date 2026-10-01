@@ -186,6 +186,7 @@ func TestHardeningStress(t *testing.T) {
 // FP-2: every seam's contract test runs linux and darwin subtests on this
 // host, without foreign syscalls.
 func TestHardeningPlatformSeams(t *testing.T) {
+	t.Parallel() // independent fixtures; overlaps the package's long parallel tests (CI headroom)
 	for _, pkg := range []string{"./internal/cli", "./internal/devcheck", "./internal/spikes/processgroup", "./internal/testkit/fakeadapter"} {
 		t.Run(filepath.Base(pkg), func(t *testing.T) {
 			bin := testkit.BuildTestBinary(t, pkg, filepath.Base(pkg))

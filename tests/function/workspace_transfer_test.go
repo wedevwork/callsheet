@@ -316,6 +316,7 @@ func sameTFiles(a, b map[string]tfile) bool {
 // non-fast-forward is refused with guidance and a stale instance
 // conflicts, with no unintended ref movement.
 func TestWorkspacePushGit(t *testing.T) {
+	t.Parallel() // independent fixtures; overlaps the package's long parallel tests (CI headroom)
 	e := startTransfer(t, nil)
 	r := mkRepo(t, map[string]tfile{"a.txt": tr("one\n"), "old.log": tr("tracked, later ignored\n"), "bin/run": tx("#!/bin/sh\n"), "l": tlnk("a.txt")})
 	first := r.head
@@ -375,6 +376,7 @@ func (r *fixRepo) pushOut(e *trEnv) result { return e.push(r.root) }
 // symlinks and CRLF-clean files pass; the NFD/NFC precompose rules hold
 // natively; the index and stored paths are never rewritten.
 func TestWorkspacePushCleanliness(t *testing.T) {
+	t.Parallel() // independent fixtures; overlaps the package's long parallel tests (CI headroom)
 	home := canonTemp(t)
 	env := []string{"PATH=" + os.Getenv("PATH"), "GIT_CONFIG_NOSYSTEM=1"}
 	e := startTransfer(t, env)
@@ -481,6 +483,7 @@ func blobOf(s string) plumbing.EncodedObject {
 // folder rules; the source stays plain; a source failure leaves the hub
 // unchanged.
 func TestWorkspacePushFolder(t *testing.T) {
+	t.Parallel() // independent fixtures; overlaps the package's long parallel tests (CI headroom)
 	e := startTransfer(t, nil)
 	folder := mkFolder(t, map[string]tfile{"a.txt": tr("alpha\n"), "bin/run": tx("#!/bin/sh\n"), "ln": tlnk("../outside"), "d/e": tr("e")})
 	os.MkdirAll(filepath.Join(folder, "empty/dir"), 0o755)
@@ -527,6 +530,7 @@ func TestWorkspacePushFolder(t *testing.T) {
 // ignored tracked content retained, and a matcher corpus through a real
 // push.
 func TestWorkspaceTransferIgnores(t *testing.T) {
+	t.Parallel() // independent fixtures; overlaps the package's long parallel tests (CI headroom)
 	home := canonTemp(t)
 	e := startTransfer(t, []string{"PATH=" + os.Getenv("PATH"), "GIT_CONFIG_NOSYSTEM=1"})
 	e.cli.home = home
@@ -604,6 +608,7 @@ func TestWorkspaceTransferIgnores(t *testing.T) {
 // existing observation ref moves backwards; the returned commit is the
 // user's external push input (no external call).
 func TestWorkspacePullGit(t *testing.T) {
+	t.Parallel() // independent fixtures; overlaps the package's long parallel tests (CI headroom)
 	e := startTransfer(t, nil)
 	src := mkRepo(t, map[string]tfile{"a.txt": tr("one\n")})
 	first := src.head
@@ -664,6 +669,7 @@ func TestWorkspacePullGit(t *testing.T) {
 // filesystem aliases refused before publication (natively); a destination
 // populated during staging preserved (delegated contract).
 func TestWorkspacePullFolder(t *testing.T) {
+	t.Parallel() // independent fixtures; overlaps the package's long parallel tests (CI headroom)
 	e := startTransfer(t, nil)
 	files := map[string]tfile{"a.txt": tr("alpha\n"), "bin/run": tx("#!/bin/sh\n"), "links/rel": tlnk("../a.txt"), "links/dangle": tlnk("missing"), "d/e/f": tr("")}
 	src := mkRepo(t, files)
@@ -750,6 +756,7 @@ func TestWorkspacePullFolder(t *testing.T) {
 // FP-7: usage, defaults, selectors, output shapes and exit codes, then S6
 // (seed from the current directory) and S18 (both delivery paths).
 func TestWorkspaceTransferCLI(t *testing.T) {
+	t.Parallel() // independent fixtures; overlaps the package's long parallel tests (CI headroom)
 	e := startTransfer(t, nil)
 	// Unborn main and missing workspace.
 	dst := canonTemp(t)
@@ -820,6 +827,7 @@ func TestWorkspaceTransferCLI(t *testing.T) {
 // errors, paths relative to the server's working directory, no content
 // sentinel in any frame, and no owned work left after cancellation or EOF.
 func TestWorkspaceTransferMCP(t *testing.T) {
+	t.Parallel() // independent fixtures; overlaps the package's long parallel tests (CI headroom)
 	tmp := canonTemp(t)
 	env := []string{"PATH=" + os.Getenv("PATH"), "TMPDIR=" + tmp}
 	e := startTransfer(t, env)
@@ -974,6 +982,7 @@ func TestWorkspaceTransferNoGit(t *testing.T) {
 // layouts are refused as unsupported_repository through the CLI and MCP,
 // never as a dirty source or a folder; nothing changes.
 func TestWorkspaceTransferEligibility(t *testing.T) {
+	t.Parallel() // independent fixtures; overlaps the package's long parallel tests (CI headroom)
 	e := startTransfer(t, nil)
 	cases := map[string]string{}
 	add := func(name, path string) { cases[name] = path }

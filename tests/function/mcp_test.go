@@ -344,6 +344,7 @@ func roleArgs(id, name, node string, conc int) map[string]any {
 
 // FP-4: role tools, the global slots and forced removal.
 func TestMCPRoles(t *testing.T) {
+	t.Parallel() // independent fixtures; overlaps the package's long parallel tests (CI headroom)
 	p := startMCPPlane(t, 0)
 	w := startMCPWorker(t, p, nodeIDN('5'))
 	cliA := newNodeCLI(t)
@@ -658,6 +659,7 @@ func ranTask(t *testing.T, p *mcpPlane, m *mcpProc, role, goal string) string {
 
 // FP-6: task reads and logs.
 func TestMCPTaskReads(t *testing.T) {
+	t.Parallel() // independent fixtures; overlaps the package's long parallel tests (CI headroom)
 	p := startMCPPlane(t, 0)
 	w := startMCPWorker(t, p, nodeIDN('8'))
 	p.addRole(t, "reader", "reader", w.id, 4)

@@ -434,7 +434,7 @@ func NativeSteps(goos string) ([]Step, error) {
 	}
 	// One invocation (one package start each): the tag compiles and runs the
 	// sidecar's tagged contract within the complete suite (iteration 08).
-	return []Step{{Name: "native", Argv: []string{"go", "test", "-json", "-tags=" + RealAdapterTag, "-count=1", "-timeout=180s", "./..."}}}, nil
+	return []Step{{Name: "native", Argv: []string{"go", "test", "-json", "-tags=" + RealAdapterTag, "-count=1", "-timeout=300s", "./..."}}}, nil
 }
 
 // acceptedActions is the exact go test -json Action set the parser accepts.
