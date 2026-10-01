@@ -684,7 +684,7 @@ func TestExportModeBeforeSync(t *testing.T) {
 			return err
 		}
 		if st.Mode&unix.S_IFMT == unix.S_IFREG {
-			modes = append(modes, st.Mode&0o7777)
+			modes = append(modes, uint32(st.Mode&0o7777))
 		}
 		return nil
 	}
