@@ -2,8 +2,9 @@
 // MCP server behind "callsheet mcp". It speaks the bounded MCP 2025-06-18
 // subset on the standard library (newline-delimited JSON-RPC 2.0,
 // initialization, tools/list and tools/call, ping and cancellation) and
-// relays the thirteen operator tools and (iteration 09a) the eight
-// workspace tools to the verified plane client. It is a
+// relays the thirteen operator tools, (iteration 09a) the eight
+// workspace tools and (iteration 09b) the two local transfer tools to the
+// verified plane client. It is a
 // stateless relay: registry and task truth stay on the plane, nothing is
 // cached between calls, and stdout carries the protocol only.
 //
@@ -112,6 +113,13 @@ type Config struct {
 	CloseOut func() error
 	// Hook observes internal events (tests only; nil in production).
 	Hook func(stage, id string)
+	// Iteration 09b: the local transfer tools. GOOS is the host OS value
+	// from the CLI seam (never read here), Cwd the server process's
+	// working directory (captured when a transfer call is admitted) and
+	// Transfer a fresh trusted client and transfer service per call.
+	GOOS     string
+	Cwd      func() (string, error)
+	Transfer TransferFactory
 }
 
 // Hook stages.

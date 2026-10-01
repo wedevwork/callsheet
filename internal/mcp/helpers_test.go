@@ -15,6 +15,7 @@ import (
 
 	"github.com/wedevwork/callsheet/internal/contract"
 	"github.com/wedevwork/callsheet/internal/testkit"
+	"github.com/wedevwork/callsheet/internal/workspacetransfer"
 )
 
 // testWait bounds every wait of a test on an event (a failure bound, never
@@ -66,6 +67,30 @@ type fakeClient struct {
 	// ws scripts every workspace operation (iteration 09a): it receives
 	// the method name and its arguments after the context.
 	ws func(ctx context.Context, method string, args ...any) (any, error)
+	// push and pull script the local transfers (iteration 09b); cwds
+	// records the working directory each transfer service was built
+	// with.
+	push  func(context.Context, workspacetransfer.PushRequest) (contract.WorkspacePushResult, error)
+	pull  func(context.Context, workspacetransfer.PullRequest) (contract.WorkspacePullResult, error)
+	cwds  []string
+	trCls int
+}
+
+// Push, Pull and Close make the fake the transfer service too.
+func (f *fakeClient) Push(ctx context.Context, req workspacetransfer.PushRequest) (contract.WorkspacePushResult, error) {
+	f.record("Push")
+	if f.push == nil {
+		return contract.WorkspacePushResult{}, errUnscripted
+	}
+	return f.push(ctx, req)
+}
+
+func (f *fakeClient) Pull(ctx context.Context, req workspacetransfer.PullRequest) (contract.WorkspacePullResult, error) {
+	f.record("Pull")
+	if f.pull == nil {
+		return contract.WorkspacePullResult{}, errUnscripted
+	}
+	return f.pull(ctx, req)
 }
 
 var errUnscripted = errors.New("fake: unscripted operation")
@@ -301,6 +326,15 @@ func start(t testing.TB, opts ...hopt) *harness {
 		In: inR, Out: outW, Stderr: h.stderr, CloseIn: inR.Close, CloseOut: outW.Close}
 	h.cfg.Factory = func(context.Context) (Client, error) {
 		h.factory.Add(1)
+		return h.fake, nil
+	}
+	h.cfg.GOOS = "linux"
+	h.cfg.Cwd = func() (string, error) { return "/work/cwd", nil }
+	h.cfg.Transfer = func(_ context.Context, cwd string) (Transfers, error) {
+		h.factory.Add(1)
+		h.fake.mu.Lock()
+		h.fake.cwds = append(h.fake.cwds, cwd)
+		h.fake.mu.Unlock()
 		return h.fake, nil
 	}
 	h.cfg.Hook = func(stage, id string) {

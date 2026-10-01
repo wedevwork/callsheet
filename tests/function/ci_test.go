@@ -127,8 +127,10 @@ type ciRunner struct {
 	stdout     string
 }
 
-// manifestBlocks is one covered profile block per iteration 09a coverage
-// manifest selection (the synthetic profile must satisfy that gate too).
+// manifestBlocks is one covered profile block per coverage manifest
+// selection (iterations 09a and 09b; native-only entries of both OS
+// values are present, each host evaluating its own): the synthetic
+// profile must satisfy that gate too.
 func manifestBlocks() string {
 	var b strings.Builder
 	for _, e := range devcheck.WorkspaceCoverageManifest {
@@ -526,14 +528,16 @@ func TestCINativeEvidence(t *testing.T) {
 		}
 		return
 	}
-	// Qualification, then the coverage stage (profile, func report, cmd list)
-	// and the workspace benchmark. An empty cover total is parsed as the
-	// literal "(statements)" and fails the stage.
+	// Qualification, then the coverage stage (profile, func report, cmd list),
+	// the workspace benchmark and (iteration 09b) the transfer benchmark.
+	// An empty cover total is parsed as the literal "(statements)" and fails
+	// the stage.
 	r := &ciRunner{stdout: valid, coverTotal: "91.7%"}
 	code, out, errOut := devcheckRun(t, r, "native")
-	if code != 0 || len(r.calls) != 5 ||
+	if code != 0 || len(r.calls) != 6 ||
 		strings.Join(r.calls[0], " ") != "go test -json -tags=realadaptercheck -count=1 -timeout=180s ./..." ||
 		strings.Join(r.calls[4], " ") != strings.Join(devcheck.WorkspaceBenchStep().Argv, " ") ||
+		strings.Join(r.calls[5], " ") != strings.Join(devcheck.TransferBenchStep().Argv, " ") ||
 		!strings.Contains(out, "native qualification passed on darwin/"+runtime.GOARCH) {
 		t.Fatalf("darwin native = %d calls=%d %s", code, len(r.calls), errOut)
 	}

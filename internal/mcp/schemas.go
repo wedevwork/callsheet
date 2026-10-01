@@ -229,6 +229,26 @@ func workspaceSchema(name string) schema {
 		props["base"] = bounded("The base snapshot: a selector, or empty for the empty tree (a continuation uses the returned base_commit or empty).", basePattern, contract.MaxFullRef)
 		props["target"] = bounded("The target snapshot: a full reachable commit hash, a branch or a complete refs/callsheet/tasks/ ref (a continuation uses the returned target_commit).", selectorPattern, contract.MaxFullRef)
 		return object(props, "name", "base", "target")
+	case toolWsPush:
+		return object(schema{
+			"name":     wsName(),
+			"instance": wsInstance(),
+			"branch":   bounded("The target branch, a short name (default main) or refs/heads/...: slash-separated components of 1-200 bytes of lowercase ASCII letters, digits, '.', '_' and '-' (starting with a letter or digit), at most 512 bytes as a full ref; byte-exact, never repaired.", branchPattern, contract.MaxFullRef),
+			"path":     localPath("The local source directory (a git repository root or a plain folder) on the machine running callsheet mcp; omitted: the server's working directory."),
+		}, "name", "instance")
+	case toolWsPull:
+		return object(schema{
+			"name": wsName(),
+			"ref":  bounded("The commit to pull: a branch (short or refs/heads/...), a full 40-hex commit hash reachable from a workspace ref or a complete refs/callsheet/tasks/t_<32 hex> ref (t_... alone is a branch name); no short hashes or revision expressions.", selectorPattern, contract.MaxFullRef),
+			"path": localPath("The local destination on the machine running callsheet mcp: an existing git repository root, or a new or empty directory; omitted: the server's working directory."),
+		}, "name", "ref")
 	}
 	return nil
+}
+
+// localPath is a local path argument: nonempty, at most the Linux native
+// limit (4095 bytes; the validators apply each OS's native byte limit and
+// reject invalid UTF-8 and NUL).
+func localPath(desc string) schema {
+	return schema{"type": "string", "minLength": 1, "maxLength": contract.MaxPathArgument, "description": desc}
 }

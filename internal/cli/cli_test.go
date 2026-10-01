@@ -106,8 +106,8 @@ func TestGroupAndLeafHelp(t *testing.T) {
 			}
 		}
 	}
-	code, out, _ := exec(t, "linux", "help", "ws", "push")
-	if code != 0 || !strings.HasPrefix(out, "Usage: callsheet ws push\n") || !strings.Contains(out, "not implemented yet") {
+	code, out, _ := exec(t, "linux", "help", "task", "prune")
+	if code != 0 || !strings.HasPrefix(out, "Usage: callsheet task prune\n") || !strings.Contains(out, "not implemented yet") {
 		t.Fatalf("leaf help: %d %q", code, out)
 	}
 	code, out, _ = exec(t, "linux", "task", "prune", "--help")
@@ -174,10 +174,10 @@ func TestStubLeaves(t *testing.T) {
 	// version, the four plane leaves (iteration 02), sidecar enroll and run
 	// and node ls and show (iteration 03), the five role leaves (iteration
 	// 04), dispatch and task ls, show and logs (iteration 05) and task
-	// cancel and wait (iteration 06b), mcp (iteration 07a) and the eight
-	// workspace leaves (iteration 09a) are implemented; 3 stubs remain
-	// (task prune, ws push and ws pull).
-	if stubs != 3 {
+	// cancel and wait (iteration 06b), mcp (iteration 07a), the eight
+	// workspace leaves (iteration 09a) and ws push and pull (iteration 09b)
+	// are implemented; 1 stub remains (task prune).
+	if stubs != 1 {
 		t.Fatalf("stubs = %d", stubs)
 	}
 	// The role group lists its five leaves as implemented, each leaf's help

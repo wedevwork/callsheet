@@ -217,6 +217,20 @@ var wsRequired = []struct {
 // wsNames lists every required iteration 09a name.
 func wsNames() []string { return requiredNames(wsRequired) }
 
+// trRequired are iteration 09b's ten local transfer function tests in FP
+// order (FP-1..FP-10), a separate group after the 09a names.
+var trRequired = []struct {
+	test string
+	subs []string
+}{
+	{"TestWorkspacePushGit", nil}, {"TestWorkspacePushCleanliness", nil}, {"TestWorkspacePushFolder", nil}, {"TestWorkspaceTransferIgnores", nil},
+	{"TestWorkspacePullGit", nil}, {"TestWorkspacePullFolder", nil}, {"TestWorkspaceTransferCLI", nil}, {"TestWorkspaceTransferMCP", nil},
+	{"TestWorkspaceTransferNoGit", nil}, {"TestWorkspaceTransferEligibility", nil},
+}
+
+// trNames lists every required iteration 09b name.
+func trNames() []string { return requiredNames(trRequired) }
+
 // realLocal is iteration 08's tagged sidecar contract with its five
 // subtests, required in the sidecar package (NativeTaskProcessPackage).
 var realLocal = []string{"TestRealAdapterLocal", "TestRealAdapterLocal/selection", "TestRealAdapterLocal/file", "TestRealAdapterLocal/ordering",
@@ -257,7 +271,7 @@ func qualification() []evt {
 		evs = append(evs, ev("pass", NativePackage, fp6+"/"+s))
 	}
 	evs = append(evs, ev("pass", NativePackage, fp6))
-	for _, p := range append(append(append(append(append(append(append(append(append(planeRequired[:0:0], planeRequired...), nodeRequired...), roleRequired...), taskRequired...), controlRequired...), mcpRequired...), qualRequired...), realRequired...), wsRequired...) {
+	for _, p := range append(append(append(append(append(append(append(append(append(append(planeRequired[:0:0], planeRequired...), nodeRequired...), roleRequired...), taskRequired...), controlRequired...), mcpRequired...), qualRequired...), realRequired...), wsRequired...), trRequired...) {
 		evs = append(evs, ev("run", NativePackage, p.test))
 		for _, s := range p.subs {
 			evs = append(evs, ev("run", NativePackage, p.test+"/"+s), ev("pass", NativePackage, p.test+"/"+s))
@@ -426,7 +440,7 @@ func TestNativeStepsAndUnsupportedOS(t *testing.T) {
 		"TestControlLateResult,TestControlLegacy,TestControlNativeGroups,TestControlNativeGroups/cooperative,TestControlNativeGroups/resistant,"+
 		"TestControlNativeGroups/orphan-restart,TestControlNativeGroups/plane-restart,"+
 		"TestControlCancellation,TestControlExecutionTimeout,TestControlBoundedWait,TestControlForceRemove,"+strings.Join(mcpNames(), ",")+","+strings.Join(qualNames(), ",")+
-		","+strings.Join(realNames(), ",")+","+strings.Join(wsNames(), ",") || len(req) != 312+11 {
+		","+strings.Join(realNames(), ",")+","+strings.Join(wsNames(), ",")+","+strings.Join(trNames(), ",") || len(req) != 312+11+10 {
 		t.Fatalf("required = %v", req)
 	}
 	req[0] = "mutated"
@@ -707,9 +721,10 @@ func TestNativeStageRunFor(t *testing.T) {
 		t.Fatalf("native = %d %s", code, errOut)
 	}
 	// Iteration 09a: the qualification, then the coverage stage and the
-	// workspace benchmarks.
-	if len(f.calls) != 5 || strings.Join(f.calls[0].argv, " ") != "go test -json -tags=realadaptercheck -count=1 -timeout=180s ./..." || f.calls[0].dir != "" ||
-		strings.Join(f.calls[4].argv, " ") != strings.Join(WorkspaceBenchStep().Argv, " ") {
+	// workspace benchmarks; iteration 09b: then the transfer benchmarks.
+	if len(f.calls) != 6 || strings.Join(f.calls[0].argv, " ") != "go test -json -tags=realadaptercheck -count=1 -timeout=180s ./..." || f.calls[0].dir != "" ||
+		strings.Join(f.calls[4].argv, " ") != strings.Join(WorkspaceBenchStep().Argv, " ") ||
+		strings.Join(f.calls[5].argv, " ") != strings.Join(TransferBenchStep().Argv, " ") {
 		t.Fatalf("calls = %+v", f.argvs())
 	}
 	if !strings.Contains(strings.Join(f.calls[0].env, "\n"), "PATH=") {
@@ -943,7 +958,7 @@ func TestNativeQualificationEvidence(t *testing.T) {
 		t.Fatalf("complete evidence: %v", err)
 	}
 	req := NativeRequiredTests()
-	if n := len(qualNames()); n != 8+43 || len(req) != 222+n+len(realNames())+len(wsNames()) || strings.Join(req[222:273], ",") != strings.Join(qualNames(), ",") ||
+	if n := len(qualNames()); n != 8+43 || len(req) != 222+n+len(realNames())+len(wsNames())+len(trNames()) || strings.Join(req[222:273], ",") != strings.Join(qualNames(), ",") ||
 		strings.Join(req[145:222], ",") != strings.Join(mcpNames(), ",") {
 		t.Fatalf("%d 07b names; native suffix %v", n, req[222:])
 	}

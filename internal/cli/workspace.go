@@ -17,7 +17,9 @@ import (
 // status, diff and ref set over the verified client. Every leaf names its
 // workspace explicitly (no default, no local configuration or cache) and
 // operates on the plane: nothing reads or writes a local repository or
-// working tree. push and pull remain reserved for iteration 09b.
+// working tree. Iteration 09b adds the two local transfers, push and
+// pull (see workspace_transfer.go), the only leaves that touch local
+// files.
 const (
 	wsCreateUsage = trustUsage + " [--json] NAME"
 	wsLsUsage     = "[--after NAME] [--limit N] " + trustUsage + " [--json]"
@@ -103,8 +105,8 @@ func wsTree() *Command {
 		planeLeaf("show", "Show a workspace", wsShowUsage, wsShowDetails, wsShow),
 		planeLeaf("rm", "Remove a workspace", wsRmUsage, wsRmDetails, wsRm),
 		planeLeaf("prune", "Prune old task refs and unreachable objects", wsPruneUsage, wsPruneDetails, wsPrune),
-		node("push", "Push local changes to a workspace"),
-		node("pull", "Pull a workspace"),
+		planeLeaf("push", "Push a clean repository's HEAD or a folder snapshot to a workspace branch", wsPushUsage, wsPushDetails, wsPush),
+		planeLeaf("pull", "Pull a workspace commit into a repository or a new folder", wsPullUsage, wsPullDetails, wsPull),
 		planeLeaf("status", "Show a workspace's refs on the plane", wsStatusUsage, wsStatusDetails, wsStatus),
 		planeLeaf("diff", "Compare two workspace snapshots (metadata only)", wsDiffUsage, wsDiffDetails, wsDiff),
 		node("ref", "Workspace ref commands",

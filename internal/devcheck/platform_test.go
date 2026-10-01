@@ -28,6 +28,8 @@ import (
 //	internal/spikes/processgroup/sys_darwin.go      darwin
 //	internal/testkit/fakeadapter/signals_unix.go    linux || darwin
 //	internal/testkit/fakeadapter/signals_other.go   !linux && !darwin
+//	internal/workspacetransfer/publish_linux.go     linux
+//	internal/workspacetransfer/publish_darwin.go    darwin
 func TestPlatformSourceGuard(t *testing.T) {
 	if err := CheckPlatformSources(testkit.MustRepoRoot(t)); err != nil {
 		t.Fatal(err)
@@ -126,6 +128,8 @@ func runFor(goos, goarch string, args []string, getenv func(string) string, stdi
 		"internal/spikes/processgroup/sys_darwin.go":    "//go:build darwin\n\npackage processgroup\n",
 		"internal/testkit/fakeadapter/signals_unix.go":  "//go:build linux || darwin\n\npackage fakeadapter\n\nconst signalsSupported = true\n",
 		"internal/testkit/fakeadapter/signals_other.go": "//go:build !linux && !darwin\n\npackage fakeadapter\n\nconst signalsSupported = false\n",
+		"internal/workspacetransfer/publish_linux.go":   "//go:build linux\n\npackage workspacetransfer\n",
+		"internal/workspacetransfer/publish_darwin.go":  "//go:build darwin\n\npackage workspacetransfer\n",
 		"root.go":            "package root\n",
 		"cmd/tool/main.go":   "package main\n\nimport \"go/build\"\n\nvar runtime = build.Default\n\nvar _ = runtime.GOOS // another package's GOOS field, no runtime import\n",
 		"cmd/tool/blank.go":  "package main\n\nimport _ \"runtime\"\n",

@@ -31,11 +31,13 @@ const (
 		"                     response and (dispatch) admission are kept\n\n" +
 		"Serves the Model Context Protocol (revision " + mcp.ProtocolVersion + ") on stdin and stdout:\n" +
 		"newline-delimited JSON-RPC, one message per line. Stdout carries the protocol only;\n" +
-		"diagnostics go to stderr. The twenty-one tools mirror the CLI one to one: node_ls,\n" +
+		"diagnostics go to stderr. The twenty-three tools mirror the CLI one to one: node_ls,\n" +
 		"node_show, role_add, role_set, role_ls, role_show, role_rm, dispatch, task_ls,\n" +
-		"task_show, task_logs, task_cancel, task_wait and the workspace tools ws_create,\n" +
-		"ws_ls, ws_show, ws_rm, ws_prune, ws_ref_set, ws_status and ws_diff (these operate on\n" +
-		"the plane's stored workspaces, never on local files). It is a stateless relay: every tool\n" +
+		"task_show, task_logs, task_cancel, task_wait, the workspace tools ws_create, ws_ls,\n" +
+		"ws_show, ws_rm, ws_prune, ws_ref_set, ws_status and ws_diff (these operate on the\n" +
+		"plane's stored workspaces, never on local files) and the local transfers ws_push\n" +
+		"(reads local files) and ws_pull (writes local files), whose paths are on this\n" +
+		"machine and resolve against this server's working directory. It is a stateless relay: every tool\n" +
 		"call resolves trust afresh and reads the plane, nothing is cached, and a plane outage\n" +
 		"fails the call instead of serving an earlier answer. Dispatches are attributed to the\n" +
 		"MCP client's self-reported name and version and this machine's hostname.\n\n" +
@@ -103,6 +105,9 @@ func mcpServe(ctx context.Context, goos string, c *Command, args []string, in io
 		Stderr:   errOut,
 		CloseIn:  st.closeIn,
 		CloseOut: st.closeOut,
+		GOOS:     goos,
+		Cwd:      processCwd,
+		Transfer: mcp.PlaneTransferFactory(u, f.ca.val, f.pin.val, goos, processEnv),
 	})
 }
 

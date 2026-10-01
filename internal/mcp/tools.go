@@ -41,12 +41,16 @@ const (
 	toolWsRefSet = "ws_ref_set"
 	toolWsStatus = "ws_status"
 	toolWsDiff   = "ws_diff"
+	// Iteration 09b: the local transfer tools.
+	toolWsPush = "ws_push"
+	toolWsPull = "ws_pull"
 )
 
 // ToolNames lists the tools in their fixed discovery order.
 var ToolNames = []string{toolNodeLs, toolNodeShow, toolRoleAdd, toolRoleSet, toolRoleLs, toolRoleShow, toolRoleRm,
 	toolDispatch, toolTaskLs, toolTaskShow, toolTaskLogs, toolTaskCancel, toolTaskWait,
-	toolWsCreate, toolWsLs, toolWsShow, toolWsRm, toolWsPrune, toolWsRefSet, toolWsStatus, toolWsDiff}
+	toolWsCreate, toolWsLs, toolWsShow, toolWsRm, toolWsPrune, toolWsRefSet, toolWsStatus, toolWsDiff,
+	toolWsPush, toolWsPull}
 
 // Client is the narrow plane client the tools use; *client.Client
 // implements it.
@@ -130,9 +134,9 @@ func mutation(destructive, idempotent bool) map[string]any {
 	return map[string]any{"readOnlyHint": false, "destructiveHint": destructive, "idempotentHint": idempotent, "openWorldHint": false}
 }
 
-// newTools builds the twenty-one definitions for budget b (thirteen
-// operator tools, iteration 07a, and eight workspace tools, iteration
-// 09a).
+// newTools builds the twenty-three definitions for budget b (thirteen
+// operator tools, iteration 07a, eight workspace tools, iteration 09a,
+// and two local transfer tools, iteration 09b).
 func newTools(b Budget) []*tool {
 	budgetNote := " This server's call budget is B=" + b.String() + ". " + BudgetDeferralNote + " " + UnverifiedNotice
 	tools := []*tool{
@@ -163,7 +167,7 @@ func newTools(b Budget) []*tool {
 		{name: toolTaskWait, annotations: readOnly(), run: runTaskWait,
 			description: "Wait for the first of 1 to 16 tasks to end durably: terminal with the winner's view, or still_running with one compact row per task in the given order. The plane may answer sooner (its own wait cap). A failed task is a successful observation. Repeat task_wait after still_running." + readOnlyNote + freshNote + budgetNote},
 	}
-	return append(tools, workspaceTools()...)
+	return append(append(tools, workspaceTools()...), transferTools()...)
 }
 
 // workspaceTools are the eight workspace hub tools (iteration 09a). They

@@ -1,0 +1,255 @@
+# Git metadata-file oracle (generated; do not edit).
+# git: git version 2.43.0 (/usr/bin/git; Ubuntu package 1:2.43.0-1ubuntu7.3 on the generating host)
+# command: git -C <repo> status --porcelain and git rev-parse --verify HEAD, HOME isolated, GIT_CONFIG_NOSYSTEM=1, LC_ALL=C
+# content: the file is created (or replaced) with the value; for HEAD and refs/heads/main the value follows the valid content
+# generator: go test -tags=gitoracle -run '^TestGenerateGitMetadataOracle$' ./internal/workspacetransfer
+# generated: 2026-10-01
+# columns: file, value (Go-quoted), accept|refuse
+HEAD	"garbage\n"	refuse
+HEAD	"0\v"	refuse
+HEAD	"\f"	refuse
+HEAD	"\r"	accept
+HEAD	"\x00"	accept
+HEAD	" "	accept
+HEAD	"\n"	accept
+HEAD	""	accept
+refs/heads/main	"garbage\n"	refuse
+refs/heads/main	"0\v"	refuse
+refs/heads/main	"\f"	refuse
+refs/heads/main	"\r"	accept
+refs/heads/main	"\x00"	accept
+refs/heads/main	" "	accept
+refs/heads/main	"\n"	accept
+refs/heads/main	""	accept
+index	"garbage\n"	refuse
+index	"0\v"	refuse
+index	"\f"	refuse
+index	"\r"	refuse
+index	"\x00"	refuse
+index	" "	refuse
+index	"\n"	refuse
+index	""	refuse
+shallow	"garbage\n"	refuse
+shallow	"0\v"	refuse
+shallow	"\f"	refuse
+shallow	"\r"	refuse
+shallow	"\x00"	refuse
+shallow	" "	refuse
+shallow	"\n"	refuse
+shallow	""	accept
+commondir	"garbage\n"	refuse
+commondir	"0\v"	refuse
+commondir	"\f"	refuse
+commondir	"\r"	accept
+commondir	"\x00"	accept
+commondir	" "	refuse
+commondir	"\n"	accept
+commondir	""	refuse
+gitdir	"garbage\n"	accept
+gitdir	"0\v"	accept
+gitdir	"\f"	accept
+gitdir	"\r"	accept
+gitdir	"\x00"	accept
+gitdir	" "	accept
+gitdir	"\n"	accept
+gitdir	""	accept
+config.worktree	"garbage\n"	accept
+config.worktree	"0\v"	accept
+config.worktree	"\f"	accept
+config.worktree	"\r"	accept
+config.worktree	"\x00"	accept
+config.worktree	" "	accept
+config.worktree	"\n"	accept
+config.worktree	""	accept
+objects/info/alternates	"garbage\n"	accept
+objects/info/alternates	"0\v"	accept
+objects/info/alternates	"\f"	accept
+objects/info/alternates	"\r"	accept
+objects/info/alternates	"\x00"	accept
+objects/info/alternates	" "	accept
+objects/info/alternates	"\n"	accept
+objects/info/alternates	""	accept
+objects/info/http-alternates	"garbage\n"	accept
+objects/info/http-alternates	"0\v"	accept
+objects/info/http-alternates	"\f"	accept
+objects/info/http-alternates	"\r"	accept
+objects/info/http-alternates	"\x00"	accept
+objects/info/http-alternates	" "	accept
+objects/info/http-alternates	"\n"	accept
+objects/info/http-alternates	""	accept
+objects/info/commit-graph	"garbage\n"	accept
+objects/info/commit-graph	"0\v"	accept
+objects/info/commit-graph	"\f"	accept
+objects/info/commit-graph	"\r"	accept
+objects/info/commit-graph	"\x00"	accept
+objects/info/commit-graph	" "	accept
+objects/info/commit-graph	"\n"	accept
+objects/info/commit-graph	""	accept
+objects/info/packs	"garbage\n"	accept
+objects/info/packs	"0\v"	accept
+objects/info/packs	"\f"	accept
+objects/info/packs	"\r"	accept
+objects/info/packs	"\x00"	accept
+objects/info/packs	" "	accept
+objects/info/packs	"\n"	accept
+objects/info/packs	""	accept
+objects/pack/multi-pack-index	"garbage\n"	accept
+objects/pack/multi-pack-index	"0\v"	accept
+objects/pack/multi-pack-index	"\f"	accept
+objects/pack/multi-pack-index	"\r"	accept
+objects/pack/multi-pack-index	"\x00"	accept
+objects/pack/multi-pack-index	" "	accept
+objects/pack/multi-pack-index	"\n"	accept
+objects/pack/multi-pack-index	""	accept
+info/grafts	"garbage\n"	accept
+info/grafts	"0\v"	accept
+info/grafts	"\f"	accept
+info/grafts	"\r"	accept
+info/grafts	"\x00"	accept
+info/grafts	" "	accept
+info/grafts	"\n"	accept
+info/grafts	""	accept
+info/sparse-checkout	"garbage\n"	accept
+info/sparse-checkout	"0\v"	accept
+info/sparse-checkout	"\f"	accept
+info/sparse-checkout	"\r"	accept
+info/sparse-checkout	"\x00"	accept
+info/sparse-checkout	" "	accept
+info/sparse-checkout	"\n"	accept
+info/sparse-checkout	""	accept
+info/exclude	"garbage\n"	accept
+info/exclude	"0\v"	accept
+info/exclude	"\f"	accept
+info/exclude	"\r"	accept
+info/exclude	"\x00"	accept
+info/exclude	" "	accept
+info/exclude	"\n"	accept
+info/exclude	""	accept
+info/attributes	"garbage\n"	accept
+info/attributes	"0\v"	accept
+info/attributes	"\f"	accept
+info/attributes	"\r"	accept
+info/attributes	"\x00"	accept
+info/attributes	" "	accept
+info/attributes	"\n"	accept
+info/attributes	""	accept
+MERGE_HEAD	"garbage\n"	accept
+MERGE_HEAD	"0\v"	accept
+MERGE_HEAD	"\f"	accept
+MERGE_HEAD	"\r"	accept
+MERGE_HEAD	"\x00"	accept
+MERGE_HEAD	" "	accept
+MERGE_HEAD	"\n"	accept
+MERGE_HEAD	""	accept
+CHERRY_PICK_HEAD	"garbage\n"	accept
+CHERRY_PICK_HEAD	"0\v"	accept
+CHERRY_PICK_HEAD	"\f"	accept
+CHERRY_PICK_HEAD	"\r"	accept
+CHERRY_PICK_HEAD	"\x00"	accept
+CHERRY_PICK_HEAD	" "	accept
+CHERRY_PICK_HEAD	"\n"	accept
+CHERRY_PICK_HEAD	""	accept
+REVERT_HEAD	"garbage\n"	accept
+REVERT_HEAD	"0\v"	accept
+REVERT_HEAD	"\f"	accept
+REVERT_HEAD	"\r"	accept
+REVERT_HEAD	"\x00"	accept
+REVERT_HEAD	" "	accept
+REVERT_HEAD	"\n"	accept
+REVERT_HEAD	""	accept
+ORIG_HEAD	"garbage\n"	accept
+ORIG_HEAD	"0\v"	accept
+ORIG_HEAD	"\f"	accept
+ORIG_HEAD	"\r"	accept
+ORIG_HEAD	"\x00"	accept
+ORIG_HEAD	" "	accept
+ORIG_HEAD	"\n"	accept
+ORIG_HEAD	""	accept
+FETCH_HEAD	"garbage\n"	accept
+FETCH_HEAD	"0\v"	accept
+FETCH_HEAD	"\f"	accept
+FETCH_HEAD	"\r"	accept
+FETCH_HEAD	"\x00"	accept
+FETCH_HEAD	" "	accept
+FETCH_HEAD	"\n"	accept
+FETCH_HEAD	""	accept
+AUTO_MERGE	"garbage\n"	accept
+AUTO_MERGE	"0\v"	accept
+AUTO_MERGE	"\f"	accept
+AUTO_MERGE	"\r"	accept
+AUTO_MERGE	"\x00"	accept
+AUTO_MERGE	" "	accept
+AUTO_MERGE	"\n"	accept
+AUTO_MERGE	""	accept
+MERGE_MSG	"garbage\n"	accept
+MERGE_MSG	"0\v"	accept
+MERGE_MSG	"\f"	accept
+MERGE_MSG	"\r"	accept
+MERGE_MSG	"\x00"	accept
+MERGE_MSG	" "	accept
+MERGE_MSG	"\n"	accept
+MERGE_MSG	""	accept
+MERGE_MODE	"garbage\n"	accept
+MERGE_MODE	"0\v"	accept
+MERGE_MODE	"\f"	accept
+MERGE_MODE	"\r"	accept
+MERGE_MODE	"\x00"	accept
+MERGE_MODE	" "	accept
+MERGE_MODE	"\n"	accept
+MERGE_MODE	""	accept
+BISECT_LOG	"garbage\n"	accept
+BISECT_LOG	"0\v"	accept
+BISECT_LOG	"\f"	accept
+BISECT_LOG	"\r"	accept
+BISECT_LOG	"\x00"	accept
+BISECT_LOG	" "	accept
+BISECT_LOG	"\n"	accept
+BISECT_LOG	""	accept
+BISECT_START	"garbage\n"	accept
+BISECT_START	"0\v"	accept
+BISECT_START	"\f"	accept
+BISECT_START	"\r"	accept
+BISECT_START	"\x00"	accept
+BISECT_START	" "	accept
+BISECT_START	"\n"	accept
+BISECT_START	""	accept
+logs/HEAD	"garbage\n"	accept
+logs/HEAD	"0\v"	accept
+logs/HEAD	"\f"	accept
+logs/HEAD	"\r"	accept
+logs/HEAD	"\x00"	accept
+logs/HEAD	" "	accept
+logs/HEAD	"\n"	accept
+logs/HEAD	""	accept
+rebase-merge/head-name	"garbage\n"	accept
+rebase-merge/head-name	"0\v"	accept
+rebase-merge/head-name	"\f"	accept
+rebase-merge/head-name	"\r"	accept
+rebase-merge/head-name	"\x00"	accept
+rebase-merge/head-name	" "	accept
+rebase-merge/head-name	"\n"	accept
+rebase-merge/head-name	""	accept
+rebase-apply/head-name	"garbage\n"	accept
+rebase-apply/head-name	"0\v"	accept
+rebase-apply/head-name	"\f"	accept
+rebase-apply/head-name	"\r"	accept
+rebase-apply/head-name	"\x00"	accept
+rebase-apply/head-name	" "	accept
+rebase-apply/head-name	"\n"	accept
+rebase-apply/head-name	""	accept
+sequencer/todo	"garbage\n"	accept
+sequencer/todo	"0\v"	accept
+sequencer/todo	"\f"	accept
+sequencer/todo	"\r"	accept
+sequencer/todo	"\x00"	accept
+sequencer/todo	" "	accept
+sequencer/todo	"\n"	accept
+sequencer/todo	""	accept
+description	"garbage\n"	accept
+description	"0\v"	accept
+description	"\f"	accept
+description	"\r"	accept
+description	"\x00"	accept
+description	" "	accept
+description	"\n"	accept
+description	""	accept

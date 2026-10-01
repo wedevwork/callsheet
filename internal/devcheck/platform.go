@@ -76,7 +76,7 @@ type platformPolicy struct {
 }
 
 // platformGuardPolicy is the fixed production policy: the only six approved
-// wrappers and the only four exempt native files.
+// wrappers and the only six exempt native files.
 var platformGuardPolicy = platformPolicy{
 	wrappers: []platformWrapper{
 		{file: "internal/cli/cli.go", fn: "Run", ret: true, callee: "runFor",
@@ -99,6 +99,10 @@ var platformGuardPolicy = platformPolicy{
 		{file: "internal/spikes/processgroup/sys_darwin.go", build: "darwin"},
 		{file: "internal/testkit/fakeadapter/signals_unix.go", build: "linux || darwin"},
 		{file: "internal/testkit/fakeadapter/signals_other.go", build: "!linux && !darwin"},
+		// Iteration 09b: the local transfers' native publication
+		// primitives (renameat2 RENAME_NOREPLACE, renameatx_np RENAME_EXCL).
+		{file: "internal/workspacetransfer/publish_linux.go", build: "linux"},
+		{file: "internal/workspacetransfer/publish_darwin.go", build: "darwin"},
 	},
 }
 
