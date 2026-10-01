@@ -278,17 +278,82 @@ func TestPullGitRefSafety(t *testing.T) {
 	if readRef(t, dst.root, ref) != s.topic.String() {
 		t.Fatal("the other writer's value was replaced")
 	}
-	// Generated paths are checked against the native limit first.
-	long := filepath.Join(tempDir(t), strings.Repeat("d", 200), strings.Repeat("e", 200), strings.Repeat("f", 200), strings.Repeat("g", 200))
-	long = filepath.Join(long, strings.Repeat("h", 1000-len(long)))
-	deep := newRepoAt(t, long, map[string]fspec{"x": reg("x")})
+	// Generated paths are checked against the native limit first. The
+	// fixture must itself be buildable under macOS's real 1024-byte path
+	// limit (PATH_MAX, terminating NUL included): its deepest path is
+	// root/.git/objects/xx/<38 hex>, 56 bytes beyond a 960-byte root. The
+	// generated lock path of a branch's Callsheet ref,
+	// root/.git/refs/callsheet/ws/heads/<branch>.lock (checkRefPath), is
+	// 35 bytes plus the branch beyond the root: a 40-byte branch puts it
+	// over darwin's 1023-byte limit and under Linux's. The branch is not
+	// hexadecimal and is selected in full, so the pull's generated path is
+	// exactly the asserted one (never the commit-ref path of a hash).
+	branch := strings.Repeat("z", 40)
+	s.p.setRef("ws", "refs/heads/"+branch, s.first)
+	deep := newRepoAt(t, pathOfLen(t, tempDir(t), 960), map[string]fspec{"x": reg("x")})
+	if d := deepestPath(t, deep.root); len(d) >= 1024 {
+		t.Fatalf("the fixture creates a %d-byte path: %s", len(d), d)
+	}
+	localRef := contract.LocalRefFor("ws", "refs/heads/"+branch)
+	if gen := filepath.Join(deep.root, ".git", localRef) + ".lock"; len(gen) <= contract.MaxPathFor("darwin") || checkRefPath("linux", deep.root, localRef) != nil ||
+		localRef != "refs/callsheet/ws/heads/"+branch {
+		t.Fatalf("fixture sizing: a %d-byte generated lock path for %s", len(gen), localRef)
+	}
+	deepBefore := fingerprint(t, deep.root)
 	if _, err := fastDeps().pull(context.Background(), Options{GOOS: "darwin", Env: s.env, Cwd: "/", Plane: s.p},
-		PullRequest{Name: "ws", Ref: "main", Path: deep.root, PathSet: true}); contract.CodeOf(err) != contract.CodeInvalidArgument {
+		PullRequest{Name: "ws", Ref: "refs/heads/" + branch, Path: deep.root, PathSet: true}); contract.CodeOf(err) != contract.CodeInvalidArgument ||
+		!strings.Contains(err.Error(), "too long") {
 		t.Fatalf("darwin path limit: %v", err)
+	}
+	if fingerprint(t, deep.root) != deepBefore {
+		t.Fatal("the deep destination changed")
 	}
 	if checkRefPath("linux", "/r", "refs/callsheet/ws/heads/"+strings.Repeat("a", 251)) == nil {
 		t.Fatal("component limit")
 	}
+}
+
+// pathOfLen extends base with components of at most 200 bytes to a path
+// of exactly n bytes.
+func pathOfLen(t *testing.T, base string, n int) string {
+	t.Helper()
+	p, letter := base, byte('d')
+	for len(p) < n {
+		c := n - len(p) - 1
+		if c > 200 {
+			c = 200
+			if n-len(p)-1-c < 2 {
+				c = 198
+			}
+		}
+		if c < 1 {
+			t.Fatalf("cannot extend %q to %d bytes", p, n)
+		}
+		p = filepath.Join(p, strings.Repeat(string([]byte{letter}), c))
+		letter++
+	}
+	if len(p) != n {
+		t.Fatalf("path of %d bytes, want %d", len(p), n)
+	}
+	return p
+}
+
+// deepestPath walks root and returns its longest path.
+func deepestPath(t *testing.T, root string) string {
+	t.Helper()
+	deepest := root
+	if err := filepath.WalkDir(root, func(p string, _ os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if len(p) > len(deepest) {
+			deepest = p
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return deepest
 }
 
 func TestPullGitFailures(t *testing.T) {
