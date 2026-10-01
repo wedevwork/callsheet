@@ -641,6 +641,7 @@ type call struct {
 	frame          *frame
 	handlerDone    bool
 	responseDone   bool
+	dequeued       bool // the writer took the answer (it is no longer queued)
 	released       bool
 }
 
@@ -920,11 +921,25 @@ func (c *call) answered() {
 	c.maybeRelease()
 }
 
+// taken marks the call's answer taken by the writer (before any byte of
+// it is written) and frees the slot if the handler has finished: a client
+// can read the answer before its Write returns, and the call must not
+// count against the next one then. The writer queue still holds at most
+// two tool answers, since only admitted calls queue one and the slot is
+// freed only after its answer left the queue.
+func (c *call) taken() {
+	c.mu.Lock()
+	c.dequeued = true
+	c.mu.Unlock()
+	c.maybeRelease()
+}
+
 // maybeRelease frees the call's slot once its handler finished and its
-// answer was written or discarded.
+// answer was taken by the writer, written or discarded (the request ID
+// stays reserved until answered).
 func (c *call) maybeRelease() {
 	c.mu.Lock()
-	if c.released || !c.handlerDone || !c.responseDone {
+	if c.released || !c.handlerDone || !(c.responseDone || c.dequeued) {
 		c.mu.Unlock()
 		return
 	}
