@@ -363,7 +363,9 @@ func TestRoleValidation(t *testing.T) {
 			lockedReadable = true // e.g. root: the actual open decides
 		}
 		wrong := filepath.Join(t.TempDir(), "wrong-adapter")
-		os.WriteFile(wrong, []byte("#!/bin/sh\necho "+roleSentinel+"; echo "+roleSentinel+" >&2\n"), 0o755)
+		if err := writeExecutable(wrong, []byte("#!/bin/sh\necho "+roleSentinel+"; echo "+roleSentinel+" >&2\n")); err != nil {
+			t.Fatal(err)
+		}
 		bad := startRoleWorker(t, p, np, wrong, nil)
 		badManual := bad.manual(t, "m.md", roleSentinel)
 		offline := np.enroll(t, p, filepath.Join(t.TempDir(), "offline"))

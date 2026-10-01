@@ -11,7 +11,6 @@ import (
 	"errors"
 	"go/build/constraint"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -134,7 +133,7 @@ func newReplayKit(root, stub string, versions map[string]string) (*replayKit, er
 		}
 		// A PATH trap: any lookup of the vendor name is recorded.
 		trap := "#!/bin/sh\necho \"" + id + " $*\" >> '" + k.trapLog + "'\nexit 127\n"
-		if err := os.WriteFile(filepath.Join(k.traps, id), []byte(trap), 0o755); err != nil {
+		if err := writeExecutable(filepath.Join(k.traps, id), []byte(trap)); err != nil {
 			return nil, err
 		}
 	}
@@ -1343,13 +1342,7 @@ func TestRealAdapterDispatch(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cmd := &exec.Cmd{Path: filepath.Join(k.traps, "claude"), Args: []string{"claude", "--version"}, Env: []string{"PATH=" + k.traps}}
-		if err := cmd.Run(); err == nil {
-			t.Fatal("a trap succeeded")
-		}
-		if b, _ := os.ReadFile(k.trapLog); string(b) != "claude --version\n" {
-			t.Fatalf("a trap does not record a PATH launch: %q", b)
-		}
+		runTrap(t, k)
 		if strings.Contains(strings.Join(r.env, " "), "/usr") || !strings.HasPrefix(r.env[0], "PATH="+r.kit.traps) {
 			t.Fatalf("the sidecar environment %q reaches installed binaries", r.env)
 		}
