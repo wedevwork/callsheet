@@ -213,7 +213,11 @@ func BenchmarkMCPWaitBudget(b *testing.B) {
 				if r, err := contract.ParseWaitResponse([]byte(text), ids, 8*time.Second); isErr || err != nil || len(r.Tasks) != n || r.EffectiveWaitMS != 8000 {
 					b.Fatalf("task_wait %s: %v", text, err)
 				}
+				// The slot is freed when the writer takes the answer; its
+				// call entry and reserved ID are retired once the answer is
+				// written (StageWritten), after which nothing may remain.
 				h.await(StageReleased, "n"+itoa(h.nextID))
+				h.await(StageWritten, "n"+itoa(h.nextID))
 			}
 			b.StopTimer()
 			h.s.mu.Lock()
