@@ -880,6 +880,12 @@ func TestControlRestart(t *testing.T) {
 		g := &fakeGroups{alive: map[int]bool{7003: true}}
 		release := g.hold()
 		defer release()
+		// The recovered cleanup's existence check, which runs before its
+		// guardian command is sent, is held until after the heartbeat
+		// assertion. The deferred release runs before the run's own stop
+		// cleanup, so a failed wait cannot stick recovery.
+		releaseExists := g.holdExists()
+		defer releaseExists()
 		cmds := &fakeCommands{}
 		var st contract.TaskStartBody
 		rr := startRecovery(t, fp, root, g, cmds, func(cfg contract.RoleConfig) {
@@ -904,7 +910,15 @@ func TestControlRestart(t *testing.T) {
 		if hb := s.beat(t, 1); hb.Roles[0].CanAccept || hb.Roles[0].Inflight != 1 {
 			t.Fatalf("ready before the cleanup: %+v", hb.Roles)
 		}
-		if sent := cmds.all(); len(sent) != 1 || !strings.Contains(sent[0], ctlNonce) || !strings.HasSuffix(strings.Fields(sent[0])[0], controlName) {
+		// Nothing is sent while the existence check is held; once released,
+		// the guardian stop command is sent before the held group check.
+		// evCleanupConfirmed would come only after that check returns.
+		if sent := cmds.all(); len(sent) != 0 {
+			t.Fatalf("commands before the existence check %v", sent)
+		}
+		releaseExists()
+		sent := cmds.await(t, 1)
+		if len(sent) != 1 || !strings.Contains(sent[0], ctlNonce) || !strings.HasSuffix(strings.Fields(sent[0])[0], controlName) {
 			t.Fatalf("commands %v", sent)
 		}
 		release()

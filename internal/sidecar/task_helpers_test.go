@@ -418,7 +418,9 @@ type fakeGroups struct {
 	alive     map[int]bool
 	existsErr error
 	gate      chan struct{}
-	l         *procLedger
+	// existsGate, when set, holds exists until holdExists' release runs.
+	existsGate chan struct{}
+	l          *procLedger
 	// stopped is notified on every recorded Stop (awaitSignal).
 	stopped chan struct{}
 	// entered is notified on every recorded gone (awaitGone).
@@ -462,7 +464,32 @@ func (g *fakeGroups) hold() func() {
 	}
 }
 
+// holdExists makes group existence checks (the first step of a recovered
+// cleanup, before its guardian command is sent) wait until the returned
+// release runs.
+func (g *fakeGroups) holdExists() func() {
+	c := make(chan struct{})
+	g.mu.Lock()
+	g.existsGate = c
+	g.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			g.mu.Lock()
+			g.existsGate = nil
+			g.mu.Unlock()
+			close(c)
+		})
+	}
+}
+
 func (g *fakeGroups) exists(pgid int) (bool, error) {
+	g.mu.Lock()
+	gate := g.existsGate
+	g.mu.Unlock()
+	if gate != nil {
+		<-gate
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.alive[pgid], g.existsErr
@@ -1052,13 +1079,21 @@ type fakeCommands struct {
 	sent    []string
 	err     error
 	deliver func(fifo string)
+	// added is notified on every recorded command (await).
+	added chan struct{}
 }
 
 func (c *fakeCommands) send(fifo string, cmd []byte) error {
 	c.mu.Lock()
 	c.sent = append(c.sent, fifo+" "+strings.TrimSpace(string(cmd)))
-	err, d := c.err, c.deliver
+	err, d, ch := c.err, c.deliver, c.added
 	c.mu.Unlock()
+	if ch != nil {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
 	if err == nil && d != nil {
 		d(fifo)
 	}
@@ -1069,6 +1104,30 @@ func (c *fakeCommands) all() []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return append([]string(nil), c.sent...)
+}
+
+// await waits (bounded) until at least n commands were recorded and
+// returns them all.
+func (c *fakeCommands) await(t *testing.T, n int) []string {
+	t.Helper()
+	deadline := time.After(testWait)
+	for {
+		c.mu.Lock()
+		sent, ch := append([]string(nil), c.sent...), c.added
+		if ch == nil {
+			ch = make(chan struct{}, 1)
+			c.added = ch
+		}
+		c.mu.Unlock()
+		if len(sent) >= n {
+			return sent
+		}
+		select {
+		case <-ch:
+		case <-deadline:
+			t.Fatalf("%d commands never sent (sent %v)", n, sent)
+		}
+	}
 }
 
 // lookup is the run's adapter metadata (the scripted registry).
