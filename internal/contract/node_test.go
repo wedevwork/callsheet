@@ -1,11 +1,11 @@
 package contract
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -380,59 +380,98 @@ func TestFrames(t *testing.T) {
 	}
 }
 
+// frameLimitCases are TestFrameLimits' pinned body limits per frame type
+// and the direction each is decoded from; frameLimitInputs builds the
+// boundary messages from these pinned values, not from BodyLimit.
+var frameLimitCases = []struct {
+	typ   string
+	from  Direction
+	limit int
+}{
+	{FrameHello, FromSidecar, MaxOtherBody},
+	{FrameHelloOK, FromPlane, MaxOtherBody},
+	{FrameHeartbeatAck, FromPlane, MaxOtherBody},
+	{FrameError, FromSidecar, MaxOtherBody},
+	{FrameRoleValidateResult, FromSidecar, MaxOtherBody},
+	{FrameRolesReplaceAck, FromSidecar, MaxOtherBody},
+	{FrameHeartbeat, FromSidecar, MaxHeartbeatBody},
+	{FrameRoleValidate, FromPlane, MaxRoleValidateBody},
+	{FrameRolesReplace, FromPlane, MaxRolesReplaceBody},
+}
+
+// frameLimitInput holds one frame type's TestFrameLimits messages: the body
+// at the limit and the four whole messages built from it.
+type frameLimitInput struct {
+	atBody, at, above, spacedAt, spacedAbove string
+}
+
+// frameLimitFixtures are TestFrameLimits' inputs: boundary messages up to
+// 2 MiB that only feed DecodeFrame and EncodeFrame. They are built once per
+// process (frameLimitInputs), and every field is a string, which is
+// immutable: each DecodeFrame gets its own []byte copy, and the outbound
+// bodies are substrings of one padding string. Nothing a repetition does
+// to its input can reach the next (TestInputFixturesPerUse).
+type frameLimitFixtures struct {
+	padding    string
+	typed      map[string]frameLimitInput
+	exact      string
+	aboveExact string
+}
+
+// pad returns n bytes of "a".
+func (f *frameLimitFixtures) pad(n int) string { return f.padding[:n] }
+
+var frameLimitInputs = sync.OnceValue(func() *frameLimitFixtures {
+	f := &frameLimitFixtures{padding: strings.Repeat("a", MaxFrameBytes), typed: map[string]frameLimitInput{}}
+	// A body of exactly n bytes: {"x":"aaa..."}.
+	bodyOf := func(n int) string { return `{"x":"` + f.pad(n-8) + `"}` }
+	for _, c := range frameLimitCases {
+		at := bodyOf(c.limit)
+		f.typed[c.typ] = frameLimitInput{atBody: at, at: string(frame(5, c.typ, "p1", at)), above: string(frame(5, c.typ, "p1", bodyOf(c.limit+1))),
+			spacedAt: string(frame(5, c.typ, "p1", `{ "x":"`+f.pad(c.limit-9)+`"}`)), spacedAbove: string(frame(5, c.typ, "p1", `{  "x":"`+f.pad(c.limit-9)+`"}`))}
+	}
+	base := frame(5, "hello", "h1", `{}`)
+	f.exact = strings.Repeat(" ", MaxFrameBytes-len(base)) + string(base)
+	f.aboveExact = " " + f.exact
+	return f
+})
+
 // TestFrameLimits checks the exact boundaries (protocol 2): the 2 MiB
 // message and 1 MiB absolute body limits and every type-specific body limit
 // (roles_replace 1 MiB, heartbeat 32 KiB, role_validate 16 KiB, all others
 // 8 KiB) are accepted at the limit and rejected one byte above it, on input
 // and on output. Whitespace inside the body counts.
 func TestFrameLimits(t *testing.T) {
-	pad := func(n int) string { return strings.Repeat("a", n) }
-	// A body of exactly n bytes: {"x":"aaa..."}.
-	bodyOf := func(n int) string { return `{"x":"` + pad(n-8) + `"}` }
+	in := frameLimitInputs()
 	type big struct {
 		X string `json:"x"`
 	}
-	for _, c := range []struct {
-		typ   string
-		from  Direction
-		limit int
-	}{
-		{FrameHello, FromSidecar, MaxOtherBody},
-		{FrameHelloOK, FromPlane, MaxOtherBody},
-		{FrameHeartbeatAck, FromPlane, MaxOtherBody},
-		{FrameError, FromSidecar, MaxOtherBody},
-		{FrameRoleValidateResult, FromSidecar, MaxOtherBody},
-		{FrameRolesReplaceAck, FromSidecar, MaxOtherBody},
-		{FrameHeartbeat, FromSidecar, MaxHeartbeatBody},
-		{FrameRoleValidate, FromPlane, MaxRoleValidateBody},
-		{FrameRolesReplace, FromPlane, MaxRolesReplaceBody},
-	} {
+	for _, c := range frameLimitCases {
 		if BodyLimit(c.typ) != c.limit {
 			t.Fatalf("%s limit = %d", c.typ, BodyLimit(c.typ))
 		}
-		at := bodyOf(c.limit)
-		if len(at) != c.limit {
-			t.Fatal(len(at))
+		m := in.typed[c.typ]
+		if len(m.atBody) != c.limit {
+			t.Fatal(len(m.atBody))
 		}
-		if f, err := DecodeFrame(frame(5, c.typ, "p1", at), c.from); err != nil || len(f.Body) != c.limit {
+		if f, err := DecodeFrame([]byte(m.at), c.from); err != nil || len(f.Body) != c.limit {
 			t.Fatalf("%s body at limit: %v", c.typ, err)
 		}
-		if _, err := DecodeFrame(frame(5, c.typ, "p1", bodyOf(c.limit+1)), c.from); CodeOf(err) != CodeInvalidArgument || !strings.Contains(err.Error(), "exceeds "+strconv.Itoa(c.limit)) {
+		if _, err := DecodeFrame([]byte(m.above), c.from); CodeOf(err) != CodeInvalidArgument || !strings.Contains(err.Error(), "exceeds "+strconv.Itoa(c.limit)) {
 			t.Fatalf("%s body above limit: %v", c.typ, err)
 		}
 		// Whitespace counts: a compact body one byte under the limit plus
 		// one inner space is exactly at it, two spaces are above it.
-		spaced := `{ "x":"` + pad(c.limit-9) + `"}`
-		if _, err := DecodeFrame(frame(5, c.typ, "p1", spaced), c.from); err != nil {
+		if _, err := DecodeFrame([]byte(m.spacedAt), c.from); err != nil {
 			t.Fatalf("%s spaced body at limit: %v", c.typ, err)
 		}
-		if _, err := DecodeFrame(frame(5, c.typ, "p1", `{  "x":"`+pad(c.limit-9)+`"}`), c.from); CodeOf(err) != CodeInvalidArgument {
+		if _, err := DecodeFrame([]byte(m.spacedAbove), c.from); CodeOf(err) != CodeInvalidArgument {
 			t.Fatalf("%s spaced body above limit: %v", c.typ, err)
 		}
-		if _, err := EncodeFrame(2, c.typ, "p1", big{pad(c.limit - 8)}); err != nil {
+		if _, err := EncodeFrame(2, c.typ, "p1", big{in.pad(c.limit - 8)}); err != nil {
 			t.Fatalf("%s outbound body at limit: %v", c.typ, err)
 		}
-		if _, err := EncodeFrame(2, c.typ, "p1", big{pad(c.limit - 7)}); err == nil || !strings.Contains(err.Error(), "exceeds "+strconv.Itoa(c.limit)) {
+		if _, err := EncodeFrame(2, c.typ, "p1", big{in.pad(c.limit - 7)}); err == nil || !strings.Contains(err.Error(), "exceeds "+strconv.Itoa(c.limit)) {
 			t.Fatalf("%s outbound body above limit: %v", c.typ, err)
 		}
 	}
@@ -441,18 +480,16 @@ func TestFrameLimits(t *testing.T) {
 	}
 	// A message of exactly MaxFrameBytes with whitespace padding outside the
 	// body, and one byte more.
-	base := frame(5, "hello", "h1", `{}`)
-	exact := append(bytes.Repeat([]byte(" "), MaxFrameBytes-len(base)), base...)
-	if len(exact) != MaxFrameBytes {
-		t.Fatal(len(exact))
+	if len(in.exact) != MaxFrameBytes || len(in.aboveExact) != MaxFrameBytes+1 {
+		t.Fatal(len(in.exact), len(in.aboveExact))
 	}
-	if _, err := DecodeFrame(exact, FromSidecar); err != nil {
+	if _, err := DecodeFrame([]byte(in.exact), FromSidecar); err != nil {
 		t.Fatalf("message at limit: %v", err)
 	}
-	if _, err := DecodeFrame(append([]byte(" "), exact...), FromSidecar); CodeOf(err) != CodeInvalidArgument || !strings.Contains(err.Error(), "exceeds 2097152") {
+	if _, err := DecodeFrame([]byte(in.aboveExact), FromSidecar); CodeOf(err) != CodeInvalidArgument || !strings.Contains(err.Error(), "exceeds 2097152") {
 		t.Fatalf("message above limit: %v", err)
 	}
-	if _, err := EncodeFrame(2, FrameHello, pad(MaxFrameBytes), nil); err == nil || !strings.Contains(err.Error(), "exceeds 2097152") {
+	if _, err := EncodeFrame(2, FrameHello, in.pad(MaxFrameBytes), nil); err == nil || !strings.Contains(err.Error(), "exceeds 2097152") {
 		t.Fatalf("outbound message above limit: %v", err)
 	}
 	if _, err := EncodeFrame(2, FrameHello, "h1", make(chan int)); err == nil {

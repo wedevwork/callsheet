@@ -27,7 +27,9 @@ import (
 // sidecar shard: five shards, thirteen steps, fourteen jobs, five-result
 // summaries) and by iteration 06a-perf (the plane and sidecar CPU1 shards:
 // seven shards, the same thirteen steps, eighteen jobs, seven-result
-// summaries). They read tracked artifacts only,
+// summaries) and by the contract headroom fix (the packages shard's
+// per-CPU contract group: sixteen steps, the same seven shards and
+// eighteen jobs). They read tracked artifacts only,
 // inject runners into devcheck, run the coordinator's contract by name in a
 // compiled devcheck test binary and the summaries' literal command in local
 // bash, and never contact GitHub or run a real suite, stress or devcheck
@@ -47,37 +49,45 @@ var shard02b = []string{
 // three single-CPU invocations, and ./internal/sidecar likewise by its
 // sidecar follow-up; design 06a-perf moved each CPU1 invocation into a
 // singleton shard of its own, leaving CPU2 and CPU4 concurrent in plane and
-// sidecar).
+// sidecar; the contract headroom fix moved ./internal/contract out of the
+// combined packages command into the packages shard's per-CPU group,
+// cpuSteps, run after it as three concurrent single-CPU invocations).
 var shardPlan = []struct {
 	name     string
 	parallel bool
 	steps    [][2]string
+	cpuSteps [][2]string
 }{
-	{"packages", false, [][2]string{{"stress packages", "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/contract ./internal/adapter ./internal/mcp ./internal/mcpqual ./internal/workspace ./internal/workspacetransfer"}}},
+	{"packages", false, [][2]string{{"stress packages", "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/mcpqual ./internal/workspace ./internal/workspacetransfer"}},
+		[][2]string{
+			{"stress contract cpu1", "go test -race -count=20 -cpu=1 -timeout=6m ./internal/contract"},
+			{"stress contract cpu2", "go test -race -count=20 -cpu=2 -timeout=6m ./internal/contract"},
+			{"stress contract cpu4", "go test -race -count=20 -cpu=4 -timeout=6m ./internal/contract"},
+		}},
 	{"plane-cpu1", true, [][2]string{
 		{"stress plane cpu1", "go test -race -count=20 -cpu=1 -timeout=6m ./internal/plane"},
-	}},
+	}, nil},
 	{"plane", true, [][2]string{
 		{"stress plane cpu2", "go test -race -count=20 -cpu=2 -timeout=6m ./internal/plane"},
 		{"stress plane cpu4", "go test -race -count=20 -cpu=4 -timeout=6m ./internal/plane"},
-	}},
+	}, nil},
 	{"sidecar-cpu1", true, [][2]string{
 		{"stress sidecar cpu1", "go test -race -count=20 -cpu=1 -timeout=6m ./internal/sidecar"},
-	}},
+	}, nil},
 	{"sidecar", true, [][2]string{
 		{"stress sidecar cpu2", "go test -race -count=20 -cpu=2 -timeout=6m ./internal/sidecar"},
 		{"stress sidecar cpu4", "go test -race -count=20 -cpu=4 -timeout=6m ./internal/sidecar"},
-	}},
+	}, nil},
 	{"processgroup", true, [][2]string{
 		{"stress processgroup cpu1", "go test -race -count=20 -cpu=1 -timeout=6m ./internal/spikes/processgroup"},
 		{"stress processgroup cpu2", "go test -race -count=20 -cpu=2 -timeout=6m ./internal/spikes/processgroup"},
 		{"stress processgroup cpu4", "go test -race -count=20 -cpu=4 -timeout=6m ./internal/spikes/processgroup"},
-	}},
+	}, nil},
 	{"functions", false, [][2]string{
 		{"stress function", "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestFP4TransportHarness|TestFP5GitRoundTrip)$ ./tests/function"},
 		{"stress plane function", "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=" + speedPlaneSelector + " ./tests/function"},
 		{"stress node function", "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestNodeEnrollment|TestNodeReconnect)$/^(locking|shutdown)$ ./tests/function"},
-	}},
+	}, nil},
 }
 
 // shard03 is iteration 03's literal addition to the 02b selection: the
@@ -134,6 +144,13 @@ func shardArgv(names ...string) [][]string {
 			}
 			for _, s := range sh.steps {
 				groups = append(groups, []string{s[1]})
+			}
+			if len(sh.cpuSteps) > 0 {
+				var g []string
+				for _, s := range sh.cpuSteps {
+					g = append(g, s[1])
+				}
+				groups = append(groups, g)
 			}
 		}
 	}
@@ -199,8 +216,9 @@ func tuples(t *testing.T, argv string) []tuple {
 	return out
 }
 
-// FP-1: both OS plans are exactly the seven literal shards (thirteen
-// steps), and their normalized union is the 02b multiset plus the literal
+// FP-1: both OS plans are exactly the seven literal shards (sixteen
+// steps since the contract headroom fix: the packages shard's combined
+// command and its contract per-CPU group), and their normalized union is the 02b multiset plus the literal
 // additions of iterations 03, 04, 07a and 07b (42 tuples, each exactly once), with
 // nothing duplicated or lost; the complete plane and sidecar packages run
 // exactly once per CPU setting: CPU1 only in plane-cpu1 and sidecar-cpu1,
@@ -291,12 +309,13 @@ func TestStressShardSelection(t *testing.T) {
 		var flat []string
 		for i, sh := range shards {
 			w := shardPlan[i]
-			if sh.Name != w.name || sh.Parallel != w.parallel || len(sh.Steps) != len(w.steps) {
+			if sh.Name != w.name || sh.Parallel != w.parallel || len(sh.Steps) != len(w.steps) || len(sh.CPUSteps) != len(w.cpuSteps) {
 				t.Fatalf("%s shard %d = %+v, want %s parallel=%v", goos, i, sh, w.name, w.parallel)
 			}
-			for j, s := range sh.Steps {
+			wantSteps := append(slices.Clone(w.steps), w.cpuSteps...)
+			for j, s := range append(slices.Clone(sh.Steps), sh.CPUSteps...) {
 				argv := strings.Join(s.Argv, " ")
-				if s.Name != w.steps[j][0] || argv != w.steps[j][1] || strings.Join(s.Env, " ") != "CGO_ENABLED=1" {
+				if s.Name != wantSteps[j][0] || argv != wantSteps[j][1] || strings.Join(s.Env, " ") != "CGO_ENABLED=1" {
 					t.Fatalf("%s %s step %d = %+v", goos, sh.Name, j, s)
 				}
 				for _, tp := range tuples(t, argv) {
@@ -345,13 +364,21 @@ func TestStressShardSelection(t *testing.T) {
 		if len(held) != 4 {
 			t.Fatalf("%s: plane or sidecar tuples in shards %v", goos, held)
 		}
+		// The contract headroom fix: ./internal/contract runs once per CPU
+		// setting, only in the packages shard's per-CPU group.
+		for j, cpu := range []string{"1", "2", "4"} {
+			tp := tuple{"./internal/contract", "", cpu, "20"}
+			if got[tp] != 1 || owner[tp] != "packages" || tuples(t, strings.Join(shards[0].CPUSteps[j].Argv, " "))[0] != tp {
+				t.Fatalf("%s: contract at -cpu=%s selected %d times in %q, want once in the packages per-CPU group", goos, cpu, got[tp], owner[tp])
+			}
+		}
 		steps, err := devcheck.StressSteps(goos)
 		var flatSteps []string
 		for _, s := range steps {
 			flatSteps = append(flatSteps, strings.Join(s.Argv, " "))
 		}
-		if err != nil || len(steps) != 13 || !slices.Equal(flatSteps, flat) {
-			t.Fatalf("%s StressSteps is not the thirteen-step flattened shard view: %q", goos, flatSteps)
+		if err != nil || len(steps) != 16 || !slices.Equal(flatSteps, flat) {
+			t.Fatalf("%s StressSteps is not the sixteen-step flattened shard view: %q", goos, flatSteps)
 		}
 	}
 	// The functions shard keeps 02b's plane selector, whose executable
@@ -453,7 +480,11 @@ func TestStressShardExecution(t *testing.T) {
 			shardArgv("packages", "plane-cpu1", "plane", "sidecar-cpu1", "sidecar", "processgroup")},
 		{"stress-processgroup", "-cpu=4 ", "stress processgroup cpu4", shardArgv("processgroup")},
 		{"stress-functions", "TestFP4TransportHarness", "stress function", shardArgv("functions")[:1]},
-		{"stress", "./internal/contract", "stress packages", shardArgv("packages")},
+		// A failed combined invocation never starts the contract group; a
+		// failed contract invocation fails the shard after its siblings ran.
+		{"stress", "./internal/client", "stress packages", shardArgv("packages")[:1]},
+		{"stress", "-cpu=2 -timeout=6m ./internal/contract", "stress contract cpu2", shardArgv("packages")},
+		{"stress-packages", "-cpu=4 -timeout=6m ./internal/contract", "stress contract cpu4", shardArgv("packages")},
 	} {
 		r := &syncRunner{failOn: c.failOn}
 		var out, errOut bytes.Buffer
@@ -471,18 +502,19 @@ func TestStressShardExecution(t *testing.T) {
 	}
 	// Through devcheck.Run, with a separate gate per shard routed by
 	// package and exact CPU argument (a CPU1 singleton never waits on its
-	// pair's gate, and no gate is reused after its release): the 26 events
-	// are packages 0-1, the plane CPU1 singleton's start and end 2-3, the
-	// plane pair's two starts 4-5 before either end 6-7, the sidecar CPU1
-	// singleton 8-9, the sidecar pair's starts 10-11 and ends 12-13,
-	// processgroup's three starts 14-16 and ends 17-19, and the sequential
-	// functions 20-25; no two Parallel shards overlap, and the logs replay
+	// pair's gate, and no gate is reused after its release): the 32 events
+	// are packages 0-1, the contract group's three starts 2-4 and ends 5-7
+	// (the contract headroom fix), the plane CPU1 singleton's start and end
+	// 8-9, the plane pair's two starts 10-11 before either end 12-13, the
+	// sidecar CPU1 singleton 14-15, the sidecar pair's starts 16-17 and ends
+	// 18-19, processgroup's three starts 20-22 and ends 23-25, and the
+	// sequential functions 26-31; no two Parallel shards overlap, and the logs replay
 	// under their CPU names in CPU order.
 	gates := map[string]*gate{}
 	for _, g := range []struct {
 		pkg  string
 		cpus []string
-	}{{"./internal/plane", []string{"1"}}, {"./internal/plane", []string{"2", "4"}}, {"./internal/sidecar", []string{"1"}},
+	}{{"./internal/contract", []string{"1", "2", "4"}}, {"./internal/plane", []string{"1"}}, {"./internal/plane", []string{"2", "4"}}, {"./internal/sidecar", []string{"1"}},
 		{"./internal/sidecar", []string{"2", "4"}}, {"./internal/spikes/processgroup", []string{"1", "2", "4"}}} {
 		gt := newGate(len(g.cpus))
 		for _, c := range g.cpus {
@@ -499,22 +531,23 @@ func TestStressShardExecution(t *testing.T) {
 	o.mu.Unlock()
 	spans := map[string][]int{}
 	for i, e := range events {
-		for _, pkg := range []string{"./internal/plane", "./internal/sidecar", "./internal/spikes/processgroup"} {
+		for _, pkg := range []string{"./internal/contract", "./internal/plane", "./internal/sidecar", "./internal/spikes/processgroup"} {
 			if strings.HasSuffix(e, " "+pkg) {
 				spans[pkg] = append(spans[pkg], i)
 			}
 		}
 	}
-	if len(events) != 26 || !slices.Equal(spans["./internal/plane"], []int{2, 3, 4, 5, 6, 7}) || !slices.Equal(spans["./internal/sidecar"], []int{8, 9, 10, 11, 12, 13}) ||
-		!slices.Equal(spans["./internal/spikes/processgroup"], []int{14, 15, 16, 17, 18, 19}) {
+	if len(events) != 32 || !slices.Equal(spans["./internal/contract"], []int{2, 3, 4, 5, 6, 7}) ||
+		!slices.Equal(spans["./internal/plane"], []int{8, 9, 10, 11, 12, 13}) || !slices.Equal(spans["./internal/sidecar"], []int{14, 15, 16, 17, 18, 19}) ||
+		!slices.Equal(spans["./internal/spikes/processgroup"], []int{20, 21, 22, 23, 24, 25}) {
 		t.Fatalf("events = %q", events)
 	}
 	for _, g := range []struct {
 		from, n int
 		cpus    []string
 		pkg     string
-	}{{2, 1, []string{"1"}, "./internal/plane"}, {4, 2, []string{"2", "4"}, "./internal/plane"}, {8, 1, []string{"1"}, "./internal/sidecar"},
-		{10, 2, []string{"2", "4"}, "./internal/sidecar"}, {14, 3, []string{"1", "2", "4"}, "./internal/spikes/processgroup"}} {
+	}{{2, 3, []string{"1", "2", "4"}, "./internal/contract"}, {8, 1, []string{"1"}, "./internal/plane"}, {10, 2, []string{"2", "4"}, "./internal/plane"},
+		{14, 1, []string{"1"}, "./internal/sidecar"}, {16, 2, []string{"2", "4"}, "./internal/sidecar"}, {20, 3, []string{"1", "2", "4"}, "./internal/spikes/processgroup"}} {
 		var starts, ends []string
 		for i := g.from; i < g.from+2*g.n; i++ {
 			e := events[i]
@@ -539,7 +572,7 @@ func TestStressShardExecution(t *testing.T) {
 	}
 	scratch := scratchOf(out.String())
 	pos := -1
-	for _, shard := range []string{"plane", "sidecar"} {
+	for _, shard := range []string{"contract", "plane", "sidecar"} {
 		for _, cpu := range []string{"1", "2", "4"} {
 			name := "stress " + shard + " cpu" + cpu
 			i := strings.Index(out.String(), "devcheck: ---- "+name+" log ("+filepath.Join(scratch, "stress-"+shard+"-cpu"+cpu+".log")+") ----\nok go test -race -count=20 -cpu="+cpu+" -timeout=6m ./internal/"+shard+"\n")
@@ -852,7 +885,9 @@ func TestStressShardPolicy(t *testing.T) {
 		t.Fatalf("contract %d jobs, workflow %d", len(contract), len(stages))
 	}
 	// Jobs are not child invocations: fourteen workers run one stage each,
-	// and those stages dispatch 26 invocations on the two platforms.
+	// and those stages dispatch 32 invocations on the two platforms (26
+	// before the contract headroom fix split the contract package per CPU
+	// inside stress-packages; no job was added).
 	workerJobs, invocations := 0, 0
 	dispatch := devcheck.Stages()
 	for _, goos := range []string{"linux", "darwin"} {
@@ -898,8 +933,8 @@ func TestStressShardPolicy(t *testing.T) {
 			os.RemoveAll(scratchOf(out.String()))
 		}
 	}
-	if workerJobs != 14 || invocations != 26 {
-		t.Fatalf("%d worker jobs dispatch %d invocations, want 14 and 26 (thirteen per platform)", workerJobs, invocations)
+	if workerJobs != 14 || invocations != 32 {
+		t.Fatalf("%d worker jobs dispatch %d invocations, want 14 and 32 (sixteen per platform)", workerJobs, invocations)
 	}
 	if strings.Join(required, ",") != "ci-linux,ci-macos,ci-linux-stress,ci-macos-stress" || !slices.Equal(required, cicheck.RequiredChecks()) {
 		t.Fatalf("required = %v", required)
@@ -1049,8 +1084,8 @@ func TestStressShardPolicy(t *testing.T) {
 }
 
 // FP-5: docs/ci.md documents the four required contexts versus the
-// fourteen workers, the seven shards with their exact commands (still
-// thirteen, the iteration 02b selection), the CPU1 singletons and CPU2/CPU4
+// fourteen workers, the seven shards with their exact commands (sixteen
+// since the contract headroom fix, still the iteration 02b selection), the CPU1 singletons and CPU2/CPU4
 // pairs with their log ownership and failure boundaries, why CPU1 is
 // isolated (design 06a-perf), the preserved budgets and contexts, estimates
 // versus observations, the superseded plane fallback, the history of the
@@ -1086,7 +1121,7 @@ func TestStressShardHandoff(t *testing.T) {
 	stress := docSection(t, "Stress checks")
 	for _, sh := range shardPlan {
 		requireTerms(t, "Stress checks", stress, "`devcheck stress-"+sh.name+"`")
-		for _, s := range sh.steps {
+		for _, s := range append(slices.Clone(sh.steps), sh.cpuSteps...) {
 			if !strings.Contains(stress, "\n"+s[1]+"\n") {
 				t.Fatalf("Stress checks lacks the command %q", s[1])
 			}
@@ -1095,7 +1130,10 @@ func TestStressShardHandoff(t *testing.T) {
 	}
 	requireTerms(t, "Stress checks", stress,
 		"The project's declared repeat count is 20 per CPU setting (1, 2, 4).",
-		"seven shards per platform", "The seven shards run thirteen commands",
+		"seven shards per platform", "The seven shards run sixteen commands",
+		// The contract headroom fix: the packages shard's per-CPU group.
+		"| `packages` | `devcheck stress-packages` | `stress packages`, then `stress contract cpu1`, `cpu2`, `cpu4` | one invocation, then three concurrent invocations of `internal/contract`, one per CPU setting (the contract headroom fix) |",
+		"`stressWaves` never applies to it", "`stress-contract-cpu1.log`", "Why contract runs per CPU setting", "run 36992345488",
 		"| `plane-cpu1` | `devcheck stress-plane-cpu1` | `stress plane cpu1` | one invocation, alone on its worker (iteration 06a-perf) |",
 		"| `plane` | `devcheck stress-plane` | `stress plane cpu2`, `cpu4` | two concurrent invocations, one per CPU setting (iteration 05b; CPU 1 moved to `plane-cpu1` in iteration 06a-perf) |",
 		"| `sidecar-cpu1` | `devcheck stress-sidecar-cpu1` | `stress sidecar cpu1` | one invocation, alone on its worker (iteration 06a-perf) |",

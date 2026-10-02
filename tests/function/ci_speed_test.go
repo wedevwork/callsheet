@@ -33,10 +33,14 @@ import (
 // The literal deduplicated stress plan (design 02b, Stress selection), as
 // sharded by design 02c: processgroup left the packages command for three
 // single-CPU invocations, and so did ./internal/plane by design 05b and
-// ./internal/sidecar by its sidecar follow-up; the function commands are
-// unchanged.
+// ./internal/sidecar by its sidecar follow-up, and ./internal/contract
+// (into the packages shard's per-CPU group) by the contract headroom fix;
+// the function commands are unchanged.
 const (
-	speedPackages      = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/contract ./internal/adapter ./internal/mcp ./internal/mcpqual ./internal/workspace ./internal/workspacetransfer"
+	speedPackages      = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/mcpqual ./internal/workspace ./internal/workspacetransfer"
+	speedContract1     = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/contract"
+	speedContract2     = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/contract"
+	speedContract4     = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/contract"
 	speedPlane1        = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/plane"
 	speedPlane2        = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/plane"
 	speedPlane4        = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/plane"
@@ -322,10 +326,11 @@ func delegatedCall(call *ast.CallExpr) (kind, contract string) {
 func TestCISpeedSelection(t *testing.T) {
 	for _, goos := range []string{"linux", "darwin"} {
 		steps, err := devcheck.StressSteps(goos)
-		if err != nil || len(steps) != 13 {
+		if err != nil || len(steps) != 16 {
 			t.Fatalf("%s: %+v %v", goos, steps, err)
 		}
 		for i, want := range []struct{ name, argv string }{{"stress packages", speedPackages},
+			{"stress contract cpu1", speedContract1}, {"stress contract cpu2", speedContract2}, {"stress contract cpu4", speedContract4},
 			{"stress plane cpu1", speedPlane1}, {"stress plane cpu2", speedPlane2}, {"stress plane cpu4", speedPlane4},
 			{"stress sidecar cpu1", speedSidecar1}, {"stress sidecar cpu2", speedSidecar2}, {"stress sidecar cpu4", speedSidecar4}, {"stress processgroup cpu1", speedPG1},
 			{"stress processgroup cpu2", speedPG2}, {"stress processgroup cpu4", speedPG4}, {"stress function", speedFunction}, {"stress plane function", speedPlaneFunction},
@@ -336,19 +341,19 @@ func TestCISpeedSelection(t *testing.T) {
 		}
 		// FP-6 is no longer repeated by a function step; its experiment
 		// stays repeated through the complete processgroup package.
-		for _, s := range steps[10:] {
+		for _, s := range steps[13:] {
 			if strings.Contains(strings.Join(s.Argv, " "), "TestFP6ProcessGroups") {
 				t.Fatalf("%s: %s still selects TestFP6ProcessGroups", goos, s.Name)
 			}
 		}
-		for _, s := range steps[7:10] {
+		for _, s := range steps[10:13] {
 			if !slices.Contains(s.Argv, "./internal/spikes/processgroup") || len(s.Argv) != 7 {
 				t.Fatalf("%s %s lost the complete processgroup package: %v", goos, s.Name, s.Argv)
 			}
 		}
 		// The plane package (its delegated contracts included) is repeated
 		// completely in its own shard (design 05b), never in packages.
-		for _, s := range steps[1:4] {
+		for _, s := range steps[4:7] {
 			if !slices.Contains(s.Argv, "./internal/plane") || len(s.Argv) != 7 {
 				t.Fatalf("%s %s lost the complete plane package: %v", goos, s.Name, s.Argv)
 			}
@@ -359,13 +364,24 @@ func TestCISpeedSelection(t *testing.T) {
 		// Likewise the sidecar package (its task children and reconnect
 		// contracts included), in its own shard since the 05b sidecar
 		// follow-up.
-		for _, s := range steps[4:7] {
+		for _, s := range steps[7:10] {
 			if !slices.Contains(s.Argv, "./internal/sidecar") || len(s.Argv) != 7 {
 				t.Fatalf("%s %s lost the complete sidecar package: %v", goos, s.Name, s.Argv)
 			}
 		}
 		if slices.Contains(steps[0].Argv, "./internal/sidecar") {
 			t.Fatalf("%s packages step still repeats sidecar: %v", goos, steps[0].Argv)
+		}
+		// The contract package runs once per CPU setting in the packages
+		// shard's per-CPU group (the contract headroom fix), never in the
+		// combined command.
+		for _, s := range steps[1:4] {
+			if !slices.Contains(s.Argv, "./internal/contract") || len(s.Argv) != 7 {
+				t.Fatalf("%s %s lost the complete contract package: %v", goos, s.Name, s.Argv)
+			}
+		}
+		if slices.Contains(steps[0].Argv, "./internal/contract") {
+			t.Fatalf("%s packages step still repeats contract: %v", goos, steps[0].Argv)
 		}
 	}
 
@@ -429,7 +445,7 @@ func TestCISpeedSelection(t *testing.T) {
 	// fixture with the same names, near-prefix neighbours and FP-6.
 	var selector string
 	steps, _ := devcheck.StressSteps(runtime.GOOS)
-	for _, a := range steps[11].Argv {
+	for _, a := range steps[14].Argv {
 		if v, ok := strings.CutPrefix(a, "-run="); ok {
 			selector = v
 		}
@@ -751,7 +767,7 @@ func TestCISpeedPolicy(t *testing.T) {
 		// set; design 06a-perf).
 		r := &ciRunner{}
 		if code, out, errOut := devcheckRun(t, r, "stress"); code != 0 || !strings.Contains(out, "stage stress ok") ||
-			!sameGroups(r.calls, [][]string{{speedPackages}, {speedPlane1}, {speedPlane2, speedPlane4}, {speedSidecar1}, {speedSidecar2, speedSidecar4},
+			!sameGroups(r.calls, [][]string{{speedPackages}, {speedContract1, speedContract2, speedContract4}, {speedPlane1}, {speedPlane2, speedPlane4}, {speedSidecar1}, {speedSidecar2, speedSidecar4},
 				{speedPG1, speedPG2, speedPG4}, {speedFunction}, {speedPlaneFunction}, {speedNodeFunction}}) {
 			t.Fatalf("stress dispatch = %d %v %s", code, r.calls, errOut)
 		}
@@ -774,7 +790,7 @@ func TestCISpeedPolicy(t *testing.T) {
 				t.Fatalf("Stress checks lacks the command %q", l)
 			}
 		}
-		requireTerms(t, "Stress checks", stress, "`stress packages`", "`stress plane cpu1`", "`stress sidecar cpu1`", "`stress processgroup cpu1`", "`stress function`", "`stress plane function`",
+		requireTerms(t, "Stress checks", stress, "`stress packages`", "`stress contract cpu1`", "`stress plane cpu1`", "`stress sidecar cpu1`", "`stress processgroup cpu1`", "`stress function`", "`stress plane function`",
 			"`TestFP6ProcessGroups`", "`TestExperiment`", "`TestNativeStateContract`", "`TestStateFailureContract`",
 			"`TestServerFailureContract`", "`TestReissueFailureContract`", "`contracts`", "`process`",
 			"quote the entire `-run` argument")

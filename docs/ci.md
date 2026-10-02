@@ -526,9 +526,10 @@ coordinator's own `TestStressConcurrencyContract` (see Local verification).
 The count, CPU list, shards, package groups, selectors, wave schedule and
 time budgets are declared once, in `internal/devcheck/stress.go`
 (`StressCount`, `StressShards`, `stressWaves`, and `StressSteps`, the
-flattened inspection view). The seven shards run thirteen commands (argv,
+flattened inspection view). The seven shards run sixteen commands (argv,
 never a shell), each with `CGO_ENABLED=1`, named `stress packages`,
-`stress plane cpu1`, `stress plane cpu2`, `stress plane cpu4`
+`stress contract cpu1`, `stress contract cpu2`, `stress contract cpu4`
+(the contract headroom fix), `stress plane cpu1`, `stress plane cpu2`, `stress plane cpu4`
 (iteration 05b), `stress sidecar cpu1`, `stress sidecar cpu2`,
 `stress sidecar cpu4` (the iteration 05b sidecar follow-up),
 `stress processgroup cpu1`, `stress processgroup cpu2`,
@@ -539,13 +540,18 @@ shard in iteration 05b, gave `./internal/sidecar` to the sidecar shard
 in its sidecar follow-up, gained `./internal/mcp` in iteration 07a,
 gained `./internal/mcpqual` in iteration 07b, gained
 `./internal/workspace` in iteration 09a and gained
-`./internal/workspacetransfer` (after it) in iteration 09b.
+`./internal/workspacetransfer` (after it) in iteration 09b, and gave
+`./internal/contract` to the packages shard's own per-CPU group in the
+contract headroom fix (2026-10-02).
 Iteration 06a-perf changed no command, only the
 grouping: `stress plane cpu1` and `stress sidecar cpu1` each have a shard
 of their own:
 
 ```
-go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/contract ./internal/adapter ./internal/mcp ./internal/mcpqual ./internal/workspace ./internal/workspacetransfer
+go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/mcpqual ./internal/workspace ./internal/workspacetransfer
+go test -race -count=20 -cpu=1 -timeout=6m ./internal/contract
+go test -race -count=20 -cpu=2 -timeout=6m ./internal/contract
+go test -race -count=20 -cpu=4 -timeout=6m ./internal/contract
 go test -race -count=20 -cpu=1 -timeout=6m ./internal/plane
 go test -race -count=20 -cpu=2 -timeout=6m ./internal/plane
 go test -race -count=20 -cpu=4 -timeout=6m ./internal/plane
@@ -562,7 +568,7 @@ go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestNodeEnrollment|TestNod
 
 | Shard | Stage | Commands | Execution |
 |---|---|---|---|
-| `packages` | `devcheck stress-packages` | `stress packages` | one invocation |
+| `packages` | `devcheck stress-packages` | `stress packages`, then `stress contract cpu1`, `cpu2`, `cpu4` | one invocation, then three concurrent invocations of `internal/contract`, one per CPU setting (the contract headroom fix) |
 | `plane-cpu1` | `devcheck stress-plane-cpu1` | `stress plane cpu1` | one invocation, alone on its worker (iteration 06a-perf) |
 | `plane` | `devcheck stress-plane` | `stress plane cpu2`, `cpu4` | two concurrent invocations, one per CPU setting (iteration 05b; CPU 1 moved to `plane-cpu1` in iteration 06a-perf) |
 | `sidecar-cpu1` | `devcheck stress-sidecar-cpu1` | `stress sidecar cpu1` | one invocation, alone on its worker (iteration 06a-perf) |
@@ -570,13 +576,17 @@ go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestNodeEnrollment|TestNod
 | `processgroup` | `devcheck stress-processgroup` | `stress processgroup cpu1`, `cpu2`, `cpu4` | three concurrent invocations, one per CPU setting |
 | `functions` | `devcheck stress-functions` | `stress function`, then `stress plane function`, then `stress node function` | sequential |
 
-`StressSteps` lists the thirteen commands in shard and CPU order, the same
-commands in the same order as before iteration 06a-perf. It is an
-inspection view, never the execution order: a concurrent shard runs its
-invocations in the waves `stressWaves` schedules, and that schedule is
-empty, so every concurrent shard starts all of its invocations at once:
-the plane and sidecar CPU1 shards their one, the plane and sidecar pairs
-their two and processgroup its three.
+`StressSteps` lists the sixteen commands in shard and CPU order (a
+shard's sequential commands, then its per-CPU group): thirteen until the
+contract headroom fix, the same commands in the same order as before
+iteration 06a-perf. It is an inspection view, never the execution order:
+a concurrent shard runs its invocations in the waves `stressWaves`
+schedules, and that schedule is empty, so every concurrent shard starts
+all of its invocations at once: the plane and sidecar CPU1 shards their
+one, the plane and sidecar pairs their two and processgroup its three.
+The packages shard's per-CPU group is not a wave schedule and
+`stressWaves` never applies to it: its three contract invocations start
+together once `stress packages` has succeeded.
 
 Since iteration 06a-perf `devcheck stress-plane` and `devcheck stress-sidecar`
 now run CPU 2 and CPU 4 only. To repeat all three CPU settings of plane,
@@ -595,7 +605,8 @@ different tests. The node selector (iteration 03) is built the same way:
 their `locking` and `shutdown` subtests below them.
 
 - Selected packages: `internal/testkit`, `internal/testkit/fakeadapter`,
-  `internal/spikes/gittransport`, `internal/client`, `internal/contract`,
+  `internal/spikes/gittransport`, `internal/client`, `internal/contract`
+  (its own per-CPU group since the contract headroom fix),
   `internal/adapter`, (iteration 07a) `internal/mcp`, (iteration 07b)
   `internal/mcpqual`, (iteration 09a) `internal/workspace` and (iteration
   09b) `internal/workspacetransfer` in the packages shard, `internal/plane` in the
@@ -766,7 +777,11 @@ their `locking` and `shutdown` subtests below them.
   sidecar's CPU 1 invocations into shards of their own without changing a
   command, count or tuple: the union is still the same 36 (package,
   selector, CPU setting, count) tuples, each exactly once, on both
-  platforms.
+  platforms. The contract headroom fix likewise turned `internal/contract`'s
+  share of the combined packages invocation into three invocations of one
+  CPU setting each (`stress contract cpu1`, `cpu2`, `cpu4`) inside the
+  packages shard: no tuple, count, CPU setting, shard, stage or job
+  changed, and every contract test still runs 60 times per platform.
 - `-count=20` applies at each CPU setting: every selected test runs
   60 times per platform across its shards (20 per CPU setting). This is repeated testing, never retry-until-green:
   any failure fails the stage. There is no count override, no lighter macOS
@@ -784,7 +799,15 @@ their `locking` and `shutdown` subtests below them.
 
 Execution. `devcheck stress` runs the shards in order, packages,
 plane-cpu1, plane, sidecar-cpu1, sidecar, processgroup, functions; a shard
-stage runs exactly its own commands. Sequential commands stop at the first
+stage runs exactly its own commands. The packages shard runs
+`stress packages` first and then, only if it succeeded, its per-CPU group:
+`stress contract cpu1`, `cpu2` and `cpu4` start together through the same
+concurrent coordinator as the Parallel shards (at most three at once, the
+same watchdog, logs `stress-contract-cpu1.log`, `stress-contract-cpu2.log`
+and `stress-contract-cpu4.log` owned by `devcheck stress-packages`,
+replayed in CPU order, all three joined before the shard fails or
+returns), and a failure in the group prevents plane-cpu1 and every later
+shard from starting. Sequential commands stop at the first
 failure, and a failed shard prevents the next. A failure in `plane-cpu1`
 during `devcheck stress` prevents `plane` and every later shard from
 starting, and a failed CPU 2 invocation still waits for CPU 4 before its
@@ -811,6 +834,30 @@ failure in CPU order with its command. A log that cannot be created, written, cl
 shard even if the child exited zero; if a log cannot be created, nothing
 starts. There are no retries. Logs are kept, and their directory printed, on
 any failure.
+
+Why contract runs per CPU setting (the contract headroom fix, 2026-10-02).
+In PR #15's run 36992345488 the `internal/contract` binary took 348.9 s of
+its 360 s `-timeout=6m` inside `stress packages` on a slow Linux runner (232 s
+in run 36974512401, 218 s on macOS), with no contract change: its time is
+CPU-bound race-detector work on maximum-size JSON (`TestTaskContract`
+and `TestFrameLimits` at the pinned 2 MiB frame and log limits).
+Test-only input caching took the local binary from 112.3 s to about 105 s,
+not enough, so the owner chose the plane and sidecar pattern: three
+single-CPU invocations, each with its own 6-minute limit, kept inside the
+packages shard so that the 18 jobs, required checks and job names stay.
+Measured locally on three pinned cores (`taskset -c 0-2`, Linux amd64, a
+warm build cache), sequentially: each contract invocation alone 35.5 s
+(CPU 1), 35.0 s (CPU 2) and 34.3 s (CPU 4), the three concurrently 41.2 s,
+41.5 s and 42.4 s (42.7 s wall), and the other nine packages' combined
+invocation 247.2 s. Run one after another the four commands would take
+about 352 s; the combined invocation followed by the concurrent group
+about 290 s, so the group runs concurrently. The whole stage, measured the
+same way: `devcheck stress-packages` 291.5 s (`stress packages` 247.6 s,
+then `stress contract cpu1`, `cpu2` and `cpu4` 42.8 s, 42.8 s and 43.6 s)
+against 297.9 s and 314.1 s for two runs before the change. At the
+observed worst-case factor of about 3.2 (hosted time over local time), a
+contract invocation projects to about 140 s against its 360 s limit.
+These are local planning figures, not a hosted measurement.
 
 Watchdog and orphans. When the watchdog (or the caller) ends the context,
 every outstanding invocation is canceled and the shard still waits for all
