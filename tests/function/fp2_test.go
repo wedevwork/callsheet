@@ -42,10 +42,11 @@ func TestFP2CommandTree(t *testing.T) {
 			"callsheet role add": true, "callsheet role set": true, "callsheet role ls": true, "callsheet role show": true, "callsheet role rm": true,
 			"callsheet dispatch": true, "callsheet task ls": true, "callsheet task show": true, "callsheet task logs": true,
 			"callsheet task cancel": true, "callsheet task wait": true, "callsheet mcp": true,
-			// Iteration 09a: the eight workspace leaves (push and pull stay
-			// reserved for 09b).
+			// Iteration 09a: the eight workspace leaves; iteration 09b: the
+			// two local transfers.
 			"callsheet ws create": true, "callsheet ws ls": true, "callsheet ws show": true, "callsheet ws rm": true,
-			"callsheet ws prune": true, "callsheet ws status": true, "callsheet ws diff": true, "callsheet ws ref set": true}
+			"callsheet ws prune": true, "callsheet ws status": true, "callsheet ws diff": true, "callsheet ws ref set": true,
+			"callsheet ws push": true, "callsheet ws pull": true}
 		for _, leaf := range leaves {
 			args := argsOf(leaf)
 			if implemented[leaf.Path()] {

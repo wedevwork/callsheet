@@ -187,7 +187,7 @@ func TestMCPLeafSession(t *testing.T) {
 		t.Fatalf("initialize %s", r)
 	}
 	io.WriteString(inW, `{"jsonrpc":"2.0","method":"notifications/initialized"}`+"\n")
-	if r := send(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`); !strings.Contains(r, "B=2s") || strings.Count(r, `"inputSchema":`) != 21 {
+	if r := send(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`); !strings.Contains(r, "B=2s") || strings.Count(r, `"inputSchema":`) != 23 {
 		t.Fatalf("tools/list %.200s", r)
 	}
 	// The per-call trust resolution fails (the CA file is missing): a tool

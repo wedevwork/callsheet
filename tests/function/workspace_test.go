@@ -249,6 +249,7 @@ func (e *wsEnv) generation(name string) string {
 // FP-1: create through the CLI and MCP; duplicates conflict on both;
 // identity survives a restart exactly; invalid names create no files.
 func TestWorkspaceCreate(t *testing.T) {
+	t.Parallel() // independent fixtures; overlaps the package's long parallel tests (CI headroom)
 	e := startWs(t, "", nil)
 	var a contract.WorkspaceView
 	e.jsonCLI(&a, "ws", "create", "alpha")
@@ -287,6 +288,7 @@ func TestWorkspaceCreate(t *testing.T) {
 // FP-2: both frontends page a sorted list without contents, from an
 // empty plane; an unavailable plane fails both.
 func TestWorkspaceList(t *testing.T) {
+	t.Parallel() // independent fixtures; overlaps the package's long parallel tests (CI headroom)
 	e := startWs(t, "", nil)
 	var l contract.WorkspaceListResponse
 	e.jsonCLI(&l, "ws", "ls")
@@ -347,6 +349,7 @@ func TestWorkspaceList(t *testing.T) {
 // text and history over TLS, with fixed retention; identity and size
 // survive a restart.
 func TestWorkspaceShow(t *testing.T) {
+	t.Parallel() // independent fixtures; overlaps the package's long parallel tests (CI headroom)
 	e := startWs(t, "", nil)
 	var v contract.WorkspaceView
 	e.jsonCLI(&v, "ws", "create", "alpha")
@@ -377,6 +380,7 @@ func TestWorkspaceShow(t *testing.T) {
 // disappears; an old instance never removes a recreated name; an injected
 // failure before the commit point preserves the workspace (delegated).
 func TestWorkspaceRemove(t *testing.T) {
+	t.Parallel() // independent fixtures; overlaps the package's long parallel tests (CI headroom)
 	e := startWs(t, "", nil)
 	var a, b contract.WorkspaceView
 	e.jsonCLI(&a, "ws", "create", "alpha")
@@ -488,6 +492,7 @@ func hasObjects(t *testing.T, root, name string, hs ...plumbing.Hash) []bool {
 // older one and its exclusive objects while the branch and the newer task
 // ancestry remain; the size falls; MCP prune and a restart confirm.
 func TestWorkspacePrune(t *testing.T) {
+	t.Parallel() // independent fixtures; overlaps the package's long parallel tests (CI headroom)
 	e := startWs(t, "", nil)
 	var v contract.WorkspaceView
 	e.jsonCLI(&v, "ws", "create", "alpha")
@@ -550,6 +555,7 @@ func TestWorkspacePrune(t *testing.T) {
 // concurrent writers get exactly one CAS winner; every UT-4 scenario runs
 // on the production handler (delegated).
 func TestWorkspaceTransport(t *testing.T) {
+	t.Parallel() // independent fixtures; overlaps the package's long parallel tests (CI headroom)
 	e := startWs(t, "", nil)
 	var v contract.WorkspaceView
 	e.jsonCLI(&v, "ws", "create", "alpha")
@@ -668,6 +674,7 @@ func exactRoot(t *testing.T, n int) string {
 // stale updates fail across a restart; nonportable names are refused by
 // both frontends before any write; the D1 maximum-path subcase.
 func TestWorkspaceRefSet(t *testing.T) {
+	t.Parallel() // independent fixtures; overlaps the package's long parallel tests (CI headroom)
 	e := startWs(t, "", nil)
 	var v contract.WorkspaceView
 	e.jsonCLI(&v, "ws", "create", "alpha")
@@ -803,6 +810,7 @@ func refSetMaxPath(t *testing.T) {
 // case and normalization variants never create or change rows, invalid
 // cursors are invalid_argument, and no local working tree is consulted.
 func TestWorkspaceStatus(t *testing.T) {
+	t.Parallel() // independent fixtures; overlaps the package's long parallel tests (CI headroom)
 	e := startWs(t, "", nil)
 	var v contract.WorkspaceView
 	e.jsonCLI(&v, "ws", "create", "alpha")
@@ -863,6 +871,7 @@ const wsSentinel = "WORKSPACE-CONTENT-SENTINEL-9e21"
 // a symlink target and commit messages never appears in any MCP traffic;
 // pages return every changed path exactly once.
 func TestWorkspaceDiff(t *testing.T) {
+	t.Parallel() // independent fixtures; overlaps the package's long parallel tests (CI headroom)
 	e := startWs(t, "", nil)
 	var v contract.WorkspaceView
 	e.jsonCLI(&v, "ws", "create", "alpha")

@@ -22,8 +22,8 @@ their names are unique diagnostic checks, not required contexts:
 
 | Check context | Runner | Timeout | Kind | Steps after setup |
 |---|---|---|---|---|
-| `ci-linux` | `ubuntu-24.04` | 45 min | required | `devcheck test` (native suite, then the same suite with `-race`, then iteration 08's `realadaptercheck`-tagged sidecar contract `TestRealAdapterLocal` and its `-race` counterpart), `devcheck coverage` (unit coverage must be greater than 80.0%; the profile run compiles the `realadaptercheck` tag), `devcheck bench` (git transport payload byte limits and commit/tree invariants, then the plane trust benchmarks: issuance, initialization and verified TLS health, the plane node benchmarks: heartbeat, snapshot of 100 nodes and durable enrollment, and the plane role benchmarks: role list and node views for 1 and 100 roles and durable add/set/rm transactions, then the node and role frame encode/decode benchmarks in `internal/contract`, then the sidecar ready-check benchmark (100 manual pairs, one shared probe) and the adapter's real fake-probe benchmark, then the task benchmarks: plane admission over 100 roles (first, last and no match, no filesystem), full-tail checkpoint writes of 0, 64 KiB and 10 MiB, the task envelope encode/decode at its maximum legal size in `internal/contract`, and the sidecar log-tail ring and maximum prompt composition, then the iteration 06a control benchmarks: the plane's per-task writer committing natural and lost terminal records and late evidence with 0, 64 KiB and 10 MiB tails (`BenchmarkControlCommit`: bytes written and bounded allocation; since iteration 06b also a stop intent's publication followed by its cancelled terminal record and a timed_out late append at the same tails), and one maximum sealed result, one maximum outbox and one 64-entry inventory page (`BenchmarkControlReplay` in `internal/contract` and `internal/sidecar`), then the iteration 06b bounded-wait benchmark (`BenchmarkControlWait` in `internal/plane`: registering and unregistering 1 and 16 IDs, waking 1 and 1,000 waiters; every waiter woken and no registration retained), then the iteration 07a MCP benchmarks in `internal/mcp` (`BenchmarkMCPCodec`: the discovery frame, the maximum 10 MiB log and the maximum 100-role list, bytes encoded and exact round trips; `BenchmarkMCPRelay`: `node_show` end to end over a real local TLS plane; `BenchmarkMCPWaitBudget`: `task_wait` of 1 and 16 IDs with a fake clock and client, nothing retained), then the iteration 07b qualification-harness benchmarks in `internal/mcpqual` (`BenchmarkMCPQualificationTranscript`: each vendor decoder over its fixture at 1 KiB and at the 8 MiB per-file limit, exact event correlation, no model-prose timeout and an oversized transcript unqualified; `BenchmarkMCPQualificationProbe`: small-frame probe throughput on a fake clock with nonce and progress correlation and nothing retained), then the iteration 08 real-adapter benchmarks (`BenchmarkVendorFinal` and `BenchmarkVendorInvocation` in the `internal/adapter` step: both vendor extractors over the captured outputs, near-8-MiB and oversized inputs at chunk sizes 1, 4096 and 65536, and invocations with the smallest and the maximum legal prompt; then the tagged step `BenchmarkRealAdapterFile` in `internal/sidecar`, `-bench=^BenchmarkRealAdapterFile$`: the final-file reader over a real 8 MiB and an oversized file, at most 8 MiB + 1 bytes consumed), with the iteration 09a workspace benchmarks in `internal/workspace` before that tagged step (`BenchmarkWorkspaceInitialTransfer` and `BenchmarkWorkspaceIncrementalTransfer` over the production TLS endpoint with the 1,024 × 4 KiB fixture: initial payload under 8 MiB, one-file incremental push plus fetch under 256 KiB and under 10% of the initial, each push a full guarded transaction with generation copy, closure validation, sync, publication and cleanup, reporting payload, copied bytes and files and visited objects per operation; then status and list pagination, show disk accounting, tree-metadata diff and prune retaining one branch while collecting an orphan history, each asserting exact output), each checking its invariants; timings are reported, never gated), `devcheck cross` (linux/amd64, linux/arm64, darwin/amd64, darwin/arm64: 12 artifacts) |
-| `ci-macos` | `macos-15` | 30 min | required | `devcheck native`: the complete suite as one `go test -json -tags=realadaptercheck` invocation, which must show passing run and pass events in `github.com/wedevwork/callsheet/tests/function` for `TestFP6ProcessGroups` and its `cooperative`, `resistant` and `leader-exits-first` scenarios, for the plane trust tests, the node tests, the role tests, the task tests the control tests (iteration 06a: the eight control function parents and the native group qualification; iteration 06b: the four task-control function parents) the MCP tests (iteration 07a: the eight MCP function parents and their mandatory subtests) and the coordinator setup and timeout qualification tests (iteration 07b: the eight function parents and their mandatory subtests) and the real-adapter tests (iteration 08: the nine function parents and their mandatory subtests) and the workspace tests (iteration 09a: the ten function tests and `TestWorkspaceRefSet/max-path`), and in `github.com/wedevwork/callsheet/internal/sidecar` for `TestTaskExecutionContract` and its `process` subtest and for the tagged `TestRealAdapterLocal` and its five subtests (see below); then, outside that stream, `devcheck coverage` and the workspace benchmark step (iteration 09a) |
+| `ci-linux` | `ubuntu-24.04` | 45 min | required | `devcheck test` (native suite, then the same suite with `-race`, then iteration 08's `realadaptercheck`-tagged sidecar contract `TestRealAdapterLocal` and its `-race` counterpart), `devcheck coverage` (unit coverage must be greater than 80.0%; the profile run compiles the `realadaptercheck` tag), `devcheck bench` (git transport payload byte limits and commit/tree invariants, then the plane trust benchmarks: issuance, initialization and verified TLS health, the plane node benchmarks: heartbeat, snapshot of 100 nodes and durable enrollment, and the plane role benchmarks: role list and node views for 1 and 100 roles and durable add/set/rm transactions, then the node and role frame encode/decode benchmarks in `internal/contract`, then the sidecar ready-check benchmark (100 manual pairs, one shared probe) and the adapter's real fake-probe benchmark, then the task benchmarks: plane admission over 100 roles (first, last and no match, no filesystem), full-tail checkpoint writes of 0, 64 KiB and 10 MiB, the task envelope encode/decode at its maximum legal size in `internal/contract`, and the sidecar log-tail ring and maximum prompt composition, then the iteration 06a control benchmarks: the plane's per-task writer committing natural and lost terminal records and late evidence with 0, 64 KiB and 10 MiB tails (`BenchmarkControlCommit`: bytes written and bounded allocation; since iteration 06b also a stop intent's publication followed by its cancelled terminal record and a timed_out late append at the same tails), and one maximum sealed result, one maximum outbox and one 64-entry inventory page (`BenchmarkControlReplay` in `internal/contract` and `internal/sidecar`), then the iteration 06b bounded-wait benchmark (`BenchmarkControlWait` in `internal/plane`: registering and unregistering 1 and 16 IDs, waking 1 and 1,000 waiters; every waiter woken and no registration retained), then the iteration 07a MCP benchmarks in `internal/mcp` (`BenchmarkMCPCodec`: the discovery frame, the maximum 10 MiB log and the maximum 100-role list, bytes encoded and exact round trips; `BenchmarkMCPRelay`: `node_show` end to end over a real local TLS plane; `BenchmarkMCPWaitBudget`: `task_wait` of 1 and 16 IDs with a fake clock and client, nothing retained), then the iteration 07b qualification-harness benchmarks in `internal/mcpqual` (`BenchmarkMCPQualificationTranscript`: each vendor decoder over its fixture at 1 KiB and at the 8 MiB per-file limit, exact event correlation, no model-prose timeout and an oversized transcript unqualified; `BenchmarkMCPQualificationProbe`: small-frame probe throughput on a fake clock with nonce and progress correlation and nothing retained), then the iteration 08 real-adapter benchmarks (`BenchmarkVendorFinal` and `BenchmarkVendorInvocation` in the `internal/adapter` step: both vendor extractors over the captured outputs, near-8-MiB and oversized inputs at chunk sizes 1, 4096 and 65536, and invocations with the smallest and the maximum legal prompt; then the tagged step `BenchmarkRealAdapterFile` in `internal/sidecar`, `-bench=^BenchmarkRealAdapterFile$`: the final-file reader over a real 8 MiB and an oversized file, at most 8 MiB + 1 bytes consumed), with the iteration 09a workspace benchmarks in `internal/workspace` before that tagged step (`BenchmarkWorkspaceInitialTransfer` and `BenchmarkWorkspaceIncrementalTransfer` over the production TLS endpoint with the 1,024 × 4 KiB fixture: initial payload under 8 MiB, one-file incremental push plus fetch under 256 KiB and under 10% of the initial, each push a full guarded transaction with generation copy, closure validation, sync, publication and cleanup, reporting payload, copied bytes and files and visited objects per operation; then status and list pagination, show disk accounting, tree-metadata diff and prune retaining one branch while collecting an orphan history, each asserting exact output), then the iteration 09b local transfer benchmarks in `internal/workspacetransfer` (`BenchmarkTransferStatus`: clean and dirty cleanliness over the 1,024 × 4 KiB fixture with nested ignores, visited files and bytes read; `BenchmarkTransferSnapshot`: folder snapshots of the same fixture, initial, unchanged and one-change, with parent histories of 1 and 8 commits, inbound full-history bytes and outbound incremental bytes reported separately, objects created and bytes read; `BenchmarkTransferPush`: initial and incremental git-source pushes over the production TLS endpoint, initial payload under 8 MiB and incremental push plus fetch under 256 KiB and under 10% of the initial; `BenchmarkTransferPullGit`: one new commit into a repository holding the history, selected by branch and separately by hash, objects verified and installed; `BenchmarkTransferExport`: a 64-file export, entries, objects verified and bytes copied; every operation with real syncs, exact commits, trees and unchanged checkouts asserted), each checking its invariants; timings are reported, never gated), `devcheck cross` (linux/amd64, linux/arm64, darwin/amd64, darwin/arm64: 12 artifacts) |
+| `ci-macos` | `macos-15` | 30 min | required | `devcheck native`: the complete suite as one `go test -json -tags=realadaptercheck` invocation, which must show passing run and pass events in `github.com/wedevwork/callsheet/tests/function` for `TestFP6ProcessGroups` and its `cooperative`, `resistant` and `leader-exits-first` scenarios, for the plane trust tests, the node tests, the role tests, the task tests the control tests (iteration 06a: the eight control function parents and the native group qualification; iteration 06b: the four task-control function parents) the MCP tests (iteration 07a: the eight MCP function parents and their mandatory subtests) and the coordinator setup and timeout qualification tests (iteration 07b: the eight function parents and their mandatory subtests) and the real-adapter tests (iteration 08: the nine function parents and their mandatory subtests) and the workspace tests (iteration 09a: the ten function tests and `TestWorkspaceRefSet/max-path`), and in `github.com/wedevwork/callsheet/internal/sidecar` for `TestTaskExecutionContract` and its `process` subtest and for the tagged `TestRealAdapterLocal` and its five subtests (see below); and the workspace local transfer tests (iteration 09b: the ten function tests); then, outside that stream, `devcheck coverage`, the workspace benchmark step (iteration 09a) and the transfer benchmark step (iteration 09b) |
 | `ci-linux-stress-packages` | `ubuntu-24.04` | 20 min | worker | `devcheck stress-packages` on Linux (see Stress checks) |
 | `ci-linux-stress-plane-cpu1` | `ubuntu-24.04` | 20 min | worker | `devcheck stress-plane-cpu1` on Linux: `internal/plane` at CPU 1, one invocation alone on its worker (iteration 06a-perf) |
 | `ci-linux-stress-plane` | `ubuntu-24.04` | 20 min | worker | `devcheck stress-plane` on Linux: `internal/plane` CPU 2 and CPU 4 as two concurrent invocations (iteration 05b; CPU 1 on its own worker since iteration 06a-perf) |
@@ -361,6 +361,15 @@ all, with the 312 earlier names unchanged and first: `TestWorkspaceCreate`,
 `TestWorkspaceRefSet/max-path`, `TestWorkspaceStatus`, `TestWorkspaceDiff`
 and `TestWorkspaceNoGit`, so their absence or a skip never satisfies native
 qualification.
+Iteration 09b (workspace local transfers) appends its ten function tests in
+FP order (FP-1 to FP-10) as a separate group, 10 more names, 333 in all,
+with the 323 earlier names unchanged and first: `TestWorkspacePushGit`,
+`TestWorkspacePushCleanliness`, `TestWorkspacePushFolder`,
+`TestWorkspaceTransferIgnores`, `TestWorkspacePullGit`,
+`TestWorkspacePullFolder`, `TestWorkspaceTransferCLI`,
+`TestWorkspaceTransferMCP`, `TestWorkspaceTransferNoGit` and
+`TestWorkspaceTransferEligibility`; Linux and macOS run the same parents
+natively.
 The same run/pass rule applies. Separately, the sidecar tuple
 (`NativeTaskProcessPackage`) appends `TestRealAdapterLocal` and its
 `selection`, `file`, `ordering`, `diagnostic` and `restart` subtests after
@@ -368,7 +377,7 @@ The same run/pass rule applies. Separately, the sidecar tuple
 run and pass in `internal/sidecar` itself, and the same names in
 `tests/function` or any other package never satisfy them. That contract is
 in a `realadaptercheck`-tagged file, so the native stage is one invocation
-of `go test -json -tags=realadaptercheck -count=1 -timeout=180s ./...`
+of `go test -json -tags=realadaptercheck -count=1 -timeout=300s ./...`
 (the tag reaches compilation, one package start per package: a second
 sidecar invocation would be a duplicate start and fails), `devcheck test`
 runs it as `go test -tags=realadaptercheck ./internal/sidecar
@@ -393,6 +402,12 @@ tests (pure extractors and argv, and the version probe on an injected
 runner and clock) run in the packages shard with the rest of
 `internal/adapter`; the function parents run in the normal, race and native
 suites only, never in a stress shard.
+Its per-package timeout is 300 s (iteration 09b, raised from 180 s by the
+owner's decision of 2026-10-01; Linux `devcheck test`, coverage and every
+stress stage keep their own limits, and the `ci-macos` job keeps its
+30-minute limit): the macOS function package takes about 110–146 s on a
+normal hosted runner, and runners up to 1.6–2× slower were observed, so a
+180 s bound left no headroom.
 
 The main jobs and all fourteen workers check out the event's revision without
 persisted credentials, take the Go version from `go.mod` with module
@@ -412,7 +427,9 @@ Darwin architecture. Since iteration 09a, once the JSON qualification has
 succeeded, and outside its parsed event stream, `devcheck native` also runs
 the coverage stage (the project-wide gate and the new/changed coverage
 manifest below) and the workspace benchmark step (`bench workspace`) on the
-macOS runner; the other benchmarks remain Linux reference measurements.
+macOS runner, and since iteration 09b the transfer benchmark step
+(`bench workspacetransfer`) after it (six runner invocations in all); the
+other benchmarks remain Linux reference measurements.
 
 Coverage of new and changed code (iteration 09a): besides the project-wide
 gate, `devcheck coverage` reads its own generated profile and computes the
@@ -428,6 +445,26 @@ included). A manifest file absent from the profile, a range that selects no
 block, an empty group or exactly 80.0% fails. The manifest is committed: CI
 reads no git base and needs no network; the reviewer compares it with the
 implementation diff and rejects omissions.
+
+Iteration 09b extends the policy. A third group, `workspacetransfer`
+(`GroupTransfer`), holds every production file of `internal/workspacetransfer`;
+the other 09b new or changed files (the transfer contracts, the git session,
+the CLI leaves, the MCP tools and devcheck) stay in the changed group, and
+the 09a entries are retained. Every 09b entry has an empty range list (its
+whole file). `CoverageEntry.OS` is `""` for a common file or `linux` /
+`darwin` for a native-only file (`publish_linux.go` and `publish_darwin.go`);
+`CheckCoverageManifest(goos, profile, manifest)` takes the driver's explicit
+`goos`. Every entry's group, OS, path and ranges are validated before any
+filtering (an unknown OS or group fails on every host, and a file listed
+with conflicting OS or group fails); a valid other-OS entry is skipped on
+this host, which is never a passing observation. Each applicable listed
+file must also pass on its own, over all of its profile blocks whatever its
+legacy ranges select: no blocks, zero statements or at most 80.0% fails.
+All three groups must have applicable statements and pass on each host;
+duplicate entries count each block once; diagnostics are sorted by file and
+group. Linux and macOS coverage jobs must each pass: numerators and
+denominators are never added across hosts, and a foreign-OS omission is
+never a pass.
 
 ## Stress checks
 
@@ -465,14 +502,15 @@ never a shell), each with `CGO_ENABLED=1`, named `stress packages`,
 `./internal/adapter` in iteration 04, gave `./internal/plane` to the plane
 shard in iteration 05b, gave `./internal/sidecar` to the sidecar shard
 in its sidecar follow-up, gained `./internal/mcp` in iteration 07a,
-gained `./internal/mcpqual` in iteration 07b and gained
-`./internal/workspace` in iteration 09a.
+gained `./internal/mcpqual` in iteration 07b, gained
+`./internal/workspace` in iteration 09a and gained
+`./internal/workspacetransfer` (after it) in iteration 09b.
 Iteration 06a-perf changed no command, only the
 grouping: `stress plane cpu1` and `stress sidecar cpu1` each have a shard
 of their own:
 
 ```
-go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/contract ./internal/adapter ./internal/mcp ./internal/mcpqual ./internal/workspace
+go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/contract ./internal/adapter ./internal/mcp ./internal/mcpqual ./internal/workspace ./internal/workspacetransfer
 go test -race -count=20 -cpu=1 -timeout=6m ./internal/plane
 go test -race -count=20 -cpu=2 -timeout=6m ./internal/plane
 go test -race -count=20 -cpu=4 -timeout=6m ./internal/plane
@@ -524,8 +562,8 @@ their `locking` and `shutdown` subtests below them.
 - Selected packages: `internal/testkit`, `internal/testkit/fakeadapter`,
   `internal/spikes/gittransport`, `internal/client`, `internal/contract`,
   `internal/adapter`, (iteration 07a) `internal/mcp`, (iteration 07b)
-  `internal/mcpqual` and (iteration 09a) `internal/workspace` in the
-  packages shard, `internal/plane` in the
+  `internal/mcpqual`, (iteration 09a) `internal/workspace` and (iteration
+  09b) `internal/workspacetransfer` in the packages shard, `internal/plane` in the
   plane shards (iteration 05b; CPU 1 in `plane-cpu1` and CPU 2 and 4 in
   `plane` since iteration 06a-perf), `internal/sidecar` in the sidecar
   shards (its sidecar follow-up; split the same way since iteration
@@ -616,6 +654,24 @@ their `locking` and `shutdown` subtests below them.
   setting together still inject every boundary once; an ordinary run
   injects them all. The ten `TestWorkspace*` function tests, which start
   plane, CLI and `callsheet mcp` subprocesses, are not repeated in stress.
+  Iteration 09b (workspace local transfers) adds exactly one package,
+  `internal/workspacetransfer`, after `internal/workspace` in the packages
+  invocation and nothing else: no selector, count, CPU setting, shard or
+  job changes, and nothing in the plane or sidecar shards. Its
+  timing-dependent tests repeat there every time: the git session's
+  event-armed no-progress watchdog (a fake clock advanced only after each
+  "armed" event), two concurrent writers on one absent branch with exactly
+  one CAS winner (a barrier at the observation point), the local ref locks
+  and cancellation joins. Orchestration tests use an in-memory plane and
+  tiny fixtures; the production handler proofs use a real TLS test plane
+  (one shared per test process for read-only proofs). Deterministic case
+  matrices (failure injection at every storage boundary, eligibility and
+  unsafe-tree cases, the zero-object CAS proof and the selector and export
+  proofs) follow the 09a sampling convention: under a repeated run each
+  invocation runs every twentieth case with an offset rotating per
+  repetition, so the 20 repetitions at each CPU setting together still run
+  every case; an ordinary run runs them all. No test starts a subprocess.
+  The ten 09b function tests are not repeated in stress.
   Iteration 05 (tasks) adds no package, selector or shard: the task
   contracts (`TestTaskContract`, `TestTaskAdmission`, `TestTaskStream` and
   `TestTaskOutput` of plane and sidecar, `TestTaskStore`,
@@ -1130,9 +1186,93 @@ Budgets:
   function package time in the normal, race and native invocations against
   the unchanged 180 s bound; a miss is investigated (fixture sharing first),
   never answered by a raised timeout, a weaker assertion or a skipped case.
+- Iteration 09b allocation (planning allowances, not measurements or pass
+  thresholds): `stress packages` command growth up to 15 s Linux / 25 s
+  macOS; `tests/function` binary growth up to 10 s Linux / 15 s macOS in
+  each normal, race and native invocation, retaining the shared 180 s
+  limit. New transfer benchmarks up to 10 s Linux / 15 s macOS; no added
+  execution in plane, sidecar, processgroup or stress-functions shards, up
+  to 5 s shared compile overhead in those workers. No new jobs,
+  count/CPU/timeout/watchdog changes. Compare before/after on the same
+  runner/cache conditions and record per-package and command durations;
+  exceeding an allowance requires explanation and fixture/setup reduction,
+  not skipped cases. Any timeout/assertion failure remains failure. Hosted
+  evidence stays pending until observed.
 
 Measurements, newest first. Hosted and local figures come from different
 machines and are never combined into one number.
+
+- Measured with iteration 09b (workspace local transfers): Linux, go1.26.4
+  linux/amd64 on a 16-thread developer workstation, warm build cache,
+  2026-10-01, each command alone and strictly sequential (never
+  overlapping), alternating with an export of landed 09a (`631cbc0`).
+  Local execution evidence only, not a hosted estimate or qualification:
+  - `stress packages` 168.2 s and 170.7 s against 162.3 s and 165.2 s for
+    09a (+5.9 s and +5.4 s; allocation 15 s Linux). The slowest binary is
+    still `internal/workspace` (167.5 s and 170.0 s against 157.3 s and
+    164.6 s, unchanged tests running beside one more binary); the new
+    `internal/workspacetransfer` binary 63.4 s and 64.2 s in the stage.
+  - `tests/function` 86.6 s plain and 98.1 s under the race detector
+    against 92.2 s and 95.3 s for 09a (race +2.8 s; allocation 10 s),
+    within the 180 s bound; the ten 09b parents take 2.5 s together when
+    run alone.
+  - Transfer benchmarks (`bench workspacetransfer`): 18.8 s against the
+    10 s Linux allocation, **over the allocation**. The measured
+    operations alone take about 12.8 s at `-benchtime=3x`; about 8.6 s of
+    that is the two parent-history snapshot cases, whose mandatory
+    full-history fetch of the 1,024 × 4 KiB fixture is served by the 09a
+    upload-pack handler, where go-git's delta search takes about 63% of
+    the benchmark's CPU. A first version that used `b.N` loops ran each
+    setup twice (the one-iteration probe, then three) and took 25.9 s;
+    the benchmarks now use `b.Loop`. No case, fixture size or assertion
+    was reduced; a further cut needs a design decision (a smaller history
+    fixture or a 09a pack-window change).
+  - After the code review r1 fixes (same host, 2026-10-01, both trees
+    run with `GOFLAGS=-buildvcs=false` because an empty `/tmp/.git` stub
+    on this host breaks Go's VCS stamping of the baseline's helper
+    builds): `stress packages` 170 s and 172 s against 158 s and 163 s for
+    09a (+12 s and +9 s; allocation 15 s), the slowest binary still
+    `internal/workspace` (169.2 s and 170.7 s against 157.9 s and
+    162.5 s), `internal/workspacetransfer` 73.5 s and 74.1 s in the stage
+    (its new regression matrices follow the sampling convention); the
+    transfer benchmarks 18.8 s, unchanged.
+  - After the code review r5 fixes (same host, 2026-10-01, both trees with
+    `GOFLAGS=-buildvcs=false`), including the Git-oracle tables:
+    `stress packages` 176 s and 182 s against 165 s and 171 s for 09a
+    (+11 s and +11 s; allocation 15 s), the slowest binary still
+    `internal/workspace` (174.9 s and 181.0 s against 163.9 s and
+    170.6 s), `internal/workspacetransfer` 110.2 s and 115.0 s in the
+    stage (the oracle tests sample their rows across repetitions).
+  - After the code review r6 fixes (same host and settings), with the
+    grammar and repository-state oracles: `stress packages` 170 s and
+    173 s against 163 s and 161 s for 09a (+7 s and +12 s; allocation
+    15 s), the slowest binary still `internal/workspace` (169.3 s and
+    172.0 s against 161.7 s and 160.4 s), `internal/workspacetransfer`
+    111.5 s and 111.7 s in the stage.
+  - After the ready-probe pipe fix (flakes B and C, 2026-10-02, same host
+    and settings, but every command pinned to 3 cores with
+    `taskset -c 0-2` to approximate the 3-core macOS runner, strictly
+    sequential, against an export of `4e4c12d`): `internal/adapter`
+    under `-race -count=20 -cpu=1,2,4` 50.8 s against 31.0 s (+19.8 s),
+    and 55.3 s against 37.3 s inside `stress packages` (+18.1 s); the
+    whole `stress packages` stage 319.2 s against 315.0 s (+4.2 s), its
+    slowest binary still `internal/workspace` (144.1 s and 141.2 s). The
+    growth is `TestAdapterContract/saturated`, which runs on every
+    repetition because it is timing-dependent: each repetition starts a
+    fresh test process that keeps 16 busy goroutines on two Ps through
+    one real probe (about 0.25 s plain, 0.30 s under the race detector,
+    with the race runtime's exit sleep disabled). 16 goroutines
+    reproduced the pre-fix false "left its output open" in 47 of 50
+    plain and 16 of 50 race runs on these 3 cores, more often and at
+    half the cost of 32 (37 and 7 of 50) or 64. The first hosted run
+    with the fix used 64 goroutines and timed out at the 6-minute limit
+    in `ci-macos-stress-packages` (run 36929701957; the adapter binary
+    took 44.5 s there before the fix, run 36889659609). On these 3-core
+    measurements the adapter binary grew by about 18–20 s while the
+    stage grew by 4.2 s, within the 09b allocation; the owner accepts the
+    added adapter cost. The hosted macOS figure stays pending until
+    observed.
+  - Hosted iteration 09b times: pending (see First remote run).
 
 - Measured with iteration 08 (real adapters): Linux, go1.26.4 linux/amd64
   on the same 16-thread developer workstation as 07b below, warm build
@@ -1678,8 +1818,9 @@ as the single forwarded argument of exactly these wrappers:
 | `cmd/mcpqual/main.go` | `run` | `return runFor(runtime.GOOS, runtime.GOARCH, args, getenv, stdin, stdout, stderr)` |
 
 A missing or renamed wrapper fails the guard, so moving one is an intentional
-policy change. Syscall exceptions are the four build-selected native files,
-exempt from the wrapper policy only while they keep their build expressions:
+policy change. Syscall exceptions are the six build-selected native files
+(iteration 09b added the two transfer publication files), exempt from the
+wrapper policy only while they keep their build expressions:
 
 - `internal/spikes/processgroup/sys_linux.go` (`linux`): the child subreaper
   and `Wait4` reaping.
@@ -1690,6 +1831,12 @@ exempt from the wrapper policy only while they keep their build expressions:
 - `internal/testkit/fakeadapter/signals_other.go` (`!linux && !darwin`): the
   generic unsupported fallback, outside supported-platform runtime
   qualification.
+- `internal/workspacetransfer/publish_linux.go` (`linux`): the folder
+  export's no-replace publication (`renameat2` with `RENAME_NOREPLACE`) and
+  `fsync`.
+- `internal/workspacetransfer/publish_darwin.go` (`darwin`): the same
+  publication through `renameatx_np` with `RENAME_EXCL`, and `F_FULLFSYNC`
+  with an `fsync` fallback.
 
 Exempt files are not scanned for `runtime.GOOS`, so
 `internal/testkit/fakeadapter/signals_unix.go` must not grow a host branch:
@@ -1731,6 +1878,19 @@ the existing `golang.org/x/sys/unix` dependency) with the refusing
 `internal/sidecar/finalfile_other.go` (`!linux && !darwin`), and makes no
 host decision. `internal/adapter`'s Claude and Codex adapters import only
 `internal/contract`, and the replay stub lives under `testdata`.
+
+Iteration 09b adds no wrapper and two exemptions, the build-selected
+publication files listed above; they hold only the native no-replace rename
+and file sync and make no host decision. Every other transfer decision that
+depends on the host (darwin's `core.precomposeUnicode` default and NFC
+directory names, the `.git` HFS aliases, the 4095/1023-byte path limits and
+the publication failure wording) takes the `GOOS` of `workspacetransfer.Options`,
+fed by `cli.Run`'s wrapper through the CLI leaves and `callsheet mcp`, and is
+unit-tested for both values on every host. The rest of the descriptor-relative
+filesystem code uses `golang.org/x/sys/unix` calls common to both systems.
+The folder export and the transfers do not build for other systems: the
+CLI's platform rejection already refuses them, and `devcheck cross` builds
+only linux and darwin.
 
 The plane package (iteration 02) resolves its default state directory in
 the pure `plane.ResolveStateDir(goos, ...)`, fed by `cli.Run`'s existing

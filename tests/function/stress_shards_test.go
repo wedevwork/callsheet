@@ -54,7 +54,7 @@ var shardPlan = []struct {
 	parallel bool
 	steps    [][2]string
 }{
-	{"packages", false, [][2]string{{"stress packages", "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/contract ./internal/adapter ./internal/mcp ./internal/mcpqual ./internal/workspace"}}},
+	{"packages", false, [][2]string{{"stress packages", "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/contract ./internal/adapter ./internal/mcp ./internal/mcpqual ./internal/workspace ./internal/workspacetransfer"}}},
 	{"plane-cpu1", true, [][2]string{
 		{"stress plane cpu1", "go test -race -count=20 -cpu=1 -timeout=6m ./internal/plane"},
 	}},
@@ -109,6 +109,12 @@ var shard07b = []string{
 // package, in the packages shard only.
 var shard09a = []string{
 	"go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/workspace",
+}
+
+// shard09b is iteration 09b's literal addition: the local transfer
+// package, in the packages shard only, after the workspace hub.
+var shard09b = []string{
+	"go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/workspacetransfer",
 }
 
 // shardArgv returns the literal commands of the named shards, in order.
@@ -265,6 +271,17 @@ func TestStressShardSelection(t *testing.T) {
 	if len(want) != 45 {
 		t.Fatalf("09a selection = %d tuples, want 07b plus 1 package at 3 CPU settings", len(want))
 	}
+	for _, argv := range shard09b {
+		for _, tp := range tuples(t, argv) {
+			if want[tp] != 0 {
+				t.Fatalf("09b addition %+v overlaps", tp)
+			}
+			want[tp]++
+		}
+	}
+	if len(want) != 48 {
+		t.Fatalf("09b selection = %d tuples, want 09a plus 1 package at 3 CPU settings", len(want))
+	}
 	for _, goos := range []string{"linux", "darwin"} {
 		shards, err := devcheck.StressShards(goos)
 		if err != nil || len(shards) != len(shardPlan) {
@@ -300,11 +317,11 @@ func TestStressShardSelection(t *testing.T) {
 		}
 		for tp, n := range got {
 			if want[tp] != n {
-				t.Errorf("%s: %+v selected %d times, 02b, 03, 04, 07a, 07b and 09a selected it %d times", goos, tp, n, want[tp])
+				t.Errorf("%s: %+v selected %d times, 02b, 03, 04, 07a, 07b, 09a and 09b selected it %d times", goos, tp, n, want[tp])
 			}
 		}
-		if len(got) != 45 {
-			t.Fatalf("%s: %d distinct tuples, want 45", goos, len(got))
+		if len(got) != 48 {
+			t.Fatalf("%s: %d distinct tuples, want 48", goos, len(got))
 		}
 		ownerOf := map[string]string{"1": "-cpu1", "2": "", "4": ""}
 		for _, pkg := range []string{"plane", "sidecar"} {

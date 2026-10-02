@@ -7,6 +7,7 @@ require (
 	github.com/go-git/go-billy/v5 v5.6.2
 	github.com/go-git/go-git/v5 v5.16.3
 	golang.org/x/sys v0.32.0
+	golang.org/x/text v0.24.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 

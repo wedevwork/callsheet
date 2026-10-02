@@ -241,6 +241,7 @@ func TestVendorProbe(t *testing.T) {
 		"stdout overflow":       {"codex", strings.Repeat("x", probeCapture+1), "", nil, "more output than a probe allows"},
 		"stderr overflow":       {"claude", claudeV + "\n", strings.Repeat("SECRET", probeCapture), nil, "more output than a probe allows"},
 		"inherited pipe closed": {"codex", codexV + "\n", "", exec.ErrWaitDelay, "left its output open after exiting"},
+		"output unreadable":     {"claude", claudeV + "\n", "", errProbeOutput, "had output the probe could not read"},
 	} {
 		r := &fakeRunner{out: c.out, errOut: c.errOut, err: c.err}
 		v, _ := vendorProber(t, c.id, r, nil)

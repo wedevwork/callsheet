@@ -126,6 +126,9 @@ func (s *session) writer() {
 		if f.id != nil {
 			key = f.id.key
 		}
+		if f.result && f.call != nil {
+			f.call.taken()
+		}
 		err := s.write(f)
 		if errors.Is(err, errLate) {
 			s.hook(StageLate, frameKey(f))

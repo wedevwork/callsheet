@@ -1,0 +1,74 @@
+# Git packed-refs oracle (generated; do not edit).
+# git: git version 2.43.0 (/usr/bin/git; Ubuntu package 1:2.43.0-1ubuntu7.3 on the generating host)
+# command: git -C <repo> status --porcelain and git rev-parse --verify HEAD, HOME isolated, GIT_CONFIG_NOSYSTEM=1, LC_ALL=C
+# file: a header, "<HEAD commit> refs/heads/main\n", then the shape (the HEAD commit stands for ab...ab); header
+# "# pack-refs with: peeled fully-peeled " (unsorted: Git sorts, so it reads every record) and with "sorted" (Git binary-searches
+# without reading every record)
+# generator: go test -tags=gitoracle -run '^TestGenerateGitPackedRefsOracle$' ./internal/workspacetransfer
+# generated: 2026-10-01
+# columns: shape (Go-quoted), unsorted accept|refuse, sorted accept|refuse
+"abababababababababababababababababababab \n"	refuse	accept
+"abababababababababababababababababababab refs/tags/a\n"	accept	accept
+"abababababababababababababababababababab refs/tags//a\n"	refuse	refuse
+"abababababababababababababababababababab refs/tags/./a\n"	refuse	refuse
+"abababababababababababababababababababab refs/tags/../a\n"	refuse	refuse
+"abababababababababababababababababababab refs/../x\n"	accept	accept
+"abababababababababababababababababababab /refs/tags/a\n"	accept	accept
+"abababababababababababababababababababab refs/tags/a/\n"	refuse	refuse
+"abababababababababababababababababababab refs/\n"	accept	accept
+"abababababababababababababababababababab refs\n"	accept	accept
+"abababababababababababababababababababab refs/tags/a.lock\n"	accept	accept
+"abababababababababababababababababababab refs/tags/.a\n"	accept	accept
+"abababababababababababababababababababab refs/tags/a..b\n"	accept	accept
+"abababababababababababababababababababab refs/tags/a b\n"	accept	accept
+"abababababababababababababababababababab refs/tags/a\tb\n"	accept	accept
+"abababababababababababababababababababab refs/tags/a~1\n"	accept	accept
+"abababababababababababababababababababab refs/tags/a^\n"	accept	accept
+"abababababababababababababababababababab refs/tags/a:b\n"	accept	accept
+"abababababababababababababababababababab refs/tags/a?\n"	accept	accept
+"abababababababababababababababababababab refs/tags/a*\n"	accept	accept
+"abababababababababababababababababababab refs/tags/a[\n"	accept	accept
+"abababababababababababababababababababab refs/tags/a\\b\n"	accept	accept
+"abababababababababababababababababababab refs/tags/a@{1}\n"	accept	accept
+"abababababababababababababababababababab refs/tags/@\n"	accept	accept
+"abababababababababababababababababababab @\n"	accept	accept
+"abababababababababababababababababababab HEAD\n"	accept	accept
+"abababababababababababababababababababab FOO_BAR\n"	accept	accept
+"abababababababababababababababababababab FOO-BAR\n"	accept	accept
+"abababababababababababababababababababab foo\n"	accept	accept
+"abababababababababababababababababababab Foo\n"	accept	accept
+"abababababababababababababababababababab refs/tags/a.\n"	accept	accept
+"abababababababababababababababababababab refs/tags/a\r\n"	accept	accept
+"abababababababababababababababababababab refs/tags/a\v\n"	accept	accept
+"abababababababababababababababababababab refs/tags/a\x7f\n"	accept	accept
+"abababababababababababababababababababab refs/tags/é\n"	accept	accept
+"abababababababababababababababababababab refs/tags/a/../../b\n"	refuse	refuse
+"abababababababababababababababababababab refs/tags/...\n"	accept	accept
+"abababababababababababababababababababab refs//\n"	accept	accept
+"abababababababababababababababababababab refs/tags/a/.\n"	refuse	refuse
+"abababababababababababababababababababab refs/tags/a/..\n"	refuse	refuse
+"abababababababababababababababababababab x/../y\n"	refuse	refuse
+"abababababababababababababababababababab  refs/tags/a\n"	accept	accept
+"abababababababababababababababababababab refs/tags/a \n"	accept	accept
+"abababababababababababababababababababab refs/./tags\n"	accept	accept
+"abababababababababababababababababababab refs/heads/main\n"	accept	accept
+"abababababababababababababababababababab refs/tags/a/b/c\n"	accept	accept
+"abababababababababababababababababababab\trefs/tags/tab\n"	accept	accept
+"abababababababababababababababababababab\rrefs/tags/cr\n"	accept	accept
+"abababababababababababababababababababab  refs/tags/two\n"	accept	accept
+"abababababababababababababababababababab\vrefs/tags/vt\n"	refuse	refuse
+"ababababababababababababababababababababrefs/tags/none\n"	accept	accept
+"ABABABABABABABABABABABABABABABABABABABAB refs/tags/upper\n"	accept	accept
+"abababababababababababababababababababa refs/tags/short\n"	accept	accept
+"ababababababababababababababababababababa refs/tags/long\n"	accept	refuse
+"abababababababababababababababababababab refs/tags/p\n^abababababababababababababababababababab\n"	accept	accept
+"abababababababababababababababababababab refs/tags/p\n^ABABABABABABABABABABABABABABABABABABABAB\n"	accept	accept
+"abababababababababababababababababababab refs/tags/p\n^abababababababababababababababababababab \n"	refuse	refuse
+"abababababababababababababababababababab refs/tags/p\n^abababababababababababababababababababab\n^abababababababababababababababababababab\n"	refuse	accept
+"^abababababababababababababababababababab\n"	accept	accept
+"abababababababababababababababababababab refs/tags/p\n^abababababababababababababababababababab"	refuse	refuse
+"\n"	refuse	refuse
+"# comment\n"	refuse	refuse
+" \n"	refuse	refuse
+"abababababababababababababababababababab refs/tags/unterminated"	refuse	refuse
+"abababababababababababababababababababab\nrefs/tags/split\n"	refuse	refuse

@@ -25,8 +25,10 @@ const NativePackage = "github.com/wedevwork/callsheet/tests/function"
 // (iteration 04), every task function test with its mandatory subtests
 // (iteration 05), the control function tests and native groups
 // (iteration 06a), the MCP function tests with their mandatory subtests
-// (iteration 07a) and the coordinator setup and timeout qualification
-// function tests with their mandatory subtests (iteration 07b).
+// (iteration 07a), the coordinator setup and timeout qualification
+// function tests with their mandatory subtests (iteration 07b), the
+// workspace hub function tests (iteration 09a) and the local transfer
+// function tests (iteration 09b).
 var nativeRequired = []string{
 	"TestFP6ProcessGroups",
 	"TestFP6ProcessGroups/cooperative",
@@ -376,6 +378,19 @@ var nativeRequired = []string{
 	"TestWorkspaceStatus",
 	"TestWorkspaceDiff",
 	"TestWorkspaceNoGit",
+	// Iteration 09b (workspace local transfers): the ten function tests in
+	// FP order (FP-1..FP-10); absence or a skip never satisfies native
+	// qualification.
+	"TestWorkspacePushGit",
+	"TestWorkspacePushCleanliness",
+	"TestWorkspacePushFolder",
+	"TestWorkspaceTransferIgnores",
+	"TestWorkspacePullGit",
+	"TestWorkspacePullFolder",
+	"TestWorkspaceTransferCLI",
+	"TestWorkspaceTransferMCP",
+	"TestWorkspaceTransferNoGit",
+	"TestWorkspaceTransferEligibility",
 }
 
 // NativeTaskProcessPackage and nativeTaskProcess are the separate native
@@ -419,7 +434,7 @@ func NativeSteps(goos string) ([]Step, error) {
 	}
 	// One invocation (one package start each): the tag compiles and runs the
 	// sidecar's tagged contract within the complete suite (iteration 08).
-	return []Step{{Name: "native", Argv: []string{"go", "test", "-json", "-tags=" + RealAdapterTag, "-count=1", "-timeout=180s", "./..."}}}, nil
+	return []Step{{Name: "native", Argv: []string{"go", "test", "-json", "-tags=" + RealAdapterTag, "-count=1", "-timeout=300s", "./..."}}}, nil
 }
 
 // acceptedActions is the exact go test -json Action set the parser accepts.
@@ -690,7 +705,7 @@ func (t *tailBuffer) Write(p []byte) (int, error) {
 // scratch log and the user's diagnostics. It stops at the first child
 // failure and validates the JSON only after every child succeeded; only
 // then (iteration 09a) does it run the coverage stage and the workspace
-// benchmark step.
+// benchmark step, and (iteration 09b) the transfer benchmark step.
 func (d *driver) native(steps []Step) error {
 	jsonPath := filepath.Join(d.scratch, "native-events.jsonl")
 	errPath := filepath.Join(d.scratch, "native-stderr.log")
@@ -723,11 +738,12 @@ func (d *driver) native(steps []Step) error {
 		d.goos, runtime.GOARCH, NativePackage, strings.Join(nativeRequired, ", "))
 	// Iteration 09a: after the qualification succeeded, and outside its
 	// parsed JSON event stream, the coverage gates (project-wide and the
-	// new/changed manifest) and the workspace benchmarks run natively.
+	// new/changed manifest) and the workspace benchmarks run natively;
+	// iteration 09b adds the transfer benchmarks after them.
 	if err := d.coverage(""); err != nil {
 		return err
 	}
-	return d.steps([]Step{WorkspaceBenchStep()})
+	return d.steps([]Step{WorkspaceBenchStep(), TransferBenchStep()})
 }
 
 func (d *driver) nativeChildren(steps []Step, events, stderrLog io.Writer) error {

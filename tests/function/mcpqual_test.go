@@ -28,7 +28,7 @@ import (
 // vendor CLI or a model, and nothing a fake produces becomes VERIFIED.
 
 var productionTools = []string{"node_ls", "node_show", "role_add", "role_set", "role_ls", "role_show", "role_rm", "dispatch", "task_ls", "task_show", "task_logs", "task_cancel", "task_wait",
-	"ws_create", "ws_ls", "ws_show", "ws_rm", "ws_prune", "ws_ref_set", "ws_status", "ws_diff"}
+	"ws_create", "ws_ls", "ws_show", "ws_rm", "ws_prune", "ws_ref_set", "ws_status", "ws_diff", "ws_push", "ws_pull"}
 
 // FP-9: the documented setup of each client drives the real Callsheet.
 func TestMCPSetup(t *testing.T) {

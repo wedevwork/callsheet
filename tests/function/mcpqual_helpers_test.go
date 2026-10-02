@@ -61,7 +61,7 @@ func newQualEnv(t *testing.T) *qualEnv {
 		trapLog: filepath.Join(dir, "trap.log"), launches: filepath.Join(dir, "launches.log")}
 	for _, name := range []string{"claude", "codex", "grok", "cursor-agent", "agent"} {
 		script := "#!/bin/sh\necho \"$0 $*\" >> '" + q.trapLog + "'\nexit 97\n"
-		if err := os.WriteFile(filepath.Join(q.trapDir, name), []byte(script), 0o755); err != nil {
+		if err := writeExecutable(filepath.Join(q.trapDir, name), []byte(script)); err != nil {
 			t.Fatal(err)
 		}
 	}

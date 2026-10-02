@@ -1,0 +1,65 @@
+# Git repository-state oracle (generated; do not edit).
+# git: git version 2.43.0 (/usr/bin/git; Ubuntu package 1:2.43.0-1ubuntu7.3 on the generating host)
+# command: git -C <repo> status --porcelain and git rev-parse --verify HEAD, HOME isolated, GIT_CONFIG_NOSYSTEM=1, LC_ALL=C,
+# plus the scenario's environment; repository: files f and d/g committed on main (see stateScenarios)
+# generator: go test -tags=gitoracle -run '^TestGenerateGitStateOracle$' ./internal/workspacetransfer
+# generated: 2026-10-01
+# columns: scenario, accept|refuse
+replace HEAD by a missing object	refuse
+replace HEAD by a missing object (packed)	refuse
+replace HEAD by itself	refuse
+replace HEAD by another commit	accept
+replace HEAD by a blob	refuse
+replace HEAD in a cycle of two	refuse
+replace the root tree by a missing object	refuse
+replace the subtree by a missing object	accept
+replace a blob by a missing object	accept
+replace an unrelated commit by a missing object	accept
+replace an absent object by a missing object	accept
+a replace ref with a bad name	accept
+a replace ref with a suffixed name	refuse
+a replace ref with an uppercase name	refuse
+a replace ref in a subdirectory	refuse
+duplicate replace refs for an unrelated commit	refuse
+a replace ref for HEAD with garbage content	refuse
+a replace ref for an unrelated commit with garbage content	accept
+replace HEAD by a missing object, core.useReplaceRefs false	accept
+replace HEAD by a missing object, GIT_NO_REPLACE_OBJECTS=1	accept
+replace HEAD by a missing object, GIT_NO_REPLACE_OBJECTS empty	accept
+replace HEAD under refs/replace, GIT_REPLACE_REF_BASE elsewhere	accept
+replace HEAD under GIT_REPLACE_REF_BASE	refuse
+replace HEAD under GIT_REPLACE_REF_BASE without a slash	refuse
+replace HEAD by a missing object, GIT_REPLACE_REF_BASE empty	refuse
+replace HEAD by a missing object (packed), GIT_REPLACE_REF_BASE empty	refuse
+replace HEAD by a missing object, GIT_REPLACE_REF_BASE the full ref name	refuse
+replace HEAD by a missing object (packed), GIT_REPLACE_REF_BASE the full ref name	refuse
+no replacement refs, GIT_REPLACE_REF_BASE empty	accept
+no replacement refs, GIT_REPLACE_REF_BASE the default	accept
+refs/stash with garbage	accept
+refs/stash to a missing commit	accept
+refs/stash to a missing commit, status.showStash	accept
+a garbage stash reflog, status.showStash	accept
+a branch with garbage	accept
+a tag to a missing object	accept
+a dangling remote HEAD	accept
+an upstream at a missing commit	accept
+an upstream at a missing commit, status.branch	accept
+an upstream with garbage	accept
+a linked worktree HEAD with garbage	accept
+a linked worktree gitdir with garbage	accept
+an empty linked worktree directory	accept
+a pack .keep file	accept
+a garbage pack and index	accept
+a garbage pack index alone	accept
+a garbage pack alone	accept
+a promisor file	accept
+a garbage commit-graph chain	accept
+a commit-graph chain to a missing graph	accept
+a garbage commit-graph in a chain	accept
+a corrupt HEAD commit object	refuse
+a corrupt unrelated loose object	accept
+grafts making HEAD a root	accept
+grafts to a missing parent	accept
+GIT_NAMESPACE set	accept
+GIT_SHALLOW_FILE naming an absent file	accept
+GIT_GRAFT_FILE naming an absent file	accept

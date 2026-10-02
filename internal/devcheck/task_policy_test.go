@@ -185,7 +185,7 @@ func TestTaskPolicy(t *testing.T) {
 		// 41-name task suffix (iteration 06a's 13 control names follow it);
 		// plus the separate sidecar package tuple.
 		req := NativeRequiredTests()
-		if len(req) != 145+len(mcpNames())+len(qualNames())+len(realNames())+len(wsNames()) || strings.Join(req[87:128], ",") != strings.Join(wantTaskSuffix, ",") || strings.Join(req[58:87], ",") != strings.Join(roleNames(), ",") ||
+		if len(req) != 145+len(mcpNames())+len(qualNames())+len(realNames())+len(wsNames())+len(trNames()) || strings.Join(req[87:128], ",") != strings.Join(wantTaskSuffix, ",") || strings.Join(req[58:87], ",") != strings.Join(roleNames(), ",") ||
 			strings.Join(taskNames(), ",") != strings.Join(wantTaskSuffix, ",") {
 			t.Fatalf("native required = %v", req[87:128])
 		}
@@ -286,7 +286,7 @@ func TestTaskPolicy(t *testing.T) {
 		if err := CheckPlatformSources(root); err != nil {
 			t.Fatalf("platform guard: %v", err)
 		}
-		if len(platformGuardPolicy.wrappers) != 6 || len(platformGuardPolicy.exemptions) != 4 {
+		if len(platformGuardPolicy.wrappers) != 6 || len(platformGuardPolicy.exemptions) != 6 {
 			t.Fatal("the platform guard's exception list grew")
 		}
 		const mod = "github.com/wedevwork/callsheet/"

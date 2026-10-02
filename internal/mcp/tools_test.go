@@ -693,8 +693,11 @@ func TestSchemas(t *testing.T) {
 		{toolTaskWait, `{"task_ids":["` + taskA + `","` + taskA + `"]}`, false, false},
 		{toolTaskWait, `{"task_ids":["` + taskA + `"],"wait":"-1s"}`, true, false},
 	}
-	// Iteration 09a: the eight workspace tools.
+	// Iteration 09a: the eight workspace tools; iteration 09b: the two
+	// local transfer tools.
 	cases = append(cases, wsSchemaCases()...)
+	cases = append(cases, transferSchemaCases()...)
+	happyTransfers(h.fake)
 	covered := map[string]bool{}
 	for _, c := range cases {
 		covered[c.tool] = true

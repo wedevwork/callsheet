@@ -90,13 +90,21 @@ func TestFP1Foundation(t *testing.T) {
 				}
 			}
 		}
-		// Only the workspace hub imports go-git directly.
-		for _, line := range strings.Split(strings.TrimSpace(goList(t, root, "-f", `{{.ImportPath}} {{join .Imports " "}}`, "./cmd/...", "./internal/cli/...", "./internal/client/...", "./internal/plane/...", "./internal/sidecar/...", "./internal/contract/...", "./internal/logging/...", "./internal/mcp/...", "./internal/workspace/...")), "\n") {
+		// Only the workspace hub and (iteration 09b) the local transfers
+		// import go-git directly, plus the client's per-call git session,
+		// which uses only go-git's plumbing (pack, object and protocol
+		// primitives; the transports stay forbidden above).
+		for _, line := range strings.Split(strings.TrimSpace(goList(t, root, "-f", `{{.ImportPath}} {{join .Imports " "}}`, "./cmd/...", "./internal/cli/...", "./internal/client/...", "./internal/plane/...", "./internal/sidecar/...", "./internal/contract/...", "./internal/logging/...", "./internal/mcp/...", "./internal/workspace/...", "./internal/workspacetransfer/...")), "\n") {
 			f := strings.Fields(line)
 			for _, imp := range f[1:] {
-				if strings.HasPrefix(imp, "github.com/go-git/") && f[0] != module+"/internal/workspace" {
-					t.Errorf("production package %s imports %s directly", f[0], imp)
+				if !strings.HasPrefix(imp, "github.com/go-git/") || f[0] == module+"/internal/workspace" || f[0] == module+"/internal/workspacetransfer" {
+					continue
 				}
+				if f[0] == module+"/internal/client" && (imp == "github.com/go-git/go-git/v5/plumbing" || strings.HasPrefix(imp, "github.com/go-git/go-git/v5/plumbing/")) &&
+					!strings.HasPrefix(imp, "github.com/go-git/go-git/v5/plumbing/transport") {
+					continue
+				}
+				t.Errorf("production package %s imports %s directly", f[0], imp)
 			}
 		}
 		// Since iteration 03 the pinned WebSocket library is the production

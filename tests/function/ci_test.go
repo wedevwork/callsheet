@@ -127,8 +127,10 @@ type ciRunner struct {
 	stdout     string
 }
 
-// manifestBlocks is one covered profile block per iteration 09a coverage
-// manifest selection (the synthetic profile must satisfy that gate too).
+// manifestBlocks is one covered profile block per coverage manifest
+// selection (iterations 09a and 09b; native-only entries of both OS
+// values are present, each host evaluating its own): the synthetic
+// profile must satisfy that gate too.
 func manifestBlocks() string {
 	var b strings.Builder
 	for _, e := range devcheck.WorkspaceCoverageManifest {
@@ -421,7 +423,7 @@ func TestCIDarwinQualification(t *testing.T) {
 		t.Fatalf("macos stages = %v %v", stages, err)
 	}
 	steps, err := devcheck.NativeSteps("darwin")
-	if err != nil || len(steps) != 1 || strings.Join(steps[0].Argv, " ") != "go test -json -tags=realadaptercheck -count=1 -timeout=180s ./..." {
+	if err != nil || len(steps) != 1 || strings.Join(steps[0].Argv, " ") != "go test -json -tags=realadaptercheck -count=1 -timeout=300s ./..." {
 		t.Fatalf("native plan = %+v %v", steps, err)
 	}
 	if got := strings.Join(devcheck.NativeRequiredTests()[:4], ","); got != "TestFP6ProcessGroups,TestFP6ProcessGroups/cooperative,TestFP6ProcessGroups/resistant,TestFP6ProcessGroups/leader-exits-first" {
@@ -442,6 +444,7 @@ func TestCIDarwinQualification(t *testing.T) {
 
 // FP-4: Linux/macOS only: four targets, full trees, unsupported-OS rejection.
 func TestCIPlatformScope(t *testing.T) {
+	t.Parallel() // independent fixtures; overlaps the package's long parallel tests (CI headroom)
 	var got []string
 	for _, tg := range devcheck.Matrix {
 		got = append(got, tg.String())
@@ -526,14 +529,16 @@ func TestCINativeEvidence(t *testing.T) {
 		}
 		return
 	}
-	// Qualification, then the coverage stage (profile, func report, cmd list)
-	// and the workspace benchmark. An empty cover total is parsed as the
-	// literal "(statements)" and fails the stage.
+	// Qualification, then the coverage stage (profile, func report, cmd list),
+	// the workspace benchmark and (iteration 09b) the transfer benchmark.
+	// An empty cover total is parsed as the literal "(statements)" and fails
+	// the stage.
 	r := &ciRunner{stdout: valid, coverTotal: "91.7%"}
 	code, out, errOut := devcheckRun(t, r, "native")
-	if code != 0 || len(r.calls) != 5 ||
-		strings.Join(r.calls[0], " ") != "go test -json -tags=realadaptercheck -count=1 -timeout=180s ./..." ||
+	if code != 0 || len(r.calls) != 6 ||
+		strings.Join(r.calls[0], " ") != "go test -json -tags=realadaptercheck -count=1 -timeout=300s ./..." ||
 		strings.Join(r.calls[4], " ") != strings.Join(devcheck.WorkspaceBenchStep().Argv, " ") ||
+		strings.Join(r.calls[5], " ") != strings.Join(devcheck.TransferBenchStep().Argv, " ") ||
 		!strings.Contains(out, "native qualification passed on darwin/"+runtime.GOARCH) {
 		t.Fatalf("darwin native = %d calls=%d %s", code, len(r.calls), errOut)
 	}

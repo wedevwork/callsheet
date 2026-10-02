@@ -71,6 +71,12 @@ var (
 		// cancellation-before-publication tests (deterministic barriers
 		// and hooks; no real subprocess).
 		"./internal/workspace",
+		// Iteration 09b: the local transfers, complete, for the
+		// event-armed no-progress watchdog, the ref-lock, CAS and
+		// concurrent-writer tests and the cancellation joins (in-memory
+		// plane and tiny fixtures; one shared production plane per
+		// process; no real subprocess).
+		"./internal/workspacetransfer",
 	}
 	// stressPlanePackage is the internal/plane package of the plane shards,
 	// distinct from the plane function-test selector in the functions shard

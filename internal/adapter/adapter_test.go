@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -97,6 +100,42 @@ func (tp *testProber) reaped(t *testing.T) *os.ProcessState {
 		t.Fatal("no wait")
 		return nil
 	}
+}
+
+// saturatedProbeEnv selects the saturated subtest's child half.
+const saturatedProbeEnv = "CALLSHEET_ADAPTER_SATURATED_PROBE"
+
+// saturatedSpinners is how many busy goroutines saturate the child's two
+// Ps: enough to delay a reader goroutine past 100 ms (the old os/exec
+// copier failed this probe), and the probe's cost grows with it.
+const saturatedSpinners = 16
+
+// saturatedProbe is the child half of TestAdapterContract/saturated: one
+// real probe of a well-behaved script while saturatedSpinners goroutines
+// keep both Ps busy. The injected clock never reaches the deadline, so
+// only the inherited-pipe rule can fail it.
+func saturatedProbe(t *testing.T) {
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(2))
+	var stop atomic.Bool
+	var spinners sync.WaitGroup
+	defer func() { stop.Store(true); spinners.Wait() }()
+	for range saturatedSpinners {
+		spinners.Add(1)
+		go func() {
+			defer spinners.Done()
+			for n := 0; !stop.Load(); n++ {
+			}
+		}()
+	}
+	dir := t.TempDir()
+	tp := newTestProber(t, dir, os.Environ())
+	if err := tp.run(bg, script(t, dir, "fast", `printf 'callsheet-fake-probe-v1\n'`)); err != nil {
+		t.Fatalf("saturated probe: %v", err)
+	}
+	if ps := tp.reaped(t); !ps.Success() {
+		t.Fatalf("saturated probe child state %v", ps)
+	}
+	t.Log("saturated probe passed")
 }
 
 func wantProbeErr(t *testing.T, err error, reason string) {
@@ -253,7 +292,10 @@ func TestAdapterContract(t *testing.T) {
 			"exit code":       {`echo callsheet-fake-probe-v1; exit 3`, "exited unsuccessfully"},
 			"stdout overflow": {`printf '` + big + `'`, "more output"},
 			"stderr overflow": {`echo callsheet-fake-probe-v1; printf '` + big + `' >&2`, "more output"},
-			"argv":            {`[ "$#" = 1 ] && [ "$1" = --callsheet-probe ] && echo callsheet-fake-probe-v1`, ""},
+			// More than a pipe holds: the running child is drained, so it
+			// exits and the overflow is reported rather than a stuck child.
+			"pipe-sized overflow": {`echo callsheet-fake-probe-v1; dd if=/dev/zero bs=65536 count=4 2>/dev/null`, "more output"},
+			"argv":                {`[ "$#" = 1 ] && [ "$1" = --callsheet-probe ] && echo callsheet-fake-probe-v1`, ""},
 		} {
 			tp := newTestProber(t, dir, os.Environ())
 			err := tp.run(bg, script(t, dir, strings.ReplaceAll(name, " ", "-"), c.body))
@@ -323,6 +365,28 @@ func TestAdapterContract(t *testing.T) {
 			if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil {
 				syscall.Kill(pid, syscall.SIGKILL)
 			}
+		}
+	})
+	t.Run("saturated", func(t *testing.T) {
+		// A child that exits 0 with exactly ProbeOutput and keeps no
+		// descendant passes even when the probing process is CPU-saturated:
+		// only a writer still open after the 100 ms wait is an inherited
+		// pipe, never a reader goroutine that resumed late. It runs in a
+		// fresh process (GOMAXPROCS 2, saturatedSpinners busy goroutines,
+		// no exec before the probe), because a warmed process usually wins
+		// that race. It runs on every repetition: it is timing-dependent.
+		if os.Getenv(saturatedProbeEnv) == "1" {
+			saturatedProbe(t)
+			return
+		}
+		ctx, cancel := context.WithTimeout(bg, testWait)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestAdapterContract$/^saturated$", "-test.count=1", "-test.v")
+		// A race-built child would sleep a second at exit for nothing.
+		cmd.Env = append(os.Environ(), saturatedProbeEnv+"=1", "GORACE="+strings.TrimSpace(os.Getenv("GORACE")+" atexit_sleep_ms=0"))
+		out, err := cmd.CombinedOutput()
+		if err != nil || !strings.Contains(string(out), "saturated probe passed") {
+			t.Fatalf("saturated probe child: %v\n%s", err, out)
 		}
 	})
 	t.Run("environment", func(t *testing.T) {

@@ -28,8 +28,9 @@ const (
 	ProbeTimeout = time.Second
 	// probeCapture bounds each of stdout and stderr.
 	probeCapture = 4 << 10
-	// probeWaitDelay closes inherited output pipes a misconfigured
-	// executable leaves open after it exits.
+	// probeWaitDelay bounds how long a writer (a descendant a
+	// misconfigured executable left behind) may keep the probe's output
+	// pipes open after the child is reaped.
 	probeWaitDelay = 100 * time.Millisecond
 )
 
@@ -96,29 +97,68 @@ type probeProc interface {
 	wait() (error, *os.ProcessState)
 }
 
-// execRunner is the real procRunner (exec.CommandContext, no shell).
+// execRunner is the real procRunner (exec.CommandContext, no shell). The
+// child's stdout and stderr are pipe write ends the runner owns, so
+// exec.Cmd starts no copy goroutines: waitDelay is how long a writer may
+// keep a pipe open after the child is reaped, decided by poll(2) on the
+// reaping goroutine, and exec.ErrWaitDelay means a writer was still open.
 type execRunner struct{}
 
-type execProc struct{ cmd *exec.Cmd }
+type execProc struct {
+	cmd       *exec.Cmd
+	pipes     *probePipes
+	waitDelay time.Duration
+}
 
 func (execRunner) start(ctx context.Context, exe string, args []string, dir string, env []string, stdout, stderr io.Writer, waitDelay time.Duration) (probeProc, error) {
+	pipes, outW, errW, err := openProbePipes(stdout, stderr)
+	if err != nil {
+		return nil, err
+	}
 	cmd := exec.CommandContext(ctx, exe, args...)
 	cmd.Dir = dir
 	cmd.Env = env
-	cmd.WaitDelay = waitDelay
-	cmd.Stdout, cmd.Stderr = stdout, stderr
-	if err := cmd.Start(); err != nil {
+	cmd.Stdout, cmd.Stderr = outW, errW
+	err = cmd.Start()
+	outW.Close()
+	errW.Close()
+	if err != nil {
+		pipes.abandon()
 		return nil, err
 	}
-	return execProc{cmd: cmd}, nil
+	pipes.drain()
+	return execProc{cmd: cmd, pipes: pipes, waitDelay: waitDelay}, nil
 }
 
 func (p execProc) pid() int { return p.cmd.Process.Pid }
 
 func (p execProc) wait() (error, *os.ProcessState) {
 	err := p.cmd.Wait()
+	switch settled := p.pipes.settle(p.waitDelay); {
+	case err != nil:
+	case settled == settleFailed:
+		err = errProbeOutput
+	case settled == settleOpen:
+		err = exec.ErrWaitDelay
+	}
 	return err, p.cmd.ProcessState
 }
+
+// settleResult is how a reaped probe child's output pipes ended.
+type settleResult int
+
+const (
+	// settleClosed: every writer closed within the wait.
+	settleClosed settleResult = iota
+	// settleOpen: a writer was still open after the wait.
+	settleOpen
+	// settleFailed: a poll or read of the pipes failed, so whether the
+	// writers closed is unknown.
+	settleFailed
+)
+
+// errProbeOutput is a probe whose output pipes could not be observed.
+var errProbeOutput = errors.New("adapter: the probe output could not be read")
 
 // fakeCheck is the fake's exact probe predicate: nothing on stderr and
 // exactly ProbeOutput on stdout.
@@ -273,6 +313,8 @@ func (p *prober) run(ctx context.Context, executable string) error {
 	switch {
 	case errors.Is(werr, exec.ErrWaitDelay):
 		return probeErr("left its output open after exiting")
+	case errors.Is(werr, errProbeOutput):
+		return probeErr("had output the probe could not read")
 	case werr != nil:
 		return probeErr("exited unsuccessfully")
 	case outOver || errOver:

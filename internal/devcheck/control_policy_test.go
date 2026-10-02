@@ -176,10 +176,11 @@ func TestControlPolicy(t *testing.T) {
 		// unchanged.
 		req := NativeRequiredTests()
 		real := len(realNames())
-		if len(req) != 145+len(mcpNames())+len(qualNames())+real+len(wsNames()) || strings.Join(req[128:141], ",") != strings.Join(wantControlNative, ",") ||
+		if len(req) != 145+len(mcpNames())+len(qualNames())+real+len(wsNames())+len(trNames()) || strings.Join(req[128:141], ",") != strings.Join(wantControlNative, ",") ||
 			strings.Join(req[87:128], ",") != strings.Join(wantTaskSuffix, ",") || strings.Join(req[141:145], ",") != strings.Join(wantTaskControlNative, ",") ||
 			strings.Join(req[145:222], ",") != strings.Join(mcpNames(), ",") || strings.Join(req[222:273], ",") != strings.Join(qualNames(), ",") ||
-			strings.Join(req[273:273+real], ",") != strings.Join(realNames(), ",") || strings.Join(req[273+real:], ",") != strings.Join(wsNames(), ",") {
+			strings.Join(req[273:273+real], ",") != strings.Join(realNames(), ",") || strings.Join(req[273+real:273+real+len(wsNames())], ",") != strings.Join(wsNames(), ",") ||
+			strings.Join(req[273+real+len(wsNames()):], ",") != strings.Join(trNames(), ",") {
 			t.Fatalf("native suffix %v", req[128:])
 		}
 		for _, n := range req[:141] {
@@ -213,7 +214,7 @@ func TestControlPolicy(t *testing.T) {
 		if err := CheckPlatformSources(root); err != nil {
 			t.Fatalf("platform guard: %v", err)
 		}
-		if len(platformGuardPolicy.wrappers) != 6 || len(platformGuardPolicy.exemptions) != 4 {
+		if len(platformGuardPolicy.wrappers) != 6 || len(platformGuardPolicy.exemptions) != 6 {
 			t.Fatal("the platform guard's exception list grew")
 		}
 		// No new package contract starts an OS process or enables real

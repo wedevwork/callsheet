@@ -2,8 +2,9 @@
 // MCP server behind "callsheet mcp". It speaks the bounded MCP 2025-06-18
 // subset on the standard library (newline-delimited JSON-RPC 2.0,
 // initialization, tools/list and tools/call, ping and cancellation) and
-// relays the thirteen operator tools and (iteration 09a) the eight
-// workspace tools to the verified plane client. It is a
+// relays the thirteen operator tools, (iteration 09a) the eight
+// workspace tools and (iteration 09b) the two local transfer tools to the
+// verified plane client. It is a
 // stateless relay: registry and task truth stay on the plane, nothing is
 // cached between calls, and stdout carries the protocol only.
 //
@@ -112,6 +113,13 @@ type Config struct {
 	CloseOut func() error
 	// Hook observes internal events (tests only; nil in production).
 	Hook func(stage, id string)
+	// Iteration 09b: the local transfer tools. GOOS is the host OS value
+	// from the CLI seam (never read here), Cwd the server process's
+	// working directory (captured when a transfer call is admitted) and
+	// Transfer a fresh trusted client and transfer service per call.
+	GOOS     string
+	Cwd      func() (string, error)
+	Transfer TransferFactory
 }
 
 // Hook stages.
@@ -633,6 +641,7 @@ type call struct {
 	frame          *frame
 	handlerDone    bool
 	responseDone   bool
+	dequeued       bool // the writer took the answer (it is no longer queued)
 	released       bool
 }
 
@@ -912,11 +921,25 @@ func (c *call) answered() {
 	c.maybeRelease()
 }
 
+// taken marks the call's answer taken by the writer (before any byte of
+// it is written) and frees the slot if the handler has finished: a client
+// can read the answer before its Write returns, and the call must not
+// count against the next one then. The writer queue still holds at most
+// two tool answers, since only admitted calls queue one and the slot is
+// freed only after its answer left the queue.
+func (c *call) taken() {
+	c.mu.Lock()
+	c.dequeued = true
+	c.mu.Unlock()
+	c.maybeRelease()
+}
+
 // maybeRelease frees the call's slot once its handler finished and its
-// answer was written or discarded.
+// answer was taken by the writer, written or discarded (the request ID
+// stays reserved until answered).
 func (c *call) maybeRelease() {
 	c.mu.Lock()
-	if c.released || !c.handlerDone || !c.responseDone {
+	if c.released || !c.handlerDone || !(c.responseDone || c.dequeued) {
 		c.mu.Unlock()
 		return
 	}

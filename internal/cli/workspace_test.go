@@ -18,18 +18,14 @@ import (
 var wsLeaves = [][]string{{"ws", "create"}, {"ws", "ls"}, {"ws", "show"}, {"ws", "rm"}, {"ws", "prune"}, {"ws", "status"}, {"ws", "diff"}, {"ws", "ref", "set"}}
 
 // UT-7: every workspace leaf has help, is implemented, and refuses usage
-// errors (exit 2) before contacting anything; push and pull stay stubs.
+// errors (exit 2) before contacting anything (iteration 09b implements
+// push and pull; their own cases are in workspace_transfer_test.go).
 func TestWorkspaceLeafHelp(t *testing.T) {
 	isolate(t)
 	for _, leaf := range wsLeaves {
 		code, out, errOut := exec(t, "linux", append(append([]string{}, leaf...), "--help")...)
 		if code != 0 || errOut != "" || !strings.Contains(out, "\nStatus: implemented.\n") || !strings.Contains(out, "on the plane") {
 			t.Fatalf("%v --help = %d %q", leaf, code, out)
-		}
-	}
-	for _, stub := range [][]string{{"ws", "push"}, {"ws", "pull"}} {
-		if code, _, _ := exec(t, "linux", stub...); code != 8 {
-			t.Fatalf("%v = %d", stub, code)
 		}
 	}
 	trust := []string{"--plane", "https://127.0.0.1:1", "--ca-fingerprint", "sha256:" + strings.Repeat("0", 64)}
