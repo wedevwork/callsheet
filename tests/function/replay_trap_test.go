@@ -12,7 +12,7 @@ import (
 
 // TestReplayTrapExecUnderForks: the replay kit's PATH traps can be
 // executed as soon as they are written while other goroutines fork (as
-// TestFP8BuildMatrix's early cross builds and the parallel tests do): a
+// the package's parallel tests do, FP-8's host cross build among them): a
 // child forked while a trap's write descriptor is open would hold it and
 // make the exec fail with ETXTBSY (golang/go#22315). Every exec must
 // reach the trap, which records its launch and exits 127.

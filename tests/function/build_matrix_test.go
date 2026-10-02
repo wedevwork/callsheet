@@ -4,15 +4,15 @@ import (
 	"context"
 	"debug/elf"
 	"debug/macho"
-	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -22,155 +22,122 @@ import (
 	"github.com/wedevwork/callsheet/internal/testkit"
 )
 
-// TestFP8BuildMatrix invokes devcheck.Cross with ExecRunner and the
-// four-target Linux/macOS matrix from the repository root, then inspects
-// (never executes) every artifact's target metadata. Its twelve cross
-// builds are the package's largest single cost, so they start as soon as
-// the test is reached and overlap the serial tests that follow it (those
-// mostly wait on subprocesses); the test then waits for them as a
-// parallel test. This file sorts first in the package, so the builds
-// start with the package's first test. The builds read no live process
-// state: isolatedCrossRunner fixes the go executable, the environment and
-// the working directory before they start (t.Chdir is not allowed in a
-// parallel test, and serial tests change the environment meanwhile).
+// TestFP8BuildMatrix is FP-8's function test: the repeatable cross-build
+// entry point produces the declared artifacts without executing foreign
+// binaries. The cross stage (devcheck cross, which ci-linux runs) builds
+// all twelve artifacts of the four targets, and Cross itself verifies them:
+// each exists, is nonempty and has an ELF or Mach-O header naming its
+// GOOS/GOARCH. This test proves the same entry point cheaply on every host
+// that runs the package, without rebuilding the matrix:
+//   - the declared Matrix, CrossPlan and CrossArtifacts against the
+//     supported set asserted here independently: four targets and twelve
+//     artifact names, each a CGO-disabled go build or go test -c for its
+//     own GOOS/GOARCH;
+//   - Cross with ExecRunner for the host's own target, from the repository
+//     root: three real builds, whose packages the suite's CGO-disabled
+//     host helper builds have already compiled, which Cross verifies; the
+//     test re-inspects them independently and never executes them;
+//   - the verifier on those real artifacts planned under every other
+//     target's names: another OS or another architecture fails, naming
+//     each artifact.
 func TestFP8BuildMatrix(t *testing.T) {
-	// The supported set is asserted independently of the planner.
+	t.Parallel() // a few links on a warm cache; reads no state the serial tests change
 	supported := []devcheck.Target{{GOOS: "linux", GOARCH: "amd64"}, {GOOS: "linux", GOARCH: "arm64"}, {GOOS: "darwin", GOARCH: "amd64"}, {GOOS: "darwin", GOARCH: "arm64"}}
-	if len(devcheck.Matrix) != len(supported) {
+	if !slices.Equal(devcheck.Matrix, supported) {
 		t.Fatalf("matrix = %v, want %v", devcheck.Matrix, supported)
 	}
-	for i, tg := range supported {
-		if devcheck.Matrix[i] != tg {
-			t.Fatalf("matrix = %v, want %v", devcheck.Matrix, supported)
-		}
-	}
-	// The builds overlap serial tests that change the process environment
-	// (t.Setenv, for example an empty PATH): the runner reads none of it.
-	run := isolatedCrossRunner(t, testkit.MustRepoRoot(t), devcheck.Matrix)
-	out := t.TempDir()
-	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
-	defer cancel()
-	built := make(chan error, 1)
-	go func() { built <- devcheck.Cross(ctx, run, out, devcheck.Matrix) }()
-	t.Parallel()
-	if err := <-built; err != nil {
-		t.Fatalf("cross: %v", err)
-	}
-	var want []string
-	for _, tg := range supported {
-		want = append(want, devcheck.CallsheetArtifact(tg), devcheck.FakeArtifact(tg), devcheck.ProcessTestArtifact(tg))
-	}
-	if len(want) != 12 {
-		t.Fatalf("expected 4+4+4 artifacts, planned %d", len(want))
-	}
-	entries, _ := os.ReadDir(out)
-	if len(entries) != len(want) {
-		t.Fatalf("artifacts = %d, want %d", len(entries), len(want))
-	}
-	for _, tg := range supported {
-		for _, n := range []string{devcheck.CallsheetArtifact(tg), devcheck.FakeArtifact(tg), devcheck.ProcessTestArtifact(tg)} {
-			p := filepath.Join(out, n)
-			st, err := os.Stat(p)
-			if err != nil || st.Size() == 0 {
-				t.Fatalf("%s missing or empty: %v", n, err)
-			}
-			goos, goarch := inspect(t, p)
-			if goos != tg.GOOS || goarch != tg.GOARCH {
-				t.Fatalf("%s metadata = %s/%s, want %s", n, goos, goarch, tg)
-			}
-		}
-	}
-}
-
-// isolatedCrossRunner returns a devcheck.Runner bound to state captured
-// now: the absolute go executable, an immutable copy of the process
-// environment and the repository root as the working directory. From a
-// call it takes only the argument vector (its "go" replaced by the
-// captured executable) and the step's own overrides, the variables
-// CrossPlan sets for targets (CGO_ENABLED, GOOS, GOARCH); GOFLAGS gains
-// -p=1, so one package compiles at a time and the builds leave the other
-// CPUs to the tests they overlap. Nothing it does reads the live process
-// environment, PATH or working directory, which serial tests may change
-// while the builds run.
-func isolatedCrossRunner(t *testing.T, root string, targets []devcheck.Target) devcheck.Runner {
-	t.Helper()
-	goBin, err := exec.LookPath("go")
-	if err == nil {
-		goBin, err = filepath.Abs(goBin)
-	}
-	if err != nil {
-		t.Fatalf("the go executable: %v", err)
-	}
-	base := slices.Clone(os.Environ())
-	plan, err := devcheck.CrossPlan(root, targets)
+	plan, err := devcheck.CrossPlan("/out", devcheck.Matrix)
 	if err != nil {
 		t.Fatal(err)
 	}
-	keys := map[string]bool{}
-	for _, st := range plan {
-		for _, kv := range st.Env {
-			k, _, _ := strings.Cut(kv, "=")
-			keys[k] = true
-		}
+	arts, err := devcheck.CrossArtifacts("/out", devcheck.Matrix)
+	if err != nil {
+		t.Fatal(err)
 	}
-	return func(ctx context.Context, argv, env []string, _ string, stdout, stderr io.Writer) error {
-		if len(argv) == 0 || argv[0] != "go" {
-			return fmt.Errorf("cross step %v does not run go", argv)
+	if len(plan) != 12 || len(arts) != 12 {
+		t.Fatalf("expected 4+4+4 artifacts, planned %d steps and %d artifacts", len(plan), len(arts))
+	}
+	for i, tg := range supported {
+		sfx := tg.GOOS + "-" + tg.GOARCH
+		want := [][2]string{
+			{"callsheet-" + sfx, "go build -o /out/callsheet-" + sfx + " ./cmd/callsheet"},
+			{"fake-adapter-" + sfx, "go build -o /out/fake-adapter-" + sfx + " ./cmd/fake-adapter"},
+			{"processgroup-" + sfx + ".test", "go test -c -o /out/processgroup-" + sfx + ".test ./internal/spikes/processgroup"},
 		}
-		var overrides []string
-		for _, kv := range env {
-			if k, _, _ := strings.Cut(kv, "="); keys[k] {
-				overrides = append(overrides, kv)
+		for j, w := range want {
+			s, a := plan[3*i+j], arts[3*i+j]
+			if got := strings.Join(s.Argv, " "); got != filepath.FromSlash(w[1]) {
+				t.Fatalf("%s step = %s, want %s", tg, got, w[1])
+			}
+			if got := strings.Join(s.Env, " "); got != "CGO_ENABLED=0 GOOS="+tg.GOOS+" GOARCH="+tg.GOARCH {
+				t.Fatalf("%s step env = %s", tg, got)
+			}
+			if a.Path != filepath.Join("/out", w[0]) || a.Target != tg {
+				t.Fatalf("artifact %+v, want %s for %s", a, w[0], tg)
 			}
 		}
-		args := append([]string{goBin}, argv[1:]...)
-		return devcheck.ExecRunner(ctx, args, withGoFlag(devcheck.MergeEnv(base, overrides), "-p=1"), root, stdout, stderr)
 	}
-}
 
-// TestCrossBuildEnvIsolation proves the cross-build runner is independent
-// of the live process state (code review of the headroom fix, C1): with
-// PATH emptied and GOFLAGS, GOOS and the working directory's meaning
-// changed after it was created, a go command it runs still finds go,
-// sees the step's own GOOS and GOARCH, the captured GOFLAGS plus -p=1,
-// and the repository root. As a serial test that changes the
-// environment, it also overlaps TestFP8BuildMatrix's running builds in
-// every run of the package.
-func TestCrossBuildEnvIsolation(t *testing.T) {
+	// The real entry point for this host's target.
+	host := devcheck.Target{GOOS: runtime.GOOS, GOARCH: runtime.GOARCH}
+	if err := devcheck.ValidateTarget(host); err != nil {
+		t.Fatalf("this host: %v", err)
+	}
 	root := testkit.MustRepoRoot(t)
-	run := isolatedCrossRunner(t, root, devcheck.Matrix)
-	t.Setenv("PATH", "")
-	t.Setenv("GOFLAGS", "-mod=callsheet-bogus")
-	t.Setenv("GOOS", "plan9")
-	var out, errOut strings.Builder
-	env := devcheck.MergeEnv(os.Environ(), []string{"CGO_ENABLED=0", "GOOS=darwin", "GOARCH=arm64"})
-	if err := run(context.Background(), []string{"go", "env", "GOOS", "GOARCH", "GOFLAGS", "GOMOD"}, env, "", &out, &errOut); err != nil {
-		t.Fatalf("go env under a changed environment: %v %s", err, errOut.String())
+	inRoot := func(ctx context.Context, argv, env []string, _ string, stdout, stderr io.Writer) error {
+		return devcheck.ExecRunner(ctx, argv, env, root, stdout, stderr)
 	}
-	got := strings.Split(strings.TrimSpace(out.String()), "\n")
-	if len(got) != 4 || got[0] != "darwin" || got[1] != "arm64" || strings.Contains(got[2], "bogus") || !strings.HasSuffix(got[2], "-p=1") ||
-		got[3] != filepath.Join(root, "go.mod") {
-		t.Fatalf("go env = %q", got)
+	out := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
+	defer cancel()
+	if err := devcheck.Cross(ctx, inRoot, out, []devcheck.Target{host}); err != nil {
+		t.Fatalf("cross %s: %v", host, err)
 	}
-}
+	built := map[string][]byte{}
+	entries, _ := os.ReadDir(out)
+	for _, e := range entries {
+		b, err := os.ReadFile(filepath.Join(out, e.Name()))
+		if err != nil || len(b) == 0 {
+			t.Fatalf("%s missing or empty: %v", e.Name(), err)
+		}
+		if goos, goarch := inspect(t, filepath.Join(out, e.Name())); goos != host.GOOS || goarch != host.GOARCH {
+			t.Fatalf("%s metadata = %s/%s, want %s", e.Name(), goos, goarch, host)
+		}
+		built[e.Name()] = b
+	}
+	sfx := host.GOOS + "-" + host.GOARCH
+	for _, n := range []string{"callsheet-" + sfx, "fake-adapter-" + sfx, "processgroup-" + sfx + ".test"} {
+		if built[n] == nil {
+			t.Fatalf("artifacts = %v, missing %s", slices.Sorted(maps.Keys(built)), n)
+		}
+	}
+	if len(built) != 3 {
+		t.Fatalf("artifacts = %v", slices.Sorted(maps.Keys(built)))
+	}
 
-// withGoFlag returns env with flag added to GOFLAGS.
-func withGoFlag(env []string, flag string) []string {
-	out := make([]string, 0, len(env)+1)
-	value := flag
-	for _, kv := range env {
-		if v, ok := strings.CutPrefix(kv, "GOFLAGS="); ok {
-			if v != "" {
-				value = v + " " + flag
-			}
+	// The verifier refuses the real host artifacts under foreign names.
+	for _, tg := range supported {
+		if tg == host {
 			continue
 		}
-		out = append(out, kv)
+		dir := t.TempDir()
+		fsfx := tg.GOOS + "-" + tg.GOARCH
+		for _, kind := range [][2]string{{"callsheet-", ""}, {"fake-adapter-", ""}, {"processgroup-", ".test"}} {
+			if err := os.WriteFile(filepath.Join(dir, kind[0]+fsfx+kind[1]), built[kind[0]+sfx+kind[1]], 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		err := devcheck.VerifyArtifacts(dir, []devcheck.Target{tg})
+		for _, n := range []string{"callsheet-" + fsfx, "fake-adapter-" + fsfx, "processgroup-" + fsfx + ".test"} {
+			if err == nil || !strings.Contains(err.Error(), "cross artifact "+n+": built for "+host.String()+", want "+tg.String()) {
+				t.Fatalf("host artifacts planned as %s: %v", tg, err)
+			}
+		}
 	}
-	return append(out, "GOFLAGS="+value)
 }
 
-// inspect reads executable headers to determine the target without running it.
+// inspect reads executable headers to determine the target without running
+// it, independently of devcheck's verifier.
 func inspect(t *testing.T, p string) (string, string) {
 	t.Helper()
 	if f, err := elf.Open(p); err == nil {
@@ -194,20 +161,14 @@ func inspect(t *testing.T, p string) (string, string) {
 }
 
 // TestFunctionParallelSafety guards the package's CI headroom (the
-// macOS native stage runs this package under a per-package timeout):
-// TestFP8BuildMatrix runs in parallel; no parallel test changes the
+// macOS native stage runs this package under a per-package timeout, and
+// its independent tests run in parallel): no parallel test changes the
 // process's working directory or environment, directly or through the
-// package's helpers (whatever its *testing.T parameter is called; Go
-// also refuses t.Chdir and t.Setenv there at run time); and no test
-// starts work before t.Parallel() that would overlap the serial tests
-// changing the environment, unless it first fixes its state with
-// isolatedCrossRunner. Whether a goroutine reads live process state
-// through other packages (devcheck.Cross reads os.Environ for every step)
-// cannot be decided from this package's syntax, so that one allowance is
-// proved dynamically instead: TestCrossBuildEnvIsolation runs the runner
-// under a changed environment and, as a serial t.Setenv test, overlaps
-// TestFP8BuildMatrix's builds in every run. The checker is first shown to
-// catch each forbidden shape.
+// package's helpers (whatever its *testing.T parameter is called; Go also
+// refuses t.Chdir and t.Setenv there at run time), and no test starts a
+// goroutine before t.Parallel(), which would overlap the serial tests that
+// change the environment. The checker is first shown to catch each
+// forbidden shape.
 func TestFunctionParallelSafety(t *testing.T) {
 	t.Parallel()
 	bad := t.TempDir()
@@ -218,7 +179,7 @@ import (
 	"testing"
 )
 
-func TestFP8BuildMatrix(t *testing.T) { t.Chdir("/") }
+func TestSerial(t *testing.T) { t.Chdir("/"); t.Setenv("A", "b") }
 
 func TestOther(t *testing.T) { t.Parallel(); t.Setenv("A", "b") }
 
@@ -238,12 +199,18 @@ func TestEarlyWork(t *testing.T) {
 	t.Parallel()
 	<-done
 }
+
+func TestEarlyIsolated(t *testing.T) {
+	run := isolatedCrossRunner(t)
+	go run()
+	t.Parallel()
+}
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	got := parallelSafetyProblems(t, bad)
-	for _, want := range []string{"TestFP8BuildMatrix must run in parallel", "TestOther is parallel", "TestHelper is parallel",
-		"TestRenamed is parallel", "TestOSEnv is parallel", "TestEarlyWork starts a goroutine before"} {
+	for _, want := range []string{"TestOther is parallel", "TestHelper is parallel",
+		"TestRenamed is parallel", "TestOSEnv is parallel", "TestEarlyWork starts a goroutine before", "TestEarlyIsolated starts a goroutine before"} {
 		if !slices.ContainsFunc(got, func(p string) bool { return strings.HasPrefix(p, want) }) {
 			t.Errorf("the checker missed %q: %v", want, got)
 		}
@@ -347,7 +314,6 @@ func parallelSafetyProblems(t *testing.T, dir string) []string {
 		return yes
 	}
 	var problems []string
-	parallel := map[string]bool{}
 	var names []string
 	for n := range funcs {
 		names = append(names, n)
@@ -385,7 +351,6 @@ func parallelSafetyProblems(t *testing.T, dir string) []string {
 		if parIndex < 0 {
 			continue
 		}
-		parallel[name] = true
 		callees := map[string]bool{}
 		yes := direct(fn.Body, params, callees)
 		for c := range callees {
@@ -396,24 +361,15 @@ func parallelSafetyProblems(t *testing.T, dir string) []string {
 		if yes {
 			problems = append(problems, name+" is parallel and changes the process's working directory or environment")
 		}
-		isolated := false
 		for _, st := range fn.Body.List[:parIndex] {
 			ast.Inspect(st, func(n ast.Node) bool {
-				if c, ok := n.(*ast.CallExpr); ok {
-					if id, ok := c.Fun.(*ast.Ident); ok && id.Name == "isolatedCrossRunner" {
-						isolated = true
-					}
-				}
-				if _, ok := n.(*ast.GoStmt); ok && !isolated {
-					problems = append(problems, name+" starts a goroutine before t.Parallel() without isolatedCrossRunner (it would overlap serial tests that change the environment)")
+				if _, ok := n.(*ast.GoStmt); ok {
+					problems = append(problems, name+" starts a goroutine before t.Parallel() (it would overlap serial tests that change the environment)")
 					return false
 				}
 				return true
 			})
 		}
-	}
-	if !parallel["TestFP8BuildMatrix"] {
-		problems = append(problems, "TestFP8BuildMatrix must run in parallel (its cross builds are the package's largest cost)")
 	}
 	return problems
 }

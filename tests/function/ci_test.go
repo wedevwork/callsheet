@@ -164,6 +164,11 @@ func (r *ciRunner) run(_ context.Context, argv, env []string, _ string, stdout, 
 				"github.com/wedevwork/callsheet/cmd/mcpqual/main.go:1.1,2.2 1 1\n"+manifestBlocks()), 0o600)
 		}
 	}
+	// A cross build writes a synthetic executable for its GOOS/GOARCH, so
+	// the cross stage's verification sees a complete, correct build.
+	if _, err := testkit.FakeGoBuild(argv, env); err != nil {
+		return err
+	}
 	switch {
 	case strings.HasPrefix(joined, "go tool cover"):
 		fmt.Fprintf(stdout, "total:\t\t\t(statements)\t%s\n", r.coverTotal)
