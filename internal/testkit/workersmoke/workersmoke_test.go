@@ -105,7 +105,11 @@ printf '{"type":"result","is_error":false,"result":"pong"}'
 
 // TestDeployment runs the harness end to end with the stand-in: a real
 // plane and sidecar from the built callsheet binary, the qualified role,
-// a completed task, and a task cancelled at its outer bound.
+// a completed task, and a task cancelled at its outer bound. The completed
+// smoke and the bounded deployment are independent (own directories,
+// planes and sidecars), so the smoke runs concurrently and is joined and
+// asserted before the refusals: each waits on a role's readiness
+// heartbeat, and the two waits overlap.
 func TestDeployment(t *testing.T) {
 	dir := t.TempDir()
 	bin, err := testkit.BuildBinaryAt(dir, "./cmd/callsheet", "callsheet")
@@ -120,11 +124,26 @@ func TestDeployment(t *testing.T) {
 	env := []string{"PATH=/usr/bin:/bin", "HOME=" + t.TempDir()}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	res, err := Run(ctx, bin, filepath.Join(dir, "run"), env, env, "claude", exe, "reply pong")
-	if err != nil || res.View.State != contract.TaskSucceeded || res.View.Result.FinalMessage == nil || *res.View.Result.FinalMessage != "pong" ||
-		string(res.Logs) != `{"type":"result","is_error":false,"result":"pong"}` {
-		t.Fatalf("run %+v %q %v", res.View, res.Logs, err)
+	type smoke struct {
+		res Result
+		err error
 	}
+	smokeDone := make(chan smoke, 1)
+	go func() {
+		res, err := Run(ctx, bin, filepath.Join(dir, "run"), env, env, "claude", exe, "reply pong")
+		smokeDone <- smoke{res, err}
+	}()
+	// joinSmoke waits for the completed smoke once; a failure below cancels
+	// ctx first (the deferred cancel), so Run returns and is still joined.
+	var joined *smoke
+	joinSmoke := func() smoke {
+		if joined == nil {
+			sm := <-smokeDone
+			joined = &sm
+		}
+		return *joined
+	}
+	defer func() { cancel(); joinSmoke() }()
 	// The outer bound: the task is cancelled and awaited.
 	d, err := Start(ctx, bin, filepath.Join(dir, "bound"), env)
 	if err != nil {
@@ -150,9 +169,13 @@ func TestDeployment(t *testing.T) {
 	if err := d.AddVendorRole(ctx, "held", "claude", s.NodeID, ins, run, 1); err != nil {
 		t.Fatal(err)
 	}
-	res, err = d.Dispatch(ctx, "held", "hang-forever", time.Second)
+	res, err := d.Dispatch(ctx, "held", "hang-forever", time.Second)
 	if !errors.Is(err, ErrOuterBound) || res.View.State != contract.TaskCancelled {
 		t.Fatalf("bounded %+v %v", res.View, err)
+	}
+	if sm := joinSmoke(); sm.err != nil || sm.res.View.State != contract.TaskSucceeded || sm.res.View.Result.FinalMessage == nil || *sm.res.View.Result.FinalMessage != "pong" ||
+		string(sm.res.Logs) != `{"type":"result","is_error":false,"result":"pong"}` {
+		t.Fatalf("run %+v %q %v", sm.res.View, sm.res.Logs, sm.err)
 	}
 	// Refusals: an unqualified vendor, a missing role, a broken binary.
 	if err := d.AddVendorRole(ctx, "x", "grok", s.NodeID, ins, run, 1); err == nil {

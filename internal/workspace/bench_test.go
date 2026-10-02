@@ -30,12 +30,21 @@ import (
 // validation, sync, publication and cleanup. Only fixture resets run
 // outside the timer. Timings are reported, never gated; payload bounds
 // and output are asserted on every iteration.
+//
+// The baseline and diff fixture pushes (outside the timer) use pack window
+// 0 (setupWindow): they carry incompressible blobs and no similar trees,
+// so the client's delta search costs CPU and saves no bytes. The timed
+// push and prune's orphan history (three similar trees, which do delta)
+// keep testkit's default window, so the stored state is unchanged.
 const (
 	benchFiles        = 1024
 	benchBlobSize     = 4 << 10
 	initialLimitBytes = 8 << 20
 	incrementLimit    = 256 << 10
 )
+
+// setupWindow is the fixture pushes' pack window option.
+var setupWindow = testkit.PackWindow(0)
 
 func benchBlob(i, v int) []byte {
 	r := rand.New(rand.NewPCG(uint64(i), uint64(v)+0x5eed))
@@ -140,7 +149,7 @@ func newBenchEnv(b *testing.B) *benchEnv {
 	}
 	e.head = commit(b, e.local, e.files, "bench baseline")
 	e.tree = commitTreeOfStore(b, e.local, e.head)
-	push(b, e.remote, e.local, "refs/heads/main", plumbing.ZeroHash, e.head)
+	push(b, e.remote, e.local, "refs/heads/main", plumbing.ZeroHash, e.head, setupWindow)
 	e.cnt.take()
 	e.takeMetrics()
 	return e
@@ -357,7 +366,7 @@ func BenchmarkWorkspaceDiff(b *testing.B) {
 	}
 	base := e.head
 	next := commit(b, e.local, e.files, "bench diff", base)
-	push(b, e.remote, e.local, "refs/heads/main", base, next)
+	push(b, e.remote, e.local, "refs/heads/main", base, next, setupWindow)
 	if _, err := setRef(e.m, "bench", e.inst, "base", contract.ExpectedAbsent, strp(base.String()), false); err != nil {
 		b.Fatal(err)
 	}

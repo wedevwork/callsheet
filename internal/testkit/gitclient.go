@@ -118,9 +118,29 @@ type PushResult struct {
 // OK reports a fully successful push.
 func (p PushResult) OK() bool { return p.Err == nil && p.Report != nil && p.Report.Error() == nil }
 
+// DefaultPackWindow is Push's pack delta search window (go-git's default),
+// so functional and stress pushes exercise the receiver's delta
+// resolution.
+const DefaultPackWindow uint = 10
+
+// PushOption adjusts one Push.
+type PushOption func(*pushConfig)
+
+type pushConfig struct{ window uint }
+
+// PackWindow sets the pack delta search window. Window 0 (no deltas) is
+// for benchmark setups whose fixtures are incompressible, where the delta
+// search costs CPU and saves no bytes.
+func PackWindow(w uint) PushOption { return func(c *pushConfig) { c.window = w } }
+
 // Push sends one command name old->new with a pack of every object of new
-// the remote does not advertise (its advertised tips are haves).
-func (r GitRemote) Push(ctx context.Context, local storer.EncodedObjectStorer, name string, old, new plumbing.Hash) PushResult {
+// the remote does not advertise (its advertised tips are haves), encoded
+// with DefaultPackWindow unless an option says otherwise.
+func (r GitRemote) Push(ctx context.Context, local storer.EncodedObjectStorer, name string, old, new plumbing.Hash, opts ...PushOption) PushResult {
+	cfg := pushConfig{window: DefaultPackWindow}
+	for _, o := range opts {
+		o(&cfg)
+	}
 	tr, ep, err := r.transport()
 	if err != nil {
 		return PushResult{Err: err}
@@ -145,7 +165,7 @@ func (r GitRemote) Push(ctx context.Context, local storer.EncodedObjectStorer, n
 		return PushResult{Err: err}
 	}
 	var buf bytes.Buffer
-	if _, err := packfile.NewEncoder(&buf, local, false).Encode(objs, 10); err != nil {
+	if _, err := packfile.NewEncoder(&buf, local, false).Encode(objs, cfg.window); err != nil {
 		return PushResult{Err: err}
 	}
 	req := packp.NewReferenceUpdateRequestFromCapabilities(ar.Capabilities)

@@ -19,7 +19,6 @@ import (
 
 	"github.com/wedevwork/callsheet/internal/cicheck"
 	"github.com/wedevwork/callsheet/internal/devcheck"
-	"github.com/wedevwork/callsheet/internal/testkit"
 )
 
 // Iteration 02c function tests: one top-level TestStressShard* per FP,
@@ -555,7 +554,7 @@ func TestStressShardExecution(t *testing.T) {
 	// the CPU2/CPU4 pairs and processgroup, and the wave mechanism on the
 	// full three-CPU processgroup shard.
 	const pkg = "./internal/devcheck"
-	bin := testkit.BuildTestBinary(t, pkg, "devcheck-stress-contract")
+	bin := contractBinary(t, pkg)
 	contractRun(t, bin, pkg, "^TestStressConcurrencyContract$", os.Environ(),
 		"TestStressConcurrencyContract", "TestStressConcurrencyContract/overlap", "TestStressConcurrencyContract/failure",
 		"TestStressConcurrencyContract/watchdog", "TestStressConcurrencyContract/logs", "TestStressConcurrencyContract/waves")

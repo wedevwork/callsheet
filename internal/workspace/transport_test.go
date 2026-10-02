@@ -594,11 +594,12 @@ func TestGitIOHaltJoins(t *testing.T) {
 
 // UT-4: over real TLS, a request body that stops making progress is cut
 // off by the no-progress deadline (not a total timeout) and the handler
-// returns.
+// returns. The test has only a stalled side, so a short window cannot
+// fail it on a slow runner: an early expiry still cuts the body off.
 func TestIdleDeadline(t *testing.T) {
 	m, _ := newManager(t)
 	v := mustCreate(t, m, "alpha")
-	m.d.idle = 200 * time.Millisecond
+	m.d.idle = 20 * time.Millisecond
 	done := make(chan struct{}, 1)
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		m.ServeGit(w, r)
@@ -620,5 +621,33 @@ func TestIdleDeadline(t *testing.T) {
 	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
 	if err == nil && resp.StatusCode == http.StatusOK {
 		t.Fatalf("stalled request answered %d", resp.StatusCode)
+	}
+}
+
+// TestPushPackWindow: the testkit push encodes deltas by default (the
+// receiver's delta resolution stays exercised), and PackWindow(0), used by
+// the benchmark setups only, sends the same closure undeltified; the hub
+// accepts both.
+func TestPushPackWindow(t *testing.T) {
+	m, _ := newManager(t)
+	g := serveGit(t, m)
+	a := benchBlob(1, 0)
+	b := append([]byte(nil), a...)
+	copy(b[100:], "changed")
+	s := memory.NewStorage()
+	c := commit(t, s, map[string]testkit.FileSpec{"a.bin": {Mode: filemode.Regular, Content: a}, "b.bin": {Mode: filemode.Regular, Content: b}}, "similar")
+	sizes := map[string]int{}
+	for name, opts := range map[string][]testkit.PushOption{"deltas": nil, "plain": {testkit.PackWindow(0)}} {
+		v := mustCreate(t, m, name)
+		res := g.remote(name, v.Instance).Push(context.Background(), s, "refs/heads/main", plumbing.ZeroHash, c, opts...)
+		if !res.OK() {
+			t.Fatalf("%s push: %s", name, pushString(res))
+		}
+		sizes[name] = res.PackBytes
+	}
+	// Undeltified, both incompressible blobs are sent whole; with deltas
+	// the second is a few bytes against the first.
+	if sizes["plain"] < 2*len(a) || sizes["plain"]-sizes["deltas"] < len(a)*3/4 {
+		t.Fatalf("pack sizes %v for two similar %d-byte blobs", sizes, len(a))
 	}
 }

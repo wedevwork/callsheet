@@ -135,9 +135,9 @@ func commit(t testing.TB, s storer.EncodedObjectStorer, files map[string]testkit
 }
 
 // push sends name old->new and requires success.
-func push(t testing.TB, r testkit.GitRemote, s storer.EncodedObjectStorer, name string, old, new plumbing.Hash) {
+func push(t testing.TB, r testkit.GitRemote, s storer.EncodedObjectStorer, name string, old, new plumbing.Hash, opts ...testkit.PushOption) {
 	t.Helper()
-	res := r.Push(context.Background(), s, name, old, new)
+	res := r.Push(context.Background(), s, name, old, new, opts...)
 	if !res.OK() {
 		t.Fatalf("push %s: %+v", name, pushString(res))
 	}

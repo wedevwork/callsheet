@@ -489,7 +489,7 @@ func TestCIPlatformScope(t *testing.T) {
 			t.Fatalf("NewTree(%q) is not nil", goos)
 		}
 	}
-	bin := testkit.BuildBinary(t, "./cmd/callsheet", "callsheet")
+	bin := nodeBinary(t)
 	env := []string{"PATH=" + os.Getenv("PATH"), "HOME=" + t.TempDir()}
 	for _, g := range []string{"plane", "sidecar"} {
 		r := runBin(t, bin, t.TempDir(), env, g)

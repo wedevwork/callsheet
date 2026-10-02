@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/wedevwork/callsheet/internal/spikes/processgroup"
-	"github.com/wedevwork/callsheet/internal/testkit"
 )
 
 // TestFP6ProcessGroups runs the cooperative, TERM-resistant and
@@ -20,8 +19,8 @@ import (
 // the recorded evidence. On Darwin the same assertions run minus the adopted
 // wait statuses, which launchd owns.
 func TestFP6ProcessGroups(t *testing.T) {
-	fake := testkit.BuildBinary(t, "./cmd/fake-adapter", "fake-adapter")
-	helper := testkit.BuildTestBinary(t, "./internal/spikes/processgroup", "processgroup")
+	fake := fakeAdapterBinary(t)
+	helper := contractBinary(t, "./internal/spikes/processgroup")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	rep, err := processgroup.RunExperiment(ctx, []string{helper}, os.Environ(), fake, t.TempDir())

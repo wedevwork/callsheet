@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/wedevwork/callsheet/internal/cli"
-	"github.com/wedevwork/callsheet/internal/testkit"
 )
 
 // TestFP2CommandTree drives the built callsheet binary through every leaf,
@@ -18,7 +17,7 @@ import (
 // behavior is tested by TestPlaneCommands, the TestNode* and the TestRole*
 // function tests); every other leaf is a stub.
 func TestFP2CommandTree(t *testing.T) {
-	bin := testkit.BuildBinary(t, "./cmd/callsheet", "callsheet")
+	bin := nodeBinary(t)
 	home := t.TempDir()
 	cwd := t.TempDir()
 	env := []string{
