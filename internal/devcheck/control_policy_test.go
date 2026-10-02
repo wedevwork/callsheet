@@ -254,7 +254,7 @@ func TestControlPolicy(t *testing.T) {
 		// concurrent, contract in the packages shard, since the contract
 		// headroom fix as its per-CPU group); the function wrappers and
 		// native groups stay out of stress-functions.
-		if stressPlanePackage != "./internal/plane" || stressSidecarPackage != "./internal/sidecar" || stressContractPackage != "./internal/contract" {
+		if stressPlanePackage != "./internal/plane" || stressSidecarPackage != "./internal/sidecar" || !slices.Contains(stressSplitPackages, "./internal/contract") {
 			t.Fatal("a control contract's package left its shard")
 		}
 		for _, sel := range append(append(append([]string{}, stressFunctionTests...), stressPlaneFunctionTests...), stressNodeFunctionTests...) {
