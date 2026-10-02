@@ -20,12 +20,17 @@ The recipes were captured on Linux x86_64 on 2026-09-30
 versions, models or efforts are refused, not approximated: the worker's
 `--version` probe fails for an unqualified version (the role is not ready),
 and any other model/effort is refused at role registration, at every ready
-check and at task start (`probe_failed` or `start_failed` with the message
-`the <id> model/effort selection is not qualified; supported: model <m>,
-effort <e>`). Operator defaults such as Claude's `opus[1m]`/`medium` or
-Codex's `medium` are never substituted, and no paid call is made to discover
-compatibility. Adding a version or pair needs new evidence and a table and
-catalog change.
+check and at task start. Only role registration returns the detail:
+`invalid_argument` with reason `probe_failed` and the message `the <id>
+model/effort selection is not qualified; supported: model <m>, effort <e>`.
+Every ready check revalidates the selection and leaves such a role not
+ready. A task-start refusal of an unqualified effective model/effort (a
+per-task override) is a generic `start_failed` and launches nothing; its
+detail is only in the sidecar's own log, a warning `task model/effort
+selection not qualified` with `reason=selection_not_qualified`. Operator
+defaults such as Claude's `opus[1m]`/`medium` or Codex's `medium` are never
+substituted, and no paid call is made to discover compatibility. Adding a
+version or pair needs new evidence and a table and catalog change.
 
 macOS is **not** qualified. The same adapters may be enabled there
 explicitly; the sidecar then logs, once at start, that the recipe is

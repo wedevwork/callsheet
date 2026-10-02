@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/wedevwork/callsheet/internal/testkit"
 )
 
 type recorded struct {
@@ -64,6 +66,11 @@ func (f *fakeRunner) run(_ context.Context, argv, env []string, dir string, stdo
 		if p, ok := strings.CutPrefix(a, "-coverprofile="); ok {
 			os.WriteFile(p, []byte(profile), 0o600)
 		}
+	}
+	// A cross build writes a synthetic executable for its GOOS/GOARCH, so
+	// the cross stage's verification sees a complete, correct build.
+	if _, err := testkit.FakeGoBuild(argv, env); err != nil {
+		return err
 	}
 	switch {
 	case strings.HasPrefix(joined, "go test -json"):
@@ -209,7 +216,7 @@ func TestCrossPlanArgvAndArtifacts(t *testing.T) {
 
 func TestCrossRunsInCallerDirAndPropagatesFailure(t *testing.T) {
 	f := &fakeRunner{}
-	if err := Cross(context.Background(), f.run, "/out", Matrix); err != nil {
+	if err := Cross(context.Background(), f.run, t.TempDir(), Matrix); err != nil {
 		t.Fatal(err)
 	}
 	if len(f.calls) != 12 {
@@ -228,7 +235,7 @@ func TestCrossRunsInCallerDirAndPropagatesFailure(t *testing.T) {
 		}
 	}
 	f = &fakeRunner{fail: "fake-adapter-darwin-amd64"}
-	err := Cross(context.Background(), f.run, "/out", Matrix)
+	err := Cross(context.Background(), f.run, t.TempDir(), Matrix)
 	var se *StepError
 	if !errors.As(err, &se) || !strings.Contains(err.Error(), "fake-adapter-darwin-amd64") || !strings.Contains(err.Error(), "boom from child") {
 		t.Fatalf("err = %v", err)
@@ -340,9 +347,9 @@ func TestStagePlanning(t *testing.T) {
 		t.Fatalf("bench = %s", got)
 	}
 	f = &fakeRunner{}
-	code, _, errOut := runDriver(t, "linux", f, "cross")
-	if code != 0 || len(f.calls) != 12 {
-		t.Fatalf("cross = %d %v %s", code, len(f.calls), errOut)
+	code, out, errOut := runDriver(t, "linux", f, "cross")
+	if code != 0 || len(f.calls) != 12 || !strings.Contains(out, "devcheck: cross: verified 12 artifacts (exist, nonempty, ELF/Mach-O header matches GOOS/GOARCH)\n") {
+		t.Fatalf("cross = %d %v %s %s", code, len(f.calls), out, errOut)
 	}
 }
 

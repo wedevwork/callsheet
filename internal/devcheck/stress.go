@@ -110,8 +110,8 @@ var (
 	// sequential -cpu=1,2,4 invocation.
 	stressProcessGroupPackage = "./internal/spikes/processgroup"
 	// stressFunctionPackage and stressFunctionTests select only the FP-4/5
-	// function tests, deliberately excluding unrelated ones such as the
-	// twelve-artifact cross-build test. TestFP6ProcessGroups is not
+	// function tests, deliberately excluding unrelated ones such as FP-8's
+	// cross-build entry-point test. TestFP6ProcessGroups is not
 	// repeated here (iteration 02b): its RunExperiment is the experiment
 	// ./internal/spikes/processgroup's TestExperiment already repeats in
 	// the processgroup shard; it still runs once in the ordinary suites.

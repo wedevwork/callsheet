@@ -10,6 +10,8 @@ package devcheck
 import (
 	"bytes"
 	"context"
+	"debug/elf"
+	"debug/macho"
 	"errors"
 	"flag"
 	"fmt"
@@ -94,25 +96,147 @@ type Step struct {
 // fake-adapter and the process-group test binary for every target. Any
 // target outside Matrix fails the whole plan.
 func CrossPlan(outDir string, targets []Target) ([]Step, error) {
+	planned, err := crossPlan(outDir, targets)
+	if err != nil {
+		return nil, err
+	}
+	steps := make([]Step, len(planned))
+	for i, p := range planned {
+		steps[i] = p.step
+	}
+	return steps, nil
+}
+
+// Artifact is one planned cross-build output: its path and the target its
+// executable header must name.
+type Artifact struct {
+	Path   string
+	Target Target
+}
+
+// CrossArtifacts returns the artifacts CrossPlan writes for targets into
+// outDir, in plan order: the cross stage verifies exactly these.
+func CrossArtifacts(outDir string, targets []Target) ([]Artifact, error) {
+	planned, err := crossPlan(outDir, targets)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Artifact, len(planned))
+	for i, p := range planned {
+		out[i] = p.artifact
+	}
+	return out, nil
+}
+
+// plannedStep is one cross step with the artifact it writes.
+type plannedStep struct {
+	step     Step
+	artifact Artifact
+}
+
+// crossPlan is the single cross plan behind CrossPlan and CrossArtifacts.
+func crossPlan(outDir string, targets []Target) ([]plannedStep, error) {
 	if len(targets) == 0 {
 		return nil, errors.New("devcheck: no targets")
 	}
-	var steps []Step
+	var plan []plannedStep
 	for _, t := range targets {
 		if err := ValidateTarget(t); err != nil {
 			return nil, err
 		}
 		env := []string{"CGO_ENABLED=0", "GOOS=" + t.GOOS, "GOARCH=" + t.GOARCH}
-		steps = append(steps,
-			Step{Name: "cross " + t.String() + " callsheet", Env: env,
-				Argv: []string{"go", "build", "-o", filepath.Join(outDir, CallsheetArtifact(t)), "./cmd/callsheet"}},
-			Step{Name: "cross " + t.String() + " fake-adapter", Env: env,
-				Argv: []string{"go", "build", "-o", filepath.Join(outDir, FakeArtifact(t)), "./cmd/fake-adapter"}},
-			Step{Name: "cross " + t.String() + " processgroup test", Env: env,
-				Argv: []string{"go", "test", "-c", "-o", filepath.Join(outDir, ProcessTestArtifact(t)), "./internal/spikes/processgroup"}},
-		)
+		// add plans "<cmd...> -o <outDir>/<name> <pkg>".
+		add := func(what, name, pkg string, cmd ...string) {
+			path := filepath.Join(outDir, name)
+			argv := append(append(cmd, "-o", path), pkg)
+			plan = append(plan, plannedStep{Step{Name: "cross " + t.String() + " " + what, Env: env, Argv: argv}, Artifact{path, t}})
+		}
+		add("callsheet", CallsheetArtifact(t), "./cmd/callsheet", "go", "build")
+		add("fake-adapter", FakeArtifact(t), "./cmd/fake-adapter", "go", "build")
+		add("processgroup test", ProcessTestArtifact(t), "./internal/spikes/processgroup", "go", "test", "-c")
 	}
-	return steps, nil
+	return plan, nil
+}
+
+// InspectExecutable reads path's executable header, never running the
+// file, and returns the target it was built for: an executable ELF file is
+// a linux target, an executable Mach-O file a darwin target, and the
+// header's machine type gives amd64 or arm64. Any other file fails.
+func InspectExecutable(path string) (Target, error) {
+	if f, err := elf.Open(path); err == nil {
+		defer f.Close()
+		arch, ok := map[elf.Machine]string{elf.EM_X86_64: "amd64", elf.EM_AARCH64: "arm64"}[f.Machine]
+		switch {
+		case f.Type != elf.ET_EXEC && f.Type != elf.ET_DYN:
+			return Target{}, fmt.Errorf("ELF type %v is not an executable", f.Type)
+		case f.OSABI != elf.ELFOSABI_NONE && f.OSABI != elf.ELFOSABI_LINUX:
+			return Target{}, fmt.Errorf("ELF OS ABI %v is not linux", f.OSABI)
+		case !ok:
+			return Target{}, fmt.Errorf("ELF machine %v is not amd64 or arm64", f.Machine)
+		}
+		return Target{"linux", arch}, nil
+	}
+	if f, err := macho.Open(path); err == nil {
+		defer f.Close()
+		arch, ok := map[macho.Cpu]string{macho.CpuAmd64: "amd64", macho.CpuArm64: "arm64"}[f.Cpu]
+		switch {
+		case f.Type != macho.TypeExec:
+			return Target{}, fmt.Errorf("Mach-O type %v is not an executable", f.Type)
+		case !ok:
+			return Target{}, fmt.Errorf("Mach-O CPU %v is not amd64 or arm64", f.Cpu)
+		}
+		return Target{"darwin", arch}, nil
+	}
+	return Target{}, errors.New("neither an ELF nor a Mach-O file")
+}
+
+// VerifyArtifacts checks a cross build into outDir without executing
+// anything: outDir holds exactly the artifacts CrossArtifacts plans for
+// targets, and each is a nonempty regular file whose executable header
+// (InspectExecutable) names its target. Every problem is reported, each
+// naming its artifact.
+func VerifyArtifacts(outDir string, targets []Target) error {
+	arts, err := CrossArtifacts(outDir, targets)
+	if err != nil {
+		return err
+	}
+	var problems []error
+	bad := func(name, format string, args ...any) {
+		problems = append(problems, fmt.Errorf("devcheck: cross artifact %s: %s", name, fmt.Sprintf(format, args...)))
+	}
+	planned := map[string]bool{}
+	for _, a := range arts {
+		name := filepath.Base(a.Path)
+		planned[name] = true
+		st, err := os.Lstat(a.Path)
+		switch {
+		case err != nil:
+			bad(name, "missing: %v", err)
+			continue
+		case !st.Mode().IsRegular():
+			bad(name, "not a regular file (%v)", st.Mode().Type())
+			continue
+		case st.Size() == 0:
+			bad(name, "empty")
+			continue
+		}
+		got, err := InspectExecutable(a.Path)
+		if err != nil {
+			bad(name, "not a %s executable: %v", a.Target, err)
+		} else if got != a.Target {
+			bad(name, "built for %s, want %s", got, a.Target)
+		}
+	}
+	entries, err := os.ReadDir(outDir)
+	if err != nil {
+		problems = append(problems, fmt.Errorf("devcheck: cross output: %w", err))
+	}
+	for _, e := range entries {
+		if !planned[e.Name()] {
+			bad(e.Name(), "not a planned artifact")
+		}
+	}
+	return errors.Join(problems...)
 }
 
 // MergeEnv returns base with every KEY in overrides replaced.
@@ -165,9 +289,11 @@ func runStep(ctx context.Context, run Runner, s Step, stdout io.Writer) error {
 }
 
 // Cross builds callsheet, fake-adapter and the process-group test binary for
-// every target into outDir, using the
-// caller's working directory (the repository root). It neither creates nor
-// removes outDir, and never executes the foreign binaries.
+// every target into outDir, using the caller's working directory (the
+// repository root), then verifies the build (VerifyArtifacts): outDir
+// holds exactly the planned artifacts, each nonempty with an ELF or
+// Mach-O header naming its GOOS/GOARCH. It neither creates nor removes
+// outDir, and never executes the foreign binaries.
 func Cross(ctx context.Context, run Runner, outDir string, targets []Target) error {
 	steps, err := CrossPlan(outDir, targets)
 	if err != nil {
@@ -178,7 +304,7 @@ func Cross(ctx context.Context, run Runner, outDir string, targets []Target) err
 			return err
 		}
 	}
-	return nil
+	return VerifyArtifacts(outDir, targets)
 }
 
 // Coverage bar: strictly greater than this percentage.
@@ -386,7 +512,11 @@ func (d *driver) cross() error {
 		return err
 	}
 	fmt.Fprintf(d.out, "devcheck: cross: %d targets into %s\n", len(Matrix), out)
-	return Cross(d.ctx, d.run, out, Matrix)
+	if err := Cross(d.ctx, d.run, out, Matrix); err != nil {
+		return err
+	}
+	fmt.Fprintf(d.out, "devcheck: cross: verified %d artifacts (exist, nonempty, ELF/Mach-O header matches GOOS/GOARCH)\n", 3*len(Matrix))
+	return nil
 }
 
 const usage = "usage: devcheck test | coverage [-o profile] | bench | cross | all | native | stress | stress-packages | stress-plane-cpu1 | stress-plane | stress-sidecar-cpu1 | stress-sidecar | stress-processgroup | stress-functions\n"
