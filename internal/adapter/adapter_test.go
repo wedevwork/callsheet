@@ -105,16 +105,21 @@ func (tp *testProber) reaped(t *testing.T) *os.ProcessState {
 // saturatedProbeEnv selects the saturated subtest's child half.
 const saturatedProbeEnv = "CALLSHEET_ADAPTER_SATURATED_PROBE"
 
+// saturatedSpinners is how many busy goroutines saturate the child's two
+// Ps: enough to delay a reader goroutine past 100 ms (the old os/exec
+// copier failed this probe), and the probe's cost grows with it.
+const saturatedSpinners = 16
+
 // saturatedProbe is the child half of TestAdapterContract/saturated: one
-// real probe of a well-behaved script while 64 goroutines keep both Ps
-// busy. The injected clock never reaches the deadline, so only the
-// inherited-pipe rule can fail it.
+// real probe of a well-behaved script while saturatedSpinners goroutines
+// keep both Ps busy. The injected clock never reaches the deadline, so
+// only the inherited-pipe rule can fail it.
 func saturatedProbe(t *testing.T) {
 	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(2))
 	var stop atomic.Bool
 	var spinners sync.WaitGroup
 	defer func() { stop.Store(true); spinners.Wait() }()
-	for range 64 {
+	for range saturatedSpinners {
 		spinners.Add(1)
 		go func() {
 			defer spinners.Done()
@@ -367,8 +372,9 @@ func TestAdapterContract(t *testing.T) {
 		// descendant passes even when the probing process is CPU-saturated:
 		// only a writer still open after the 100 ms wait is an inherited
 		// pipe, never a reader goroutine that resumed late. It runs in a
-		// fresh process (GOMAXPROCS 2, 64 busy goroutines, no exec before
-		// the probe), because a warmed process usually wins that race.
+		// fresh process (GOMAXPROCS 2, saturatedSpinners busy goroutines,
+		// no exec before the probe), because a warmed process usually wins
+		// that race. It runs on every repetition: it is timing-dependent.
 		if os.Getenv(saturatedProbeEnv) == "1" {
 			saturatedProbe(t)
 			return
@@ -376,7 +382,8 @@ func TestAdapterContract(t *testing.T) {
 		ctx, cancel := context.WithTimeout(bg, testWait)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestAdapterContract$/^saturated$", "-test.count=1", "-test.v")
-		cmd.Env = append(os.Environ(), saturatedProbeEnv+"=1")
+		// A race-built child would sleep a second at exit for nothing.
+		cmd.Env = append(os.Environ(), saturatedProbeEnv+"=1", "GORACE="+strings.TrimSpace(os.Getenv("GORACE")+" atexit_sleep_ms=0"))
 		out, err := cmd.CombinedOutput()
 		if err != nil || !strings.Contains(string(out), "saturated probe passed") {
 			t.Fatalf("saturated probe child: %v\n%s", err, out)

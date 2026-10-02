@@ -1249,6 +1249,29 @@ machines and are never combined into one number.
     15 s), the slowest binary still `internal/workspace` (169.3 s and
     172.0 s against 161.7 s and 160.4 s), `internal/workspacetransfer`
     111.5 s and 111.7 s in the stage.
+  - After the ready-probe pipe fix (flakes B and C, 2026-10-02, same host
+    and settings, but every command pinned to 3 cores with
+    `taskset -c 0-2` to approximate the 3-core macOS runner, strictly
+    sequential, against an export of `4e4c12d`): `internal/adapter`
+    under `-race -count=20 -cpu=1,2,4` 50.8 s against 31.0 s (+19.8 s),
+    and 55.3 s against 37.3 s inside `stress packages` (+18.1 s); the
+    whole `stress packages` stage 319.2 s against 315.0 s (+4.2 s), its
+    slowest binary still `internal/workspace` (144.1 s and 141.2 s). The
+    growth is `TestAdapterContract/saturated`, which runs on every
+    repetition because it is timing-dependent: each repetition starts a
+    fresh test process that keeps 16 busy goroutines on two Ps through
+    one real probe (about 0.25 s plain, 0.30 s under the race detector,
+    with the race runtime's exit sleep disabled). 16 goroutines
+    reproduced the pre-fix false "left its output open" in 47 of 50
+    plain and 16 of 50 race runs on these 3 cores, more often and at
+    half the cost of 32 (37 and 7 of 50) or 64. The first hosted run
+    with the fix used 64 goroutines and timed out at the 6-minute limit
+    in `ci-macos-stress-packages` (run 36929701957; the adapter binary
+    took 44.5 s there before the fix, run 36889659609). On these 3-core
+    measurements the adapter binary grew by about 18–20 s while the
+    stage grew by 4.2 s, within the 09b allocation; the owner accepts the
+    added adapter cost. The hosted macOS figure stays pending until
+    observed.
   - Hosted iteration 09b times: pending (see First remote run).
 
 - Measured with iteration 08 (real adapters): Linux, go1.26.4 linux/amd64
