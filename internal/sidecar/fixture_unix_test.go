@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"runtime"
 	"syscall"
+	"time"
 
 	"github.com/wedevwork/callsheet/internal/adapter"
 )
@@ -62,4 +63,50 @@ func runFixture(raw string) int {
 	}
 	fmt.Fprintf(os.Stderr, "fixture run: %v\n", err)
 	return 1
+}
+
+// Iteration 10a: two more modes of this package's test binary.
+//
+// As the guardian (argv[1] is GuardianToken, as the sidecar re-executes
+// it): tests/function's TestTaskFastGroupCleanup points a fixture's
+// guardian at this binary for its injected-unknown scenario, the
+// production guardian whose group observation is installed but never
+// proves anything (unknown), so its grace must run in full.
+//
+// As the native probe calibration (probeCalibrationEnv set, started in a
+// process group of its own): BenchmarkGuardianCompletion's one
+// measurement of the native primitive outside its repeated loop.
+
+// probeCalibrationEnv selects the probe calibration mode.
+const probeCalibrationEnv = "CALLSHEET_SIDECAR_PROBE_CALIBRATION"
+
+// probeCalibrations is the calibration's probe count.
+const probeCalibrations = 1000
+
+// runInjectedGuardian is the injected-unknown guardian.
+func runInjectedGuardian(args []string) int {
+	env := defaultGuardianEnv()
+	env.groupAlone = func(int) (groupState, error) { return groupUnknown, nil }
+	return runGuardian(args, os.Stderr, env)
+}
+
+// probeCalibration installs the subreaper (where one exists), observes
+// its own childless group probeCalibrations times and prints the last
+// state and the mean nanoseconds per probe.
+func probeCalibration() int {
+	if err := enableGuardianSubreaper(); err != nil {
+		fmt.Printf("subreap: %v\n", err)
+		return 1
+	}
+	var st groupState
+	var err error
+	start := time.Now()
+	for range probeCalibrations {
+		if st, err = probeGuardianGroup(os.Getpid()); err != nil {
+			fmt.Printf("probe: %v\n", err)
+			return 1
+		}
+	}
+	fmt.Printf("%s %d\n", st, time.Since(start).Nanoseconds()/probeCalibrations)
+	return 0
 }

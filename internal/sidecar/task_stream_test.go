@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -58,23 +59,37 @@ func TestTaskStream(t *testing.T) {
 		// the advance below reaches. Moving the clock before that start
 		// would shift the whole cadence past the advance.
 		tr.ev.awaitMatch(t, evCycleDone, func(ev event) bool { return ev.rev == 1 })
+		// Its prompt ready report (iteration 10a) was acknowledged and
+		// processed before the clock moves.
+		s.report(t, 1, func(r contract.RoleStatus) bool { return r.CanAccept })
+		s.c.settle()
 		// Full duplex: the sidecar's heartbeat is outstanding while the
-		// plane's start is answered, on independent slots.
+		// plane's start is answered, on independent slots (the periodic
+		// heartbeat, read and acknowledged by the test).
+		s.c.setManual()
 		tr.clk.Advance(heartbeatInterval)
-		hbRid := s.nextB()
-		s.c.readHeartbeat(2)
+		hb := s.request(t)
+		if hb.Type != contract.FrameHeartbeat {
+			t.Fatalf("got %s %s, want the periodic heartbeat", hb.Type, hb.RequestID)
+		}
+		k, _ := strconv.Atoi(hb.RequestID[1:])
 		st := startBody(1, s.cfgs[0], 1, 1, "goal one")
 		s.c.sendStart("p2", st)
 		if r := s.c.startResult("p2"); r.Err != nil || r.TaskID != st.TaskID {
 			t.Fatalf("start = %+v", r)
 		}
 		ch := tr.child(t)
-		s.c.send(contract.ProtocolVersion, contract.FrameHeartbeatAck, hbRid, nil)
+		// The occupied slot is reported once the heartbeat's exchange ends.
+		s.c.setAuto()
+		s.c.send(contract.ProtocolVersion, contract.FrameHeartbeatAck, hb.RequestID, nil)
 		// The heartbeat ack, and the ready cycle due at the same tick (the
 		// second cycle, the first published since the wait above), finish
 		// in either order; the final heartbeat's readiness depends on that
 		// cycle.
-		tr.ev.awaitAll(t, func(ev event) bool { return ev.kind == evAck && ev.acks == 2 }, nthKind(evCycleDone, 1))
+		tr.ev.awaitAll(t, func(ev event) bool { return ev.kind == evAck && ev.acks == k }, nthKind(evCycleDone, 1))
+		if r := s.report(t, 1, func(r contract.RoleStatus) bool { return r.Inflight == 1 }); r.Roles[0].Concurrency != 2 {
+			t.Fatalf("occupied report %+v", r.Roles)
+		}
 		if p := ch.prompt(t); !bytes.Contains(p, []byte("INSTRUCTION")) || !bytes.Contains(p, []byte(`"goal":"goal one"`)) {
 			t.Fatalf("prompt %s", p)
 		}
@@ -95,9 +110,9 @@ func TestTaskStream(t *testing.T) {
 		if *res.ExitCode != 0 || res.OutputBytes != 9 || res.Signal != nil {
 			t.Fatalf("result %+v", res)
 		}
-		// Heartbeats report the run-lifetime local count: back to zero.
-		tr.clk.Advance(heartbeatInterval)
-		if hb := s.beat(t, 1); hb.Roles[0].Inflight != 0 || !hb.Roles[0].CanAccept {
+		// Heartbeats report the run-lifetime local count: back to zero,
+		// reported at once.
+		if hb := s.report(t, 1, func(r contract.RoleStatus) bool { return r.Inflight == 0 }); !hb.Roles[0].CanAccept {
 			t.Fatalf("heartbeat %+v", hb.Roles)
 		}
 		// Even after completion the attachment remembers the start: a
@@ -208,8 +223,7 @@ func TestTaskStream(t *testing.T) {
 			s := tr.connect(t, 1, 1, roleConfig("a", ins, run))
 			st, ch := s.run(t, 1, 0, "big")
 			ch.out(bytes.Repeat([]byte("z"), 3*contract.MaxLogChunkBytes/2))
-			rid := s.nextB()
-			lb := s.c.expectLog(rid)
+			rid, lb := s.nextLog(t)
 			if len(lb.Data) != contract.MaxLogChunkBytes {
 				t.Fatalf("chunk of %d bytes", len(lb.Data))
 			}
@@ -224,8 +238,7 @@ func TestTaskStream(t *testing.T) {
 			}
 			tr.advanceBackoff(t, backoff(0, 0.5))
 			s, _ = tr.reconnect(t, 2, 2, map[string]string{st.TaskID: contract.ActionContinue}, roleConfig("a", ins, run))
-			rid = s.nextB()
-			again := s.c.expectLog(rid)
+			rid, again := s.nextLog(t)
 			if again.Offset != lb.Offset || !bytes.Equal(again.Data, lb.Data) || again.LateDigest != nil {
 				t.Fatalf("resent chunk at %d of %d bytes", again.Offset, len(again.Data))
 			}
@@ -236,10 +249,8 @@ func TestTaskStream(t *testing.T) {
 			if len(rest) != contract.MaxLogChunkBytes/2 || r.OutputBytes != 3*contract.MaxLogChunkBytes/2 {
 				t.Fatalf("after the resend: %d bytes, result %+v", len(rest), r)
 			}
-			tr.clk.Advance(heartbeatInterval)
-			if hb := s.beat(t, 2); hb.Roles[0].Inflight != 0 {
-				t.Fatalf("heartbeat %+v", hb.Roles)
-			}
+			// The freed slot is reported at once (iteration 10a).
+			s.report(t, 2, func(r contract.RoleStatus) bool { return r.Inflight == 0 })
 		})
 		t.Run("preparation", func(t *testing.T) {
 			t.Parallel()
@@ -259,8 +270,9 @@ func TestTaskStream(t *testing.T) {
 			st := startBody(1, s.cfgs[0], 1, 1, "stuck")
 			s.c.sendStart("p2", st)
 			<-bo.arrived
-			tr.clk.Advance(heartbeatInterval)
-			s.beat(t, 1)
+			// The reserved slot's report, then the periodic heartbeat.
+			s.report(t, 1, func(r contract.RoleStatus) bool { return r.Inflight == 1 && r.CanAccept })
+			s.periodic(t, 1)
 			// At the budget the refusal and the next heartbeat are both due:
 			// read them in whichever order they were written.
 			tr.clk.Advance(prepBudget - heartbeatInterval)
@@ -349,9 +361,10 @@ func TestTaskStream(t *testing.T) {
 			st := startBody(1, s.cfgs[0], 1, 1, "slow start")
 			s.c.sendStart("p2", st)
 			<-gate.arrived
-			// The heartbeat due mid-budget is answered first.
-			tr.clk.Advance(heartbeatInterval)
-			s.beat(t, 1)
+			// The heartbeat due mid-budget is answered first (after the
+			// passed cycle's and the reserved slot's reports).
+			s.report(t, 1, func(r contract.RoleStatus) bool { return r.Inflight == 1 && r.CanAccept })
+			s.periodic(t, 1)
 			tr.clk.Advance(prepBudget - heartbeatInterval)
 			var code websocket.StatusCode
 			var reason string
@@ -439,8 +452,7 @@ func TestTaskStream(t *testing.T) {
 			}
 			// Collector B: the session applies the acknowledgement and
 			// collects (the worker is done and acknowledged).
-			rid := s.nextB()
-			res := s.c.expectResult(rid)
+			rid, res := s.nextResult(t)
 			s.c.ackResult(rid, st.TaskID, res.Digest, true)
 			collected, acked := false, false
 			deadline := time.After(testWait)
@@ -484,8 +496,7 @@ func TestTaskStream(t *testing.T) {
 		wp, rp := weak.Make(w1), weak.Make(w1.ring)
 		w1 = nil
 		c1.exitCode(0)
-		rid := s.nextB()
-		r1 := s.c.expectResult(rid)
+		rid, r1 := s.nextResult(t)
 		s.c.ackResult(rid, st1.TaskID, r1.Digest, true)
 		// The acknowledgement and the worker's own completion are
 		// independent: GC is forced only after both the session applied
@@ -497,9 +508,10 @@ func TestTaskStream(t *testing.T) {
 			t.Fatal("the acknowledged worker (or its output ring) is still retained")
 		}
 		// Past the four-second exchange bound (and to the next heartbeat)
-		// with no write in flight: the session is still attached.
-		tr.clk.Advance(heartbeatInterval)
-		s.beat(t, 1)
+		// with no write in flight: the session is still attached (the freed
+		// slot's report, then the periodic heartbeat).
+		s.report(t, 1, func(r contract.RoleStatus) bool { return r.Inflight == 1 && r.CanAccept })
+		s.periodic(t, 1)
 		sup := tr.super(t)
 		if sup.find(st1.TaskID) != nil || sup.find(st2.TaskID) == nil {
 			t.Fatal("the acknowledged result was retained, or the running task dropped")
@@ -531,8 +543,7 @@ func TestTaskStream(t *testing.T) {
 		s := tr.connect(t, 1, 1, roleConfig("a", ins, run))
 		st, ch := s.run(t, 1, 0, "lost ack")
 		ch.exitCode(3)
-		rid := s.nextB()
-		first := s.c.expectResult(rid)
+		rid, first := s.nextResult(t)
 		if *first.ExitCode != 3 {
 			t.Fatalf("result %+v", first)
 		}
@@ -549,11 +560,13 @@ func TestTaskStream(t *testing.T) {
 		if again.Digest != first.Digest || *again.ExitCode != 3 {
 			t.Fatalf("resent %+v", again)
 		}
-		// Uncommitted: retried no sooner than a second later.
+		// The slot was released with the lost acknowledgement (the new
+		// attachment reports it free at once).
+		s.report(t, 2, func(r contract.RoleStatus) bool { return r.Inflight == 0 && r.CanAccept })
+		// Uncommitted: retried no sooner than a second later (every
+		// acknowledgement processed before the clock moves).
+		s.c.settle()
 		tr.clk.Advance(heartbeatInterval)
-		if hb := s.beat(t, 2); hb.Roles[0].Inflight != 0 {
-			t.Fatalf("slot after the lost ack: %+v", hb.Roles)
-		}
 		if third := s.result(t, st); third.Digest != first.Digest {
 			t.Fatalf("retried %+v", third)
 		}

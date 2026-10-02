@@ -33,7 +33,7 @@ type fakeRun struct {
 	root string
 }
 
-func startFakeRun(t *testing.T, fp *fakePlane, url string, caPEM []byte) *fakeRun {
+func startFakeRun(t testing.TB, fp *fakePlane, url string, caPEM []byte) *fakeRun {
 	t.Helper()
 	f := &fakeRun{fp: fp, clk: testkit.NewFakeClock(time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)), logs: newSyncLog(), root: newRoot(t)}
 	f.d = testDeps(f.clk)
@@ -52,7 +52,7 @@ func startFakeRun(t *testing.T, fp *fakePlane, url string, caPEM []byte) *fakeRu
 
 // advanceBackoff waits for the backoff event and its timer, checks the
 // delay, then advances past it.
-func (f *fakeRun) advanceBackoff(t *testing.T, want time.Duration) {
+func (f *fakeRun) advanceBackoff(t testing.TB, want time.Duration) {
 	t.Helper()
 	ev := f.ev.await(t, evBackoff)
 	if ev.delay != want {
@@ -67,7 +67,7 @@ func (f *fakeRun) advanceBackoff(t *testing.T, want time.Duration) {
 // awaitReply waits until the session's request (hello for 0, heartbeat
 // acks otherwise) was written and it waits for the reply: from then on the
 // only 5 s timer is the reply wait, not the write's own bound.
-func (f *fakeRun) awaitReply(t *testing.T, acks int) {
+func (f *fakeRun) awaitReply(t testing.TB, acks int) {
 	t.Helper()
 	for {
 		if ev := f.ev.await(t, evAwaitReply); ev.acks == acks {
@@ -78,7 +78,7 @@ func (f *fakeRun) awaitReply(t *testing.T, acks int) {
 
 // tick advances one heartbeat interval once the session, after an
 // acknowledgement, waits for the next heartbeat's due time.
-func (f *fakeRun) tick(t *testing.T) {
+func (f *fakeRun) tick(t testing.TB) {
 	t.Helper()
 	if err := f.clk.AwaitWaiter(testWait, testkit.HasTimer(heartbeatInterval)); err != nil {
 		t.Fatal(err)
@@ -88,7 +88,7 @@ func (f *fakeRun) tick(t *testing.T) {
 
 // stopped cancels Run and requires a clean cancellation with no clock
 // waiter left behind.
-func (f *fakeRun) stopped(t *testing.T) {
+func (f *fakeRun) stopped(t testing.TB) {
 	t.Helper()
 	f.run.cancel()
 	if err := f.run.result(t); !errors.Is(err, context.Canceled) {
@@ -516,7 +516,7 @@ func TestRunCancellation(t *testing.T) {
 
 // pipeStream returns a client WebSocket over net.Pipe whose server side
 // completes the upgrade and then never reads, so writes block.
-func pipeStream(t *testing.T) (*websocket.Conn, func()) {
+func pipeStream(t testing.TB) (*websocket.Conn, func()) {
 	t.Helper()
 	c1, c2 := net.Pipe()
 	release := make(chan struct{})
@@ -603,14 +603,14 @@ func TestRunStartup(t *testing.T) {
 
 type clientTrust = client.Trust
 
-func mkdir0700(t *testing.T, p string) {
+func mkdir0700(t testing.TB, p string) {
 	t.Helper()
 	if err := os.MkdirAll(p, 0o700); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func writeFile0600(t *testing.T, p, s string) {
+func writeFile0600(t testing.TB, p, s string) {
 	t.Helper()
 	if err := os.WriteFile(p, []byte(s), 0o600); err != nil {
 		t.Fatal(err)

@@ -43,6 +43,12 @@ import (
 // or the parent's EOF (lost) latched first keeps its cause. The latched
 // control cause is reported as a stopping status before the deliberate
 // group KILL, through one bounded, ordered status writer.
+//
+// Iteration 10a: the grace ends early, without the KILL, only on positive
+// native proof that the guardian is the last member of its group (Linux:
+// a child subreaper whose WNOHANG wait4 reports ECHILD; macOS: the
+// kernel's process-group PID list naming only the guardian). Anything
+// else keeps the full grace and the KILL.
 
 // maxGuardianDiag bounds the guardian's stderr diagnostics.
 const maxGuardianDiag = 512
@@ -60,6 +66,10 @@ const (
 // (status), 7-9 (the adapter's stdin, stdout and stderr).
 type guardianFDs struct {
 	inv, life, release, status, stdin, stdout, stderr *os.File
+	// lifeBlocking reports a lifetime pipe that could not be made
+	// nonblocking at adoption (iteration 10a): closing it would not unblock
+	// its reader, so the guardian neither completes early nor joins it.
+	lifeBlocking bool
 }
 
 // adapterRun is a started adapter the guardian waits for.
@@ -87,7 +97,31 @@ type guardianEnv struct {
 	// observes the arbitration (tests only).
 	timerAt func(at time.Time) (<-chan time.Time, func() bool)
 	events  func(string)
+	// subreap and groupAlone are iteration 10a's early-completion
+	// primitives (build-selected natively: group_alone_linux.go,
+	// group_alone_darwin.go). subreap runs once before any adapter Start;
+	// groupAlone observes the guardian's group after the adapter's Wait
+	// joined. A nil field disables the fast path (unknown), never proves
+	// alone; an error always means unknown, whatever state it returns.
+	subreap    func() error
+	groupAlone func(pgid int) (groupState, error)
 }
+
+// groupState is one native observation of the guardian's own group
+// (iteration 10a): only groupAlone, returned without an error, is the
+// positive proof that the guardian is the group's last member.
+type groupState int
+
+const (
+	groupUnknown groupState = iota
+	groupBusy
+	groupAlone
+)
+
+// maxProbeRetries bounds a native observation's EINTR retries: an
+// interrupted probe is retried within the same cleanup deadline, then
+// counts as unknown.
+const maxProbeRetries = 8
 
 // statusDeadline bounds one status delivery on the injected clock: a
 // blocked status pipe is abandoned, never waited for.
@@ -222,6 +256,17 @@ type guardian struct {
 	done      chan struct{}
 	cleanOnce sync.Once
 	cleaned   chan struct{}
+	// fast reports that the early-completion primitives are installed
+	// (iteration 10a: both present and the subreaper, where one exists,
+	// set before the adapter's Start). fin makes one decision between a
+	// positive group proof and the escalation's deadline: once the
+	// deadline's final flush (or its KILL) claimed the cleanup, no proof is
+	// accepted; a proof accepted first ends the cleanup and withholds the
+	// KILL (killGate).
+	fast    bool
+	fin     sync.Mutex
+	claimed bool
+	proved  bool
 }
 
 func (g *guardian) event(e string) {
@@ -572,9 +617,14 @@ func (g *guardian) run() int {
 		stopTerm() // no delivery after this, so the channel may close
 		close(term)
 	}()
+	// The lifetime reader ends at the parent's EOF (parent gone), or when
+	// the guardian's ordinary return closes its descriptor and joins it.
+	lifeDone := make(chan struct{})
 	go func() {
-		io.Copy(io.Discard, g.fds.life)
-		close(g.parentGone)
+		defer close(lifeDone)
+		if _, err := io.Copy(io.Discard, g.fds.life); !errors.Is(err, os.ErrClosed) {
+			close(g.parentGone)
+		}
 	}()
 	fifo := filepath.Join(g.inv.TaskDir, controlName)
 	if err := g.env.mkfifo(fifo); err != nil {
@@ -588,7 +638,11 @@ func (g *guardian) run() int {
 	if err := syncPath(g.inv.TaskDir); err != nil {
 		return g.fail(guardianFIFOFailed, err)
 	}
-	go g.readCommands(ff)
+	cmdDone := make(chan struct{})
+	go func() {
+		defer close(cmdDone)
+		g.readCommands(ff)
+	}()
 	if err := g.writeOwner(contract.OwnerArmed); err != nil {
 		return g.fail(guardianOwnerFailed, err)
 	}
@@ -618,6 +672,23 @@ func (g *guardian) run() int {
 		return g.fail(guardianOwnerFailed, err)
 	}
 	g.cleaned = make(chan struct{})
+	// Iteration 10a: the early-completion primitives are installed before
+	// any adapter Start. The subreaper (Linux) must exist before the launch
+	// so an orphaned descendant is adopted before its parent can be fully
+	// reaped; its failure only disables the early completion (the full
+	// grace remains), never the task.
+	if g.fast = g.env.subreap != nil && g.env.groupAlone != nil; g.fast && g.fds.lifeBlocking {
+		g.fast = false
+		diagf(g.diag, "early group completion disabled: the lifetime pipe stayed blocking")
+		g.event("lifetime-blocking")
+	}
+	if g.fast {
+		if err := g.env.subreap(); err != nil {
+			g.fast = false
+			diagf(g.diag, "early group completion disabled: %v", err)
+			g.event("subreap-failed")
+		}
+	}
 	// Start authorization: the monotonic instant is sampled and the
 	// deadline armed under the arbitration mutex, immediately before Start;
 	// Start runs outside it, so a blocked Start never prevents the timeout.
@@ -672,6 +743,17 @@ func (g *guardian) run() int {
 		case <-g.exitCh:
 			g.cleanup()
 			<-g.cleaned
+			// An ordinary return (iteration 10a: the group was proved to
+			// hold only this guardian; before, only an unkillable injected
+			// group returned): close the command and lifetime readers'
+			// descriptors and join them (the lifetime reader only when its
+			// descriptor is pollable, so its Close unblocks it).
+			ff.Close()
+			<-cmdDone
+			if !g.fds.lifeBlocking {
+				g.fds.life.Close()
+				<-lifeDone
+			}
 			return 0
 		case <-parentGone:
 			parentGone = nil
@@ -746,16 +828,132 @@ func (g *guardian) publishExit(ex procExit) {
 }
 
 // cleanup starts the group cleanup once: TERM to its own group, the
-// grace, then KILL to that same group, the guardian included; no
-// descendant-enumeration fast path. The adapter's wait status, not this
-// KILL, decides a natural outcome; the enqueued status records are flushed
-// (bounded) immediately before the KILL.
+// grace, then KILL to that same group, the guardian included. The
+// adapter's wait status, not this KILL, decides a natural outcome; the
+// enqueued status records are flushed (bounded) immediately before the
+// KILL.
+//
+// Iteration 10a: when the fast path is installed, a separate observer
+// (observe) looks for positive native proof that the guardian is its
+// group's last member; a proof accepted before the deadline's final flush
+// claimed the cleanup ends it without the KILL: the status queue is
+// flushed (bounded) and the guardian returns normally, still having
+// anchored the group until then. Busy, unknown or a probe error never ends
+// the grace early, and a slow probe never delays the escalation, which
+// keeps its armed deadline. The sidecar's own ESRCH observation, not this
+// proof, remains the group's final absence.
 func (g *guardian) cleanup() {
 	g.cleanOnce.Do(func() {
 		go func() {
 			defer close(g.cleaned)
-			processgroup.Escalate(context.Background(), processgroup.Plan{PGID: g.pid, Grace: g.env.grace, Sig: g.env.sig, Clock: g.env.clock,
-				BeforeDeadline: func() error { g.sq.flush(); return nil }})
+			alone, stop, observed := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			if g.fast {
+				go func() {
+					defer close(observed)
+					g.observe(alone, stop)
+				}()
+			} else {
+				close(observed)
+			}
+			processgroup.Escalate(context.Background(), processgroup.Plan{PGID: g.pid, Grace: g.env.grace, Sig: killGate{g}, Clock: g.env.clock,
+				Done: alone, BeforeDeadline: func() error { g.claim(); g.sq.flush(); return nil }})
+			g.event("escalation-ended")
+			close(stop)
+			<-observed
+			g.fin.Lock()
+			proved := g.proved
+			g.fin.Unlock()
+			if proved {
+				g.sq.flush()
+				g.event("group-alone")
+			}
 		}()
 	})
+}
+
+// observe is the cleanup's group observer: once the adapter's Start
+// returned and its Wait joined (the published exit fact; a Start in
+// progress or a direct child's exit alone is never eligible), it probes
+// the group at once and then every groupPoll until a proof is accepted,
+// the deadline claimed the cleanup, or the cleanup ends.
+func (g *guardian) observe(alone chan<- struct{}, stop <-chan struct{}) {
+	select {
+	case <-g.exitCh:
+	case <-stop:
+		return
+	}
+	for {
+		st, err := g.env.groupAlone(g.pid)
+		if err != nil {
+			st = groupUnknown
+		}
+		g.event("probe " + st.String())
+		if st == groupAlone {
+			if g.accept() {
+				g.event("proof-accepted")
+				close(alone)
+			}
+			return
+		}
+		tick, cancel := g.after(groupPoll)
+		select {
+		case <-stop:
+			cancel()
+			return
+		case <-tick:
+		}
+	}
+}
+
+// accept records a positive proof unless the deadline already claimed the
+// cleanup (under fin: one order between the two).
+func (g *guardian) accept() bool {
+	g.fin.Lock()
+	defer g.fin.Unlock()
+	if g.claimed {
+		return false
+	}
+	g.proved = true
+	return true
+}
+
+// claim is the deadline's final step before its flush and KILL: unless a
+// proof was accepted first, no proof is accepted afterwards.
+func (g *guardian) claim() bool {
+	g.fin.Lock()
+	ok := !g.proved
+	if ok {
+		g.claimed = true
+	}
+	g.fin.Unlock()
+	if ok {
+		g.event("deadline-claimed")
+	}
+	return ok
+}
+
+// killGate is the escalation's signaler: every signal but the KILL passes
+// to the guardian's own; the KILL is sent only if claim, under the same
+// mutex as accept, still authorizes it. A proof accepted first therefore
+// withholds the KILL however the escalation's wake-ups are ordered (the
+// group then holds only the guardian; the escalation reads the withheld
+// KILL as a group already gone).
+type killGate struct{ g *guardian }
+
+func (k killGate) Signal(pid int, sig syscall.Signal) error {
+	if sig == syscall.SIGKILL && !k.g.claim() {
+		k.g.event("kill-withheld")
+		return syscall.ESRCH
+	}
+	return k.g.env.sig.Signal(pid, sig)
+}
+
+func (s groupState) String() string {
+	switch s {
+	case groupAlone:
+		return "alone"
+	case groupBusy:
+		return "busy"
+	}
+	return "unknown"
 }

@@ -626,6 +626,9 @@ func startTaskRun(t *testing.T, fp *fakePlane, o taskOpts) *taskRun {
 	}
 	f.ev = observe(f.d)
 	fp.ev = f.ev
+	fp.mu.Lock()
+	fp.autoAck = true
+	fp.mu.Unlock()
 	if o.root == "" {
 		writeState(t, f.root, testID, fp.url, fp.caPEM)
 	}
@@ -842,9 +845,12 @@ func (c *fakeConn) reconcileEmpty() {
 
 // taskSession is one connected session with roles installed.
 type taskSession struct {
-	c    *fakeConn
-	tr   *taskRun
-	b    int // next sidecar request number
+	c  *fakeConn
+	tr *taskRun
+	// b is the lowest number the sidecar's next task request may have:
+	// heartbeats, prompt readiness reports included (iteration 10a), share
+	// the sequence, so readers take each request's own number, in order.
+	b    int
 	p    int // next plane request number
 	gen  int
 	cfgs []contract.RoleConfig
@@ -938,11 +944,46 @@ func (s *taskSession) nextP() string {
 	return rid
 }
 
-// nextB returns the next sidecar request ID the sidecar will use.
-func (s *taskSession) nextB() string {
-	rid := "b" + strconv.Itoa(s.b)
-	s.b++
-	return rid
+// request reads the sidecar's next task request (the dispatcher handles
+// the heartbeats between): a b request numbered at least s.b, which then
+// moves past it.
+func (s *taskSession) request(t *testing.T) contract.NodeFrame {
+	t.Helper()
+	f := s.c.recv()
+	k, err := strconv.Atoi(strings.TrimPrefix(f.RequestID, "b"))
+	if !strings.HasPrefix(f.RequestID, "b") || err != nil || k < s.b {
+		t.Fatalf("got %s %s, want a sidecar request numbered b%d or later", f.Type, f.RequestID, s.b)
+	}
+	s.b = k + 1
+	return f
+}
+
+// nextLog reads the next task request, which must be a task_log.
+func (s *taskSession) nextLog(t *testing.T) (string, contract.TaskLogBody) {
+	t.Helper()
+	f := s.request(t)
+	if f.Type != contract.FrameTaskLog {
+		t.Fatalf("got %s %s (%s), want a task_log", f.Type, f.RequestID, f.Body)
+	}
+	b, err := contract.DecodeTaskLog(f.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return f.RequestID, b
+}
+
+// nextResult reads the next task request, which must be a task_result.
+func (s *taskSession) nextResult(t *testing.T) (string, contract.TaskResultBody) {
+	t.Helper()
+	f := s.request(t)
+	if f.Type != contract.FrameTaskResult {
+		t.Fatalf("got %s %s (%s), want a task_result", f.Type, f.RequestID, f.Body)
+	}
+	b, err := contract.DecodeTaskResult(f.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return f.RequestID, b
 }
 
 // start sends a start for task n on role index i and returns the reply.
@@ -968,14 +1009,46 @@ func (s *taskSession) run(t *testing.T, n, i int, goal string) (contract.TaskSta
 	return b, ch
 }
 
-// beat acknowledges the next heartbeat (the clock must have made it due).
+// beat returns the dispatcher's next heartbeat observation (checking its
+// revision) once the sidecar processed its acknowledgement.
 func (s *taskSession) beat(t *testing.T, rev int) contract.HeartbeatBody {
 	t.Helper()
-	rid := s.nextB()
-	k, _ := strconv.Atoi(rid[1:])
-	b := s.c.heartbeatAt(k, rev)
-	s.tr.ev.awaitMatch(t, evAck, func(ev event) bool { return ev.acks == k })
-	return b
+	b := s.c.nextBeat()
+	if b.body.RolesRevision != rev {
+		t.Fatalf("heartbeat b%d revision %d, want %d", b.k, b.body.RolesRevision, rev)
+	}
+	s.b = max(s.b, b.k+1)
+	s.tr.ev.awaitAck(t, s.c.minSession, b.k)
+	return b.body
+}
+
+// report waits until the latest heartbeat observation is at revision rev
+// with a first role whose status satisfies pred (a prompt readiness
+// report, or a periodic heartbeat) and the sidecar processed its
+// acknowledgement.
+func (s *taskSession) report(t *testing.T, rev int, pred func(contract.RoleStatus) bool) contract.HeartbeatBody {
+	t.Helper()
+	return s.reportBody(t, rev, func(b contract.HeartbeatBody) bool { return len(b.Roles) > 0 && pred(b.Roles[0]) })
+}
+
+// periodic returns the next periodic heartbeat: every acknowledgement
+// processed and earlier observations dropped, the clock moves one
+// heartbeat interval (the caller has awaited every report it caused).
+func (s *taskSession) periodic(t *testing.T, rev int) contract.HeartbeatBody {
+	t.Helper()
+	s.c.settle()
+	s.c.drainBeats()
+	s.tr.clk.Advance(heartbeatInterval)
+	return s.beat(t, rev)
+}
+
+// reportBody is report for a predicate on the whole heartbeat body.
+func (s *taskSession) reportBody(t *testing.T, rev int, pred func(contract.HeartbeatBody) bool) contract.HeartbeatBody {
+	t.Helper()
+	b := s.c.awaitLatest(func(b beatObs) bool { return b.body.RolesRevision == rev && pred(b.body) })
+	s.b = max(s.b, b.k+1)
+	s.tr.ev.awaitAck(t, s.c.minSession, b.k)
+	return b.body
 }
 
 // logs reads task_log requests of st until next reaches end, acking each.
@@ -983,8 +1056,7 @@ func (s *taskSession) logs(t *testing.T, st contract.TaskStartBody, end int) []b
 	t.Helper()
 	var out []byte
 	for next := 0; next < end; {
-		rid := s.nextB()
-		lb := s.c.expectLog(rid)
+		rid, lb := s.nextLog(t)
 		if lb.TaskID != st.TaskID || lb.Offset != next || lb.Execution != st.Execution {
 			t.Fatalf("log %s = %s at %d, want %s at %d", rid, lb.TaskID, lb.Offset, st.TaskID, next)
 		}
@@ -1005,8 +1077,7 @@ func (s *taskSession) result(t *testing.T, st contract.TaskStartBody) contract.T
 // received only).
 func (s *taskSession) resultAck(t *testing.T, st contract.TaskStartBody, committed bool) contract.TaskResultBody {
 	t.Helper()
-	rid := s.nextB()
-	r := s.c.expectResult(rid)
+	rid, r := s.nextResult(t)
 	if r.TaskID != st.TaskID || r.Execution != st.Execution {
 		t.Fatalf("result %s for %s", rid, r.TaskID)
 	}
@@ -1044,11 +1115,8 @@ func (s *taskSession) drain(t *testing.T, st contract.TaskStartBody) (contract.T
 	t.Helper()
 	var out []byte
 	for {
-		rid := s.nextB()
-		f := s.c.recv()
-		if f.RequestID != rid {
-			t.Fatalf("got %s %s, want request %s", f.Type, f.RequestID, rid)
-		}
+		f := s.request(t)
+		rid := f.RequestID
 		switch f.Type {
 		case contract.FrameTaskLog:
 			lb, err := contract.DecodeTaskLog(f.Body)

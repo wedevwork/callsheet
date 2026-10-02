@@ -56,8 +56,10 @@ func TestControlNativeGroups(t *testing.T) {
 		// plane and its descendant is ready: the plane's durable intent
 		// reaches the guardian, whose TERM reaches the leader (its wait
 		// status) and the descendant, which exits; the whole group completes
-		// and is proved gone before the task is cancelled, and a Run
-		// shutdown afterwards has nothing left to stop.
+		// and is proved gone before the task is cancelled (since iteration
+		// 10a without waiting for the grace: the guardian proves it is the
+		// last member, and the sidecar's ESRCH is still the final absence),
+		// and a Run shutdown afterwards has nothing left to stop.
 		r := startNativeRig(t, ledger, fakeadapter.TermExit, 0)
 		started := "native started pid=" + strconv.Itoa(r.info.LeaderPID) + "\n"
 		r.awaitTask(t, func(v contract.TaskView) bool { return strings.Contains(v.LogTail, started) })
@@ -67,9 +69,7 @@ func TestControlNativeGroups(t *testing.T) {
 			t.Fatalf("cancel %+v %v", resp, err)
 		}
 		v := r.awaitTask(t, func(v contract.TaskView) bool { return contract.TaskTerminal(v.State) })
-		if el := time.Since(start); el < time.Second {
-			t.Fatalf("the group was reported gone after %v, before the 1 s grace", el)
-		}
+		t.Logf("cooperative cancellation: terminal %v after the cancel request", time.Since(start))
 		if v.State != contract.TaskCancelled || v.Result == nil || v.Result.Signal == nil || *v.Result.Signal != "SIGTERM" ||
 			!strings.Contains(v.LogTail, started) {
 			t.Fatalf("cancelled task %+v", v)

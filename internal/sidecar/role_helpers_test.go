@@ -93,7 +93,7 @@ func (a *scriptAdapter) count() int {
 }
 
 // awaitProbe waits for the next probe start.
-func (a *scriptAdapter) awaitProbe(t *testing.T) string {
+func (a *scriptAdapter) awaitProbe(t testing.TB) string {
 	t.Helper()
 	select {
 	case exe := <-a.started:
@@ -127,7 +127,7 @@ const fakeExe = "/opt/fake-adapter/bin/fake adapter"
 
 // manuals writes an instruction and runbook for id under dir and returns
 // their paths.
-func manuals(t *testing.T, dir, id, content string) (string, string) {
+func manuals(t testing.TB, dir, id, content string) (string, string) {
 	t.Helper()
 	d := filepath.Join(dir, id)
 	if err := os.MkdirAll(d, 0o755); err != nil {
@@ -156,13 +156,13 @@ type roleRun struct {
 	dir    string
 }
 
-func startRoleRun(t *testing.T, fp *fakePlane, enabled bool) *roleRun {
+func startRoleRun(t testing.TB, fp *fakePlane, enabled bool) *roleRun {
 	t.Helper()
 	return startRoleRunWith(t, fp, enabled, nil)
 }
 
 // startRoleRunWith is startRoleRun with prepared deps adjustments.
-func startRoleRunWith(t *testing.T, fp *fakePlane, enabled bool, adjust func(d *deps)) *roleRun {
+func startRoleRunWith(t testing.TB, fp *fakePlane, enabled bool, adjust func(d *deps)) *roleRun {
 	t.Helper()
 	rr := &roleRun{script: newScript(), dir: t.TempDir()}
 	f := &fakeRun{fp: fp, clk: testkit.NewFakeClock(time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)), logs: newSyncLog(), root: newRoot(t)}
@@ -174,6 +174,9 @@ func startRoleRunWith(t *testing.T, fp *fakePlane, enabled bool, adjust func(d *
 	f.ev = observe(f.d)
 	if fp != nil {
 		fp.ev = f.ev
+		fp.mu.Lock()
+		fp.autoAck = true
+		fp.mu.Unlock()
 	}
 	url, ca := "https://127.0.0.1:1", []byte(nil)
 	if fp != nil {
@@ -196,7 +199,7 @@ func startRoleRunWith(t *testing.T, fp *fakePlane, enabled bool, adjust func(d *
 }
 
 // startRunOpts is startRun with complete options.
-func startRunOpts(t *testing.T, d *deps, o RunOptions) *running {
+func startRunOpts(t testing.TB, d *deps, o RunOptions) *running {
 	t.Helper()
 	ctx, cancel := context.WithCancel(bg)
 	r := &running{cancel: cancel, done: make(chan error, 1)}
@@ -214,7 +217,7 @@ func startRunOpts(t *testing.T, d *deps, o RunOptions) *running {
 
 // awaitKind returns the next event of kind (skipping others) satisfying
 // match, if given.
-func (e *events) awaitMatch(t *testing.T, kind eventKind, match func(event) bool) event {
+func (e *events) awaitMatch(t testing.TB, kind eventKind, match func(event) bool) event {
 	t.Helper()
 	deadline := time.After(testWait)
 	for {
@@ -239,14 +242,22 @@ func (c *fakeConn) connect() {
 	c.reconcileEmpty()
 }
 
-// heartbeatAt reads heartbeat k, checks its revision and acknowledges it.
+// heartbeatAt reads heartbeat k, checks its revision and acknowledges it
+// (in auto mode: the dispatcher's next observation, already acknowledged).
 func (c *fakeConn) heartbeatAt(k, rev int) contract.HeartbeatBody {
 	c.t.Helper()
-	b := c.readHeartbeat(k)
+	var b contract.HeartbeatBody
+	if c.auto.Load() {
+		b = c.beatK(k)
+	} else {
+		b = c.readHeartbeat(k)
+	}
 	if b.RolesRevision != rev {
 		c.t.Fatalf("heartbeat b%d revision %d, want %d", k, b.RolesRevision, rev)
 	}
-	c.send(contract.ProtocolVersion, contract.FrameHeartbeatAck, "b"+strconv.Itoa(k), nil)
+	if !c.auto.Load() {
+		c.send(contract.ProtocolVersion, contract.FrameHeartbeatAck, "b"+strconv.Itoa(k), nil)
+	}
 	return b
 }
 
@@ -255,13 +266,31 @@ func (c *fakeConn) heartbeatAt(k, rev int) contract.HeartbeatBody {
 func (rr *roleRun) beat(c *fakeConn, k, rev int) contract.HeartbeatBody {
 	c.t.Helper()
 	b := c.heartbeatAt(k, rev)
-	rr.ev.awaitMatch(c.t, evAck, func(ev event) bool { return ev.acks == k })
+	if c.auto.Load() {
+		rr.ev.awaitAck(c.t, c.minSession, k)
+	} else {
+		rr.ev.awaitMatch(c.t, evAck, func(ev event) bool { return ev.acks == k })
+	}
 	return b
 }
 
-// readHeartbeat reads heartbeat k without acknowledging it.
+// report waits until the latest heartbeat observation is at revision rev
+// with statuses satisfying pred (a prompt readiness report or a periodic
+// heartbeat; earlier observations are consumed) and the sidecar processed
+// its acknowledgement, and returns it.
+func (rr *roleRun) report(c *fakeConn, rev int, pred func(map[string]bool) bool) beatObs {
+	c.t.Helper()
+	b := c.awaitLatest(func(b beatObs) bool { return b.body.RolesRevision == rev && pred(statuses(b.body)) })
+	rr.ev.awaitAck(c.t, c.minSession, b.k)
+	return b
+}
+
+// readHeartbeat reads heartbeat k without acknowledging it (manual mode).
 func (c *fakeConn) readHeartbeat(k int) contract.HeartbeatBody {
 	c.t.Helper()
+	if c.auto.Load() {
+		c.t.Fatal("readHeartbeat needs the manual acknowledgement mode")
+	}
 	f := c.expect(contract.FrameHeartbeat, "b"+strconv.Itoa(k))
 	b, err := contract.DecodeHeartbeat(f.Body)
 	if err != nil {
@@ -335,7 +364,7 @@ func statuses(b contract.HeartbeatBody) map[string]bool {
 	return out
 }
 
-func wantResult(t *testing.T, e *contract.Error, code contract.Code, field, reason string) {
+func wantResult(t testing.TB, e *contract.Error, code contract.Code, field, reason string) {
 	t.Helper()
 	if e == nil || e.Code != code {
 		t.Fatalf("result = %v, want %s", e, code)
@@ -392,7 +421,7 @@ func (p *pipePlane) DialNodeStream(ctx context.Context) (*websocket.Conn, error)
 }
 
 // accept returns the next dialed pipe connection.
-func (p *pipePlane) accept(t *testing.T) *pipeConn {
+func (p *pipePlane) accept(t testing.TB) *pipeConn {
 	t.Helper()
 	select {
 	case c := <-p.conns:
@@ -404,7 +433,7 @@ func (p *pipePlane) accept(t *testing.T) *pipeConn {
 	}
 }
 
-func (c *pipeConn) read(t *testing.T) contract.NodeFrame {
+func (c *pipeConn) read(t testing.TB) contract.NodeFrame {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(bg, testWait)
 	defer cancel()
@@ -419,7 +448,7 @@ func (c *pipeConn) read(t *testing.T) contract.NodeFrame {
 	return f
 }
 
-func (c *pipeConn) send(t *testing.T, typ, rid string, body any) {
+func (c *pipeConn) send(t testing.TB, typ, rid string, body any) {
 	t.Helper()
 	b, err := contract.EncodeFrame(contract.ProtocolVersion, typ, rid, body)
 	if err != nil {
@@ -432,7 +461,7 @@ func (c *pipeConn) send(t *testing.T, typ, rid string, body any) {
 	}
 }
 
-func mustJSON(t *testing.T, v any) string {
+func mustJSON(t testing.TB, v any) string {
 	t.Helper()
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -443,7 +472,7 @@ func mustJSON(t *testing.T, v any) string {
 
 // reconcileEmpty acknowledges an empty final inventory page i1 and sends
 // the empty final reconcile page r1, reading its acknowledgement.
-func (c *pipeConn) reconcileEmpty(t *testing.T) {
+func (c *pipeConn) reconcileEmpty(t testing.TB) {
 	t.Helper()
 	f := c.read(t)
 	b, err := contract.DecodeTaskInventory(f.Body)

@@ -121,8 +121,7 @@ func TestTaskOutput(t *testing.T) {
 		st, ch := s.run(t, 1, 0, "flood")
 		ch.prompt(t)
 		ch.out([]byte("start\n"))
-		rid := s.nextB()
-		first := s.c.expectLog(rid)
+		rid, first := s.nextLog(t)
 		if first.Offset != 0 {
 			t.Fatalf("first chunk %+v", first.Offset)
 		}
@@ -140,16 +139,14 @@ func TestTaskOutput(t *testing.T) {
 		}
 		s.c.ackLog(rid, st.TaskID, len(first.Data))
 		// The next chunk jumps over the evicted bytes.
-		rid = s.nextB()
-		next := s.c.expectLog(rid)
+		rid, next := s.nextLog(t)
 		if next.Offset != total-ringCap {
 			t.Fatalf("resumed at %d, want %d", next.Offset, total-ringCap)
 		}
 		sent := next.Offset + len(next.Data)
 		s.c.ackLog(rid, st.TaskID, sent)
 		for sent < total {
-			rid = s.nextB()
-			lb := s.c.expectLog(rid)
+			rid, lb := s.nextLog(t)
 			sent = lb.Offset + len(lb.Data)
 			s.c.ackLog(rid, st.TaskID, sent)
 		}
@@ -172,8 +169,7 @@ func TestTaskOutput(t *testing.T) {
 		st, ch := s.run(t, 1, 0, "marker first")
 		ch.prompt(t)
 		ch.errOut([]byte(`{"type":"callsheet_final","message":"from stderr"}` + "\n"))
-		rid := s.nextB()
-		first := s.c.expectLog(rid)
+		rid, first := s.nextLog(t)
 		ch.out([]byte(`{"type":"callsheet_final","message":"kept"}` + "\n"))
 		ch.out(bytes.Repeat([]byte("x"), ringCap+1))
 		ch.exitCode(0)

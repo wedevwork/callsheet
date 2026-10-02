@@ -242,6 +242,12 @@ func TestCoverageManifestFiles(t *testing.T) {
 			t.Fatalf("09b file %s missing from the changed group", rel)
 		}
 	}
+	for rel, goos := range map[string]string{"internal/sidecar/group_alone_linux.go": "linux", "internal/sidecar/group_alone_darwin.go": "darwin",
+		"internal/sidecar/guardian.go": "", "internal/sidecar/session.go": "", "internal/sidecar/task_process_unix.go": "", "internal/sidecar/tasks.go": ""} {
+		if e, ok := listed[rel]; !ok || e.Group != GroupChanged || len(e.Ranges) != 0 || e.OS != goos {
+			t.Fatalf("10a file %s missing from the changed group as a whole file (OS %q)", rel, goos)
+		}
+	}
 	if !slices.ContainsFunc(WorkspaceCoverageManifest, func(e CoverageEntry) bool { return e.OS == "linux" }) ||
 		!slices.ContainsFunc(WorkspaceCoverageManifest, func(e CoverageEntry) bool { return e.OS == "darwin" }) {
 		t.Fatal("native-only publication files missing")

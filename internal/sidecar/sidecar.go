@@ -176,8 +176,12 @@ type event struct {
 	passed   []bool
 	// action is a disposition's reconcile action (evDisposed).
 	action string
-	// at is a ready-check cycle's start instant (evCycleDone).
+	// at is a ready-check cycle's start instant (evCycleDone) or a
+	// heartbeat's send instant (evAwaitReply).
 	at time.Time
+	// prompt marks an immediate readiness report (iteration 10a,
+	// evAwaitReply), as opposed to a periodic heartbeat.
+	prompt bool
 }
 
 // deps are the injectable dependencies of Enroll and Run.

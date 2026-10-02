@@ -14,7 +14,7 @@ import (
 	"github.com/wedevwork/callsheet/internal/contract"
 )
 
-func newRoot(t *testing.T) string { return filepath.Join(t.TempDir(), "sidecar") }
+func newRoot(t testing.TB) string { return filepath.Join(t.TempDir(), "sidecar") }
 
 func (p *inPlane) opts(root string) EnrollOptions {
 	return EnrollOptions{StateDir: root, PlaneURL: p.url, CAFile: p.caFile, SoftwareVersion: "dev"}

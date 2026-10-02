@@ -296,7 +296,7 @@ func TestDirSyncFallback(t *testing.T) {
 
 // startLockHolder runs the lock helper on root and waits until it holds
 // the lock; release closes its stdin, kill ends it.
-func startLockHolder(t *testing.T, root string) (release, kill func()) {
+func startLockHolder(t testing.TB, root string) (release, kill func()) {
 	t.Helper()
 	exe, err := os.Executable()
 	if err != nil {

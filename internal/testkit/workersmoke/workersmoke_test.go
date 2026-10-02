@@ -108,8 +108,10 @@ printf '{"type":"result","is_error":false,"result":"pong"}'
 // a completed task, and a task cancelled at its outer bound. The completed
 // smoke and the bounded deployment are independent (own directories,
 // planes and sidecars), so the smoke runs concurrently and is joined and
-// asserted before the refusals: each waits on a role's readiness
-// heartbeat, and the two waits overlap.
+// asserted before the refusals: each waits for a role's observed
+// readiness (polled; since iteration 10a the sidecar reports a passed
+// readiness cycle at once instead of on its next periodic heartbeat), and
+// the two waits overlap.
 func TestDeployment(t *testing.T) {
 	dir := t.TempDir()
 	bin, err := testkit.BuildBinaryAt(dir, "./cmd/callsheet", "callsheet")

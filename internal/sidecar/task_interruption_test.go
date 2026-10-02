@@ -113,10 +113,8 @@ func disconnectAndShutdown(t *testing.T) {
 	if r, out := s.drain(t, after); string(out) != "after the reconnect\n" || *r.ExitCode != 0 {
 		t.Fatalf("reconciled result %+v %q", r, out)
 	}
-	tr.clk.Advance(heartbeatInterval)
-	if hb := s.beat(t, 2); hb.Roles[0].Inflight != 1 {
-		t.Fatalf("heartbeat %+v", hb.Roles)
-	}
+	// The released slot is reported at once (iteration 10a).
+	s.report(t, 2, func(r contract.RoleStatus) bool { return r.Inflight == 1 })
 	// Shutdown: the still-running child's group is stopped through its
 	// guardian and joined before Run returns; nothing is sent for it.
 	tr.run.cancel()

@@ -313,8 +313,10 @@ func TestControlRemove(t *testing.T) {
 		tr.ev.awaitMatch(t, evAckWritten, func(ev event) bool { return ev.rev == 2 })
 		s.p = 2
 		tr.ev.awaitMatch(t, evCycleDone, func(ev event) bool { return ev.rev == 2 })
-		tr.clk.Advance(heartbeatInterval)
-		if hb := s.beat(t, 2); hb.Roles[0].CanAccept {
+		// The snapshot's report, then (no change after the passed cycle)
+		// the periodic heartbeat.
+		s.report(t, 2, func(r contract.RoleStatus) bool { return !r.CanAccept })
+		if hb := s.periodic(t, 2); hb.Roles[0].CanAccept {
 			t.Fatalf("the new instance accepts while the old group is cleaned: %+v", hb.Roles)
 		}
 		nb := startBody(2, readd, 2, 2, "new instance")
@@ -370,8 +372,7 @@ func preparingCancel(t *testing.T, unconfirmed bool) {
 	}
 	// (The latch and exit events precede the snapshot's acknowledgement
 	// reconnect awaited; the result frame is the observable outcome.)
-	rid := s.nextB()
-	r := s.c.expectResult(rid)
+	rid, r := s.nextResult(t)
 	want, phase := contract.OutcomeCancelled, contract.JournalCompleted
 	if unconfirmed {
 		want, phase = contract.OutcomeLost, contract.JournalLost
