@@ -1050,7 +1050,8 @@ func TestNodePlatform(t *testing.T) {
 		const nodeFn = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestNodeEnrollment|TestNodeReconnect)$/^(locking|shutdown)$ ./tests/function"
 		for _, goos := range []string{"linux", "darwin"} {
 			// The client and contract node packages stay in the packages
-			// shard; the plane's node contracts repeat in the plane shards
+			// shard (contract in its per-CPU group, one invocation per CPU
+			// setting, since the contract headroom fix); the plane's node contracts repeat in the plane shards
 			// (iteration 05b) and the sidecar's reconnect contracts in the
 			// sidecar shards (its sidecar follow-up): CPU 1 in plane-cpu1
 			// and sidecar-cpu1, CPU 2 and 4 in plane and sidecar (design
@@ -1058,7 +1059,17 @@ func TestNodePlatform(t *testing.T) {
 			// steps and the node selector.
 			shards, err := devcheck.StressShards(goos)
 			if err != nil || len(shards) != 7 || shards[6].Name != "functions" || len(shards[6].Steps) != 3 || strings.Join(shards[6].Steps[2].Argv, " ") != nodeFn ||
-				slices.Contains(shards[0].Steps[0].Argv, "./internal/sidecar") || !slices.Contains(shards[0].Steps[0].Argv, "./internal/client") || !slices.Contains(shards[0].Steps[0].Argv, "./internal/contract") {
+				slices.Contains(shards[0].Steps[0].Argv, "./internal/sidecar") || !slices.Contains(shards[0].Steps[0].Argv, "./internal/client") ||
+				slices.Contains(shards[0].Steps[0].Argv, "./internal/contract") || len(shards[0].CPUSteps) != 3 ||
+				!slices.ContainsFunc(shards[0].CPUSteps, func(s devcheck.Step) bool {
+					return slices.Equal(s.Argv[4:], []string{"-cpu=1", "-timeout=6m", "./internal/contract"})
+				}) ||
+				!slices.ContainsFunc(shards[0].CPUSteps, func(s devcheck.Step) bool {
+					return slices.Equal(s.Argv[4:], []string{"-cpu=2", "-timeout=6m", "./internal/contract"})
+				}) ||
+				!slices.ContainsFunc(shards[0].CPUSteps, func(s devcheck.Step) bool {
+					return slices.Equal(s.Argv[4:], []string{"-cpu=4", "-timeout=6m", "./internal/contract"})
+				}) {
 				t.Fatalf("%s stress plan = %+v %v", goos, shards, err)
 			}
 			for _, c := range []struct {

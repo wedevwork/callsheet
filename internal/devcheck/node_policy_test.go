@@ -59,8 +59,9 @@ const (
 	// iteration 05b moved ./internal/plane (the plane's lease, registry and
 	// stream contracts) to the plane shard, one invocation per CPU setting,
 	// and its sidecar follow-up moved ./internal/sidecar (the reconnect
-	// contracts) to the sidecar shard likewise.
-	wantNodeStressPackages = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/contract ./internal/adapter ./internal/mcp ./internal/mcpqual ./internal/workspace ./internal/workspacetransfer"
+	// contracts) to the sidecar shard likewise; the contract headroom fix
+	// moved ./internal/contract to the packages shard's per-CPU group.
+	wantNodeStressPackages = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/mcpqual ./internal/workspace ./internal/workspacetransfer"
 	wantNodeStressFunction = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestNodeEnrollment|TestNodeReconnect)$/^(locking|shutdown)$ ./tests/function"
 )
 
@@ -74,7 +75,7 @@ func TestNodeVerificationPolicyContract(t *testing.T) {
 	for _, goos := range []string{"linux", "darwin"} {
 		t.Run(goos, func(t *testing.T) {
 			shards, err := StressShards(goos)
-			if err != nil || len(shards) != 7 || strings.Join(shards[0].Steps[0].Argv, " ") != wantNodeStressPackages ||
+			if err != nil || len(shards) != 7 || strings.Join(shards[0].Steps[0].Argv, " ") != wantNodeStressPackages || strings.Join(argvOf(shards[0].CPUSteps), "|") != wantStressContract1+"|"+wantStressContract2+"|"+wantStressContract4 ||
 				shards[1].Name != "plane-cpu1" || shards[2].Name != "plane" || joinedArgv(shards, 1, 2) != wantStressPlane1+"|"+wantStressPlane2+"|"+wantStressPlane4 ||
 				joinedArgv(shards, 1) != wantStressPlane1 || joinedArgv(shards, 2) != wantStressPlane2+"|"+wantStressPlane4 ||
 				shards[3].Name != "sidecar-cpu1" || shards[4].Name != "sidecar" || joinedArgv(shards, 3, 4) != wantStressSidecar1+"|"+wantStressSidecar2+"|"+wantStressSidecar4 ||

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -564,10 +565,12 @@ func TestTaskContract(t *testing.T) {
 	})
 	t.Run("responses", func(t *testing.T) {
 		v := maxView()
-		b, err := Encode(DispatchResponse{Version: ProtocolVersion, TaskID: v.TaskID, Task: &v})
-		if err != nil {
-			t.Fatal(err)
-		}
+		// The encoded maximal view is only the parse step's input; it is
+		// built once per process and every use gets a fresh copy
+		// (maxDispatchResponseJSON). The parse runs every repetition, and
+		// the maximal view is still encoded every repetition below
+		// (combined, a superset of it).
+		b := maxDispatchResponse(t)
 		if got, err := ParseDispatchResponse(b); err != nil || got.TaskID != v.TaskID || *got.Result.FinalMessage != *v.Result.FinalMessage {
 			t.Fatalf("dispatch response: %v", err)
 		}
@@ -777,6 +780,82 @@ func maxView() TaskView {
 		TimeoutPolicy: TimeoutPolicyLegacy, State: TaskSucceeded, CreatedAt: now, StartedAt: &now, FinishedAt: &now, DurabilityConfirmed: true,
 		Log: TaskLogMeta{RetainedBytes: 10, SourceBytes: 10, ReceivedBytes: 10}, LogTail: tail,
 		Result: &TaskResult{State: TaskSucceeded, ExitCode: &zero, FinalMessage: &msg, LogTail: tail}}
+}
+
+// maxDispatchResponseJSON is maxView encoded in a dispatch envelope, an
+// input of TestTaskContract/responses only. Encoding it costs about 0.1 s
+// under the race detector, which the stress stage would otherwise pay 60
+// times per process, so it is built once per process. It is held as a
+// string, which is immutable, and maxDispatchResponse hands every use its
+// own []byte copy: a parse or a mutation in one repetition cannot reach the
+// next (TestInputFixturesPerUse). Only the input is shared; the parse and
+// its assertions run every repetition.
+var maxDispatchResponseJSON = sync.OnceValues(func() (string, error) {
+	v := maxView()
+	b, err := Encode(DispatchResponse{Version: ProtocolVersion, TaskID: v.TaskID, Task: &v})
+	return string(b), err
+})
+
+// maxDispatchResponse returns a fresh copy of maxDispatchResponseJSON.
+func maxDispatchResponse(t testing.TB) []byte {
+	t.Helper()
+	enc, err := maxDispatchResponseJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return []byte(enc)
+}
+
+// TestInputFixturesPerUse proves the process-wide test inputs
+// (maxDispatchResponseJSON, frameLimitInputs) are copied per use: each
+// repetition overwrites its copies with NUL bytes, which neither the
+// encoder nor the fixtures ever produce, and both a second copy in the same
+// repetition and the first copy of every later repetition (-count) must be
+// unscribbled. Nothing here parses the 1.4 MB view; the parse belongs to
+// TestTaskContract/responses.
+func TestInputFixturesPerUse(t *testing.T) {
+	clean := func(name string, b []byte) {
+		t.Helper()
+		if len(b) == 0 || bytes.IndexByte(b, 0) >= 0 || b[0] != '{' {
+			t.Fatalf("%s: a previous use's mutation leaked into the fixture", name)
+		}
+	}
+	scribble := func(b []byte) { clear(b) }
+	first := maxDispatchResponse(t)
+	clean("dispatch response", first)
+	want := string(first)
+	scribble(first)
+	if again := maxDispatchResponse(t); string(again) != want || &again[0] == &first[0] {
+		t.Fatal("dispatch response: a use's mutation reached the next use")
+	}
+	in := frameLimitInputs()
+	for _, typ := range []string{FrameHello, FrameRolesReplace} {
+		msg := []byte(in.typed[typ].at)
+		clean(typ, msg)
+		pristine := string(msg)
+		if typ == FrameHello {
+			// The decoded body may alias its input; scribble both.
+			f, err := DecodeFrame(msg, FromSidecar)
+			if err != nil {
+				t.Fatal(err)
+			}
+			scribble(f.Body)
+		}
+		scribble(msg)
+		if again := []byte(in.typed[typ].at); string(again) != pristine {
+			t.Fatalf("%s: a use's mutation reached the next use", typ)
+		}
+	}
+	for name, m := range map[string]string{"exact": in.exact, "above": in.aboveExact} {
+		b := []byte(m)
+		if bytes.IndexByte(b, 0) >= 0 || len(b) < MaxFrameBytes {
+			t.Fatalf("%s: fixture changed", name)
+		}
+		scribble(b)
+	}
+	if in.pad(MaxFrameBytes) != strings.Repeat("a", MaxFrameBytes) {
+		t.Fatal("padding changed")
+	}
 }
 
 // smallView is a valid succeeded view with short fields.

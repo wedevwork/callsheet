@@ -50,9 +50,9 @@ var (
 		"./internal/testkit/fakeadapter",
 		"./internal/spikes/gittransport",
 		// Iteration 03: the node client and wire contract, complete (the
-		// node sidecar is in the sidecar shard).
+		// node sidecar is in the sidecar shard; the wire contract runs per
+		// CPU setting since the contract headroom fix, stressContractPackage).
 		"./internal/client",
-		"./internal/contract",
 		// Iteration 04: the adapter package (probe deadlines, cancellation
 		// and child waits on an injected clock), complete. The role
 		// contracts of plane, sidecar, client and contract already run in
@@ -78,6 +78,16 @@ var (
 		// process; no real subprocess).
 		"./internal/workspacetransfer",
 	}
+	// stressContractPackage is the packages shard's per-CPU package (the
+	// contract headroom fix, 2026-10-02). Its race time is CPU-bound on
+	// maximum-size JSON, and inside the combined -cpu=1,2,4 invocation it
+	// came within 11 s of its 6-minute limit on a slow hosted runner, so it
+	// left that invocation for three single-setting invocations, each
+	// StressCount times at one setting: the same 60 repetitions per test,
+	// each binary with its own 6-minute limit. They stay in the packages
+	// shard (no new job or stage) and run after the combined invocation as
+	// one concurrent group (runConcurrentCPU, as the processgroup shard).
+	stressContractPackage = "./internal/contract"
 	// stressPlanePackage is the internal/plane package of the plane shards,
 	// distinct from the plane function-test selector in the functions shard
 	// (stressPlaneFunctionTests). Its stress time is CPU-bound under the
@@ -162,12 +172,17 @@ const (
 // the waves stressWaves declares (by default one wave of all steps). A
 // Parallel shard holds one to three steps: a CPU1 singleton, a CPU2/CPU4
 // pair or all three CPU settings (design 06a-perf); a singleton still runs
-// through runConcurrentCPU, for its lifecycle and log format. Its devcheck
+// through runConcurrentCPU, for its lifecycle and log format. A sequential
+// shard may also hold CPUSteps: one step per CPU setting of a split
+// package, run after its Steps as one concurrent group through
+// runConcurrentCPU (the packages shard's contract invocations since the
+// contract headroom fix); stressWaves never applies to them. Its devcheck
 // stage is "stress-" + Name.
 type StressShard struct {
 	Name     string
 	Parallel bool
 	Steps    []Step
+	CPUSteps []Step
 }
 
 func stressCPUList() string {
@@ -212,7 +227,9 @@ func stressSupported(goos string) error {
 }
 
 // StressShards returns the stress plan for goos as its seven fixed shards,
-// in order: packages (sequential), plane-cpu1 (Parallel: plane's CPU 1
+// in order: packages (sequential: the combined invocation, then
+// ./internal/contract's three CPU settings as one concurrent group since
+// the contract headroom fix), plane-cpu1 (Parallel: plane's CPU 1
 // invocation alone, design 06a-perf), plane (Parallel: CPU 2 and 4,
 // iteration 05b), sidecar-cpu1 (Parallel: sidecar's CPU 1 alone, design
 // 06a-perf), sidecar (Parallel: CPU 2 and 4, design 05b's sidecar
@@ -241,7 +258,7 @@ func StressShards(goos string) ([]StressShard, error) {
 	return []StressShard{
 		{Name: "packages", Steps: []Step{
 			{Name: "stress packages", Env: env(), Argv: append(stressFlags(stressCPUList()), stressPackages...)},
-		}},
+		}, CPUSteps: perCPU("contract", stressContractPackage, stressCPUs)},
 		{Name: "plane-cpu1", Parallel: true, Steps: perCPU("plane", stressPlanePackage, []int{1})},
 		{Name: "plane", Parallel: true, Steps: perCPU("plane", stressPlanePackage, []int{2, 4})},
 		{Name: "sidecar-cpu1", Parallel: true, Steps: perCPU("sidecar", stressSidecarPackage, []int{1})},
@@ -259,7 +276,8 @@ func StressShards(goos string) ([]StressShard, error) {
 }
 
 // StressSteps returns the stress plan for goos flattened in shard and CPU
-// order: thirteen race-built go test commands. It is an inspection view only;
+// order: sixteen race-built go test commands (a shard's Steps, then its
+// CPUSteps). It is an inspection view only;
 // execution uses StressShards (and stressWaves for the order of a Parallel
 // shard's invocations) and never infers concurrency or execution order
 // from this list. Unsupported goos values are rejected like StressShards.
@@ -272,6 +290,7 @@ func StressSteps(goos string) ([]Step, error) {
 	var steps []Step
 	for _, sh := range shards {
 		steps = append(steps, sh.Steps...)
+		steps = append(steps, sh.CPUSteps...)
 	}
 	return steps, nil
 }
@@ -324,8 +343,10 @@ func isStressStage(stage string) bool {
 // that is always canceled on return. A shard stage passes one shard and so
 // gets its own watchdog; "stress" passes all seven, which share one. A
 // failure or an expired watchdog fails the stage and never starts the next
-// step, wave or shard. Every Parallel shard's waves (stressGroups) are
-// resolved before anything starts, so an invalid schedule starts nothing
+// step, wave, group or shard. A sequential shard's CPUSteps run after its
+// Steps as one concurrent group (runConcurrentCPU), only if they
+// succeeded. Every Parallel shard's waves (stressGroups) are resolved
+// before anything starts, so an invalid schedule starts nothing
 // (stressPlan has already rejected it for a dispatched stage).
 func (d *driver) stress(shards []StressShard) error {
 	groups := make([][][]Step, len(shards))
@@ -346,6 +367,17 @@ func (d *driver) stress(shards []StressShard) error {
 	for i, sh := range shards {
 		if !sh.Parallel {
 			if err := sd.stressSequential(sh.Steps); err != nil {
+				return err
+			}
+			if len(sh.CPUSteps) == 0 {
+				continue
+			}
+			// stressSequential has checked the watchdog after the last
+			// step, and runConcurrentCPU starts nothing once it is done.
+			if err := runConcurrentCPU(ctx, d.run, sh.CPUSteps, dirLogs(d.scratch), d.out); err != nil {
+				if ctx.Err() != nil {
+					return fmt.Errorf("devcheck: stress watchdog (%v) ended during stress %s per-CPU group: %w", stressWatchdog, sh.Name, err)
+				}
 				return err
 			}
 			continue

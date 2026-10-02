@@ -32,21 +32,25 @@ import (
 // plane contracts from the function steps; iteration 02c moved
 // processgroup into its own shard of three single-CPU invocations,
 // iteration 05b moved ./internal/plane into one likewise, and its sidecar
-// follow-up ./internal/sidecar.
+// follow-up ./internal/sidecar; the contract headroom fix moved
+// ./internal/contract into the packages shard's per-CPU group.
 const (
-	hardeningStressCount    = 20
-	hardeningStressPackages = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/contract ./internal/adapter ./internal/mcp ./internal/mcpqual ./internal/workspace ./internal/workspacetransfer"
-	hardeningStressPlane1   = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/plane"
-	hardeningStressPlane2   = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/plane"
-	hardeningStressPlane4   = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/plane"
-	hardeningStressSidecar1 = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/sidecar"
-	hardeningStressSidecar2 = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/sidecar"
-	hardeningStressSidecar4 = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/sidecar"
-	hardeningStressPG1      = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/spikes/processgroup"
-	hardeningStressPG2      = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/spikes/processgroup"
-	hardeningStressPG4      = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/spikes/processgroup"
-	hardeningStressFunction = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestFP4TransportHarness|TestFP5GitRoundTrip)$ ./tests/function"
-	hardeningStressPlaneFn  = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestPlaneState|TestPlaneTLS|TestPlaneReissue)$/^(paths|persistence|locking|validation|https-only|prelisten-validation|bounded-shutdown|process)$ ./tests/function"
+	hardeningStressCount     = 20
+	hardeningStressPackages  = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/mcpqual ./internal/workspace ./internal/workspacetransfer"
+	hardeningStressContract1 = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/contract"
+	hardeningStressContract2 = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/contract"
+	hardeningStressContract4 = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/contract"
+	hardeningStressPlane1    = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/plane"
+	hardeningStressPlane2    = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/plane"
+	hardeningStressPlane4    = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/plane"
+	hardeningStressSidecar1  = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/sidecar"
+	hardeningStressSidecar2  = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/sidecar"
+	hardeningStressSidecar4  = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/sidecar"
+	hardeningStressPG1       = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/spikes/processgroup"
+	hardeningStressPG2       = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/spikes/processgroup"
+	hardeningStressPG4       = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/spikes/processgroup"
+	hardeningStressFunction  = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestFP4TransportHarness|TestFP5GitRoundTrip)$ ./tests/function"
+	hardeningStressPlaneFn   = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestPlaneState|TestPlaneTLS|TestPlaneReissue)$/^(paths|persistence|locking|validation|https-only|prelisten-validation|bounded-shutdown|process)$ ./tests/function"
 	// Iteration 03 appended the node packages and the node function step.
 	hardeningStressNodeFn = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestNodeEnrollment|TestNodeReconnect)$/^(locking|shutdown)$ ./tests/function"
 )
@@ -54,6 +58,7 @@ const (
 // hardeningPlan is the flattened stress plan in shard/CPU order.
 var hardeningPlan = []struct{ name, argv string }{
 	{"stress packages", hardeningStressPackages},
+	{"stress contract cpu1", hardeningStressContract1}, {"stress contract cpu2", hardeningStressContract2}, {"stress contract cpu4", hardeningStressContract4},
 	{"stress plane cpu1", hardeningStressPlane1}, {"stress plane cpu2", hardeningStressPlane2}, {"stress plane cpu4", hardeningStressPlane4},
 	{"stress sidecar cpu1", hardeningStressSidecar1}, {"stress sidecar cpu2", hardeningStressSidecar2}, {"stress sidecar cpu4", hardeningStressSidecar4},
 	{"stress processgroup cpu1", hardeningStressPG1}, {"stress processgroup cpu2", hardeningStressPG2}, {"stress processgroup cpu4", hardeningStressPG4},
@@ -137,7 +142,7 @@ func TestHardeningStress(t *testing.T) {
 	r := &ciRunner{}
 	code, out, errOut := devcheckRun(t, r, "stress")
 	if code != 0 || !strings.Contains(out, "stage stress ok") ||
-		!sameGroups(r.calls, [][]string{{hardeningStressPackages}, {hardeningStressPlane1}, {hardeningStressPlane2, hardeningStressPlane4},
+		!sameGroups(r.calls, [][]string{{hardeningStressPackages}, {hardeningStressContract1, hardeningStressContract2, hardeningStressContract4}, {hardeningStressPlane1}, {hardeningStressPlane2, hardeningStressPlane4},
 			{hardeningStressSidecar1}, {hardeningStressSidecar2, hardeningStressSidecar4},
 			{hardeningStressPG1, hardeningStressPG2, hardeningStressPG4}, {hardeningStressFunction}, {hardeningStressPlaneFn}, {hardeningStressNodeFn}}) {
 		t.Fatalf("%s stress = %d %v %s", runtime.GOOS, code, r.calls, errOut)
@@ -152,11 +157,12 @@ func TestHardeningStress(t *testing.T) {
 	for _, c := range []struct {
 		failOn, step string
 		calls        int
-	}{{"./internal/spikes/gittransport", "stress packages", 1}, {"-cpu=1 -timeout=6m ./internal/plane", "stress plane cpu1", 2},
-		{"-cpu=4 -timeout=6m ./internal/plane", "stress plane cpu4", 4}, {"-cpu=1 -timeout=6m ./internal/sidecar", "stress sidecar cpu1", 5},
-		{"-cpu=4 -timeout=6m ./internal/sidecar", "stress sidecar cpu4", 7},
-		{"-cpu=4 -timeout=6m ./internal/spikes/processgroup", "stress processgroup cpu4", 10}, {"TestFP5GitRoundTrip", "stress function", 11},
-		{"TestPlaneTLS", "stress plane function", 12}, {"TestNodeReconnect", "stress node function", 13}} {
+	}{{"./internal/spikes/gittransport", "stress packages", 1}, {"-cpu=2 -timeout=6m ./internal/contract", "stress contract cpu2", 4},
+		{"-cpu=1 -timeout=6m ./internal/plane", "stress plane cpu1", 5},
+		{"-cpu=4 -timeout=6m ./internal/plane", "stress plane cpu4", 7}, {"-cpu=1 -timeout=6m ./internal/sidecar", "stress sidecar cpu1", 8},
+		{"-cpu=4 -timeout=6m ./internal/sidecar", "stress sidecar cpu4", 10},
+		{"-cpu=4 -timeout=6m ./internal/spikes/processgroup", "stress processgroup cpu4", 13}, {"TestFP5GitRoundTrip", "stress function", 14},
+		{"TestPlaneTLS", "stress plane function", 15}, {"TestNodeReconnect", "stress node function", 16}} {
 		r := &ciRunner{failOn: c.failOn}
 		code, out, errOut := devcheckRun(t, r, "stress")
 		if code != 1 || len(r.calls) != c.calls || !strings.Contains(errOut, "stage stress FAILED: "+c.step+" failed") ||
@@ -388,9 +394,10 @@ func TestHardeningCIStress(t *testing.T) {
 	if workers != 14 {
 		t.Fatalf("%d worker jobs, want 14", workers)
 	}
-	// Invocations per stage: full stress 13, the plane and sidecar pairs 2
-	// each, the new CPU1 stages 1 each.
-	for stage, calls := range map[string]int{"stress": 13, "stress-packages": 1, "stress-plane-cpu1": 1, "stress-plane": 2, "stress-sidecar-cpu1": 1,
+	// Invocations per stage: full stress 16, the packages shard 4 (its
+	// combined command and the contract group, the contract headroom fix),
+	// the plane and sidecar pairs 2 each, the new CPU1 stages 1 each.
+	for stage, calls := range map[string]int{"stress": 16, "stress-packages": 4, "stress-plane-cpu1": 1, "stress-plane": 2, "stress-sidecar-cpu1": 1,
 		"stress-sidecar": 2, "stress-processgroup": 3, "stress-functions": 3} {
 		r := &ciRunner{}
 		if code, _, errOut := devcheckRun(t, r, stage); code != 0 || len(r.calls) != calls {
@@ -430,13 +437,14 @@ func TestHardeningDeveloperContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Every command runs the documented count at the documented CPU list,
-	// except processgroup's (iteration 02c), plane's (iteration 05b) and
-	// sidecar's (its sidecar follow-up), which run one documented setting
-	// each and together cover the whole list for their package.
+	// except processgroup's (iteration 02c), plane's (iteration 05b),
+	// sidecar's (its sidecar follow-up) and contract's (the contract
+	// headroom fix), which run one documented setting each and together
+	// cover the whole list for their package.
 	cpu := "-cpu=" + strings.ReplaceAll(m[2], ", ", ",")
 	var pkgs []string
 	selectors := map[string]bool{}
-	splitCPUs := map[string]map[string]bool{" ./internal/spikes/processgroup": {}, " ./internal/plane": {}, " ./internal/sidecar": {}}
+	splitCPUs := map[string]map[string]bool{" ./internal/spikes/processgroup": {}, " ./internal/plane": {}, " ./internal/sidecar": {}, " ./internal/contract": {}}
 	for _, s := range steps {
 		argv := strings.Join(s.Argv, " ")
 		split := false
