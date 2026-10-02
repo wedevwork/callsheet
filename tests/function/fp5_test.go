@@ -55,7 +55,7 @@ var gitScenarios = []string{
 // results, including commit/tree/ref preservation and transport capture.
 func TestFP5GitRoundTrip(t *testing.T) {
 	root := testkit.MustRepoRoot(t)
-	bin := testkit.BuildTestBinary(t, "./internal/spikes/gittransport", "gittransport")
+	bin := contractBinary(t, "./internal/spikes/gittransport")
 	empty := testkit.EmptyDir(t)
 	results := filepath.Join(t.TempDir(), "git-results.json")
 	env := testkit.EnvWithout(os.Environ(), append([]string{"PATH", "HOME", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT"}, testkit.ProxyVars...),

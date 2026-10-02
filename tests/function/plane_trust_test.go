@@ -55,7 +55,7 @@ func newPlaneCLI(t *testing.T) *planeCLI {
 	t.Helper()
 	home, cwd := t.TempDir(), t.TempDir()
 	return &planeCLI{
-		bin:  testkit.BuildBinary(t, "./cmd/callsheet", "callsheet"),
+		bin:  nodeBinary(t),
 		home: home,
 		cwd:  cwd,
 		env:  []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home},

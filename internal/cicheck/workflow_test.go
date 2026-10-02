@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -1000,21 +1001,114 @@ func TestStressWorkerStepMutations(t *testing.T) {
 	}
 }
 
-// fixtureJobs parses validYAML, applies f to its jobs (by ID) in memory and
-// returns the re-encoded workflow.
-func fixtureJobs(t *testing.T, f func(jobs map[string]*yaml.Node)) []byte {
+// validDoc is validYAML parsed once per test process. It is never handed
+// out or mutated: fixtureDoc returns deep clones.
+var validDoc struct {
+	once sync.Once
+	node *yaml.Node
+	err  error
+}
+
+// fixtureDoc returns a private deep clone of the parsed validYAML.
+func fixtureDoc(t *testing.T) *yaml.Node {
 	t.Helper()
-	var doc yaml.Node
-	if err := yaml.Unmarshal([]byte(validYAML), &doc); err != nil {
+	validDoc.once.Do(func() {
+		var doc yaml.Node
+		validDoc.err = yaml.Unmarshal([]byte(validYAML), &doc)
+		validDoc.node = &doc
+	})
+	if validDoc.err != nil {
+		t.Fatal(validDoc.err)
+	}
+	return cloneNode(validDoc.node, map[*yaml.Node]*yaml.Node{})
+}
+
+// cloneNode deep-copies n. seen maps each original node to its copy, so a
+// copied alias points at the copied anchor and a shared node stays shared.
+func cloneNode(n *yaml.Node, seen map[*yaml.Node]*yaml.Node) *yaml.Node {
+	if n == nil {
+		return nil
+	}
+	if c, ok := seen[n]; ok {
+		return c
+	}
+	c := *n
+	seen[n] = &c
+	if n.Content != nil {
+		c.Content = make([]*yaml.Node, len(n.Content))
+		for i, k := range n.Content {
+			c.Content[i] = cloneNode(k, seen)
+		}
+	}
+	c.Alias = cloneNode(n.Alias, seen)
+	return &c
+}
+
+// TestFixtureClone: a clone re-encodes to the same bytes as its source,
+// shares no node with it (an alias points at the clone's own anchor), and a
+// mutated fixture leaves the cached validYAML untouched.
+func TestFixtureClone(t *testing.T) {
+	var src yaml.Node
+	if err := yaml.Unmarshal([]byte("a: &x {k: [1, 2]}\nb: *x\nc: [*x, *x]\n"), &src); err != nil {
 		t.Fatal(err)
 	}
+	c := cloneNode(&src, map[*yaml.Node]*yaml.Node{})
+	want, _ := yaml.Marshal(&src)
+	got, err := yaml.Marshal(c)
+	if err != nil || string(got) != string(want) {
+		t.Fatalf("clone encodes %q (%v), want %q", got, err, want)
+	}
+	orig := map[*yaml.Node]bool{}
+	var walk func(n *yaml.Node, f func(*yaml.Node))
+	walk = func(n *yaml.Node, f func(*yaml.Node)) {
+		f(n)
+		for _, k := range n.Content {
+			walk(k, f)
+		}
+	}
+	walk(&src, func(n *yaml.Node) { orig[n] = true })
+	anchor := c.Content[0].Content[1]
+	aliases := 0
+	walk(c, func(n *yaml.Node) {
+		if orig[n] || (n.Alias != nil && orig[n.Alias]) {
+			t.Fatalf("clone shares node %+v with its source", n)
+		}
+		if n.Kind == yaml.AliasNode {
+			aliases++
+			if n.Alias != anchor {
+				t.Fatal("a cloned alias does not point at the cloned anchor")
+			}
+		}
+	})
+	if aliases != 3 {
+		t.Fatalf("%d aliases cloned, want 3", aliases)
+	}
+	fixtureJobs(t, func(js map[string]*yaml.Node) { removeKey(t, js["linux"], "name") })
+	if got, _ := yaml.Marshal(fixtureDoc(t)); string(got) != string(fixtureJobs(t, func(map[string]*yaml.Node) {})) {
+		t.Fatal("fixture clones differ")
+	}
+	var fresh yaml.Node
+	if err := yaml.Unmarshal([]byte(validYAML), &fresh); err != nil {
+		t.Fatal(err)
+	}
+	want, _ = yaml.Marshal(&fresh)
+	if got, _ := yaml.Marshal(fixtureDoc(t)); string(got) != string(want) {
+		t.Fatal("a mutation reached the cached validYAML")
+	}
+}
+
+// fixtureJobs clones the parsed validYAML, applies f to its jobs (by ID)
+// in memory and returns the re-encoded workflow.
+func fixtureJobs(t *testing.T, f func(jobs map[string]*yaml.Node)) []byte {
+	t.Helper()
+	doc := fixtureDoc(t)
 	js := child(doc.Content[0], "jobs")
 	byID := map[string]*yaml.Node{}
 	for i := 0; i+1 < len(js.Content); i += 2 {
 		byID[js.Content[i].Value] = js.Content[i+1]
 	}
 	f(byID)
-	out, err := yaml.Marshal(&doc)
+	out, err := yaml.Marshal(doc)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1203,25 +1297,20 @@ func TestOrdinaryJobContract(t *testing.T) {
 func TestJobRemovedOrRenamed(t *testing.T) {
 	for _, j := range Jobs() {
 		p := "jobs." + j.ID
-		var doc yaml.Node
-		if err := yaml.Unmarshal([]byte(validYAML), &doc); err != nil {
-			t.Fatal(err)
-		}
+		doc := fixtureDoc(t)
 		removeKey(t, child(doc.Content[0], "jobs"), j.ID)
-		data, _ := yaml.Marshal(&doc)
+		data, _ := yaml.Marshal(doc)
 		if err := ValidateWorkflow(data); err == nil || !strings.Contains(err.Error(), p+": missing required field") {
 			t.Fatalf("removed %s: %v", j.ID, err)
 		}
-		if err := yaml.Unmarshal([]byte(validYAML), &doc); err != nil {
-			t.Fatal(err)
-		}
+		doc = fixtureDoc(t)
 		js := child(doc.Content[0], "jobs")
 		for i := 0; i+1 < len(js.Content); i += 2 {
 			if js.Content[i].Value == j.ID {
 				js.Content[i].Value = j.ID + "-old"
 			}
 		}
-		data, _ = yaml.Marshal(&doc)
+		data, _ = yaml.Marshal(doc)
 		err := ValidateWorkflow(data)
 		if err == nil || !strings.Contains(err.Error(), p+"-old: unknown field") || !strings.Contains(err.Error(), p+": missing required field") {
 			t.Fatalf("renamed %s: %v", j.ID, err)

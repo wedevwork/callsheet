@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -475,7 +476,16 @@ func TestInsecureSkipVerifyGuard(t *testing.T) {
 		if !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
 			return nil
 		}
-		f, err := parser.ParseFile(token.NewFileSet(), p, nil, parser.SkipObjectResolution)
+		// Go identifiers have no escape form, so a file without these
+		// bytes cannot name the field: only candidates are parsed.
+		src, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		if !bytes.Contains(src, []byte("InsecureSkipVerify")) {
+			return nil
+		}
+		f, err := parser.ParseFile(token.NewFileSet(), p, src, parser.SkipObjectResolution)
 		if err != nil {
 			return err
 		}

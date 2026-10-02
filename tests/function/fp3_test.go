@@ -10,15 +10,13 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/wedevwork/callsheet/internal/testkit"
 )
 
 // TestFP3FakeWorker invokes the built fake with quoted/Unicode argv,
 // stdout/stderr, an edit and a nonzero exit, and checks exact bytes, the
 // duration bound measured from ready acknowledgment, and containment.
 func TestFP3FakeWorker(t *testing.T) {
-	fake := testkit.BuildBinary(t, "./cmd/fake-adapter", "fake-adapter")
+	fake := fakeAdapterBinary(t)
 	env := os.Environ()
 
 	t.Run("output edit duration exit", func(t *testing.T) {

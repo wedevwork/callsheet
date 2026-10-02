@@ -72,10 +72,10 @@ var hardeningSelectors = map[string][]string{
 }
 
 // contractRun runs only the tests matching run in bin, pkg's compiled test
-// binary (testkit.BuildTestBinary), in the package directory. It requires
-// exit status 0 and a PASS line for every name in pass, and rejects skips,
-// failures and empty runs: a zero exit with no matching test is not
-// evidence.
+// binary (contractBinary or testkit.BuildTestBinary), in the package
+// directory. It requires exit status 0 and a PASS line for every name in
+// pass, and rejects skips, failures and empty runs: a zero exit with no
+// matching test is not evidence.
 func contractRun(t *testing.T, bin, pkg, run string, env []string, pass ...string) string {
 	t.Helper()
 	root := testkit.MustRepoRoot(t)
@@ -189,7 +189,7 @@ func TestHardeningPlatformSeams(t *testing.T) {
 	t.Parallel() // independent fixtures; overlaps the package's long parallel tests (CI headroom)
 	for _, pkg := range []string{"./internal/cli", "./internal/devcheck", "./internal/spikes/processgroup", "./internal/testkit/fakeadapter"} {
 		t.Run(filepath.Base(pkg), func(t *testing.T) {
-			bin := testkit.BuildTestBinary(t, pkg, filepath.Base(pkg))
+			bin := contractBinary(t, pkg)
 			contractRun(t, bin, pkg, "^TestPlatformSeamContract$", os.Environ(),
 				"TestPlatformSeamContract", "TestPlatformSeamContract/linux", "TestPlatformSeamContract/darwin")
 		})
@@ -267,7 +267,7 @@ func TestHardeningPlatformGuard(t *testing.T) {
 // scenario both run and pass.
 func TestHardeningSANOracle(t *testing.T) {
 	const pkg = "./internal/spikes/gittransport"
-	bin := testkit.BuildTestBinary(t, pkg, "gittransport")
+	bin := contractBinary(t, pkg)
 	out := contractRun(t, bin, pkg, "^TestSANMismatchHostOracle$", os.Environ(),
 		"TestSANMismatchHostOracle", "TestSANMismatchHostOracle/127.0.0.1:1234", "TestSANMismatchHostOracle/127.0.0.2:1234",
 		"TestSANMismatchHostOracle/[::1]:1234", "TestSANMismatchHostOracle/not_an_address")
@@ -292,7 +292,7 @@ func TestHardeningSignalEvidence(t *testing.T) {
 		}
 	}
 	const pkg = "./internal/spikes/processgroup"
-	contractRun(t, testkit.BuildTestBinary(t, pkg, "processgroup"), pkg, "^TestSignalEvidenceContract$", os.Environ(),
+	contractRun(t, contractBinary(t, pkg), pkg, "^TestSignalEvidenceContract$", os.Environ(),
 		append([]string{"TestSignalEvidenceContract"}, names...)...)
 }
 
