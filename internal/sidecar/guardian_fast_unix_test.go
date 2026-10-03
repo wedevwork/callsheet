@@ -69,6 +69,35 @@ func hasTimer(ws []testkit.Waiter, d time.Duration) bool {
 	return slices.ContainsFunc(ws, func(w testkit.Waiter) bool { return !w.Ticker && w.Duration == d })
 }
 
+// holdTerm passes every signal to next but holds the first TERM inside
+// Signal (held closed on entry) until release is closed.
+type holdTerm struct {
+	next          processgroup.Signaler
+	held, release chan struct{}
+	once          sync.Once
+}
+
+func (h *holdTerm) Signal(pid int, sig syscall.Signal) error {
+	if sig == syscall.SIGTERM {
+		first := false
+		h.once.Do(func() { first = true })
+		if first {
+			close(h.held)
+			<-h.release
+		}
+	}
+	return h.next.Signal(pid, sig)
+}
+
+// closeOnce closes c unless it is already closed (one closer at a time).
+func closeOnce(c chan struct{}) {
+	select {
+	case <-c:
+	default:
+		close(c)
+	}
+}
+
 // always answers every probe with a.
 func always(a probeAnswer) func(int) probeAnswer { return func(int) probeAnswer { return a } }
 
@@ -277,11 +306,25 @@ func TestGuardianFastCompletion(t *testing.T) {
 			}
 			return probeAnswer{st: groupBusy}
 		})
+		// The escalation's TERM is held inside Signal: Escalate sampled
+		// its Now but has not armed its grace timer yet, the ordering the
+		// observer's first poll can otherwise win at random.
+		held, release := make(chan struct{}), make(chan struct{})
+		r.env.sig = &holdTerm{next: r.env.sig, held: held, release: release}
+		t.Cleanup(func() { closeOnce(release) })
 		r.natural(t)
 		r.ev.await(t, "probe busy")
 		r.awaitTimer(t, groupPoll)
+		select {
+		case <-held:
+		case <-time.After(testWait):
+			t.Fatal("the escalation never sent its TERM")
+		}
 		// To the deadline's final flush (the claim), the observer's next
-		// tick due on the way.
+		// tick due on the way: only once the escalation armed its grace
+		// timer, which follows its TERM.
+		closeOnce(release)
+		r.awaitTimer(t, groupGrace-processgroup.ProbeLead)
 		r.fc.Advance(groupGrace - processgroup.ProbeLead)
 		r.ev.await(t, "deadline-claimed")
 		// Either the tick's probe followed the claim (alone, refused), or
