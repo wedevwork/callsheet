@@ -15,6 +15,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/wedevwork/callsheet/internal/contract"
 	"github.com/wedevwork/callsheet/internal/spikes/processgroup"
 )
@@ -630,18 +632,18 @@ func (g *guardian) run() int {
 	if err := g.env.mkfifo(fifo); err != nil {
 		return g.fail(guardianFIFOFailed, err)
 	}
-	ff, err := os.OpenFile(fifo, os.O_RDWR, 0)
+	ctl, err := openControlFIFO(fifo, adoptBlocking)
 	if err != nil {
 		return g.fail(guardianFIFOFailed, err)
 	}
-	defer ff.Close()
+	defer ctl.close()
 	if err := syncPath(g.inv.TaskDir); err != nil {
 		return g.fail(guardianFIFOFailed, err)
 	}
 	cmdDone := make(chan struct{})
 	go func() {
 		defer close(cmdDone)
-		g.readCommands(ff)
+		g.readCommands(ctl.r)
 	}()
 	if err := g.writeOwner(contract.OwnerArmed); err != nil {
 		return g.fail(guardianOwnerFailed, err)
@@ -748,8 +750,7 @@ func (g *guardian) run() int {
 			// group returned): close the command and lifetime readers'
 			// descriptors and join them (the lifetime reader only when its
 			// descriptor is pollable, so its Close unblocks it).
-			ff.Close()
-			<-cmdDone
+			ctl.shutdown(cmdDone)
 			if !g.fds.lifeBlocking {
 				g.fds.life.Close()
 				<-lifeDone
@@ -956,4 +957,55 @@ func (s groupState) String() string {
 		return "busy"
 	}
 	return "unknown"
+}
+
+// controlFIFO is the guardian's open control FIFO: the read end
+// readCommands serves and a write end the guardian holds until it returns,
+// the FIFO's last writer. Both are close-on-exec (the adapter inherits
+// neither) and blocking, outside the runtime poller: Go never polls a FIFO
+// on darwin (kqueue misses the last writer's close, issue 24164), so the
+// guardian adopts it that way everywhere. Closing a blocking read end does
+// not interrupt its Read; closing the last writer ends it with EOF.
+type controlFIFO struct{ r, w *os.File }
+
+// openControlFIFO opens path's read end (nonblocking, so the open does not
+// wait for a writer) and adopts it through adopt (adoptBlocking in
+// production), then opens the held write end, which a reader now lets open
+// at once. A command sender's transient writer still delivers while the
+// held one is open.
+func openControlFIFO(path string, adopt func(fd int, name string) *os.File) (*controlFIFO, error) {
+	rfd, err := unix.Open(path, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, err
+	}
+	r := adopt(rfd, path)
+	w, err := os.OpenFile(path, os.O_WRONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		r.Close()
+		return nil, err
+	}
+	return &controlFIFO{r: r, w: w}, nil
+}
+
+// adoptBlocking adopts fd in blocking mode, outside the runtime poller.
+func adoptBlocking(fd int, name string) *os.File {
+	unix.SetNonblock(fd, false)
+	return os.NewFile(uintptr(fd), name)
+}
+
+// shutdown is the ordinary return's join of readCommands: the held write
+// end closes first (the last writer: a read blocked in any poller state
+// returns EOF), then the reader is joined, then the read end closes.
+func (c *controlFIFO) shutdown(readerDone <-chan struct{}) {
+	c.w.Close()
+	<-readerDone
+	c.r.Close()
+}
+
+// close closes both ends, the write end first (every early return: a
+// parked reader then sees EOF instead of staying blocked). Closing an end
+// already closed is harmless.
+func (c *controlFIFO) close() {
+	c.w.Close()
+	c.r.Close()
 }
