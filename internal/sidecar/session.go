@@ -3,6 +3,7 @@ package sidecar
 import (
 	"context"
 	"log/slog"
+	"slices"
 	"strconv"
 	"time"
 
@@ -209,6 +210,16 @@ type roleSession struct {
 	lastR      int
 	reconciled bool
 	retry      timerSlot
+
+	// Iteration 10a prompt readiness: the last sent heartbeat snapshot
+	// (revision and ordered statuses), the passed cycle's freshness expiry
+	// and whether an immediate report was sent since the last task output
+	// exchange (fairness while output is ready).
+	sent      bool
+	sentRev   int
+	sentRoles []contract.RoleStatus
+	fresh     timerSlot
+	prompted  bool
 }
 
 // cleanup stops every timer and cancels the session's worker jobs; the
@@ -231,6 +242,7 @@ func (rs *roleSession) cleanup(cancelJobs context.CancelFunc) {
 	}
 	rs.cadence.clear()
 	rs.retry.clear()
+	rs.fresh.clear()
 	cancelJobs()
 }
 
@@ -287,9 +299,27 @@ func (rs *roleSession) run() error {
 		}
 		rs.retry.clear()
 		if !rs.fenced && rs.out == nil && rs.reconciled {
+			// Iteration 10a: a changed status snapshot is reported at once by
+			// an ordinary heartbeat, after the mandatory replies and a due
+			// periodic heartbeat; at most one such report between two task
+			// output exchanges while output is ready.
+			changed := rs.changed(now)
+			if changed && !rs.prompted {
+				if err := rs.report(now); err != nil {
+					return err
+				}
+				continue
+			}
 			w, kind, retry := rs.nextOutput(now)
 			if w != nil {
 				if err := rs.writeOutput(w, kind); err != nil {
+					return err
+				}
+				rs.prompted = false
+				continue
+			}
+			if changed {
+				if err := rs.report(now); err != nil {
 					return err
 				}
 				continue
@@ -298,6 +328,7 @@ func (rs *roleSession) run() error {
 				rs.retry.set(rs.d.clock, retry)
 			}
 		}
+		rs.armFreshness(now)
 		if !rs.fenced && rs.out == nil {
 			rs.due.set(rs.d.clock, rs.nextDue)
 		} else {
@@ -342,6 +373,8 @@ func (rs *roleSession) run() error {
 			rs.pend.timer.fired()
 		case <-rs.retry.ch():
 			rs.retry.fired()
+		case <-rs.fresh.ch():
+			rs.fresh.fired()
 		case <-rs.tasks.notify:
 		case <-rs.ctx.Done():
 		}
@@ -602,6 +635,14 @@ func (rs *roleSession) statuses(now time.Time) []contract.RoleStatus {
 // writeHeartbeat assigns the next ID as the write begins; the exchange's
 // deadline starts before the write.
 func (rs *roleSession) writeHeartbeat(now time.Time) error {
+	return rs.heartbeat(now, false)
+}
+
+// heartbeat writes one heartbeat of the current snapshot, periodic or an
+// immediate report (iteration 10a): the same frame, exchange deadline and
+// next periodic instant (heartbeatInterval after this send). The snapshot
+// is computed now, at the send, and becomes the last sent one.
+func (rs *roleSession) heartbeat(now time.Time, prompt bool) error {
 	rs.k++
 	o := &outstanding{id: "b" + strconv.Itoa(rs.k), k: rs.k, deadline: now.Add(stepTimeout)}
 	rs.nextDue = now.Add(heartbeatInterval)
@@ -609,14 +650,66 @@ func (rs *roleSession) writeHeartbeat(now time.Time) error {
 	if err := rs.s.writeBy(rs.ctx, o.deadline, contract.FrameHeartbeat, o.id, body); err != nil {
 		return err
 	}
+	rs.sent, rs.sentRev, rs.sentRoles = true, body.RolesRevision, body.Roles
 	rs.out = o
 	if o.deadline.After(rs.d.clock.Now()) {
 		o.timer.set(rs.d.clock, o.deadline)
 	} else {
 		o.expired = true
 	}
-	rs.emit(event{kind: evAwaitReply, acks: o.k, rev: body.RolesRevision, statuses: body.Roles})
+	rs.emit(event{kind: evAwaitReply, acks: o.k, rev: body.RolesRevision, statuses: body.Roles, prompt: prompt, at: now})
 	return nil
+}
+
+// report sends an immediate readiness report: an ordinary heartbeat of the
+// changed snapshot (iteration 10a).
+func (rs *roleSession) report(now time.Time) error {
+	if err := rs.heartbeat(now, true); err != nil {
+		return err
+	}
+	rs.prompted = true
+	return nil
+}
+
+// changed reports whether the current status snapshot differs from the
+// last sent one: a new revision (its all-false statuses included), a
+// readiness transition either way (a cycle's result, a slot occupied or
+// freed, a cleanup blocker, a passed cycle gone stale) or a changed
+// inflight count. Identical snapshots travel only on the periodic
+// heartbeat, and an acknowledgement alone never changes the snapshot.
+func (rs *roleSession) changed(now time.Time) bool {
+	if !rs.sent {
+		return false // the periodic first heartbeat comes first
+	}
+	if rs.sentRev != rs.inst.rev {
+		return true
+	}
+	cur := rs.statuses(now)
+	if len(cur) != len(rs.sentRoles) {
+		return true
+	}
+	for i := range cur {
+		if cur[i] != rs.sentRoles[i] {
+			return true
+		}
+	}
+	return false
+}
+
+// armFreshness keeps one timer at the instant the last passed cycle goes
+// stale, so that transition is reported promptly too (nothing is armed
+// without a fresh passed role).
+func (rs *roleSession) armFreshness(now time.Time) {
+	l := rs.last
+	if l == nil || l.rev != rs.inst.rev || !slices.Contains(l.passed, true) {
+		rs.fresh.clear()
+		return
+	}
+	if at := l.start.Add(freshness); now.Before(at) {
+		rs.fresh.set(rs.d.clock, at)
+		return
+	}
+	rs.fresh.clear()
 }
 
 // startCycle starts a due cycle when the slot is free: never overlapping,

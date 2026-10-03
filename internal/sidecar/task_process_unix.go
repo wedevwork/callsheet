@@ -281,6 +281,10 @@ func defaultGuardianEnv() guardianEnv {
 			t := time.NewTimer(time.Until(at))
 			return t.C, t.Stop
 		},
+		// Iteration 10a: the build-selected native group-completion proof
+		// (group_alone_linux.go, group_alone_darwin.go).
+		subreap:    enableGuardianSubreaper,
+		groupAlone: probeGuardianGroup,
 	}
 }
 
@@ -314,7 +318,32 @@ var guardianFDLayout = []struct {
 // underlying pipe; every one is made close-on-exec so the adapter inherits
 // only its explicit stdio.
 func inheritedFDs() (guardianFDs, error) {
-	return checkFDs(unix.FcntlInt, unix.Fstat, unix.CloseOnExec, os.NewFile)
+	adopt, blocking := lifetimeAdopter(lifetimeFD, unix.SetNonblock)
+	fds, err := checkFDs(unix.FcntlInt, unix.Fstat, unix.CloseOnExec, adopt)
+	fds.lifeBlocking = blocking()
+	return fds, err
+}
+
+// lifetimeFD is the parent-lifetime pipe's descriptor (guardianFDLayout).
+const lifetimeFD = 4
+
+// lifetimeAdopter returns checkFDs' adoption of each validated descriptor
+// and a report of its one possible failure. The lifetime pipe's read end
+// (lifetime) is the guardian's alone (its parent closed its copy; the
+// adapter inherits only its stdio): it is made nonblocking first, so the
+// runtime poller serves it and the guardian's ordinary return (iteration
+// 10a) can close it to join its reader. If that fails the descriptor stays
+// blocking, which the report says: the guardian then disables its early
+// completion (its cleanup ends by its group KILL, as before). Every other
+// descriptor is adopted as inherited.
+func lifetimeAdopter(lifetime uintptr, setNonblock func(fd int, nonblocking bool) error) (func(fd uintptr, name string) *os.File, func() bool) {
+	failed := false
+	return func(fd uintptr, name string) *os.File {
+		if fd == lifetime && setNonblock(int(fd), true) != nil {
+			failed = true
+		}
+		return os.NewFile(fd, name)
+	}, func() bool { return failed }
 }
 
 // checkFDs is inheritedFDs over injectable primitives.

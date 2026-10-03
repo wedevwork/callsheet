@@ -117,8 +117,8 @@ func TestControlTimeout(t *testing.T) {
 		}
 		got := map[string]contract.TaskResultBody{}
 		for i := 0; i < 3; i++ {
-			rid := s.nextB()
-			f := s.c.recv()
+			f := s.request(t)
+			rid := f.RequestID
 			if f.Type != contract.FrameTaskResult || f.RequestID != rid {
 				t.Fatalf("got %s %s", f.Type, f.RequestID)
 			}

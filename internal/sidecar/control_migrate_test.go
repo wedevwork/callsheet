@@ -71,8 +71,8 @@ func restartMigration(t *testing.T) {
 	}
 	got := map[string]contract.TaskResultBody{}
 	for len(got) < 2 {
-		rid := s.nextB()
-		f := s.c.recv()
+		f := s.request(t)
+		rid := f.RequestID
 		if f.Type == contract.FrameTaskLog {
 			lb, err := contract.DecodeTaskLog(f.Body)
 			if err != nil {
@@ -138,8 +138,8 @@ func lateIntentReplay(t *testing.T) {
 	}
 	var tail []byte
 	for {
-		rid := s.nextB()
-		f := s.c.recv()
+		f := s.request(t)
+		rid := f.RequestID
 		if f.Type == contract.FrameTaskLog {
 			lb, err := contract.DecodeTaskLog(f.Body)
 			if err != nil || lb.LateDigest == nil || *lb.LateDigest != res.Digest {

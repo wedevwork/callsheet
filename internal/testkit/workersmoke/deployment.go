@@ -261,7 +261,9 @@ func (d *Deployment) Manuals(name, instruction, runbook string) (string, string,
 
 // AddVendorRole registers role id for vendor on node with the vendor's
 // qualified model/effort pair (never an operator default) and waits until
-// it can accept work.
+// it can accept work: the plane's observed readiness, polled within ctx
+// (no heartbeat-period sleep; since iteration 10a the sidecar reports its
+// first passed readiness cycle at once).
 func (d *Deployment) AddVendorRole(ctx context.Context, id, vendor, node, ins, run string, concurrency int) error {
 	var q adapter.Qualification
 	for _, c := range adapter.Qualifications() {

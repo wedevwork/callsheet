@@ -207,6 +207,7 @@ func TestControlProtocol(t *testing.T) {
 			}
 		})
 		c := fp.accept(t)
+		c.setManual()
 		c.helloOK(testID)
 		// b1 holds the one request slot until its late (in-bound) ack; i1
 		// follows it; the next heartbeat falls due while i1 is outstanding
@@ -386,13 +387,22 @@ func TestControlProtocol(t *testing.T) {
 		c.expectReplaceAck("p1", 2)
 		tr.ev.awaitMatch(t, evAckWritten, func(ev event) bool { return ev.rev == 2 })
 		ch.out([]byte("unbound\n"))
-		tr.clk.Advance(heartbeatInterval)
-		c.heartbeatAt(2, 2)
+		// The snapshot's reports (its passed cycle included), then the
+		// periodic heartbeat: output written before it would have been
+		// delivered before it (one read goroutine, in order).
+		s2 := &taskSession{c: c, tr: tr, b: 2, p: 2, gen: 2, cfgs: []contract.RoleConfig{cfg}}
+		s2.report(t, 2, func(r contract.RoleStatus) bool { return r.CanAccept })
+		s2.periodic(t, 2)
 		tr.logs.await(t, "unknown disposition", func(s string) bool {
 			return strings.Contains(s, "reconciliation named an execution this worker does not hold")
 		})
 		if len(c.held) != 0 {
 			t.Fatalf("an unbound execution's output was sent: %+v", c.held)
+		}
+		select {
+		case r := <-c.in:
+			t.Fatalf("an unbound execution's output was sent: %s %v", r.data, r.err)
+		default:
 		}
 		ch.exitCode(0)
 		tr.settled(t, st.TaskID)
@@ -458,8 +468,10 @@ func TestControlLease(t *testing.T) {
 		defer release()
 		s, _ = tr.reconnect(t, 2, 2, map[string]string{st.TaskID: contract.ActionStopLost}, cfg)
 		tr.ev.awaitMatch(t, evCycleDone, func(ev event) bool { return ev.rev == 2 })
-		tr.clk.Advance(heartbeatInterval)
-		if hb := s.beat(t, 2); hb.Roles[0].Inflight != 1 || hb.Roles[0].CanAccept {
+		// The snapshot's report, then (no change after the passed cycle)
+		// the periodic heartbeat.
+		s.report(t, 2, func(r contract.RoleStatus) bool { return r.Inflight == 1 && !r.CanAccept })
+		if hb := s.periodic(t, 2); hb.Roles[0].Inflight != 1 || hb.Roles[0].CanAccept {
 			t.Fatalf("heartbeat while cleaning %+v", hb.Roles)
 		}
 		nb := startBody(2, cfg, 1, 2, "blocked")
@@ -662,8 +674,9 @@ func TestControlLaunch(t *testing.T) {
 				if err := tr.clk.AwaitWaiter(testWait, testkit.HasTimer(prepBudget)); err != nil {
 					t.Fatal(err)
 				}
-				tr.clk.Advance(heartbeatInterval)
-				s.beat(t, 1)
+				// The reserved slot's report, then the periodic heartbeat.
+				s.report(t, 1, func(r contract.RoleStatus) bool { return r.Inflight == 1 && r.CanAccept })
+				s.periodic(t, 1)
 				tr.clk.Advance(prepBudget - heartbeatInterval + offset)
 				if offset < 0 {
 					close(hold)
@@ -856,8 +869,7 @@ func TestControlRestart(t *testing.T) {
 		if len(inv) != 1 || inv[0].Phase != contract.PhaseResult || *inv[0].ResultDigest != res.Digest {
 			t.Fatalf("inventory %+v", inv)
 		}
-		rid := s.nextB()
-		lb := s.c.expectLog(rid)
+		rid, lb := s.nextLog(t)
 		if lb.LateDigest == nil || *lb.LateDigest != res.Digest || string(lb.Data) != "tail\n" || lb.Offset != 0 {
 			t.Fatalf("replayed tail %+v", lb)
 		}
@@ -899,11 +911,14 @@ func TestControlRestart(t *testing.T) {
 			t.Fatalf("inventory %+v", inv)
 		}
 		rr.ev.awaitMatch(t, evCycleDone, nil)
+		s.report(t, 1, func(r contract.RoleStatus) bool { return !r.CanAccept && r.Inflight == 1 })
 		// The ready-check cycle due at this advance is held until the
 		// cleanup was confirmed and its lost outcome sent: the worst
 		// ordering for the readiness read after the cleanup.
 		hold := make(chan struct{})
 		rr.script.set(nil, hold)
+		s.c.settle()
+		s.c.drainBeats()
 		rr.clk.Advance(heartbeatInterval)
 		cadence := rr.clk.Now() // the held cycle started here
 		rr.script.awaitProbe(t)
@@ -927,16 +942,12 @@ func TestControlRestart(t *testing.T) {
 		if r.Outcome != contract.OutcomeLost || r.OutputBytes != 9 || !r.LogIncomplete || string(out) != "partial" {
 			t.Fatalf("lost %+v %q", r, out)
 		}
-		// The next heartbeat's readiness comes from the held cycle: it
-		// completes before time moves on. A cycle still running when the
-		// clock jumps a heartbeat interval finishes past its budget (all
-		// false), and the first cycle is stale by then (freshness).
+		// The confirmed cleanup frees the slot and lifts the blocker: the
+		// first cycle is still fresh, so the worker is ready at once
+		// (iteration 10a), before the held cycle completes.
+		s.report(t, 1, func(r contract.RoleStatus) bool { return r.CanAccept && r.Inflight == 0 })
 		close(hold)
 		rr.ev.awaitCycleSince(t, 1, cadence)
-		rr.clk.Advance(heartbeatInterval)
-		if hb := s.beat(t, 1); !hb.Roles[0].CanAccept || hb.Roles[0].Inflight != 0 {
-			t.Fatalf("after the cleanup %+v", hb.Roles)
-		}
 	})
 	t.Run("blocked", func(t *testing.T) {
 		t.Parallel()
@@ -983,15 +994,18 @@ func TestControlRestart(t *testing.T) {
 				if r.Outcome != contract.OutcomeLost {
 					t.Fatalf("blocked outcome %+v", r)
 				}
+				// The snapshot's report follows the result's exchange; then
+				// the periodic heartbeat (no change after the passed cycle).
+				s.report(t, 1, func(r contract.RoleStatus) bool { return !r.CanAccept })
+				c2.settle()
+				c2.drainBeats()
 				rr.clk.Advance(heartbeatInterval)
-				rid := s.nextB()
-				f := c2.expect(contract.FrameHeartbeat, rid)
-				c2.send(contract.ProtocolVersion, contract.FrameHeartbeatAck, rid, nil)
-				hb, _ := contract.DecodeHeartbeat(f.Body)
-				if hb.Roles[0].CanAccept {
-					t.Fatalf("ready with an unproved cleanup: %+v", hb.Roles)
+				b := c2.nextBeat()
+				hb := b.body
+				if hb.RolesRevision != 1 || hb.Roles[0].CanAccept {
+					t.Fatalf("ready with an unproved cleanup: %+v", hb)
 				}
-				if keys := statusKeys(t, f.Body); strings.Join(keys, ",") != "can_accept,concurrency,inflight,role_id" {
+				if keys := statusKeys(t, b.raw); strings.Join(keys, ",") != "can_accept,concurrency,inflight,role_id" {
 					t.Fatalf("role status keys %v", keys)
 				}
 				nb := startBody(2, rr.cfg, 1, 1, "refused")
@@ -1231,8 +1245,8 @@ func TestControlRestart(t *testing.T) {
 			if total, tasks := loaded(); tasks > 1 || total > contract.MaxLogRetainedBytes {
 				t.Fatalf("%d recovered tails (%d bytes) in memory at once", tasks, total)
 			}
-			rid := s.nextB()
-			f := s.c.recv()
+			f := s.request(t)
+			rid := f.RequestID
 			if f.RequestID != rid {
 				t.Fatalf("got %s %s, want %s", f.Type, f.RequestID, rid)
 			}
@@ -1449,8 +1463,7 @@ func TestControlLate(t *testing.T) {
 		st, ch := s.run(t, 1, 0, "late")
 		ch.prompt(t)
 		ch.out([]byte("before the loss\n"))
-		rid := s.nextB()
-		lb := s.c.expectLog(rid)
+		rid, lb := s.nextLog(t)
 		s.c.ackLog(rid, st.TaskID, lb.Offset+len(lb.Data))
 		ch.out([]byte("unsent\n"))
 		s.detach(t, false, st.TaskID)
@@ -1464,8 +1477,8 @@ func TestControlLate(t *testing.T) {
 		var tagged []contract.TaskLogBody
 		var res contract.TaskResultBody
 		for {
-			rid := s.nextB()
-			f := s.c.recv()
+			f := s.request(t)
+			rid := f.RequestID
 			if f.Type == contract.FrameTaskLog {
 				b, _ := contract.DecodeTaskLog(f.Body)
 				tagged = append(tagged, b)
@@ -1505,11 +1518,9 @@ func TestControlLate(t *testing.T) {
 			writeJournal(t, root, j, nil)
 		})
 		s, _ := rr.reconnect(t, 1, 1, map[string]string{st.TaskID: contract.ActionSendResult}, rr.cfg)
-		rid := s.nextB()
-		s.c.expectLog(rid)
+		rid, _ := s.nextLog(t)
 		s.c.ackLog(rid, st.TaskID, 10)
-		rid = s.nextB()
-		if r := s.c.expectResult(rid); r.Digest != res.Digest {
+		if _, r := s.nextResult(t); r.Digest != res.Digest {
 			t.Fatal("digest")
 		}
 		s.c.finish()
@@ -1541,7 +1552,7 @@ func TestControlLate(t *testing.T) {
 			writeJournal(t, root, j, nil)
 		})
 		s, _ := rr.reconnect(t, 1, 1, map[string]string{st.TaskID: contract.ActionSendResult}, rr.cfg)
-		s.c.expectLog(s.nextB())
+		s.nextLog(t)
 		// The first Run's only connection is this reconciled one (the test
 		// read it): stopping the Run dials nothing more.
 		rr.run.cancel()

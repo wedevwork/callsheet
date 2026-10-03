@@ -23,6 +23,9 @@ func (rr *roleRun) awaitCycle(t *testing.T, rev int) []bool {
 func TestRoleReadinessContract(t *testing.T) {
 	t.Run("changes", func(t *testing.T) {
 		t.Parallel()
+		// Since iteration 10a every changed status snapshot is reported at
+		// once by an ordinary heartbeat; an identical one travels only on
+		// the periodic heartbeat.
 		fp := startFakePlane(t)
 		rr := startRoleRun(t, fp, true)
 		c := fp.accept(t)
@@ -32,8 +35,8 @@ func TestRoleReadinessContract(t *testing.T) {
 		insA, runA := manuals(t, rr.dir, "a", "x")
 		insB, runB := manuals(t, rr.dir, "b", "")
 		a, b := roleConfig("a", insA, runA), roleConfig("b", insB, runB)
-		// Installed at T0+4s while its first cycle is held: the heartbeat
-		// due at T0+5s reports both false (first false).
+		// Installed at T0+4s while its first cycle is held: the new
+		// revision is reported at once, both false (first false).
 		block := make(chan struct{})
 		rr.script.set(nil, block)
 		rr.clk.Advance(4 * time.Second)
@@ -41,73 +44,65 @@ func TestRoleReadinessContract(t *testing.T) {
 		c.expectReplaceAck("p1", 1)
 		rr.ev.awaitMatch(t, evCycleStarted, func(ev event) bool { return ev.rev == 1 })
 		rr.script.awaitProbe(t)
-		rr.clk.Advance(time.Second)
 		if s := statuses(rr.beat(c, 2, 1)); s["a"] || s["b"] || len(s) != 2 {
 			t.Fatalf("first heartbeat = %v", s)
 		}
-		// The cycle completes within its budget: then true.
+		// The cycle completes within its budget: then true, reported at
+		// once (b3 at T0+4s; the next periodic heartbeat is due at T0+9s).
 		close(block)
 		if p := rr.awaitCycle(t, 1); !p[0] || !p[1] {
 			t.Fatalf("cycle = %v", p)
 		}
-		rr.script.set(nil, nil)
-		// Next cycle starts at T0+9s (5 s after the previous start).
-		rr.clk.Advance(4 * time.Second) // T0+9s
-		rr.awaitCycle(t, 1)
-		rr.clk.Advance(time.Second) // T0+10s
 		if s := statuses(rr.beat(c, 3, 1)); !s["a"] || !s["b"] {
 			t.Fatalf("ready heartbeat = %v", s)
 		}
+		rr.script.set(nil, nil)
+		// Next cycle starts at T0+9s (5 s after the previous start), with
+		// the periodic heartbeat due then: the repeated identical result
+		// is no report, only the periodic backstop (b4).
+		rr.clk.Advance(5 * time.Second) // T0+9s
+		rr.awaitCycle(t, 1)
+		if s := statuses(rr.beat(c, 4, 1)); !s["a"] || !s["b"] {
+			t.Fatalf("periodic heartbeat = %v", s)
+		}
 		// Deletion: a's runbook disappears; the next cycle (T0+14s) marks
-		// only a false.
+		// only a false, reported by the heartbeat due at that instant or at
+		// once after it.
 		os.Remove(runA)
-		rr.clk.Advance(4 * time.Second)
+		rr.clk.Advance(5 * time.Second)
 		if p := rr.awaitCycle(t, 1); p[0] || !p[1] {
 			t.Fatalf("after deletion = %v", p)
 		}
-		rr.clk.Advance(time.Second) // T0+15s
-		if s := statuses(rr.beat(c, 4, 1)); s["a"] || !s["b"] {
-			t.Fatalf("after deletion heartbeat = %v", s)
-		}
+		rr.report(c, 1, func(s map[string]bool) bool { return !s["a"] && s["b"] })
 		// Recovery at the following cycle (T0+19s).
 		os.WriteFile(runA, []byte("x"), 0o644)
-		rr.clk.Advance(4 * time.Second)
+		rr.clk.Advance(5 * time.Second)
 		if p := rr.awaitCycle(t, 1); !p[0] || !p[1] {
 			t.Fatalf("after recovery = %v", p)
 		}
-		rr.clk.Advance(time.Second) // T0+20s
-		if s := statuses(rr.beat(c, 5, 1)); !s["a"] || !s["b"] {
-			t.Fatalf("after recovery heartbeat = %v", s)
-		}
+		rr.report(c, 1, func(s map[string]bool) bool { return s["a"] && s["b"] })
 		// set: a changed configuration (concurrency) replaces the snapshot;
 		// readiness restarts from its own first cycle.
 		a.Concurrency = 5
 		c.replace("p2", 2, a, b)
 		c.expectReplaceAck("p2", 2)
 		rr.awaitCycle(t, 2)
-		rr.clk.Advance(heartbeatInterval) // T0+25s
-		hb := rr.beat(c, 6, 2)
-		if hb.Roles[0].Concurrency != 5 || !statuses(hb)["a"] {
+		hb := rr.report(c, 2, func(s map[string]bool) bool { return s["a"] && s["b"] }).body
+		if hb.Roles[0].Concurrency != 5 {
 			t.Fatalf("after set = %+v", hb)
 		}
 		// rm: the snapshot without a; its status disappears.
 		c.replace("p3", 3, b)
 		c.expectReplaceAck("p3", 3)
 		rr.awaitCycle(t, 3)
-		rr.clk.Advance(heartbeatInterval)
-		// That advance also starts b's next cycle (5 s after the previous
-		// start); it finishes before the probes are counted below, and the
-		// heartbeat reports b ready after either cycle.
-		rr.awaitCycle(t, 3)
-		if hb := rr.beat(c, 7, 3); len(hb.Roles) != 1 || hb.Roles[0].RoleID != "b" || !hb.Roles[0].CanAccept {
+		if hb := rr.report(c, 3, func(s map[string]bool) bool { return s["b"] }).body; len(hb.Roles) != 1 || hb.Roles[0].RoleID != "b" {
 			t.Fatalf("after rm = %+v", hb)
 		}
 		// rm of the last role: no roles, no cycle, no probe.
 		probes := rr.script.count()
 		c.replace("p4", 4)
 		c.expectReplaceAck("p4", 4)
-		rr.clk.Advance(heartbeatInterval)
-		if hb := rr.beat(c, 8, 4); len(hb.Roles) != 0 || rr.script.count() != probes {
+		if hb := rr.report(c, 4, func(s map[string]bool) bool { return len(s) == 0 }).body; len(hb.Roles) != 0 || rr.script.count() != probes {
 			t.Fatalf("empty snapshot = %+v, probes %d->%d", hb, probes, rr.script.count())
 		}
 	})
@@ -160,8 +155,11 @@ func TestRoleReadinessContract(t *testing.T) {
 		if p := rr.awaitCycle(t, 1); p[0] {
 			t.Fatalf("cycle = %v", p)
 		}
+		// The new revision's immediate report, then the periodic ones.
 		for k := 2; k <= 4; k++ {
-			rr.clk.Advance(heartbeatInterval)
+			if k > 2 {
+				rr.clk.Advance(heartbeatInterval)
+			}
 			if s := statuses(rr.beat(c, k, 1)); s["a"] {
 				t.Fatalf("b%d = %v", k, s)
 			}
@@ -199,14 +197,15 @@ func TestRoleReadinessContract(t *testing.T) {
 		c.expectReplaceAck("p1", 1)
 		rr.ev.awaitMatch(t, evCycleStarted, func(ev event) bool { return ev.rev == 1 })
 		rr.script.awaitProbe(t)
+		rr.beat(c, 2, 1)            // the new revision's immediate report
 		rr.clk.Advance(cycleBudget) // T0+2s
 		if p := rr.awaitCycle(t, 1); p[0] {
 			t.Fatalf("expired cycle = %v", p)
 		}
 		rr.clk.Advance(3 * time.Second) // T0+5s: a tick, slot still held
-		rr.beat(c, 2, 1)
-		rr.clk.Advance(heartbeatInterval) // T0+10s: another tick
 		rr.beat(c, 3, 1)
+		rr.clk.Advance(heartbeatInterval) // T0+10s: another tick
+		rr.beat(c, 4, 1)
 		if n := rr.script.count(); n != 1 {
 			t.Fatalf("%d probes while the worker was stuck", n)
 		}
@@ -248,10 +247,8 @@ func TestRoleReadinessContract(t *testing.T) {
 		if p := rr.awaitCycle(t, 2); !p[0] {
 			t.Fatalf("revision 2 cycle = %v", p)
 		}
-		rr.clk.Advance(heartbeatInterval)
-		if s := statuses(rr.beat(c, 2, 2)); !s["a"] {
-			t.Fatalf("b2 = %v", s)
-		}
+		// Reported at once; the abandoned revision-1 result never was.
+		rr.report(c, 2, func(s map[string]bool) bool { return s["a"] })
 	})
 	t.Run("freshness", func(t *testing.T) {
 		t.Parallel()

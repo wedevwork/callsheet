@@ -299,6 +299,7 @@ func TestRoleValidationContract(t *testing.T) {
 		fp := startFakePlane(t)
 		rr := startRoleRun(t, fp, true)
 		c := fp.accept(t)
+		c.setManual()
 		f := c.expect(contract.FrameHello, "h1")
 		wire := string(f.Body)
 		c.send(contract.ProtocolVersion, contract.FrameHelloOK, "h1", contract.HelloOKBody{HeartbeatIntervalMS: contract.HeartbeatIntervalMS, LeaseMS: contract.LeaseMS})
@@ -316,8 +317,7 @@ func TestRoleValidationContract(t *testing.T) {
 		wire += mustJSON(t, c.result("p2"))
 		c.replace("p3", 1, roleConfig("a", ins, run))
 		c.expectReplaceAck("p3", 1)
-		rr.ev.await(t, evCycleDone)
-		rr.clk.Advance(heartbeatInterval)
+		// The snapshot's immediate report (iteration 10a).
 		wire += mustJSON(t, c.heartbeatAt(2, 1))
 		if strings.Contains(wire, sentinel) || strings.Contains(rr.logs.String(), sentinel) {
 			t.Fatal("a manual body left the node")

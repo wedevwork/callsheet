@@ -31,12 +31,20 @@ func (s *taskSession) detach(t *testing.T, byAck bool, fenced ...string) {
 	t.Helper()
 	tr := s.tr
 	if byAck {
+		// Every earlier acknowledgement was processed; the next heartbeat
+		// (due within the interval) is left unacknowledged until its bound.
+		s.c.settle()
+		s.c.setManual()
 		tr.clk.Advance(heartbeatInterval)
-		rid := s.nextB()
-		k := rid[1:]
-		s.c.expect(contract.FrameHeartbeat, rid)
-		tr.ev.awaitMatch(t, evAwaitReply, func(ev event) bool { return itoa(ev.acks) == k })
-		tr.clk.Advance(stepTimeout)
+		f := s.c.recv()
+		if f.Type != contract.FrameHeartbeat {
+			t.Fatalf("got %s %s, want the due heartbeat", f.Type, f.RequestID)
+		}
+		k := f.RequestID[1:]
+		ev := tr.ev.awaitMatch(t, evAwaitReply, func(ev event) bool { return itoa(ev.acks) == k })
+		if d := ev.at.Add(stepTimeout).Sub(tr.clk.Now()); d > 0 {
+			tr.clk.Advance(d)
+		}
 	} else {
 		s.c.finish()
 	}
@@ -63,15 +71,16 @@ func sidecarRemainingCapacity(t *testing.T, byAck bool) {
 	s := tr.connect(t, 1, 1, cfg)
 	st1, ch1 := s.run(t, 1, 0, "old")
 	ch1.prompt(t)
+	// The occupied slot's report precedes the detachment (iteration 10a).
+	s.report(t, 1, func(r contract.RoleStatus) bool { return r.Inflight == 1 })
 	s.detach(t, byAck, st1.TaskID)
 	s, inv := tr.reconnect(t, 2, 2, map[string]string{st1.TaskID: contract.ActionContinue}, cfg)
 	if len(inv) != 1 || inv[0].TaskID != st1.TaskID || inv[0].Phase != contract.PhaseRunning || inv[0].StartedAt == nil || inv[0].Execution != st1.Execution ||
 		inv[0].StartDigest != st1.StartDigestHex() {
 		t.Fatalf("inventory %+v", inv)
 	}
-	tr.ev.awaitMatch(t, evCycleDone, func(ev event) bool { return ev.rev == 2 })
-	tr.clk.Advance(heartbeatInterval)
-	if hb := s.beat(t, 2); hb.Roles[0].Inflight != 1 || !hb.Roles[0].CanAccept {
+	// The ready report (at once, iteration 10a) counts the old child.
+	if hb := s.report(t, 2, func(r contract.RoleStatus) bool { return r.CanAccept }); hb.Roles[0].Inflight != 1 {
 		t.Fatalf("ready heartbeat with the old child %+v", hb.Roles)
 	}
 	st2, ch2 := s.run(t, 2, 0, "new")
@@ -98,10 +107,7 @@ func sidecarRemainingCapacity(t *testing.T, byAck bool) {
 	if r := s.result(t, st2); r.TaskID != st2.TaskID {
 		t.Fatal("wrong result")
 	}
-	tr.clk.Advance(heartbeatInterval)
-	if hb := s.beat(t, 2); hb.Roles[0].Inflight != 0 {
-		t.Fatalf("after both exits %+v", hb.Roles)
-	}
+	s.report(t, 2, func(r contract.RoleStatus) bool { return r.Inflight == 0 })
 }
 
 // sidecarRecoveryRemove is the shared removal contract on the worker (06a
@@ -129,6 +135,8 @@ func sidecarRecoveryRemoveOpts(t *testing.T, byAck bool, o taskOpts) {
 	s := tr.connect(t, 1, 1, cfg)
 	st1, ch1 := s.run(t, 1, 0, "old")
 	ch1.prompt(t)
+	// The occupied slot's report precedes the detachment (iteration 10a).
+	s.report(t, 1, func(r contract.RoleStatus) bool { return r.Inflight == 1 })
 	s.detach(t, byAck, st1.TaskID)
 	// Output while detached stays unsent until the lost outcome's replay.
 	ch1.out([]byte("tail\n"))
@@ -145,16 +153,16 @@ func sidecarRecoveryRemoveOpts(t *testing.T, byAck bool, o taskOpts) {
 	// moving the clock before that could fire the drain bound and mark
 	// the log incomplete.
 	tr.groups.awaitGone(t, ch1.gpid)
-	tr.clk.Advance(heartbeatInterval)
-	if hb := s.beat(t, 2); len(hb.Roles) != 0 {
-		t.Fatalf("the removed instance is still reported: %+v", hb.Roles)
-	}
+	// The snapshot without the instance is reported at once.
+	s.reportBody(t, 2, func(hb contract.HeartbeatBody) bool { return len(hb.Roles) == 0 })
 	s.install(t, 3, contract.RoleRecord{RoleConfig: cfg, RegistrationOrder: 2})
 	s.cfgs = []contract.RoleConfig{cfg}
-	tr.ev.awaitMatch(t, evCycleDone, func(ev event) bool { return ev.rev == 3 })
-	tr.clk.Advance(heartbeatInterval)
-	cadence := tr.clk.Now() // the next ready-check cycle starts here
-	if hb := s.beat(t, 3); hb.Roles[0].Inflight != 0 || hb.Roles[0].CanAccept {
+	// Its first cycle passes, yet the unresolved cleanup keeps the node
+	// nonaccepting (no changed report): the periodic heartbeat after it
+	// says so.
+	tr.ev.awaitMatch(t, evCycleDone, func(ev event) bool { return ev.rev == 3 && ev.passed[0] })
+	s.report(t, 3, func(contract.RoleStatus) bool { return true })
+	if hb := s.periodic(t, 3); hb.Roles[0].Inflight != 0 || hb.Roles[0].CanAccept {
 		t.Fatalf("the node accepted with an old group's cleanup unresolved: %+v", hb.Roles)
 	}
 	blocked := startBody(3, cfg, 2, 2, "while cleaning")
@@ -171,11 +179,8 @@ func sidecarRecoveryRemoveOpts(t *testing.T, byAck bool, o taskOpts) {
 	if r.Outcome != contract.OutcomeLost || r.Signal == nil || *r.Signal != "SIGTERM" || string(out) != "tail\n" {
 		t.Fatalf("stopped execution %+v %q", r, out)
 	}
-	// The cycle that keeps readiness fresh at the next heartbeat
-	// completed before time moves on.
-	tr.ev.awaitCycleSince(t, 3, cadence)
-	tr.clk.Advance(heartbeatInterval)
-	if hb := s.beat(t, 3); hb.Roles[0].Inflight != 0 || !hb.Roles[0].CanAccept {
+	// The proved cleanup lifts the blocker: ready at once, from zero.
+	if hb := s.report(t, 3, func(r contract.RoleStatus) bool { return r.CanAccept }); hb.Roles[0].Inflight != 0 {
 		t.Fatalf("the re-added instance inherited activity: %+v", hb.Roles)
 	}
 	nb := startBody(2, cfg, 2, 2, "new instance")
@@ -216,16 +221,14 @@ func TestTaskRoleIntegration(t *testing.T) {
 		st2, ch2 := s.run(t, 2, 0, "two")
 		ch1.prompt(t)
 		ch2.prompt(t)
-		tr.clk.Advance(heartbeatInterval)
-		if hb := s.beat(t, 1); hb.Roles[0].Inflight != 2 || hb.Roles[0].CanAccept {
+		if hb := s.report(t, 1, func(r contract.RoleStatus) bool { return r.Inflight == 2 }); hb.Roles[0].CanAccept {
 			t.Fatalf("full %+v", hb.Roles)
 		}
 		lowered := cfg
 		lowered.Concurrency = 1
 		s.install(t, 2, contract.RoleRecord{RoleConfig: lowered, RegistrationOrder: 1})
 		s.cfgs = []contract.RoleConfig{lowered}
-		tr.clk.Advance(heartbeatInterval)
-		if hb := s.beat(t, 2); hb.Roles[0].Inflight != 2 || hb.Roles[0].Concurrency != 1 || hb.Roles[0].CanAccept {
+		if hb := s.report(t, 2, func(contract.RoleStatus) bool { return true }); hb.Roles[0].Inflight != 2 || hb.Roles[0].Concurrency != 1 || hb.Roles[0].CanAccept {
 			t.Fatalf("lowered %+v", hb.Roles)
 		}
 		b := startBody(3, lowered, 1, 1, "over")
@@ -241,16 +244,10 @@ func TestTaskRoleIntegration(t *testing.T) {
 			t.Fatalf("occupied %d after the exit", n)
 		}
 		s.result(t, st1)
-		tr.clk.Advance(heartbeatInterval)
-		if hb := s.beat(t, 2); hb.Roles[0].Inflight != 1 {
-			t.Fatalf("after the first exit %+v", hb.Roles)
-		}
+		s.report(t, 2, func(r contract.RoleStatus) bool { return r.Inflight == 1 })
 		ch2.exitCode(0)
 		s.result(t, st2)
-		tr.clk.Advance(heartbeatInterval)
-		if hb := s.beat(t, 2); hb.Roles[0].Inflight != 0 {
-			t.Fatalf("after both %+v", hb.Roles)
-		}
+		s.report(t, 2, func(r contract.RoleStatus) bool { return r.Inflight == 0 })
 	})
 	t.Run("mutation", func(t *testing.T) {
 		t.Parallel()
@@ -274,13 +271,12 @@ func TestTaskRoleIntegration(t *testing.T) {
 			t.Fatal("a start did not read the manual at start")
 		}
 		s.install(t, 2, contract.RoleRecord{RoleConfig: cfg, RegistrationOrder: 1}, contract.RoleRecord{RoleConfig: other, RegistrationOrder: 2})
-		tr.clk.Advance(heartbeatInterval)
-		if hb := s.beat(t, 2); hb.Roles[0].Inflight != 2 {
+		// The new revision is reported at once (iteration 10a).
+		if hb := s.report(t, 2, func(contract.RoleStatus) bool { return true }); hb.Roles[0].Inflight != 2 {
 			t.Fatalf("installation reset the count %+v", hb.Roles)
 		}
 		s.install(t, 3, contract.RoleRecord{RoleConfig: other, RegistrationOrder: 2})
-		tr.clk.Advance(heartbeatInterval)
-		if hb := s.beat(t, 3); len(hb.Roles) != 1 || hb.Roles[0].RoleID != "b" || hb.Roles[0].Inflight != 0 {
+		if hb := s.report(t, 3, func(contract.RoleStatus) bool { return true }); len(hb.Roles) != 1 || hb.Roles[0].RoleID != "b" || hb.Roles[0].Inflight != 0 {
 			t.Fatalf("after removal %+v", hb.Roles)
 		}
 		if len(tr.groups.signals()) != 0 {

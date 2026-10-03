@@ -182,8 +182,7 @@ func TestTaskExecutionContract(t *testing.T) {
 		if _, err := composePrompt([]byte("12345"), []byte("67890"), probe, 9); !errors.Is(err, errPromptTooLarge) {
 			t.Fatalf("raw manuals over the limit: %v", err)
 		}
-		tr.clk.Advance(heartbeatInterval)
-		if hb := s.beat(t, 1); hb.Roles[0].Inflight != 0 {
+		if hb := s.report(t, 1, func(r contract.RoleStatus) bool { return r.Inflight == 0 }); hb.Roles[0].Concurrency != 2 {
 			t.Fatalf("refusals kept slots: %+v", hb.Roles)
 		}
 	})
@@ -290,6 +289,7 @@ func TestTaskExecutionContract(t *testing.T) {
 			t.Fatal("the ready cycle failed")
 		}
 		var dirs []string
+		var st0 contract.TaskStartBody // the first, a proven cleanup
 		for i, c := range []struct {
 			exit procExit
 			code *int
@@ -299,6 +299,9 @@ func TestTaskExecutionContract(t *testing.T) {
 			{procExit{err: errors.New("wait failed")}, nil, contract.SignalUnknown}, {procExit{code: 0}, intp(0), ""},
 		} {
 			st, ch := s.run(t, i+1, 0, "exit")
+			if i == 0 {
+				st0 = st
+			}
 			dirs = append(dirs, ch.spec.dir)
 			ch.prompt(t)
 			ch.finish(c.exit)
@@ -313,11 +316,8 @@ func TestTaskExecutionContract(t *testing.T) {
 				t.Fatal("a scratch directory was reused")
 			}
 		}
-		tr.clk.Advance(heartbeatInterval)
-		cadence := tr.clk.Now() // the next ready-check cycle starts here
-		if hb := s.beat(t, 1); hb.Roles[0].Inflight != 0 || !hb.Roles[0].CanAccept {
-			t.Fatalf("after exits %+v", hb.Roles)
-		}
+		// Reported at once (iteration 10a): every slot free, ready.
+		s.report(t, 1, func(r contract.RoleStatus) bool { return r.Inflight == 0 && r.CanAccept })
 		// A child that removes its scratch directory: the cleanup warning
 		// does not rewrite the successful exit.
 		st, ch := s.run(t, 10, 0, "messy")
@@ -339,16 +339,27 @@ func TestTaskExecutionContract(t *testing.T) {
 		if r := s.result(t, st); *r.ExitCode != 0 {
 			t.Fatalf("unconfirmed cleanup result %+v", r)
 		}
-		// Readiness is fresh at the next heartbeat (the cycle started at
-		// the previous advance completed), so only the unconfirmed cleanup
-		// can make it false.
-		tr.ev.awaitCycleSince(t, 1, cadence)
-		tr.clk.Advance(heartbeatInterval)
-		if hb := s.beat(t, 1); hb.Roles[0].Inflight != 1 || hb.Roles[0].CanAccept {
+		// Readiness is still fresh (the clock has not moved since the
+		// passed cycle), so only the unconfirmed cleanup makes it false,
+		// reported at once.
+		if hb := s.report(t, 1, func(r contract.RoleStatus) bool { return !r.CanAccept }); hb.Roles[0].Inflight != 1 {
 			t.Fatalf("after unconfirmed cleanup %+v", hb.Roles)
 		}
 		if _, err := os.Stat(ch.spec.dir); err != nil {
 			t.Fatal("the scratch of an unconfirmed cleanup was removed")
+		}
+		// Iteration 10a's diagnostics: a proven absence reports its cleanup
+		// time from the exit receipt (0 on the unmoved injected clock); an
+		// unconfirmed one never reports an absence.
+		logs := tr.logs.String()
+		if gone, ok := logRecord(logs, "task group gone", st0.TaskID); !ok || gone["cleanup_elapsed_ns"] != float64(0) {
+			t.Fatalf("proven absence diagnostic %v", gone)
+		}
+		if _, ok := logRecord(logs, "task adapter exit observed", st.TaskID); !ok {
+			t.Fatal("no exit diagnostic for the stuck group")
+		}
+		if rec, ok := logRecord(logs, "task group gone", st.TaskID); ok {
+			t.Fatalf("an unconfirmed cleanup reported an absence: %v", rec)
 		}
 		_, r := s.start(t, 12, 0, "blocked")
 		wantRefusal(t, r, contract.ReasonLocalFull)
@@ -414,10 +425,8 @@ func TestTaskExecutionContract(t *testing.T) {
 			// child's state at the deadline check.
 			t.Fatalf("the real fake adapter did not pass its ready probe: probes %d, probe error: %v; %v", ca.count(), ca.lastErr(), trace.Last())
 		}
-		tr.clk.Advance(heartbeatInterval)
-		if hb := s.beat(t, 1); !hb.Roles[0].CanAccept {
-			t.Fatalf("not ready: %+v", hb.Roles)
-		}
+		// The passed cycle is reported at once (iteration 10a).
+		s.report(t, 1, func(r contract.RoleStatus) bool { return r.CanAccept })
 		// Child one: success; its final marker on stdout and the fixture's
 		// report of what it actually got (cwd, its permissions, the
 		// environment) on stderr.
@@ -478,8 +487,8 @@ func TestTaskExecutionContract(t *testing.T) {
 		// Heartbeats continue after both exits with the slot free (its
 		// readiness then ages out: the cadence is disabled so no second
 		// probe runs).
-		tr.clk.Advance(heartbeatInterval)
-		if hb := s.beat(t, 1); hb.Roles[0].Inflight != 0 {
+		s.report(t, 1, func(r contract.RoleStatus) bool { return r.Inflight == 0 })
+		if hb := s.periodic(t, 1); hb.Roles[0].Inflight != 0 {
 			t.Fatalf("heartbeat after the children: %+v", hb.Roles)
 		}
 		mu.Lock()

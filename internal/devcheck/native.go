@@ -391,6 +391,12 @@ var nativeRequired = []string{
 	"TestWorkspaceTransferMCP",
 	"TestWorkspaceTransferNoGit",
 	"TestWorkspaceTransferEligibility",
+	// Iteration 10a (prompt readiness and group completion): the two
+	// function tests in FP order (FP-1, FP-2), a separate group after the
+	// 09b names; their scenarios assert within each parent, and absence or
+	// a skip never satisfies native qualification.
+	"TestTaskPromptReadiness",
+	"TestTaskFastGroupCleanup",
 }
 
 // NativeTaskProcessPackage and nativeTaskProcess are the separate native

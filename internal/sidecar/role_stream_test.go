@@ -41,7 +41,8 @@ func TestRoleStreamContract(t *testing.T) {
 			fp := startFakePlane(t)
 			rr := startRoleRun(t, fp, true)
 			c := fp.accept(t)
-			c.connect() // b1, then reconciliation (protocol 4)
+			c.setManual() // no roles: no readiness report
+			c.connect()   // b1, then reconciliation (protocol 4)
 			rr.ev.awaitMatch(t, evAck, func(ev event) bool { return ev.acks == 1 })
 			rr.clk.Advance(heartbeatInterval)
 			c.readHeartbeat(2) // b2 outstanding
@@ -77,31 +78,35 @@ func TestRoleStreamContract(t *testing.T) {
 			// Installation, acknowledgement and heartbeats share the session
 			// goroutine: a heartbeat written before an installation carries
 			// the old revision; every heartbeat after the ack write carries
-			// the new one; IDs never skip.
+			// the new one; IDs never skip. Since iteration 10a the first
+			// heartbeat after the ack write is an immediate report. Every
+			// probe is held (manual acknowledgements): no cycle result
+			// changes readiness here.
 			fp := startFakePlane(t)
 			rr := startRoleRun(t, fp, true)
+			rr.script.set(nil, make(chan struct{})) // canceled when Run ends
 			c := fp.accept(t)
+			c.setManual()
 			c.helloOK(testID)
 			rr.beat(c, 1, 0)
 			c.reconcileEmpty()
 			ins, run := manuals(t, rr.dir, "a", "x")
 			a := roleConfig("a", ins, run)
-			// (1) Replacement with nothing due: installed, acked, then the
-			// next heartbeat reports it (not yet ready: no cycle result at
-			// the time it is prepared is required).
+			// (1) Replacement with nothing due: installed, acked, then
+			// reported at once (not ready: no cycle result is required).
 			c.replace("p1", 3, a)
 			if ev := rr.ev.await(t, evInstalled); ev.rev != 3 || ev.id != "p1" {
 				t.Fatalf("installed %+v", ev)
 			}
 			c.expectReplaceAck("p1", 3)
 			rr.ev.awaitMatch(t, evAckWritten, func(ev event) bool { return ev.rev == 3 })
-			rr.clk.Advance(heartbeatInterval)
-			if b := rr.beat(c, 2, 3); len(b.Roles) != 1 || b.Roles[0].RoleID != "a" || b.Roles[0].Concurrency != 2 {
+			if b := rr.beat(c, 2, 3); len(b.Roles) != 1 || b.Roles[0].RoleID != "a" || b.Roles[0].Concurrency != 2 || b.Roles[0].CanAccept {
 				t.Fatalf("b2 = %+v", b)
 			}
 			// (2) A replacement arriving while a heartbeat awaits its ack:
 			// the ack is written at once; the outstanding heartbeat was the
-			// old revision; the next one reports the new.
+			// old revision; the next one, reported as soon as that exchange
+			// ends, the new.
 			rr.clk.Advance(heartbeatInterval)
 			if b := c.readHeartbeat(3); b.RolesRevision != 3 {
 				t.Fatalf("b3 = %+v", b)
@@ -110,7 +115,6 @@ func TestRoleStreamContract(t *testing.T) {
 			c.expectReplaceAck("p2", 4)
 			c.send(contract.ProtocolVersion, contract.FrameHeartbeatAck, "b3", nil)
 			rr.ev.awaitMatch(t, evAck, func(ev event) bool { return ev.acks == 3 })
-			rr.clk.Advance(heartbeatInterval)
 			rr.beat(c, 4, 4)
 			// (3) A heartbeat due at the same instant as a replacement: both
 			// orders are legal, but the heartbeat written after the ack write
@@ -143,9 +147,9 @@ func TestRoleStreamContract(t *testing.T) {
 			rr.ev.awaitWritten(t, evAckWritten, "p3")
 			if order[0] == "hb" {
 				// The old-revision heartbeat was already being written; the
-				// next heartbeat reports the new revision.
+				// next heartbeat, reported at once after its exchange,
+				// reports the new revision.
 				rr.ev.awaitMatch(t, evAck, func(ev event) bool { return ev.acks == 5 })
-				rr.clk.Advance(heartbeatInterval)
 				c.heartbeatAt(6, 5)
 			}
 		})
@@ -163,8 +167,7 @@ func TestRoleStreamContract(t *testing.T) {
 			c.expectReplaceAck("p1", 0)
 			c.replace("p2", 9, roleConfig("a", ins, run))
 			c.expectReplaceAck("p2", 9)
-			rr.clk.Advance(heartbeatInterval)
-			c.heartbeatAt(2, 9)
+			c.heartbeatAt(2, 9) // reported at once (iteration 10a)
 			c.finish()
 			rr.ev.await(t, evEnded)
 			rr.advanceBackoff(t, jitterDelay(0))
@@ -259,6 +262,7 @@ func TestRoleStreamContract(t *testing.T) {
 			fp := startFakePlane(t)
 			rr := startRoleRun(t, fp, true)
 			c := fp.accept(t)
+			c.setManual() // no roles: no readiness report
 			c.helloOK(testID)
 			ack := func(rid string, n int) {
 				c.sendRaw([]byte(`{"version":5,"type":"heartbeat_ack","request_id":"` + rid + `","body":{` + strings.Repeat(" ", n-2) + `}}`))

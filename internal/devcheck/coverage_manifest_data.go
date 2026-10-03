@@ -1,14 +1,17 @@
 package devcheck
 
 // WorkspaceCoverageManifest is the committed coverage manifest of
-// iterations 09a and 09b. 09a: every new production file (all blocks) and
-// the changed executable line ranges (new side of the diff against the
-// iteration's base, d56ae28) of existing production files. 09b (base
-// 631cbc0): every new or changed production file with an empty Ranges
-// list (its whole file), the transfer package in GroupTransfer and its
-// build-selected publication files native-only. Every applicable listed
-// file must also pass on its own. The reviewer compares it with the
-// implementation diff; CI consumes it without any git base or network.
+// iterations 09a, 09b and 10a. 09a: every new production file (all
+// blocks) and the changed executable line ranges (new side of the diff
+// against the iteration's base, d56ae28) of existing production files.
+// 09b (base 631cbc0): every new or changed production file with an empty
+// Ranges list (its whole file), the transfer package in GroupTransfer and
+// its build-selected publication files native-only. 10a (base 48078df):
+// its two new build-selected sidecar files, whole and each on its own OS,
+// and its four changed sidecar files, whole and common.
+// Every applicable listed file must also pass on its own. The reviewer
+// compares it with the implementation diff; CI consumes it without any
+// git base or network.
 var WorkspaceCoverageManifest = []CoverageEntry{
 	// New: the workspace hub package.
 	{Group: GroupWorkspace, File: modulePath + "/internal/workspace/billy.go"},
@@ -75,6 +78,19 @@ var WorkspaceCoverageManifest = []CoverageEntry{
 	{Group: GroupChanged, File: modulePath + "/internal/mcp/tools.go"},
 	{Group: GroupChanged, File: modulePath + "/internal/devcheck/devcheck.go"},
 	{Group: GroupChanged, File: modulePath + "/internal/devcheck/native.go"},
+
+	// Iteration 10a (base 48078df), new: the build-selected native
+	// group-completion primitives of the task guardian, whole files, each
+	// evaluated on its own OS.
+	{Group: GroupChanged, File: modulePath + "/internal/sidecar/group_alone_darwin.go", OS: "darwin"},
+	{Group: GroupChanged, File: modulePath + "/internal/sidecar/group_alone_linux.go", OS: "linux"},
+	// Iteration 10a, changed executable code of existing files (whole
+	// files, evaluated on both systems: session.go and tasks.go build
+	// everywhere, guardian.go and task_process_unix.go on linux || darwin).
+	{Group: GroupChanged, File: modulePath + "/internal/sidecar/guardian.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/sidecar/session.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/sidecar/task_process_unix.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/sidecar/tasks.go"},
 }
 
 // modulePath is the profile's import-path prefix.

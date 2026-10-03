@@ -14,9 +14,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -59,6 +61,12 @@ func TestMain(m *testing.M) {
 	}
 	if cfg := os.Getenv(FixtureEnv); cfg != "" {
 		os.Exit(runFixture(cfg))
+	}
+	if len(os.Args) == 2 && os.Args[1] == GuardianToken {
+		os.Exit(runInjectedGuardian(os.Args[1:]))
+	}
+	if os.Getenv(probeCalibrationEnv) != "" {
+		os.Exit(probeCalibration())
 	}
 	code := m.Run()
 	if fixtureDir != "" {
@@ -103,7 +111,7 @@ func lockHelper(root string) int {
 
 func discard() *slog.Logger { return slog.New(slog.DiscardHandler) }
 
-func wantCode(t *testing.T, err error, code contract.Code, substr ...string) {
+func wantCode(t testing.TB, err error, code contract.Code, substr ...string) {
 	t.Helper()
 	if contract.CodeOf(err) != code {
 		t.Fatalf("err = %v (code %q), want %q", err, contract.CodeOf(err), code)
@@ -163,7 +171,7 @@ func (l *syncLog) String() string {
 }
 
 // await waits (bounded) until pred holds for the captured text.
-func (l *syncLog) await(t *testing.T, what string, pred func(string) bool) string {
+func (l *syncLog) await(t testing.TB, what string, pred func(string) bool) string {
 	t.Helper()
 	deadline := time.After(testWait)
 	for {
@@ -206,7 +214,7 @@ type inPlane struct {
 }
 
 // startPlane initializes and serves a plane (SAN 127.0.0.1) in-process.
-func startPlane(t *testing.T) *inPlane {
+func startPlane(t testing.TB) *inPlane {
 	t.Helper()
 	p := &inPlane{root: filepath.Join(t.TempDir(), "plane"), logs: newSyncLog(), done: make(chan error, 1)}
 	ctx, cancel := context.WithCancel(bg)
@@ -223,7 +231,7 @@ func startPlane(t *testing.T) *inPlane {
 	return p
 }
 
-func (p *inPlane) stop(t *testing.T) {
+func (p *inPlane) stop(t testing.TB) {
 	t.Helper()
 	p.cancel()
 	select {
@@ -234,7 +242,7 @@ func (p *inPlane) stop(t *testing.T) {
 	}
 }
 
-func (p *inPlane) client(t *testing.T) *client.Client {
+func (p *inPlane) client(t testing.TB) *client.Client {
 	t.Helper()
 	ca, err := os.ReadFile(p.caFile)
 	if err != nil {
@@ -263,26 +271,51 @@ type fakePlane struct {
 	mu        sync.Mutex
 	refuse    int
 	onUpgrade func()
+	// autoAck makes every accepted connection's dispatcher acknowledge the
+	// sidecar's heartbeats itself (iteration 10a; role and task runs).
+	// Without it, heartbeats are delivered like any message and the test
+	// acknowledges them (the manual mode of the ack-loss, coalescing and
+	// deadline tests, and of runs without roles).
+	autoAck bool
 }
 
 type fakeConn struct {
-	t    *testing.T
+	t    testing.TB
 	ev   *events
 	ws   *websocket.Conn
 	done chan struct{}
 	once sync.Once
 	// in receives every message, then the terminal read error: like a
 	// real plane, the fake always reads, so close handshakes complete.
+	// In auto-acknowledgement mode heartbeats are not delivered here.
 	in chan readResult
 	// held are sidecar task frames read past while waiting for another
 	// reply (a reconciled attachment's output may precede the snapshot's
 	// acknowledgement); recv returns them first.
 	held []contract.NodeFrame
+	// Iteration 10a's shared receive dispatcher: in auto mode, the read
+	// goroutine recognizes every heartbeat by its type and request ID,
+	// validates its sequence and revision order, acknowledges it at once
+	// and queues the observation on beats (in order) for assertions.
+	auto       atomic.Bool
+	beats      chan beatObs
+	bmu        sync.Mutex
+	last       beatObs
+	ackedK     []int
+	minSession int
+}
+
+// beatObs is one heartbeat the dispatcher observed and acknowledged: its
+// request number and body.
+type beatObs struct {
+	k    int
+	body contract.HeartbeatBody
+	raw  json.RawMessage
 }
 
 func (c *fakeConn) finish() { c.once.Do(func() { close(c.done) }) }
 
-func startFakePlane(t *testing.T) *fakePlane {
+func startFakePlane(t testing.TB) *fakePlane {
 	t.Helper()
 	ca, err := testkit.NewFixtureCA()
 	if err != nil {
@@ -313,10 +346,16 @@ func startFakePlane(t *testing.T) *fakePlane {
 		if err != nil {
 			return
 		}
-		c := &fakeConn{t: t, ws: ws, done: make(chan struct{}), in: make(chan readResult, 64)}
+		c := &fakeConn{t: t, ws: ws, done: make(chan struct{}), in: make(chan readResult, 64), beats: make(chan beatObs, 1024)}
+		fp.mu.Lock()
+		c.auto.Store(fp.autoAck)
+		fp.mu.Unlock()
 		go func() {
 			for {
 				typ, b, err := ws.Read(context.Background())
+				if err == nil && c.auto.Load() && c.dispatch(typ, b) {
+					continue
+				}
 				c.in <- readResult{typ: typ, data: b, err: err}
 				if err != nil {
 					return
@@ -355,13 +394,16 @@ func (fp *fakePlane) setRefuse(status int) {
 }
 
 // accept returns the next upgraded connection.
-func (fp *fakePlane) accept(t *testing.T) *fakeConn {
+func (fp *fakePlane) accept(t testing.TB) *fakeConn {
 	t.Helper()
 	select {
 	case c := <-fp.conns:
 		t.Cleanup(c.finish)
 		if fp.ev != nil {
 			fp.ev.drainWritten()
+			// Every acknowledgement of an earlier session was emitted
+			// before this connection's: its own are the later sessions'.
+			c.minSession = fp.ev.drainAcks() + 1
 			c.ev = fp.ev
 		}
 		return c
@@ -442,12 +484,167 @@ func (c *fakeConn) helloOK(id string) {
 	c.send(contract.ProtocolVersion, contract.FrameHelloOK, "h1", contract.HelloOKBody{HeartbeatIntervalMS: contract.HeartbeatIntervalMS, LeaseMS: contract.LeaseMS})
 }
 
-// ack answers heartbeat k.
+// ack answers heartbeat k (in auto mode: requires the dispatcher's next
+// observation to be k, already acknowledged).
 func (c *fakeConn) ack(k int) {
 	c.t.Helper()
+	if c.auto.Load() {
+		c.beatK(k)
+		return
+	}
 	rid := "b" + strconv.Itoa(k)
 	c.expect(contract.FrameHeartbeat, rid)
 	c.send(contract.ProtocolVersion, contract.FrameHeartbeatAck, rid, nil)
+}
+
+// dispatch is the auto mode's read-goroutine step for one message: a
+// well-formed heartbeat later in the sequence than the previous one, at no
+// older revision, is acknowledged and queued; anything else is delivered
+// to the test (which fails on an unexpected message).
+func (c *fakeConn) dispatch(typ websocket.MessageType, b []byte) bool {
+	if typ != websocket.MessageText {
+		return false
+	}
+	f, err := contract.DecodeFrame(b, contract.FromSidecar)
+	if err != nil || f.Type != contract.FrameHeartbeat || !strings.HasPrefix(f.RequestID, "b") {
+		return false
+	}
+	k, err := strconv.Atoi(f.RequestID[1:])
+	if err != nil {
+		return false
+	}
+	hb, err := contract.DecodeHeartbeat(f.Body)
+	if err != nil {
+		return false
+	}
+	c.bmu.Lock()
+	ok := k > c.last.k && (c.last.k == 0 || hb.RolesRevision >= c.last.body.RolesRevision)
+	if ok {
+		c.last = beatObs{k: k, body: hb}
+		c.ackedK = append(c.ackedK, k)
+	}
+	c.bmu.Unlock()
+	if !ok {
+		return false
+	}
+	ack, err := contract.EncodeFrame(contract.ProtocolVersion, contract.FrameHeartbeatAck, f.RequestID, nil)
+	if err != nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(bg, testWait)
+	c.ws.Write(ctx, websocket.MessageText, ack)
+	cancel()
+	c.beats <- beatObs{k: k, body: hb, raw: f.Body}
+	return true
+}
+
+// setManual switches the dispatcher to manual acknowledgement: later
+// heartbeats are delivered like any message. Call it while no heartbeat
+// is in flight.
+func (c *fakeConn) setManual() { c.auto.Store(false) }
+
+// setAuto switches the dispatcher back to auto acknowledgement (before
+// the next heartbeat can arrive).
+func (c *fakeConn) setAuto() { c.auto.Store(true) }
+
+// nextBeat returns the dispatcher's next queued observation (in order).
+func (c *fakeConn) nextBeat() beatObs {
+	c.t.Helper()
+	select {
+	case b := <-c.beats:
+		return b
+	case <-time.After(testWait):
+		c.t.Fatal("no heartbeat from the sidecar")
+		return beatObs{}
+	}
+}
+
+// beatK requires the next queued observation to be heartbeat k.
+func (c *fakeConn) beatK(k int) contract.HeartbeatBody {
+	c.t.Helper()
+	b := c.nextBeat()
+	if b.k != k {
+		c.t.Fatalf("heartbeat b%d (%+v), want b%d", b.k, b.body, k)
+	}
+	return b.body
+}
+
+// awaitBeat consumes queued observations until one satisfies pred.
+func (c *fakeConn) awaitBeat(pred func(beatObs) bool) beatObs {
+	c.t.Helper()
+	deadline := time.After(testWait)
+	for {
+		select {
+		case b := <-c.beats:
+			if pred(b) {
+				return b
+			}
+		case <-deadline:
+			c.t.Fatal("no matching heartbeat from the sidecar")
+			return beatObs{}
+		}
+	}
+}
+
+// awaitLatest waits until the latest observation so far satisfies pred
+// (earlier ones are consumed; a stale match followed by a mismatch keeps
+// waiting) and returns it.
+func (c *fakeConn) awaitLatest(pred func(beatObs) bool) beatObs {
+	c.t.Helper()
+	deadline := time.After(testWait)
+	var latest *beatObs
+	for {
+		select {
+		case b := <-c.beats:
+			latest = &b
+			continue
+		default:
+		}
+		if latest != nil && pred(*latest) {
+			return *latest
+		}
+		select {
+		case b := <-c.beats:
+			latest = &b
+		case <-deadline:
+			c.t.Fatalf("no heartbeat in the expected state (latest %+v)", latest)
+			return beatObs{}
+		}
+	}
+}
+
+// drainBeats drops every queued observation.
+func (c *fakeConn) drainBeats() {
+	for {
+		select {
+		case <-c.beats:
+		default:
+			return
+		}
+	}
+}
+
+// noBeat requires no queued observation.
+func (c *fakeConn) noBeat() {
+	c.t.Helper()
+	select {
+	case b := <-c.beats:
+		c.t.Fatalf("unexpected heartbeat b%d %+v", b.k, b.body)
+	default:
+	}
+}
+
+// settle waits until the sidecar processed every acknowledgement the
+// dispatcher sent so far: only then may a test move the clock past an
+// exchange deadline.
+func (c *fakeConn) settle() {
+	c.t.Helper()
+	c.bmu.Lock()
+	ks := slices.Clone(c.ackedK)
+	c.bmu.Unlock()
+	for _, k := range ks {
+		c.ev.awaitAck(c.t, c.minSession, k)
+	}
 }
 
 // closed reads until the socket ends and returns its close status.
@@ -461,7 +658,7 @@ func (c *fakeConn) closed() websocket.StatusCode {
 }
 
 // writeState writes identity.json and enrollment.json directly.
-func writeState(t *testing.T, root, id, url string, caPEM []byte) {
+func writeState(t testing.TB, root, id, url string, caPEM []byte) {
 	t.Helper()
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		t.Fatal(err)
@@ -491,13 +688,29 @@ type events struct {
 	// cycles receives every completed ready-check cycle a second time
 	// (awaitCycleSince), without consuming the main stream.
 	cycles chan event
+	// ackc receives every processed heartbeat acknowledgement a second
+	// time (iteration 10a: awaitAck); amu guards acked, the (session, k)
+	// pairs read from it, and maxSession.
+	ackc       chan event
+	amu        sync.Mutex
+	acked      map[[2]int]bool
+	maxSession int
 }
 
 func observe(d *deps) *events {
 	e := &events{ch: make(chan event, 4096), written: make(chan event, 4096), collected: make(chan event, 4096), gone: map[string]bool{},
-		cycles: make(chan event, 4096)}
+		cycles: make(chan event, 4096), ackc: make(chan event, 4096), acked: map[[2]int]bool{}}
+	// A tap the test installed before (deps adjustments) still sees
+	// every event first.
+	tap := d.observe
 	d.observe = func(ev event) {
+		if tap != nil {
+			tap(ev)
+		}
 		e.ch <- ev
+		if ev.kind == evAck {
+			e.ackc <- ev
+		}
 		if ev.kind == evAckWritten || ev.kind == evReplied {
 			e.written <- ev
 		}
@@ -514,7 +727,7 @@ func observe(d *deps) *events {
 // awaitWritten waits until the sidecar's write of message id (kind
 // evAckWritten or evReplied) returned: a test that read the message must
 // not move the clock before then, or it may fire that write's own bound.
-func (e *events) awaitWritten(t *testing.T, kind eventKind, id string) {
+func (e *events) awaitWritten(t testing.TB, kind eventKind, id string) {
 	t.Helper()
 	deadline := time.After(testWait)
 	for {
@@ -529,9 +742,76 @@ func (e *events) awaitWritten(t *testing.T, kind eventKind, id string) {
 	}
 }
 
+// discard drops the events already recorded on the main stream and on
+// the cycle, collection and acknowledgement copies (never the write
+// completions, which the connection helpers consume), and returns how many
+// the main stream held: a long-running caller (a benchmark) keeps the
+// recorder's queues bounded with it.
+func (e *events) discard() int {
+	n := len(e.ch)
+	for _, c := range []chan event{e.ch, e.cycles, e.collected, e.ackc} {
+	drain:
+		for {
+			select {
+			case <-c:
+			default:
+				break drain
+			}
+		}
+	}
+	return n
+}
+
+// noteAck records one processed acknowledgement (under amu).
+func (e *events) noteAck(ev event) {
+	e.acked[[2]int{ev.session, ev.acks}] = true
+	e.maxSession = max(e.maxSession, ev.session)
+}
+
+// drainAcks records every acknowledgement event already emitted and
+// returns the latest session seen.
+func (e *events) drainAcks() int {
+	e.amu.Lock()
+	defer e.amu.Unlock()
+	for {
+		select {
+		case ev := <-e.ackc:
+			e.noteAck(ev)
+		default:
+			return e.maxSession
+		}
+	}
+}
+
+// awaitAck waits until a session numbered minSession or later processed
+// the acknowledgement of its heartbeat k (read from the acks copy, never
+// consuming the main stream).
+func (e *events) awaitAck(t testing.TB, minSession, k int) {
+	t.Helper()
+	deadline := time.After(testWait)
+	for {
+		e.amu.Lock()
+		for s := minSession; s <= e.maxSession; s++ {
+			if e.acked[[2]int{s, k}] {
+				e.amu.Unlock()
+				return
+			}
+		}
+		e.amu.Unlock()
+		select {
+		case ev := <-e.ackc:
+			e.amu.Lock()
+			e.noteAck(ev)
+			e.amu.Unlock()
+		case <-deadline:
+			t.Fatalf("the acknowledgement of heartbeat b%d was never processed", k)
+		}
+	}
+}
+
 // awaitCycleSince waits until a ready-check cycle of revision rev that
 // started at or after since completed (read from the cycles copy).
-func (e *events) awaitCycleSince(t *testing.T, rev int, since time.Time) event {
+func (e *events) awaitCycleSince(t testing.TB, rev int, since time.Time) event {
 	t.Helper()
 	deadline := time.After(testWait)
 	for {
@@ -559,7 +839,7 @@ func (e *events) drainWritten() {
 }
 
 // await returns the next event of kind, skipping others.
-func (e *events) await(t *testing.T, kind eventKind) event {
+func (e *events) await(t testing.TB, kind eventKind) event {
 	t.Helper()
 	deadline := time.After(testWait)
 	for {
@@ -580,7 +860,7 @@ type running struct {
 	done   chan error
 }
 
-func startRun(t *testing.T, d *deps, root string, logger *slog.Logger) *running {
+func startRun(t testing.TB, d *deps, root string, logger *slog.Logger) *running {
 	t.Helper()
 	ctx, cancel := context.WithCancel(bg)
 	r := &running{cancel: cancel, done: make(chan error, 1)}
@@ -597,7 +877,7 @@ func startRun(t *testing.T, d *deps, root string, logger *slog.Logger) *running 
 }
 
 // result waits for Run to return.
-func (r *running) result(t *testing.T) error {
+func (r *running) result(t testing.TB) error {
 	t.Helper()
 	select {
 	case err := <-r.done:
@@ -610,7 +890,7 @@ func (r *running) result(t *testing.T) error {
 }
 
 // readLine reads one line from r with a bounded wait.
-func readLine(t *testing.T, r io.Reader) string {
+func readLine(t testing.TB, r io.Reader) string {
 	t.Helper()
 	line := make(chan string, 1)
 	go func() {

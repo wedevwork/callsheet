@@ -1040,6 +1040,9 @@ func (s *taskSupervisor) supervise(w *taskWorker, g guardianProc, a adapter.Adap
 	go func() { defer drains.Done(); drainStart(); drain(p.stdoutR, w.ring, feed, s.signal) }()
 	go func() { defer drains.Done(); drainStart(); drain(p.stderrR, w.ring, nil, s.signal) }()
 	var exit *procExit
+	// exitAt is the receipt of the guardian's validated adapter-exit
+	// status on the process clock (iteration 10a's cleanup diagnostics).
+	var exitAt time.Time
 	stopCh, stopAll, ctlCh := w.stopCh, s.stopAll, w.ctlCh
 	if unobserved {
 		ctlCh = nil
@@ -1073,6 +1076,11 @@ func (s *taskSupervisor) supervise(w *taskWorker, g guardianProc, a adapter.Adap
 				continue
 			}
 			if m.Type == contract.GuardianExit {
+				exitAt = s.d.clock.Now()
+				w.mu.Lock()
+				pgid := w.pgid
+				w.mu.Unlock()
+				s.logger.Info("task adapter exit observed", "task_id", w.id(), "pgid", pgid)
 				ex := procExit{}
 				if m.Signal != nil {
 					ex.signal = *m.Signal
@@ -1126,8 +1134,17 @@ func (s *taskSupervisor) supervise(w *taskWorker, g guardianProc, a adapter.Adap
 	pgid := w.pgid
 	w.mu.Unlock()
 	cleanupErr := s.groups.gone(pgid)
+	goneAt := s.d.clock.Now()
 	if cleanupErr == nil {
 		s.event(evGroupGone, w)
+		// Iteration 10a: the bounded lifecycle diagnostic of a proven
+		// absence (ESRCH only), with the cleanup's duration from the
+		// adapter-exit receipt when one was observed.
+		if exitAt.IsZero() {
+			s.logger.Info("task group gone", "task_id", w.id(), "pgid", pgid)
+		} else {
+			s.logger.Info("task group gone", "task_id", w.id(), "pgid", pgid, "cleanup_elapsed_ns", goneAt.Sub(exitAt).Nanoseconds())
+		}
 	}
 	// Iteration 08: finalize the answer's source while the scratch
 	// directory still exists (the final file only once no group member can
