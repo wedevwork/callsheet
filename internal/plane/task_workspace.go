@@ -509,5 +509,49 @@ func (s *nodeService) handlePublication(w http.ResponseWriter, r *http.Request, 
 	}
 }
 
+// ---- Task workspace status (iteration 10c) ----
+
+// workspaceStatus serves GET /api/v1/tasks/<id>/workspace: a consistent
+// copy of the task record's visible state, phase, binding and terminal
+// workspace result is taken under the task lock, which is released before
+// the hub is observed; then the bound instance and the exact recorded task
+// ref and hash are read together under the workspace read lock (a fresh
+// observation, not a retention lease). A removed or recreated workspace or
+// a missing or other ref is available=false with the historical result
+// intact; a real storage failure is an error, never available=false.
+func (ts *taskService) workspaceStatus(ctx context.Context, id string) (contract.TaskWorkspaceStatus, error) {
+	ts.mu.Lock()
+	e := ts.tasks[id]
+	if e == nil {
+		ts.mu.Unlock()
+		return contract.TaskWorkspaceStatus{}, taskNotFound(id)
+	}
+	rec := e.rec
+	if rec.Workspace == nil {
+		ts.mu.Unlock()
+		return contract.TaskWorkspaceStatus{}, contract.NoTaskWorkspace(id)
+	}
+	st := contract.TaskWorkspaceStatus{TaskID: rec.TaskID, State: rec.State, Binding: *rec.Workspace,
+		WorkspacePhase: contract.WorkspacePhaseOf(rec.Workspace, rec.State, e.publishingLocked())}
+	if contract.TaskTerminal(rec.State) && rec.WorkspaceResult != nil {
+		r := *rec.WorkspaceResult
+		st.Result = &r
+	}
+	ts.mu.Unlock()
+	r := st.Result
+	if r == nil || r.Publication != contract.PublicationPublished {
+		return st, nil
+	}
+	if ts.ws == nil {
+		return st, contract.New(contract.CodeUnavailable, "this plane serves no workspaces")
+	}
+	ref, err := ts.ws.TaskRef(ctx, st.Binding.Name, st.Binding.Instance, id)
+	if err != nil {
+		return contract.TaskWorkspaceStatus{}, err
+	}
+	st.Available = ref.Exists && ref.Commit == *r.Commit
+	return st, nil
+}
+
 // sameHashPtr reports equal nullable hashes.
 func sameHashPtr(a, b *string) bool { return (a == nil) == (b == nil) && (a == nil || *a == *b) }

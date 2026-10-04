@@ -353,12 +353,37 @@ const benchEventBound = 256
 // while K changes coalesce (exactly one report of the latest snapshot: the
 // pending report never queues). The recorder's queues are drained every
 // iteration and must stay bounded, so any -benchtime runs.
+// awaitRecorded waits until the benchmark's tap has counted revision
+// rev's report; a revision it never counts fails here, as at the total.
+func awaitRecorded(b *testing.B, recorded <-chan int, rev int) {
+	b.Helper()
+	deadline := time.After(testWait)
+	for {
+		select {
+		case r := <-recorded:
+			if r == rev {
+				return
+			}
+		case <-deadline:
+			b.Fatalf("revision %d's report was never recorded", rev)
+		}
+	}
+}
+
 func BenchmarkPromptReadiness(b *testing.B) {
 	b.Run("event-to-send", func(b *testing.B) {
 		var mu sync.Mutex
 		var ackRev, reported int
 		var ackAt time.Time
 		var total time.Duration
+		// recorded carries each revision whose report the tap counted. The
+		// session emits evAwaitReply only after the report's write
+		// returned, so the plane can see the frame before the tap ran:
+		// every iteration waits here for its own revision before the next
+		// one (and before the total is checked). One revision is counted at
+		// most once and only after the previous one was received, so the
+		// send never finds the buffer full.
+		recorded := make(chan int, 1)
 		tap := func(ev event) {
 			now := time.Now()
 			mu.Lock()
@@ -370,6 +395,10 @@ func BenchmarkPromptReadiness(b *testing.B) {
 				total += now.Sub(ackAt)
 				reported++
 				ackAt = time.Time{} // the first report of this revision only
+				select {
+				case recorded <- ev.rev:
+				default:
+				}
 			}
 		}
 		fp := startFakePlane(b)
@@ -385,6 +414,7 @@ func BenchmarkPromptReadiness(b *testing.B) {
 			c.replace("p"+strconv.Itoa(rev), rev, a)
 			c.expectReplaceAck("p"+strconv.Itoa(rev), rev)
 			c.awaitLatest(func(o beatObs) bool { return o.body.RolesRevision == rev })
+			awaitRecorded(b, recorded, rev)
 			if n := rr.ev.discard(); n > benchEventBound {
 				b.Fatalf("%d events queued in one iteration", n)
 			}

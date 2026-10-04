@@ -14,6 +14,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/format/packfile"
@@ -75,10 +76,36 @@ type PushRequest struct {
 }
 
 // PullRequest is ws pull's input; an unset Path is the working directory.
+// ExpectedInstance and ExpectedCommit (iteration 10c, task-ID callers
+// only) are a paired precondition: both or neither, a 32-hex instance and
+// a full commit hash with a canonical task-ref Ref. The initial and final
+// instance checks and the selector resolution then report a missing or
+// recreated workspace as conflict/workspace_instance_mismatch, and the
+// resolved task ref must name exactly ExpectedCommit before any fetch.
+// Explicit pulls leave both unset and keep their behavior.
 type PullRequest struct {
 	Name, Ref string
 	Path      string
 	PathSet   bool
+
+	ExpectedInstance, ExpectedCommit string
+}
+
+// expectation validates a pull's paired task precondition (nil without
+// one).
+func (req PullRequest) expectation(in contract.PullIntent) (*PullRequest, error) {
+	if req.ExpectedInstance == "" && req.ExpectedCommit == "" {
+		return nil, nil
+	}
+	switch {
+	case req.ExpectedInstance == "" || req.ExpectedCommit == "":
+		return nil, contract.New(contract.CodeInvalidArgument, "a task pull's expected instance and commit go together")
+	case !contract.ValidWorkspaceToken(req.ExpectedInstance) || !contract.ValidCommitHash(req.ExpectedCommit):
+		return nil, contract.New(contract.CodeInvalidArgument, "a task pull's expected instance is a 32-hex token and its commit a full 40-hex hash")
+	case in.Selector.Kind != contract.SelectorKindTask || in.Canonical != req.Ref:
+		return nil, contract.New(contract.CodeInvalidArgument, "a task pull selects a canonical refs/callsheet/tasks/ ref")
+	}
+	return &req, nil
 }
 
 // ResolvePath returns the absolute cleaned path of a PATH argument (the
@@ -423,10 +450,15 @@ func classifyDestination(ctx context.Context, o Options, abs string) (*destinati
 // resolveSelector resolves the pull's selector to one immutable commit:
 // branch and task refs through the status pages pinned by instance and
 // generation, a hash through the reachability-validating diff (base
-// empty, limit 1). A generation change aborts; nothing restarts.
-func resolveSelector(ctx context.Context, p Plane, name, instance string, sel contract.Selector) (plumbing.Hash, error) {
+// empty, limit 1). A generation change aborts; nothing restarts. A task
+// pull (iteration 10c) reports an instance change, or a workspace that
+// disappeared during the scan, as conflict/workspace_instance_mismatch.
+func resolveSelector(ctx context.Context, p Plane, name, instance string, sel contract.Selector, task bool) (plumbing.Hash, error) {
 	notFound := contract.New(contract.CodeNotFound, "the workspace has no such branch or task ref (an unborn branch has no commit)")
-	recreated := contract.New(contract.CodeConflict, "the workspace was removed or recreated during the pull; nothing was written")
+	var recreated error = contract.New(contract.CodeConflict, "the workspace was removed or recreated during the pull; nothing was written")
+	if task {
+		recreated = contract.WorkspaceInstanceMismatch(name)
+	}
 	if sel.Kind == contract.SelectorKindHash {
 		r, err := p.WorkspaceDiff(ctx, name, client.DiffPage{Base: contract.SelectorEmpty, Target: sel.Value, Limit: 1})
 		if err != nil {
@@ -441,6 +473,9 @@ func resolveSelector(ctx context.Context, p Plane, name, instance string, sel co
 	for {
 		r, err := p.WorkspaceStatus(ctx, name, page)
 		if err != nil {
+			if task {
+				return plumbing.ZeroHash, taskInstanceError(ctx, p, name, instance, err, page.Instance != "")
+			}
 			return plumbing.ZeroHash, err
 		}
 		if r.Instance != instance {
@@ -461,6 +496,44 @@ func resolveSelector(ctx context.Context, p Plane, name, instance string, sel co
 	}
 }
 
+// taskInstanceError maps a task pull's failed plane observation: a missing
+// workspace is conflict/workspace_instance_mismatch, and so is a
+// continuation conflict when the workspace was removed or recreated (a
+// changed generation alone keeps the plane's conflict); every other error
+// propagates unchanged.
+func taskInstanceError(ctx context.Context, p Plane, name, instance string, err error, continuation bool) error {
+	switch {
+	case contract.CodeOf(err) == contract.CodeNotFound:
+		return contract.WorkspaceInstanceMismatch(name)
+	case continuation && contract.CodeOf(err) == contract.CodeConflict:
+		v, verr := p.ShowWorkspace(ctx, name)
+		if contract.CodeOf(verr) == contract.CodeNotFound || (verr == nil && v.Instance != instance) {
+			return contract.WorkspaceInstanceMismatch(name)
+		}
+	}
+	return err
+}
+
+// observeInstance is a pull's initial or final instance check. A task
+// pull's missing workspace or other instance than want is
+// conflict/workspace_instance_mismatch; an explicit pull (task false)
+// returns the plane's error and reports a change (want nonempty) as the
+// plain conflict.
+func observeInstance(ctx context.Context, p Plane, name, want string, task bool) (string, error) {
+	v, err := p.ShowWorkspace(ctx, name)
+	switch {
+	case err != nil && task && contract.CodeOf(err) == contract.CodeNotFound:
+		return "", contract.WorkspaceInstanceMismatch(name)
+	case err != nil:
+		return "", err
+	case want != "" && v.Instance != want && task:
+		return "", contract.WorkspaceInstanceMismatch(name)
+	case want != "" && v.Instance != want:
+		return "", contract.New(contract.CodeConflict, "the workspace was removed or recreated during the pull; nothing was written")
+	}
+	return v.Instance, nil
+}
+
 func (d *deps) pull(ctx context.Context, o Options, req PullRequest) (res contract.WorkspacePullResult, err error) {
 	if err := checkGOOS(o.GOOS); err != nil {
 		return res, err
@@ -469,6 +542,11 @@ func (d *deps) pull(ctx context.Context, o Options, req PullRequest) (res contra
 	if err != nil {
 		return res, err
 	}
+	exp, err := req.expectation(in)
+	if err != nil {
+		return res, err
+	}
+	task := exp != nil
 	abs, err := ResolvePath(o.GOOS, o.Cwd, req.Path, req.PathSet)
 	if err != nil {
 		return res, err
@@ -490,18 +568,37 @@ func (d *deps) pull(ctx context.Context, o Options, req PullRequest) (res contra
 		}
 	}
 	d.stage("pull-classified")
-	view, err := o.Plane.ShowWorkspace(ctx, in.Name)
+	want := ""
+	if task {
+		want = exp.ExpectedInstance
+	}
+	instance, err := observeInstance(ctx, o.Plane, in.Name, want, task)
 	if err != nil {
 		return res, err
 	}
-	commit, err := resolveSelector(ctx, o.Plane, in.Name, view.Instance, in.Selector)
+	commit, err := resolveSelector(ctx, o.Plane, in.Name, instance, in.Selector, task)
 	if err != nil {
 		return res, err
+	}
+	if task && commit.String() != exp.ExpectedCommit {
+		// A present task ref naming another hash is never a new selection.
+		return res, contract.TaskResultUnavailable(strings.TrimPrefix(in.Canonical, contract.TaskRefPrefix), "its task ref names another commit than the recorded result")
 	}
 	if dst.repo != nil && in.Selector.Kind == contract.SelectorKindHash && old.found && old.hash != commit {
 		return res, errLocalRef("the Callsheet ref of this hash holds another commit; it is never repaired")
 	}
 	d.stage("pull-resolved")
+	// fetchFailed reports a failed fetch: a task pull whose workspace was
+	// removed or recreated meanwhile reports the instance mismatch (the
+	// final check, observed early); every other failure is unchanged.
+	fetchFailed := func(err error) error {
+		if task && ctx.Err() == nil {
+			if _, ierr := observeInstance(ctx, o.Plane, in.Name, instance, true); contract.TransferReason(ierr) == contract.ReasonWorkspaceInstanceMismatch {
+				return ierr
+			}
+		}
+		return err
+	}
 	g, err := o.Plane.WorkspaceGit(in.Name)
 	if err != nil {
 		return res, err
@@ -535,19 +632,17 @@ func (d *deps) pull(ctx context.Context, o Options, req PullRequest) (res contra
 				}
 			}
 			if err := d.fetchInto(ctx, g, temp, []plumbing.Hash{commit}, haves); err != nil {
-				return res, err
+				return res, fetchFailed(err)
 			}
 		}
 	} else if err := d.fetchInto(ctx, g, temp, []plumbing.Hash{commit}, nil); err != nil {
-		return res, err
+		return res, fetchFailed(err)
 	}
 	d.stage("pull-fetched")
-	again, err := o.Plane.ShowWorkspace(ctx, in.Name)
-	if err != nil {
+	// The final instance check runs even when the closure was already
+	// present locally (nothing was fetched).
+	if _, err := observeInstance(ctx, o.Plane, in.Name, instance, task); err != nil {
 		return res, err
-	}
-	if again.Instance != view.Instance {
-		return res, contract.New(contract.CodeConflict, "the workspace was removed or recreated during the pull; nothing was written")
 	}
 	st := &closureStats{}
 	closure, err := walkClosure(ctx, store, []plumbing.Hash{commit}, st, dst.repo != nil)
@@ -555,7 +650,7 @@ func (d *deps) pull(ctx context.Context, o Options, req PullRequest) (res contra
 		return res, fetchedFailure(ctx, err)
 	}
 	d.emit("pull-objects-verified", st.objects)
-	res = contract.WorkspacePullResult{Name: in.Name, Instance: view.Instance, Selector: in.Canonical, Commit: commit.String()}
+	res = contract.WorkspacePullResult{Name: in.Name, Instance: instance, Selector: in.Canonical, Commit: commit.String()}
 	if dst.repo != nil {
 		res.DestinationKind = contract.KindGit
 		n, err := d.installObjects(ctx, dst.repo.gitFD, dst.repo.store, store, closure)

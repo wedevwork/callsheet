@@ -5,7 +5,9 @@ import (
 	"flag"
 	"io"
 	"os"
+	"strings"
 
+	"github.com/wedevwork/callsheet/internal/client"
 	"github.com/wedevwork/callsheet/internal/contract"
 	"github.com/wedevwork/callsheet/internal/workspacetransfer"
 )
@@ -17,7 +19,7 @@ import (
 // and result metadata cross to the plane's verified TLS endpoint.
 const (
 	wsPushUsage = "--instance TOKEN [--branch BRANCH] " + trustUsage + " [--json] NAME [PATH]"
-	wsPullUsage = trustUsage + " [--json] NAME REF [PATH]"
+	wsPullUsage = trustUsage + " [--json] (TASK_ID | NAME REF) [PATH]"
 
 	wsLocalNote = "PATH is on this machine (default: the current directory; relative paths resolve\n" +
 		"against it; no ~ or variable expansion). Flags come before the operands. Transfers\n" +
@@ -48,10 +50,18 @@ const (
 		"  callsheet ws push --instance <token from ws show> --plane https://plane.example:8443 \\\n" +
 		"    --ca plane-ca.crt myproject ./myproject\n" + wsLocalNote
 	wsPullDetails = "Flags:\n" + trustHelp + wsJSONHelp + "\n" +
-		"REF is a branch (short or refs/heads/...), a full 40-hex commit hash reachable from a\n" +
-		"workspace ref, or a complete refs/callsheet/tasks/t_<32 hex> ref (t_... alone is a\n" +
-		"branch name). The commit is resolved once and verified completely before anything\n" +
-		"local is written.\n\n" +
+		"TASK_ID pulls that task's published result: its bound workspace and instance and its\n" +
+		"immutable result commit, read from the task's record (no name inference, latest-task\n" +
+		"or role lookup). A task still running is a conflict (task_result_pending), a task\n" +
+		"without a published result too (task_result_unavailable), a scratch task is\n" +
+		"invalid (no_task_workspace), a pruned result not_found and a removed or recreated\n" +
+		"workspace a conflict (workspace_instance_mismatch): it never falls back to a new\n" +
+		"workspace of the same name or a local cache.\n\n" +
+		"NAME REF pulls REF of workspace NAME: a branch (short or refs/heads/...), a full\n" +
+		"40-hex commit hash reachable from a workspace ref, a complete\n" +
+		"refs/callsheet/tasks/t_<32 hex> ref, or a bare task ID meaning that task ref (a branch\n" +
+		"named like a task ID is refs/heads/t_...). The commit is resolved once and verified\n" +
+		"completely before anything local is written.\n\n" +
 		"Into an existing git repository (PATH must be its root; local changes are fine) it\n" +
 		"installs the objects and sets exactly one Callsheet ref: refs/callsheet/NAME/heads/\n" +
 		"BRANCH, refs/callsheet/NAME/tasks/TASK_ID or refs/callsheet/NAME/commits/HASH, with a\n" +
@@ -76,11 +86,15 @@ var (
 	transferPull = workspacetransfer.Pull
 	processCwd   = os.Getwd
 	processEnv   = os.Environ
+	// Iteration 10c: the task-ID forms' typed client operations.
+	resolveTaskResult   = (*client.Client).ResolveTaskResult
+	taskWorkspaceStatus = (*client.Client).TaskWorkspaceStatus
+	taskWorkspaceDiff   = (*client.Client).TaskWorkspaceDiff
 )
 
 // transferOptions builds a transfer's options from the verified client,
 // the process working directory and environment.
-func transferOptions(goos string, f *remoteFlags, ctx context.Context, errOut io.Writer) (workspacetransfer.Options, func(), int, bool) {
+func transferOptions(goos string, f *remoteFlags, ctx context.Context, errOut io.Writer) (workspacetransfer.Options, *client.Client, int, bool) {
 	cwd, err := processCwd()
 	if err != nil {
 		cwd = ""
@@ -90,7 +104,21 @@ func transferOptions(goos string, f *remoteFlags, ctx context.Context, errOut io
 		return workspacetransfer.Options{}, nil, code, false
 	}
 	return workspacetransfer.Options{GOOS: goos, Env: workspacetransfer.ProcessEnv(processEnv()), Cwd: cwd, Plane: workspacetransfer.ClientPlane(cl)},
-		cl.Close, 0, true
+		cl, 0, true
+}
+
+// taskForm reports whether a first operand selects a task-ID form: a
+// canonical task ID (workspace names cannot contain an underscore). A
+// malformed operand starting t_ is invalid_argument, never a workspace
+// name.
+func taskForm(op string) (bool, error) {
+	switch {
+	case contract.ValidTaskID(op):
+		return true, nil
+	case strings.HasPrefix(op, "t_"):
+		return false, contract.TaskError(contract.CodeInvalidArgument, "task_id", "", "invalid task ID; want t_ followed by 32 lowercase hex digits")
+	}
+	return false, nil
 }
 
 // optPath returns the optional PATH operand at index i.
@@ -152,11 +180,11 @@ func wsPush(ctx context.Context, goos string, c *Command, args []string, out, er
 			return planeFail(errOut, err)
 		}
 	}
-	o, closeFn, code, ok := transferOptions(goos, f, ctx, errOut)
+	o, cl, code, ok := transferOptions(goos, f, ctx, errOut)
 	if !ok {
 		return code
 	}
-	defer closeFn()
+	defer cl.Close()
 	r, err := transferPush(ctx, o, workspacetransfer.PushRequest{Name: ops[0], Instance: inst.val, Branch: branch.val, Path: path, PathSet: pathSet})
 	if err != nil {
 		return planeFail(errOut, err)
@@ -169,24 +197,60 @@ func wsPull(ctx context.Context, goos string, c *Command, args []string, out, er
 	if !ok {
 		return code
 	}
-	if len(ops) < 2 {
-		return usageError(errOut, c, c.Path()+" needs NAME and REF")
+	if len(ops) == 0 {
+		return usageError(errOut, c, c.Path()+" needs TASK_ID, or NAME and REF")
 	}
-	if _, err := contract.ValidatePull(ops[0], ops[1]); err != nil {
+	task, err := taskForm(ops[0])
+	if err != nil {
 		return planeFail(errOut, err)
 	}
-	path, pathSet := optPath(ops, 2)
+	req := workspacetransfer.PullRequest{}
+	pathAt := 2
+	if task {
+		if len(ops) > 2 {
+			return usageError(errOut, c, c.Path()+" TASK_ID takes at most a PATH after the task ID")
+		}
+		pathAt = 1
+	} else {
+		if len(ops) < 2 {
+			return usageError(errOut, c, c.Path()+" needs NAME and REF (or a TASK_ID)")
+		}
+		if code, ok := wsName(errOut, ops[0]); !ok {
+			return code
+		}
+		// A bare task ID means its full task ref (refs/heads/t_... escapes
+		// to a branch); the unchanged ValidatePull then checks the result.
+		sel, err := contract.ParseTaskSelector(ops[1], "ref", false)
+		if err != nil {
+			return planeFail(errOut, err)
+		}
+		req.Name, req.Ref = ops[0], contract.SelectorString(sel)
+		if _, err := contract.ValidatePull(req.Name, req.Ref); err != nil {
+			return planeFail(errOut, err)
+		}
+	}
+	path, pathSet := optPath(ops, pathAt)
 	if pathSet {
 		if err := contract.ValidateLocalPath(goos, path); err != nil {
 			return planeFail(errOut, err)
 		}
 	}
-	o, closeFn, code, ok := transferOptions(goos, f, ctx, errOut)
+	req.Path, req.PathSet = path, pathSet
+	o, cl, code, ok := transferOptions(goos, f, ctx, errOut)
 	if !ok {
 		return code
 	}
-	defer closeFn()
-	r, err := transferPull(ctx, o, workspacetransfer.PullRequest{Name: ops[0], Ref: ops[1], Path: path, PathSet: pathSet})
+	defer cl.Close()
+	if task {
+		// The task's record selects its bound instance and immutable result;
+		// the pair guards the transfer itself (not a separate preflight).
+		sel, err := resolveTaskResult(cl, ctx, ops[0])
+		if err != nil {
+			return planeFail(errOut, err)
+		}
+		req.Name, req.Ref, req.ExpectedInstance, req.ExpectedCommit = sel.Name, sel.Ref, sel.Instance, sel.Commit
+	}
+	r, err := transferPull(ctx, o, req)
 	if err != nil {
 		return planeFail(errOut, err)
 	}

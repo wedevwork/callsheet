@@ -298,6 +298,25 @@ func TestCoverageManifestFiles(t *testing.T) {
 			}
 		}
 	}
+	// Iteration 10c (UT-C6): every production file it changes, whole in its
+	// group with its build OS, and none keeps an older partial-range entry.
+	tenC := map[string]string{"internal/workspacetransfer/transfer.go": GroupTransfer}
+	for _, rel := range []string{"internal/contract/task_workspace.go", "internal/client/tasks.go", "internal/cli/task.go", "internal/cli/workspace.go",
+		"internal/cli/workspace_transfer.go", "internal/mcp/schemas.go", "internal/mcp/tools.go", "internal/mcp/transfer.go", "internal/plane/task_api.go",
+		"internal/plane/task_workspace.go", "internal/devcheck/native.go"} {
+		tenC[rel] = GroupChanged
+	}
+	for rel, group := range tenC {
+		e, ok := listed[rel]
+		if !ok || e.Group != group || e.OS != buildOS(t, filepath.Join(root, filepath.FromSlash(rel))) {
+			t.Fatalf("10c file %s missing from the %s group with its build OS", rel, group)
+		}
+		for _, x := range WorkspaceCoverageManifest {
+			if x.File == modulePath+"/"+rel && len(x.Ranges) != 0 {
+				t.Fatalf("10c file %s keeps a partial-range entry %v", rel, x.Ranges)
+			}
+		}
+	}
 	if !slices.ContainsFunc(WorkspaceCoverageManifest, func(e CoverageEntry) bool { return e.OS == "linux" }) ||
 		!slices.ContainsFunc(WorkspaceCoverageManifest, func(e CoverageEntry) bool { return e.OS == "darwin" }) {
 		t.Fatal("native-only publication files missing")
@@ -336,5 +355,40 @@ func TestTaskWorkspaceBudgets(t *testing.T) {
 		t.Fatal("the 10b budgets entry is not a Budgets allocation before the measurements")
 	case !strings.Contains(s[:at], "Iteration 10b allocation (design 10b r0.2 Budgets; planning allowances"):
 		t.Fatal("the 10b budgets entry is not labelled as planning allowances")
+	}
+}
+
+// taskDeliveryBudget is the parent design's 10c Budgets entry, verbatim.
+const taskDeliveryBudget = "10c: plane/sidecar stress workload unchanged; packages growth ≤5 s Linux / 8 s macOS; function binary growth ≤8 s Linux / 12 s macOS. " +
+	"No added benchmark step. Other shards: no new execution, ≤5 s shared compile overhead across the whole iteration; summaries unchanged. Preserve all timeouts. " +
+	"Record binary and command times separately and compare matched runner/cache conditions. " +
+	"An allocation miss requires investigation and fixture reduction or design revision, never weaker tests. " +
+	"The owner specifically retains 18 jobs despite the historical 06b split trigger: no automatic expansion to 22 jobs in this iteration."
+
+// UT-C6 (iteration 10c): docs/ci.md carries the exact 10c budgets policy
+// once, as a planning allocation in Budgets (before its measurements), and
+// Checks names the six 10c function tests and the 353-name inventory.
+func TestTaskDeliveryBudgets(t *testing.T) {
+	doc, err := os.ReadFile(filepath.Join(testkit.MustRepoRoot(t), "docs", "ci.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(doc)
+	at := strings.Index(s, taskDeliveryBudget)
+	budgets, measured := strings.Index(s, "\nBudgets:\n"), strings.Index(s, "\nMeasurements, newest first.")
+	switch {
+	case at < 0 || strings.Count(s, taskDeliveryBudget) != 1:
+		t.Fatal("docs/ci.md does not carry the 10c budgets entry exactly once")
+	case budgets < 0 || measured < 0 || at < budgets || at > measured:
+		t.Fatal("the 10c budgets entry is not a Budgets allocation before the measurements")
+	case !strings.Contains(s[:at], "Iteration 10c allocation (design 10c r0.4 CI plan and the parent design's\n  10c Budgets entry; planning allowances"):
+		t.Fatal("the 10c budgets entry is not labelled as planning allowances")
+	case !strings.Contains(s, "6 more names, 353 in all"):
+		t.Fatal("docs/ci.md Checks does not count 353 native names")
+	}
+	for _, n := range wsDoorNames() {
+		if !strings.Contains(s, "`"+n+"`") {
+			t.Fatalf("docs/ci.md does not name %s", n)
+		}
 	}
 }

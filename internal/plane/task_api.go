@@ -70,8 +70,9 @@ func methodNotAllowed(w http.ResponseWriter, allow string) {
 }
 
 // handleTasks serves /api/v1/tasks, /api/v1/tasks/wait (iteration 06b,
-// matched before any task ID), /api/v1/tasks/{id}, /api/v1/tasks/{id}/logs
-// and /api/v1/tasks/{id}/cancel (iteration 06b). The protocol header is
+// matched before any task ID), /api/v1/tasks/{id}, /api/v1/tasks/{id}/logs,
+// /api/v1/tasks/{id}/cancel (iteration 06b) and GET
+// /api/v1/tasks/{id}/workspace (iteration 10c). The protocol header is
 // checked first, then the path, method, query, body and size; IDs use the
 // task grammar before any lookup, and encoded path aliases are refused.
 func (s *nodeService) handleTasks(w http.ResponseWriter, r *http.Request) {
@@ -97,7 +98,7 @@ func (s *nodeService) handleTasks(w http.ResponseWriter, r *http.Request) {
 	}
 	rest := strings.TrimPrefix(r.URL.Path, contract.PathTasks)
 	var id string
-	logs, cancel := false, false
+	logs, cancel, wsStatus := false, false, false
 	if rest != "" {
 		parts := strings.Split(strings.TrimPrefix(rest, "/"), "/")
 		if len(parts) >= 2 && "/"+parts[1] == contract.PublicationSuffix {
@@ -120,6 +121,10 @@ func (s *nodeService) handleTasks(w http.ResponseWriter, r *http.Request) {
 			id, logs = parts[0], true
 		case len(parts) == 2 && parts[1] == "cancel":
 			id, cancel = parts[0], true
+		case len(parts) == 2 && "/"+parts[1] == contract.TaskWorkspaceSuffix:
+			// Iteration 10c: the task workspace status, matched exactly
+			// (never by prefix; extra segments are no such endpoint).
+			id, wsStatus = parts[0], true
 		default:
 			writeError(w, contract.New(contract.CodeNotFound, "no such endpoint"))
 			return
@@ -152,6 +157,17 @@ func (s *nodeService) handleTasks(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.cancelTask(w, r, ts, id)
+	case wsStatus:
+		if _, err := taskQuery(r); err != nil {
+			writeCodeError(w, err)
+			return
+		}
+		st, err := ts.workspaceStatus(r.Context(), id)
+		if err != nil {
+			writeCodeError(w, err)
+			return
+		}
+		writeBounded(w, http.StatusOK, contract.TaskWorkspaceStatusResponse{Version: contract.ProtocolVersion, Workspace: st}, contract.MaxWorkspaceResponse)
 	case r.Method == http.MethodPost:
 		if _, err := taskQuery(r); err != nil {
 			writeCodeError(w, err)

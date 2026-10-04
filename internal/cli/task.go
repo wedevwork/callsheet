@@ -24,7 +24,7 @@ import (
 var hostname = os.Hostname
 
 const (
-	dispatchUsage   = "(--role-id ID | --role-name NAME) --goal TEXT --acceptance TEXT [--payload POINTER ...] [--model MODEL] [--effort EFFORT] [--timeout DURATION] [--wait DURATION] " + trustUsage + " [--json]"
+	dispatchUsage   = "(--role-id ID | --role-name NAME) --goal TEXT --acceptance TEXT [--payload POINTER ...] [--model MODEL] [--effort EFFORT] [--timeout DURATION] [--wait DURATION] [--workspace NAME [--base SELECTOR] [--workspace-instance TOKEN]] " + trustUsage + " [--json]"
 	taskCancelUsage = "ID " + trustUsage + " [--json]"
 	taskWaitUsage   = "ID [ID ...] [--wait DURATION] " + trustUsage + " [--json]"
 	taskLsUsage     = "[--limit N] [--after ID] " + trustUsage + " [--json]"
@@ -50,20 +50,38 @@ const (
 		"  --wait DURATION    after admission, wait at most this long (0 to 5m) for the task to\n" +
 		"                     end, then print its result or a compact still-running line; the\n" +
 		"                     plane may answer sooner (plane run --max-task-wait, default 30s)\n" +
+		"  --workspace NAME   run the task in a private checkout of this workspace and publish\n" +
+		"                     its result as refs/callsheet/tasks/TASK_ID (omitted: a scratch\n" +
+		"                     directory and no result commit)\n" +
+		"  --base SELECTOR    the checkout's base, with --workspace: a branch (default main), a\n" +
+		"                     full 40-hex commit hash, a complete task ref, a task ID (its result\n" +
+		"                     ref) or empty for the empty tree (refs/heads/t_... selects a branch\n" +
+		"                     named like a task ID)\n" +
+		"  --workspace-instance TOKEN\n" +
+		"                     with --workspace: admit only if the workspace still has this\n" +
+		"                     instance (from callsheet ws show or a previous task's binding)\n" +
 		trustHelp + taskJSONHelp + "\n" +
 		"Exactly one of --role-id and --role-name is required. The plane reserves one of the\n" +
 		"role's slots atomically, or fails at once listing every candidate with its state:\n" +
 		"there is no queue and no reroute. The worker composes the prompt from its local\n" +
-		"manuals and this task, and runs the adapter's CLI child in a fresh scratch directory.\n" +
+		"manuals and this task, and runs the adapter's CLI child in a fresh scratch directory,\n" +
+		"or with --workspace in a private checkout of the selected commit. The selected\n" +
+		"commit and the workspace instance are fixed at admission: later branch movement never\n" +
+		"changes them. An empty workspace (main unborn) needs --base empty. Nothing moves a\n" +
+		"branch: the result is a separate task ref (callsheet ws status, diff and pull TASK_ID).\n" +
 		"Exit 0 means the task was admitted, not that it succeeded, with or without --wait:\n" +
 		"follow it with callsheet task wait or task show. A lost response may hide an admitted\n" +
 		"task; check callsheet task ls before dispatching again (a dispatch is never retried).\n" +
-		"Workspaces are not supported in this build. The wait bounds are CLI and operator\n" +
-		"choices, not a verified MCP tool-call limit.\n\n" +
+		"The wait bounds are CLI and operator choices, not a verified MCP tool-call limit.\n\n" +
 		"Example, on an operator machine:\n" +
 		"  callsheet dispatch --role-name implementer --goal \"fix the parser\" \\\n" +
 		"    --acceptance \"all tests pass\" --payload repo://callsheet \\\n" +
-		"    --plane https://plane.example:8443 --ca plane-ca.crt\n"
+		"    --plane https://plane.example:8443 --ca plane-ca.crt\n" +
+		"A second hop on a first task's published result (its result.workspace.commit and\n" +
+		"workspace_binding instance):\n" +
+		"  callsheet dispatch --role-name reviewer --goal \"review the change\" \\\n" +
+		"    --acceptance \"findings listed\" --workspace myproject --base <commit> \\\n" +
+		"    --workspace-instance <instance> --plane https://plane.example:8443 --ca plane-ca.crt\n"
 	taskCancelDetails = "Flags:\n" + trustHelp + taskJSONHelp + "\n" +
 		"Asks the plane to cancel the task and prints cancel accepted: ID once the request is\n" +
 		"durable, or task already terminal: ID STATE. Acceptance is not the outcome: the worker\n" +
@@ -117,6 +135,8 @@ type taskFlags struct {
 	payload                                                          multi
 	limit, after, lines                                              single
 	late                                                             boolFlag
+	// Iteration 10c: the optional workspace selection.
+	workspace, base, workspaceInstance single
 }
 
 func (tf *taskFlags) dispatchFlags(fs *flag.FlagSet) {
@@ -129,6 +149,19 @@ func (tf *taskFlags) dispatchFlags(fs *flag.FlagSet) {
 	fs.Var(&tf.effort, "effort", "")
 	fs.Var(&tf.timeout, "timeout", "")
 	fs.Var(&tf.wait, "wait", "")
+	fs.Var(&tf.workspace, "workspace", "")
+	fs.Var(&tf.base, "base", "")
+	fs.Var(&tf.workspaceInstance, "workspace-instance", "")
+}
+
+// opt returns a set flag's value, nil when absent (an empty value stays
+// present: the contract refuses it).
+func opt(s single) *string {
+	if !s.set {
+		return nil
+	}
+	v := s.val
+	return &v
 }
 
 // waitFlag parses an explicit --wait (def when absent).
@@ -195,6 +228,9 @@ func dispatch(ctx context.Context, goos string, c *Command, args []string, out, 
 		}
 		req.Override = o
 	}
+	// The workspace selection is forwarded unchanged; the shared contract
+	// validator (req.Validate below) is the only authority.
+	req.Workspace, req.Base, req.WorkspaceInstance = opt(tf.workspace), opt(tf.base), opt(tf.workspaceInstance)
 	rb, err := requester()
 	if err != nil {
 		return planeFail(errOut, err)
@@ -529,6 +565,7 @@ func RenderDispatch(v contract.TaskView) string {
 	} {
 		b.WriteString(kv[0] + ": " + kv[1] + "\n")
 	}
+	renderTaskWorkspace(&b, v)
 	if v.TimeoutPolicy == contract.TimeoutPolicyLegacy {
 		b.WriteString("notice: " + contract.TimeoutNotice + "\n")
 	}
@@ -537,6 +574,44 @@ func RenderDispatch(v contract.TaskView) string {
 		b.WriteString(renderCandidates("candidate: ", v.Candidates))
 	}
 	return b.String()
+}
+
+// renderTaskWorkspace renders a workspace task's binding and phase and,
+// with a terminal workspace result, its publication metadata: names,
+// tokens, hashes, fixed codes, totals and escaped paths only (never blob
+// bytes, patches, pack errors or commit messages). An absent or null value
+// is "-". A task without a workspace renders nothing (scratch output is
+// unchanged).
+func renderTaskWorkspace(b *strings.Builder, v contract.TaskView) {
+	ws := v.WorkspaceBinding
+	if ws == nil {
+		return
+	}
+	line := func(k, val string) { b.WriteString(k + ": " + val + "\n") }
+	line("workspace", ws.Name)
+	line("workspace_instance", ws.Instance)
+	line("base_commit", dash(ws.BaseCommit))
+	line("workspace_phase", dash(v.WorkspacePhase))
+	if v.Result == nil || v.Result.Workspace == nil {
+		return
+	}
+	r, w := v.Result, v.Result.Workspace
+	line("publication", w.Publication)
+	line("result_commit", dash(r.ResultCommit))
+	line("result_ref", dash(w.Ref))
+	line("publication_error", dash(w.Error))
+	ds := "-"
+	if d := r.Diffstat; d != nil {
+		ds = fmt.Sprintf("added=%d modified=%d deleted=%d old_bytes=%d new_bytes=%d", d.Added, d.Modified, d.Deleted, d.OldBytes, d.NewBytes)
+	}
+	line("diffstat", ds)
+	for _, p := range r.ChangedPaths {
+		line("changed_path", DisplayPath(p))
+	}
+	if r.ChangedPathsTruncated {
+		line("changed_paths_truncated", "true")
+		line("changed_paths_next_after", dash(r.ChangedPathsNextAfter))
+	}
 }
 
 // TaskColumns is the text header of task ls.
@@ -589,6 +664,7 @@ func RenderTask(v contract.TaskView) string {
 	line("completion_pending", strconv.FormatBool(v.CompletionPending))
 	line("persistence_reason", dash(v.PersistenceReason))
 	line("durability_confirmed", strconv.FormatBool(v.DurabilityConfirmed))
+	renderTaskWorkspace(&b, v)
 	if v.Reason != nil {
 		line("reason", v.Reason.Code+" "+jsonString(v.Reason.Message))
 		b.WriteString(renderCandidates("candidate: ", v.Candidates))

@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/filemode"
@@ -26,6 +27,7 @@ import (
 	"github.com/wedevwork/callsheet/internal/taskworkspace"
 	"github.com/wedevwork/callsheet/internal/testkit"
 	"github.com/wedevwork/callsheet/internal/testkit/taskhub"
+	"github.com/wedevwork/callsheet/internal/workspace"
 )
 
 // External tests and benchmarks (iteration 10b) on the real hub over
@@ -576,6 +578,7 @@ func BenchmarkTaskWorkspaceMetadata(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			var size int
+			var status, page time.Duration
 			for i := 0; i < b.N; i++ {
 				md, err := h.M.TaskDiff(context.Background(), "meta", inst, base, commit)
 				if err != nil {
@@ -590,8 +593,37 @@ func BenchmarkTaskWorkspaceMetadata(b *testing.B) {
 				if dto.Diffstat.Added != int64(n) || size > contract.MaxWorkspaceDTOBytes || len(dto.Changes) > contract.MaxWorkspaceChanges || (n > 100) != dto.ChangesTruncated {
 					b.Fatalf("metadata %+v %d bytes truncated %v", dto.Diffstat, size, dto.ChangesTruncated)
 				}
+				// Iteration 10c: the hub side of a task status (the bound
+				// instance and the exact task ref under the read lock, then
+				// the exact-ref check's first status page) and of one task
+				// diff page (the immutable base and result hashes, 100 rows),
+				// timed separately; metadata only.
+				b.StopTimer()
+				st := time.Now()
+				ref, err := h.M.TaskRef(context.Background(), "meta", inst, taskhub.TaskID(1))
+				if err != nil || ref.Exists {
+					b.Fatalf("task ref %+v %v", ref, err)
+				}
+				if _, err := h.M.Show(context.Background(), "meta"); err != nil {
+					b.Fatal(err)
+				}
+				sp, err := h.M.Status(context.Background(), "meta", workspace.StatusQuery{Limit: contract.MaxWorkspaceLimit})
+				if err != nil || sp.Instance != inst {
+					b.Fatalf("status %+v %v", sp, err)
+				}
+				status += time.Since(st)
+				dt := time.Now()
+				dp, err := h.M.Diff(context.Background(), "meta", workspace.DiffQuery{Base: contract.Selector{Kind: contract.SelectorKindHash, Value: base.String()},
+					Target: contract.Selector{Kind: contract.SelectorKindHash, Value: commit.String()}, Limit: contract.MaxWorkspaceLimit})
+				page += time.Since(dt)
+				if err != nil || dp.Instance != inst || len(dp.Changes) != 100 || (n > 100) != (dp.NextAfter != nil) || dp.TargetCommit != commit.String() {
+					b.Fatalf("diff page %d rows %v", len(dp.Changes), err)
+				}
+				b.StartTimer()
 			}
 			b.ReportMetric(float64(size), "dto-bytes")
+			b.ReportMetric(float64(status.Nanoseconds())/float64(b.N), "task-status-ns/op")
+			b.ReportMetric(float64(page.Nanoseconds())/float64(b.N), "task-diff-page-ns/op")
 		})
 	}
 }

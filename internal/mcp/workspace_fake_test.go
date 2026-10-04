@@ -54,3 +54,17 @@ func (f *fakeClient) WorkspaceStatus(ctx context.Context, name string, p client.
 func (f *fakeClient) WorkspaceDiff(ctx context.Context, name string, p client.DiffPage) (contract.WorkspaceDiffResponse, error) {
 	return fakeWs[contract.WorkspaceDiffResponse](f, ctx, "WorkspaceDiff", name, p)
 }
+
+// Iteration 10c: the task-ID forms, scripted through ws as well.
+
+func (f *fakeClient) TaskWorkspaceStatus(ctx context.Context, id string) (contract.TaskWorkspaceStatusResponse, error) {
+	return fakeWs[contract.TaskWorkspaceStatusResponse](f, ctx, "TaskWorkspaceStatus", id)
+}
+
+func (f *fakeClient) TaskWorkspaceDiff(ctx context.Context, id string, p client.TaskDiffPage) (contract.WorkspaceDiffResponse, error) {
+	return fakeWs[contract.WorkspaceDiffResponse](f, ctx, "TaskWorkspaceDiff", id, p)
+}
+
+func (f *fakeClient) ResolveTaskResult(ctx context.Context, id string) (client.TaskResultSelection, error) {
+	return fakeWs[client.TaskResultSelection](f, ctx, "ResolveTaskResult", id)
+}

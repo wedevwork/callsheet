@@ -63,8 +63,8 @@ func transferSchemaCases() []struct {
 		{toolWsPull, `{"name":"alpha","ref":"main"}`, true, true},
 		{toolWsPull, `{"name":"alpha","ref":"` + wsHash + `","path":"out"}`, true, true},
 		{toolWsPull, `{"name":"alpha","ref":"refs/callsheet/tasks/t_` + strings.Repeat("a", 32) + `"}`, true, true},
-		{toolWsPull, `{"name":"alpha","ref":"t_` + strings.Repeat("a", 32) + `"}`, true, true}, // a branch named t_...
-		{toolWsPull, `{"name":"alpha"}`, false, false},
+		{toolWsPull, `{"name":"alpha","ref":"t_` + strings.Repeat("a", 32) + `"}`, true, true}, // iteration 10c: that task's ref
+		{toolWsPull, `{"name":"alpha"}`, true, false},                                          // missing ref: a runtime form rule (flat schema)
 		{toolWsPull, `{"name":"alpha","ref":"HEAD~1"}`, false, false},
 		{toolWsPull, `{"name":"alpha","ref":"abc123"}`, true, true}, // a branch named abc123 (no short hashes)
 		{toolWsPull, `{"name":"alpha","ref":"main","path":""}`, false, false},
@@ -149,7 +149,8 @@ func TestTransferTools(t *testing.T) {
 		t.Fatalf("push relay %+v %v", a, gotPush)
 	}
 	a = h.ask(toolWsPull, `{"name":"alpha","ref":"main","path":"out"}`)
-	if a.isError || gotPull[0] != (workspacetransfer.PullRequest{Name: "alpha", Ref: "main", Path: "out", PathSet: true}) {
+	// Iteration 10c: the explicit form relays the canonical selector.
+	if a.isError || gotPull[0] != (workspacetransfer.PullRequest{Name: "alpha", Ref: "refs/heads/main", Path: "out", PathSet: true}) {
 		t.Fatalf("pull relay %+v %v", a, gotPull)
 	}
 	var pr contract.WorkspacePullResult
