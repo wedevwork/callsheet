@@ -20,10 +20,9 @@ const (
 	// run in its own package) is in the plane shard, and since its sidecar
 	// follow-up ./internal/sidecar is in the sidecar shard, not this
 	// invocation, and since the contract headroom fix ./internal/contract
-	// and later ./internal/mcpqual, ./internal/workspace and (iteration
-	// 10b's r0.5 schedule) ./internal/workspacetransfer are in the packages
-	// shard's per-CPU groups.
-	wantRoleStressPackages = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/taskworkspace ./internal/taskpublication"
+	// and later ./internal/mcpqual and ./internal/workspace are in the
+	// packages shard's per-CPU groups.
+	wantRoleStressPackages = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/workspacetransfer ./internal/taskworkspace ./internal/taskpublication"
 	wantRoleBenchPlan      = "go test ./internal/spikes/gittransport -run ^$ -bench . -benchmem -benchtime=3x -count=1 -timeout=180s|" +
 		"go test ./internal/plane -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s|" +
 		"go test ./internal/contract -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s|" +
@@ -106,7 +105,7 @@ func TestRolePolicy(t *testing.T) {
 	t.Run("policy", func(t *testing.T) {
 		for _, goos := range []string{"linux", "darwin"} {
 			shards, err := StressShards(goos)
-			if err != nil || len(shards) != 7 || strings.Join(shards[0].Steps[0].Argv, " ") != wantRoleStressPackages || strings.Join(argvOf(slices.Concat(shards[0].CPUGroups...)), "|") != strings.Join(slices.Concat(groupContract, groupMcpqual, groupWorkspace, groupTransfer), "|") ||
+			if err != nil || len(shards) != 7 || strings.Join(shards[0].Steps[0].Argv, " ") != wantRoleStressPackages || strings.Join(argvOf(slices.Concat(shards[0].CPUGroups...)), "|") != strings.Join(slices.Concat(groupContract, groupMcpqual, groupWorkspace), "|") ||
 				joinedArgv(shards, 1, 2) != wantStressPlane1+"|"+wantStressPlane2+"|"+wantStressPlane4 || !shards[1].Parallel || !shards[2].Parallel ||
 				joinedArgv(shards, 1) != wantStressPlane1 || joinedArgv(shards, 2) != wantStressPlane2+"|"+wantStressPlane4 ||
 				joinedArgv(shards, 3, 4) != wantStressSidecar1+"|"+wantStressSidecar2+"|"+wantStressSidecar4 || !shards[3].Parallel || !shards[4].Parallel ||

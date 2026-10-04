@@ -62,10 +62,15 @@ var (
 		// Iteration 07a: the MCP server's lifecycle, deadline and
 		// concurrency unit tests (event-armed fake clocks), complete.
 		"./internal/mcp",
-		// Iteration 07b's qualification harness, iteration 09a's
-		// workspace hub and iteration 09b's local transfers run per CPU
-		// setting since the workspace and mcpqual headroom fix and
-		// iteration 10b's r0.5 schedule (stressSplitPackages).
+		// Iteration 07b's qualification harness and iteration 09a's
+		// workspace hub run per CPU setting since the workspace and
+		// mcpqual headroom fix (stressSplitPackages).
+		// Iteration 09b: the local transfers, complete, for the
+		// event-armed no-progress watchdog, the ref-lock, CAS and
+		// concurrent-writer tests and the cancellation joins (in-memory
+		// plane and tiny fixtures; one shared production plane per
+		// process; no real subprocess).
+		"./internal/workspacetransfer",
 		// Iteration 10b: the task workspace's cache, preparation, snapshot
 		// and publication state machine, then the plane-owned publication
 		// transaction with its external plane-wiring harness, complete
@@ -95,15 +100,13 @@ var (
 	//     236.6 s and 273.3 s inside the combined invocation on a normal
 	//     hosted Linux runner, about 355 s and 410 s at the observed 1.5x
 	//     slow-runner factor.
-	//   - ./internal/workspacetransfer (iteration 09b's local transfers: the
-	//     event-armed no-progress watchdog, the ref-lock, CAS and
-	//     concurrent-writer tests and the cancellation joins, on an
-	//     in-memory plane and tiny fixtures with one shared production
-	//     plane per process and no real subprocess), iteration 10b's r0.5
-	//     schedule: the fourth group, after workspace. Its binary measured
-	//     216.1 s Linux and 278.9 s macOS inside the combined invocation
-	//     alongside the new task workspace packages.
-	stressSplitPackages = []string{"./internal/contract", "./internal/mcpqual", "./internal/workspace", "./internal/workspacetransfer"}
+	// ./internal/workspacetransfer (198.4 s, about 300 s at 1.5x) stays in
+	// the combined invocation, after mcp and before taskworkspace and
+	// taskpublication: iteration 10b's r0.5 schedule ran it as a fourth
+	// group, and its hosted remeasure returned it here (r0.6), since the
+	// later per-CPU waves were already full and the overlap inside the
+	// combined invocation was the saving.
+	stressSplitPackages = []string{"./internal/contract", "./internal/mcpqual", "./internal/workspace"}
 	// stressPlanePackage is the internal/plane package of the plane shards,
 	// distinct from the plane function-test selector in the functions shard
 	// (stressPlaneFunctionTests). Its stress time is CPU-bound under the
@@ -192,8 +195,7 @@ const (
 // shard may also hold CPUGroups: for each split package, one step per CPU
 // setting. The groups run after its Steps, one after another, each as one
 // concurrent group through runConcurrentCPU (the packages shard's
-// contract, mcpqual, workspace and workspacetransfer invocations since the
-// headroom fixes and iteration 10b's r0.5 schedule);
+// contract, mcpqual and workspace invocations since the headroom fixes);
 // stressWaves never applies to them. Its devcheck stage is "stress-" +
 // Name.
 type StressShard struct {
@@ -298,7 +300,7 @@ func StressShards(goos string) ([]StressShard, error) {
 }
 
 // StressSteps returns the stress plan for goos flattened in shard and CPU
-// order: twenty-five race-built go test commands (a shard's Steps, then its
+// order: twenty-two race-built go test commands (a shard's Steps, then its
 // CPUGroups in order). It is an inspection view only;
 // execution uses StressShards (and stressWaves for the order of a Parallel
 // shard's invocations) and never infers concurrency or execution order

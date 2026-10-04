@@ -568,14 +568,12 @@ coordinator's own `TestStressConcurrencyContract` (see Local verification).
 The count, CPU list, shards, package groups, selectors, wave schedule and
 time budgets are declared once, in `internal/devcheck/stress.go`
 (`StressCount`, `StressShards`, `stressWaves`, and `StressSteps`, the
-flattened inspection view). The seven shards run twenty-five commands
+flattened inspection view). The seven shards run twenty-two commands
 (argv, never a shell), each with `CGO_ENABLED=1`, named `stress packages`,
 `stress contract cpu1`, `stress contract cpu2`, `stress contract cpu4`
 (the contract headroom fix), `stress mcpqual cpu1`, `stress mcpqual cpu2`,
 `stress mcpqual cpu4`, `stress workspace cpu1`, `stress workspace cpu2`,
 `stress workspace cpu4` (the workspace and mcpqual headroom fix),
-`stress workspacetransfer cpu1`, `stress workspacetransfer cpu2`,
-`stress workspacetransfer cpu4` (iteration 10b's r0.5 schedule),
 `stress plane cpu1`, `stress plane cpu2`, `stress plane cpu4`
 (iteration 05b), `stress sidecar cpu1`, `stress sidecar cpu2`,
 `stress sidecar cpu4` (the iteration 05b sidecar follow-up),
@@ -593,17 +591,13 @@ that order) in iteration 10b, gave
 `./internal/contract` to the packages shard's own per-CPU group in the
 contract headroom fix (2026-10-02), and gave `./internal/mcpqual` and
 `./internal/workspace` to per-CPU groups of their own after it in the
-workspace and mcpqual headroom fix (2026-10-02), and gave
-`./internal/workspacetransfer` to a fourth per-CPU group after workspace's
-in iteration 10b's r0.5 schedule (2026-10-04), leaving
-`./internal/taskworkspace` and `./internal/taskpublication` immediately
-after `./internal/mcp`.
+workspace and mcpqual headroom fix (2026-10-02).
 Iteration 06a-perf changed no command, only the
 grouping: `stress plane cpu1` and `stress sidecar cpu1` each have a shard
 of their own:
 
 ```
-go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/taskworkspace ./internal/taskpublication
+go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/workspacetransfer ./internal/taskworkspace ./internal/taskpublication
 go test -race -count=20 -cpu=1 -timeout=6m ./internal/contract
 go test -race -count=20 -cpu=2 -timeout=6m ./internal/contract
 go test -race -count=20 -cpu=4 -timeout=6m ./internal/contract
@@ -613,9 +607,6 @@ go test -race -count=20 -cpu=4 -timeout=6m ./internal/mcpqual
 go test -race -count=20 -cpu=1 -timeout=6m ./internal/workspace
 go test -race -count=20 -cpu=2 -timeout=6m ./internal/workspace
 go test -race -count=20 -cpu=4 -timeout=6m ./internal/workspace
-go test -race -count=20 -cpu=1 -timeout=6m ./internal/workspacetransfer
-go test -race -count=20 -cpu=2 -timeout=6m ./internal/workspacetransfer
-go test -race -count=20 -cpu=4 -timeout=6m ./internal/workspacetransfer
 go test -race -count=20 -cpu=1 -timeout=6m ./internal/plane
 go test -race -count=20 -cpu=2 -timeout=6m ./internal/plane
 go test -race -count=20 -cpu=4 -timeout=6m ./internal/plane
@@ -632,7 +623,7 @@ go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestNodeEnrollment|TestNod
 
 | Shard | Stage | Commands | Execution |
 |---|---|---|---|
-| `packages` | `devcheck stress-packages` | `stress packages`, then `stress contract cpu1`, `cpu2`, `cpu4`, then `stress mcpqual cpu1`, `cpu2`, `cpu4`, then `stress workspace cpu1`, `cpu2`, `cpu4`, then `stress workspacetransfer cpu1`, `cpu2`, `cpu4` | one invocation, then one group per split package (`internal/contract`, `internal/mcpqual`, `internal/workspace`, `internal/workspacetransfer`), one group after another, each three concurrent invocations, one per CPU setting (the headroom fixes and iteration 10b's r0.5 schedule) |
+| `packages` | `devcheck stress-packages` | `stress packages`, then `stress contract cpu1`, `cpu2`, `cpu4`, then `stress mcpqual cpu1`, `cpu2`, `cpu4`, then `stress workspace cpu1`, `cpu2`, `cpu4` | one invocation, then one group per split package (`internal/contract`, `internal/mcpqual`, `internal/workspace`), one group after another, each three concurrent invocations, one per CPU setting (the headroom fixes) |
 | `plane-cpu1` | `devcheck stress-plane-cpu1` | `stress plane cpu1` | one invocation, alone on its worker (iteration 06a-perf) |
 | `plane` | `devcheck stress-plane` | `stress plane cpu2`, `cpu4` | two concurrent invocations, one per CPU setting (iteration 05b; CPU 1 moved to `plane-cpu1` in iteration 06a-perf) |
 | `sidecar-cpu1` | `devcheck stress-sidecar-cpu1` | `stress sidecar cpu1` | one invocation, alone on its worker (iteration 06a-perf) |
@@ -640,11 +631,11 @@ go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestNodeEnrollment|TestNod
 | `processgroup` | `devcheck stress-processgroup` | `stress processgroup cpu1`, `cpu2`, `cpu4` | three concurrent invocations, one per CPU setting |
 | `functions` | `devcheck stress-functions` | `stress function`, then `stress plane function`, then `stress node function` | sequential |
 
-`StressSteps` lists the twenty-five commands in shard and CPU order (a
+`StressSteps` lists the twenty-two commands in shard and CPU order (a
 shard's sequential commands, then its per-CPU groups in order): thirteen
 until the contract headroom fix, the same commands in the same order as
-before iteration 06a-perf, sixteen until the workspace and mcpqual
-headroom fix and twenty-two until iteration 10b's r0.5 schedule. It is an inspection view, never the execution order:
+before iteration 06a-perf, and sixteen until the workspace and mcpqual
+headroom fix. It is an inspection view, never the execution order:
 a concurrent shard runs its invocations in the waves `stressWaves`
 schedules, and that schedule is empty, so every concurrent shard starts
 all of its invocations at once: the plane and sidecar CPU1 shards their
@@ -652,8 +643,7 @@ one, the plane and sidecar pairs their two and processgroup its three.
 The packages shard's per-CPU groups are not a wave schedule and
 `stressWaves` never applies to them: once `stress packages` has
 succeeded, contract's three invocations start together, then mcpqual's
-once contract's have all succeeded, then workspace's likewise, then
-workspacetransfer's likewise.
+once contract's have all succeeded, then workspace's likewise.
 
 Since iteration 06a-perf `devcheck stress-plane` and `devcheck stress-sidecar`
 now run CPU 2 and CPU 4 only. To repeat all three CPU settings of plane,
@@ -677,8 +667,7 @@ their `locking` and `shutdown` subtests below them.
   `internal/adapter`, (iteration 07a) `internal/mcp`, (iteration 07b)
   `internal/mcpqual`, (iteration 09a) `internal/workspace` (each its own
   per-CPU group since the workspace and mcpqual headroom fix) and
-  (iteration 09b) `internal/workspacetransfer` (its own per-CPU group since
-  iteration 10b's r0.5 schedule) in the packages shard, `internal/plane` in the
+  (iteration 09b) `internal/workspacetransfer` in the packages shard, `internal/plane` in the
   plane shards (iteration 05b; CPU 1 in `plane-cpu1` and CPU 2 and 4 in
   `plane` since iteration 06a-perf), `internal/sidecar` in the sidecar
   shards (its sidecar follow-up; split the same way since iteration
@@ -786,22 +775,13 @@ their `locking` and `shutdown` subtests below them.
   invocation runs every twentieth case with an offset rotating per
   repetition, so the 20 repetitions at each CPU setting together still run
   every case; an ordinary run runs them all. No test starts a subprocess.
-  The ten 09b function tests are not repeated in stress. Since iteration
-  10b's r0.5 schedule the package runs as the packages shard's fourth
-  per-CPU group rather than in the combined invocation (below), with the
-  same 60 repetitions per test.
+  The ten 09b function tests are not repeated in stress.
   Iteration 10b (workspace execution) adds exactly two packages,
-  `internal/taskworkspace` and `internal/taskpublication`, immediately
-  after `internal/mcp` in the combined packages invocation, in that order,
-  and nothing else: no selector, count, CPU setting, shard or job changes,
-  no plane stress case and no new repeated function selector. Its r0.5
-  schedule moves `internal/workspacetransfer` out of the combined
-  invocation into a fourth per-CPU group after the original three
-  (contract, mcpqual, workspace), which stay exact:
-  `stress workspacetransfer cpu1`, `cpu2` and `cpu4`, each `-race -count=20` at one
-  CPU setting with its own `-timeout=6m`, run concurrently inside the
-  group, with no new shard, job, selector or repeated function test, and
-  the 15-minute watchdog unchanged for the whole stage. The new
+  `internal/taskworkspace` and `internal/taskpublication`, after
+  `internal/workspacetransfer` in the combined packages invocation, in that
+  order, and nothing else: no selector, count, CPU setting, shard or job
+  changes, no plane stress case and no new repeated function selector; the
+  three per-CPU groups (contract, mcpqual, workspace) stay exact. The new
   lifecycle matrices live there: the cache's locking, eviction and
   corruption cases, the preparation, snapshot and publication state
   machine with fake clocks armed before every advance, the publication
@@ -899,12 +879,11 @@ stage runs exactly its own commands. The packages shard runs
 `stress packages` first and then, only if it succeeded, its per-CPU
 groups, one after another: `stress contract cpu1`, `cpu2` and `cpu4`,
 then `stress mcpqual cpu1`, `cpu2` and `cpu4`, then
-`stress workspace cpu1`, `cpu2` and `cpu4`, then
-`stress workspacetransfer cpu1`, `cpu2` and `cpu4`. Each group's three
+`stress workspace cpu1`, `cpu2` and `cpu4`. Each group's three
 invocations start together through the same concurrent coordinator as the
 Parallel shards (at most three at once, the same watchdog, logs such as
-`stress-contract-cpu1.log`, `stress-mcpqual-cpu2.log`,
-`stress-workspace-cpu4.log` and `stress-workspacetransfer-cpu1.log` owned by `devcheck stress-packages`, replayed
+`stress-contract-cpu1.log`, `stress-mcpqual-cpu2.log` and
+`stress-workspace-cpu4.log` owned by `devcheck stress-packages`, replayed
 in CPU order, all three joined before the group fails or the next group
 starts), and a failure in a group prevents the later groups, plane-cpu1
 and every later shard from starting. Sequential commands stop at the first
@@ -972,8 +951,8 @@ Their cost is CPU-bound race work in the workspace fixture copies,
 validation, durability boundaries and transport tests, and in mcpqual's
 JSON report stages.
 `internal/workspacetransfer` (about 300 s at 1.5×) stayed in the combined
-invocation at this fix; iteration 10b's r0.5 schedule has since given it
-a group of its own, the fourth, after workspace's (below).
+invocation at this fix; a group of its own was later tried and withdrawn
+(iteration 10b's r0.5 and r0.6 schedules, below), and it stays combined.
 The schedule was chosen by measurement, sequentially on pinned cores
 (Linux amd64, warm build cache), against an export of 473ceb2:
 
@@ -998,19 +977,33 @@ the worst cases are about 191 s for a workspace invocation, about 142 s
 for mcpqual and about 141 s for contract (94 s × 1.5), each against its
 own 360 s limit. These are planning figures, not hosted measurements.
 
-Then iteration 10b's r0.5 schedule (2026-10-04). With the task workspace
-packages added to the combined invocation, run 37188932800 measured the
-`internal/workspacetransfer` binary at 216.1 s (Linux) and 278.9 s
-(macOS) there, against 143.9 s and 138.4 s on main's run 37101472176;
-locally the package was not slower alone, so the growth is contention in
-the combined invocation. It took the same mechanism as a fourth group
-after workspace's: `stress workspacetransfer cpu1`, `cpu2` and `cpu4`,
-each 20 repetitions at one CPU setting with the unchanged 6-minute binary
-limit, concurrent inside the group. `internal/taskworkspace` and
-`internal/taskpublication` stay in the combined invocation immediately
-after `internal/mcp`. The 15-minute watchdog, the 360 s binary timeout,
-the repetition counts and the 18 jobs are unchanged; no hosted timing of
-this schedule is claimed here.
+Then iteration 10b's r0.5 schedule (2026-10-04), since withdrawn. With the
+task workspace packages added to the combined invocation, run 37188932800
+measured the `internal/workspacetransfer` binary at 216.1 s (Linux) and
+278.9 s (macOS) there, against 143.9 s and 138.4 s on main's run
+37101472176; locally the package was not slower alone, so the growth was
+contention in the combined invocation. r0.5 gave it the same mechanism as
+a fourth per-CPU group after workspace's, with the 15-minute watchdog, the
+360 s binary timeout, the repetition counts and the 18 jobs unchanged.
+
+Then iteration 10b's r0.6 schedule (2026-10-04) returned
+`internal/workspacetransfer` to the combined invocation, after
+`internal/mcp` and before `internal/taskworkspace` and
+`internal/taskpublication`, and the per-CPU groups to the original three
+(contract, mcpqual, workspace). Run 37199285026 on 56fa0d8 (the r0.5
+schedule), against run 37188932800 on 1c3b8b3: the macOS stress-packages
+step fell from 724 s to 689 s and its combined command from 471 s to
+320 s, with the transfer group adding 113 s; the Linux step grew from
+635 s to 779 s although its combined command fell from 360 s to 318 s,
+because the transfer group added 145 s sequentially after contract's
+140 s, mcpqual's 70 s and workspace's 105 s, whose waves were already
+full. Before the split, transfer had extended the Linux combined command
+by about 42 s while its own binary took 216 s: the overlap inside the
+combined invocation was the saving. macOS taskworkspace inside the
+combined command fell from 249 s to 171 s after the compressed loose copy
+and the task-upload pack window, reducing the contention that motivated
+the split. The watchdog, binary timeout, repetition counts and jobs are
+unchanged; these figures are historical evidence, not new allowances.
 
 Watchdog and orphans. When the watchdog (or the caller) ends the context,
 every outstanding invocation is canceled and the shard still waits for all

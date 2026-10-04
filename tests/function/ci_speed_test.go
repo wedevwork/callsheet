@@ -36,11 +36,10 @@ import (
 // ./internal/sidecar by its sidecar follow-up, and ./internal/contract
 // (into the packages shard's per-CPU group) by the contract headroom fix,
 // and ./internal/mcpqual and ./internal/workspace likewise by the workspace
-// and mcpqual headroom fix, and ./internal/workspacetransfer likewise (the
-// fourth group) by iteration 10b's r0.5 schedule;
+// and mcpqual headroom fix;
 // the function commands are unchanged.
 const (
-	speedPackages      = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/taskworkspace ./internal/taskpublication"
+	speedPackages      = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/workspacetransfer ./internal/taskworkspace ./internal/taskpublication"
 	speedContract1     = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/contract"
 	speedContract2     = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/contract"
 	speedContract4     = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/contract"
@@ -50,9 +49,6 @@ const (
 	speedWorkspace1    = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/workspace"
 	speedWorkspace2    = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/workspace"
 	speedWorkspace4    = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/workspace"
-	speedTransfer1     = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/workspacetransfer"
-	speedTransfer2     = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/workspacetransfer"
-	speedTransfer4     = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/workspacetransfer"
 	speedPlane1        = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/plane"
 	speedPlane2        = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/plane"
 	speedPlane4        = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/plane"
@@ -351,14 +347,13 @@ func delegatedCall(call *ast.CallExpr) (kind, contract string) {
 func TestCISpeedSelection(t *testing.T) {
 	for _, goos := range []string{"linux", "darwin"} {
 		steps, err := devcheck.StressSteps(goos)
-		if err != nil || len(steps) != 25 {
+		if err != nil || len(steps) != 22 {
 			t.Fatalf("%s: %+v %v", goos, steps, err)
 		}
 		for i, want := range []struct{ name, argv string }{{"stress packages", speedPackages},
 			{"stress contract cpu1", speedContract1}, {"stress contract cpu2", speedContract2}, {"stress contract cpu4", speedContract4},
 			{"stress mcpqual cpu1", speedMcpqual1}, {"stress mcpqual cpu2", speedMcpqual2}, {"stress mcpqual cpu4", speedMcpqual4},
 			{"stress workspace cpu1", speedWorkspace1}, {"stress workspace cpu2", speedWorkspace2}, {"stress workspace cpu4", speedWorkspace4},
-			{"stress workspacetransfer cpu1", speedTransfer1}, {"stress workspacetransfer cpu2", speedTransfer2}, {"stress workspacetransfer cpu4", speedTransfer4},
 			{"stress plane cpu1", speedPlane1}, {"stress plane cpu2", speedPlane2}, {"stress plane cpu4", speedPlane4},
 			{"stress sidecar cpu1", speedSidecar1}, {"stress sidecar cpu2", speedSidecar2}, {"stress sidecar cpu4", speedSidecar4}, {"stress processgroup cpu1", speedPG1},
 			{"stress processgroup cpu2", speedPG2}, {"stress processgroup cpu4", speedPG4}, {"stress function", speedFunction}, {"stress plane function", speedPlaneFunction},
@@ -369,19 +364,19 @@ func TestCISpeedSelection(t *testing.T) {
 		}
 		// FP-6 is no longer repeated by a function step; its experiment
 		// stays repeated through the complete processgroup package.
-		for _, s := range steps[22:] {
+		for _, s := range steps[19:] {
 			if strings.Contains(strings.Join(s.Argv, " "), "TestFP6ProcessGroups") {
 				t.Fatalf("%s: %s still selects TestFP6ProcessGroups", goos, s.Name)
 			}
 		}
-		for _, s := range steps[19:22] {
+		for _, s := range steps[16:19] {
 			if !slices.Contains(s.Argv, "./internal/spikes/processgroup") || len(s.Argv) != 7 {
 				t.Fatalf("%s %s lost the complete processgroup package: %v", goos, s.Name, s.Argv)
 			}
 		}
 		// The plane package (its delegated contracts included) is repeated
 		// completely in its own shard (design 05b), never in packages.
-		for _, s := range steps[13:16] {
+		for _, s := range steps[10:13] {
 			if !slices.Contains(s.Argv, "./internal/plane") || len(s.Argv) != 7 {
 				t.Fatalf("%s %s lost the complete plane package: %v", goos, s.Name, s.Argv)
 			}
@@ -392,7 +387,7 @@ func TestCISpeedSelection(t *testing.T) {
 		// Likewise the sidecar package (its task children and reconnect
 		// contracts included), in its own shard since the 05b sidecar
 		// follow-up.
-		for _, s := range steps[16:19] {
+		for _, s := range steps[13:16] {
 			if !slices.Contains(s.Argv, "./internal/sidecar") || len(s.Argv) != 7 {
 				t.Fatalf("%s %s lost the complete sidecar package: %v", goos, s.Name, s.Argv)
 			}
@@ -400,12 +395,11 @@ func TestCISpeedSelection(t *testing.T) {
 		if slices.Contains(steps[0].Argv, "./internal/sidecar") {
 			t.Fatalf("%s packages step still repeats sidecar: %v", goos, steps[0].Argv)
 		}
-		// The contract, mcpqual, workspace and workspacetransfer packages run
-		// once per CPU setting in the packages shard's per-CPU groups (the
-		// headroom fixes and iteration 10b's r0.5 schedule), never in the
-		// combined command, which ends with taskworkspace and
-		// taskpublication immediately after mcp.
-		for g, pkg := range []string{"./internal/contract", "./internal/mcpqual", "./internal/workspace", "./internal/workspacetransfer"} {
+		// The contract, mcpqual and workspace packages run once per CPU
+		// setting in the packages shard's per-CPU groups (the headroom
+		// fixes), never in the combined command; workspacetransfer stays
+		// combined.
+		for g, pkg := range []string{"./internal/contract", "./internal/mcpqual", "./internal/workspace"} {
 			for _, s := range steps[1+3*g : 4+3*g] {
 				if !slices.Contains(s.Argv, pkg) || len(s.Argv) != 7 {
 					t.Fatalf("%s %s lost the complete %s package: %v", goos, s.Name, pkg, s.Argv)
@@ -415,8 +409,8 @@ func TestCISpeedSelection(t *testing.T) {
 				t.Fatalf("%s packages step still repeats %s: %v", goos, pkg, steps[0].Argv)
 			}
 		}
-		if n := len(steps[0].Argv); n < 3 || !slices.Equal(steps[0].Argv[n-3:], []string{"./internal/mcp", "./internal/taskworkspace", "./internal/taskpublication"}) {
-			t.Fatalf("%s packages step does not end with mcp, taskworkspace, taskpublication: %v", goos, steps[0].Argv)
+		if !slices.Contains(steps[0].Argv, "./internal/workspacetransfer") {
+			t.Fatalf("%s packages step lost workspacetransfer: %v", goos, steps[0].Argv)
 		}
 	}
 
@@ -480,7 +474,7 @@ func TestCISpeedSelection(t *testing.T) {
 	// fixture with the same names, near-prefix neighbours and FP-6.
 	var selector string
 	steps, _ := devcheck.StressSteps(runtime.GOOS)
-	for _, a := range steps[23].Argv {
+	for _, a := range steps[20].Argv {
 		if v, ok := strings.CutPrefix(a, "-run="); ok {
 			selector = v
 		}
@@ -804,8 +798,7 @@ func TestCISpeedPolicy(t *testing.T) {
 		r := &ciRunner{}
 		if code, out, errOut := devcheckRun(t, r, "stress"); code != 0 || !strings.Contains(out, "stage stress ok") ||
 			!sameGroups(r.calls, [][]string{{speedPackages}, {speedContract1, speedContract2, speedContract4},
-				{speedMcpqual1, speedMcpqual2, speedMcpqual4}, {speedWorkspace1, speedWorkspace2, speedWorkspace4},
-				{speedTransfer1, speedTransfer2, speedTransfer4}, {speedPlane1}, {speedPlane2, speedPlane4}, {speedSidecar1}, {speedSidecar2, speedSidecar4},
+				{speedMcpqual1, speedMcpqual2, speedMcpqual4}, {speedWorkspace1, speedWorkspace2, speedWorkspace4}, {speedPlane1}, {speedPlane2, speedPlane4}, {speedSidecar1}, {speedSidecar2, speedSidecar4},
 				{speedPG1, speedPG2, speedPG4}, {speedFunction}, {speedPlaneFunction}, {speedNodeFunction}}) {
 			t.Fatalf("stress dispatch = %d %v %s", code, r.calls, errOut)
 		}
