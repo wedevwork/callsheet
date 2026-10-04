@@ -38,7 +38,7 @@ import (
 // ./internal/workspace into per-CPU groups of their own after it.
 const (
 	hardeningStressCount     = 20
-	hardeningStressPackages  = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/workspacetransfer"
+	hardeningStressPackages  = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/workspacetransfer ./internal/taskworkspace ./internal/taskpublication"
 	hardeningStressContract1 = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/contract"
 	hardeningStressContract2 = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/contract"
 	hardeningStressContract4 = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/contract"

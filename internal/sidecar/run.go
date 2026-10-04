@@ -9,6 +9,7 @@ import (
 	"github.com/wedevwork/callsheet/internal/adapter"
 	"github.com/wedevwork/callsheet/internal/client"
 	"github.com/wedevwork/callsheet/internal/contract"
+	"github.com/wedevwork/callsheet/internal/taskworkspace"
 )
 
 // backoffSchedule is the delay after consecutive failures: 1, 2, 4, 8,
@@ -137,6 +138,22 @@ func (d *deps) run(ctx context.Context, o RunOptions) error {
 	// state lock and before any role readiness or start (their cleanup
 	// continues in the background while the node stays nonaccepting).
 	w.tasks = d.newSupervisor(env, o.GOOS, logger, l)
+	// Iteration 10b: workspace execution's node identity, plane surface and
+	// shared object cache (validated, its leftovers discarded and idle
+	// eviction applied under the state lock, before recovery; another
+	// enrollment target's caches are purged).
+	w.tasks.nodeID = id
+	if d.taskWorkspacePlane != nil {
+		w.tasks.ws = d.taskWorkspacePlane
+	} else if cc, ok := c.(*client.Client); ok {
+		w.tasks.ws = clientPlane{cc}
+	}
+	cache, err := taskworkspace.OpenCache(ctx, taskworkspace.CacheOptions{Root: l.root, Origin: e.PlaneURL + " " + e.CAFingerprint, Logger: logger})
+	if err != nil {
+		w.tasks.shutdown()
+		return wrapf(contract.CodeInternal, err, "cannot open the workspace cache in %s: %v", l.path(taskworkspace.CacheDirName), err)
+	}
+	w.tasks.cache = cache
 	if d.onSupervisor != nil {
 		d.onSupervisor(w.tasks)
 	}

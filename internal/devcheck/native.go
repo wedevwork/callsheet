@@ -397,6 +397,23 @@ var nativeRequired = []string{
 	// a skip never satisfies native qualification.
 	"TestTaskPromptReadiness",
 	"TestTaskFastGroupCleanup",
+	// Iteration 10b (workspace execution): the nine function tests in FP
+	// order (FP-1..FP-9), a separate group after the 10a names, each named
+	// acceptance scenario right after its parent (AC-WS-1 under the
+	// commit, AC-WS-5 under the publication, AC-WS-2 under the isolation
+	// test); absence or a skip never satisfies native qualification.
+	"TestTaskWorkspaceAdmission",
+	"TestTaskWorkspaceAccess",
+	"TestTaskWorkspaceCache",
+	"TestTaskWorkspaceCheckout",
+	"TestTaskWorkspaceCommit",
+	"TestTaskWorkspaceCommit/AC-WS-1",
+	"TestTaskWorkspacePublication",
+	"TestTaskWorkspacePublication/AC-WS-5",
+	"TestTaskWorkspaceMetadata",
+	"TestTaskWorkspaceRecovery",
+	"TestTaskWorkspaceIsolation",
+	"TestTaskWorkspaceIsolation/AC-WS-2",
 }
 
 // NativeTaskProcessPackage and nativeTaskProcess are the separate native
@@ -745,11 +762,12 @@ func (d *driver) native(steps []Step) error {
 	// Iteration 09a: after the qualification succeeded, and outside its
 	// parsed JSON event stream, the coverage gates (project-wide and the
 	// new/changed manifest) and the workspace benchmarks run natively;
-	// iteration 09b adds the transfer benchmarks after them.
+	// iteration 09b adds the transfer benchmarks after them, iteration 10b
+	// the task workspace benchmarks after those.
 	if err := d.coverage(""); err != nil {
 		return err
 	}
-	return d.steps([]Step{WorkspaceBenchStep(), TransferBenchStep()})
+	return d.steps([]Step{WorkspaceBenchStep(), TransferBenchStep(), TaskWorkspaceBenchStep()})
 }
 
 func (d *driver) nativeChildren(steps []Step, events, stderrLog io.Writer) error {

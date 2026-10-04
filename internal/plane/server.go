@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/wedevwork/callsheet/internal/contract"
+	"github.com/wedevwork/callsheet/internal/taskpublication"
 	"github.com/wedevwork/callsheet/internal/workspace"
 )
 
@@ -115,10 +116,22 @@ func (d *deps) run(ctx context.Context, o RunOptions) error {
 		return err
 	}
 	defer wm.Close()
+	// Iteration 10b: the publication state machine over the task writer
+	// and the hub. Before streams or requests are accepted every
+	// authorized intent is replayed between the two stores (its fence
+	// reconstructed first): a matching ref settles published, an absent one
+	// failed (publication_interrupted).
+	ts.ws = wm
+	pub := taskpublication.New(taskpublication.Options{Tasks: ts, Workspaces: wm, Clock: d.nodeClock, Logger: logger, Rand: d.rand})
+	defer pub.Close()
+	if err := pub.Replay(ctx); err != nil {
+		ts.close()
+		return wrapf(contract.CodeConflict, err, "a task publication cannot be recovered between the task and workspace stores: %v; stop the plane and restore a complete stopped backup of the state directory", err)
+	}
 	if err := canceled(ctx); err != nil {
 		return err
 	}
-	return d.serve(ctx, logger, m, fp, reg, wm)
+	return d.serve(ctx, logger, m, fp, reg, wm, pub)
 }
 
 // checkMaxTaskWait validates plane run's wait cap (zero: the default).
@@ -148,7 +161,7 @@ func logWarning(logger *slog.Logger, w Warning) {
 // bounded by what remains of shutdownTimeout, then Close), and joins Serve
 // and every in-flight handler before returning. The caller keeps the state
 // lock until then.
-func (d *deps) serve(ctx context.Context, logger *slog.Logger, m *material, fp string, reg *nodeRegistry, wm *workspace.Manager) error {
+func (d *deps) serve(ctx context.Context, logger *slog.Logger, m *material, fp string, reg *nodeRegistry, wm *workspace.Manager, pub *taskpublication.Service) error {
 	ln, err := d.listen("tcp", m.bind.String())
 	if err != nil {
 		return wrapf(contract.CodeUnavailable, err, "cannot listen on %s: %v", m.bind, err)
@@ -158,7 +171,7 @@ func (d *deps) serve(ctx context.Context, logger *slog.Logger, m *material, fp s
 	cert := tls.Certificate{Certificate: [][]byte{m.serverCert.Raw, m.caCert.Raw}, PrivateKey: m.serverKey, Leaf: m.serverCert}
 	tlsLn := tls.NewListener(ln, &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert}})
 	svc := newNodeService(reg, d.nodeClock, logger, certPEM(m.caCert.Raw), d.streamCloseGrace)
-	svc.ws = wm
+	svc.ws, svc.pub = wm, pub
 	svc.events = d.streamEvents
 	svc.helloRead = d.streamHelloRead
 	svc.helloArmed = d.streamHelloArmed
@@ -280,6 +293,9 @@ func newServiceHandler(svc *nodeService) http.Handler {
 			svc.handleWorkspaces(w, r)
 		case svc.ws != nil && strings.HasPrefix(p, contract.WorkspaceGitPrefix):
 			svc.ws.ServeGit(w, r)
+		case svc.ws != nil && svc.pub != nil && strings.HasPrefix(p, contract.PathNodeWorkspaces):
+			// Iteration 10b: the assignment-guarded node transfer routes.
+			svc.ws.ServeTaskGit(w, r, svc.pub)
 		default:
 			writeError(w, contract.New(contract.CodeNotFound, "no such endpoint"))
 		}

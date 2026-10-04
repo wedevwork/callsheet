@@ -659,16 +659,18 @@ func startTaskRun(t *testing.T, fp *fakePlane, o taskOpts) *taskRun {
 // scratchRoot is the parent a task's scratch directory must have under
 // the injected temp root tmp: tmp as given on Linux, its physical path on
 // Darwin, whose seam resolves symlinks (/var is one to /private/var).
-func scratchRoot(t *testing.T, goos, tmp string) string {
+// workDir is task id's journal-owned work directory (iteration 10b) as the
+// platform seam names it: below the state root, physical on darwin.
+func workDir(t *testing.T, goos, root, id string) string {
 	t.Helper()
-	if goos != "darwin" {
-		return tmp
+	if goos == "darwin" {
+		r, err := filepath.EvalSymlinks(root)
+		if err != nil {
+			t.Fatalf("resolve the state root %s: %v", root, err)
+		}
+		root = r
 	}
-	root, err := filepath.EvalSymlinks(tmp)
-	if err != nil {
-		t.Fatalf("resolve the temp root %s: %v", tmp, err)
-	}
-	return root
+	return filepath.Join(root, journalDir, id, workName)
 }
 
 // setEnv replaces the children's environment source.
@@ -738,8 +740,9 @@ func (c *fakeConn) sendStart(rid string, b contract.TaskStartBody) {
 	c.send(contract.ProtocolVersion, contract.FrameTaskStart, rid, b)
 }
 
-// startResult reads task_start_result rid; with c.ev set it also waits
-// for the reply's write to return.
+// startResult reads task_start_result rid. It does not wait for the
+// reply's write to return (its bytes arrive first): a caller that moves
+// the clock next waits for that (events.awaitStartReplied).
 func (c *fakeConn) startResult(rid string) contract.TaskStartResult {
 	c.t.Helper()
 	f := c.expect(contract.FrameTaskStartResult, rid)
@@ -1040,6 +1043,24 @@ func (s *taskSession) periodic(t *testing.T, rev int) contract.HeartbeatBody {
 	s.c.drainBeats()
 	s.tr.clk.Advance(heartbeatInterval)
 	return s.beat(t, rev)
+}
+
+// periodicArmed is periodic for a session whose readiness is settled (its
+// last report awaited, the revision's cycle done) while the clock stands
+// at the instant the last awaited heartbeat (s.b-1) was sent: the clock
+// moves only once the sidecar armed its periodic timer for exactly one
+// interval later after that exchange completed (nothing outstanding, no
+// heartbeat still arriving), and the ready-check cycle that move starts
+// must complete before the next move, so it cannot expire into a report.
+func (s *taskSession) periodicArmed(t *testing.T, rev int) contract.HeartbeatBody {
+	t.Helper()
+	at := s.tr.clk.Now().Add(heartbeatInterval)
+	s.tr.ev.awaitHeartbeatArmed(t, s.c.minSession, s.b-1, at)
+	s.c.drainBeats()
+	s.tr.clk.Advance(heartbeatInterval)
+	b := s.beat(t, rev)
+	s.tr.ev.awaitCycleSince(t, rev, at)
+	return b
 }
 
 // reportBody is report for a predicate on the whole heartbeat body.

@@ -28,6 +28,10 @@ func writeJournalV1(t *testing.T, root string, j contract.ExecutionJournal) {
 		t.Fatal(err)
 	}
 	delete(m, "stop_intent")
+	// Schema 3's work directory, binding and runtime directory are newer.
+	delete(m, "work")
+	delete(m, "workspace")
+	delete(m, "runtime_dir")
 	m["schema_version"] = json.RawMessage("1")
 	if r := m["result"]; string(r) != "null" {
 		var rm map[string]json.RawMessage

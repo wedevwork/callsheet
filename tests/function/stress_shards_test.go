@@ -62,7 +62,7 @@ var shardPlan = []struct {
 	steps     [][2]string
 	cpuGroups [][][2]string
 }{
-	{"packages", false, [][2]string{{"stress packages", "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/workspacetransfer"}},
+	{"packages", false, [][2]string{{"stress packages", "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/workspacetransfer ./internal/taskworkspace ./internal/taskpublication"}},
 		[][][2]string{{
 			{"stress contract cpu1", "go test -race -count=20 -cpu=1 -timeout=6m ./internal/contract"},
 			{"stress contract cpu2", "go test -race -count=20 -cpu=2 -timeout=6m ./internal/contract"},
@@ -136,6 +136,13 @@ var shard09a = []string{
 // package, in the packages shard only, after the workspace hub.
 var shard09b = []string{
 	"go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/workspacetransfer",
+}
+
+// shard10b is iteration 10b's literal addition: the task workspace and
+// task publication packages, in the combined packages invocation after
+// the local transfers, in that order.
+var shard10b = []string{
+	"go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/taskworkspace ./internal/taskpublication",
 }
 
 // shardArgv returns the literal commands of the named shards, in order.
@@ -311,6 +318,17 @@ func TestStressShardSelection(t *testing.T) {
 	if len(want) != 48 {
 		t.Fatalf("09b selection = %d tuples, want 09a plus 1 package at 3 CPU settings", len(want))
 	}
+	for _, argv := range shard10b {
+		for _, tp := range tuples(t, argv) {
+			if want[tp] != 0 {
+				t.Fatalf("10b addition %+v overlaps", tp)
+			}
+			want[tp]++
+		}
+	}
+	if len(want) != 54 {
+		t.Fatalf("10b selection = %d tuples, want 09b plus 2 packages at 3 CPU settings", len(want))
+	}
 	for _, goos := range []string{"linux", "darwin"} {
 		shards, err := devcheck.StressShards(goos)
 		if err != nil || len(shards) != len(shardPlan) {
@@ -353,11 +371,11 @@ func TestStressShardSelection(t *testing.T) {
 		}
 		for tp, n := range got {
 			if want[tp] != n {
-				t.Errorf("%s: %+v selected %d times, 02b, 03, 04, 07a, 07b, 09a and 09b selected it %d times", goos, tp, n, want[tp])
+				t.Errorf("%s: %+v selected %d times, 02b, 03, 04, 07a, 07b, 09a, 09b and 10b selected it %d times", goos, tp, n, want[tp])
 			}
 		}
-		if len(got) != 48 {
-			t.Fatalf("%s: %d distinct tuples, want 48", goos, len(got))
+		if len(got) != 54 {
+			t.Fatalf("%s: %d distinct tuples, want 54", goos, len(got))
 		}
 		ownerOf := map[string]string{"1": "-cpu1", "2": "", "4": ""}
 		for _, pkg := range []string{"plane", "sidecar"} {
@@ -1162,7 +1180,10 @@ func TestStressShardHandoff(t *testing.T) {
 		"| `packages` | `devcheck stress-packages` | `stress packages`, then `stress contract cpu1`, `cpu2`, `cpu4`, then `stress mcpqual cpu1`, `cpu2`, `cpu4`, then `stress workspace cpu1`, `cpu2`, `cpu4` | one invocation, then one group per split package (`internal/contract`, `internal/mcpqual`, `internal/workspace`), one group after another, each three concurrent invocations, one per CPU setting (the headroom fixes) |",
 		"`stressWaves` never applies to them", "`stress-contract-cpu1.log`", "`stress-workspace-cpu4.log`",
 		"Why contract, mcpqual and workspace run per CPU setting", "run 36992345488", "run 37009626145",
-		"it is the next candidate for a group of its own", "at most three invocations run at once on either runner",
+		// Iteration 10b's r0.6 schedule: workspacetransfer tried a fourth
+		// per-CPU group (r0.5) and returned to the combined invocation.
+		"a group of its own was later tried and withdrawn", "Then iteration 10b's r0.6 schedule (2026-10-04) returned",
+		"at most three invocations run at once on either runner",
 		"| `plane-cpu1` | `devcheck stress-plane-cpu1` | `stress plane cpu1` | one invocation, alone on its worker (iteration 06a-perf) |",
 		"| `plane` | `devcheck stress-plane` | `stress plane cpu2`, `cpu4` | two concurrent invocations, one per CPU setting (iteration 05b; CPU 1 moved to `plane-cpu1` in iteration 06a-perf) |",
 		"| `sidecar-cpu1` | `devcheck stress-sidecar-cpu1` | `stress sidecar cpu1` | one invocation, alone on its worker (iteration 06a-perf) |",
@@ -1247,7 +1268,11 @@ func TestStressShardHandoff(t *testing.T) {
 		"Sidecar stays in the packages shard", "The four shards run ten commands", "The plane and processgroup shards are concurrent",
 		"Hosted iteration 05b times: pending", "Follow-up rule, decided in advance and inactive",
 		"The five shards run thirteen commands", "The plane, sidecar and processgroup shards are concurrent", "Pre-authorised plane fallback (inactive)",
-		"so plane, sidecar and processgroup each start all three at once", "all five shards in one process under one shared 15-minute watchdog rather than five"} {
+		"so plane, sidecar and processgroup each start all three at once", "all five shards in one process under one shared 15-minute watchdog rather than five",
+		// Iteration 10b's r0.6 schedule withdrew r0.5's fourth group: the
+		// split has been tried and measured, so no next-candidate claim.
+		"it is the next candidate for a group of its own", "The seven shards run twenty-five commands",
+		"`stress workspacetransfer cpu1`", "`stress-workspacetransfer-cpu1.log`"} {
 		if strings.Contains(strings.Join(strings.Fields(stress), " "), stale) {
 			t.Fatalf("Stress checks keeps the obsolete %q", stale)
 		}

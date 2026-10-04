@@ -75,22 +75,22 @@ func TestNodeJSON(t *testing.T) {
 	if string(b) != `{"id":"`+testID+`","liveness":"offline","last_seen":null,"protocol_version":null,"software_version":null,"roles":[]}` {
 		t.Fatalf("empty node = %s", b)
 	}
-	list, _ := Encode(NodeListResponse{Version: 5})
-	if string(list) != `{"version":5,"nodes":[]}` {
+	list, _ := Encode(NodeListResponse{Version: 6})
+	if string(list) != `{"version":6,"nodes":[]}` {
 		t.Fatalf("empty list = %s", list)
 	}
-	resp, _ := Encode(NodeResponse{Version: 5, Node: n})
+	resp, _ := Encode(NodeResponse{Version: 6, Node: n})
 	got, err := ParseNodeResponse(resp)
 	if err != nil || got.ID != testID || !got.LastSeen.Equal(ts) || *got.ProtocolVersion != 1 || *got.SoftwareVersion != "dev" || len(got.Roles) != 0 || got.Roles == nil {
 		t.Fatalf("round trip = %+v %v", got, err)
 	}
 	two := Node{ID: "n_1123456789abcdef0123456789abcdef", Liveness: LivenessOffline}
-	lb, _ := Encode(NodeListResponse{Version: 5, Nodes: []Node{empty, two}})
+	lb, _ := Encode(NodeListResponse{Version: 6, Nodes: []Node{empty, two}})
 	nodes, err := ParseNodeListResponse(lb)
 	if err != nil || len(nodes) != 2 || nodes[0].LastSeen != nil || nodes[1].ID != two.ID {
 		t.Fatalf("list = %+v %v", nodes, err)
 	}
-	if nodes, err := ParseNodeListResponse([]byte(`{"version":5,"nodes":[]}`)); err != nil || len(nodes) != 0 {
+	if nodes, err := ParseNodeListResponse([]byte(`{"version":6,"nodes":[]}`)); err != nil || len(nodes) != 0 {
 		t.Fatalf("empty list = %v %v", nodes, err)
 	}
 }
@@ -138,11 +138,11 @@ func TestNodeParsingRejects(t *testing.T) {
 		}
 	}
 	for name, c := range map[string]struct{ in, want string }{
-		"version":  {`{"version":1,"node":` + good + `}`, "protocol version mismatch: local=5 remote=1"},
+		"version":  {`{"version":1,"node":` + good + `}`, "protocol version mismatch: local=6 remote=1"},
 		"version2": {`{"version":"2","node":` + good + `}`, "integer"},
-		"extra":    {`{"version":5,"node":` + good + `,"x":1}`, "unknown field"},
-		"null":     {`{"version":5,"node":null}`, "must not be null"},
-		"bad node": {`{"version":5,"node":{}}`, "required field"},
+		"extra":    {`{"version":6,"node":` + good + `,"x":1}`, "unknown field"},
+		"null":     {`{"version":6,"node":null}`, "must not be null"},
+		"bad node": {`{"version":6,"node":{}}`, "required field"},
 		"array":    {`[]`, "not a JSON object"},
 	} {
 		_, err := ParseNodeResponse([]byte(c.in))
@@ -151,15 +151,15 @@ func TestNodeParsingRejects(t *testing.T) {
 		}
 	}
 	for name, c := range map[string]struct{ in, want string }{
-		"null nodes": {`{"version":5,"nodes":null}`, "must not be null"},
-		"not array":  {`{"version":5,"nodes":{}}`, "must be an array"},
-		"unsorted":   {`{"version":5,"nodes":[` + strings.Replace(good, "n_0", "n_1", 1) + `,` + good + `]}`, "not sorted"},
-		"duplicate":  {`{"version":5,"nodes":[` + good + `,` + good + `]}`, "not sorted"},
-		"bad item":   {`{"version":5,"nodes":[{}]}`, "required field"},
+		"null nodes": {`{"version":6,"nodes":null}`, "must not be null"},
+		"not array":  {`{"version":6,"nodes":{}}`, "must be an array"},
+		"unsorted":   {`{"version":6,"nodes":[` + strings.Replace(good, "n_0", "n_1", 1) + `,` + good + `]}`, "not sorted"},
+		"duplicate":  {`{"version":6,"nodes":[` + good + `,` + good + `]}`, "not sorted"},
+		"bad item":   {`{"version":6,"nodes":[{}]}`, "required field"},
 		"version":    {`{"version":3,"nodes":[]}`, "remote=3"},
-		"missing":    {`{"version":5}`, "required field"},
+		"missing":    {`{"version":6}`, "required field"},
 		"garbage":    {`x`, "not a JSON object"},
-		"broken arr": {`{"version":5,"nodes":[1,}`, "malformed"},
+		"broken arr": {`{"version":6,"nodes":[1,}`, "malformed"},
 	} {
 		_, err := ParseNodeListResponse([]byte(c.in))
 		if err == nil || !strings.Contains(err.Error(), c.want) {
@@ -241,7 +241,7 @@ func frame(version any, typ, rid, body string) []byte {
 // version-before-body rule.
 func TestFrames(t *testing.T) {
 	hello, err := EncodeFrame(ProtocolVersion, FrameHello, "h1", HelloBody{NodeID: testID, SoftwareVersion: "dev"})
-	want := `{"version":5,"type":"hello","request_id":"h1","body":{"node_id":"` + testID + `","software_version":"dev"}}`
+	want := `{"version":6,"type":"hello","request_id":"h1","body":{"node_id":"` + testID + `","software_version":"dev"}}`
 	if err != nil || string(hello) != want {
 		t.Fatalf("hello = %s %v", hello, err)
 	}
@@ -254,7 +254,7 @@ func TestFrames(t *testing.T) {
 		t.Fatalf("hello body = %+v %v", h, err)
 	}
 	ok, _ := EncodeFrame(ProtocolVersion, FrameHelloOK, "h1", HelloOKBody{HeartbeatIntervalMS, LeaseMS})
-	if string(ok) != `{"version":5,"type":"hello_ok","request_id":"h1","body":{"heartbeat_interval_ms":5000,"lease_ms":15000}}` {
+	if string(ok) != `{"version":6,"type":"hello_ok","request_id":"h1","body":{"heartbeat_interval_ms":5000,"lease_ms":15000}}` {
 		t.Fatalf("hello_ok = %s", ok)
 	}
 	f, _ = DecodeFrame(ok, FromPlane)
@@ -262,7 +262,7 @@ func TestFrames(t *testing.T) {
 		t.Fatal(err)
 	}
 	hb, _ := EncodeFrame(ProtocolVersion, FrameHeartbeat, "b1", HeartbeatBody{})
-	if string(hb) != `{"version":5,"type":"heartbeat","request_id":"b1","body":{"roles_revision":0,"roles":[]}}` {
+	if string(hb) != `{"version":6,"type":"heartbeat","request_id":"b1","body":{"roles_revision":0,"roles":[]}}` {
 		t.Fatalf("heartbeat = %s", hb)
 	}
 	f, _ = DecodeFrame(hb, FromSidecar)
@@ -270,7 +270,7 @@ func TestFrames(t *testing.T) {
 		t.Fatalf("heartbeat body %v %v", b, err)
 	}
 	ack, _ := EncodeFrame(ProtocolVersion, FrameHeartbeatAck, "b1", nil)
-	if string(ack) != `{"version":5,"type":"heartbeat_ack","request_id":"b1","body":{}}` {
+	if string(ack) != `{"version":6,"type":"heartbeat_ack","request_id":"b1","body":{}}` {
 		t.Fatalf("ack = %s", ack)
 	}
 	f, _ = DecodeFrame(ack, FromPlane)
@@ -278,7 +278,7 @@ func TestFrames(t *testing.T) {
 		t.Fatal(err)
 	}
 	ef, _ := EncodeFrame(ProtocolVersion, FrameError, "h1", VersionMismatch(1, 2))
-	if string(ef) != `{"version":5,"type":"error","request_id":"h1","body":{"error":{"code":"protocol_mismatch","message":"protocol version mismatch: local=1 remote=2","details":{"local_version":1,"remote_version":2}}}}` {
+	if string(ef) != `{"version":6,"type":"error","request_id":"h1","body":{"error":{"code":"protocol_mismatch","message":"protocol version mismatch: local=1 remote=2","details":{"local_version":1,"remote_version":2}}}}` {
 		t.Fatalf("error frame = %s", ef)
 	}
 	for _, from := range []Direction{FromSidecar, FromPlane} {
@@ -303,7 +303,7 @@ func TestFrames(t *testing.T) {
 		[]byte(`{"type":"future","version":1,"request_id":"h7"}`),
 	} {
 		f, err := DecodeFrame(in, FromSidecar)
-		if CodeOf(err) != CodeProtocolMismatch || !strings.Contains(err.Error(), "local=5 remote=1") || f.Version != 1 || f.RequestID != "h7" {
+		if CodeOf(err) != CodeProtocolMismatch || !strings.Contains(err.Error(), "local=6 remote=1") || f.Version != 1 || f.RequestID != "h7" {
 			t.Fatalf("mismatch %s = %+v %v", in, f, err)
 		}
 	}
@@ -321,23 +321,23 @@ func TestFrames(t *testing.T) {
 		"null version":   {[]byte(`{"version":null,"type":"hello","request_id":"h1","body":{}}`), FromSidecar, `"version"`},
 		"string version": {frame("2", "hello", "h1", `{}`), FromSidecar, "must be an integer"},
 		"float version":  {frame(1.5, "hello", "h1", `{}`), FromSidecar, "must be an integer"},
-		"duplicate":      {[]byte(`{"version":5,"version":2,"type":"hello","request_id":"h1","body":{}}`), FromSidecar, "duplicate field"},
-		"unknown":        {[]byte(`{"version":5,"type":"hello","request_id":"h1","body":{},"x":1}`), FromSidecar, "unknown field"},
-		"null type":      {[]byte(`{"version":5,"type":null,"request_id":"h1","body":{}}`), FromSidecar, "must not be null"},
-		"null body":      {[]byte(`{"version":5,"type":"hello","request_id":"h1","body":null}`), FromSidecar, "must not be null"},
-		"no body":        {[]byte(`{"version":5,"type":"hello","request_id":"h1"}`), FromSidecar, "required field"},
-		"trailing":       {append(frame(5, "hello", "h1", `{}`), []byte(` {}`)...), FromSidecar, "trailing data"},
-		"bad request id": {frame(5, "hello", "a b", `{}`), FromSidecar, "request_id must be"},
-		"long rid":       {frame(5, "hello", strings.Repeat("a", 65), `{}`), FromSidecar, "request_id must be"},
-		"rid type":       {[]byte(`{"version":5,"type":"hello","request_id":1,"body":{}}`), FromSidecar, "must be a string"},
-		"type type":      {[]byte(`{"version":5,"type":1,"request_id":"h1","body":{}}`), FromSidecar, "must be a string"},
-		"unknown type":   {frame(5, "task", "h1", `{}`), FromSidecar, `unexpected message type "task"`},
-		"wrong dir 1":    {frame(5, "hello_ok", "h1", `{}`), FromSidecar, "not valid in this direction"},
-		"wrong dir 2":    {frame(5, "heartbeat", "b1", `{"roles":[]}`), FromPlane, "not valid in this direction"},
-		"wrong dir 3":    {frame(5, "hello", "h1", `{}`), FromPlane, "not valid in this direction"},
-		"body array":     {frame(5, "hello", "h1", `[]`), FromSidecar, "body must be a JSON object"},
-		"body string":    {frame(5, "hello", "h1", `"x"`), FromSidecar, "body must be a JSON object"},
-		"malformed":      {[]byte(`{"version":5,`), FromSidecar, "malformed"},
+		"duplicate":      {[]byte(`{"version":6,"version":2,"type":"hello","request_id":"h1","body":{}}`), FromSidecar, "duplicate field"},
+		"unknown":        {[]byte(`{"version":6,"type":"hello","request_id":"h1","body":{},"x":1}`), FromSidecar, "unknown field"},
+		"null type":      {[]byte(`{"version":6,"type":null,"request_id":"h1","body":{}}`), FromSidecar, "must not be null"},
+		"null body":      {[]byte(`{"version":6,"type":"hello","request_id":"h1","body":null}`), FromSidecar, "must not be null"},
+		"no body":        {[]byte(`{"version":6,"type":"hello","request_id":"h1"}`), FromSidecar, "required field"},
+		"trailing":       {append(frame(6, "hello", "h1", `{}`), []byte(` {}`)...), FromSidecar, "trailing data"},
+		"bad request id": {frame(6, "hello", "a b", `{}`), FromSidecar, "request_id must be"},
+		"long rid":       {frame(6, "hello", strings.Repeat("a", 65), `{}`), FromSidecar, "request_id must be"},
+		"rid type":       {[]byte(`{"version":6,"type":"hello","request_id":1,"body":{}}`), FromSidecar, "must be a string"},
+		"type type":      {[]byte(`{"version":6,"type":1,"request_id":"h1","body":{}}`), FromSidecar, "must be a string"},
+		"unknown type":   {frame(6, "task", "h1", `{}`), FromSidecar, `unexpected message type "task"`},
+		"wrong dir 1":    {frame(6, "hello_ok", "h1", `{}`), FromSidecar, "not valid in this direction"},
+		"wrong dir 2":    {frame(6, "heartbeat", "b1", `{"roles":[]}`), FromPlane, "not valid in this direction"},
+		"wrong dir 3":    {frame(6, "hello", "h1", `{}`), FromPlane, "not valid in this direction"},
+		"body array":     {frame(6, "hello", "h1", `[]`), FromSidecar, "body must be a JSON object"},
+		"body string":    {frame(6, "hello", "h1", `"x"`), FromSidecar, "body must be a JSON object"},
+		"malformed":      {[]byte(`{"version":6,`), FromSidecar, "malformed"},
 	} {
 		_, err := DecodeFrame(c.in, c.from)
 		if CodeOf(err) != CodeInvalidArgument || !strings.Contains(err.Error(), c.want) {
@@ -427,10 +427,10 @@ var frameLimitInputs = sync.OnceValue(func() *frameLimitFixtures {
 	bodyOf := func(n int) string { return `{"x":"` + f.pad(n-8) + `"}` }
 	for _, c := range frameLimitCases {
 		at := bodyOf(c.limit)
-		f.typed[c.typ] = frameLimitInput{atBody: at, at: string(frame(5, c.typ, "p1", at)), above: string(frame(5, c.typ, "p1", bodyOf(c.limit+1))),
-			spacedAt: string(frame(5, c.typ, "p1", `{ "x":"`+f.pad(c.limit-9)+`"}`)), spacedAbove: string(frame(5, c.typ, "p1", `{  "x":"`+f.pad(c.limit-9)+`"}`))}
+		f.typed[c.typ] = frameLimitInput{atBody: at, at: string(frame(6, c.typ, "p1", at)), above: string(frame(6, c.typ, "p1", bodyOf(c.limit+1))),
+			spacedAt: string(frame(6, c.typ, "p1", `{ "x":"`+f.pad(c.limit-9)+`"}`)), spacedAbove: string(frame(6, c.typ, "p1", `{  "x":"`+f.pad(c.limit-9)+`"}`))}
 	}
-	base := frame(5, "hello", "h1", `{}`)
+	base := frame(6, "hello", "h1", `{}`)
 	f.exact = strings.Repeat(" ", MaxFrameBytes-len(base)) + string(base)
 	f.aboveExact = " " + f.exact
 	return f

@@ -9,6 +9,7 @@ import (
 	"os"
 	"sort"
 
+	"github.com/go-git/go-git/v5/plumbing/format/objfile"
 	"golang.org/x/sys/unix"
 )
 
@@ -30,6 +31,10 @@ type deps struct {
 	hook func(stage string)
 	// syncFD makes a file's or directory's contents durable.
 	syncFD func(fd int) error
+	// syncBatchFD makes the files and directories (paths relative to the
+	// directory dirFD, "." for itself) durable together (iteration 10b
+	// task databases); syncBatch (the platform primitive) in production.
+	syncBatchFD func(dirFD int, files, dirs []string) error
 	// linkAt publishes a loose object by hard link (unix.Linkat); a
 	// filesystem without hard links falls back to a no-replace rename.
 	linkAt func(olddirfd int, oldpath string, newdirfd int, newpath string, flags int) error
@@ -39,13 +44,61 @@ type deps struct {
 	rand       io.Reader
 	// metric, when non-nil, receives work counters (benchmarks).
 	metric func(name string, v int64)
+	// newObjWriter, when non-nil, constructs the deflating loose-object
+	// writer in place of objfile.NewWriter (objWriter; tests count the
+	// constructions: a verified compressed loose copy constructs none).
+	newObjWriter func(w io.Writer) *objfile.Writer
 	// tempDir is the parent of private temporary stores ("" = the
 	// process temporary directory).
 	tempDir string
 }
 
 func defaultDeps() *deps {
-	return &deps{syncFD: fsyncFD, linkAt: unix.Linkat, aliasProbe: probeAliasing, rand: rand.Reader}
+	return &deps{syncFD: fsyncFD, syncBatchFD: syncBatch, linkAt: unix.Linkat, aliasProbe: probeAliasing, rand: rand.Reader}
+}
+
+// syncBatch makes a batch durable through the seam (a test deps without a
+// batch primitive syncs each path with syncFD).
+func (d *deps) syncBatch(dirFD int, files, dirs []string) error {
+	if d.syncBatchFD != nil {
+		return d.syncBatchFD(dirFD, files, dirs)
+	}
+	return eachSync(dirFD, append(append([]string(nil), files...), dirs...), d.syncFD)
+}
+
+// eachSync opens each path below dirFD without following links and syncs
+// it with sync.
+func eachSync(dirFD int, paths []string, sync func(fd int) error) error {
+	for _, p := range paths {
+		var fd int
+		var err error
+		if p == "." {
+			fd, err = unix.Dup(dirFD)
+		} else {
+			fd, err = openRelRead(dirFD, p)
+		}
+		if err != nil {
+			return err
+		}
+		err = sync(fd)
+		closeFD(fd)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// openRelRead opens a relative path below dirFD read-only, never following
+// a link.
+func openRelRead(dirFD int, p string) (int, error) {
+	var fd int
+	err := retryEINTR(func() error {
+		var err error
+		fd, err = unix.Openat(dirFD, p, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		return err
+	})
+	return fd, err
 }
 
 func (d *deps) check(op string) error {
@@ -65,6 +118,14 @@ func (d *deps) emit(name string, v int64) {
 	if d.metric != nil {
 		d.metric(name, v)
 	}
+}
+
+// objWriter constructs the deflating loose-object writer over w.
+func (d *deps) objWriter(w io.Writer) *objfile.Writer {
+	if d.newObjWriter != nil {
+		return d.newObjWriter(w)
+	}
+	return objfile.NewWriter(w)
 }
 
 // token returns 32 random lowercase hex digits.

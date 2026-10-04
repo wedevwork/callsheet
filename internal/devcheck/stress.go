@@ -71,6 +71,12 @@ var (
 		// plane and tiny fixtures; one shared production plane per
 		// process; no real subprocess).
 		"./internal/workspacetransfer",
+		// Iteration 10b: the task workspace's cache, preparation, snapshot
+		// and publication state machine, then the plane-owned publication
+		// transaction with its external plane-wiring harness, complete
+		// (fake clocks, tiny fixtures, no repeated real child).
+		"./internal/taskworkspace",
+		"./internal/taskpublication",
 	}
 	// stressSplitPackages are the packages shard's per-CPU packages, in
 	// execution order. Each left the combined -cpu=1,2,4 invocation for
@@ -95,7 +101,11 @@ var (
 	//     hosted Linux runner, about 355 s and 410 s at the observed 1.5x
 	//     slow-runner factor.
 	// ./internal/workspacetransfer (198.4 s, about 300 s at 1.5x) stays in
-	// the combined invocation; it is the next candidate.
+	// the combined invocation, after mcp and before taskworkspace and
+	// taskpublication: iteration 10b's r0.5 schedule ran it as a fourth
+	// group, and its hosted remeasure returned it here (r0.6), since the
+	// later per-CPU waves were already full and the overlap inside the
+	// combined invocation was the saving.
 	stressSplitPackages = []string{"./internal/contract", "./internal/mcpqual", "./internal/workspace"}
 	// stressPlanePackage is the internal/plane package of the plane shards,
 	// distinct from the plane function-test selector in the functions shard

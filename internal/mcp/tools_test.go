@@ -317,13 +317,13 @@ func TestRegistryTools(t *testing.T) {
 		t.Fatalf("role_show bad id %+v", e)
 	}
 	rmResult = contract.RoleRemoveResult{Completed: &contract.RoleRemoveResponse{Version: contract.ProtocolVersion, Removed: "r"}}
-	if a := h.ask(toolRoleRm, `{"id":"r"}`); a.text != `{"version":5,"removed":"r"}` || fmt.Sprint(gotRm) != "[r false ]" {
+	if a := h.ask(toolRoleRm, `{"id":"r"}`); a.text != `{"version":6,"removed":"r"}` || fmt.Sprint(gotRm) != "[r false ]" {
 		t.Fatalf("role_rm %+v %v", a, gotRm)
 	}
 	pending := contract.RoleRemovePendingResponse{Version: contract.ProtocolVersion, OperationID: opA, RoleID: "r", RegistrationOrder: 4, Removing: true}
 	rmResult = contract.RoleRemoveResult{Pending: &pending}
 	a = h.ask(toolRoleRm, `{"id":"r","force":true,"operation":"`+opA+`"}`)
-	if a.isError || a.text != `{"version":5,"operation_id":"`+opA+`","role_id":"r","registration_order":4,"removing":true}` || fmt.Sprint(gotRm) != "[r true "+opA+"]" {
+	if a.isError || a.text != `{"version":6,"operation_id":"`+opA+`","role_id":"r","registration_order":4,"removing":true}` || fmt.Sprint(gotRm) != "[r true "+opA+"]" {
 		t.Fatalf("role_rm pending %+v %v", a, gotRm)
 	}
 	rmResult = contract.RoleRemoveResult{}
@@ -375,7 +375,7 @@ func TestDispatchTool(t *testing.T) {
 	}
 	var top map[string]json.RawMessage
 	json.Unmarshal([]byte(a.text), &top)
-	if _, hasTask := top["task"]; hasTask || len(top) != 3 || !strings.HasPrefix(string(top["wait_result"]), `{"version":5,"status":"terminal"`) {
+	if _, hasTask := top["task"]; hasTask || len(top) != 3 || !strings.HasPrefix(string(top["wait_result"]), `{"version":6,"status":"terminal"`) {
 		t.Fatalf("dispatch-with-wait %s", a.text)
 	}
 	before := h.factory.Load()

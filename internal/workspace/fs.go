@@ -74,6 +74,10 @@ type deps struct {
 	// bytes and files copied per transaction, objects visited, entries
 	// scanned).
 	metric func(name string, v int64)
+	// packEncode, when non-nil, replaces the task upload's pack encoder
+	// (encodeTaskPack; tests observe the selected window and inject
+	// encoding failures and stalls).
+	packEncode packEncoder
 }
 
 func (d *deps) emit(name string, v int64) {

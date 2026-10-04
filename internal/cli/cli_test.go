@@ -209,7 +209,7 @@ func TestStubLeaves(t *testing.T) {
 func TestVersion(t *testing.T) {
 	for _, args := range [][]string{{"version"}, {"--version"}} {
 		code, out, errOut := exec(t, "linux", args...)
-		if code != 0 || out != "callsheet dev protocol=5\n" || errOut != "" {
+		if code != 0 || out != "callsheet dev protocol=6\n" || errOut != "" {
 			t.Fatalf("%v: %d %q %q", args, code, out, errOut)
 		}
 	}
@@ -217,7 +217,7 @@ func TestVersion(t *testing.T) {
 	Version = "1.2.3"
 	defer func() { Version = old }()
 	_, out, _ := exec(t, "linux", "version")
-	if out != "callsheet 1.2.3 protocol=5\n" {
+	if out != "callsheet 1.2.3 protocol=6\n" {
 		t.Fatalf("ldflags version: %q", out)
 	}
 	code, _, errOut := exec(t, "linux", "version", "extra")
@@ -298,7 +298,7 @@ func TestInterruptedAndPublicRun(t *testing.T) {
 	}
 	out.Reset()
 	errOut.Reset()
-	if code := Run(context.Background(), []string{"version"}, strings.NewReader(""), &out, &errOut); code != 0 || out.String() != "callsheet dev protocol=5\n" {
+	if code := Run(context.Background(), []string{"version"}, strings.NewReader(""), &out, &errOut); code != 0 || out.String() != "callsheet dev protocol=6\n" {
 		t.Fatalf("Run = %d %q", code, out.String())
 	}
 	// Run uses the host tree; the supported test hosts have the plane group.
@@ -337,7 +337,7 @@ func TestPlatformSeamContract(t *testing.T) {
 				out, err string
 			}{
 				{"help", context.Background(), nil, 0, "Usage: callsheet <command>\n", ""},
-				{"version", context.Background(), []string{"version"}, 0, "callsheet dev protocol=5\n", ""},
+				{"version", context.Background(), []string{"version"}, 0, "callsheet dev protocol=6\n", ""},
 				{"stub", context.Background(), []string{"task", "prune"}, 8, "", "callsheet: not_implemented: \"callsheet task prune\" is not implemented yet\n"},
 				{"usage", context.Background(), []string{"bogus"}, 2, "", "callsheet: invalid_argument: unknown command \"bogus\" for \"callsheet\"\n"},
 				{"cancel", canceled, []string{"version"}, 130, "", "callsheet: interrupted\n"},

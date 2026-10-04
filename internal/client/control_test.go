@@ -91,7 +91,7 @@ func TestControlCancel(t *testing.T) {
 	cs := startCtlServer(t)
 	path := contract.PathTasks + "/" + taskA + "/cancel"
 	t.Run("accepted", func(t *testing.T) {
-		cs.set(jsonRoute("5", 202, envelopeOf(t, contract.CancelResponse{Version: 5, TaskID: taskA, Accepted: true, Task: stopView(taskA)})))
+		cs.set(jsonRoute("6", 202, envelopeOf(t, contract.CancelResponse{Version: 6, TaskID: taskA, Accepted: true, Task: stopView(taskA)})))
 		r, err := cs.c.CancelTask(bg, taskA)
 		if err != nil || !r.Accepted || !r.Task.StopRequested {
 			t.Fatalf("accepted %+v %v", r, err)
@@ -101,7 +101,7 @@ func TestControlCancel(t *testing.T) {
 		}
 	})
 	t.Run("terminal", func(t *testing.T) {
-		cs.set(jsonRoute("5", 200, envelopeOf(t, contract.CancelResponse{Version: 5, TaskID: taskA, Task: taskView(taskA, taskRequest("done"), contract.TaskSucceeded)})))
+		cs.set(jsonRoute("6", 200, envelopeOf(t, contract.CancelResponse{Version: 6, TaskID: taskA, Task: taskView(taskA, taskRequest("done"), contract.TaskSucceeded)})))
 		r, err := cs.c.CancelTask(bg, taskA)
 		if err != nil || r.Accepted || r.Task.State != contract.TaskSucceeded {
 			t.Fatalf("terminal %+v %v", r, err)
@@ -116,16 +116,16 @@ func TestControlCancel(t *testing.T) {
 			h    http.HandlerFunc
 			code contract.Code
 		}{
-			"not found":         {jsonRoute("5", 404, `{"error":{"code":"not_found","message":"task does not exist"}}`), contract.CodeNotFound},
-			"unavailable":       {jsonRoute("5", 503, `{"error":{"code":"unavailable","message":"retry"}}`), contract.CodeUnavailable},
-			"accepted 200":      {jsonRoute("5", 200, envelopeOf(t, contract.CancelResponse{Version: 5, TaskID: taskA, Accepted: true, Task: stopView(taskA)})), contract.CodeInvalidArgument},
-			"unaccepted 202":    {jsonRoute("5", 202, envelopeOf(t, contract.CancelResponse{Version: 5, TaskID: taskA, Task: taskView(taskA, taskRequest("d"), contract.TaskSucceeded)})), contract.CodeInvalidArgument},
-			"not terminal":      {jsonRoute("5", 200, envelopeOf(t, contract.CancelResponse{Version: 5, TaskID: taskA, Task: running})), contract.CodeInvalidArgument},
-			"no stop":           {jsonRoute("5", 202, envelopeOf(t, contract.CancelResponse{Version: 5, TaskID: taskA, Accepted: true, Task: running})), contract.CodeInvalidArgument},
-			"other task":        {jsonRoute("5", 202, envelopeOf(t, contract.CancelResponse{Version: 5, TaskID: taskB, Accepted: true, Task: stopView(taskB)})), contract.CodeInvalidArgument},
-			"extra field":       {jsonRoute("5", 202, strings.Replace(envelopeOf(t, contract.CancelResponse{Version: 5, TaskID: taskA, Accepted: true, Task: stopView(taskA)}), `{"version"`, `{"x":1,"version"`, 1)), contract.CodeInvalidArgument},
-			"version":           {jsonRoute("6", 202, `{}`), contract.CodeProtocolMismatch},
-			"unexpected status": {jsonRoute("5", 201, `{}`), contract.CodeInvalidArgument},
+			"not found":         {jsonRoute("6", 404, `{"error":{"code":"not_found","message":"task does not exist"}}`), contract.CodeNotFound},
+			"unavailable":       {jsonRoute("6", 503, `{"error":{"code":"unavailable","message":"retry"}}`), contract.CodeUnavailable},
+			"accepted 200":      {jsonRoute("6", 200, envelopeOf(t, contract.CancelResponse{Version: 6, TaskID: taskA, Accepted: true, Task: stopView(taskA)})), contract.CodeInvalidArgument},
+			"unaccepted 202":    {jsonRoute("6", 202, envelopeOf(t, contract.CancelResponse{Version: 6, TaskID: taskA, Task: taskView(taskA, taskRequest("d"), contract.TaskSucceeded)})), contract.CodeInvalidArgument},
+			"not terminal":      {jsonRoute("6", 200, envelopeOf(t, contract.CancelResponse{Version: 6, TaskID: taskA, Task: running})), contract.CodeInvalidArgument},
+			"no stop":           {jsonRoute("6", 202, envelopeOf(t, contract.CancelResponse{Version: 6, TaskID: taskA, Accepted: true, Task: running})), contract.CodeInvalidArgument},
+			"other task":        {jsonRoute("6", 202, envelopeOf(t, contract.CancelResponse{Version: 6, TaskID: taskB, Accepted: true, Task: stopView(taskB)})), contract.CodeInvalidArgument},
+			"extra field":       {jsonRoute("6", 202, strings.Replace(envelopeOf(t, contract.CancelResponse{Version: 6, TaskID: taskA, Accepted: true, Task: stopView(taskA)}), `{"version"`, `{"x":1,"version"`, 1)), contract.CodeInvalidArgument},
+			"version":           {jsonRoute("7", 202, `{}`), contract.CodeProtocolMismatch},
+			"unexpected status": {jsonRoute("6", 201, `{}`), contract.CodeInvalidArgument},
 		} {
 			cs.set(c.h)
 			if _, err := cs.c.CancelTask(bg, taskA); contract.CodeOf(err) != c.code {
@@ -193,7 +193,7 @@ func running(t *testing.T, eff int, ids ...string) string {
 	for _, id := range ids {
 		rows = append(rows, contract.WaitRow{TaskID: id, State: contract.TaskRunning, ElapsedMS: 5, LastLogLine: "line", DurabilityConfirmed: true})
 	}
-	b, err := contract.EncodeWaitResponse(contract.WaitResponse{Version: 5, Status: contract.WaitStillRunning, EffectiveWaitMS: eff, Tasks: rows})
+	b, err := contract.EncodeWaitResponse(contract.WaitResponse{Version: 6, Status: contract.WaitStillRunning, EffectiveWaitMS: eff, Tasks: rows})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +218,7 @@ func TestControlWait(t *testing.T) {
 				hangUp(w, r)
 				return
 			}
-			jsonRoute("5", 200, running(t, 4700, taskA))(w, r)
+			jsonRoute("6", 200, running(t, 4700, taskA))(w, r)
 		})
 		r, err := cs.c.WaitTasks(bg, []string{taskA}, 5*time.Second)
 		if err != nil || r.Status != contract.WaitStillRunning {
@@ -238,7 +238,7 @@ func TestControlWait(t *testing.T) {
 				hangUp(w, r)
 				return
 			}
-			jsonRoute("5", 200, running(t, 0, taskA))(w, r)
+			jsonRoute("6", 200, running(t, 0, taskA))(w, r)
 		})
 		if r, err := cs.c.WaitTasks(bg, []string{taskA}, 300*time.Millisecond); err != nil || r.EffectiveWaitMS != 0 {
 			t.Fatalf("snapshot %+v %v", r, err)
@@ -252,8 +252,8 @@ func TestControlWait(t *testing.T) {
 			t.Fatalf("unreachable %v", err)
 		}
 		// Not retried: validation, not_found and trust answers.
-		for _, h := range []http.HandlerFunc{jsonRoute("5", 404, `{"error":{"code":"not_found","message":"no"}}`),
-			jsonRoute("5", 400, `{"error":{"code":"invalid_argument","message":"no"}}`)} {
+		for _, h := range []http.HandlerFunc{jsonRoute("6", 404, `{"error":{"code":"not_found","message":"no"}}`),
+			jsonRoute("6", 400, `{"error":{"code":"invalid_argument","message":"no"}}`)} {
 			cs.set(h)
 			if _, err := cs.c.WaitTasks(bg, []string{taskA}, time.Second); err == nil {
 				t.Fatal("an error answer passed")
@@ -306,7 +306,7 @@ func TestControlWait(t *testing.T) {
 		fc := waitSeams(t, OperationTimeout)
 		cs.set(func(w http.ResponseWriter, r *http.Request) {
 			fc.add(time.Minute)
-			jsonRoute("5", 200, running(t, 1000, taskA))(w, r)
+			jsonRoute("6", 200, running(t, 1000, taskA))(w, r)
 		})
 		if _, err := cs.c.WaitTasks(bg, []string{taskA}, time.Second); contract.CodeOf(err) != contract.CodeUnavailable {
 			t.Fatalf("late answer %v", err)
@@ -315,9 +315,9 @@ func TestControlWait(t *testing.T) {
 	t.Run("correlation", func(t *testing.T) {
 		waitSeams(t, OperationTimeout)
 		term := taskView(taskB, taskRequest("b"), contract.TaskSucceeded)
-		wr := contract.WaitResponse{Version: 5, Status: contract.WaitTerminal, EffectiveWaitMS: 1000, Winner: taskB, Task: &term}
+		wr := contract.WaitResponse{Version: 6, Status: contract.WaitTerminal, EffectiveWaitMS: 1000, Winner: taskB, Task: &term}
 		good, _ := contract.EncodeWaitResponse(wr)
-		cs.set(jsonRoute("5", 200, string(good)))
+		cs.set(jsonRoute("6", 200, string(good)))
 		if r, err := cs.c.WaitTasks(bg, []string{taskA, taskB}, time.Second); err != nil || r.Winner != taskB {
 			t.Fatalf("winner %+v %v", r, err)
 		}
@@ -327,7 +327,7 @@ func TestControlWait(t *testing.T) {
 			"missing row":    running(t, 1000, taskA),
 			"over effective": running(t, 1001, taskA, taskB),
 		} {
-			cs.set(jsonRoute("5", 200, body))
+			cs.set(jsonRoute("6", 200, body))
 			ids := []string{taskA, taskB}
 			if name == "foreign winner" {
 				ids = []string{taskA}
@@ -341,19 +341,19 @@ func TestControlWait(t *testing.T) {
 		}
 		// A dispatch's answer names its own task, and never carries the
 		// admitted view beside the wait.
-		one := contract.WaitResponse{Version: 5, Status: contract.WaitStillRunning, EffectiveWaitMS: 1000,
+		one := contract.WaitResponse{Version: 6, Status: contract.WaitStillRunning, EffectiveWaitMS: 1000,
 			Tasks: []contract.WaitRow{{TaskID: taskA, State: contract.TaskPending}}}
 		v := taskView(taskA, taskRequest("d"), contract.TaskPending)
 		for name, c := range map[string]struct {
 			body string
 			ok   bool
 		}{
-			"ok":        {envelopeOf(t, contract.DispatchResponse{Version: 5, TaskID: taskA, WaitResult: &one}), true},
-			"other":     {envelopeOf(t, contract.DispatchResponse{Version: 5, TaskID: taskB, WaitResult: &one}), false},
-			"with task": {envelopeOf(t, contract.DispatchResponse{Version: 5, TaskID: taskA, Task: &v, WaitResult: &one}), false},
-			"null wait": {envelopeOf(t, contract.DispatchResponse{Version: 5, TaskID: taskA, Task: &v}), false},
+			"ok":        {envelopeOf(t, contract.DispatchResponse{Version: 6, TaskID: taskA, WaitResult: &one}), true},
+			"other":     {envelopeOf(t, contract.DispatchResponse{Version: 6, TaskID: taskB, WaitResult: &one}), false},
+			"with task": {envelopeOf(t, contract.DispatchResponse{Version: 6, TaskID: taskA, Task: &v, WaitResult: &one}), false},
+			"null wait": {envelopeOf(t, contract.DispatchResponse{Version: 6, TaskID: taskA, Task: &v}), false},
 		} {
-			cs.set(jsonRoute("5", 202, c.body))
+			cs.set(jsonRoute("6", 202, c.body))
 			r, err := cs.c.DispatchWithWait(bg, taskRequest("d"), time.Second)
 			if (err == nil) != c.ok || (c.ok && (r.TaskID != taskA || r.WaitResult == nil)) {
 				t.Fatalf("%s: %+v %v", name, r, err)

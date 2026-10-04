@@ -424,7 +424,7 @@ func TestRoleProtocol(t *testing.T) {
 		s := dialPeer(t, np)
 		s.send(1, contract.FrameHello, "h1", contract.HelloBody{NodeID: id, SoftwareVersion: "iteration-03"})
 		f, e := s.recv()
-		if e == nil || e.Code != contract.CodeProtocolMismatch || e.Message != "protocol version mismatch: local=5 remote=1" || f.Version != 5 {
+		if e == nil || e.Code != contract.CodeProtocolMismatch || e.Message != "protocol version mismatch: local=6 remote=1" || f.Version != 6 {
 			t.Fatalf("protocol-1 hello = %+v %v", f, e)
 		}
 	})
@@ -562,7 +562,7 @@ func TestRoleCommands(t *testing.T) {
 		if err != nil || strings.Count(r.stdout, "\n") != 1 || v.ID != "r4" || v.RegistrationOrder != 4 {
 			t.Fatalf("add json = %q %v", r.stdout, err)
 		}
-		if again, _ := contract.Encode(contract.RoleResponse{Version: 5, Role: v}); string(again)+"\n" != r.stdout {
+		if again, _ := contract.Encode(contract.RoleResponse{Version: 6, Role: v}); string(again)+"\n" != r.stdout {
 			t.Fatalf("not the compact envelope: %q", r.stdout)
 		}
 		r = mustOK(t, b.run(t, append([]string{"role", "ls", "--json"}, np.trust()...)...))
@@ -570,13 +570,13 @@ func TestRoleCommands(t *testing.T) {
 		if err != nil || len(list) != 3 || list[0].ID != "r1" || list[1].ID != "r4" || list[2].ID != "r2" {
 			t.Fatalf("ls json = %q %v", r.stdout, err)
 		}
-		if again, _ := contract.Encode(contract.RoleListResponse{Version: 5, Roles: list}); string(again)+"\n" != r.stdout {
+		if again, _ := contract.Encode(contract.RoleListResponse{Version: 6, Roles: list}); string(again)+"\n" != r.stdout {
 			t.Fatalf("not the compact list envelope: %q", r.stdout)
 		}
-		if r := mustOK(t, b.run(t, append([]string{"role", "show", "r2", "--json"}, np.trust()...)...)); !strings.HasPrefix(r.stdout, `{"version":5,"role":{"id":"r2",`) {
+		if r := mustOK(t, b.run(t, append([]string{"role", "show", "r2", "--json"}, np.trust()...)...)); !strings.HasPrefix(r.stdout, `{"version":6,"role":{"id":"r2",`) {
 			t.Fatalf("show json = %q", r.stdout)
 		}
-		if r := mustOK(t, a.run(t, append([]string{"role", "rm", "--json", "r4", "--force"}, np.trust()...)...)); r.stdout != `{"version":5,"removed":"r4"}`+"\n" {
+		if r := mustOK(t, a.run(t, append([]string{"role", "rm", "--json", "r4", "--force"}, np.trust()...)...)); r.stdout != `{"version":6,"removed":"r4"}`+"\n" {
 			t.Fatalf("rm json = %q", r.stdout)
 		}
 		var decoded map[string]any

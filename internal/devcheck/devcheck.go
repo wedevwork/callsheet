@@ -394,6 +394,9 @@ func BenchSteps() []Step {
 		// Iteration 09b: the local transfers' status, snapshot, push,
 		// pull and export benchmarks.
 		TransferBenchStep(),
+		// Iteration 10b: the task workspace's prepare, snapshot, publish
+		// and metadata benchmarks.
+		TaskWorkspaceBenchStep(),
 		// Iteration 08: the tagged final-file helper benchmark (the vendor
 		// extractor and invocation benchmarks run in "bench adapter").
 		{Name: "bench sidecar " + RealAdapterTag, Argv: []string{"go", "test", "./internal/sidecar", "-tags=" + RealAdapterTag, "-run=^$",
@@ -411,6 +414,12 @@ func WorkspaceBenchStep() Step {
 // (iteration 09b), shared by the bench stage and the native driver.
 func TransferBenchStep() Step {
 	return Step{Name: "bench workspacetransfer", Argv: []string{"go", "test", "./internal/workspacetransfer", "-run=^$", "-bench=.", "-benchmem", "-benchtime=3x", "-count=1", "-timeout=180s"}}
+}
+
+// TaskWorkspaceBenchStep is the task workspace's benchmark step
+// (iteration 10b), shared by the bench stage and the native driver.
+func TaskWorkspaceBenchStep() Step {
+	return Step{Name: "bench taskworkspace", Argv: []string{"go", "test", "./internal/taskworkspace", "-run=^$", "-bench=.", "-benchmem", "-benchtime=3x", "-count=1", "-timeout=180s"}}
 }
 
 // CoverageSteps returns the profile run, the func report and the cmd

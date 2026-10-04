@@ -89,6 +89,8 @@ func BodyLimit(typ string) int {
 		return MaxAckBody
 	case FrameTaskCancel, FrameTaskCancelAck:
 		return MaxControlBody
+	case FrameTaskPrepared, FrameTaskPreparedAck:
+		return MaxTaskPreparedBody
 	}
 	return MaxOtherBody
 }

@@ -902,7 +902,7 @@ func TestRealAdapterInvocation(t *testing.T) {
 		if got, wantIn := string(l.Stdin), strings.ReplaceAll(stdin, "{task_id}", f.view.TaskID); got != wantIn {
 			t.Fatalf("%s stdin %q, want %q", vendor, got, wantIn)
 		}
-		if l.CwdMode != "0700" || !strings.HasPrefix(filepath.Base(l.Cwd), "callsheet-task-"+f.view.TaskID+"-") {
+		if l.CwdMode != "0700" || filepath.Base(l.Cwd) != "work" || filepath.Base(filepath.Dir(l.Cwd)) != f.view.TaskID {
 			t.Fatalf("%s cwd %s %s", vendor, l.Cwd, l.CwdMode)
 		}
 	}

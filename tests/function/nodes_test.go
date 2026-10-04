@@ -418,7 +418,7 @@ func TestNodeTrust(t *testing.T) {
 			w.Header().Set(contract.ProtocolHeader, "1")
 			io.WriteString(w, `{"version":1,"nodes":[]}`)
 		}))
-		mustCode(t, p.run(t, "node", "ls", "--plane", v1, "--ca", caFile), 7, "callsheet: protocol_mismatch: protocol version mismatch: local=5 remote=1")
+		mustCode(t, p.run(t, "node", "ls", "--plane", v1, "--ca", caFile), 7, "callsheet: protocol_mismatch: protocol version mismatch: local=6 remote=1")
 		// Nothing was enrolled by any rejection.
 		nodes, err := np.client(t).ListNodes(context.Background())
 		if err != nil || len(nodes) != len(ids) {
@@ -639,13 +639,13 @@ func TestNodeProtocol(t *testing.T) {
 			s := dialPeer(t, np)
 			c.send(s)
 			f, e := s.recv()
-			if e == nil || e.Code != c.code || f.RequestID != c.rid || f.Version != 5 {
+			if e == nil || e.Code != c.code || f.RequestID != c.rid || f.Version != 6 {
 				t.Fatalf("%s: %+v %v", c.name, f, e)
 			}
 			if c.code == contract.CodeProtocolMismatch {
 				l, _ := e.DetailInt("local_version")
 				r, _ := e.DetailInt("remote_version")
-				if e.Message != "protocol version mismatch: local=5 remote=1" || l != 5 || r != 1 {
+				if e.Message != "protocol version mismatch: local=6 remote=1" || l != 6 || r != 1 {
 					t.Fatalf("mismatch body %+v", e)
 				}
 			}
@@ -653,7 +653,7 @@ func TestNodeProtocol(t *testing.T) {
 				t.Fatalf("%s: close %v", c.name, st)
 			}
 		}
-		if !hasRecord(np.proc.logs.String(), "protocol version mismatch", map[string]any{"local_version": 5, "remote_version": 1}) {
+		if !hasRecord(np.proc.logs.String(), "protocol version mismatch", map[string]any{"local_version": 6, "remote_version": 1}) {
 			t.Fatalf("plane did not log both versions:\n%s", np.proc.logs.String())
 		}
 		// hello_ok carries the fixed values; hello alone is not liveness; a
@@ -690,7 +690,7 @@ func TestNodeProtocol(t *testing.T) {
 		if f, e := s.recv(); e != nil || f.Type != contract.FrameHeartbeatAck || f.RequestID != "b1" {
 			t.Fatalf("ack %+v %v", f, e)
 		}
-		if n, _ := np.client(t).ShowNode(context.Background(), id); n.Liveness != contract.LivenessOnline || *n.ProtocolVersion != 5 {
+		if n, _ := np.client(t).ShowNode(context.Background(), id); n.Liveness != contract.LivenessOnline || *n.ProtocolVersion != 6 {
 			t.Fatalf("after heartbeat %+v", n)
 		}
 		s.c.Close(websocket.StatusNormalClosure, "")
@@ -716,8 +716,8 @@ func TestNodeProtocol(t *testing.T) {
 		state := filepath.Join(t.TempDir(), "v2")
 		writeSidecarState(t, state, "n_"+strings.Repeat("3c", 16), v2, ca.CertPEM)
 		sc := startSidecar(t, p, state, "sidecar starting")
-		if code := sc.wait(t); code != 7 || !strings.Contains(sc.logs.String(), "callsheet: protocol_mismatch: protocol version mismatch: local=5 remote=1\n") ||
-			!sc.logs.has("connection failed permanently", map[string]any{"local_version": 5, "remote_version": 1}) {
+		if code := sc.wait(t); code != 7 || !strings.Contains(sc.logs.String(), "callsheet: protocol_mismatch: protocol version mismatch: local=6 remote=1\n") ||
+			!sc.logs.has("connection failed permanently", map[string]any{"local_version": 6, "remote_version": 1}) {
 			t.Fatalf("sidecar against v1 = %d\n%s", code, sc.logs.String())
 		}
 	})
@@ -972,7 +972,7 @@ func TestNodeDiscovery(t *testing.T) {
 				t.Fatalf("row %q", lines[i+1])
 			}
 			if id == online {
-				if _, ok := contract.ParseTime(f[2]); !ok || f[1] != "online" || f[3] != "5" || f[4] != "dev" {
+				if _, ok := contract.ParseTime(f[2]); !ok || f[1] != "online" || f[3] != "6" || f[4] != "dev" {
 					t.Fatalf("online row %q", lines[i+1])
 				}
 			} else if f[1] != "offline" || f[2] != "-" || f[3] != "-" || f[4] != "-" {
@@ -982,7 +982,7 @@ func TestNodeDiscovery(t *testing.T) {
 		r = op.run(t, "node", "show", online, "--plane", np.url, "--ca-fingerprint", np.fp)
 		show := strings.Split(r.stdout, "\n")
 		if r.code != 0 || len(show) != 7 || show[0] != "id: "+online || show[1] != "liveness: online" || !strings.HasPrefix(show[2], "last_seen: ") ||
-			show[3] != "protocol_version: 5" || show[4] != "software_version: dev" || show[5] != "roles: []" {
+			show[3] != "protocol_version: 6" || show[4] != "software_version: dev" || show[5] != "roles: []" {
 			t.Fatalf("show = %+v", r)
 		}
 		if f := listTree(t, op.home); len(f) != 0 {
@@ -991,7 +991,7 @@ func TestNodeDiscovery(t *testing.T) {
 	})
 	t.Run("json", func(t *testing.T) {
 		r := op.run(t, "node", "ls", "--json", "--plane", empty.url, "--ca", empty.ca)
-		if r.code != 0 || r.stdout != `{"version":5,"nodes":[]}`+"\n" {
+		if r.code != 0 || r.stdout != `{"version":6,"nodes":[]}`+"\n" {
 			t.Fatalf("empty json = %+v", r)
 		}
 		r = op.run(t, "node", "ls", "--plane", np.url, "--ca", np.ca, "--json")
@@ -999,7 +999,7 @@ func TestNodeDiscovery(t *testing.T) {
 		if r.code != 0 || err != nil || strings.Count(r.stdout, "\n") != 1 || len(nodes) != 2 || nodes[0].ID != ids[0] || nodes[1].ID != ids[1] {
 			t.Fatalf("json = %+v %v", r, err)
 		}
-		again, _ := contract.Encode(contract.NodeListResponse{Version: 5, Nodes: nodes})
+		again, _ := contract.Encode(contract.NodeListResponse{Version: 6, Nodes: nodes})
 		if string(again)+"\n" != r.stdout {
 			t.Fatalf("not the compact ordered envelope: %q", r.stdout)
 		}
@@ -1090,7 +1090,7 @@ func TestNodePlatform(t *testing.T) {
 				}
 			}
 		}
-		if b := devcheck.BenchSteps(); len(b) != 10 || strings.Join(b[2].Argv, " ") != "go test ./internal/contract -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s" {
+		if b := devcheck.BenchSteps(); len(b) != 11 || strings.Join(b[2].Argv, " ") != "go test ./internal/contract -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s" {
 			t.Fatalf("bench plan = %+v", b)
 		}
 		// Every required node name is defined here, as a top-level test or

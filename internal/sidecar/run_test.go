@@ -266,16 +266,16 @@ func TestReconnectTerminal(t *testing.T) {
 		{"mismatch", func(t *testing.T, c *fakeConn) {
 			// An iteration 05 (protocol 3) plane refuses this sidecar.
 			c.expect(contract.FrameHello, "h1")
-			c.send(5, contract.FrameError, "h1", contract.VersionMismatch(3, 5))
-		}, contract.CodeProtocolMismatch, "protocol version mismatch: local=5 remote=3", false},
+			c.send(6, contract.FrameError, "h1", contract.VersionMismatch(3, 6))
+		}, contract.CodeProtocolMismatch, "protocol version mismatch: local=6 remote=3", false},
 		{"mismatch-v2", func(t *testing.T, c *fakeConn) {
 			c.expect(contract.FrameHello, "h1")
-			c.send(5, contract.FrameError, "h1", contract.VersionMismatch(6, 5))
-		}, contract.CodeProtocolMismatch, "local=5 remote=6", false},
+			c.send(6, contract.FrameError, "h1", contract.VersionMismatch(7, 6))
+		}, contract.CodeProtocolMismatch, "local=6 remote=7", false},
 		{"future-hello-ok", func(t *testing.T, c *fakeConn) {
 			c.expect(contract.FrameHello, "h1")
-			c.send(6, contract.FrameHelloOK, "h1", contract.HelloOKBody{HeartbeatIntervalMS: 5000, LeaseMS: 15000})
-		}, contract.CodeProtocolMismatch, "local=5 remote=6", false},
+			c.send(7, contract.FrameHelloOK, "h1", contract.HelloOKBody{HeartbeatIntervalMS: 5000, LeaseMS: 15000})
+		}, contract.CodeProtocolMismatch, "local=6 remote=7", false},
 		{"unknown-node", func(t *testing.T, c *fakeConn) {
 			c.expect(contract.FrameHello, "h1")
 			c.send(contract.ProtocolVersion, contract.FrameError, "h1", contract.New(contract.CodeNotFound, "node is not enrolled"))
@@ -296,15 +296,15 @@ func TestReconnectTerminal(t *testing.T) {
 		{"bad-ack-body", func(t *testing.T, c *fakeConn) {
 			c.helloOK(testID)
 			c.expect(contract.FrameHeartbeat, "b1")
-			c.sendRaw([]byte(`{"version":5,"type":"heartbeat_ack","request_id":"b1","body":{"x":1}}`))
+			c.sendRaw([]byte(`{"version":6,"type":"heartbeat_ack","request_id":"b1","body":{"x":1}}`))
 		}, contract.CodeInvalidArgument, "unknown field", true},
 		{"malformed", func(t *testing.T, c *fakeConn) {
 			c.expect(contract.FrameHello, "h1")
-			c.sendRaw([]byte(`{"version":5,"type":"hello_ok"`))
+			c.sendRaw([]byte(`{"version":6,"type":"hello_ok"`))
 		}, contract.CodeInvalidArgument, "malformed", true},
 		{"bad-error-body", func(t *testing.T, c *fakeConn) {
 			c.expect(contract.FrameHello, "h1")
-			c.sendRaw([]byte(`{"version":5,"type":"error","request_id":"h1","body":{"error":{"code":"bogus","message":"m"}}}`))
+			c.sendRaw([]byte(`{"version":6,"type":"error","request_id":"h1","body":{"error":{"code":"bogus","message":"m"}}}`))
 		}, contract.CodeInvalidArgument, "unknown error code", true},
 		{"binary", func(t *testing.T, c *fakeConn) {
 			c.expect(contract.FrameHello, "h1")
@@ -358,7 +358,7 @@ func TestReconnectTerminal(t *testing.T) {
 					t.Fatalf("sidecar close = %v", st)
 				}
 			}
-			if c.code == contract.CodeProtocolMismatch && (!strings.Contains(f.logs.String(), `"local_version":5`) || !strings.Contains(f.logs.String(), `"msg":"connection failed permanently"`)) {
+			if c.code == contract.CodeProtocolMismatch && (!strings.Contains(f.logs.String(), `"local_version":6`) || !strings.Contains(f.logs.String(), `"msg":"connection failed permanently"`)) {
 				t.Fatalf("mismatch logs: %s", f.logs.String())
 			}
 			if ws := f.clk.Waiters(); len(ws) != 0 {

@@ -67,6 +67,10 @@ type WorkspaceGit struct {
 	// hook observes the no-progress watchdog (tests only): "armed" after
 	// each timer is registered, "idle" when it cancels a stream.
 	hook func(stage string)
+	// headers are a node transfer session's assignment headers (iteration
+	// 10b); node maps its refusals' fixed reasons.
+	headers map[string]string
+	node    bool
 }
 
 // WorkspaceGit returns a git session of workspace name. Close it after
@@ -213,6 +217,9 @@ func (g *WorkspaceGit) do(ctx context.Context, method, path, contentType, instan
 	if instance != "" {
 		req.Header.Set(contract.WorkspaceInstanceHeader, instance)
 	}
+	for k, v := range g.headers {
+		req.Header.Set(k, v)
+	}
 	resp, err := g.hc.Do(req)
 	if err != nil {
 		e := g.failure(ctx, s, err)
@@ -222,8 +229,14 @@ func (g *WorkspaceGit) do(ctx context.Context, method, path, contentType, instan
 	s.resp = resp
 	s.w.touch()
 	if resp.StatusCode != http.StatusOK {
+		var e error
+		if g.node {
+			e = nodeStatusError(resp.StatusCode, resp.Body, what)
+		} else {
+			e = gitStatusError(resp.StatusCode, what)
+		}
 		s.close()
-		return nil, gitStatusError(resp.StatusCode, what)
+		return nil, e
 	}
 	s.body = &progressReader{r: resp.Body, w: s.w}
 	return s, nil

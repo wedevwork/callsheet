@@ -142,7 +142,9 @@ func (l layout) scan() (scanResult, error) {
 			} else {
 				s.hasEnrollment = true
 			}
-		case n == journalDir:
+		case n == journalDir, n == cacheDirName:
+			// tasks/ and (iteration 10b) the disposable workspace-cache/,
+			// whose entries the cache validates itself.
 			if err := checkDir(p, fi); err != nil {
 				return s, err
 			}
@@ -153,7 +155,7 @@ func (l layout) scan() (scanResult, error) {
 	}
 	if len(unexpected) > 0 {
 		sort.Strings(unexpected)
-		return s, errf(contract.CodeConflict, "sidecar state directory %s holds unexpected %s; it may contain only identity.json, enrollment.json, tasks/ and .lock. Nothing was changed: move the unexpected entries out, or choose a fresh --state-dir",
+		return s, errf(contract.CodeConflict, "sidecar state directory %s holds unexpected %s; it may contain only identity.json, enrollment.json, tasks/, workspace-cache/ and .lock. Nothing was changed: move the unexpected entries out, or choose a fresh --state-dir",
 			l.root, strings.Join(unexpected, ", "))
 	}
 	ids, leftovers, err := l.scanJournalsFull()

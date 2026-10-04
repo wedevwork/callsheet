@@ -41,11 +41,26 @@ func (m *Manager) prune(ctx context.Context, name, instance string, before time.
 	}
 	ctx, done := m.opCtx(ctx)
 	defer done()
-	h, release, err := m.write(ctx, name, instance)
-	if err != nil {
-		return resp, st, opError("prune", err)
+	// Iteration 10b: an active task publication holds prune off: waited for
+	// with no lock held and rechecked under the write lock (a publication
+	// may have fenced and committed while this prune was queued for it).
+	var h *handle
+	for {
+		if err := m.awaitFences(ctx, name); err != nil {
+			return resp, st, opError("prune", err)
+		}
+		hh, release, err := m.write(ctx, name, instance)
+		if err != nil {
+			return resp, st, opError("prune", err)
+		}
+		if !m.Fenced(name) {
+			h = hh
+			defer release()
+			break
+		}
+		release()
+		m.d.stage("prune-refenced", ctx)
 	}
-	defer release()
 	d := m.d
 	d.stage("prune-locked", ctx)
 	beforeSize, err := treeSize(h.dir)

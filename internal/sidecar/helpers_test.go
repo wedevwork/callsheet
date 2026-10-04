@@ -695,17 +695,46 @@ type events struct {
 	amu        sync.Mutex
 	acked      map[[2]int]bool
 	maxSession int
+	// armed is each session's latest periodic heartbeat timer arming
+	// (evHeartbeatArmed, never on the main stream, so it adds nothing to
+	// a caller's queue bounds); armSig is closed and replaced on each.
+	armMu  sync.Mutex
+	armed  map[int]event
+	armSig chan struct{}
+	// replied records the task IDs whose start reply's write returned
+	// (evStartReplied, also on the main stream), so a test can wait for
+	// that write without consuming the stream (awaitStartReplied); repSig
+	// is closed and replaced on each.
+	repMu   sync.Mutex
+	replied map[string]bool
+	repSig  chan struct{}
 }
 
 func observe(d *deps) *events {
 	e := &events{ch: make(chan event, 4096), written: make(chan event, 4096), collected: make(chan event, 4096), gone: map[string]bool{},
-		cycles: make(chan event, 4096), ackc: make(chan event, 4096), acked: map[[2]int]bool{}}
+		cycles: make(chan event, 4096), ackc: make(chan event, 4096), acked: map[[2]int]bool{}, armed: map[int]event{}, armSig: make(chan struct{}),
+		replied: map[string]bool{}, repSig: make(chan struct{})}
 	// A tap the test installed before (deps adjustments) still sees
 	// every event first.
 	tap := d.observe
 	d.observe = func(ev event) {
 		if tap != nil {
 			tap(ev)
+		}
+		if ev.kind == evHeartbeatArmed {
+			e.armMu.Lock()
+			e.armed[ev.session] = ev
+			close(e.armSig)
+			e.armSig = make(chan struct{})
+			e.armMu.Unlock()
+			return
+		}
+		if ev.kind == evStartReplied {
+			e.repMu.Lock()
+			e.replied[ev.id] = true
+			close(e.repSig)
+			e.repSig = make(chan struct{})
+			e.repMu.Unlock()
 		}
 		e.ch <- ev
 		if ev.kind == evAck {
@@ -722,6 +751,35 @@ func observe(d *deps) *events {
 		}
 	}
 	return e
+}
+
+// awaitStartReplied waits until the write of task id's start reply
+// returned (its bytes may reach the plane while that write, bounded by the
+// clock, is still active: a test that read the reply must not move the
+// clock before then). It does not consume the main event stream, so it
+// holds whichever of the reply and a concurrent worker event came first.
+func (e *events) awaitStartReplied(t testing.TB, id string) {
+	t.Helper()
+	deadline := time.After(testWait)
+	for {
+		e.repMu.Lock()
+		sig, done := e.repSig, e.replied[id]
+		e.repMu.Unlock()
+		if done {
+			return
+		}
+		select {
+		case <-sig:
+		case <-deadline:
+			e.repMu.Lock()
+			done = e.replied[id]
+			e.repMu.Unlock()
+			if done {
+				return
+			}
+			t.Fatalf("the start reply write of %s did not return", id)
+		}
+	}
 }
 
 // awaitWritten waits until the sidecar's write of message id (kind
@@ -805,6 +863,43 @@ func (e *events) awaitAck(t testing.TB, minSession, k int) {
 			e.amu.Unlock()
 		case <-deadline:
 			t.Fatalf("the acknowledgement of heartbeat b%d was never processed", k)
+		}
+	}
+}
+
+// awaitHeartbeatArmed waits until a session numbered minSession or later
+// armed its periodic heartbeat timer for exactly instant at after request
+// k's exchange completed (that session's latest arming): no exchange is
+// outstanding then, and advancing the clock to at fires that timer.
+func (e *events) awaitHeartbeatArmed(t testing.TB, minSession, k int, at time.Time) {
+	t.Helper()
+	deadline := time.After(testWait)
+	for {
+		e.armMu.Lock()
+		sig := e.armSig
+		var latest []event
+		for s, ev := range e.armed {
+			if s >= minSession {
+				if ev.acks == k && ev.at.Equal(at) {
+					e.armMu.Unlock()
+					return
+				}
+				latest = append(latest, ev)
+			}
+		}
+		e.armMu.Unlock()
+		select {
+		case <-sig:
+		case <-deadline:
+			e.armMu.Lock()
+			for s, ev := range e.armed {
+				if s >= minSession && ev.acks == k && ev.at.Equal(at) {
+					e.armMu.Unlock()
+					return
+				}
+			}
+			e.armMu.Unlock()
+			t.Fatalf("the heartbeat timer was never armed for %v after b%d (latest armings %+v)", at, k, latest)
 		}
 	}
 }

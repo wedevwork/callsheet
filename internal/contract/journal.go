@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -20,10 +21,13 @@ import (
 // private inherited pipe only).
 const (
 	// ExecutionJournalSchemaVersion is execution.json's schema (iteration
-	// 06b: the stop intent and control outcomes);
-	// LegacyExecutionJournalSchemaVersion is 06a's, still decoded strictly
-	// and normalized. OwnerSchemaVersion is owner.json's, unchanged.
-	ExecutionJournalSchemaVersion       = 2
+	// 10b: the journal-owned work directory, the workspace binding and the
+	// owned runtime directory); ExecutionJournalSchema2 is 06b's (the stop
+	// intent and control outcomes) and LegacyExecutionJournalSchemaVersion
+	// 06a's, both still decoded strictly and normalized. OwnerSchemaVersion
+	// is owner.json's, unchanged.
+	ExecutionJournalSchemaVersion       = 3
+	ExecutionJournalSchema2             = 2
 	LegacyExecutionJournalSchemaVersion = 1
 	OwnerSchemaVersion                  = 1
 	// MaxExecutionJournalBytes bounds execution.json (the retained tail
@@ -101,11 +105,38 @@ type ExecutionJournal struct {
 	StartedAt  *time.Time
 	Result     *TaskResultBody
 	Log        TaskLog
-	// Schema is the decoded schema (1 or 2); the encoder writes 2.
+	// Work (schema 3) reports the journal-owned work directory
+	// tasks/<task_id>/work (the child's cwd); Workspace is the immutable
+	// binding of a workspace task and RuntimeDir its owned final-output
+	// directory's name inside work (null for none).
+	Work       bool
+	Workspace  *WorkspaceBinding
+	RuntimeDir *string
+	// Schema is the decoded schema (1 to 3); the encoder writes 3.
 	Schema int
 }
 
 type executionWire struct {
+	SchemaVersion int               `json:"schema_version"`
+	TaskID        string            `json:"task_id"`
+	Execution     ExecutionToken    `json:"execution"`
+	StartDigest   string            `json:"start_digest"`
+	Role          json.RawMessage   `json:"role"`
+	Effective     TaskEffective     `json:"effective"`
+	TimeoutPolicy string            `json:"timeout_policy"`
+	OwnerNonce    *string           `json:"owner_nonce"`
+	Phase         string            `json:"phase"`
+	StopIntent    *StopIntent       `json:"stop_intent"`
+	Work          bool              `json:"work"`
+	Workspace     *WorkspaceBinding `json:"workspace"`
+	RuntimeDir    *string           `json:"runtime_dir"`
+	StartedAt     *string           `json:"started_at"`
+	Result        *TaskResultBody   `json:"result"`
+	Log           json.RawMessage   `json:"log"`
+}
+
+// executionWireV2 is iteration 06b's exact schema-2 journal.
+type executionWireV2 struct {
 	SchemaVersion int             `json:"schema_version"`
 	TaskID        string          `json:"task_id"`
 	Execution     ExecutionToken  `json:"execution"`
@@ -119,6 +150,16 @@ type executionWire struct {
 	StartedAt     *string         `json:"started_at"`
 	Result        *TaskResultBody `json:"result"`
 	Log           json.RawMessage `json:"log"`
+}
+
+// RuntimeDirPrefix starts an owned final-output directory's name inside a
+// workspace task's work directory (128 random bits follow in hex).
+const RuntimeDirPrefix = ".callsheet-runtime-"
+
+// ValidRuntimeDir reports .callsheet-runtime- plus 32 lowercase hex.
+func ValidRuntimeDir(s string) bool {
+	tok, ok := strings.CutPrefix(s, RuntimeDirPrefix)
+	return ok && ValidWorkspaceToken(tok)
 }
 
 // executionWireV1 is iteration 06a's exact schema-1 journal: no stop
@@ -172,8 +213,8 @@ func EncodeExecutionJournal(j ExecutionJournal) ([]byte, error) {
 		policy = TimeoutPolicyLegacy
 	}
 	w := executionWire{SchemaVersion: ExecutionJournalSchemaVersion, TaskID: j.TaskID, Execution: j.Execution, StartDigest: j.StartDigest, Role: role,
-		Effective: j.Effective, TimeoutPolicy: policy, OwnerNonce: j.OwnerNonce, Phase: j.Phase, StopIntent: j.StopIntent, StartedAt: timePtr(j.StartedAt),
-		Result: j.Result, Log: lg}
+		Effective: j.Effective, TimeoutPolicy: policy, OwnerNonce: j.OwnerNonce, Phase: j.Phase, StopIntent: j.StopIntent, Work: j.Work,
+		Workspace: j.Workspace, RuntimeDir: j.RuntimeDir, StartedAt: timePtr(j.StartedAt), Result: j.Result, Log: lg}
 	var b bytes.Buffer
 	enc := json.NewEncoder(&b)
 	enc.SetEscapeHTML(false)
@@ -236,6 +277,20 @@ func ParseExecutionJournal(data []byte, lookup AdapterLookup) (ExecutionJournal,
 				FinalMessage: r.FinalMessage, FinalMessageTruncated: r.FinalMessageTruncated, OutputBytes: r.OutputBytes,
 				LogIncomplete: r.LogIncomplete, CounterOverflow: r.CounterOverflow, Digest: r.Digest}
 		}
+	case ExecutionJournalSchema2:
+		var o executionWireV2
+		if err := decodeStrict(data, &o, what); err != nil {
+			return ExecutionJournal{}, err
+		}
+		if !ValidTimeoutPolicy(o.TimeoutPolicy) {
+			return ExecutionJournal{}, errInvalid("%s timeout_policy must be %q or %q", what, TimeoutPolicyEnforced, TimeoutPolicyLegacy)
+		}
+		if o.Result != nil && o.Result.Workspace != nil {
+			return ExecutionJournal{}, errInvalid("%s: a schema 2 result has no workspace", what)
+		}
+		w = executionWire{SchemaVersion: o.SchemaVersion, TaskID: o.TaskID, Execution: o.Execution, StartDigest: o.StartDigest, Role: o.Role,
+			Effective: o.Effective, TimeoutPolicy: o.TimeoutPolicy, OwnerNonce: o.OwnerNonce, Phase: o.Phase, StopIntent: o.StopIntent,
+			StartedAt: o.StartedAt, Result: o.Result, Log: o.Log}
 	case ExecutionJournalSchemaVersion:
 		if err := decodeStrict(data, &w, what); err != nil {
 			return ExecutionJournal{}, err
@@ -243,9 +298,28 @@ func ParseExecutionJournal(data []byte, lookup AdapterLookup) (ExecutionJournal,
 		if !ValidTimeoutPolicy(w.TimeoutPolicy) {
 			return ExecutionJournal{}, errInvalid("%s timeout_policy must be %q or %q", what, TimeoutPolicyEnforced, TimeoutPolicyLegacy)
 		}
+		switch {
+		case w.Workspace != nil && !w.Work:
+			// work=false is an execution migrated from schema 1 or 2, whose
+			// scratch directory was never journal-owned.
+			return ExecutionJournal{}, errInvalid("%s: a workspace execution owns its work directory", what)
+		case w.RuntimeDir != nil && (w.Workspace == nil || !ValidRuntimeDir(*w.RuntimeDir)):
+			return ExecutionJournal{}, errInvalid("%s runtime_dir is an owned .callsheet-runtime- directory of a workspace task", what)
+		case w.Result != nil && (w.Result.Workspace != nil) != (w.Workspace != nil):
+			return ExecutionJournal{}, errInvalid("%s: a result carries its workspace result exactly for a workspace task", what)
+		}
+		if w.Workspace != nil {
+			if err := w.Workspace.Validate(); err != nil {
+				return ExecutionJournal{}, err
+			}
+			if r := w.Result; r != nil && (r.Workspace.Name != w.Workspace.Name || r.Workspace.Instance != w.Workspace.Instance ||
+				!sameHash(r.Workspace.BaseCommit, w.Workspace.BaseCommit)) {
+				return ExecutionJournal{}, errInvalid("%s result's workspace result does not match the binding", what)
+			}
+		}
 	default:
-		return ExecutionJournal{}, errInvalid("%s schema_version %s is not supported (this build supports %d and %d)", what, SafeText(string(probe.SchemaVersion), 32),
-			LegacyExecutionJournalSchemaVersion, ExecutionJournalSchemaVersion)
+		return ExecutionJournal{}, errInvalid("%s schema_version %s is not supported (this build supports %d, %d and %d)", what, SafeText(string(probe.SchemaVersion), 32),
+			LegacyExecutionJournalSchemaVersion, ExecutionJournalSchema2, ExecutionJournalSchemaVersion)
 	}
 	switch {
 	case !ValidTaskID(w.TaskID):
@@ -305,7 +379,7 @@ func ParseExecutionJournal(data []byte, lookup AdapterLookup) (ExecutionJournal,
 	}
 	j := ExecutionJournal{TaskID: w.TaskID, Execution: w.Execution, StartDigest: w.StartDigest, Role: role, Effective: w.Effective,
 		TimeoutPolicy: w.TimeoutPolicy, OwnerNonce: w.OwnerNonce, Phase: w.Phase, StopIntent: w.StopIntent, Result: w.Result, Log: lg,
-		Schema: w.SchemaVersion}
+		Work: w.Work, Workspace: w.Workspace, RuntimeDir: w.RuntimeDir, Schema: w.SchemaVersion}
 	if w.StartedAt != nil {
 		t, _ := ParseTime(*w.StartedAt)
 		j.StartedAt = &t

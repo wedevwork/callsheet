@@ -339,7 +339,7 @@ func TestRoleConfigContract(t *testing.T) {
 			return string(b)
 		}
 		list := func(views ...string) []byte {
-			return []byte(`{"version":5,"roles":[` + strings.Join(views, ",") + `]}`)
+			return []byte(`{"version":6,"roles":[` + strings.Join(views, ",") + `]}`)
 		}
 		got, err := ParseRoleListResponse(list(view("b", "coder", 2), view("a", "coder", 5), view("c", "reviewer", 1)), testLookup)
 		if err != nil || len(got) != 3 || got[1].ID != "a" {
@@ -353,8 +353,8 @@ func TestRoleConfigContract(t *testing.T) {
 			"unsorted order": {list(view("a", "coder", 3), view("b", "coder", 2)), "not sorted"},
 			"dup id":         {list(view("a", "coder", 1), view("a", "coder", 2)), "repeats"},
 			"dup order":      {list(view("a", "coder", 1), view("b", "reviewer", 1)), "repeats"},
-			"version":        {[]byte(`{"version":1,"roles":[]}`), "local=5 remote=1"},
-			"null":           {[]byte(`{"version":5,"roles":null}`), "must not be null"},
+			"version":        {[]byte(`{"version":1,"roles":[]}`), "local=6 remote=1"},
+			"null":           {[]byte(`{"version":6,"roles":null}`), "must not be null"},
 		} {
 			if _, err := ParseRoleListResponse(c.in, testLookup); err == nil || !strings.Contains(err.Error(), c.want) {
 				t.Errorf("list %s: %v", name, err)
@@ -370,7 +370,7 @@ func TestRoleConfigContract(t *testing.T) {
 		if _, err := ParseRoleListResponse(list(many...), testLookup); err == nil || !strings.Contains(err.Error(), "at most 100") {
 			t.Fatalf("101 roles: %v", err)
 		}
-		if b, _ := Encode(RoleListResponse{Version: 5}); string(b) != `{"version":5,"roles":[]}` {
+		if b, _ := Encode(RoleListResponse{Version: 6}); string(b) != `{"version":6,"roles":[]}` {
 			t.Fatalf("empty list = %s", b)
 		}
 		// Orders are exact positive integers up to 2^53-1.
@@ -384,7 +384,7 @@ func TestRoleConfigContract(t *testing.T) {
 	t.Run("views", func(t *testing.T) {
 		c, _ := ParseRoleConfig([]byte(roleJSON(nil)), testLookup)
 		v := RoleView{RoleRecord: RoleRecord{RoleConfig: c, RegistrationOrder: 3}, NodeLiveness: LivenessOnline, CanAccept: true, AdapterTestOnly: true}
-		b, _ := Encode(RoleResponse{Version: 5, Role: v})
+		b, _ := Encode(RoleResponse{Version: 6, Role: v})
 		if !strings.HasSuffix(string(b), `"timeout":"1h30m0s","registration_order":3,"inflight":0,"can_accept":true,"node_liveness":"online","adapter_test_only":true,"removing":false,"removal":null}}`) {
 			t.Fatalf("view = %s", b)
 		}
@@ -403,17 +403,17 @@ func TestRoleConfigContract(t *testing.T) {
 			"noncanon":   {strings.Replace(good, `"1h30m0s"`, `"90m"`, 1), "canonical"},
 			"no timeout": {strings.Replace(good, `"timeout":"1h30m0s",`, "", 1), `required field "timeout"`},
 			"extra":      {strings.Replace(good, `"inflight":0`, `"inflight":0,"x":1`, 1), "unknown field"},
-			"version":    {strings.Replace(good, `{"version":5`, `{"version":6`, 1), "remote=6"},
+			"version":    {strings.Replace(good, `{"version":6`, `{"version":7`, 1), "remote=7"},
 		} {
 			if _, err := ParseRoleResponse([]byte(c.in), testLookup); err == nil || !strings.Contains(err.Error(), c.want) {
 				t.Errorf("view %s: %v, want %q", name, err, c.want)
 			}
 		}
-		id, err := ParseRoleRemoveResponse([]byte(`{"version":5,"removed":"worker-a"}`))
+		id, err := ParseRoleRemoveResponse([]byte(`{"version":6,"removed":"worker-a"}`))
 		if err != nil || id != "worker-a" {
 			t.Fatalf("removed = %q %v", id, err)
 		}
-		for _, in := range []string{`{"version":5,"removed":"BAD"}`, `{"version":5}`, `{"version":1,"removed":"a"}`, `{"version":5,"removed":"a","x":1}`} {
+		for _, in := range []string{`{"version":6,"removed":"BAD"}`, `{"version":6}`, `{"version":1,"removed":"a"}`, `{"version":6,"removed":"a","x":1}`} {
 			if _, err := ParseRoleRemoveResponse([]byte(in)); err == nil {
 				t.Errorf("remove response %s accepted", in)
 			}
@@ -549,7 +549,7 @@ func TestRoleFrames(t *testing.T) {
 	// Directions: plane requests never come from a sidecar and replies
 	// never from the plane.
 	for typ, from := range map[string]Direction{FrameRoleValidate: FromSidecar, FrameRolesReplace: FromSidecar, FrameRoleValidateResult: FromPlane, FrameRolesReplaceAck: FromPlane} {
-		if _, err := DecodeFrame(frame(5, typ, "p1", `{}`), from); err == nil || !strings.Contains(err.Error(), "not valid in this direction") {
+		if _, err := DecodeFrame(frame(6, typ, "p1", `{}`), from); err == nil || !strings.Contains(err.Error(), "not valid in this direction") {
 			t.Errorf("%s from the wrong side: %v", typ, err)
 		}
 	}

@@ -324,7 +324,7 @@ func TestTaskStream(t *testing.T) {
 			expectClosed(t, w, w.sendLog(st, 3, []byte("zzzzzz")))
 			w = tp.worker(t, idA)
 			rid := w.nextID()
-			w.sendRaw([]byte(`{"version":5,"type":"task_log","request_id":"` + rid + `","body":{"x":"` + strings.Repeat("a", contract.MaxTaskLogBody) + `"}}`))
+			w.sendRaw([]byte(`{"version":6,"type":"task_log","request_id":"` + rid + `","body":{"x":"` + strings.Repeat("a", contract.MaxTaskLogBody) + `"}}`))
 			expectClosed(t, w, rid)
 			w = tp.worker(t, idA)
 			w.answer("p9", st.TaskID, nil)

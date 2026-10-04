@@ -169,45 +169,56 @@ func TestTaskPlatform(t *testing.T) {
 		if err := os.Symlink(real, link); err != nil {
 			t.Fatal(err)
 		}
+		// Iteration 10b: the working directory is the journal-owned
+		// tasks/<id>/work, 0700, absolute and cleaned, physical on Darwin.
 		const id = "t_0123456789abcdef0123456789abcdef"
 		linux, _ := taskPlatformFor("linux")
 		darwin, _ := taskPlatformFor("darwin")
-		dl, err := linux.scratch(link, id)
-		if err != nil || filepath.Dir(dl) != link || !filepath.IsAbs(dl) {
-			t.Fatalf("linux scratch %s %v", dl, err)
+		for _, d := range []string{filepath.Join(real, "l", id), filepath.Join(real, "d", id)} {
+			if err := os.MkdirAll(d, 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		dl, err := linux.work(filepath.Join(link, "l", id))
+		if err != nil || dl != filepath.Join(link, "l", id, workName) || !filepath.IsAbs(dl) {
+			t.Fatalf("linux work %s %v", dl, err)
 		}
 		physical, _ := filepath.EvalSymlinks(real)
-		dd, err := darwin.scratch(link, id)
-		if err != nil || filepath.Dir(dd) != physical {
-			t.Fatalf("darwin scratch %s %v (want under %s)", dd, err, real)
+		dd, err := darwin.work(filepath.Join(link, "d", id) + "/")
+		if err != nil || dd != filepath.Join(physical, "d", id, workName) {
+			t.Fatalf("darwin work %s %v (want under %s)", dd, err, physical)
 		}
 		for _, d := range []string{dl, dd} {
 			fi, err := os.Stat(d)
-			if err != nil || !fi.IsDir() || fi.Mode().Perm() != 0o700 || !strings.HasPrefix(filepath.Base(d), scratchPrefix+id+"-") {
-				t.Fatalf("scratch %s: %v %v", d, fi, err)
+			if err != nil || !fi.IsDir() || fi.Mode().Perm() != 0o700 {
+				t.Fatalf("work %s: %v %v", d, fi, err)
 			}
 		}
-		if dl2, _ := linux.scratch(link, id); dl2 == dl {
-			t.Fatal("scratch directories are not unique per task")
+		if _, err := linux.work(filepath.Join(link, "l", id)); err == nil {
+			t.Fatal("an existing work directory was reused")
 		}
-		if _, err := linux.scratch(filepath.Join(real, "missing"), id); err == nil {
-			t.Fatal("an unavailable temp root produced a scratch directory")
+		if _, err := linux.work(filepath.Join(real, "missing")); err == nil {
+			t.Fatal("a missing task directory produced a work directory")
 		}
-		// Removal deletes the known directory, never a symlink's target.
-		os.WriteFile(filepath.Join(dl, "f"), []byte("x"), 0o600)
-		if err := removeScratch(dl); err != nil {
+		// Removal deletes the known directory (even with its modes
+		// removed), never a symlink's target; an absent one is no error.
+		os.MkdirAll(filepath.Join(dl, "sub"), 0o700)
+		os.WriteFile(filepath.Join(dl, "sub", "f"), []byte("x"), 0o600)
+		os.Chmod(filepath.Join(dl, "sub"), 0)
+		if err := removeWork(dl); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := os.Stat(dl); !os.IsNotExist(err) {
-			t.Fatal("scratch not removed")
+			t.Fatal("work not removed")
+		}
+		if err := removeWork(dl); err != nil || removeWork("") != nil {
+			t.Fatalf("absent work removal: %v", err)
 		}
 		victim := t.TempDir()
 		os.WriteFile(filepath.Join(victim, "keep"), []byte("x"), 0o600)
 		trap := filepath.Join(t.TempDir(), "trap")
 		os.Symlink(victim, trap)
-		if err := removeScratch(trap); err == nil {
-			t.Fatal("a symlinked scratch path was accepted")
-		}
+		removeWork(trap)
 		if _, err := os.Stat(filepath.Join(victim, "keep")); err != nil {
 			t.Fatal("removal followed a symlink")
 		}

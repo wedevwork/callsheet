@@ -166,7 +166,7 @@ func TestMCPProtocol(t *testing.T) {
 		}
 		release()
 		for _, c := range []<-chan mcpResponse{a, b} {
-			if r := decodeTool(t, m.wait(c)); r.isError || !strings.HasPrefix(r.text, `{"version":5,"nodes":[`) {
+			if r := decodeTool(t, m.wait(c)); r.isError || !strings.HasPrefix(r.text, `{"version":6,"nodes":[`) {
 				t.Fatalf("held call %s", r.raw)
 			}
 		}
@@ -386,7 +386,7 @@ func TestMCPRoles(t *testing.T) {
 		m.fails("role_show", map[string]any{"id": "nobody"}, contract.CodeNotFound)
 	})
 	t.Run("role-rm", func(t *testing.T) {
-		if text := m.ok("role_rm", map[string]any{"id": "worker-b"}); text != `{"version":5,"removed":"worker-b"}` {
+		if text := m.ok("role_rm", map[string]any{"id": "worker-b"}); text != `{"version":6,"removed":"worker-b"}` {
 			t.Fatalf("role_rm %s", text)
 		}
 		m.fails("role_show", map[string]any{"id": "worker-b"}, contract.CodeNotFound)
@@ -489,7 +489,7 @@ func TestMCPRoles(t *testing.T) {
 		})
 		id := taskIDOf(t, m.ok("dispatch", dispatchArgs("id", "quickrm", "hold then cancel", nil)))
 		w.await(t, "started "+id)
-		if text := m.ok("role_rm", map[string]any{"id": "quickrm", "force": true}); text != `{"version":5,"removed":"quickrm"}` {
+		if text := m.ok("role_rm", map[string]any{"id": "quickrm", "force": true}); text != `{"version":6,"removed":"quickrm"}` {
 			t.Fatalf("force rm %s", text)
 		}
 		if v := p.awaitTask(t, id, func(v contract.TaskView) bool { return contract.TaskTerminal(v.State) }); v.State != contract.TaskCancelled {

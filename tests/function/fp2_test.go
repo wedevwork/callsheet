@@ -63,7 +63,7 @@ func TestFP2CommandTree(t *testing.T) {
 			}
 			r := run(args...)
 			if leaf.Name == "version" {
-				if r.code != 0 || r.stdout != "callsheet dev protocol=5\n" || r.stderr != "" {
+				if r.code != 0 || r.stdout != "callsheet dev protocol=6\n" || r.stderr != "" {
 					t.Fatalf("version = %+v", r)
 				}
 			} else {
@@ -110,7 +110,7 @@ func TestFP2CommandTree(t *testing.T) {
 				}
 			}
 		}
-		if r := run("--version"); r.code != 0 || r.stdout != "callsheet dev protocol=5\n" {
+		if r := run("--version"); r.code != 0 || r.stdout != "callsheet dev protocol=6\n" {
 			t.Fatalf("--version = %+v", r)
 		}
 	})

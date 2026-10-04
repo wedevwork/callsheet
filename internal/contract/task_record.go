@@ -46,15 +46,53 @@ type TaskRecord struct {
 	ResultDigest *string
 	// Late is the single late-evidence slot (terminal records only).
 	Late *LateResult
-	// Schema is the on-disk schema the record was decoded from (1, 2 or
-	// 3); EncodeTaskRecord always writes schema 3.
+	// Workspace, Publication and WorkspaceResult (iteration 10b, schema 4):
+	// the immutable admission binding, the durable publication intent and
+	// its settlement, and a terminal workspace task's publication DTO.
+	Workspace       *WorkspaceBinding
+	Publication     *TaskPublication
+	WorkspaceResult *TaskWorkspaceResult
+	// Schema is the on-disk schema the record was decoded from (1 to 4);
+	// EncodeTaskRecord always writes schema 4.
 	Schema int
 }
 
-// taskRecordWire is the ordered schema-3 form of tasks/<task_id>.json
-// (iteration 06b): no timeout_enforced, the timeout policy and the
-// nullable stop intent.
+// taskRecordWire is the ordered schema-4 form of tasks/<task_id>.json
+// (iteration 10b): schema 3 plus the nullable workspace binding,
+// publication intent and workspace result.
 type taskRecordWire struct {
+	SchemaVersion         int                  `json:"schema_version"`
+	TaskID                string               `json:"task_id"`
+	Request               DispatchRequest      `json:"request"`
+	Role                  json.RawMessage      `json:"role"`
+	RolesRevision         int                  `json:"roles_revision"`
+	Effective             TaskEffective        `json:"effective"`
+	TimeoutPolicy         string               `json:"timeout_policy"`
+	Execution             ExecutionToken       `json:"execution"`
+	StartDigest           *string              `json:"start_digest"`
+	StopIntent            *StopIntent          `json:"stop_intent"`
+	Workspace             *WorkspaceBinding    `json:"workspace_binding"`
+	Publication           *TaskPublication     `json:"publication"`
+	State                 string               `json:"state"`
+	CreatedAt             string               `json:"created_at"`
+	StartedAt             *string              `json:"started_at"`
+	FinishedAt            *string              `json:"finished_at"`
+	ExitCode              *int                 `json:"exit_code"`
+	Signal                *string              `json:"signal"`
+	FinalMessage          *string              `json:"final_message"`
+	FinalMessageTruncated bool                 `json:"final_message_truncated"`
+	ResultDigest          *string              `json:"result_digest"`
+	WorkspaceResult       *TaskWorkspaceResult `json:"workspace_result"`
+	Reason                *TaskReason          `json:"reason"`
+	Candidates            []TaskCandidate      `json:"candidates"`
+	Log                   json.RawMessage      `json:"log"`
+	LateResult            *lateWire            `json:"late_result"`
+	Revision              int                  `json:"revision"`
+}
+
+// taskRecordWireV3 is iteration 06b's exact schema-3 document: no
+// timeout_enforced, the timeout policy and the nullable stop intent.
+type taskRecordWireV3 struct {
 	SchemaVersion         int             `json:"schema_version"`
 	TaskID                string          `json:"task_id"`
 	Request               DispatchRequest `json:"request"`
@@ -220,10 +258,11 @@ func encodeTaskMeta(r TaskRecord) ([]byte, error) {
 		policy = TimeoutPolicyLegacy
 	}
 	w := taskRecordWire{SchemaVersion: TaskRecordSchemaVersion, TaskID: r.TaskID, Request: r.Request, Role: role, RolesRevision: r.RolesRevision,
-		Effective: r.Effective, TimeoutPolicy: policy, Execution: r.Execution, StartDigest: r.StartDigest, StopIntent: r.StopIntent, State: r.State,
+		Effective: r.Effective, TimeoutPolicy: policy, Execution: r.Execution, StartDigest: r.StartDigest, StopIntent: r.StopIntent,
+		Workspace: r.Workspace, Publication: r.Publication, State: r.State,
 		CreatedAt: FormatTime(r.CreatedAt), StartedAt: timePtr(r.StartedAt), FinishedAt: timePtr(r.FinishedAt), ExitCode: r.ExitCode,
 		Signal: r.Signal, FinalMessage: r.FinalMessage, FinalMessageTruncated: r.FinalMessageTruncated, ResultDigest: r.ResultDigest,
-		Reason: r.Reason, Candidates: cands, Log: lg, Revision: r.Revision}
+		WorkspaceResult: r.WorkspaceResult, Reason: r.Reason, Candidates: cands, Log: lg, Revision: r.Revision}
 	if l := r.Late; l != nil {
 		llg, err := compact(l.Log)
 		if err != nil {
@@ -231,7 +270,7 @@ func encodeTaskMeta(r TaskRecord) ([]byte, error) {
 		}
 		w.LateResult = &lateWire{Digest: l.Digest, ReceivedAt: FormatTime(l.ReceivedAt), Outcome: l.Outcome, ExitCode: l.ExitCode, Signal: l.Signal,
 			FinalMessage: l.FinalMessage, FinalMessageTruncated: l.FinalMessageTruncated, OutputBytes: l.OutputBytes,
-			LogIncomplete: l.LogIncomplete, CounterOverflow: l.CounterOverflow, Log: llg}
+			LogIncomplete: l.LogIncomplete, CounterOverflow: l.CounterOverflow, Workspace: l.Workspace, Log: llg}
 	}
 	var b bytes.Buffer
 	enc := json.NewEncoder(&b)
@@ -284,6 +323,9 @@ func ParseTaskRecord(data []byte, lookup AdapterLookup) (TaskRecord, error) {
 		if w.State == TaskCancelled || w.State == TaskTimedOut {
 			return TaskRecord{}, errInvalid("%s state %q is not a schema 2 state", what, w.State)
 		}
+		if w.Request.Workspace != nil || (w.LateResult != nil && w.LateResult.Workspace != nil) {
+			return TaskRecord{}, errInvalid("%s: a schema 2 task has no workspace", what)
+		}
 		rec, err := finishRecord(taskRecordWire{SchemaVersion: w.SchemaVersion, TaskID: w.TaskID, Request: w.Request, Role: w.Role,
 			RolesRevision: w.RolesRevision, Effective: w.Effective, TimeoutPolicy: w.TimeoutPolicy, Execution: w.Execution,
 			StartDigest: w.StartDigest, State: w.State, CreatedAt: w.CreatedAt, StartedAt: w.StartedAt, FinishedAt: w.FinishedAt,
@@ -295,10 +337,32 @@ func ParseTaskRecord(data []byte, lookup AdapterLookup) (TaskRecord, error) {
 		}
 		rec.Schema = TaskRecordSchema2
 		return rec, err
+	case TaskRecordSchema3:
+		var o taskRecordWireV3
+		if err := decodeStrict(data, &o, what); err != nil {
+			return TaskRecord{}, err
+		}
+		if !ValidTimeoutPolicy(o.TimeoutPolicy) {
+			return TaskRecord{}, errInvalid("%s timeout_policy must be %q or %q", what, TimeoutPolicyEnforced, TimeoutPolicyLegacy)
+		}
+		if o.Request.Workspace != nil {
+			return TaskRecord{}, errInvalid("%s: a schema 3 task has no workspace", what)
+		}
+		if o.LateResult != nil && o.LateResult.Workspace != nil {
+			return TaskRecord{}, errInvalid("%s: a schema 3 late result has no workspace", what)
+		}
+		rec, err := finishRecord(taskRecordWire{SchemaVersion: o.SchemaVersion, TaskID: o.TaskID, Request: o.Request, Role: o.Role,
+			RolesRevision: o.RolesRevision, Effective: o.Effective, TimeoutPolicy: o.TimeoutPolicy, Execution: o.Execution,
+			StartDigest: o.StartDigest, StopIntent: o.StopIntent, State: o.State, CreatedAt: o.CreatedAt, StartedAt: o.StartedAt,
+			FinishedAt: o.FinishedAt, ExitCode: o.ExitCode, Signal: o.Signal, FinalMessage: o.FinalMessage,
+			FinalMessageTruncated: o.FinalMessageTruncated, ResultDigest: o.ResultDigest, Reason: o.Reason, Candidates: o.Candidates,
+			Log: o.Log, LateResult: o.LateResult, Revision: o.Revision}, lookup, what)
+		rec.Schema = TaskRecordSchema3
+		return rec, err
 	case TaskRecordSchemaVersion:
 	default:
-		return TaskRecord{}, errInvalid("%s schema_version %s is not supported (this build supports %d, %d and %d)", what, SafeText(string(raw), 32),
-			LegacyTaskRecordSchemaVersion, TaskRecordSchema2, TaskRecordSchemaVersion)
+		return TaskRecord{}, errInvalid("%s schema_version %s is not supported (this build supports %d, %d, %d and %d)", what, SafeText(string(raw), 32),
+			LegacyTaskRecordSchemaVersion, TaskRecordSchema2, TaskRecordSchema3, TaskRecordSchemaVersion)
 	}
 	var w taskRecordWire
 	if err := decodeStrict(data, &w, what); err != nil {
@@ -307,7 +371,66 @@ func ParseTaskRecord(data []byte, lookup AdapterLookup) (TaskRecord, error) {
 	if !ValidTimeoutPolicy(w.TimeoutPolicy) {
 		return TaskRecord{}, errInvalid("%s timeout_policy must be %q or %q", what, TimeoutPolicyEnforced, TimeoutPolicyLegacy)
 	}
-	return finishRecord(w, lookup, what)
+	rec, err := finishRecord(w, lookup, what)
+	if err != nil {
+		return TaskRecord{}, err
+	}
+	if err := checkWorkspaceRecord(rec, what); err != nil {
+		return TaskRecord{}, err
+	}
+	return rec, nil
+}
+
+// checkWorkspaceRecord validates a schema-4 record's workspace fields: the
+// binding agrees with the request; a publication intent belongs to a
+// workspace task, is authorized only while the task is nonterminal and
+// settled with its canonical state; a terminal workspace task carries its
+// workspace result (matching its binding and settlement), a task without a
+// workspace none; late evidence never claims a published result.
+func checkWorkspaceRecord(rec TaskRecord, what string) error {
+	if err := CheckBinding(rec.Request, rec.Workspace); err != nil {
+		return err
+	}
+	b, p, wr := rec.Workspace, rec.Publication, rec.WorkspaceResult
+	term := TaskTerminal(rec.State)
+	if b == nil && (p != nil || wr != nil) {
+		return errInvalid("%s: a task without a workspace has no publication or workspace result", what)
+	}
+	if p != nil {
+		switch {
+		case p.Instance != b.Instance:
+			return errInvalid("%s publication names another instance than its binding", what)
+		case p.Phase == PubPhaseAuthorized && term:
+			return errInvalid("%s: an authorized publication belongs to a nonterminal task", what)
+		case p.Phase == PubPhaseSettled && (!term || rec.State != p.State):
+			return errInvalid("%s: a settled publication's task is terminal with its canonical state", what)
+		case p.Candidate.TaskID != rec.TaskID || p.Candidate.Execution != rec.Execution:
+			return errInvalid("%s publication candidate names another execution", what)
+		}
+	}
+	if term && b != nil && wr == nil {
+		return errInvalid("%s: a terminal workspace task carries its workspace result", what)
+	}
+	if !term && wr != nil {
+		return errInvalid("%s: a nonterminal task has no workspace result", what)
+	}
+	if wr != nil {
+		switch {
+		case wr.Name != b.Name || wr.Instance != b.Instance || !sameHash(wr.BaseCommit, b.BaseCommit):
+			return errInvalid("%s workspace result does not match the binding", what)
+		case wr.Publication == PublicationPublished && (p == nil || p.Phase != PubPhaseSettled || *p.Status != PublicationPublished ||
+			*wr.Commit != p.Commit || *wr.Ref != TaskRefPrefix+rec.TaskID):
+			return errInvalid("%s: a published workspace result matches its settled publication", what)
+		case wr.Publication == PublicationFailed && p != nil && p.Phase == PubPhaseSettled && *p.Status != PublicationFailed:
+			return errInvalid("%s: a failed workspace result matches its settlement", what)
+		case (rec.State == TaskLost || rec.State == TaskRejected) && wr.Publication != PublicationNotApplicable:
+			return errInvalid("%s: a %s workspace task's result is not_applicable", what, rec.State)
+		}
+	}
+	if l := rec.Late; l != nil && l.Workspace != nil && l.Workspace.Publication == PublicationPublished {
+		return errInvalid("%s late evidence never claims a published workspace result", what)
+	}
+	return nil
 }
 
 // stopIntentState reports whether a record in state may carry a stop
@@ -340,6 +463,7 @@ func finishRecord(w taskRecordWire, lookup AdapterLookup, what string) (TaskReco
 	}
 	rec.Request, rec.Execution, rec.StartDigest, rec.ResultDigest, rec.StopIntent = w.Request, w.Execution, w.StartDigest, w.ResultDigest, w.StopIntent
 	rec.TimeoutPolicy, rec.Schema = w.TimeoutPolicy, TaskRecordSchemaVersion
+	rec.Workspace, rec.Publication, rec.WorkspaceResult = w.Workspace, w.Publication, w.WorkspaceResult
 	if lw := w.LateResult; lw != nil {
 		at, ok := ParseTime(lw.ReceivedAt)
 		if !ok {
@@ -351,7 +475,7 @@ func finishRecord(w taskRecordWire, lookup AdapterLookup, what string) (TaskReco
 		}
 		l := LateResult{Digest: lw.Digest, ReceivedAt: at, Outcome: lw.Outcome, ExitCode: lw.ExitCode, Signal: lw.Signal, FinalMessage: lw.FinalMessage,
 			FinalMessageTruncated: lw.FinalMessageTruncated, OutputBytes: lw.OutputBytes, LogIncomplete: lw.LogIncomplete,
-			CounterOverflow: lw.CounterOverflow, Log: lg}
+			CounterOverflow: lw.CounterOverflow, Workspace: lw.Workspace, Log: lg}
 		if err := l.validate(what); err != nil {
 			return TaskRecord{}, err
 		}
@@ -373,6 +497,9 @@ func parseLegacyTaskRecord(data []byte, lookup AdapterLookup) (TaskRecord, error
 	}
 	if w.State == TaskLost || w.State == TaskCancelled || w.State == TaskTimedOut {
 		return TaskRecord{}, errInvalid("%s state %q is not a schema 1 state", what, w.State)
+	}
+	if w.Request.Workspace != nil {
+		return TaskRecord{}, errInvalid("%s: a schema 1 task has no workspace", what)
 	}
 	var cands []TaskCandidate
 	for _, c := range w.Candidates {

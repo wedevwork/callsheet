@@ -343,6 +343,7 @@ func TestStagePlanning(t *testing.T) {
 		"go test ./internal/mcpqual -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s|"+
 		"go test ./internal/workspace -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s|"+
 		"go test ./internal/workspacetransfer -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s|"+
+		"go test ./internal/taskworkspace -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s|"+
 		"go test ./internal/sidecar -tags=realadaptercheck -run=^$ -bench=^BenchmarkRealAdapterFile$ -benchmem -benchtime=3x -count=1 -timeout=180s" {
 		t.Fatalf("bench = %s", got)
 	}
@@ -428,15 +429,16 @@ func TestAllStopsAtFirstFailure(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("all = %d %s", code, errOut)
 	}
-	// test(4) + coverage(3) + bench(10) + cross(12), in that order.
+	// test(4) + coverage(3) + bench(11) + cross(12), in that order.
 	a := f.argvs()
-	if len(a) != 29 || !strings.Contains(a[0], "go test -count=1") || !strings.Contains(a[2], "-tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$") ||
+	if len(a) != 30 || !strings.Contains(a[0], "go test -count=1") || !strings.Contains(a[2], "-tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$") ||
 		!strings.Contains(a[4], "-coverprofile") || !strings.Contains(a[7], "-bench") ||
 		!strings.Contains(a[8], "./internal/plane -run=^$ -bench=.") || !strings.Contains(a[9], "./internal/contract -run=^$ -bench=.") ||
 		!strings.Contains(a[10], "./internal/sidecar -run=^$ -bench=.") || !strings.Contains(a[11], "./internal/adapter -run=^$ -bench=.") ||
 		!strings.Contains(a[12], "./internal/mcp -run=^$ -bench=.") || !strings.Contains(a[13], "./internal/mcpqual -run=^$ -bench=.") ||
 		!strings.Contains(a[14], "./internal/workspace -run=^$ -bench=.") || !strings.Contains(a[15], "./internal/workspacetransfer -run=^$ -bench=.") ||
-		!strings.Contains(a[16], "-bench=^BenchmarkRealAdapterFile$") || !strings.Contains(a[17], "go build") {
+		!strings.Contains(a[16], "./internal/taskworkspace -run=^$ -bench=.") ||
+		!strings.Contains(a[17], "-bench=^BenchmarkRealAdapterFile$") || !strings.Contains(a[18], "go build") {
 		t.Fatalf("all order = %v", a)
 	}
 	f = &fakeRunner{fail: "-bench", coverTotal: "81%", cmdList: cmdList, profile: goodProfile}

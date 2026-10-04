@@ -248,8 +248,93 @@ func TestCoverageManifestFiles(t *testing.T) {
 			t.Fatalf("10a file %s missing from the changed group as a whole file (OS %q)", rel, goos)
 		}
 	}
+	// Iteration 10b (UT-B9): both new packages' production files whole in
+	// the changed group, and every other new or changed production file
+	// whole in its group with its build OS; no 10b file keeps an older
+	// partial-range entry.
+	tenB := map[string]string{
+		"internal/workspace/tasks.go": GroupWorkspace, "internal/workspacetransfer/task.go": GroupTransfer,
+		"internal/workspacetransfer/task_snapshot.go": GroupTransfer,
+	}
+	for _, dir := range []string{"taskworkspace", "taskpublication"} {
+		files, _ := filepath.Glob(filepath.Join(root, "internal", dir, "*.go"))
+		n := 0
+		for _, f := range files {
+			if !strings.HasSuffix(f, "_test.go") {
+				tenB["internal/"+dir+"/"+filepath.Base(f)] = GroupChanged
+				n++
+			}
+		}
+		if n == 0 {
+			t.Fatalf("no production files in internal/%s", dir)
+		}
+	}
+	for _, rel := range []string{"internal/contract/contract.go", "internal/contract/control.go", "internal/contract/frame.go",
+		"internal/contract/journal.go", "internal/contract/journal_workspace.go", "internal/contract/node.go", "internal/contract/task.go",
+		"internal/contract/task_record.go", "internal/contract/task_view.go", "internal/contract/task_workspace.go",
+		"internal/adapter/task.go", "internal/adapter/vendor.go", "internal/client/client.go", "internal/client/node_workspace.go",
+		"internal/client/workspace_git.go", "internal/plane/node_stream.go", "internal/plane/nodes.go", "internal/plane/server.go",
+		"internal/plane/task_api.go", "internal/plane/task_controls.go", "internal/plane/task_recon.go", "internal/plane/task_workspace.go",
+		"internal/plane/task_writer.go", "internal/plane/tasks.go", "internal/sidecar/run.go", "internal/sidecar/session.go",
+		"internal/sidecar/session_tasks.go", "internal/sidecar/sidecar.go", "internal/sidecar/state.go", "internal/sidecar/task_journal.go",
+		"internal/sidecar/task_platform.go", "internal/sidecar/task_recovery.go", "internal/sidecar/task_workspace.go", "internal/sidecar/task_storage.go",
+		"internal/sidecar/tasks.go", "internal/devcheck/devcheck.go", "internal/devcheck/native.go", "internal/devcheck/stress.go"} {
+		tenB[rel] = GroupChanged
+	}
+	for rel, group := range map[string]string{"internal/workspace/manager.go": GroupWorkspace, "internal/workspace/prune.go": GroupWorkspace,
+		"internal/workspace/repo.go": GroupWorkspace, "internal/workspacetransfer/export.go": GroupTransfer,
+		"internal/workspacetransfer/fsutil.go": GroupTransfer, "internal/workspacetransfer/objects.go": GroupTransfer,
+		"internal/workspacetransfer/publish_darwin.go": GroupTransfer, "internal/workspacetransfer/publish_linux.go": GroupTransfer} {
+		tenB[rel] = group
+	}
+	for rel, group := range tenB {
+		e, ok := listed[rel]
+		if !ok || e.Group != group || e.OS != buildOS(t, filepath.Join(root, filepath.FromSlash(rel))) {
+			t.Fatalf("10b file %s missing from the %s group with its build OS", rel, group)
+		}
+		for _, x := range WorkspaceCoverageManifest {
+			if x.File == modulePath+"/"+rel && len(x.Ranges) != 0 {
+				t.Fatalf("10b file %s keeps a partial-range entry %v", rel, x.Ranges)
+			}
+		}
+	}
 	if !slices.ContainsFunc(WorkspaceCoverageManifest, func(e CoverageEntry) bool { return e.OS == "linux" }) ||
 		!slices.ContainsFunc(WorkspaceCoverageManifest, func(e CoverageEntry) bool { return e.OS == "darwin" }) {
 		t.Fatal("native-only publication files missing")
+	}
+}
+
+// taskWorkspaceBudget is design 10b r0.2's Budgets entry, verbatim.
+const taskWorkspaceBudget = "10b: place all new lifecycle matrices outside plane; add no plane stress cases or repeated selectors and no child-heavy sidecar matrix. " +
+	"Use post-10a CPU1 CI ranges from runs 37095473701, 37090552825 and 37101472176: sidecar 155.0–173.2 s Linux / 189.0–252.5 s macOS and plane 144.2–213.9 s Linux / 229.9–257.0 s macOS. " +
+	"Allocate sidecar binary growth of 20 s Linux / 30 s macOS for 10b, giving CPU1 planning targets of 193.2 s / 282.5 s from the observed maxima; reserve a further 30 s diagnostic variance envelope, giving 223.2 s / 312.5 s and leaving 136.8 s / 47.5 s below the unchanged 360 s binary timeout. " +
+	"Plane has zero planned growth, with observed maxima 213.9 s / 257.0 s and a 30 s diagnostic envelope of 243.9 s / 287.0 s. " +
+	"Other sidecar CPUs retain the 20 s / 30 s incremental allowance against matched post-10a runs; CPU1 measurements do not establish their baselines. " +
+	"These are planning and investigation thresholds, not comparative wall-clock acceptance gates; one noisy run above a target is an allocation miss to investigate, not proof of a regression or permission to ignore a failure. " +
+	"Record binary and command times separately; use matched alternating base/change observations to distinguish persistent growth from runner variance, retaining all results. " +
+	"The 360 s timeout and all test assertions remain gates. Do not spend an estimated saving twice or weaken tests to meet an allocation. " +
+	"Packages stage growth allowance is 20 s Linux / 30 s macOS; each new combined package binary is allocated 45 s Linux / 60 s macOS across all 60 repetitions. " +
+	"Workspace per-CPU growth allowance is 5 s each; transfer combined growth allowance is 10 s. " +
+	"Function binary growth allowance is 12 s Linux / 18 s macOS per normal/race/native run against 10a. New benchmark step allowance is 10 s Linux / 15 s macOS. " +
+	"Unit coverage execution growth allowance is 20 s Linux / 30 s macOS per coverage command, reported separately from stress. " +
+	"Preserve 18 jobs, four required checks and all existing timeouts. An allocation miss requires investigation and fixture reduction or design revision, never weaker tests."
+
+// UT-B9 (iteration 10b): docs/ci.md carries the exact 10b budgets policy
+// once, as a planning allocation in Budgets (before its measurements).
+func TestTaskWorkspaceBudgets(t *testing.T) {
+	doc, err := os.ReadFile(filepath.Join(testkit.MustRepoRoot(t), "docs", "ci.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(doc)
+	at := strings.Index(s, taskWorkspaceBudget)
+	budgets, measured := strings.Index(s, "\nBudgets:\n"), strings.Index(s, "\nMeasurements, newest first.")
+	switch {
+	case at < 0 || strings.Count(s, taskWorkspaceBudget) != 1:
+		t.Fatal("docs/ci.md does not carry the 10b budgets entry exactly once")
+	case budgets < 0 || measured < 0 || at < budgets || at > measured:
+		t.Fatal("the 10b budgets entry is not a Budgets allocation before the measurements")
+	case !strings.Contains(s[:at], "Iteration 10b allocation (design 10b r0.2 Budgets; planning allowances"):
+		t.Fatal("the 10b budgets entry is not labelled as planning allowances")
 	}
 }

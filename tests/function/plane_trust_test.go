@@ -354,7 +354,7 @@ func health(c *http.Client, addr string) error {
 	}
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != 200 || string(b) != "{\"status\":\"ok\",\"version\":5}\n" || resp.Header.Get("Content-Type") != "application/json" {
+	if resp.StatusCode != 200 || string(b) != "{\"status\":\"ok\",\"version\":6}\n" || resp.Header.Get("Content-Type") != "application/json" {
 		return fmt.Errorf("health = %d %q", resp.StatusCode, b)
 	}
 	return nil
@@ -980,7 +980,7 @@ func TestPlanePlatform(t *testing.T) {
 	// The headroom fixes moved ./internal/contract, ./internal/mcpqual and
 	// ./internal/workspace to the packages shard's per-CPU groups
 	// (StressSteps indexes 1-9).
-	const stressPkgs = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/workspacetransfer"
+	const stressPkgs = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/workspacetransfer ./internal/taskworkspace ./internal/taskpublication"
 	stressPlane := []string{
 		"go test -race -count=20 -cpu=1 -timeout=6m ./internal/plane",
 		"go test -race -count=20 -cpu=2 -timeout=6m ./internal/plane",
@@ -1011,7 +1011,7 @@ func TestPlanePlatform(t *testing.T) {
 		}
 	}
 	bench := devcheck.BenchSteps()
-	if len(bench) != 10 || strings.Join(bench[1].Argv, " ") != benchPlane {
+	if len(bench) != 11 || strings.Join(bench[1].Argv, " ") != benchPlane {
 		t.Fatalf("bench plan = %+v", bench)
 	}
 	if _, err := devcheck.NativeSteps("linux"); err == nil {
@@ -1024,7 +1024,7 @@ func TestPlanePlatform(t *testing.T) {
 		"TestPlaneReissue", "TestPlaneReissue/process", "TestPlaneReissue/contracts", "TestPlaneStatus", "TestPlaneStatus/inspection", "TestPlaneStatus/expiry-warnings", "TestPlanePlatform"}
 	// The 28 iteration-02 names are preserved first; iteration 03 appends
 	// the node names (checked by TestNodePlatform).
-	if got := devcheck.NativeRequiredTests(); len(got) != 335 || !slices.Equal(got[:28], required) {
+	if got := devcheck.NativeRequiredTests(); len(got) != 347 || !slices.Equal(got[:28], required) {
 		t.Fatalf("native required = %v", got)
 	}
 	// Every required plane name exists as a top-level test or mandatory

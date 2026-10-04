@@ -19,14 +19,16 @@ type timerSlot struct {
 	on   bool
 }
 
-// set arms the timer for the absolute instant at.
-func (t *timerSlot) set(c clock, at time.Time) {
+// set arms the timer for the absolute instant at and reports whether it
+// registered a timer (false when already armed for at).
+func (t *timerSlot) set(c clock, at time.Time) bool {
 	if t.on && t.at.Equal(at) {
-		return
+		return false
 	}
 	t.clear()
 	t.c, t.stop = c.NewTimerAt(at)
 	t.at, t.on = at, true
+	return true
 }
 
 func (t *timerSlot) clear() {
@@ -57,6 +59,7 @@ const (
 	reqLog
 	reqResult
 	reqInventory // iteration 06a: one task_inventory page (i1, i2, ...)
+	reqPrepared  // iteration 10b: one task_prepared (b sequence)
 )
 
 // outstanding is the one sidecar request awaiting its reply.
@@ -87,6 +90,8 @@ type startEntry struct {
 	w       *taskWorker
 	started bool
 	refusal *contract.Error
+	// preparing (iteration 10b): the start was answered preparing.
+	preparing bool
 }
 
 // settle replaces the entry's worker with its outcome.
@@ -330,7 +335,9 @@ func (rs *roleSession) run() error {
 		}
 		rs.armFreshness(now)
 		if !rs.fenced && rs.out == nil {
-			rs.due.set(rs.d.clock, rs.nextDue)
+			if rs.due.set(rs.d.clock, rs.nextDue) {
+				rs.emit(event{kind: evHeartbeatArmed, acks: rs.k, at: rs.nextDue})
+			}
 		} else {
 			rs.due.clear()
 		}
@@ -388,7 +395,7 @@ func (rs *roleSession) handle(r readResult) error {
 		return err
 	}
 	switch f.Type {
-	case contract.FrameHeartbeatAck, contract.FrameTaskLogAck, contract.FrameTaskResultAck, contract.FrameTaskInventoryAck:
+	case contract.FrameHeartbeatAck, contract.FrameTaskLogAck, contract.FrameTaskResultAck, contract.FrameTaskInventoryAck, contract.FrameTaskPreparedAck:
 		return rs.onAck(f, r.at)
 	case contract.FrameTaskReconcile:
 		return rs.onReconcile(f)
@@ -430,7 +437,7 @@ func (rs *roleSession) onAck(f contract.NodeFrame, at time.Time) error {
 		return invalid(f.RequestID, "unknown or stale acknowledgement "+f.RequestID+" (want "+rs.out.id+")")
 	}
 	want := map[reqKind]string{reqHeartbeat: contract.FrameHeartbeatAck, reqLog: contract.FrameTaskLogAck, reqResult: contract.FrameTaskResultAck,
-		reqInventory: contract.FrameTaskInventoryAck}[rs.out.kind]
+		reqInventory: contract.FrameTaskInventoryAck, reqPrepared: contract.FrameTaskPreparedAck}[rs.out.kind]
 	if f.Type != want {
 		return invalid(f.RequestID, "the plane answered "+f.RequestID+" with "+f.Type+" (want "+want+")")
 	}
@@ -641,11 +648,16 @@ func (rs *roleSession) writeHeartbeat(now time.Time) error {
 // heartbeat writes one heartbeat of the current snapshot, periodic or an
 // immediate report (iteration 10a): the same frame, exchange deadline and
 // next periodic instant (heartbeatInterval after this send). The snapshot
-// is computed now, at the send, and becomes the last sent one.
+// is computed now, at the send, and becomes the last sent one. The
+// periodic timer armed for the previous exchange is invalidated here: a
+// prompt report can keep the same next instant, and its acknowledgement
+// may already be queued when the loop next arms, so only a fresh
+// registration (and its evHeartbeatArmed) names this request.
 func (rs *roleSession) heartbeat(now time.Time, prompt bool) error {
 	rs.k++
 	o := &outstanding{id: "b" + strconv.Itoa(rs.k), k: rs.k, deadline: now.Add(stepTimeout)}
 	rs.nextDue = now.Add(heartbeatInterval)
+	rs.due.clear()
 	body := contract.HeartbeatBody{RolesRevision: rs.inst.rev, Roles: rs.statuses(now)}
 	if err := rs.s.writeBy(rs.ctx, o.deadline, contract.FrameHeartbeat, o.id, body); err != nil {
 		return err
@@ -658,6 +670,9 @@ func (rs *roleSession) heartbeat(now time.Time, prompt bool) error {
 		o.expired = true
 	}
 	rs.emit(event{kind: evAwaitReply, acks: o.k, rev: body.RolesRevision, statuses: body.Roles, prompt: prompt, at: now})
+	if h := rs.d.heartbeatHook; h != nil {
+		h(prompt, rs.s.in)
+	}
 	return nil
 }
 

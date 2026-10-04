@@ -538,9 +538,9 @@ func TestRoleStreamContract(t *testing.T) {
 			// stream's own and is proven by TestNodeStreamProtocol/oversized.
 			p := rp.online(t, idA)
 			body := `{"roles_revision":0,"roles":[]` + strings.Repeat(" ", contract.MaxHeartbeatBody-len(`{"roles_revision":0,"roles":[]}`)) + `}`
-			p.sendRaw([]byte(`{"version":5,"type":"heartbeat","request_id":"b2","body":` + body + `}`))
+			p.sendRaw([]byte(`{"version":6,"type":"heartbeat","request_id":"b2","body":` + body + `}`))
 			p.expect(contract.FrameHeartbeatAck, "b2")
-			p.sendRaw([]byte(`{"version":5,"type":"heartbeat","request_id":"b3","body":` + body[:len(body)-1] + ` }` + `}`))
+			p.sendRaw([]byte(`{"version":6,"type":"heartbeat","request_id":"b3","body":` + body[:len(body)-1] + ` }` + `}`))
 			p.expectError("b3", contract.CodeInvalidArgument)
 			if st := p.closed(); st != websocket.StatusPolicyViolation {
 				t.Fatalf("oversized heartbeat close = %v", st)

@@ -64,8 +64,14 @@ func errStorage(what string, cause error) error {
 	return &contract.Error{Code: contract.CodeInternal, Message: msg, Details: map[string]any{"reason": contract.ReasonStorageFailure}, Cause: cause}
 }
 
+// ErrIntegrity is the local cause of every object integrity failure (an
+// object that is unreadable, corrupt or does not hash to its ID); a
+// storage failure or a cancellation never has it. Like every cause, it is
+// never serialized.
+var ErrIntegrity = errors.New("object integrity failure")
+
 func errIntegrity(what string) error {
-	return contract.New(contract.CodeInternal, what)
+	return &contract.Error{Code: contract.CodeInternal, Message: what, Cause: ErrIntegrity}
 }
 
 // ctxOr returns ctx's error when it is done, else err.

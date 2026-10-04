@@ -197,7 +197,15 @@ func (v *vendor) Invocation(in TaskInput) (Invocation, error) {
 	if in.ScratchDir == "" || !filepath.IsAbs(in.ScratchDir) || filepath.Clean(in.ScratchDir) != in.ScratchDir {
 		return Invocation{}, errInvocation("codex needs the task's absolute clean scratch directory")
 	}
-	final := filepath.Join(in.ScratchDir, CodexFinalName)
+	dir := in.ScratchDir
+	if in.FinalDir != "" {
+		// Iteration 10b: a workspace task's owned final-output directory.
+		if !filepath.IsAbs(in.FinalDir) || filepath.Clean(in.FinalDir) != in.FinalDir {
+			return Invocation{}, errInvocation("codex needs the task's absolute clean final-output directory")
+		}
+		dir = in.FinalDir
+	}
+	final := filepath.Join(dir, CodexFinalName)
 	return Invocation{Argv: []string{"-a", "never", "exec", "--model", in.Model,
 		"-c", `model_reasoning_effort="` + in.Effort + `"`, "--json",
 		"--skip-git-repo-check", "--output-last-message", final, "-"}, Stdin: bytes.Clone(in.Prompt), FinalFile: final}, nil

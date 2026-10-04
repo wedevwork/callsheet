@@ -36,6 +36,35 @@ func (s *taskSupervisor) recoverJournals(ids []string, lookup contract.AdapterLo
 			return err
 		}
 		w := s.recovered(lj)
+		if lj.j.Phase == contract.JournalRunning && lj.j.Workspace != nil {
+			// Iteration 10b: a checkpointed publication is resumed, never
+			// rerun (an authorized intent is only observed); its slot is held
+			// until its outbox is durable.
+			cp, err := s.jr.l.readCheckpoint(id)
+			if err != nil {
+				return err
+			}
+			if cp != nil {
+				w.resuming, w.cleanupCh = true, make(chan struct{})
+				s.mu.Lock()
+				s.occupied[w.key]++
+				s.workers[w] = true
+				s.mu.Unlock()
+				if lj.owner != nil {
+					w.cleaning = true
+					s.mu.Lock()
+					s.blockers[w] = true
+					s.mu.Unlock()
+					pending = append(pending, w)
+				} else {
+					w.cleanupOK = true
+					close(w.cleanupCh)
+				}
+				s.wg.Add(1)
+				go s.resumeWorkspace(w, *cp)
+				continue
+			}
+		}
 		if lj.j.Phase == contract.JournalPrepared || lj.j.Phase == contract.JournalRunning {
 			// Never resumed: its outcome is lost, frozen once, keeping a
 			// latched stop intent's ID (iteration 06b: never a newly
@@ -46,7 +75,7 @@ func (s *taskSupervisor) recoverJournals(ids []string, lookup contract.AdapterLo
 				id := in.ID
 				res.StopID = &id
 			}
-			res = res.Sealed()
+			res = workspaceLost(lj.j.Workspace, res)
 			j := lj.j
 			j.Phase, j.Result = contract.JournalLost, &res
 			s.logger.Warn("task execution lost", "task_id", w.id(), "reason", lostSidecarRestarted)
@@ -65,19 +94,23 @@ func (s *taskSupervisor) recoverJournals(ids []string, lookup contract.AdapterLo
 			// Its group may still exist: it counts against its instance and
 			// blocks the node until its absence is proved.
 			w.cleaning = true
-			s.mu.Lock()
-			s.occupied[w.key]++
-			s.mu.Unlock()
 		} else {
 			w.cleanupOK = true
 		}
+		// Iteration 10b: a journal-owned work directory (an ownerless
+		// journal's included) also holds the slot, until the group's absence
+		// is proved, the outcome is durable and the work is deleted.
+		w.ownsWork = w.work != ""
 		s.mu.Lock()
+		if w.cleaning || w.ownsWork {
+			s.occupied[w.key]++
+		}
 		s.workers[w] = true
 		if w.cleaning || w.journalFailing {
 			s.blockers[w] = true
 		}
 		s.mu.Unlock()
-		if w.cleaning || w.journalFailing {
+		if w.cleaning || w.journalFailing || w.ownsWork {
 			pending = append(pending, w)
 		}
 	}
@@ -95,13 +128,19 @@ func (s *taskSupervisor) recovered(lj loadedJournal) *taskWorker {
 	}
 	// Compact metadata only: the retained tail stays in the journal until
 	// the replay loader reads it back for a reconciled attachment.
-	w := &taskWorker{sup: s, start: contract.TaskStartBody{TaskID: j.TaskID, Execution: j.Execution, Role: j.Role, Effective: j.Effective},
+	w := &taskWorker{sup: s, start: contract.TaskStartBody{TaskID: j.TaskID, Execution: j.Execution, Role: j.Role, Effective: j.Effective, Workspace: j.Workspace},
 		digest: j.StartDigest, key: keyOf(j.Role), ring: newOutputRingMeta(ringCap, j.Log), exitedCh: make(chan struct{}),
 		stopCh: make(chan struct{}), commitCh: make(chan struct{}), ctlCh: make(chan struct{}), recovered: true, owner: lj.owner, phase: phaseStarted,
-		started: j.StartedAt, done: true, ctl: j.StopIntent}
+		started: j.StartedAt, done: true, ctl: j.StopIntent, release: make(chan bool, 1)}
 	close(w.exitedCh)
 	if lj.owner != nil {
 		w.pgid = lj.owner.PGID
+	}
+	if j.Work {
+		w.work = filepath.Join(lj.dir, workName)
+	}
+	if j.RuntimeDir != nil {
+		w.runtimeDir = *j.RuntimeDir
 	}
 	return w
 }
@@ -111,7 +150,8 @@ func (s *taskSupervisor) recovered(lj loadedJournal) *taskWorker {
 // in turn (each attempt ends confirmed or blocked); then the lost outcomes
 // whose journal publication failed are retried every journalRetry until
 // they are durable or Run shuts down. A worker stays a node blocker until
-// both of its obligations complete.
+// both of its obligations complete. A journal-owned work directory is
+// deleted, and its slot released, once both hold (iteration 10b).
 func (s *taskSupervisor) recoveryLoop(ws []*taskWorker) {
 	defer s.wg.Done()
 	for _, w := range ws {
@@ -125,6 +165,9 @@ func (s *taskSupervisor) recoveryLoop(ws []*taskWorker) {
 			return
 		}
 		s.cleanupRecovered(w)
+	}
+	for _, w := range ws {
+		s.releaseRecoveredWork(w)
 	}
 	for {
 		var pending []*taskWorker
@@ -143,9 +186,45 @@ func (s *taskSupervisor) recoveryLoop(ws []*taskWorker) {
 		}
 		for _, w := range pending {
 			s.publishLost(w)
+			s.releaseRecoveredWork(w)
 		}
 	}
 	s.d.emit(event{kind: evRecoveryDone})
+}
+
+// releaseRecoveredWork deletes a recovered execution's journal-owned work
+// directory and then frees the slot it holds, once its group's absence is
+// proved and its outcome is durable (a lost outcome journaled, or a frozen
+// outbox loaded). A failed deletion keeps the slot held (cleanup pending)
+// until the janitor's removal of the whole task directory succeeds; an
+// unproved cleanup keeps both. The janitor never removes the journal while
+// the work is owned here.
+func (s *taskSupervisor) releaseRecoveredWork(w *taskWorker) {
+	w.mu.Lock()
+	ready := w.ownsWork && w.cleanupOK && w.outcome != nil && w.pendingLost == nil && !w.forgotten
+	w.mu.Unlock()
+	if !ready {
+		return
+	}
+	err := s.d.hook("remove", filepath.Join(taskDirRel(w.id()), workName))
+	if err == nil {
+		err = removeWork(w.work)
+	}
+	w.mu.Lock()
+	w.ownsWork = false
+	if err != nil {
+		w.workPending = true
+	}
+	w.mu.Unlock()
+	if err != nil {
+		s.logger.Warn("recovered task work directory cleanup failed; the slot is held until the janitor removes it", "task_id", w.id())
+		s.event(evWorkPending, w)
+		s.kickJanitor()
+		return
+	}
+	s.release(w.key)
+	s.event(evWorkReleased, w)
+	s.kickJanitor()
 }
 
 // publishLost retries one recovered execution's lost-outcome journal
@@ -213,9 +292,20 @@ func (s *taskSupervisor) cleanupDone(w *taskWorker, err error) {
 	}
 	w.mu.Unlock()
 	if err == nil {
-		s.release(w.key)
+		// A resumed publication or a journal-owned work directory keeps the
+		// slot until the work is deleted (iteration 10b).
+		w.mu.Lock()
+		keep := w.resuming || w.ownsWork
+		w.mu.Unlock()
+		if !keep {
+			s.release(w.key)
+		}
 		s.refreshBlocker(w)
 		s.event(evCleanupConfirmed, w)
+		if w.cleanupCh != nil {
+			// A resumed publication continues (iteration 10b).
+			close(w.cleanupCh)
+		}
 		s.kickJanitor()
 		return
 	}

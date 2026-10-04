@@ -120,8 +120,8 @@ func TestLogValueExcludesCause(t *testing.T) {
 }
 
 func TestProtocolVersion(t *testing.T) {
-	if ProtocolVersion != 5 {
-		t.Fatal("protocol version must be 5 (iteration 06b)")
+	if ProtocolVersion != 6 {
+		t.Fatal("protocol version must be 6 (iteration 10b)")
 	}
 }
 

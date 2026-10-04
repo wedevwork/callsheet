@@ -11,7 +11,7 @@ func TestRunWrapper(t *testing.T) {
 	if code := run([]string{"version"}, strings.NewReader(""), &out, &errOut); code != 0 {
 		t.Fatalf("code = %d", code)
 	}
-	if out.String() != "callsheet dev protocol=5\n" || errOut.Len() != 0 {
+	if out.String() != "callsheet dev protocol=6\n" || errOut.Len() != 0 {
 		t.Fatalf("out=%q err=%q", out.String(), errOut.String())
 	}
 	out.Reset()

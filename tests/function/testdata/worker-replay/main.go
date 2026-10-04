@@ -35,7 +35,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -151,8 +150,10 @@ func run() int {
 	if sc.Vendor != l.Vendor {
 		return fail("scenario %s is for %s, invoked as %s", name, sc.Vendor, l.Vendor)
 	}
-	// The private, non-git scratch working directory of this task.
-	if !regexp.MustCompile(`^callsheet-task-`+regexp.QuoteMeta(l.TaskID)+`-[0-9]+$`).MatchString(filepath.Base(l.Cwd)) || l.CwdMode != "0700" {
+	// The private, non-git, journal-owned working directory of this task
+	// (iteration 10b): <state>/tasks/<task_id>/work.
+	if filepath.Base(l.Cwd) != "work" || filepath.Base(filepath.Dir(l.Cwd)) != l.TaskID ||
+		filepath.Base(filepath.Dir(filepath.Dir(l.Cwd))) != "tasks" || l.CwdMode != "0700" {
 		return fail("cwd %s (mode %s) is not the task's private scratch directory", l.Cwd, l.CwdMode)
 	}
 	if _, err := os.Lstat(filepath.Join(l.Cwd, ".git")); err == nil {

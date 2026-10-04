@@ -31,7 +31,10 @@ const (
 	wantBenchRealAdapter = "go test ./internal/sidecar -tags=realadaptercheck -run=^$ -bench=^BenchmarkRealAdapterFile$ -benchmem -benchtime=3x -count=1 -timeout=180s"
 	// wantBenchPlan is the complete bench plan in order.
 	wantBenchPlan = wantBenchGit + "|" + wantBenchPlane + "|" + wantBenchContract + "|" + wantBenchSidecar + "|" + wantBenchAdapter + "|" + wantBenchMCP + "|" +
-		wantBenchMCPQual + "|" + wantBenchWorkspace + "|" + wantBenchTransfer + "|" + wantBenchRealAdapter
+		wantBenchMCPQual + "|" + wantBenchWorkspace + "|" + wantBenchTransfer + "|" + wantBenchTaskWorkspace + "|" + wantBenchRealAdapter
+	// wantBenchTaskWorkspace is iteration 10b's task workspace benchmark
+	// command, immediately after the transfer one.
+	wantBenchTaskWorkspace = "go test ./internal/taskworkspace -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s"
 	// wantBenchWorkspace is iteration 09a's appended workspace benchmark
 	// command.
 	wantBenchWorkspace = "go test ./internal/workspace -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s"
@@ -75,7 +78,7 @@ func TestPlaneVerificationPolicyContract(t *testing.T) {
 			t.Fatal("linux native plan accepted")
 		}
 		for stage, want := range map[string][][]string{
-			"bench":               {{wantBenchGit}, {wantBenchPlane}, {wantBenchContract}, {wantBenchSidecar}, {wantBenchAdapter}, {wantBenchMCP}, {wantBenchMCPQual}, {wantBenchWorkspace}, {wantBenchTransfer}, {wantBenchRealAdapter}},
+			"bench":               {{wantBenchGit}, {wantBenchPlane}, {wantBenchContract}, {wantBenchSidecar}, {wantBenchAdapter}, {wantBenchMCP}, {wantBenchMCPQual}, {wantBenchWorkspace}, {wantBenchTransfer}, {wantBenchTaskWorkspace}, {wantBenchRealAdapter}},
 			"stress":              wantStageGroups["stress"],
 			"stress-packages":     wantStageGroups["stress-packages"],
 			"stress-plane-cpu1":   wantStageGroups["stress-plane-cpu1"],
@@ -111,7 +114,7 @@ func TestPlaneVerificationPolicyContract(t *testing.T) {
 		// The 28 iteration-02 names are preserved first; iteration 03 appends
 		// the node names, iteration 04 the role names, iteration 05 the
 		// task names, iteration 06a the control names.
-		if strings.Join(req[:28], ",") != strings.Join(want, ",") || len(req) != 28+len(nodeNames())+len(roleNames())+len(taskNames())+len(controlNames())+len(mcpNames())+len(qualNames())+len(realNames())+len(wsNames())+len(trNames())+len(latNames()) || strings.Join(req[28:58], ",") != strings.Join(nodeNames(), ",") {
+		if strings.Join(req[:28], ",") != strings.Join(want, ",") || len(req) != 28+len(nodeNames())+len(roleNames())+len(taskNames())+len(controlNames())+len(mcpNames())+len(qualNames())+len(realNames())+len(wsNames())+len(trNames())+len(latNames())+len(wsTaskNames()) || strings.Join(req[28:58], ",") != strings.Join(nodeNames(), ",") {
 			t.Fatalf("required = %v", req)
 		}
 		if err := check(stream(qualification()...)); err != nil {
@@ -121,10 +124,11 @@ func TestPlaneVerificationPolicyContract(t *testing.T) {
 		code, out, errOut := runDriver(t, "darwin", f, "native")
 		// Iteration 09a: after the qualification, the coverage stage and
 		// the workspace benchmarks run outside the parsed event stream;
-		// iteration 09b: then the transfer benchmarks (six invocations).
+		// iteration 09b: then the transfer benchmarks; iteration 10b: then
+		// the task workspace benchmarks (seven invocations).
 		a := f.argvs()
-		if code != 0 || len(a) != 6 || a[0] != wantNative || !strings.Contains(a[1], "-coverprofile=") || !strings.HasPrefix(a[2], "go tool cover") ||
-			!strings.HasPrefix(a[3], "go list") || a[4] != wantBenchWorkspace || a[5] != wantBenchTransfer ||
+		if code != 0 || len(a) != 7 || a[0] != wantNative || !strings.Contains(a[1], "-coverprofile=") || !strings.HasPrefix(a[2], "go tool cover") ||
+			!strings.HasPrefix(a[3], "go list") || a[4] != wantBenchWorkspace || a[5] != wantBenchTransfer || a[6] != wantBenchTaskWorkspace ||
 			!strings.Contains(out, "TestPlaneStatus/expiry-warnings, TestPlanePlatform") {
 			t.Fatalf("darwin native = %d %v %s", code, a, errOut)
 		}

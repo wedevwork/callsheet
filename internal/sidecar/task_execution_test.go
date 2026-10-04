@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 
@@ -189,11 +190,20 @@ func TestTaskExecutionContract(t *testing.T) {
 	t.Run("environment", func(t *testing.T) {
 		t.Parallel()
 		// The child gets the sidecar's environment minus the fixture
-		// descriptors, PWD set to its fresh scratch directory, argv with
-		// explicit model and effort, and the enabled executable; adapter,
-		// executable, scratch and Start failures are refusals.
+		// descriptors, PWD set to its fresh journal-owned work directory
+		// (iteration 10b: tasks/<task_id>/work), argv with explicit model and
+		// effort, and the enabled executable; adapter, executable, work
+		// directory and Start failures are refusals.
 		fp := startFakePlane(t)
-		tr := startTaskRun(t, fp, taskOpts{})
+		var failWork atomic.Bool
+		tr := startTaskRun(t, fp, taskOpts{adjust: func(d *deps) {
+			d.fail = func(op, name string) error {
+				if op == "mkdir" && failWork.Load() && filepath.Base(name) == workName {
+					return errors.New("injected work directory failure")
+				}
+				return nil
+			}
+		}})
 		ins, run := manuals(t, tr.dir, "a", "m")
 		s := tr.connect(t, 1, 1, roleConfig("a", ins, run))
 		st, ch := s.run(t, 1, 0, "env")
@@ -205,29 +215,33 @@ func TestTaskExecutionContract(t *testing.T) {
 			t.Fatalf("argv %q path %s", ch.spec.argv, ch.spec.path)
 		}
 		fi, err := os.Stat(ch.spec.dir)
-		if err != nil || fi.Mode().Perm() != 0o700 || !strings.HasPrefix(filepath.Base(ch.spec.dir), scratchPrefix+st.TaskID+"-") || filepath.Dir(ch.spec.dir) != scratchRoot(t, runtime.GOOS, tr.tmp) {
+		if err != nil || fi.Mode().Perm() != 0o700 || ch.spec.dir != workDir(t, runtime.GOOS, tr.root, st.TaskID) {
 			t.Fatalf("scratch %s %v", ch.spec.dir, err)
 		}
 		ch.prompt(t)
 		ch.exitCode(0)
 		s.result(t, st)
 		if _, err := os.Stat(ch.spec.dir); !os.IsNotExist(err) {
-			t.Fatal("the scratch directory was not removed")
+			t.Fatal("the work directory was not removed")
 		}
 		tr.ledger.mu.Lock()
 		tr.ledger.startErr = errUnsupported
 		tr.ledger.mu.Unlock()
-		_, r := s.start(t, 2, 0, "start fails")
+		st2, r := s.start(t, 2, 0, "start fails")
 		wantRefusal(t, r, contract.ReasonStartFailed)
-		if entries, _ := os.ReadDir(tr.tmp); len(entries) != 0 {
-			t.Fatalf("a failed start left %v", entries)
+		if _, err := os.Stat(filepath.Join(tr.root, journalDir, st2.TaskID)); !os.IsNotExist(err) {
+			t.Fatalf("a failed start left its task directory: %v", err)
 		}
 		tr.ledger.mu.Lock()
 		tr.ledger.startErr = nil
 		tr.ledger.mu.Unlock()
-		os.RemoveAll(tr.tmp)
-		_, r = s.start(t, 3, 0, "no scratch")
+		failWork.Store(true)
+		st3, r := s.start(t, 3, 0, "no scratch")
 		wantRefusal(t, r, contract.ReasonScratchUnavailable)
+		failWork.Store(false)
+		if _, err := os.Stat(filepath.Join(tr.root, journalDir, st3.TaskID)); !os.IsNotExist(err) {
+			t.Fatalf("a refused start left its task directory: %v", err)
+		}
 		tr.noChild(t)
 		// A disabled adapter and a vanished executable.
 		fp2 := startFakePlane(t)
@@ -243,26 +257,29 @@ func TestTaskExecutionContract(t *testing.T) {
 		wantRefusal(t, r, contract.ReasonStartFailed)
 		tr3.noChild(t)
 	})
-	t.Run("symlinked-temp-root", func(t *testing.T) {
+	t.Run("symlinked-state-root", func(t *testing.T) {
 		t.Parallel()
-		// A temp root reached through a symlink, as Darwin's /var is one to
-		// /private/var: the scratch directory is created in it, and its
-		// parent is the root as the platform seam names it.
+		// A state root reached through a symlink, as Darwin's /var is one to
+		// /private/var: the work directory is created below it, named as the
+		// platform seam names it (physical on darwin).
 		for _, goos := range []string{"linux", "darwin"} {
 			t.Run(goos, func(t *testing.T) {
 				t.Parallel()
-				real := t.TempDir()
-				link := filepath.Join(t.TempDir(), "tmp-link")
-				if err := os.Symlink(real, link); err != nil {
+				// The state root itself is a real directory; an ancestor is the
+				// symlink.
+				link := filepath.Join(t.TempDir(), "state-link")
+				if err := os.Symlink(t.TempDir(), link); err != nil {
 					t.Fatal(err)
 				}
+				root := filepath.Join(link, "sidecar")
 				fp := startFakePlane(t)
-				tr := startTaskRun(t, fp, taskOpts{goos: goos, tmp: link})
+				writeState(t, root, testID, fp.url, fp.caPEM)
+				tr := startTaskRun(t, fp, taskOpts{goos: goos, root: root})
 				ins, run := manuals(t, tr.dir, "a", "m")
 				s := tr.connect(t, 1, 1, roleConfig("a", ins, run))
 				st, ch := s.run(t, 1, 0, "symlinked root")
 				fi, err := os.Stat(ch.spec.dir)
-				if err != nil || fi.Mode().Perm() != 0o700 || !strings.HasPrefix(filepath.Base(ch.spec.dir), scratchPrefix+st.TaskID+"-") || filepath.Dir(ch.spec.dir) != scratchRoot(t, goos, tr.tmp) {
+				if err != nil || fi.Mode().Perm() != 0o700 || ch.spec.dir != workDir(t, goos, root, st.TaskID) {
 					t.Fatalf("scratch %s %v", ch.spec.dir, err)
 				}
 				ch.prompt(t)
@@ -456,10 +473,16 @@ func TestTaskExecutionContract(t *testing.T) {
 		if !marker || rep.CWD == "" {
 			t.Fatalf("child one output %q", out)
 		}
-		root, _ := filepath.EvalSymlinks(tr.tmp)
-		dir, _ := filepath.EvalSymlinks(filepath.Dir(rep.CWD))
-		if dir != root || !strings.HasPrefix(filepath.Base(rep.CWD), scratchPrefix+st.TaskID+"-") || rep.CWDMode != "0700" {
-			t.Fatalf("child cwd %s (mode %s), want a private scratch in %s", rep.CWD, rep.CWDMode, root)
+		// The committed result lets the janitor delete tasks/<task_id> at any
+		// moment: resolve the persistent tasks/ directory and require the
+		// exact <task_id>/work components below it.
+		want, err := filepath.EvalSymlinks(filepath.Join(tr.root, journalDir))
+		if err != nil {
+			t.Fatal(err)
+		}
+		dir, _ := filepath.EvalSymlinks(filepath.Dir(filepath.Dir(rep.CWD)))
+		if dir != want || filepath.Base(filepath.Dir(rep.CWD)) != st.TaskID || filepath.Base(rep.CWD) != workName || rep.CWDMode != "0700" {
+			t.Fatalf("child cwd %s (mode %s), want the private work directory %s", rep.CWD, rep.CWDMode, filepath.Join(want, st.TaskID, workName))
 		}
 		wantEnv := []string{fakeadapter.EnvTaskReport + "=1", "HOME=" + home, "KEEP=credential", "PATH=" + os.Getenv("PATH"), "PWD=" + rep.CWD}
 		if !slices.Equal(rep.Env, wantEnv) {

@@ -176,12 +176,13 @@ func TestControlPolicy(t *testing.T) {
 		// unchanged.
 		req := NativeRequiredTests()
 		real := len(realNames())
-		if len(req) != 145+len(mcpNames())+len(qualNames())+real+len(wsNames())+len(trNames())+len(latNames()) || strings.Join(req[128:141], ",") != strings.Join(wantControlNative, ",") ||
+		if len(req) != 145+len(mcpNames())+len(qualNames())+real+len(wsNames())+len(trNames())+len(latNames())+len(wsTaskNames()) || strings.Join(req[128:141], ",") != strings.Join(wantControlNative, ",") ||
 			strings.Join(req[87:128], ",") != strings.Join(wantTaskSuffix, ",") || strings.Join(req[141:145], ",") != strings.Join(wantTaskControlNative, ",") ||
 			strings.Join(req[145:222], ",") != strings.Join(mcpNames(), ",") || strings.Join(req[222:273], ",") != strings.Join(qualNames(), ",") ||
 			strings.Join(req[273:273+real], ",") != strings.Join(realNames(), ",") || strings.Join(req[273+real:273+real+len(wsNames())], ",") != strings.Join(wsNames(), ",") ||
 			strings.Join(req[273+real+len(wsNames()):273+real+len(wsNames())+len(trNames())], ",") != strings.Join(trNames(), ",") ||
-			strings.Join(req[273+real+len(wsNames())+len(trNames()):], ",") != strings.Join(latNames(), ",") {
+			strings.Join(req[273+real+len(wsNames())+len(trNames()):273+real+len(wsNames())+len(trNames())+len(latNames())], ",") != strings.Join(latNames(), ",") ||
+			strings.Join(req[273+real+len(wsNames())+len(trNames())+len(latNames()):], ",") != strings.Join(wsTaskNames(), ",") {
 			t.Fatalf("native suffix %v", req[128:])
 		}
 		for _, n := range req[:141] {

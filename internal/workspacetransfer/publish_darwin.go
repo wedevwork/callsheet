@@ -24,3 +24,15 @@ func fsyncFD(fd int) error {
 	}
 	return unix.Fsync(fd)
 }
+
+// syncBatch makes a batch of new files and directories below dirFD durable
+// together (iteration 10b task databases): fsync(2) hands each one's data
+// and metadata to the drive (on darwin it does not flush the drive's
+// cache), then one F_FULLFSYNC flushes the drive cache for all of them,
+// instead of a full flush per object.
+func syncBatch(dirFD int, files, dirs []string) error {
+	if err := eachSync(dirFD, append(append([]string(nil), files...), dirs...), unix.Fsync); err != nil {
+		return err
+	}
+	return fsyncFD(dirFD)
+}
