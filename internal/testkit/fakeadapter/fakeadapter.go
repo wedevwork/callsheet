@@ -457,6 +457,10 @@ func publishReady(root *os.Root, name string, info ReadyInfo) error {
 	return nil
 }
 
+// appendSignal does not sync: the signal line is a same-host fixture log read
+// only after the writer exits, and a flush (F_FULLFSYNC on darwin) on the
+// TERM-exit path can outlast the supervisor's grace.
+// TestTermExitReturnsWhileSignalSyncBlocks rejects any sync call here.
 func appendSignal(root *os.Root, name string, rec SignalRecord) error {
 	if err := ensureParent(root, name); err != nil {
 		return err
@@ -467,8 +471,7 @@ func appendSignal(root *os.Root, name string, rec SignalRecord) error {
 	}
 	b, _ := json.Marshal(rec)
 	_, werr := f.Write(append(b, '\n'))
-	serr := f.Sync()
-	return errors.Join(werr, serr, f.Close())
+	return errors.Join(werr, f.Close())
 }
 
 type descendant struct {
