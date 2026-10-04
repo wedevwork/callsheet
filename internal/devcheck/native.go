@@ -414,6 +414,16 @@ var nativeRequired = []string{
 	"TestTaskWorkspaceRecovery",
 	"TestTaskWorkspaceIsolation",
 	"TestTaskWorkspaceIsolation/AC-WS-2",
+	// Iteration 10c (coordinator delivery): the six function tests in FP
+	// order (FP-1..FP-6), a separate group after the 10b names; their named
+	// subtests assert within each parent and are not inventory entries.
+	// Absence or a skip never satisfies native qualification.
+	"TestWorkspaceDispatchDoors",
+	"TestWorkspaceTaskPull",
+	"TestWorkspaceTaskInspect",
+	"TestWorkspaceTaskMCP",
+	"TestWorkspaceMultiHop",
+	"TestWorkspaceOperatorWorkflow",
 }
 
 // NativeTaskProcessPackage and nativeTaskProcess are the separate native

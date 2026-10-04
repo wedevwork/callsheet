@@ -382,7 +382,12 @@ func TestDispatchTool(t *testing.T) {
 	long := strings.Repeat("x", contract.MaxPointerBytes+1)
 	many := `["` + strings.Repeat(`p","`, contract.MaxPayloadPointers) + `p"]`
 	for _, bad := range []string{
-		`{}`, base + `,"requested_by":{"name":"a","version":"b","hostname":"c"}}`, base + `,"workspace":"w"}`, base + `,"base":"b"}`,
+		// Iteration 10c: the workspace selection's shared contract refusals
+		// (empty, null, invalid name, selector or token, base or instance
+		// without workspace).
+		`{}`, base + `,"requested_by":{"name":"a","version":"b","hostname":"c"}}`, base + `,"workspace":""}`, base + `,"workspace":null}`, base + `,"base":"b"}`,
+		base + `,"workspace":"W"}`, base + `,"workspace":"w","base":""}`, base + `,"workspace":"w","base":"HEAD~1"}`, base + `,"workspace":"w","workspace_instance":"x"}`,
+		base + `,"workspace_instance":"` + strings.Repeat("a", 32) + `"}`, base + `,"workspace":"w","base":"refs/callsheet/tasks/t_1"}`,
 		`{"target":{"kind":"both","value":"x"},"goal":"g","acceptance":"a"}`, `{"target":{"kind":"id"},"goal":"g","acceptance":"a"}`,
 		`{"target":{"kind":"id","value":"x","name":"y"},"goal":"g","acceptance":"a"}`, `{"target":"x","goal":"g","acceptance":"a"}`,
 		base + `,"payload":` + many + `}`, base + `,"payload":["` + long + `"]}`, base + `,"payload":[""]}`, base + `,"payload":null}`,

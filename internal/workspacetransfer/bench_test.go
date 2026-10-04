@@ -10,10 +10,12 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/storage/memory"
 
+	"github.com/wedevwork/callsheet/internal/client"
 	"github.com/wedevwork/callsheet/internal/contract"
 	"github.com/wedevwork/callsheet/internal/testkit"
 )
@@ -379,7 +381,12 @@ func BenchmarkTransferPullGit(b *testing.B) {
 		b.Fatal(err)
 	}
 	n := 0
-	for _, sel := range []string{"branch", "hash"} {
+	// Iteration 10c adds task-ID selection: a planted task ref pulled with
+	// the paired expected instance and commit (the timed transfer), and
+	// the task-ref lookup's exact-ref check (client.CheckTaskResultRef)
+	// reported separately as ref-check-ns/op.
+	cl := tp.client(b)
+	for _, sel := range []string{"branch", "hash", "task"} {
 		b.Run(sel, func(b *testing.B) {
 			dst := newRepo(b, map[string]fspec{"x": reg("x")})
 			if _, err := pullWith(b, fastDeps(), p, env, "main", dst.root); err != nil {
@@ -387,6 +394,7 @@ func BenchmarkTransferPullGit(b *testing.B) {
 			}
 			before := checkoutFingerprint(b, dst.root)
 			var objs, installed int64
+			var check time.Duration
 			b.ReportAllocs()
 			b.ResetTimer()
 			for b.Loop() {
@@ -396,9 +404,19 @@ func BenchmarkTransferPullGit(b *testing.B) {
 				if _, err := pushWith(b, fastDeps(), p, env, "ws", v.Instance, "", r.root); err != nil {
 					b.Fatal(err)
 				}
-				ref := "main"
-				if sel == "hash" {
-					ref = r.head.String()
+				req := PullRequest{Name: "ws", Ref: "main", Path: dst.root, PathSet: true}
+				switch sel {
+				case "hash":
+					req.Ref = r.head.String()
+				case "task":
+					id := fmt.Sprintf("t_%032x", n)
+					tp.plantTask(b, "ws", id, r.head)
+					req.Ref, req.ExpectedInstance, req.ExpectedCommit = contract.TaskRefPrefix+id, v.Instance, r.head.String()
+					start := time.Now()
+					if err := cl.CheckTaskResultRef(context.Background(), client.TaskResultSelection{Name: "ws", Instance: v.Instance, Ref: req.Ref, Commit: req.ExpectedCommit}); err != nil {
+						b.Fatal(err)
+					}
+					check += time.Since(start)
 				}
 				d := defaultDeps()
 				d.metric = func(n string, v int64) {
@@ -410,7 +428,7 @@ func BenchmarkTransferPullGit(b *testing.B) {
 					}
 				}
 				b.StartTimer()
-				res, err := pullWith(b, d, p, env, ref, dst.root)
+				res, err := d.pull(context.Background(), Options{GOOS: hostGOOS(), Env: env, Cwd: "/", Plane: p}, req)
 				b.StopTimer()
 				if err != nil || res.Commit != r.head.String() {
 					b.Fatalf("%+v %v", res, err)
@@ -418,10 +436,16 @@ func BenchmarkTransferPullGit(b *testing.B) {
 				if readRefB(dst.root, *res.LocalRef) != r.head.String() || checkoutFingerprint(b, dst.root) != before {
 					b.Fatal("ref or checkout")
 				}
+				if sel == "task" && *res.LocalRef != "refs/callsheet/ws/tasks/"+req.Ref[len(contract.TaskRefPrefix):] {
+					b.Fatalf("task local ref %s", *res.LocalRef)
+				}
 				b.StartTimer()
 			}
 			b.ReportMetric(float64(objs), "objects-verified/op")
 			b.ReportMetric(float64(installed), "objects-installed/op")
+			if sel == "task" {
+				b.ReportMetric(float64(check.Nanoseconds())/float64(b.N), "ref-check-ns/op")
+			}
 		})
 	}
 }

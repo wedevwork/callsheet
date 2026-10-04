@@ -80,8 +80,8 @@ func TestTransferLeafHelp(t *testing.T) {
 		}
 	}
 	_, out, _ = exec(t, "linux", "ws", "pull", "--help")
-	for _, want := range []string{"Usage: callsheet ws pull --plane URL", "[--json] NAME REF [PATH]", "git push <your-remote> <commit>:refs/heads/<delivery-branch>",
-		"refs/callsheet/NAME/heads/", "existing empty one"} {
+	for _, want := range []string{"Usage: callsheet ws pull --plane URL", "[--json] (TASK_ID | NAME REF) [PATH]", "git push <your-remote> <commit>:refs/heads/<delivery-branch>",
+		"refs/callsheet/NAME/heads/", "existing empty one", "a bare task ID meaning that task ref", "refs/heads/t_...", "workspace_instance_mismatch"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("pull help lacks %q", want)
 		}

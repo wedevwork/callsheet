@@ -102,6 +102,98 @@ func BenchmarkMCPCodec(b *testing.B) {
 			b.Fatalf("role list frame of %d bytes differs", len(f))
 		}
 	})
+	// Iteration 10c: the maximum workspace TaskView and task workspace
+	// status (a result DTO of at most 32 KiB) round-trip exactly, metadata
+	// only; the flat two-form argument validation is measured per call.
+	b.Run("max-workspace-task", func(b *testing.B) {
+		st := maxStatus(b)
+		v := taskView(taskA)
+		v.State, v.WorkspaceBinding = contract.TaskSucceeded, &st.Workspace.Binding
+		res := contract.TaskResult{State: contract.TaskSucceeded}.WithWorkspace(st.Workspace.Result)
+		v.Result = &res
+		r := contract.TaskShowResponse{Version: contract.ProtocolVersion, Task: v}
+		var f []byte
+		b.ReportAllocs()
+		for b.Loop() {
+			res, err := encodeJSON(r)
+			if err != nil {
+				b.Fatal(err)
+			}
+			f = successFrame(id, res)
+		}
+		b.ReportMetric(float64(len(f)), "bytes/op")
+		text, isErr := decodeFrameText(b, f)
+		want, _ := contract.Encode(r)
+		dto, _ := contract.Encode(*v.Result.Workspace)
+		if isErr || text != string(want) || len(dto) > contract.MaxWorkspaceDTOBytes || len(f) > MaxFrameBytes || len(v.Result.ChangedPaths) == 0 {
+			b.Fatalf("workspace task frame of %d bytes (DTO %d) differs", len(f), len(dto))
+		}
+	})
+	b.Run("max-workspace-status", func(b *testing.B) {
+		r := maxStatus(b)
+		var f []byte
+		b.ReportAllocs()
+		for b.Loop() {
+			res, err := encodeJSON(r)
+			if err != nil {
+				b.Fatal(err)
+			}
+			f = successFrame(id, res)
+		}
+		b.ReportMetric(float64(len(f)), "bytes/op")
+		text, isErr := decodeFrameText(b, f)
+		back, err := contract.ParseTaskWorkspaceStatusResponse([]byte(text))
+		dto, _ := contract.Encode(*back.Workspace.Result)
+		if again, _ := contract.Encode(back); isErr || err != nil || string(again) != text || len(dto) > contract.MaxWorkspaceDTOBytes {
+			b.Fatalf("workspace status frame of %d bytes: %v", len(f), err)
+		}
+	})
+	b.Run("argument-forms", func(b *testing.B) {
+		task := `"task_id":"` + taskA + `"`
+		cont := `"after":"YQ==","instance":"` + wsInst + `","generation":"` + wsGen + `"`
+		cases := []struct {
+			tool string
+			raw  json.RawMessage
+			ok   bool
+		}{
+			{toolWsPull, json.RawMessage(`{` + task + `,"path":"out"}`), true},
+			{toolWsPull, json.RawMessage(`{"name":"alpha","ref":"` + taskB + `"}`), true},
+			{toolWsPull, json.RawMessage(`{` + task + `,"name":"alpha"}`), false},
+			{toolWsStatus, json.RawMessage(`{` + task + `}`), true},
+			{toolWsStatus, json.RawMessage(`{` + task + `,"limit":1}`), false},
+			{toolWsDiff, json.RawMessage(`{` + task + `,` + cont + `,"limit":5}`), true},
+			{toolWsDiff, json.RawMessage(`{"name":"alpha","base":"empty","target":"main",` + cont + `}`), true},
+			{toolWsDiff, json.RawMessage(`{` + task + `,"base":"empty"}`), false},
+		}
+		check := func(tool string, raw json.RawMessage) error {
+			if tool == toolWsPull {
+				var a pullArgs
+				if err := decodeArgs(raw, &a); err != nil {
+					return err
+				}
+				_, _, err := a.request()
+				return err
+			}
+			var a wsFormArgs
+			if err := decodeArgs(raw, &a); err != nil {
+				return err
+			}
+			if _, err := a.form(tool, tool == toolWsDiff); err != nil {
+				return err
+			}
+			_, _, _, _, err := a.paging().page()
+			return err
+		}
+		b.ReportAllocs()
+		for b.Loop() {
+			for _, c := range cases {
+				if (check(c.tool, c.raw) == nil) != c.ok {
+					b.Fatalf("%s %s", c.tool, c.raw)
+				}
+			}
+		}
+		b.ReportMetric(float64(len(cases)), "forms/op")
+	})
 }
 
 // benchPlane runs an in-process plane with one enrolled node and returns

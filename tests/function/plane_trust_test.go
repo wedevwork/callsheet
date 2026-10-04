@@ -1024,7 +1024,7 @@ func TestPlanePlatform(t *testing.T) {
 		"TestPlaneReissue", "TestPlaneReissue/process", "TestPlaneReissue/contracts", "TestPlaneStatus", "TestPlaneStatus/inspection", "TestPlaneStatus/expiry-warnings", "TestPlanePlatform"}
 	// The 28 iteration-02 names are preserved first; iteration 03 appends
 	// the node names (checked by TestNodePlatform).
-	if got := devcheck.NativeRequiredTests(); len(got) != 347 || !slices.Equal(got[:28], required) {
+	if got := devcheck.NativeRequiredTests(); len(got) != 353 || !slices.Equal(got[:28], required) {
 		t.Fatalf("native required = %v", got)
 	}
 	// Every required plane name exists as a top-level test or mandatory

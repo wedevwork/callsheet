@@ -90,7 +90,7 @@ func wsSchemaCases() []struct {
 		{toolWsStatus, `{"name":"alpha","after":"refs/heads/Main","instance":"` + wsInst + `","generation":"` + wsGen + `"}`, false, false},
 		{toolWsDiff, `{"name":"alpha","base":"empty","target":"main"}`, true, true},
 		{toolWsDiff, `{"name":"alpha","base":"empty","target":"` + wsHash + `","after":"YQ==","instance":"` + wsInst + `","generation":"` + wsGen + `"}`, true, true},
-		{toolWsDiff, `{"name":"alpha","base":"main"}`, false, false},
+		{toolWsDiff, `{"name":"alpha","base":"main"}`, true, false},                               // missing target: a runtime form rule (iteration 10c flat schema)
 		{toolWsDiff, `{"name":"alpha","base":"empty","target":"empty"}`, true, true},              // a target "empty" is the branch refs/heads/empty
 		{toolWsDiff, `{"name":"alpha","base":"empty","target":"refs/tags/v1"}`, true, false},      // full refs outside refs/heads/: contract only
 		{toolWsDiff, `{"name":"alpha","base":"empty","target":"main","after":"YQ"}`, true, false}, // noncanonical base64: contract only
@@ -123,7 +123,8 @@ func TestWorkspaceTools(t *testing.T) {
 		t.Fatalf("status relay %v", got)
 	}
 	h.ask(toolWsDiff, `{"name":"alpha","base":"empty","target":"main"}`)
-	if p := got[2].(client.DiffPage); p.Base != "empty" || p.Target != "main" || p.Limit != contract.DefaultWorkspaceLimit {
+	// Iteration 10c: explicit selectors are relayed canonically.
+	if p := got[2].(client.DiffPage); p.Base != "empty" || p.Target != "refs/heads/main" || p.Limit != contract.DefaultWorkspaceLimit {
 		t.Fatalf("diff relay %v", got)
 	}
 	// Invalid UTF-8 (an unpaired surrogate escape), the JSON replacement

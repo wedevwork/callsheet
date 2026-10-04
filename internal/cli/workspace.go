@@ -26,8 +26,8 @@ const (
 	wsShowUsage   = trustUsage + " [--json] NAME"
 	wsRmUsage     = "--instance TOKEN " + trustUsage + " [--json] NAME"
 	wsPruneUsage  = "--instance TOKEN --before RFC3339 " + trustUsage + " [--json] NAME"
-	wsStatusUsage = "[--after REF --generation TOKEN --instance TOKEN] [--limit N] " + trustUsage + " [--json] NAME"
-	wsDiffUsage   = "--base SELECTOR [--after CURSOR --instance TOKEN --generation TOKEN] [--limit N] " + trustUsage + " [--json] NAME TARGET"
+	wsStatusUsage = "[--after REF --generation TOKEN --instance TOKEN] [--limit N] " + trustUsage + " [--json] (NAME | TASK_ID)"
+	wsDiffUsage   = "[--base SELECTOR] [--after CURSOR --instance TOKEN --generation TOKEN] [--limit N] " + trustUsage + " [--json] (NAME TARGET | TASK_ID)"
 	wsRefSetUsage = "--instance TOKEN --expected HASH|absent [--delete] " + trustUsage + " [--json] NAME BRANCH [TARGET]"
 
 	wsJSONHelp  = "  --json             print the plane's exact API success object as one JSON value\n"
@@ -77,17 +77,34 @@ const (
 		"Prints the plane's stored refs of a workspace sorted by name: tab-separated REF,\n" +
 		"COMMIT and PUBLISHED_AT (task refs only; - for branches). An unborn main has no row.\n" +
 		"A changed generation between pages conflicts: restart from the first page. It never\n" +
-		"inspects a local working tree or reports ahead/behind. " + wsPlaneNote
+		"inspects a local working tree or reports ahead/behind.\n\n" +
+		"With a TASK_ID (no paging flags) it prints that task's workspace status instead:\n" +
+		"state, workspace_phase (preparing, executing or publishing; - when terminal), the\n" +
+		"immutable binding, the terminal result's publication metadata (- while running) and\n" +
+		"available: whether the current instance still holds the exact result ref and hash\n" +
+		"(false after a prune, removal or recreation; the historical result stays). A task\n" +
+		"without a workspace is invalid (no_task_workspace).\n" + wsPlaneNote
 	wsDiffDetails = "Flags:\n" +
-		"  --base SELECTOR    the base snapshot, or empty for the empty tree\n" +
+		"  --base SELECTOR    NAME TARGET form (required there): the base snapshot, or empty for\n" +
+		"                     the empty tree\n" +
 		"  --after CURSOR --instance TOKEN --generation TOKEN\n" +
-		"                     continue from the previous page (all three, from its output; base\n" +
-		"                     and target then as the printed full hashes)\n" +
+		"                     continue from the previous page (all three, from its output; in\n" +
+		"                     the NAME TARGET form base and target then as the printed full\n" +
+		"                     hashes)\n" +
 		"  --limit N          at most N rows (1-100, default 100)\n" + trustHelp + wsJSONHelp + "\n" +
 		"Compares two stored snapshots and prints changed-path metadata only: tab-separated\n" +
 		"KIND (added, deleted, modified), OLD_MODE, NEW_MODE, OLD_BYTES, NEW_BYTES and PATH (a\n" +
 		"quoted UTF-8 path, or base64: and the raw path bytes). No file content, patch or\n" +
-		"commit message is ever returned; renames are a delete and an add.\n" + wsSelectorHelp + wsPlaneNote
+		"commit message is ever returned; renames are a delete and an add.\n" + wsSelectorHelp +
+		"In the NAME TARGET form a bare task ID (as --base or TARGET) means its complete task\n" +
+		"ref; a branch named like a task ID is refs/heads/t_....\n\n" +
+		"With a TASK_ID (no --base, no TARGET) it compares the task's admitted base (or the\n" +
+		"empty tree) with its published result commit, both fixed by the task's record. Every\n" +
+		"page rechecks the bound instance and the exact result ref: a removed or recreated\n" +
+		"workspace conflicts (workspace_instance_mismatch, even with identical hashes), a\n" +
+		"pruned result is not_found, a changed generation conflicts; nothing restarts or\n" +
+		"mixes pages. The simplest way to read every page is to run ws diff TASK_ID\n" +
+		"again from the first page. To compare against another base use the NAME TARGET form.\n" + wsPlaneNote
 	wsRefSetDetails = "Flags:\n" +
 		"  --instance TOKEN   the workspace's instance (from callsheet ws show)\n" +
 		"  --expected HASH|absent\n" +
@@ -345,6 +362,15 @@ func wsStatus(ctx context.Context, goos string, c *Command, args []string, out, 
 	if !ok {
 		return code
 	}
+	if len(ops) == 1 {
+		task, err := taskForm(ops[0])
+		if err != nil {
+			return planeFail(errOut, err)
+		}
+		if task {
+			return wsTaskStatus(ctx, c, f, &cf, ops[0], out, errOut)
+		}
+	}
 	if code, ok := wsOperands(c, ops, 1, errOut); !ok {
 		return code
 	}
@@ -376,6 +402,86 @@ func wsStatus(ctx context.Context, goos string, c *Command, args []string, out, 
 	return wsOut(out, errOut, f.json.val, r, b.String())
 }
 
+// wsTaskStatus is ws status TASK_ID (iteration 10c): no paging flags; the
+// exact versioned envelope as JSON, or its fields as text.
+func wsTaskStatus(ctx context.Context, c *Command, f *remoteFlags, cf *continuationFlags, id string, out, errOut io.Writer) int {
+	if cf.after.set || cf.instance.set || cf.generation.set || cf.limit.set {
+		return usageError(errOut, c, c.Path()+" TASK_ID takes no --after, --instance, --generation or --limit")
+	}
+	cl, code, ok := wsClient(ctx, f, errOut)
+	if !ok {
+		return code
+	}
+	defer cl.Close()
+	r, err := taskWorkspaceStatus(cl, ctx, id)
+	if err != nil {
+		return planeFail(errOut, err)
+	}
+	return wsOut(out, errOut, f.json.val, r, RenderTaskWorkspaceStatus(r.Workspace))
+}
+
+// RenderTaskWorkspaceStatus renders a task's workspace status as label:
+// value lines (- for null), its result's change rows as the diff table;
+// metadata only, never contents.
+func RenderTaskWorkspaceStatus(s contract.TaskWorkspaceStatus) string {
+	var b strings.Builder
+	line := func(k, v string) { b.WriteString(k + ": " + v + "\n") }
+	line("task_id", s.TaskID)
+	line("state", s.State)
+	line("workspace_phase", orDash(s.WorkspacePhase))
+	line("workspace", s.Binding.Name)
+	line("workspace_instance", s.Binding.Instance)
+	line("base_selector", s.Binding.BaseSelector)
+	line("base_commit", orDash(s.Binding.BaseCommit))
+	line("available", boolText(s.Available))
+	r := s.Result
+	if r == nil {
+		line("publication", "-")
+		return b.String()
+	}
+	line("publication", r.Publication)
+	line("result_commit", orDash(r.Commit))
+	line("result_ref", orDash(r.Ref))
+	line("publication_error", orDash(r.Error))
+	ds := "-"
+	if d := r.Diffstat; d != nil {
+		ds = "added=" + strconv.FormatInt(d.Added, 10) + " modified=" + strconv.FormatInt(d.Modified, 10) + " deleted=" + strconv.FormatInt(d.Deleted, 10) +
+			" old_bytes=" + strconv.FormatInt(d.OldBytes, 10) + " new_bytes=" + strconv.FormatInt(d.NewBytes, 10)
+	}
+	line("diffstat", ds)
+	if len(r.Changes) > 0 {
+		writeChanges(&b, r.Changes)
+	}
+	if r.ChangesTruncated {
+		line("changes_truncated", "true")
+		line("next_after", orDash(r.NextAfter))
+	}
+	return b.String()
+}
+
+// writeChanges writes the diff table header and one row per change.
+func writeChanges(b *strings.Builder, changes []contract.WorkspaceChange) {
+	b.WriteString(joinFields([]string{"KIND", "OLD_MODE", "NEW_MODE", "OLD_BYTES", "NEW_BYTES", "PATH"}))
+	for _, ch := range changes {
+		b.WriteString(joinFields([]string{ch.Kind, orDash(ch.OldMode), orDash(ch.NewMode), sizeOrDash(ch.OldBytes), sizeOrDash(ch.NewBytes), DisplayPath(ch.PathBase64)}))
+	}
+}
+
+// renderDiff renders one diff page as text.
+func renderDiff(r contract.WorkspaceDiffResponse) string {
+	var b strings.Builder
+	baseCommit := "empty"
+	if r.BaseCommit != nil {
+		baseCommit = *r.BaseCommit
+	}
+	b.WriteString("name: " + r.Name + "\ninstance: " + r.Instance + "\ngeneration: " + r.Generation + "\nbase_commit: " + baseCommit + "\ntarget_commit: " + r.TargetCommit + "\n")
+	writeChanges(&b, r.Changes)
+	if r.NextAfter != nil {
+		b.WriteString("next_after: " + *r.NextAfter + "\n")
+	}
+	return b.String()
+}
+
 // DisplayPath renders a raw diff path for a terminal: a valid UTF-8 path
 // as a quoted string with every control character escaped, any other as
 // base64: followed by its standard base64.
@@ -401,11 +507,27 @@ func wsDiff(ctx context.Context, goos string, c *Command, args []string, out, er
 	if !ok {
 		return code
 	}
-	if code, ok := wsOperands(c, ops, 2, errOut); !ok {
-		return code
+	task := false
+	if len(ops) > 0 {
+		var err error
+		if task, err = taskForm(ops[0]); err != nil {
+			return planeFail(errOut, err)
+		}
 	}
-	if !base.set {
-		return usageError(errOut, c, "--base is required: a selector or empty")
+	if task {
+		switch {
+		case len(ops) != 1:
+			return usageError(errOut, c, c.Path()+" TASK_ID takes no TARGET: it compares the task's base with its result")
+		case base.set:
+			return usageError(errOut, c, c.Path()+" TASK_ID takes no --base (its base is the task's admitted base); compare against another base with --base BASE NAME TARGET")
+		}
+	} else {
+		if code, ok := wsOperands(c, ops, 2, errOut); !ok {
+			return code
+		}
+		if !base.set {
+			return usageError(errOut, c, "--base is required: a selector or empty")
+		}
 	}
 	if code, ok := cf.check(c, errOut); !ok {
 		return code
@@ -414,29 +536,36 @@ func wsDiff(ctx context.Context, goos string, c *Command, args []string, out, er
 	if !ok {
 		return code
 	}
+	var page client.DiffPage
+	if !task {
+		// A bare task ID as base or target means its full task ref.
+		b, err := contract.ParseTaskSelector(base.val, "base", true)
+		if err != nil {
+			return planeFail(errOut, err)
+		}
+		t, err := contract.ParseTaskSelector(ops[1], "target", false)
+		if err != nil {
+			return planeFail(errOut, err)
+		}
+		page = client.DiffPage{Base: contract.SelectorString(b), Target: contract.SelectorString(t), After: cf.after.val, Instance: cf.instance.val,
+			Generation: cf.generation.val, Limit: n}
+	}
 	cl, code, ok := wsClient(ctx, f, errOut)
 	if !ok {
 		return code
 	}
 	defer cl.Close()
-	r, err := cl.WorkspaceDiff(ctx, ops[0], client.DiffPage{Base: base.val, Target: ops[1], After: cf.after.val, Instance: cf.instance.val, Generation: cf.generation.val, Limit: n})
+	var r contract.WorkspaceDiffResponse
+	var err error
+	if task {
+		r, err = taskWorkspaceDiff(cl, ctx, ops[0], client.TaskDiffPage{After: cf.after.val, Instance: cf.instance.val, Generation: cf.generation.val, Limit: n})
+	} else {
+		r, err = cl.WorkspaceDiff(ctx, ops[0], page)
+	}
 	if err != nil {
 		return planeFail(errOut, err)
 	}
-	var b strings.Builder
-	baseCommit := "empty"
-	if r.BaseCommit != nil {
-		baseCommit = *r.BaseCommit
-	}
-	b.WriteString("name: " + r.Name + "\ninstance: " + r.Instance + "\ngeneration: " + r.Generation + "\nbase_commit: " + baseCommit + "\ntarget_commit: " + r.TargetCommit + "\n")
-	b.WriteString(joinFields([]string{"KIND", "OLD_MODE", "NEW_MODE", "OLD_BYTES", "NEW_BYTES", "PATH"}))
-	for _, ch := range r.Changes {
-		b.WriteString(joinFields([]string{ch.Kind, orDash(ch.OldMode), orDash(ch.NewMode), sizeOrDash(ch.OldBytes), sizeOrDash(ch.NewBytes), DisplayPath(ch.PathBase64)}))
-	}
-	if r.NextAfter != nil {
-		b.WriteString("next_after: " + *r.NextAfter + "\n")
-	}
-	return wsOut(out, errOut, f.json.val, r, b.String())
+	return wsOut(out, errOut, f.json.val, r, renderDiff(r))
 }
 
 func wsRefSet(ctx context.Context, goos string, c *Command, args []string, out, errOut io.Writer) int {

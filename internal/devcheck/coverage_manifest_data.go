@@ -33,9 +33,7 @@ var WorkspaceCoverageManifest = []CoverageEntry{
 	// only touch comments, imports, constants, variables or struct fields
 	// hold no executable block and are not listed).
 	{Group: GroupChanged, File: modulePath + "/internal/cli/cli.go", Ranges: [][2]int{{151, 151}}},
-	{Group: GroupChanged, File: modulePath + "/internal/mcp/schemas.go", Ranges: [][2]int{{153, 245}}},
 	{Group: GroupChanged, File: modulePath + "/internal/mcp/server.go", Ranges: [][2]int{{491, 491}}},
-	{Group: GroupChanged, File: modulePath + "/internal/mcp/tools.go", Ranges: [][2]int{{142, 142}, {170, 488}}},
 	{Group: GroupChanged, File: modulePath + "/internal/plane/service.go", Ranges: [][2]int{{58, 62}}},
 	{Group: GroupChanged, File: modulePath + "/internal/plane/state.go", Ranges: [][2]int{{162, 162}, {208, 210}, {238, 238}, {246, 248}, {272, 272}, {278, 278}, {280, 281}}},
 	{Group: GroupChanged, File: modulePath + "/internal/plane/status.go", Ranges: [][2]int{{92, 100}}},
@@ -137,6 +135,18 @@ var WorkspaceCoverageManifest = []CoverageEntry{
 	{Group: GroupChanged, File: modulePath + "/internal/sidecar/task_workspace.go"},
 	{Group: GroupChanged, File: modulePath + "/internal/sidecar/task_storage.go"},
 	{Group: GroupChanged, File: modulePath + "/internal/devcheck/stress.go"},
+
+	// Iteration 10c (base 362405f): the two production files it changes
+	// that no earlier entry lists whole, as whole files (no build
+	// constraint: evaluated on both systems). Its other changed files are
+	// already listed whole: contract/task_workspace.go, cli/workspace.go,
+	// cli/workspace_transfer.go, mcp/schemas.go, mcp/tools.go,
+	// mcp/transfer.go, plane/task_api.go, plane/task_workspace.go,
+	// workspacetransfer/transfer.go (GroupTransfer) and devcheck/native.go;
+	// the 09a partial mcp/schemas.go and mcp/tools.go entries are removed
+	// (their 09b whole-file entries remain).
+	{Group: GroupChanged, File: modulePath + "/internal/client/tasks.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/cli/task.go"},
 }
 
 // modulePath is the profile's import-path prefix.

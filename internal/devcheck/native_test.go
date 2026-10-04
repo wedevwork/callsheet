@@ -258,6 +258,20 @@ var wsTaskRequired = []struct {
 // wsTaskNames lists every required iteration 10b name.
 func wsTaskNames() []string { return requiredNames(wsTaskRequired) }
 
+// wsDoorRequired are iteration 10c's six coordinator delivery function
+// tests in FP order (FP-1..FP-6), a separate group after the 10b names;
+// their named subtests are not inventory entries.
+var wsDoorRequired = []struct {
+	test string
+	subs []string
+}{
+	{"TestWorkspaceDispatchDoors", nil}, {"TestWorkspaceTaskPull", nil}, {"TestWorkspaceTaskInspect", nil},
+	{"TestWorkspaceTaskMCP", nil}, {"TestWorkspaceMultiHop", nil}, {"TestWorkspaceOperatorWorkflow", nil},
+}
+
+// wsDoorNames lists every required iteration 10c name.
+func wsDoorNames() []string { return requiredNames(wsDoorRequired) }
+
 // realLocal is iteration 08's tagged sidecar contract with its five
 // subtests, required in the sidecar package (NativeTaskProcessPackage).
 var realLocal = []string{"TestRealAdapterLocal", "TestRealAdapterLocal/selection", "TestRealAdapterLocal/file", "TestRealAdapterLocal/ordering",
@@ -298,7 +312,7 @@ func qualification() []evt {
 		evs = append(evs, ev("pass", NativePackage, fp6+"/"+s))
 	}
 	evs = append(evs, ev("pass", NativePackage, fp6))
-	for _, p := range append(append(append(append(append(append(append(append(append(append(append(append(planeRequired[:0:0], planeRequired...), nodeRequired...), roleRequired...), taskRequired...), controlRequired...), mcpRequired...), qualRequired...), realRequired...), wsRequired...), trRequired...), latRequired...), wsTaskRequired...) {
+	for _, p := range append(append(append(append(append(append(append(append(append(append(append(append(append(planeRequired[:0:0], planeRequired...), nodeRequired...), roleRequired...), taskRequired...), controlRequired...), mcpRequired...), qualRequired...), realRequired...), wsRequired...), trRequired...), latRequired...), wsTaskRequired...), wsDoorRequired...) {
 		evs = append(evs, ev("run", NativePackage, p.test))
 		for _, s := range p.subs {
 			evs = append(evs, ev("run", NativePackage, p.test+"/"+s), ev("pass", NativePackage, p.test+"/"+s))
@@ -467,7 +481,7 @@ func TestNativeStepsAndUnsupportedOS(t *testing.T) {
 		"TestControlLateResult,TestControlLegacy,TestControlNativeGroups,TestControlNativeGroups/cooperative,TestControlNativeGroups/resistant,"+
 		"TestControlNativeGroups/orphan-restart,TestControlNativeGroups/plane-restart,"+
 		"TestControlCancellation,TestControlExecutionTimeout,TestControlBoundedWait,TestControlForceRemove,"+strings.Join(mcpNames(), ",")+","+strings.Join(qualNames(), ",")+
-		","+strings.Join(realNames(), ",")+","+strings.Join(wsNames(), ",")+","+strings.Join(trNames(), ",")+","+strings.Join(latNames(), ",")+","+strings.Join(wsTaskNames(), ",") || len(req) != 312+11+10+2+12 {
+		","+strings.Join(realNames(), ",")+","+strings.Join(wsNames(), ",")+","+strings.Join(trNames(), ",")+","+strings.Join(latNames(), ",")+","+strings.Join(wsTaskNames(), ",")+","+strings.Join(wsDoorNames(), ",") || len(req) != 312+11+10+2+12+6 {
 		t.Fatalf("required = %v", req)
 	}
 	req[0] = "mutated"
@@ -987,7 +1001,7 @@ func TestNativeQualificationEvidence(t *testing.T) {
 		t.Fatalf("complete evidence: %v", err)
 	}
 	req := NativeRequiredTests()
-	if n := len(qualNames()); n != 8+43 || len(req) != 222+n+len(realNames())+len(wsNames())+len(trNames())+len(latNames())+len(wsTaskNames()) || strings.Join(req[222:273], ",") != strings.Join(qualNames(), ",") ||
+	if n := len(qualNames()); n != 8+43 || len(req) != 222+n+len(realNames())+len(wsNames())+len(trNames())+len(latNames())+len(wsTaskNames())+len(wsDoorNames()) || strings.Join(req[222:273], ",") != strings.Join(qualNames(), ",") ||
 		strings.Join(req[145:222], ",") != strings.Join(mcpNames(), ",") {
 		t.Fatalf("%d 07b names; native suffix %v", n, req[222:])
 	}

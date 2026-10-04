@@ -78,6 +78,9 @@ type Client interface {
 	SetWorkspaceRef(ctx context.Context, name string, req contract.WorkspaceRefSetRequest) (contract.WorkspaceRefSetResponse, error)
 	WorkspaceStatus(ctx context.Context, name string, p client.StatusPage) (contract.WorkspaceStatusResponse, error)
 	WorkspaceDiff(ctx context.Context, name string, p client.DiffPage) (contract.WorkspaceDiffResponse, error)
+	// Iteration 10c: the task-ID forms of ws_status and ws_diff.
+	TaskWorkspaceStatus(ctx context.Context, id string) (contract.TaskWorkspaceStatusResponse, error)
+	TaskWorkspaceDiff(ctx context.Context, id string, p client.TaskDiffPage) (contract.WorkspaceDiffResponse, error)
 	Close()
 }
 
@@ -155,7 +158,7 @@ func newTools(b Budget) []*tool {
 		{name: toolRoleRm, annotations: mutation(true, false), run: runRoleRm,
 			description: "Remove a role. Without force a role with tasks in flight is refused (conflict, tasks_inflight). With force the plane fences this role instance, cancels its tasks and removes it once each ended durably; when that takes longer than the plane's budget the answer is a pending removal with an operation token (a success, not a completed deletion): call role_rm again with force and that operation. Nothing is polled or retried automatically. After an ambiguous answer read role_show first; never repeat a bare force against a possibly reused role ID. Recreating a role is not proof that old execution stopped." + mutationNote + freshNote},
 		{name: toolDispatch, annotations: mutation(false, false), run: runDispatch,
-			description: "Dispatch a task to a role: the plane reserves one of the role's slots atomically or fails at once listing every candidate (no queue, no reroute). Without wait the answer is the admitted task. With wait (0 to 5m) the same single call also waits for the task to end, capped by the call budget (at most B minus the reserves and a 6s admission allowance): the terminal task or its compact still_running row; follow with task_wait. A lost answer may hide an admitted task: inspect task_ls before dispatching again (never retried). requested_by is this MCP client's self-reported clientInfo name and version plus the coordinator hostname, not an authenticated identity." + admissionNote + mutationNote + freshNote + budgetNote},
+			description: "Dispatch a task to a role: the plane reserves one of the role's slots atomically or fails at once listing every candidate (no queue, no reroute). With workspace the task runs in a private checkout of that workspace's base (default main; a branch, full hash, complete task ref, task ID or empty) and publishes its result as refs/callsheet/tasks/TASK_ID; the base commit and instance are fixed at admission (workspace_binding), an empty workspace needs base empty, and nothing moves a branch. To continue from task A, dispatch with A's result.workspace.commit as base and its workspace_binding name and instance as workspace and workspace_instance. Without wait the answer is the admitted task. With wait (0 to 5m) the same single call also waits for the task to end, capped by the call budget (at most B minus the reserves and a 6s admission allowance): the terminal task or its compact still_running row; follow with task_wait. A lost answer may hide an admitted task: inspect task_ls before dispatching again (never retried). requested_by is this MCP client's self-reported clientInfo name and version plus the coordinator hostname, not an authenticated identity." + admissionNote + mutationNote + freshNote + budgetNote},
 		{name: toolTaskLs, annotations: readOnly(), run: runTaskLs,
 			description: "List tasks from every coordinator ordered by task ID, one page per call (limit 1-100, default 100; after: the previous page's next_after); all pages are never fetched automatically." + readOnlyNote + freshNote},
 		{name: toolTaskShow, annotations: readOnly(), run: runTaskShow,
@@ -191,9 +194,9 @@ func workspaceTools() []*tool {
 		{name: toolWsRefSet, annotations: mutation(false, false), run: runWsRefSet,
 			description: "Create, move or delete one branch with compare-and-swap: expected is the branch's current full hash, or absent to create it; exactly one of target (a reachable full commit hash, a branch or a complete refs/callsheet/tasks/ ref) and delete=true. No merge or fast-forward requirement; no other branch moves; a stale expected conflicts. Branch names are byte-exact lowercase ASCII (never repaired)." + plane + pinned + mutationNote + freshNote},
 		{name: toolWsStatus, annotations: readOnly(), run: runWsStatus,
-			description: "Return one page of a workspace's stored refs on the plane sorted by name (task refs with their publication time, branches with published_at null; an unborn main has no row). Continue with after, instance and generation from the previous page; a changed generation conflicts (restart). It never inspects a local working tree." + plane + pinned + readOnlyNote + freshNote},
+			description: "Two forms (exactly one). {name, ...}: return one page of a workspace's stored refs on the plane sorted by name (task refs with their publication time, branches with published_at null; an unborn main has no row); continue with after, instance and generation from the previous page; a changed generation conflicts (restart). {task_id}: return that task's workspace status {version, workspace:{task_id, state, workspace_phase, binding, result, available}}: available is whether the current instance still holds the exact result ref and hash (false after a prune, removal or recreation); a scratch task is invalid_argument (no_task_workspace). It never inspects a local working tree." + plane + readOnlyNote + freshNote},
 		{name: toolWsDiff, annotations: readOnly(), run: runWsDiff,
-			description: "Compare two stored snapshots (base, or empty for the empty tree, and target) and return one page of changed-path metadata only: path_base64 (raw path bytes, never contents), kind, modes and blob sizes. No file content, patch or commit message is returned. Continue with the returned full hashes, after, instance and generation." + plane + pinned + readOnlyNote + freshNote},
+			description: "Two forms (exactly one). {name, base, target, ...}: compare two stored snapshots (base, or empty for the empty tree, and target; a bare task ID means its task ref). {task_id, ...}: compare that task's admitted base (or the empty tree) with its published result commit, rechecking the bound instance and exact result ref on every page (a removed or recreated workspace conflicts, a pruned result is not_found). Returns one page of changed-path metadata only: path_base64 (raw path bytes, never contents), kind, modes and blob sizes. No file content, patch or commit message is returned. Continue with after, instance and generation (the explicit form with the returned full hashes as base and target); a changed generation conflicts: restart from the first page." + plane + readOnlyNote + freshNote},
 	}
 }
 
@@ -392,12 +395,74 @@ func (a wsPageArgs) page() (after, instance, generation string, limit int, err e
 	return after, instance, generation, limit, nil
 }
 
+// wsFormArgs are ws_status's and ws_diff's flat arguments (iteration 10c):
+// the union of the explicit form's keys and the task form's task_id.
+// Exactly one form, its required keys and no mixed key are runtime rules
+// (the flat schema does not express them).
+type wsFormArgs struct {
+	TaskID     *string `json:"task_id,omitempty"`
+	Name       *string `json:"name,omitempty"`
+	Base       *string `json:"base,omitempty"`
+	Target     *string `json:"target,omitempty"`
+	After      *string `json:"after,omitempty"`
+	Instance   *string `json:"instance,omitempty"`
+	Generation *string `json:"generation,omitempty"`
+	Limit      *int    `json:"limit,omitempty"`
+}
+
+func (a wsFormArgs) paging() wsPageArgs {
+	return wsPageArgs{After: a.After, Instance: a.Instance, Generation: a.Generation, Limit: a.Limit}
+}
+
+// form selects the accepted form: task (task_id, with paging only when
+// paged) or explicit (name, and with diff base and target); a mixed or
+// incomplete set is invalid_argument.
+func (a wsFormArgs) form(tool string, diff bool) (bool, error) {
+	if a.TaskID != nil {
+		switch {
+		case a.Name != nil || a.Base != nil || a.Target != nil:
+			return false, invalid("task_id", "%s takes either task_id or the explicit workspace arguments, never both", tool)
+		case !diff && (a.After != nil || a.Instance != nil || a.Generation != nil || a.Limit != nil):
+			return false, invalid("task_id", "%s with task_id takes no paging arguments", tool)
+		case !contract.ValidTaskID(*a.TaskID):
+			return false, invalidTaskID("task_id")
+		}
+		return true, nil
+	}
+	switch {
+	case a.Name == nil && diff:
+		return false, invalid("name", "%s needs task_id, or name with base and target", tool)
+	case a.Name == nil:
+		return false, invalid("name", "%s needs task_id or name", tool)
+	case diff && (a.Base == nil || a.Target == nil):
+		return false, invalid("base", "%s's explicit form needs name, base and target together", tool)
+	case !diff && (a.Base != nil || a.Target != nil):
+		return false, invalid("base", "%s takes no base or target", tool)
+	}
+	return false, nil
+}
+
 func runWsStatus(c *call, raw json.RawMessage) (toolResult, error) {
-	var name string
-	var p wsPageArgs
-	if err := decodeWsArgs(raw, &name, &p, nil, nil); err != nil {
+	var a wsFormArgs
+	if err := decodeArgs(raw, &a); err != nil {
 		return toolResult{}, err
 	}
+	task, err := a.form(toolWsStatus, false)
+	if err != nil {
+		return toolResult{}, err
+	}
+	if task {
+		cl, err := c.client()
+		if err != nil {
+			return toolResult{}, err
+		}
+		r, err := cl.TaskWorkspaceStatus(c.opCtx, *a.TaskID)
+		if err != nil {
+			return toolResult{}, err
+		}
+		return encodeJSON(r)
+	}
+	name, p := *a.Name, a.paging()
 	if !contract.ValidWorkspaceName(name) {
 		return toolResult{}, invalidWsName()
 	}
@@ -420,22 +485,19 @@ func runWsStatus(c *call, raw json.RawMessage) (toolResult, error) {
 }
 
 func runWsDiff(c *call, raw json.RawMessage) (toolResult, error) {
-	var name, base, target string
-	var p wsPageArgs
-	if err := decodeWsArgs(raw, &name, &p, &base, &target); err != nil {
+	var a wsFormArgs
+	if err := decodeArgs(raw, &a); err != nil {
 		return toolResult{}, err
 	}
-	if !contract.ValidWorkspaceName(name) {
-		return toolResult{}, invalidWsName()
-	}
-	after, instance, generation, limit, err := p.page()
+	task, err := a.form(toolWsDiff, true)
 	if err != nil {
 		return toolResult{}, err
 	}
-	if _, err := contract.ParseSelector(base, "base", true); err != nil {
-		return toolResult{}, err
+	if !task && !contract.ValidWorkspaceName(*a.Name) {
+		return toolResult{}, invalidWsName()
 	}
-	if _, err := contract.ParseSelector(target, "target", false); err != nil {
+	after, instance, generation, limit, err := a.paging().page()
+	if err != nil {
 		return toolResult{}, err
 	}
 	if after != "" {
@@ -443,49 +505,36 @@ func runWsDiff(c *call, raw json.RawMessage) (toolResult, error) {
 			return toolResult{}, err
 		}
 	}
+	if task {
+		cl, err := c.client()
+		if err != nil {
+			return toolResult{}, err
+		}
+		r, err := cl.TaskWorkspaceDiff(c.opCtx, *a.TaskID, client.TaskDiffPage{After: after, Instance: instance, Generation: generation, Limit: limit})
+		if err != nil {
+			return toolResult{}, err
+		}
+		return encodeJSON(r)
+	}
+	// A bare task ID as base or target means its full task ref.
+	base, err := contract.ParseTaskSelector(*a.Base, "base", true)
+	if err != nil {
+		return toolResult{}, err
+	}
+	target, err := contract.ParseTaskSelector(*a.Target, "target", false)
+	if err != nil {
+		return toolResult{}, err
+	}
 	cl, err := c.client()
 	if err != nil {
 		return toolResult{}, err
 	}
-	r, err := cl.WorkspaceDiff(c.opCtx, name, client.DiffPage{Base: base, Target: target, After: after, Instance: instance, Generation: generation, Limit: limit})
+	r, err := cl.WorkspaceDiff(c.opCtx, *a.Name, client.DiffPage{Base: contract.SelectorString(base), Target: contract.SelectorString(target), After: after,
+		Instance: instance, Generation: generation, Limit: limit})
 	if err != nil {
 		return toolResult{}, err
 	}
 	return encodeJSON(r)
-}
-
-// decodeWsArgs strictly decodes status (base == nil) or diff arguments
-// into flat fields (the strict decoder has no embedded-struct support).
-func decodeWsArgs(raw json.RawMessage, name *string, p *wsPageArgs, base, target *string) error {
-	if base == nil {
-		var a struct {
-			Name       string  `json:"name"`
-			After      *string `json:"after,omitempty"`
-			Instance   *string `json:"instance,omitempty"`
-			Generation *string `json:"generation,omitempty"`
-			Limit      *int    `json:"limit,omitempty"`
-		}
-		if err := decodeArgs(raw, &a); err != nil {
-			return err
-		}
-		*name, *p = a.Name, wsPageArgs{After: a.After, Instance: a.Instance, Generation: a.Generation, Limit: a.Limit}
-		return nil
-	}
-	var a struct {
-		Name       string  `json:"name"`
-		Base       string  `json:"base"`
-		Target     string  `json:"target"`
-		After      *string `json:"after,omitempty"`
-		Instance   *string `json:"instance,omitempty"`
-		Generation *string `json:"generation,omitempty"`
-		Limit      *int    `json:"limit,omitempty"`
-	}
-	if err := decodeArgs(raw, &a); err != nil {
-		return err
-	}
-	*name, *base, *target = a.Name, a.Base, a.Target
-	*p = wsPageArgs{After: a.After, Instance: a.Instance, Generation: a.Generation, Limit: a.Limit}
-	return nil
 }
 
 // ---- Argument decoding ----
@@ -772,6 +821,12 @@ type dispatchArgs struct {
 		Timeout *string `json:"timeout,omitempty"`
 	} `json:"override,omitempty"`
 	Wait *string `json:"wait,omitempty"`
+	// Iteration 10c: the optional workspace selection, forwarded unchanged
+	// to the shared contract validator (null and duplicates are refused by
+	// the strict decoder).
+	Workspace         *string `json:"workspace,omitempty"`
+	Base              *string `json:"base,omitempty"`
+	WorkspaceInstance *string `json:"workspace_instance,omitempty"`
 }
 
 // request builds the plane request with the session's attribution and
@@ -785,7 +840,7 @@ func (a dispatchArgs) request(rb contract.RequestedBy) (contract.DispatchRequest
 		payload = []string{}
 	}
 	req := contract.DispatchRequest{Target: contract.TaskTarget{Kind: a.Target.Kind, Value: a.Target.Value}, Goal: a.Goal, Payload: payload,
-		Acceptance: a.Acceptance, RequestedBy: rb}
+		Acceptance: a.Acceptance, RequestedBy: rb, Workspace: a.Workspace, Base: a.Base, WorkspaceInstance: a.WorkspaceInstance}
 	if o := a.Override; o != nil {
 		req.Override = &contract.TaskOverride{Model: o.Model, Effort: o.Effort}
 		if o.Timeout != nil {

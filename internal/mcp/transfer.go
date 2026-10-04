@@ -21,6 +21,9 @@ import (
 type Transfers interface {
 	Push(ctx context.Context, req workspacetransfer.PushRequest) (contract.WorkspacePushResult, error)
 	Pull(ctx context.Context, req workspacetransfer.PullRequest) (contract.WorkspacePullResult, error)
+	// ResolveTaskResult (iteration 10c) resolves a task's published result
+	// through the same call's typed client for ws_pull's task form.
+	ResolveTaskResult(ctx context.Context, id string) (client.TaskResultSelection, error)
 	Close()
 }
 
@@ -40,6 +43,10 @@ func (p *planeTransfers) Push(ctx context.Context, req workspacetransfer.PushReq
 
 func (p *planeTransfers) Pull(ctx context.Context, req workspacetransfer.PullRequest) (contract.WorkspacePullResult, error) {
 	return workspacetransfer.Pull(ctx, p.o, req)
+}
+
+func (p *planeTransfers) ResolveTaskResult(ctx context.Context, id string) (client.TaskResultSelection, error) {
+	return p.cl.ResolveTaskResult(ctx, id)
 }
 
 func (p *planeTransfers) Close() { p.cl.Close() }
@@ -71,7 +78,7 @@ func transferTools() []*tool {
 			description: "Push local files to a workspace branch (default main): this tool READS local files. A clean git repository (path must be its root) pushes its committed HEAD and complete history with exact commit IDs; it must be clean (no staged, unstaged or untracked non-ignored changes, with .gitignore, info/exclude and the global excludes file; files are compared in Git's normalized check-in form, so a line-ending-only difference is clean), else commit first. A plain folder is snapshotted honoring its nested .gitignore files as one deterministic commit parented on the branch's current commit (an unchanged tree adds none). Fast-forward only with compare-and-swap on the observed tip: a push that would replace history is refused (push to a new branch, then ws_ref_set); a moved branch conflicts. Worktrees, submodules, shallow, partial, sparse and LFS repositories and repository subdirectories are refused. Returns name, instance, branch, old_commit, commit, source_kind and changed. A lost answer may hide a completed push: inspect ws_status before repeating it (never retried)." +
 				local + long + mutationNote + freshNote},
 		{name: toolWsPull, annotations: mutation(false, false), run: runWsPull,
-			description: "Pull a workspace commit to local files: this tool WRITES local files. ref is a branch, a full reachable 40-hex commit hash or a complete refs/callsheet/tasks/ ref; the commit is verified completely before anything local is written. Into an existing git repository (path must be its root; local changes are fine) it installs objects and sets only refs/callsheet/NAME/heads|tasks|commits/... with a local compare-and-swap; checkout, index, HEAD, branches, config and remotes are never touched, and delivering it to your own remote is your own git push. Into any other path it exports the files to a new or empty directory with one atomic rename (a nonempty directory is refused, never overwritten; unsafe trees are refused). Returns name, instance, selector, commit, destination_kind, local_ref, old_commit and changed. After a lost answer inspect the destination before repeating it." +
+			description: "Pull a workspace commit to local files: this tool WRITES local files. Two forms (exactly one). {task_id, path?}: that task's published result from its bound workspace instance (its record selects the instance and immutable result commit; a running task conflicts with task_result_pending, an unpublished result with task_result_unavailable, a scratch task is invalid_argument no_task_workspace, a pruned result not_found and a removed or recreated workspace conflicts with workspace_instance_mismatch: never a fallback to a new workspace of the same name). {name, ref, path?}: ref is a branch, a full reachable 40-hex commit hash, a complete refs/callsheet/tasks/ ref or a bare task ID meaning that task ref (refs/heads/t_... is a branch named like a task ID). The commit is verified completely before anything local is written. Into an existing git repository (path must be its root; local changes are fine) it installs objects and sets only refs/callsheet/NAME/heads|tasks|commits/... with a local compare-and-swap; checkout, index, HEAD, branches, config and remotes are never touched, and delivering it to your own remote is your own git push. Into any other path it exports the files to a new or empty directory with one atomic rename (a nonempty directory is refused, never overwritten; unsafe trees are refused). Returns name, instance, selector, commit, destination_kind, local_ref, old_commit and changed. After a lost answer inspect the destination before repeating it." +
 				local + long + mutationNote + freshNote},
 	}
 }
@@ -140,20 +147,56 @@ func runWsPush(c *call, raw json.RawMessage) (toolResult, error) {
 	return encodeJSON(r)
 }
 
-func runWsPull(c *call, raw json.RawMessage) (toolResult, error) {
-	var a struct {
-		Name string  `json:"name"`
-		Ref  string  `json:"ref"`
-		Path *string `json:"path,omitempty"`
+// pullArgs are ws_pull's flat arguments (iteration 10c): the explicit
+// form {name, ref, path?} or the task form {task_id, path?}; exactly one
+// form and no mixed key are runtime rules.
+type pullArgs struct {
+	TaskID *string `json:"task_id,omitempty"`
+	Name   *string `json:"name,omitempty"`
+	Ref    *string `json:"ref,omitempty"`
+	Path   *string `json:"path,omitempty"`
+}
+
+// request validates the form and returns the pull request (without the
+// task form's resolved selection) and whether it is the task form.
+func (a pullArgs) request() (workspacetransfer.PullRequest, bool, error) {
+	var req workspacetransfer.PullRequest
+	switch {
+	case a.TaskID != nil && (a.Name != nil || a.Ref != nil):
+		return req, false, invalid("task_id", "ws_pull takes either task_id or name and ref, never both")
+	case a.TaskID != nil && !contract.ValidTaskID(*a.TaskID):
+		return req, false, invalidTaskID("task_id")
+	case a.TaskID != nil:
+		return req, true, nil
+	case a.Name == nil || a.Ref == nil:
+		return req, false, invalid("name", "ws_pull needs task_id, or name and ref together")
 	}
+	if !contract.ValidWorkspaceName(*a.Name) {
+		return req, false, invalidWsName()
+	}
+	// A bare task ID means its full task ref (refs/heads/t_... escapes to
+	// a branch); the unchanged ValidatePull then checks the result.
+	sel, err := contract.ParseTaskSelector(*a.Ref, "ref", false)
+	if err != nil {
+		return req, false, err
+	}
+	req.Name, req.Ref = *a.Name, contract.SelectorString(sel)
+	if _, err := contract.ValidatePull(req.Name, req.Ref); err != nil {
+		return req, false, err
+	}
+	return req, false, nil
+}
+
+func runWsPull(c *call, raw json.RawMessage) (toolResult, error) {
+	var a pullArgs
 	if err := decodeArgs(raw, &a); err != nil {
 		return toolResult{}, err
 	}
-	if _, err := contract.ValidatePull(a.Name, a.Ref); err != nil {
+	req, task, err := a.request()
+	if err != nil {
 		return toolResult{}, err
 	}
-	path, set, err := c.optionalPath(a.Path)
-	if err != nil {
+	if req.Path, req.PathSet, err = c.optionalPath(a.Path); err != nil {
 		return toolResult{}, err
 	}
 	tr, err := c.transfers()
@@ -161,7 +204,17 @@ func runWsPull(c *call, raw json.RawMessage) (toolResult, error) {
 		return toolResult{}, err
 	}
 	defer tr.Close()
-	r, err := tr.Pull(c.opCtx, workspacetransfer.PullRequest{Name: a.Name, Ref: a.Ref, Path: path, PathSet: set})
+	if task {
+		// The task's record selects its bound instance and immutable
+		// result; the pair guards the transfer itself. The call's context
+		// cancels the lookup and the transfer alike.
+		sel, err := tr.ResolveTaskResult(c.opCtx, *a.TaskID)
+		if err != nil {
+			return toolResult{}, err
+		}
+		req.Name, req.Ref, req.ExpectedInstance, req.ExpectedCommit = sel.Name, sel.Ref, sel.Instance, sel.Commit
+	}
+	r, err := tr.Pull(c.opCtx, req)
 	if err != nil {
 		return toolResult{}, err
 	}

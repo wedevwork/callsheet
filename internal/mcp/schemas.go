@@ -125,6 +125,10 @@ func schemaFor(name string) schema {
 				"description": "Opaque pointers for the worker (never fetched): at most 64, each at most 2 KiB, 64 KiB in total."},
 			"override": override,
 			"wait":     duration("After admission, wait at most this long (0 to 5m) for the task to end, capped by the call budget; omitted: no wait."),
+			// Iteration 10c: the optional workspace selection.
+			"workspace":          withDesc(wsName(), "Run the task in a private checkout of this workspace and publish its result as refs/callsheet/tasks/TASK_ID; omitted: a scratch directory and no result commit."),
+			"base":               pattern("With workspace: the checkout's base, fixed at admission: a branch (default main), a full 40-hex commit hash, a complete refs/callsheet/tasks/ ref, a task ID (its result ref) or empty for the empty tree (an empty workspace needs it); refs/heads/t_... is a branch named like a task ID.", taskBasePattern),
+			"workspace_instance": withDesc(wsInstance(), "With workspace: admit only if the workspace still has this instance (ws_show, or a previous task's workspace_binding.instance for a continuation); compare-only."),
 		}, "target", "goal", "acceptance")
 	case toolTaskLs:
 		return object(schema{
@@ -164,7 +168,13 @@ const (
 	selectorPattern = `^([0-9a-f]{40}|refs/callsheet/tasks/t_[0-9a-f]{32}|(refs/heads/)?[a-z0-9][a-z0-9._-]{0,199}(/[a-z0-9][a-z0-9._-]{0,199})*)$`
 	basePattern     = `^(empty|[0-9a-f]{40}|refs/callsheet/tasks/t_[0-9a-f]{32}|(refs/heads/)?[a-z0-9][a-z0-9._-]{0,199}(/[a-z0-9][a-z0-9._-]{0,199})*)$`
 	cursorPattern   = `^(refs/heads/[a-z0-9][a-z0-9._-]{0,199}(/[a-z0-9][a-z0-9._-]{0,199})*|refs/callsheet/tasks/t_[0-9a-f]{32})$`
+	// taskBasePattern (iteration 10c) is dispatch's base with its explicit
+	// task-ID alternative (the result ref of that task).
+	taskBasePattern = `^(empty|t_[0-9a-f]{32}|[0-9a-f]{40}|refs/callsheet/tasks/t_[0-9a-f]{32}|(refs/heads/)?[a-z0-9][a-z0-9._-]{0,199}(/[a-z0-9][a-z0-9._-]{0,199})*)$`
 )
+
+// taskIDForm is the task_id property of the two-form workspace tools.
+func taskIDForm(desc string) schema { return taskID(desc) }
 
 func wsName() schema {
 	return slug("The workspace name (a slug of lowercase letters, digits and internal hyphens, 1-63 bytes), named explicitly on every call.")
@@ -218,17 +228,30 @@ func workspaceSchema(name string) schema {
 			"delete":   boolean("Delete the branch instead (expected must be its current hash)."),
 		}, "name", "instance", "branch", "expected")
 	case toolWsStatus:
+		// Two forms in one flat object (iteration 10c): {name, after?,
+		// instance?, generation?, limit?} or {task_id}; exactly one form is a
+		// runtime rule, so nothing is required here.
 		props := cont()
-		props["after"] = bounded("Continuation only (with instance and generation): the previous page's next_after, a complete ref.", cursorPattern, contract.MaxFullRef)
-		props["name"] = wsName()
-		return object(props, "name")
+		props["after"] = bounded("Name form only, continuation only (with instance and generation, all or none): the previous page's next_after, a complete ref.", cursorPattern, contract.MaxFullRef)
+		props["instance"] = pattern("Name form only, continuation only (with after and generation, all or none): the previous page's instance.", tokenPattern)
+		props["generation"] = pattern("Name form only, continuation only (with after and instance, all or none): the previous page's generation; a changed generation conflicts.", tokenPattern)
+		props["limit"] = integer("Name form only: at most this many rows (independently optional).", 1, contract.MaxWorkspaceLimit, contract.DefaultWorkspaceLimit, true)
+		props["name"] = withDesc(wsName(), "Name form: the workspace name (required for this form; excludes task_id). The paging arguments apply only to this form.")
+		props["task_id"] = taskIDForm("Task form: the task whose workspace status to return (selects the task form; excludes name and every paging argument).")
+		return object(props)
 	case toolWsDiff:
+		// Two forms in one flat object (iteration 10c): {name, base, target,
+		// paging?} or {task_id, paging?}; exactly one form is a runtime rule.
 		props := cont()
-		props["after"] = pattern("Continuation only (with instance and generation): the previous page's next_after, base64 of a raw path.", `^[A-Za-z0-9+/]+={0,2}$`)
-		props["name"] = wsName()
-		props["base"] = bounded("The base snapshot: a selector, or empty for the empty tree (a continuation uses the returned base_commit or empty).", basePattern, contract.MaxFullRef)
-		props["target"] = bounded("The target snapshot: a full reachable commit hash, a branch or a complete refs/callsheet/tasks/ ref (a continuation uses the returned target_commit).", selectorPattern, contract.MaxFullRef)
-		return object(props, "name", "base", "target")
+		props["after"] = pattern("Either form, continuation only (with instance and generation, all or none): the previous page's next_after, base64 of a raw path.", `^[A-Za-z0-9+/]+={0,2}$`)
+		props["instance"] = pattern("Either form, continuation only (with after and generation, all or none): the previous page's instance (the task form requires the task's bound instance).", tokenPattern)
+		props["generation"] = pattern("Either form, continuation only (with after and instance, all or none): the previous page's generation; a changed generation conflicts (restart from the first page).", tokenPattern)
+		props["limit"] = integer("Either form: at most this many rows (independently optional).", 1, contract.MaxWorkspaceLimit, contract.DefaultWorkspaceLimit, true)
+		props["name"] = withDesc(wsName(), "Explicit form: the workspace name; required together with base and target, and excludes task_id.")
+		props["base"] = bounded("Explicit form (with name and target; excludes task_id): the base snapshot, a selector, a bare task ID (its task ref) or empty for the empty tree (a continuation uses the returned base_commit or empty).", basePattern, contract.MaxFullRef)
+		props["target"] = bounded("Explicit form (with name and base; excludes task_id): the target snapshot, a full reachable commit hash, a branch, a complete refs/callsheet/tasks/ ref or a bare task ID (its task ref; refs/heads/t_... is a branch) (a continuation uses the returned target_commit).", selectorPattern, contract.MaxFullRef)
+		props["task_id"] = taskIDForm("Task form: compare this task's admitted base with its published result commit (selects the task form; excludes name, base and target; the paging arguments apply).")
+		return object(props)
 	case toolWsPush:
 		return object(schema{
 			"name":     wsName(),
@@ -237,13 +260,23 @@ func workspaceSchema(name string) schema {
 			"path":     localPath("The local source directory (a git repository root or a plain folder) on the machine running callsheet mcp; omitted: the server's working directory."),
 		}, "name", "instance")
 	case toolWsPull:
+		// Two forms in one flat object (iteration 10c): {name, ref, path?} or
+		// {task_id, path?}; exactly one form is a runtime rule.
 		return object(schema{
-			"name": wsName(),
-			"ref":  bounded("The commit to pull: a branch (short or refs/heads/...), a full 40-hex commit hash reachable from a workspace ref or a complete refs/callsheet/tasks/t_<32 hex> ref (t_... alone is a branch name); no short hashes or revision expressions.", selectorPattern, contract.MaxFullRef),
-			"path": localPath("The local destination on the machine running callsheet mcp: an existing git repository root, or a new or empty directory; omitted: the server's working directory."),
-		}, "name", "ref")
+			"name": withDesc(wsName(), "Explicit form: the workspace name; required together with ref, and excludes task_id."),
+			"ref": bounded("Explicit form (with name; excludes task_id): the commit to pull, a branch (short or refs/heads/...), a full 40-hex commit hash reachable from a workspace ref, a complete refs/callsheet/tasks/t_<32 hex> ref or a bare task ID meaning that task ref (refs/heads/t_... is a branch named like a task ID); no short hashes or revision expressions.",
+				selectorPattern, contract.MaxFullRef),
+			"task_id": taskIDForm("Task form: pull this task's published result from its bound workspace instance (selects the task form; excludes name and ref)."),
+			"path":    localPath("Optional in both forms: the local destination on the machine running callsheet mcp, an existing git repository root, or a new or empty directory; omitted: the server's working directory."),
+		})
 	}
 	return nil
+}
+
+// withDesc replaces s's description.
+func withDesc(s schema, desc string) schema {
+	s["description"] = desc
+	return s
 }
 
 // localPath is a local path argument: nonempty, at most the Linux native

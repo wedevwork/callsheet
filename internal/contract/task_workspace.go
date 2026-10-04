@@ -1072,3 +1072,161 @@ func SplitPublicationPath(rest string) (pub string, finish, ok bool) {
 
 // EncodePath renders raw path bytes as path_base64.
 func EncodePath(p []byte) string { return base64.StdEncoding.EncodeToString(p) }
+
+// ---- Coordinator delivery (iteration 10c) ----
+
+// Task-result door errors of the coordinator's task-ID forms (ws pull,
+// ws status and ws diff TASK_ID): a bound task without a terminal result
+// yet (conflict), a terminal task without a published, still exactly
+// present result (conflict), and a task without a workspace binding
+// (invalid_argument). The landed ReasonWorkspaceInstanceMismatch reports a
+// removed or recreated bound workspace.
+const (
+	ReasonTaskResultPending     = "task_result_pending"
+	ReasonTaskResultUnavailable = "task_result_unavailable"
+	ReasonNoTaskWorkspace       = "no_task_workspace"
+)
+
+// TaskWorkspaceSuffix follows /api/v1/tasks/<id> for the task workspace
+// status endpoint (matched exactly, never by prefix).
+const TaskWorkspaceSuffix = "/workspace"
+
+// TaskWorkspacePath is GET /api/v1/tasks/<id>/workspace.
+func TaskWorkspacePath(taskID string) string { return PathTasks + "/" + taskID + TaskWorkspaceSuffix }
+
+// ParseTaskSelector parses a selector at a task-aware door: a canonical
+// bare task ID selects its full task ref; everything else is
+// ParseSelector's grammar (an actual branch named like a task ID is
+// refs/heads/TASK_ID).
+func ParseTaskSelector(s, field string, allowEmpty bool) (Selector, error) {
+	if ValidTaskID(s) {
+		return Selector{Kind: SelectorKindTask, Value: TaskRefPrefix + s}, nil
+	}
+	return ParseSelector(s, field, allowEmpty)
+}
+
+// NoTaskWorkspace is the error of a task-ID form naming a task without a
+// workspace binding.
+func NoTaskWorkspace(id string) error {
+	return TaskError(CodeInvalidArgument, "task_id", ReasonNoTaskWorkspace, "task %s has no workspace (no_task_workspace): a scratch task has no result commit", id)
+}
+
+// TaskResultPending is the error of a bound task that is not terminal yet.
+func TaskResultPending(id string) error {
+	return TaskError(CodeConflict, "task_id", ReasonTaskResultPending, "task %s has no workspace result yet (task_result_pending); wait for it to end (task wait) and retry", id)
+}
+
+// TaskResultUnavailable is the error of a terminal task whose result is not
+// published, or whose task ref names another commit.
+func TaskResultUnavailable(id, why string) error {
+	return TaskError(CodeConflict, "task_id", ReasonTaskResultUnavailable, "task %s has no available workspace result (task_result_unavailable): %s", id, why)
+}
+
+// WorkspaceInstanceMismatch is the error of a task-ID form whose bound
+// workspace was removed or recreated: never a fallback to a new workspace
+// of the same name.
+func WorkspaceInstanceMismatch(name string) error {
+	return TaskError(CodeConflict, "", ReasonWorkspaceInstanceMismatch,
+		"workspace %s was removed or recreated since the task's admission (workspace_instance_mismatch); its result is not in the current workspace", name)
+}
+
+// TaskWorkspaceStatus is a task's workspace status (the payload of GET
+// /api/v1/tasks/<id>/workspace): its state and nonterminal phase, the
+// immutable binding, the bounded terminal result (null while nonterminal)
+// and whether the current matching instance holds the exact recorded task
+// ref and hash, a fresh observation and not a retention lease. It never
+// carries file contents, patches, commit messages or task output.
+type TaskWorkspaceStatus struct {
+	TaskID         string               `json:"task_id"`
+	State          string               `json:"state"`
+	WorkspacePhase *string              `json:"workspace_phase"`
+	Binding        WorkspaceBinding     `json:"binding"`
+	Result         *TaskWorkspaceResult `json:"result"`
+	Available      bool                 `json:"available"`
+}
+
+// Validate checks the payload's grammar and its state, phase, binding,
+// result and availability consistency.
+func (s TaskWorkspaceStatus) Validate() error {
+	const what = "task workspace status"
+	switch {
+	case !ValidTaskID(s.TaskID):
+		return errInvalid("%s task_id is not a task ID", what)
+	case !ValidTaskState(s.State):
+		return errInvalid("%s state is not a known state", what)
+	}
+	if err := s.Binding.Validate(); err != nil {
+		return err
+	}
+	term := TaskTerminal(s.State)
+	switch p := s.WorkspacePhase; {
+	case term && p != nil, !term && p == nil:
+		return errInvalid("%s workspace_phase is null exactly when terminal", what)
+	case p != nil && *p != WorkspacePhasePreparing && *p != WorkspacePhaseExecuting && *p != WorkspacePhasePublishing:
+		return errInvalid("%s workspace_phase must be preparing, executing or publishing", what)
+	case term != (s.Result != nil):
+		return errInvalid("%s result is present exactly when terminal", what)
+	}
+	if r := s.Result; r != nil {
+		if err := r.Validate(); err != nil {
+			return err
+		}
+		switch {
+		case r.Name != s.Binding.Name || r.Instance != s.Binding.Instance || !sameHash(r.BaseCommit, s.Binding.BaseCommit):
+			return errInvalid("%s result does not match the task's binding", what)
+		case r.Ref != nil && *r.Ref != TaskRefPrefix+s.TaskID:
+			return errInvalid("%s result ref is not the task's own ref", what)
+		}
+	}
+	if s.Available && (s.Result == nil || s.Result.Publication != PublicationPublished) {
+		return errInvalid("%s: only a published result is available", what)
+	}
+	return nil
+}
+
+// TaskWorkspaceStatusResponse is the versioned task workspace status
+// envelope {"version":6,"workspace":{...}}, shared by the HTTP endpoint,
+// CLI JSON and MCP structuredContent.
+type TaskWorkspaceStatusResponse struct {
+	Version   int
+	Workspace TaskWorkspaceStatus
+}
+
+// MarshalJSON renders the envelope with the protocol version and every
+// payload key, nulls included.
+func (r TaskWorkspaceStatusResponse) MarshalJSON() ([]byte, error) {
+	type wire struct {
+		Version   int                 `json:"version"`
+		Workspace TaskWorkspaceStatus `json:"workspace"`
+	}
+	return compact(wire{ProtocolVersion, r.Workspace})
+}
+
+// ParseTaskWorkspaceStatusResponse strictly decodes the envelope: its
+// MaxWorkspaceResponse bound, the protocol version, exact keys (no unknown,
+// missing, null or duplicate member) and the payload's consistency.
+func ParseTaskWorkspaceStatusResponse(b []byte) (TaskWorkspaceStatusResponse, error) {
+	const what = "task workspace status response"
+	var r TaskWorkspaceStatusResponse
+	if len(b) > MaxWorkspaceResponse {
+		return r, errInvalid("%s exceeds %d bytes", what, MaxWorkspaceResponse)
+	}
+	var w struct {
+		Version   int             `json:"version"`
+		Workspace json.RawMessage `json:"workspace"`
+	}
+	if err := decodeStrict(b, &w, what); err != nil {
+		return r, err
+	}
+	if w.Version != ProtocolVersion {
+		return r, errInvalid("%s version must be %d", what, ProtocolVersion)
+	}
+	var s TaskWorkspaceStatus
+	if err := decodeStrict(w.Workspace, &s, what+" workspace"); err != nil {
+		return r, err
+	}
+	if err := s.Validate(); err != nil {
+		return r, err
+	}
+	return TaskWorkspaceStatusResponse{Version: w.Version, Workspace: s}, nil
+}

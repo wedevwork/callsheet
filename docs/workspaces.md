@@ -1,6 +1,6 @@
 # Workspaces: local push and pull
 
-The plane hosts named workspaces: durable git hubs over its verified TLS endpoint (iteration 09a: `ws create`, `ls`, `show`, `rm`, `prune`, `status`, `diff`, `ref set`). Iteration 09b adds the two local transfers, `ws push` and `ws pull`, on the CLI and as the MCP tools `ws_push` and `ws_pull`. They run on the machine where the command or `callsheet mcp` runs: push reads local files, pull writes them. Only paths, selectors and the result metadata below cross the CLI or MCP boundary: never file contents, file lists, commit messages, absolute local paths, credentials or pack diagnostics.
+The plane hosts named workspaces: durable git hubs over its verified TLS endpoint (iteration 09a: `ws create`, `ls`, `show`, `rm`, `prune`, `status`, `diff`, `ref set`). Iteration 09b adds the two local transfers, `ws push` and `ws pull`, on the CLI and as the MCP tools `ws_push` and `ws_pull`. Iteration 10c adds workspace dispatch on the CLI and MCP, the task-ID forms of pull, status and diff, and the [coordinator workflow](#coordinator-workflow) for chaining tasks. They run on the machine where the command or `callsheet mcp` runs: push reads local files, pull writes them. Only paths, selectors and the result metadata below cross the CLI or MCP boundary: never file contents, file lists, commit messages, absolute local paths, credentials or pack diagnostics.
 
 go-git v5.16.3 is embedded and is the only git engine. No `git` executable is needed or run, and no hook, filter, LFS process, remote helper, credential helper, SSH agent or persisted remote is ever used. Linux and macOS are supported.
 
@@ -8,23 +8,24 @@ go-git v5.16.3 is embedded and is the only git engine. No `git` executable is ne
 
 ```
 callsheet ws push --instance TOKEN [--branch BRANCH] --plane URL (--ca FILE | --ca-fingerprint SHA256) [--json] NAME [PATH]
-callsheet ws pull --plane URL (--ca FILE | --ca-fingerprint SHA256) [--json] NAME REF [PATH]
+callsheet ws pull --plane URL (--ca FILE | --ca-fingerprint SHA256) [--json] (TASK_ID | NAME REF) [PATH]
 ```
 
 - `NAME` is an existing workspace; nothing is created or inferred. Flags come before the operands.
+- `TASK_ID` (iteration 10c) pulls that task's published result: the task's own record selects its bound workspace, instance and immutable result commit (see [Task results by task ID](#task-results-by-task-id)). A first operand that is a task ID selects this form (workspace names cannot contain `_`); a malformed operand starting `t_` is `invalid_argument`, never a workspace name.
 - `PATH` defaults to the current directory. A relative path resolves against the process working directory (for `ws_push`/`ws_pull`, the `callsheet mcp` server's working directory when the call is admitted), never against a path a model supplies. There is no `~` or variable expansion; an empty path, invalid UTF-8, NUL or a path over the native limit (4095 bytes on Linux, 1023 on macOS) is `invalid_argument`.
 - `push` needs `--instance` (from `ws show`), like `rm`, `prune` and `ref set`. `--branch` is the target branch, short (`topic/x`) or `refs/heads/...`, default `main`, with the 09a portable name rules (lowercase ASCII, components of 1-200 bytes, at most 512 bytes as a full ref).
-- `pull` needs no instance: it records the instance it observed and checks it again before anything local is published. `REF` is a branch (short or `refs/heads/...`), a full 40-hex commit hash reachable from a workspace ref, or a complete `refs/callsheet/tasks/t_<32 hex>` ref (created by workspace tasks since iteration 10b, see [Workspace tasks](#workspace-tasks)). `t_...` alone is a branch name; there are no short hashes, revision expressions or task-name lookups.
+- `pull` needs no instance: it records the instance it observed and checks it again before anything local is published. `REF` is a branch (short or `refs/heads/...`), a full 40-hex commit hash reachable from a workspace ref, a complete `refs/callsheet/tasks/t_<32 hex>` ref (created by workspace tasks since iteration 10b, see [Workspace tasks](#workspace-tasks)), or, since iteration 10c, a bare `t_<32 hex>` task ID meaning that complete task ref. A branch named like a task ID is selected as `refs/heads/t_...`. A complete task ref keeps its 09b meaning (also for a ref planted without a task record); the `NAME REF` form never looks the task up. There are no short hashes, revision expressions or task-name lookups.
 - There is no `--force`, `--commit` or remote option.
 
 MCP tools (after the eight 09a workspace tools; 23 tools in all):
 
-| Tool | Required | Optional |
+| Tool | Accepted forms (exactly one) | Optional |
 |---|---|---|
 | `ws_push` | `name`, `instance` | `branch` (default main), `path` (default: the server's working directory) |
-| `ws_pull` | `name`, `ref` | `path` (default: the server's working directory) |
+| `ws_pull` | `{name, ref}` or `{task_id}` | `path` in both forms (default: the server's working directory) |
 
-An omitted optional argument differs from `null` or `""`, which are invalid. Both tools are mutations (`readOnlyHint:false`, `destructiveHint:false`, `idempotentHint:false`) and are never retried automatically.
+An omitted optional argument differs from `null` or `""`, which are invalid. Both tools are mutations (`readOnlyHint:false`, `destructiveHint:false`, `idempotentHint:false`) and are never retried automatically. `ws_pull`, `ws_status` and `ws_diff` keep one flat input schema each (the union of their two forms' properties, nothing required at the top level): exactly one complete form, no mixed keys and the all-or-none `after`/`instance`/`generation` continuation are checked when the call runs, and a violation is `invalid_argument` before anything is contacted.
 
 ## Results
 
@@ -156,7 +157,13 @@ Transfers stream over the plane's TLS endpoint without a total timeout: the dial
 
 ## Workspace tasks
 
-Since iteration 10b (protocol 6) a task can run in a workspace. In this iteration the selection is part of the HTTP dispatch request (`POST /api/v1/tasks`); the CLI and MCP doors follow in iteration 10c.
+Since iteration 10b (protocol 6) a task can run in a workspace. The selection is the dispatch request's `workspace`, `base` and `workspace_instance` (HTTP `POST /api/v1/tasks`), and since iteration 10c the CLI's `callsheet dispatch --workspace NAME [--base SELECTOR] [--workspace-instance TOKEN]` and the MCP `dispatch` tool's optional `workspace`, `base` and `workspace_instance` arguments, all checked by the same contract validator:
+
+```sh
+callsheet dispatch --role-name implementer --goal "fix the parser" --acceptance "tests pass" \
+  --workspace myproject --base main --workspace-instance <instance> \
+  --plane https://plane.example:8443 --ca plane-ca.crt
+```
 
 - `workspace` names the workspace; omitted means a task without a workspace, while `""` or `null` is `invalid_argument`. `base` (requires `workspace`) is omitted for `refs/heads/main` (an unborn `main` is `not_found`, never an implicit empty base), `empty` for an empty tree with no parent, a branch (short or `refs/heads/...`), a full 40-hex commit reachable from a ref, a full task ref, or a bare `t_<32 hex>` task ID meaning that task's ref. `workspace_instance` (requires `workspace`) is a compare-only precondition: another instance is `conflict` before anything is dispatched.
 - Admission resolves the instance and base commit once and stores the immutable binding (`workspace_binding` in the task view: `name`, `instance`, `base_selector`, `base_commit`). Later branch movement never changes it. Resolution is not a retention lease: a prune or `ws rm` before the worker's fetch makes the start fail (`workspace_base_unavailable` or `workspace_unavailable`).
@@ -167,14 +174,98 @@ Since iteration 10b (protocol 6) a task can run in a workspace. In this iteratio
 - The result's `workspace` object reports `publication` (`published`, `failed`, `not_started`, `not_applicable`), the commit and ref when published, a fixed `error` when failed, tree-metadata totals (`diffstat`: added, modified and deleted paths and old/new bytes, never line counts) and at most 100 change rows and 32 KiB (`changes_truncated`, `next_after`), with exact totals. `result_commit`, `diffstat` and `changed_paths` mirror it. A failed publication never changes the task's state: **check `workspace.publication` before chaining a task's result.**
 - Publication survives crashes on either side. The plane records an intent before the ref and the terminal record after it. A worker restarted after an intent only observes the settlement and never pushes again. The plane settles an intent nobody completes at its five-minute expiry, or at its own restart. While a receive's hub storage outcome is ambiguous (a sync failure after its commit point), the task stays completion-pending until the plane's restart recovers the workspace. `ws rm` and `ws prune`, even when already queued, wait for an active publication instead of erasing its evidence.
 - Peak disk for workspace tasks: the plane's generation copy during each receive (09a), plus on each node its disposable cache (an idle target of 1 GiB of logical bytes, least recently used entries evicted; a single larger history is used privately and not kept) and its staging, plus per simultaneous task one independent copy of the selected history, its checkout, and the result's objects and pack staging. There is no task quota; a full disk fails the preparation or the publication with a fixed reason.
+- The task's own working directory is the private checkout: a role's configured work directory is not supported for workspace tasks, and a task without a workspace (scratch) has no result commit at all.
+- Dispatch success and `task show`/`task wait` terminal views carry `workspace_binding`, `workspace_phase` (`preparing`, `executing` or `publishing`; null when terminal) and the terminal `result.workspace`. CLI text adds `workspace`, `workspace_instance`, `base_commit`, `workspace_phase` and, with a terminal workspace result, `publication`, `result_commit`, `result_ref`, `publication_error`, `diffstat` and one escaped `changed_path` line per path (`changed_paths_truncated: true` and `changed_paths_next_after` when cut); a null value prints as `-`. A nonterminal `task wait` answer stays the compact still-running row: use `task show` for the binding and phase.
+
+## Task results by task ID
+
+Iteration 10c lets a coordinator name a task instead of a workspace and ref. These are the only task-aware doors: CLI `dispatch --base` and MCP `dispatch.base`; `ws pull TASK_ID`, `ws status TASK_ID` and `ws diff TASK_ID` and the MCP `task_id` forms of `ws_pull`, `ws_status` and `ws_diff`; and the explicit `ws pull NAME REF`/`ws_pull.ref` and `ws diff` base and target (`--base`, `TARGET`, `ws_diff.base` and `.target`), where a bare task ID means its complete task ref. `ws ref set` (and `ws_ref_set.target`) and the raw hub API are unchanged: there `t_...` is still a branch name. Use `refs/heads/t_...` to select a branch named like a task ID at a task-aware door.
+
+```
+callsheet ws status [--json] --plane URL (--ca FILE | --ca-fingerprint SHA256) TASK_ID
+callsheet ws diff [--after CURSOR --instance TOKEN --generation TOKEN] [--limit N] [--json] --plane URL (--ca FILE | --ca-fingerprint SHA256) TASK_ID
+callsheet ws pull [--json] --plane URL (--ca FILE | --ca-fingerprint SHA256) TASK_ID [PATH]
+```
+
+- **Lookup.** The task's durable record decides: no binding is `invalid_argument` (`no_task_workspace`), checked first; a task that is not terminal yet (preparing, executing or publishing) is `conflict` (`task_result_pending`); a terminal task whose publication is `failed`, `not_started` or `not_applicable` (lost, rejected, cancelled before start) is `conflict` (`task_result_unavailable`); an unknown task is `not_found`. There is no name inference, fuzzy match, latest-task or role-name lookup.
+- **Exact result.** Pull and diff then check that the workspace still has the bound instance and holds exactly the recorded task ref and hash: a removed or recreated workspace is `conflict` (`workspace_instance_mismatch`), even if the replacement holds the same commits; a pruned ref is `not_found`; a ref naming another commit is `conflict` (`task_result_unavailable`). Nothing falls back to a new workspace of the same name or to a local cache.
+- **Pull.** The guarded transfer fetches the recorded hash and checks the instance again before anything local is published, even when the objects are already local. Into a repository it installs only objects and `refs/callsheet/NAME/tasks/TASK_ID` (checkout, index, `HEAD`, branches, config, remotes and `FETCH_HEAD` untouched; uncommitted changes are fine); into a new or empty folder it exports with the [folder](#pulling-into-a-folder) rules. It prints the ordinary pull result; its `selector` is the complete task ref.
+- **Status.** `ws status TASK_ID` (no paging flags; MCP `{task_id}`) reads `GET /api/v1/tasks/<id>/workspace`: `{"version":6,"workspace":{task_id, state, workspace_phase, binding, result, available}}`. `result` is the bounded terminal result (null while running), and `available` is true only when the publication is `published` and the current matching instance holds the exact ref and hash. A prune, removal or recreation makes it `false` with the historical result intact; a real storage failure is an error, never `available: false`. It is a fresh observation, not a retention lease. `ws status NAME` stays the hub inventory (task refs with their `published_at`).
+- **Diff.** `ws diff TASK_ID` (no `--base`, no `TARGET`; MCP `{task_id}`) compares the admitted base commit (or the empty tree) with the published result commit, both fixed by the record, with the 09a pages (at most 100 rows and 1 MiB each, paths sorted by raw bytes, metadata only). Every page rechecks the bound instance and the exact ref. A continuation passes `--after`, `--instance` and `--generation` together (`--limit` is independent); its instance must be the task's, and a changed generation is `conflict` (restart): nothing restarts or mixes pages on its own. The simplest way to read all pages is to run `ws diff TASK_ID` again from the first page. To compare against another base use `ws diff --base BASE NAME TARGET`. The result's 32 KiB preview cursor (`next_after`) can seed a new explicit hash-based diff only after reading a current generation; it carries no generation itself.
+
+## Chaining tasks
+
+The continuation recipe: wait until task A is terminal; require `result.workspace.publication` to be `published`; take `result.workspace.commit` and `workspace_binding.name` and `.instance`; dispatch B with them as `base`, `workspace` and `workspace_instance`, and check B's returned `workspace_binding` against that instance and hash. `result.result_commit` is the same commit (its top-level mirror). The instance guard is checked at admission under the same workspace lock as the base resolution, so B never runs on an identically named replacement, even one seeded with the same commit; do not use a check-then-dispatch-then-cancel race instead.
+
+B's result commit has exactly A's result commit as its parent, also when A failed, was cancelled or timed out and you deliberately continue from its partial result. Nothing chains automatically on a terminal state, on an unpublished local hash or on `main`; both task refs stay, and no branch (`main` included) moves. A's task ID is also accepted as `base` (its task ref), but the recipe uses the hash to state the exact ancestry. A prune between A and B's admission or fetch makes the hash unavailable: B fails normally, and nothing reruns A or picks another base.
+
+## Coordinator workflow
+
+A copyable local sequence (the plane, a worker node and this machine), executed as written by the function test `TestWorkspaceOperatorWorkflow/documentation`. Lines starting `callsheet` run; a comment `note the printed KEY as VAR` names a value of a later command's `KEY: value` output; the final `git` line is your own optional step and never a Callsheet action.
+
+<!-- workflow:begin -->
+```sh
+TRUST="--plane https://plane.example:8443 --ca plane-ca.crt"
+ROLE=implementer
+# 1. Create a workspace; note the printed instance as INSTANCE.
+callsheet ws create $TRUST myproject
+# 2. Seed it from a plain folder (or the root of a clean repository).
+callsheet ws push --instance $INSTANCE $TRUST myproject ./myproject
+# 3. Dispatch task A on main with the instance guard; note the printed task_id as TASK_A.
+callsheet dispatch --role-name $ROLE --goal "implement the parser" --acceptance "tests pass" --workspace myproject --base main --workspace-instance $INSTANCE $TRUST
+# 4. Wait for A and read its result; note the printed result_commit as COMMIT_A (publication must be published).
+callsheet task wait --wait 5m $TRUST $TASK_A
+callsheet task show --lines 0 $TRUST $TASK_A
+# 5. Inspect A's workspace status and its diff against the admitted base.
+callsheet ws status $TRUST $TASK_A
+callsheet ws diff $TRUST $TASK_A
+# 6. Dispatch task B on A's exact result commit and instance; note the printed task_id as TASK_B.
+callsheet dispatch --role-name $ROLE --goal "review the parser" --acceptance "findings listed" --workspace myproject --base $COMMIT_A --workspace-instance $INSTANCE $TRUST
+callsheet task wait --wait 5m $TRUST $TASK_B
+callsheet ws diff $TRUST $TASK_B
+# 7. Deliver B into your existing (even dirty) repository, or into a new folder.
+callsheet ws pull $TRUST $TASK_B ~/src/myproject
+callsheet ws pull $TRUST $TASK_B ./delivery
+# 8. Optional, your own step: push the result to your own remote yourself.
+git -C ~/src/myproject push <your-remote> refs/callsheet/myproject/tasks/$TASK_B:refs/heads/<delivery-branch>
+```
+<!-- workflow:end -->
+
+What to expect:
+
+- **Result trees.** The visible files after the child exits are committed directly onto the admitted base (one parent; none for `empty`), whatever commits or branches the child made itself; with the [plain-folder ignore policy](#ignore-rules) (root and nested `.gitignore` only, byte-exact). The child's `.git` and the runtime's own files are excluded. Every eligible task gets exactly one result commit, even for an unchanged tree. The commit's identity and message are fixed (`Callsheet <workspace@callsheet.invalid>`, epoch time, task, role, model and state), and the base's bytes are used as stored (normalized check-in form).
+- **Metadata only.** Results, status and diffs carry names, tokens, hashes, modes, sizes and fixed codes, bounded (100 rows and 32 KiB per result, 1 MiB per page): never file contents, patches, symlink targets, commit messages or pack diagnostics. Task output and final messages keep their own channels.
+- **Time bounds.** Preparation and finalization each have five minutes; an authorized publication expires after five minutes. A publication failure (`workspace.publication: failed` with a fixed `error`) is separate from the child's outcome: it never changes the task's state.
+- **Trust.** Node routes check the claimed node ID, execution, start digest and instance against the durable task: correctness checks against accidents on a trusted network, not authentication. Anyone with network access and the CA can act as a coordinator or impersonate a node.
+- **Disk.** Each node keeps a disposable workspace cache (an idle target of 1 GiB, least recently used entries evicted) plus one private copy per running task; a large history therefore costs disk on every node that runs it, and the plane copies a generation per receive.
+- **Native names.** A tree a platform cannot represent safely (names a filesystem aliases, unsafe symlinks, nested repositories) fails preparation or publication with a fixed code instead of being altered.
+- **Crashes and pruning.** A restarted worker or plane recovers a publication without publishing twice (one stable receipt); interrupted checkouts and staging are cleaned on restart. `ws prune` removes old task refs: a pruned result stays in its task's history as metadata but is no longer `available` and cannot be pulled, diffed or chained.
+- **Delivery.** Callsheet stores no remote URLs or credentials and never advances a branch. Delivering a result to your own git remote is your own `git push` (09b's next step), never a Callsheet action.
+
+## Manual M4 checks
+
+These are manual checks for the two-machine M3+M4 acceptance session (a laptop coordinator and a remote worker node). Local automation, including `TestWorkspaceOperatorWorkflow`, does not perform or qualify them.
+
+1. **M4-1 Laptop push:** push a project from the laptop into a new workspace.
+2. **M4-2 Remote cwd is the base:** task A on the remote node reports a working directory whose files equal the selected base commit.
+3. **M4-3 A metadata and diff:** A's task ref, `ws status TASK_ID` metadata and `ws diff TASK_ID` are visible from the laptop.
+4. **M4-4 Second hop:** task B dispatched on A's exact result hash and instance sees A's changes, and B's result parent is A's commit.
+5. **M4-5 Parallel sibling:** a sibling task on the original base sees neither A's nor B's changes.
+6. **M4-6 Partial results:** a failed, a cancelled and a timed-out task each publish an inspectable partial result.
+7. **M4-7 Lost task:** a lost task has no ref.
+8. **M4-8 Restart around publication:** a node or plane restart around a publication yields one stable receipt.
+9. **M4-9 Laptop pull:** pulling a result preserves the laptop's dirty checkout, and `main` never moves.
+10. **M4-10 External delivery (optional):** the user pushes a pulled result to an external remote with their own `git push`.
+
+Record for each check: the OS of both machines, the Callsheet and adapter versions, the task IDs, the workspace instance, the base and result hashes, and the terminal state and publication status. Never record file contents or credentials.
 
 ## Errors
 
 | Code (exit) | When |
 |---|---|
-| `invalid_argument` (2) | arguments, paths, unsupported repositories (`unsupported_repository`), unsafe trees (`unsafe_tree`) |
-| `not_found` (3) | missing source path, workspace, branch, task ref or unreachable hash |
-| `conflict` (4) | dirty source (`dirty_source`), non-fast-forward (`non_fast_forward`), stale instance or compare-and-swap, source changed during the push (`source_changed`), occupied destination (`destination_not_empty`), local ref lock or value (`local_ref_conflict`) |
+| `invalid_argument` (2) | arguments, paths, unsupported repositories (`unsupported_repository`), unsafe trees (`unsafe_tree`), a task without a workspace (`no_task_workspace`) |
+| `not_found` (3) | missing source path, workspace, branch, task, task ref (a pruned result) or unreachable hash |
+| `conflict` (4) | dirty source (`dirty_source`), non-fast-forward (`non_fast_forward`), stale instance or compare-and-swap, source changed during the push (`source_changed`), occupied destination (`destination_not_empty`), local ref lock or value (`local_ref_conflict`), a task not terminal yet (`task_result_pending`) or without an available published result (`task_result_unavailable`), a removed or recreated task workspace (`workspace_instance_mismatch`), a changed generation between pages |
 | `unavailable` (5) | network failures, the 30 s no-progress bound |
 | `trust_failed` (6) | TLS verification |
 | `protocol_mismatch` (7) | version mismatch |
