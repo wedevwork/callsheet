@@ -239,9 +239,12 @@ func TestTaskCheckoutRefusals(t *testing.T) {
 		t.Fatal("missing work accepted")
 	}
 	// A darwin path budget below the work path refuses before writes.
-	deep := tempDir(t)
-	for len(deep) < 1010 {
-		deep = filepath.Join(deep, strings.Repeat("d", 60))
+	// The directory must be creatable on darwin (at most its 1023-byte
+	// budget) and still too long for checkout's repository paths.
+	limit := contract.MaxPathFor("darwin")
+	deep := pathOfLen(t, tempDir(t), limit-16)
+	if len(deep) > limit || len(deep)+len("/.git/objects/00/")+38+len(".lock") <= limit {
+		t.Fatalf("darwin budget fixture: work path of %d bytes, want at most %d and over %d with its repository paths", len(deep), limit, limit)
 	}
 	if err := os.MkdirAll(deep, 0o700); err != nil {
 		t.Fatal(err)

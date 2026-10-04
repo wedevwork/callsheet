@@ -725,6 +725,74 @@ func TestTaskWorkspacePublication(t *testing.T) {
 	})
 }
 
+// wsKindsRow is one TestTaskWorkspaceMetadata/kinds change row.
+type wsKindsRow struct {
+	kind, oldMode, newMode string
+	oldBytes, newBytes     int64
+}
+
+// wsKindsRawOp is the kinds script's index of its last op, the create of
+// the non-UTF-8 name "\xff\xfe.raw".
+const wsKindsRawOp = 6
+
+// wsKindsWant selects TestTaskWorkspaceMetadata/kinds' expected rows and
+// Added count by that create's outcome as the child reported it (state,
+// logTail): the task succeeded with no op error (the name was created;
+// Linux), every row and Added 5; the task failed and its whole log is that
+// op's create refused for its encoding (APFS: EILSEQ), the same rows
+// without that empty file (NewBytes unchanged) and Added 4. Any other
+// outcome fails.
+func wsKindsWant(state, logTail, sentinel string) (map[string]wsKindsRow, int64, error) {
+	full := map[string]wsKindsRow{
+		"mod": {"modified", "100644", "100644", 3, int64(len(sentinel))}, "del": {"deleted", "100644", "-", 5, -1},
+		"bin.dat": {"added", "-", "100644", -1, 6}, "ln": {"added", "-", "120000", -1, 4}, "x.sh": {"added", "-", "100755", -1, 2},
+		"ctl\x01name": {"added", "-", "100644", -1, 0}, "\xff\xfe.raw": {"added", "-", "100644", -1, 0},
+	}
+	line, rest, _ := strings.Cut(logTail, "\n")
+	switch {
+	case state == contract.TaskSucceeded && !strings.Contains(logTail, "fake-adapter:"):
+		return full, 5, nil
+	case state == contract.TaskFailed && rest == "" && strings.HasSuffix(logTail, "\n") &&
+		strings.HasPrefix(line, fmt.Sprintf("fake-adapter: op %d: open ", wsKindsRawOp)) && strings.HasSuffix(line, ": "+syscall.EILSEQ.Error()):
+		delete(full, "\xff\xfe.raw")
+		return full, 4, nil
+	}
+	return nil, 0, fmt.Errorf("create of the non-UTF-8 name: task %s, log %q", state, logTail)
+}
+
+// TestTaskWorkspaceMetadataKindsSelector pins wsKindsWant: a created name
+// keeps every row; a create refused for its encoding (APFS: EILSEQ) omits
+// only that empty file; any other outcome fails.
+func TestTaskWorkspaceMetadataKindsSelector(t *testing.T) {
+	t.Parallel()
+	const sentinel = "S"
+	opErr := func(op int, errno syscall.Errno) string {
+		return fmt.Sprintf("fake-adapter: op %d: %v\n", op, &os.PathError{Op: "open", Path: "/w/work/\xff\xfe.raw", Err: errno})
+	}
+	full, added, err := wsKindsWant(contract.TaskSucceeded, "", sentinel)
+	if err != nil || added != 5 || len(full) != 7 || full["\xff\xfe.raw"] != (wsKindsRow{"added", "-", "100644", -1, 0}) ||
+		full["mod"] != (wsKindsRow{"modified", "100644", "100644", 3, int64(len(sentinel))}) {
+		t.Fatalf("created: %v %d %v", full, added, err)
+	}
+	refused, added, err := wsKindsWant(contract.TaskFailed, opErr(wsKindsRawOp, syscall.EILSEQ), sentinel)
+	delete(full, "\xff\xfe.raw")
+	if err != nil || added != 4 || fmt.Sprint(refused) != fmt.Sprint(full) {
+		t.Fatalf("encoding refused: %v %d %v", refused, added, err)
+	}
+	for _, c := range []struct{ state, log string }{
+		{contract.TaskFailed, opErr(wsKindsRawOp, syscall.EIO)},
+		{contract.TaskFailed, opErr(wsKindsRawOp-1, syscall.EILSEQ)},
+		{contract.TaskFailed, "x\n" + opErr(wsKindsRawOp, syscall.EILSEQ)},
+		{contract.TaskSucceeded, opErr(wsKindsRawOp, syscall.EILSEQ)},
+		{contract.TaskFailed, ""},
+		{contract.TaskLost, ""},
+	} {
+		if m, n, err := wsKindsWant(c.state, c.log, sentinel); err == nil {
+			t.Errorf("%s %q selected %v %d", c.state, c.log, m, n)
+		}
+	}
+}
+
 // FP-7: bounded metadata without file contents.
 func TestTaskWorkspaceMetadata(t *testing.T) {
 	r := sharedWsRig(t)
@@ -742,10 +810,13 @@ func TestTaskWorkspaceMetadata(t *testing.T) {
 			fakeadapter.WorkspaceOp{WriteB64: base64.StdEncoding.EncodeToString([]byte("ctl\x01name"))},
 			fakeadapter.WorkspaceOp{WriteB64: base64.StdEncoding.EncodeToString([]byte("\xff\xfe.raw"))})})
 		w := publishedWs(t, v)
-		type row struct {
-			kind, oldMode, newMode string
-			oldBytes, newBytes     int64
+		// APFS refuses a non-UTF-8 name; wsKindsWant selects the rows by
+		// the child's real create outcome.
+		want, added, err := wsKindsWant(v.State, v.Result.LogTail, sentinel)
+		if err != nil {
+			t.Fatal(err)
 		}
+		type row = wsKindsRow
 		mode := func(p *string) string {
 			if p == nil {
 				return "-"
@@ -771,16 +842,11 @@ func TestTaskWorkspaceMetadata(t *testing.T) {
 		if !sort.StringsAreSorted(order) {
 			t.Fatalf("changes not in raw byte order: %q", order)
 		}
-		want := map[string]row{
-			"mod": {"modified", "100644", "100644", 3, int64(len(sentinel))}, "del": {"deleted", "100644", "-", 5, -1},
-			"bin.dat": {"added", "-", "100644", -1, 6}, "ln": {"added", "-", "120000", -1, 4}, "x.sh": {"added", "-", "100755", -1, 2},
-			"ctl\x01name": {"added", "-", "100644", -1, 0}, "\xff\xfe.raw": {"added", "-", "100644", -1, 0},
-		}
 		if fmt.Sprint(got) != fmt.Sprint(want) {
 			t.Fatalf("changes %v\nwant %v", got, want)
 		}
 		d := w.Diffstat
-		if d.Added != 5 || d.Modified != 1 || d.Deleted != 1 || d.OldBytes != 8 || d.NewBytes != int64(len(sentinel))+6+4+2 || w.ChangesTruncated || w.NextAfter != nil {
+		if d.Added != added || d.Modified != 1 || d.Deleted != 1 || d.OldBytes != 8 || d.NewBytes != int64(len(sentinel))+6+4+2 || w.ChangesTruncated || w.NextAfter != nil {
 			t.Fatalf("diffstat %+v truncated %v", d, w.ChangesTruncated)
 		}
 		// Mirrors, and no file content anywhere in the views or logs.

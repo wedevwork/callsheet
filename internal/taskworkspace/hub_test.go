@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand/v2"
@@ -14,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 
 	"github.com/go-git/go-git/v5/plumbing"
@@ -60,6 +62,56 @@ func publish(t testing.TB, h *taskhub.Hub, w *taskhub.Worker, n int, b contract.
 	return *pub.Result
 }
 
+// kindsExpect is TestMetadata/kinds' expected change rows and the diffstat
+// counters that depend on them.
+type kindsExpect struct {
+	rows            []string
+	added, newBytes int64
+}
+
+// kindsWant selects kindsExpect by the outcome of creating the non-UTF-8
+// name "\xff\xfe" in the work tree (createErr): created (Linux), every row;
+// refused for its encoding (APFS: EILSEQ), the same rows without that
+// empty file. Any other create error fails.
+func kindsWant(createErr error, sentinel string) (kindsExpect, error) {
+	switch {
+	case createErr == nil:
+		return kindsExpect{
+			rows: []string{`"bin" added - 100644`, `"ctl\x01" added - 100644`, `"del" deleted 100644 -`, `"ln" added - 120000`,
+				`"mod" modified 100644 100644`, `"tx" modified 100644 100755`, `"\xff\xfe" added - 100644`},
+			added: 4, newBytes: int64(3 + 0 + 0 + 4 + len("new "+sentinel) + 1),
+		}, nil
+	case errors.Is(createErr, syscall.EILSEQ):
+		return kindsExpect{
+			rows: []string{`"bin" added - 100644`, `"ctl\x01" added - 100644`, `"del" deleted 100644 -`, `"ln" added - 120000`,
+				`"mod" modified 100644 100644`, `"tx" modified 100644 100755`},
+			added: 3, newBytes: int64(3 + 0 + 4 + len("new "+sentinel) + 1),
+		}, nil
+	}
+	return kindsExpect{}, fmt.Errorf("create the non-UTF-8 name: %w", createErr)
+}
+
+// TestMetadataKindsSelector pins kindsWant: a created name keeps every row,
+// a filesystem that refuses the name's encoding (APFS: EILSEQ) omits only
+// that empty file, and any other create error fails.
+func TestMetadataKindsSelector(t *testing.T) {
+	t.Parallel()
+	const sentinel = "S"
+	full, err := kindsWant(nil, sentinel)
+	if err != nil || full.added != 4 || full.newBytes != int64(3+0+0+4+len("new "+sentinel)+1) || len(full.rows) != 7 || full.rows[6] != `"\xff\xfe" added - 100644` {
+		t.Fatalf("created: %+v %v", full, err)
+	}
+	refused, err := kindsWant(&os.PathError{Op: "open", Path: "work/\xff\xfe", Err: syscall.EILSEQ}, sentinel)
+	want := []string{`"bin" added - 100644`, `"ctl\x01" added - 100644`, `"del" deleted 100644 -`, `"ln" added - 120000`,
+		`"mod" modified 100644 100644`, `"tx" modified 100644 100755`}
+	if err != nil || strings.Join(refused.rows, "|") != strings.Join(want, "|") || refused.added != 3 || refused.newBytes != int64(3+0+4+len("new "+sentinel)+1) {
+		t.Fatalf("encoding refused: %+v %v", refused, err)
+	}
+	if _, err := kindsWant(&os.PathError{Op: "open", Path: "work/\xff\xfe", Err: syscall.EIO}, sentinel); err == nil {
+		t.Fatal("an I/O error selected an outcome")
+	}
+}
+
 // TestMetadata is UT-B7 (iteration 10b): a published result's tree
 // metadata as the plane recomputes it: exact counters, kinds, modes and
 // sizes, raw-byte sorted paths (control and non-UTF-8 names as base64),
@@ -77,6 +129,7 @@ func TestMetadata(t *testing.T) {
 	b := h.Binding(t, "proj", inst, nil)
 	const sentinel = "METADATA-SENTINEL-10b"
 	t.Run("kinds", func(t *testing.T) {
+		var exp kindsExpect
 		res := publish(t, h, w, 1, b, func(work string) {
 			put(t, filepath.Join(work, "mod"), []byte("new "+sentinel), 0o644)
 			os.Remove(filepath.Join(work, "del"))
@@ -84,7 +137,14 @@ func TestMetadata(t *testing.T) {
 			os.Symlink("keep", filepath.Join(work, "ln"))
 			os.Chmod(filepath.Join(work, "tx"), 0o755)
 			put(t, filepath.Join(work, "ctl\x01"), nil, 0o644)
-			put(t, filepath.Join(work, "\xff\xfe"), nil, 0o644)
+			// APFS refuses a non-UTF-8 name; kindsWant selects the rows by
+			// the real create's outcome.
+			illegal := filepath.Join(work, "\xff\xfe")
+			os.Remove(illegal)
+			var err error
+			if exp, err = kindsWant(os.WriteFile(illegal, nil, 0o644), sentinel); err != nil {
+				t.Fatal(err)
+			}
 			os.MkdirAll(filepath.Join(work, "emptydir"), 0o755)
 		})
 		d := res.Workspace
@@ -100,13 +160,11 @@ func TestMetadata(t *testing.T) {
 			}
 			got = append(got, fmt.Sprintf("%q %s %s %s", p, c.Kind, om, nm))
 		}
-		want := []string{`"bin" added - 100644`, `"ctl\x01" added - 100644`, `"del" deleted 100644 -`, `"ln" added - 120000`,
-			`"mod" modified 100644 100644`, `"tx" modified 100644 100755`, `"\xff\xfe" added - 100644`}
-		if strings.Join(got, "|") != strings.Join(want, "|") {
-			t.Fatalf("changes\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+		if strings.Join(got, "|") != strings.Join(exp.rows, "|") {
+			t.Fatalf("changes\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(exp.rows, "\n"))
 		}
 		ds := d.Diffstat
-		if ds.Added != 4 || ds.Modified != 2 || ds.Deleted != 1 || ds.OldBytes != 3+5+1 || ds.NewBytes != int64(3+0+0+4+len("new "+sentinel)+1) {
+		if ds.Added != exp.added || ds.Modified != 2 || ds.Deleted != 1 || ds.OldBytes != 3+5+1 || ds.NewBytes != exp.newBytes {
 			t.Fatalf("diffstat %+v", ds)
 		}
 		enc, _ := contract.Encode(res)
