@@ -630,6 +630,13 @@ func (m *Manager) fetchStage(ctx context.Context, dir string, base plumbing.Hash
 			}
 		}
 		if _, err := stage.CopyFrom(ctx, cur.Store(), missing); err != nil {
+			if errors.Is(err, workspacetransfer.ErrIntegrity) && ctx.Err() == nil {
+				// A cached object that does not copy intact (a loose file
+				// that is not a regular file, or one changed since the
+				// closure verified) is cache corruption: the caller purges
+				// the entry and makes its one fresh fetch without haves.
+				return fail(errCorruptResponse)
+			}
 			return fail(err)
 		}
 	}

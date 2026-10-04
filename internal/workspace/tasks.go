@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"path/filepath"
 	"slices"
@@ -16,6 +17,8 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/format/pktline"
 	"github.com/go-git/go-git/v5/plumbing/protocol/packp"
 	"github.com/go-git/go-git/v5/plumbing/protocol/packp/capability"
+	"github.com/go-git/go-git/v5/plumbing/revlist"
+	"github.com/go-git/go-git/v5/plumbing/storer"
 
 	"github.com/wedevwork/callsheet/internal/contract"
 )
@@ -461,21 +464,100 @@ func (m *Manager) taskUpload(w http.ResponseWriter, r *http.Request, id string, 
 		io.finish()
 		return
 	}
-	sess, err := libraryServer(s).NewUploadPackSession(endpoint, nil)
+	if err := req.Validate(); err != nil {
+		plainError(w, http.StatusBadRequest, "invalid_argument")
+		return
+	}
+	// The library's object selection, resolved before the response starts:
+	// a retained have whose closure cannot be resolved fails the request
+	// rather than turning it into an unsolicited full fetch.
+	objs, err := taskUploadObjects(s, req)
 	if err != nil {
 		plainError(w, http.StatusInternalServerError, "internal")
 		return
 	}
-	defer sess.Close()
-	resp, err := sess.UploadPack(ctx, req)
-	if err != nil {
-		plainError(w, http.StatusBadRequest, "invalid_argument")
-		return
-	}
 	io.header(serviceUpload, false)
-	resp.Encode(io)
-	resp.Close()
+	m.serveTaskPack(ctx, io, s, req, objs, taskPackWindow(req.Haves))
 	io.finish()
+}
+
+// The task upload's owned pack response (iteration 10b r0.5). The library
+// server's upload session encodes every pack with a fixed delta window of
+// 10; on a cold task fetch that searches deltas across the base's whole
+// closure for nothing the node can use. The task route therefore encodes
+// its own response, with the library's framing, object selection and OFS
+// delta representation and an explicit window; coordinator upload, receive
+// and task receive keep the library paths.
+
+// Task upload delta windows: a request without retained haves (a cold
+// fetch) has no delta search; one with at least one retained have keeps
+// the library's window, the incremental delta opportunity.
+const (
+	taskColdWindow        uint = 0
+	taskIncrementalWindow uint = 10
+)
+
+// taskPackWindow selects the window from the retained haves (decodeHaves
+// keeps only haves the store holds: an unknown have never selects the
+// incremental window).
+func taskPackWindow(haves []plumbing.Hash) uint {
+	if len(haves) == 0 {
+		return taskColdWindow
+	}
+	return taskIncrementalWindow
+}
+
+// taskUploadObjects is the library upload session's object selection: the
+// wants' closure minus the haves' closure.
+func taskUploadObjects(s storer.EncodedObjectStorer, req *packp.UploadPackRequest) ([]plumbing.Hash, error) {
+	haves, err := revlist.Objects(s, req.Haves, nil)
+	if err != nil {
+		return nil, err
+	}
+	return revlist.Objects(s, req.Wants, haves)
+}
+
+// packEncoder encodes objs from s as one pack into w with window.
+type packEncoder func(w io.Writer, s storer.EncodedObjectStorer, objs []plumbing.Hash, window uint) error
+
+// encodeTaskPack is the production packEncoder: the library encoder with
+// OFS deltas (useRefDeltas=false), as the library server encodes.
+func encodeTaskPack(w io.Writer, s storer.EncodedObjectStorer, objs []plumbing.Hash, window uint) error {
+	_, err := packfile.NewEncoder(w, s, false).Encode(objs, window)
+	return err
+}
+
+// errPackResponseEnded stops a pack producer whose response has ended.
+var errPackResponseEnded = errors.New("the task pack response ended")
+
+// serveTaskPack writes the upload response for objs (the server response,
+// then the pack encoded at window) to g. The encoder is a producer owned
+// here: cancellation of ctx and a failed response write close its pipe,
+// and every path joins it before returning, so the caller closes the
+// storage and releases the workspace lock only after the producer is gone.
+// An encoding error ends the response stream before the pack is complete
+// (its trailing checksum is never written) and is returned; a complete pack
+// is never reported after an error.
+func (m *Manager) serveTaskPack(ctx context.Context, g *gitIO, s storer.EncodedObjectStorer, req *packp.UploadPackRequest, objs []plumbing.Hash, window uint) error {
+	encode := m.d.packEncode
+	if encode == nil {
+		encode = encodeTaskPack
+	}
+	pr, pw := io.Pipe()
+	produced := make(chan error, 1)
+	go func() {
+		err := encode(pw, s, objs, window)
+		pw.CloseWithError(err)
+		produced <- err
+	}()
+	stop := context.AfterFunc(ctx, func() { pr.CloseWithError(ctx.Err()) })
+	werr := packp.NewUploadPackResponseWithPackfile(req, pr).Encode(g)
+	stop()
+	pr.CloseWithError(errPackResponseEnded)
+	if perr := <-produced; perr != nil {
+		return perr
+	}
+	return werr
 }
 
 // taskReceiveAdvertise names only the bound base (when still reachable)

@@ -62,9 +62,10 @@ const (
 	// and its sidecar follow-up moved ./internal/sidecar (the reconnect
 	// contracts) to the sidecar shard likewise; the contract headroom fix
 	// moved ./internal/contract, and the workspace and mcpqual headroom fix
-	// ./internal/mcpqual and ./internal/workspace, to the packages shard's
+	// ./internal/mcpqual and ./internal/workspace, and iteration 10b's r0.5
+	// schedule ./internal/workspacetransfer, to the packages shard's
 	// per-CPU groups.
-	wantNodeStressPackages = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/workspacetransfer ./internal/taskworkspace ./internal/taskpublication"
+	wantNodeStressPackages = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/taskworkspace ./internal/taskpublication"
 	wantNodeStressFunction = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestNodeEnrollment|TestNodeReconnect)$/^(locking|shutdown)$ ./tests/function"
 )
 
@@ -78,7 +79,7 @@ func TestNodeVerificationPolicyContract(t *testing.T) {
 	for _, goos := range []string{"linux", "darwin"} {
 		t.Run(goos, func(t *testing.T) {
 			shards, err := StressShards(goos)
-			if err != nil || len(shards) != 7 || strings.Join(shards[0].Steps[0].Argv, " ") != wantNodeStressPackages || strings.Join(argvOf(slices.Concat(shards[0].CPUGroups...)), "|") != strings.Join(slices.Concat(groupContract, groupMcpqual, groupWorkspace), "|") ||
+			if err != nil || len(shards) != 7 || strings.Join(shards[0].Steps[0].Argv, " ") != wantNodeStressPackages || strings.Join(argvOf(slices.Concat(shards[0].CPUGroups...)), "|") != strings.Join(slices.Concat(groupContract, groupMcpqual, groupWorkspace, groupTransfer), "|") ||
 				shards[1].Name != "plane-cpu1" || shards[2].Name != "plane" || joinedArgv(shards, 1, 2) != wantStressPlane1+"|"+wantStressPlane2+"|"+wantStressPlane4 ||
 				joinedArgv(shards, 1) != wantStressPlane1 || joinedArgv(shards, 2) != wantStressPlane2+"|"+wantStressPlane4 ||
 				shards[3].Name != "sidecar-cpu1" || shards[4].Name != "sidecar" || joinedArgv(shards, 3, 4) != wantStressSidecar1+"|"+wantStressSidecar2+"|"+wantStressSidecar4 ||

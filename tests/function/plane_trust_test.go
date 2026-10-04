@@ -978,9 +978,10 @@ func TestPlanePlatform(t *testing.T) {
 	const stressFn = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestFP4TransportHarness|TestFP5GitRoundTrip)$ ./tests/function"
 	const stressPlaneFn = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestPlaneState|TestPlaneTLS|TestPlaneReissue)$/^(paths|persistence|locking|validation|https-only|prelisten-validation|bounded-shutdown|process)$ ./tests/function"
 	// The headroom fixes moved ./internal/contract, ./internal/mcpqual and
-	// ./internal/workspace to the packages shard's per-CPU groups
-	// (StressSteps indexes 1-9).
-	const stressPkgs = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/workspacetransfer ./internal/taskworkspace ./internal/taskpublication"
+	// ./internal/workspace, and iteration 10b's r0.5 schedule
+	// ./internal/workspacetransfer, to the packages shard's per-CPU groups
+	// (StressSteps indexes 1-12).
+	const stressPkgs = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/taskworkspace ./internal/taskpublication"
 	stressPlane := []string{
 		"go test -race -count=20 -cpu=1 -timeout=6m ./internal/plane",
 		"go test -race -count=20 -cpu=2 -timeout=6m ./internal/plane",
@@ -989,8 +990,8 @@ func TestPlanePlatform(t *testing.T) {
 	const benchPlane = "go test ./internal/plane -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s"
 	for _, goos := range []string{"linux", "darwin"} {
 		steps, err := devcheck.StressSteps(goos)
-		if err != nil || len(steps) != 22 || strings.Join(steps[0].Argv, " ") != stressPkgs || strings.Join(steps[19].Argv, " ") != stressFn ||
-			steps[20].Name != "stress plane function" || strings.Join(steps[20].Argv, " ") != stressPlaneFn {
+		if err != nil || len(steps) != 25 || strings.Join(steps[0].Argv, " ") != stressPkgs || strings.Join(steps[22].Argv, " ") != stressFn ||
+			steps[23].Name != "stress plane function" || strings.Join(steps[23].Argv, " ") != stressPlaneFn {
 			t.Fatalf("%s stress plan = %+v %v", goos, steps, err)
 		}
 		// Design 06a-perf: plane's CPU 1 invocation runs alone in

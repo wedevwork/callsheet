@@ -2,14 +2,18 @@ package function
 
 import (
 	"bytes"
+	"compress/zlib"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -21,6 +25,9 @@ import (
 
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/filemode"
+	"github.com/go-git/go-git/v5/plumbing/format/packfile"
+	"github.com/go-git/go-git/v5/plumbing/revlist"
+	"github.com/go-git/go-git/v5/storage/memory"
 
 	"github.com/wedevwork/callsheet/internal/contract"
 	"github.com/wedevwork/callsheet/internal/testkit"
@@ -53,6 +60,53 @@ func (r *wsRig) taskCount(t *testing.T) int {
 		t.Fatal(err)
 	}
 	return len(es)
+}
+
+// storedLoose re-encodes every loose object below the objects directory
+// objs as stored (level 0) zlib blocks, the same object and hash, and
+// returns the new bytes by fan-out path ("ab/cdef...").
+func storedLoose(t *testing.T, objs string) map[string][]byte {
+	t.Helper()
+	out := map[string][]byte{}
+	fans, err := os.ReadDir(objs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fan := range fans {
+		if !fan.IsDir() || len(fan.Name()) != 2 {
+			continue
+		}
+		names, err := os.ReadDir(filepath.Join(objs, fan.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, n := range names {
+			p := filepath.Join(objs, fan.Name(), n.Name())
+			raw, err := os.ReadFile(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			zr, err := zlib.NewReader(bytes.NewReader(raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			plain, err := io.ReadAll(zr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var b bytes.Buffer
+			zw, _ := zlib.NewWriterLevel(&b, zlib.NoCompression)
+			zw.Write(plain)
+			zw.Close()
+			os.Chmod(p, 0o600)
+			if err := os.WriteFile(p, b.Bytes(), 0o444); err != nil {
+				t.Fatal(err)
+			}
+			os.Chmod(p, 0o444)
+			out[fan.Name()+"/"+n.Name()] = b.Bytes()
+		}
+	}
+	return out
 }
 
 // logRecord returns sidecar s's JSON record msg for task id.
@@ -315,6 +369,140 @@ func TestTaskWorkspaceAccess(t *testing.T) {
 	t.Run("routes", func(t *testing.T) {
 		wsDelegate(t, "./internal/workspace", "^TestTaskRoutes$", "TestTaskRoutes")
 	})
+	t.Run("fetch-window", func(t *testing.T) {
+		// Iteration 10b r0.5: the production task fetch over the actual TLS
+		// node route. A pseudorandom base (09a's deterministic 4 KiB blobs)
+		// and a one-file increment: the cold fetch decodes to the base's
+		// complete closure below 8 MiB, the incremental one to exactly the
+		// increment below 256 KiB and 10% of the cold one. Then a
+		// similar-source increment (four near-identical new blobs): with a
+		// retained have the pack deltas them (window 10); cold, the same
+		// blobs are sent whole (window 0, no delta search).
+		wname, winst := r.workspace(t)
+		files := map[string]tfile{}
+		for i := 0; i < 256; i++ {
+			files[fmt.Sprintf("d%02d/f%04d.bin", i%16, i)] = tr(string(pseudoBlob(i, 0)))
+		}
+		b0 := r.seed(t, wname, winst, "", files)
+		files["d00/f0000.bin"] = tr(string(pseudoBlob(0, 1)))
+		b1 := r.seed(t, wname, winst, "", files)
+		sim := pseudoBlob(4096, 0)
+		for k := 0; k < 4; k++ {
+			v := append([]byte(nil), sim...)
+			v[k*64] ^= 0xff
+			files[fmt.Sprintf("sim/s%d.bin", k)] = tr(string(v))
+		}
+		b2 := r.seed(t, wname, winst, "", files)
+		// fetch fetches base over task id's node route with haves and
+		// returns the pack's bytes and its decoded objects.
+		fetch := func(t *testing.T, id, base string, haves ...string) (int64, *memory.Storage) {
+			t.Helper()
+			g, err := c.NodeTaskGit(id, r.assignment(t, id), "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer g.Close()
+			var hv []plumbing.Hash
+			for _, h := range haves {
+				hv = append(hv, plumbing.NewHash(h))
+			}
+			s := memory.NewStorage()
+			var n int64
+			if err := g.Fetch(ctx, []plumbing.Hash{plumbing.NewHash(base)}, hv, func(rd io.Reader) error {
+				cr := &countingReader{r: rd}
+				err := packfile.UpdateObjectStorage(s, cr)
+				n = cr.n
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			return n, s
+		}
+		closure := func(t *testing.T, s *memory.Storage, want plumbing.Hash, haves ...plumbing.Hash) map[plumbing.Hash]bool {
+			t.Helper()
+			var hv []plumbing.Hash
+			if len(haves) > 0 {
+				var err error
+				if hv, err = revlist.Objects(s, haves, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			objs, err := revlist.Objects(s, []plumbing.Hash{want}, hv)
+			if err != nil {
+				t.Fatalf("closure of %s: %v", want, err)
+			}
+			out := map[plumbing.Hash]bool{}
+			for _, h := range objs {
+				out[h] = true
+			}
+			return out
+		}
+		decoded := func(s *memory.Storage) map[plumbing.Hash]bool {
+			out := map[plumbing.Hash]bool{}
+			for h := range s.Objects {
+				out[h] = true
+			}
+			return out
+		}
+		held := func(base string) (contract.TaskView, barrier) {
+			bb := newBarrier(t)
+			v := r.running(t, "ws-a", sp(wname), sp(base), fakeadapter.WorkspaceScript{Ops: ops(fakeadapter.WorkspaceOp{Touch: bb.path("in")},
+				fakeadapter.WorkspaceOp{WaitFor: bb.path("go")})}, bb, "in")
+			return v, bb
+		}
+		va, ba := held(b1)
+		cold, cs := fetch(t, va.TaskID, b1)
+		full := closure(t, cs, plumbing.NewHash(b1))
+		if cold <= 0 || cold >= 8<<20 || !maps.Equal(decoded(cs), full) {
+			t.Fatalf("cold fetch: %d bytes, %d objects decoded, closure %d", cold, len(cs.Objects), len(full))
+		}
+		inc, is := fetch(t, va.TaskID, b1, b0)
+		if want := closure(t, cs, plumbing.NewHash(b1), plumbing.NewHash(b0)); inc >= 256<<10 || inc*10 >= cold || !maps.Equal(decoded(is), want) {
+			t.Fatalf("incremental fetch: %d bytes (cold %d), %d objects decoded, want %d", inc, cold, len(is.Objects), len(want))
+		}
+		// An unknown have is no have: the full closure, still cold.
+		unk, us := fetch(t, va.TaskID, b1, strings.Repeat("e", 40))
+		if !maps.Equal(decoded(us), full) || unk != cold {
+			t.Fatalf("unknown have: %d bytes (cold %d), %d objects", unk, cold, len(us.Objects))
+		}
+		ba.release(t, "go")
+		publishedWs(t, r.await(t, va.TaskID))
+		vb, bb := held(b2)
+		cold2, cs2 := fetch(t, vb.TaskID, b2)
+		simInc, ss := fetch(t, vb.TaskID, b2, b1)
+		if !maps.Equal(decoded(cs2), closure(t, cs2, plumbing.NewHash(b2))) || !maps.Equal(decoded(ss), closure(t, cs2, plumbing.NewHash(b2), plumbing.NewHash(b1))) {
+			t.Fatal("similar-source fetches did not decode to their closures")
+		}
+		// Four near-identical incompressible 4 KiB blobs: deltas keep the
+		// incremental pack below two blobs; the cold pack carries each whole.
+		if simInc >= 2*4096 || cold2-cold < 3*4096 {
+			t.Fatalf("similar-source: incremental %d bytes, cold %d over %d", simInc, cold2, cold)
+		}
+		bb.release(t, "go")
+		publishedWs(t, r.await(t, vb.TaskID))
+	})
+}
+
+// pseudoBlob is 09a's deterministic pseudorandom 4 KiB blob i, version v.
+func pseudoBlob(i, v int) []byte {
+	rnd := rand.New(rand.NewPCG(uint64(i), uint64(v)+0x5eed))
+	b := make([]byte, 4096)
+	for j := 0; j < len(b); j += 8 {
+		binary.LittleEndian.PutUint64(b[j:], rnd.Uint64())
+	}
+	return b
+}
+
+// countingReader counts the bytes read through it.
+type countingReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
 }
 
 // FP-3: the shared per-node cache.
@@ -345,6 +533,69 @@ func TestTaskWorkspaceCache(t *testing.T) {
 		p2 := prepared(t, r.a, v2.TaskID)
 		if p1["cache_hit"] != false || p2["cache_hit"] != true || p2["saved_bytes"].(float64) <= 0 || p2["fetched_bytes"].(float64) >= p1["fetched_bytes"].(float64) {
 			t.Fatalf("cache stats %v then %v", p1, p2)
+		}
+	})
+	t.Run("compressed-copy", func(t *testing.T) {
+		// Iteration 10b r0.5: real Prepare copies. Once the cache holds
+		// loose objects (after a warm run), each leg copies their compressed
+		// bytes verbatim: the cache's objects are re-encoded as stored
+		// (level 0) zlib blocks, which the deflater never produces, and
+		// exactly those bytes, hashes unchanged, arrive in the task's
+		// trusted objects and the checkout's .git/objects. The case owns
+		// its workspace, so both preparations happen here whatever ran
+		// before: a cold one (which leaves packed objects in the cache),
+		// then a warm one (which leaves them loose).
+		name, inst := r.workspace(t)
+		r.seed(t, name, inst, "", files)
+		cold := r.run(t, "ws-a", sp(name), nil, fakeadapter.WorkspaceScript{})
+		publishedWs(t, cold)
+		warm := r.run(t, "ws-a", sp(name), nil, fakeadapter.WorkspaceScript{})
+		publishedWs(t, warm)
+		if pc, pw := prepared(t, r.a, cold.TaskID), prepared(t, r.a, warm.TaskID); pc["cache_hit"] != false || pw["cache_hit"] != true {
+			t.Fatalf("cold then warm preparation stats %v then %v", pc, pw)
+		}
+		cur := filepath.Join(r.a.State, "workspace-cache", inst, "current", "objects")
+		stored := storedLoose(t, cur)
+		if len(stored) == 0 {
+			t.Fatalf("no loose cached objects under %s", cur)
+		}
+		b := newBarrier(t)
+		v := r.running(t, "ws-a", sp(name), nil, fakeadapter.WorkspaceScript{Ops: ops(fakeadapter.WorkspaceOp{Touch: b.path("in")},
+			fakeadapter.WorkspaceOp{WaitFor: b.path("go")})}, b, "in")
+		dir := taskDir(r.a, v.TaskID)
+		for rel, want := range stored {
+			for _, p := range []string{filepath.Join(dir, "objects", "objects", rel), filepath.Join(dir, "work", ".git", "objects", rel)} {
+				if got, err := os.ReadFile(p); err != nil || !bytes.Equal(got, want) {
+					t.Fatalf("%s not copied verbatim: %v", p, err)
+				}
+			}
+		}
+		b.release(t, "go")
+		publishedWs(t, r.await(t, v.TaskID))
+		if p := prepared(t, r.a, v.TaskID); p["cache_hit"] != true || p["refetched"] != false || p["cache_purged"] != false {
+			t.Fatalf("verbatim warm copy stats %v", p)
+		}
+		// Tampering: a cached loose object replaced by a link to valid bytes
+		// (readable through storage that follows links) is refused by the
+		// copy and handled as cache corruption: one fresh fetch serves the
+		// task.
+		var victim string
+		for rel := range stored {
+			victim = rel
+			break
+		}
+		elsewhere := filepath.Join(t.TempDir(), "obj")
+		if err := os.WriteFile(elsewhere, stored[victim], 0o444); err != nil {
+			t.Fatal(err)
+		}
+		os.Remove(filepath.Join(cur, victim))
+		if err := os.Symlink(elsewhere, filepath.Join(cur, victim)); err != nil {
+			t.Fatal(err)
+		}
+		v2 := r.run(t, "ws-a", sp(name), nil, fakeadapter.WorkspaceScript{})
+		publishedWs(t, v2)
+		if p := prepared(t, r.a, v2.TaskID); p["refetched"] != true || p["cache_hit"] != false || p["fetched_bytes"].(float64) <= 0 {
+			t.Fatalf("tampered cache not refetched: %v", p)
 		}
 	})
 	t.Run("overlapping", func(t *testing.T) {

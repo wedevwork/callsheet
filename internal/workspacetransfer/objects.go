@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/go-git/go-billy/v5/osfs"
@@ -19,6 +20,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/storer"
 	"github.com/go-git/go-git/v5/storage/filesystem"
+	gitsync "github.com/go-git/go-git/v5/utils/sync"
 	"golang.org/x/sys/unix"
 )
 
@@ -118,7 +120,7 @@ func (db *looseDB) write(ctx context.Context, t plumbing.ObjectType, size int64,
 	}
 	f := os.NewFile(uintptr(fd), tmp)
 	h, werr := func() (plumbing.Hash, error) {
-		ow := objfile.NewWriter(f)
+		ow := db.d.objWriter(f)
 		if err := ow.WriteHeader(t, size); err != nil {
 			return plumbing.ZeroHash, err
 		}
@@ -239,6 +241,199 @@ func verifyLoose(dfd int, name string, h plumbing.Hash) error {
 		return errIntegrity("an existing object in the destination repository is corrupt")
 	}
 	return nil
+}
+
+// copyLoose copies the loose object h from src, its compressed source
+// file, into db without recompressing it: the compressed bytes are streamed
+// verbatim into a private exclusive temporary file in the objects
+// directory, that same file is verified (verifyCompressed), and only then
+// is it published with the no-replace primitive of write (an existing
+// object is verified, never overwritten), with write's permission
+// transition, fault hooks and durability. The bytes verified are the bytes
+// published; the source is never reopened. No deflater runs. It returns the
+// object's content size. A source that cannot be read or does not verify is
+// an integrity failure; cancellation is observed while copying and while
+// verifying, and the temporary file is removed on every failure.
+func (db *looseDB) copyLoose(ctx context.Context, src io.Reader, h plumbing.Hash) (int64, error) {
+	tok, err := db.d.token()
+	if err != nil {
+		return 0, err
+	}
+	tmp := "tmp_obj_" + tok
+	if err := db.d.check(db.opPref + "object-create"); err != nil {
+		return 0, err
+	}
+	fd, err := unix.Openat(db.objFD, tmp, unix.O_RDWR|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
+	if err != nil {
+		return 0, err
+	}
+	f := os.NewFile(uintptr(fd), tmp)
+	size, werr := func() (int64, error) {
+		sr := &sourceReader{r: src}
+		if _, err := copyCtx(ctx, f, sr); err != nil {
+			if sr.err != nil && ctx.Err() == nil {
+				return 0, errIntegrity("a selected object cannot be read")
+			}
+			return 0, err
+		}
+		if err := db.d.check(db.opPref + "object-write"); err != nil {
+			return 0, err
+		}
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			return 0, err
+		}
+		size, err := verifyCompressed(ctx, f, h)
+		if err != nil {
+			return 0, err
+		}
+		if err := unix.Fchmod(fd, 0o444); err != nil {
+			return 0, err
+		}
+		if db.sync && !db.batch {
+			if err := db.d.sync(fd, db.opPref+"object-sync"); err != nil {
+				return 0, err
+			}
+		}
+		return size, nil
+	}()
+	cerr := f.Close()
+	if werr == nil && cerr != nil {
+		werr = cerr
+	}
+	if werr == nil {
+		werr = db.d.check(db.opPref + "object-close")
+	}
+	if werr != nil {
+		unix.Unlinkat(db.objFD, tmp, 0)
+		return 0, werr
+	}
+	if err := db.publish(tmp, h); err != nil {
+		unix.Unlinkat(db.objFD, tmp, 0)
+		return 0, err
+	}
+	return size, nil
+}
+
+// sourceReader records a read failure of the copied source (an integrity
+// failure), as distinct from a failure to write the destination.
+type sourceReader struct {
+	r   io.Reader
+	err error
+}
+
+func (s *sourceReader) Read(p []byte) (int, error) {
+	n, err := s.r.Read(p)
+	if err != nil && err != io.EOF {
+		s.err = err
+	}
+	return n, err
+}
+
+// Loose header field bounds: the longest base type name ("commit") and an
+// int64 in decimal fit with room to spare (a sign and leading zeros).
+const (
+	maxTypeField = 16
+	maxSizeField = 32
+)
+
+// verifyCompressed verifies a loose object stream as verifyLoose does an
+// existing object: it inflates through the pooled zlib reader the normal
+// object reader uses, decodes the "<type> <size>\x00" header into bounded
+// storage (looseHeader), requires a base object type and a nonnegative
+// declared length, consumes the content through the zlib end of stream and
+// its checksum, requires exactly the declared length, and hashes the header
+// and content against h. Bytes after the zlib stream are not inspected. It
+// returns the content size; every rejection is an integrity failure, and
+// cancellation is observed before every compressed read and every header
+// byte, so neither a malformed header nor a cancelled verification consumes
+// the rest of the stream.
+func verifyCompressed(ctx context.Context, r io.Reader, h plumbing.Hash) (int64, error) {
+	corrupt := errIntegrity("a selected object is corrupt")
+	fail := func() (int64, error) {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		return 0, corrupt
+	}
+	zr, err := gitsync.GetZlibReader(&ctxReader{ctx: ctx, r: r})
+	if err != nil {
+		return fail()
+	}
+	defer gitsync.PutZlibReader(zr)
+	t, size, err := looseHeader(ctx, zr.Reader)
+	if err != nil {
+		return fail()
+	}
+	hh := plumbing.NewHasher(t, size)
+	n, err := copyCtx(ctx, hh, zr.Reader)
+	if err != nil {
+		return fail()
+	}
+	if n != size {
+		return 0, corrupt
+	}
+	if hh.Sum() != h {
+		return 0, errIntegrity("a selected object does not match its hash")
+	}
+	return size, nil
+}
+
+// looseHeader decodes a loose object header from the inflated stream zr:
+// the type up to its space (at most maxTypeField bytes), which must be a
+// base object type, and the decimal size up to its NUL (at most
+// maxSizeField bytes), which must be nonnegative. Fields are read a byte at
+// a time into fixed storage, so the stream is consumed only through the
+// header; a field without its delimiter within its bound is malformed, and
+// cancellation is checked before every byte.
+func looseHeader(ctx context.Context, zr io.Reader) (plumbing.ObjectType, int64, error) {
+	var typ [maxTypeField]byte
+	tf, err := headerField(ctx, zr, ' ', typ[:])
+	if err != nil {
+		return plumbing.InvalidObject, 0, err
+	}
+	t, err := plumbing.ParseObjectType(string(tf))
+	if err != nil || (t != plumbing.CommitObject && t != plumbing.TreeObject && t != plumbing.BlobObject && t != plumbing.TagObject) {
+		return plumbing.InvalidObject, 0, objfile.ErrHeader
+	}
+	var num [maxSizeField]byte
+	sf, err := headerField(ctx, zr, 0, num[:])
+	if err != nil {
+		return plumbing.InvalidObject, 0, err
+	}
+	size, err := strconv.ParseInt(string(sf), 10, 64)
+	if err != nil || size < 0 {
+		return plumbing.InvalidObject, 0, objfile.ErrHeader
+	}
+	return t, size, nil
+}
+
+// headerField reads zr up to delim into dst and returns the bytes before
+// it; a stream ending first, or a field longer than dst, is malformed.
+func headerField(ctx context.Context, zr io.Reader, delim byte, dst []byte) ([]byte, error) {
+	var one [1]byte
+	n := 0
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		m, err := zr.Read(one[:])
+		if m == 1 {
+			if one[0] == delim {
+				return dst[:n], nil
+			}
+			if n == len(dst) {
+				return nil, objfile.ErrHeader
+			}
+			dst[n] = one[0]
+			n++
+		}
+		if err == io.EOF {
+			return nil, objfile.ErrHeader
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
 }
 
 // syncDirs syncs every fan-out directory written to and, when one was

@@ -1061,7 +1061,7 @@ func TestNodePlatform(t *testing.T) {
 			shards, err := devcheck.StressShards(goos)
 			if err != nil || len(shards) != 7 || shards[6].Name != "functions" || len(shards[6].Steps) != 3 || strings.Join(shards[6].Steps[2].Argv, " ") != nodeFn ||
 				slices.Contains(shards[0].Steps[0].Argv, "./internal/sidecar") || !slices.Contains(shards[0].Steps[0].Argv, "./internal/client") ||
-				slices.Contains(shards[0].Steps[0].Argv, "./internal/contract") || len(shards[0].CPUGroups) != 3 || len(shards[0].CPUGroups[0]) != 3 ||
+				slices.Contains(shards[0].Steps[0].Argv, "./internal/contract") || len(shards[0].CPUGroups) != 4 || len(shards[0].CPUGroups[0]) != 3 ||
 				!slices.ContainsFunc(shards[0].CPUGroups[0], func(s devcheck.Step) bool {
 					return slices.Equal(s.Argv[4:], []string{"-cpu=1", "-timeout=6m", "./internal/contract"})
 				}) ||

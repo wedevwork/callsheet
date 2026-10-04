@@ -1,22 +1,28 @@
 package workspace
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/filemode"
+	"github.com/go-git/go-git/v5/plumbing/format/packfile"
 	"github.com/go-git/go-git/v5/plumbing/format/pktline"
 	"github.com/go-git/go-git/v5/plumbing/protocol/packp"
 	"github.com/go-git/go-git/v5/plumbing/protocol/packp/capability"
+	"github.com/go-git/go-git/v5/plumbing/storer"
+	"github.com/go-git/go-git/v5/storage/memory"
 
 	"github.com/wedevwork/callsheet/internal/contract"
 	"github.com/wedevwork/callsheet/internal/testkit"
@@ -310,6 +316,114 @@ func TestTaskRoutes(t *testing.T) {
 			t.Fatalf("another instance's ref %+v %v", st, err)
 		}
 	})
+	t.Run("upload-window", func(t *testing.T) {
+		// Iteration 10b r0.5: the owned task upload encodes with window 0
+		// without a retained have and 10 with one (an unknown have is
+		// filtered, never incremental), with the library's selection and
+		// OFS representation: the decoded packs are exactly the closures.
+		w := newTransportFixture(t)
+		if r := w.receive(t, cmd("refs/heads/main", w.c0, w.c1), w.pack(t, w.c1, w.c0)); !r.ok() {
+			t.Fatalf("advance main: %s", r)
+		}
+		wg := &fakeGuard{acc: TaskAccess{Name: "alpha", Instance: w.inst, Base: w.c1, TaskRef: acc.TaskRef}}
+		var mu sync.Mutex
+		var windows []uint
+		w.m.d.packEncode = func(out io.Writer, s storer.EncodedObjectStorer, objs []plumbing.Hash, window uint) error {
+			mu.Lock()
+			windows = append(windows, window)
+			mu.Unlock()
+			return encodeTaskPack(out, s, objs, window)
+		}
+		for _, c := range []struct {
+			name   string
+			haves  []plumbing.Hash
+			window uint
+			want   []plumbing.Hash
+		}{
+			{"cold", nil, 0, objectsFor(t, w.local, w.c1)},
+			{"retained-have", []plumbing.Hash{w.c0}, 10, objectsFor(t, w.local, w.c1, w.c0)},
+			{"unknown-have", []plumbing.Hash{plumbing.NewHash(strings.Repeat("e", 40))}, 0, objectsFor(t, w.local, w.c1)},
+		} {
+			windows = nil
+			r := serveTask(w.m, wg, http.MethodPost, taskPath("git-upload-pack"), hdr, uploadBody(t, []plumbing.Hash{w.c1}, c.haves, capability.OFSDelta))
+			got, err := uploadedObjects(r.body)
+			if r.status != 200 || err != nil || len(windows) != 1 || windows[0] != c.window || !sameHashes(got, c.want) {
+				t.Fatalf("%s: %s windows %v, %d objects (want %d) %v", c.name, r, windows, len(got), len(c.want), err)
+			}
+		}
+		// The node's verified copy of the base itself: an acknowledgement
+		// and an empty pack, no encoding.
+		windows = nil
+		if r := serveTask(w.m, wg, http.MethodPost, taskPath("git-upload-pack"), hdr, uploadBody(t, []plumbing.Hash{w.c1}, []plumbing.Hash{w.c1})); r.status != 200 || len(windows) != 0 {
+			t.Fatalf("cached base %s windows %v", r, windows)
+		}
+		if taskPackWindow(nil) != 0 || taskPackWindow([]plumbing.Hash{w.c0}) != 10 {
+			t.Fatal("window selection")
+		}
+	})
+	t.Run("upload-encoding-failure", func(t *testing.T) {
+		// An encoding error ends the response before the pack completes
+		// (never a complete pack), and the producer is joined before the
+		// handler returns.
+		w := newTransportFixture(t)
+		g := &fakeGuard{acc: TaskAccess{Name: "alpha", Instance: w.inst, Base: w.c0, TaskRef: acc.TaskRef}}
+		var exited atomic.Bool
+		w.m.d.packEncode = func(out io.Writer, _ storer.EncodedObjectStorer, _ []plumbing.Hash, _ uint) error {
+			defer exited.Store(true)
+			out.Write([]byte("PACK\x00\x00\x00\x02\x00\x00\x00\x09partial"))
+			return errors.New("encoding failed (fixture)")
+		}
+		r := serveTask(w.m, g, http.MethodPost, taskPath("git-upload-pack"), hdr, uploadBody(t, []plumbing.Hash{w.c0}, nil, capability.OFSDelta))
+		if !exited.Load() {
+			t.Fatal("the handler returned before its pack producer")
+		}
+		if _, err := uploadedObjects(r.body); err == nil || !strings.Contains(r.body, "partial") {
+			t.Fatalf("a failed encoding produced a complete pack: %s", r)
+		}
+	})
+	t.Run("upload-cancel", func(t *testing.T) {
+		// A stalled peer: the response write blocks until the request is
+		// cancelled; the cancellation ends the write and the producer, which
+		// is joined before the handler returns (and so before the storage
+		// is closed and the workspace lock released).
+		w := newTransportFixture(t)
+		g := &fakeGuard{acc: TaskAccess{Name: "alpha", Instance: w.inst, Base: w.c0, TaskRef: acc.TaskRef}}
+		exited := make(chan struct{})
+		w.m.d.packEncode = func(out io.Writer, _ storer.EncodedObjectStorer, _ []plumbing.Hash, _ uint) error {
+			defer close(exited)
+			chunk := make([]byte, 1024)
+			for {
+				if _, err := out.Write(chunk); err != nil {
+					return err
+				}
+			}
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		req := httptest.NewRequest(http.MethodPost, taskPath("git-upload-pack"), bytes.NewReader(uploadBody(t, []plumbing.Hash{w.c0}, nil, capability.OFSDelta))).WithContext(ctx)
+		for k, v := range hdr {
+			req.Header[k] = v
+		}
+		sw := &stallWriter{h: http.Header{}, limit: 4096, ctx: ctx, parked: make(chan struct{}, 1)}
+		returned := make(chan struct{})
+		go func() {
+			defer close(returned)
+			w.m.ServeTaskGit(sw, req, g)
+		}()
+		testkit.WithinBy(t, sw.parked, time.After(testWait), "the response write stalled")
+		testkit.AbsentFor(t, returned, time.After(10*time.Millisecond), "the handler returned while its write stalled")
+		cancel()
+		testkit.WithinBy(t, returned, time.After(testWait), "the cancelled handler's return")
+		select {
+		case <-exited:
+		default:
+			t.Fatal("the handler returned before its pack producer")
+		}
+		// The workspace lock was released: a writer proceeds.
+		if r := w.receive(t, cmd("refs/heads/main", w.c0, w.c1), w.pack(t, w.c1, w.c0)); !r.ok() {
+			t.Fatalf("write after a cancelled upload: %s", r)
+		}
+	})
 	t.Run("resolve", func(t *testing.T) {
 		m, _ := newManager(t)
 		v := mustCreate(t, m, "beta")
@@ -597,4 +711,73 @@ func TestTaskReceiveUnconfirmed(t *testing.T) {
 	if err != nil || !st.Exists || st.Commit != result.String() || st.PublicationID != pub {
 		t.Fatalf("recovered provenance %+v %v", st, err)
 	}
+}
+
+// uploadedObjects decodes an upload response (one server-response pkt-line,
+// then the pack) and returns the pack's objects; a pack that is incomplete
+// or corrupt is an error.
+func uploadedObjects(body string) ([]plumbing.Hash, error) {
+	r := bufio.NewReader(strings.NewReader(body))
+	var sr packp.ServerResponse
+	if err := sr.Decode(r, false); err != nil {
+		return nil, err
+	}
+	s := memory.NewStorage()
+	if err := packfile.UpdateObjectStorage(s, r); err != nil {
+		return nil, err
+	}
+	var out []plumbing.Hash
+	for h := range s.Objects {
+		out = append(out, h)
+	}
+	return out, nil
+}
+
+// sameHashes reports whether a and b hold the same hashes.
+func sameHashes(a, b []plumbing.Hash) bool {
+	set := map[plumbing.Hash]bool{}
+	for _, h := range a {
+		set[h] = true
+	}
+	if len(set) != len(a) || len(a) != len(b) {
+		return false
+	}
+	for _, h := range b {
+		if !set[h] {
+			return false
+		}
+	}
+	return true
+}
+
+// stallWriter is a response writer whose peer stops reading: it accepts
+// limit bytes, then blocks every write (announcing on parked) until ctx
+// ends.
+type stallWriter struct {
+	h      http.Header
+	mu     sync.Mutex
+	n      int
+	limit  int
+	ctx    context.Context
+	parked chan struct{}
+}
+
+func (s *stallWriter) Header() http.Header { return s.h }
+
+func (s *stallWriter) WriteHeader(int) {}
+
+func (s *stallWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	if s.n < s.limit {
+		s.n += len(p)
+		s.mu.Unlock()
+		return len(p), nil
+	}
+	s.mu.Unlock()
+	select {
+	case s.parked <- struct{}{}:
+	default:
+	}
+	<-s.ctx.Done()
+	return 0, s.ctx.Err()
 }

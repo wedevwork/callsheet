@@ -1,8 +1,11 @@
 package taskworkspace
 
 import (
+	"bytes"
+	"compress/zlib"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -308,6 +311,63 @@ func TestCache(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+	t.Run("compressed-copy", func(t *testing.T) {
+		// Iteration 10b r0.5: real cold and warm Prepare copies. Once the
+		// cache holds loose objects, every leg (cache to staging, staging to
+		// the task database, the task database to the checkout) copies their
+		// compressed bytes verbatim: the cache's objects are re-encoded as
+		// stored (level 0) zlib blocks, which the deflater never produces,
+		// and exactly those bytes arrive in the task database and the
+		// checkout's .git/objects, hashes unchanged.
+		src := newSource(t)
+		c0 := src.commit(spec("a", strings.Repeat("compressed copy\n", 512), "d/b", "bee"))
+		m, root := openCache(t, 0)
+		f := &fetcher{src: src}
+		_, cold := prepared(t, m, f, binding(c0), false)
+		// The first warm run copies the cached pack into loose objects.
+		prepared(t, m, f, binding(c0), false)
+		cur := filepath.Join(root, CacheDirName, instA, currentName, "objects")
+		stored := restoreLoose(t, cur)
+		if len(stored) == 0 {
+			t.Fatal("the cache holds no loose objects after a warm run")
+		}
+		dir, warm := prepared(t, m, f, binding(c0), false)
+		if !warm.Stats.Hit || warm.Stats.Retried || warm.Stats.Purged || warm.Stats.Copied != cold.Stats.Copied {
+			t.Fatalf("warm %+v, cold %+v", warm.Stats, cold.Stats)
+		}
+		for name, want := range stored {
+			for _, p := range []string{filepath.Join(dir, ObjectsName, "objects", name), filepath.Join(dir, WorkName, ".git", "objects", name)} {
+				if got, err := os.ReadFile(p); err != nil || !bytes.Equal(got, want) {
+					t.Fatalf("%s not copied verbatim: %v", p, err)
+				}
+			}
+		}
+		// Tampering: a cached loose object that is a link (readable through
+		// the generic storage, which follows it) is refused by the copy, not
+		// followed, and is cache corruption: the entry is purged and one
+		// fresh fetch without haves serves the task.
+		var victim string
+		for name := range stored {
+			victim = name
+			break
+		}
+		p := filepath.Join(cur, victim)
+		elsewhere := filepath.Join(t.TempDir(), "obj")
+		os.WriteFile(elsewhere, stored[victim], 0o444)
+		os.Chmod(filepath.Dir(p), 0o755)
+		os.Remove(p)
+		if err := os.Symlink(elsewhere, p); err != nil {
+			t.Fatal(err)
+		}
+		f.calls = nil
+		dir2, tampered := prepared(t, m, f, binding(c0), false)
+		if !tampered.Stats.Retried || tampered.Stats.Hit || f.nCalls() != 2 || len(f.calls[0]) != 1 || len(f.calls[1]) != 0 {
+			t.Fatalf("tampered cache %+v (haves %v)", tampered.Stats, f.calls)
+		}
+		if fi, err := os.Lstat(filepath.Join(dir2, ObjectsName, "objects", victim)); err != nil || !fi.Mode().IsRegular() {
+			t.Fatalf("the task's object is not an independent regular file: %v", err)
+		}
+	})
 	t.Run("startup", func(t *testing.T) {
 		src := newSource(t)
 		c0 := src.commit(spec("x", "1"))
@@ -365,4 +425,51 @@ func TestCache(t *testing.T) {
 			t.Fatal("a cancelled startup succeeded")
 		}
 	})
+}
+
+// restoreLoose re-encodes every loose object below the objects directory
+// objs as stored (level 0) zlib blocks, the same object and hash, and
+// returns the new bytes by fan-out path ("ab/cdef...").
+func restoreLoose(t *testing.T, objs string) map[string][]byte {
+	t.Helper()
+	out := map[string][]byte{}
+	fans, err := os.ReadDir(objs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fan := range fans {
+		if !fan.IsDir() || len(fan.Name()) != 2 {
+			continue
+		}
+		names, err := os.ReadDir(filepath.Join(objs, fan.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, n := range names {
+			p := filepath.Join(objs, fan.Name(), n.Name())
+			raw, err := os.ReadFile(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			zr, err := zlib.NewReader(bytes.NewReader(raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			plain, err := io.ReadAll(zr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var b bytes.Buffer
+			zw, _ := zlib.NewWriterLevel(&b, zlib.NoCompression)
+			zw.Write(plain)
+			zw.Close()
+			os.Chmod(p, 0o600)
+			if err := os.WriteFile(p, b.Bytes(), 0o444); err != nil {
+				t.Fatal(err)
+			}
+			os.Chmod(p, 0o444)
+			out[fan.Name()+"/"+n.Name()] = b.Bytes()
+		}
+	}
+	return out
 }

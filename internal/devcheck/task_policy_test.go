@@ -232,7 +232,7 @@ func TestTaskPolicy(t *testing.T) {
 		for _, goos := range []string{"linux", "darwin"} {
 			shards, err := StressShards(goos)
 			if err != nil || len(shards) != 7 || strings.Join(shards[0].Steps[0].Argv, " ") != wantRoleStressPackages ||
-				strings.Contains(strings.Join(shards[0].Steps[0].Argv, " "), "./internal/sidecar") || strings.Join(argvOf(slices.Concat(shards[0].CPUGroups...)), "|") != strings.Join(slices.Concat(groupContract, groupMcpqual, groupWorkspace), "|") ||
+				strings.Contains(strings.Join(shards[0].Steps[0].Argv, " "), "./internal/sidecar") || strings.Join(argvOf(slices.Concat(shards[0].CPUGroups...)), "|") != strings.Join(slices.Concat(groupContract, groupMcpqual, groupWorkspace, groupTransfer), "|") ||
 				joinedArgv(shards, 1, 2) != wantStressPlane1+"|"+wantStressPlane2+"|"+wantStressPlane4 ||
 				joinedArgv(shards, 1) != wantStressPlane1 || joinedArgv(shards, 2) != wantStressPlane2+"|"+wantStressPlane4 ||
 				shards[3].Name != "sidecar-cpu1" || shards[4].Name != "sidecar" ||

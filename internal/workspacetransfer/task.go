@@ -107,8 +107,58 @@ func (t *TaskDB) Close() {
 // Dir is the database directory.
 func (t *TaskDB) Dir() string { return t.dir }
 
-// Store is the database's object storer (reads, and the closure walk).
-func (t *TaskDB) Store() storer.EncodedObjectStorer { return t.store }
+// Store is the database's object storer (reads, and the closure walk): its
+// filesystem storage, every method promoted, with the internal loose-source
+// opener, so a copy from it (CopyFrom, the checkout's copy) streams a loose
+// object's compressed bytes instead of decoding and re-deflating them.
+func (t *TaskDB) Store() storer.EncodedObjectStorer { return taskStore{Storage: t.store, db: t} }
+
+// taskStore is a TaskDB's storer: its *filesystem.Storage with the owned
+// loose-source opener (looseSource). It exposes no path.
+type taskStore struct {
+	*filesystem.Storage
+	db *TaskDB
+}
+
+// looseSource is the optional internal opener of a source's loose objects
+// (copyObjects).
+type looseSource interface {
+	// openLoose opens h's loose object file read-only, or returns
+	// errLooseAbsent when the source has no loose file for h (it may be
+	// packed); any other error is a present but unreadable object.
+	openLoose(h plumbing.Hash) (*os.File, error)
+}
+
+// errLooseAbsent: the source holds no loose file for the object.
+var errLooseAbsent = errors.New("no loose object")
+
+func (s taskStore) openLoose(h plumbing.Hash) (*os.File, error) {
+	if s.db.objFD < 0 {
+		return nil, errors.New("the task object database is closed")
+	}
+	return openLooseAt(s.db.objFD, h)
+}
+
+// openLooseAt opens only h's fan-out file beneath the already-owned objects
+// directory objFD, descriptor-relative and without following a link: the
+// fan-out directory and the file are never links, and the file is a regular
+// file. A missing fan-out directory or file is errLooseAbsent.
+func openLooseAt(objFD int, h plumbing.Hash) (*os.File, error) {
+	hex := h.String()
+	dfd, err := openDirAt(objFD, hex[:2])
+	if err != nil {
+		if errors.Is(err, unix.ENOENT) {
+			return nil, errLooseAbsent
+		}
+		return nil, err
+	}
+	defer closeFD(dfd)
+	f, _, err := openFileAt(dfd, hex[2:])
+	if errors.Is(err, unix.ENOENT) {
+		return nil, errLooseAbsent
+	}
+	return f, err
+}
 
 // Has reports whether h is present (not verified).
 func (t *TaskDB) Has(h plumbing.Hash) bool { return t.store.HasEncodedObject(h) == nil }
@@ -158,18 +208,33 @@ type CopyStats struct {
 	Objects, Bytes int64
 }
 
-// CopyFrom copies the objects hashes from src (each streamed, re-hashed by
-// the loose writer and checked against its ID) into the database; objects
-// already present are verified, never overwritten.
+// CopyFrom copies the objects hashes from src into the database; objects
+// already present are verified, never overwritten. A loose object of a
+// TaskDB's Store is copied as its verified compressed bytes; any other
+// object (a packed one, or one of another storer) is streamed and
+// re-hashed by the loose writer and checked against its ID. Objects counts
+// the copied selections and Bytes their uncompressed content.
 func (t *TaskDB) CopyFrom(ctx context.Context, src storer.EncodedObjectStorer, hashes []plumbing.Hash) (CopyStats, error) {
 	return copyObjects(ctx, t.db, src, hashes)
 }
 
 func copyObjects(ctx context.Context, db *looseDB, src storer.EncodedObjectStorer, hashes []plumbing.Hash) (CopyStats, error) {
 	var st CopyStats
+	loose, _ := src.(looseSource)
 	for _, h := range hashes {
 		if err := ctx.Err(); err != nil {
 			return st, err
+		}
+		if loose != nil {
+			size, ok, err := db.copyLooseFrom(ctx, loose, h)
+			if err != nil {
+				return st, err
+			}
+			if ok {
+				st.Objects++
+				st.Bytes += size
+				continue
+			}
 		}
 		o, err := src.EncodedObject(plumbing.AnyObject, h)
 		if err != nil {
@@ -194,6 +259,26 @@ func copyObjects(ctx context.Context, db *looseDB, src storer.EncodedObjectStore
 		return st, errStorage("cannot sync the copied objects", err)
 	}
 	return st, nil
+}
+
+// copyLooseFrom copies h as src's loose object (ok) through copyLoose. A
+// genuinely absent loose file is not ok and no error: the decoded writer
+// copies the object. A present loose file that cannot be opened is an
+// integrity failure, never a reason to fall back.
+func (db *looseDB) copyLooseFrom(ctx context.Context, src looseSource, h plumbing.Hash) (int64, bool, error) {
+	f, err := src.openLoose(h)
+	if errors.Is(err, errLooseAbsent) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, errIntegrity("a selected object cannot be read")
+	}
+	defer f.Close()
+	size, err := db.copyLoose(ctx, f, h)
+	if err != nil {
+		return 0, false, orStorage(ctxOr(ctx, err), "cannot copy the selected objects")
+	}
+	return size, true, nil
 }
 
 // Closure validates the complete typed closure of the commit roots in the
@@ -686,7 +771,7 @@ func (d *deps) initChildRepo(ctx context.Context, workFD int, db *TaskDB, commit
 		}
 		hashes, _, err := db.Closure(ctx, []plumbing.Hash{commit})
 		if err == nil {
-			_, err = copyObjects(ctx, &looseDB{d: d, objFD: objFD, opPref: "checkout-"}, db.store, hashes)
+			_, err = copyObjects(ctx, &looseDB{d: d, objFD: objFD, opPref: "checkout-"}, db.Store(), hashes)
 		}
 		closeFD(objFD)
 		if err != nil {

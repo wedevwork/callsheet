@@ -9,6 +9,7 @@ import (
 	"os"
 	"sort"
 
+	"github.com/go-git/go-git/v5/plumbing/format/objfile"
 	"golang.org/x/sys/unix"
 )
 
@@ -43,6 +44,10 @@ type deps struct {
 	rand       io.Reader
 	// metric, when non-nil, receives work counters (benchmarks).
 	metric func(name string, v int64)
+	// newObjWriter, when non-nil, constructs the deflating loose-object
+	// writer in place of objfile.NewWriter (objWriter; tests count the
+	// constructions: a verified compressed loose copy constructs none).
+	newObjWriter func(w io.Writer) *objfile.Writer
 	// tempDir is the parent of private temporary stores ("" = the
 	// process temporary directory).
 	tempDir string
@@ -113,6 +118,14 @@ func (d *deps) emit(name string, v int64) {
 	if d.metric != nil {
 		d.metric(name, v)
 	}
+}
+
+// objWriter constructs the deflating loose-object writer over w.
+func (d *deps) objWriter(w io.Writer) *objfile.Writer {
+	if d.newObjWriter != nil {
+		return d.newObjWriter(w)
+	}
+	return objfile.NewWriter(w)
 }
 
 // token returns 32 random lowercase hex digits.
