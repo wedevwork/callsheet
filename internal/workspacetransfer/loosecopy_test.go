@@ -427,7 +427,27 @@ func TestTaskCompressedCopy(t *testing.T) {
 		// Header decoding is bounded and observes cancellation (review r0.5
 		// C1): a header without its delimiters is neither accumulated nor
 		// consumed to the end of the stream.
-		noDelim := zlibRaw(t, zlib.NoCompression, append([]byte("blob"), bytes.Repeat([]byte("x"), 8<<20)...))
+		// oversized builds a malformed header stream of prefix and body at
+		// level: the compressed stream must exceed the 64 KiB read bound
+		// below, and the body is kept small enough for the stress run.
+		oversized := func(level int, prefix string, body []byte) []byte {
+			t.Helper()
+			raw := zlibRaw(t, level, append([]byte(prefix), body...))
+			if len(raw) <= 64<<10 {
+				t.Errorf("oversized %q fixture: %d compressed bytes, not above the 64 KiB read bound", prefix, len(raw))
+			}
+			if len(body) > 128<<10 {
+				t.Errorf("oversized %q fixture: %d-byte body, above 128 KiB", prefix, len(body))
+			}
+			return raw
+		}
+		// The deflated fixtures are Huffman-coded over a 26-letter cycle,
+		// which has neither a space nor a NUL and stays above the bound.
+		alphabet := make([]byte, 128<<10)
+		for i := range alphabet {
+			alphabet[i] = byte('A' + i%26)
+		}
+		noDelim := oversized(zlib.NoCompression, "blob", bytes.Repeat([]byte("x"), 128<<10))
 		// Cancelled during header parsing: the stream is served one
 		// compressed byte per read and cancelled during the tenth read (the
 		// zlib and stored-block headers take seven), so parsing stops at the
@@ -442,15 +462,15 @@ func TestTaskCompressedCopy(t *testing.T) {
 		if _, err := verifyCompressed(ctx, sr, h); !errors.Is(err, context.Canceled) || sr.reads != 10 {
 			t.Fatalf("cancelled during the header: %v after %d reads (%d bytes)", err, sr.reads, sr.n)
 		}
-		// Oversized malformed headers (8 MiB without the type's space or
+		// Oversized malformed headers (128 KiB without the type's space or
 		// without the size's NUL), stored or deflated, served in 1 KiB
 		// reads: an integrity failure after a bounded read, nowhere near
 		// the stream's end.
 		for name, raw := range map[string][]byte{
 			"type-stored":   noDelim,
-			"type-deflated": zlibRaw(t, zlib.DefaultCompression, append([]byte("blob"), bytes.Repeat([]byte("x"), 8<<20)...)),
-			"size-stored":   zlibRaw(t, zlib.NoCompression, append([]byte("blob "), bytes.Repeat([]byte("1"), 8<<20)...)),
-			"size-deflated": zlibRaw(t, zlib.DefaultCompression, append([]byte("blob "), bytes.Repeat([]byte("1"), 8<<20)...)),
+			"type-deflated": oversized(zlib.HuffmanOnly, "blob", alphabet),
+			"size-stored":   oversized(zlib.NoCompression, "blob ", bytes.Repeat([]byte("1"), 128<<10)),
+			"size-deflated": oversized(zlib.HuffmanOnly, "blob ", alphabet),
 		} {
 			sr := &stepReader{data: raw, step: 1 << 10}
 			_, err := verifyCompressed(context.Background(), sr, h)
