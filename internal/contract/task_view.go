@@ -189,26 +189,33 @@ func (r TaskRole) validate(what string) error {
 	return nil
 }
 
-// TaskResult is a terminal task's immutable result. Workspace fields are
-// explicitly unavailable in this build: result_commit and diffstat are
-// null and changed_paths is empty, never fabricated.
+// TaskResult is a terminal task's immutable result. Workspace (iteration
+// 10b) is a workspace task's publication DTO (null for no-workspace and
+// legacy tasks); result_commit, diffstat, changed_paths and the
+// changed_paths truncation fields are its derived public mirrors (null,
+// null, [], false, null without a published result), never fabricated.
 type TaskResult struct {
-	State                 string           `json:"state"`
-	ExitCode              *int             `json:"exit_code"`
-	Signal                *string          `json:"signal"`
-	FinalMessage          *string          `json:"final_message"`
-	FinalMessageTruncated bool             `json:"final_message_truncated"`
-	LogTail               string           `json:"log_tail"`
-	ResultCommit          *json.RawMessage `json:"result_commit"`
-	Diffstat              *json.RawMessage `json:"diffstat"`
-	ChangedPaths          []string         `json:"changed_paths"`
+	State                 string               `json:"state"`
+	ExitCode              *int                 `json:"exit_code"`
+	Signal                *string              `json:"signal"`
+	FinalMessage          *string              `json:"final_message"`
+	FinalMessageTruncated bool                 `json:"final_message_truncated"`
+	LogTail               string               `json:"log_tail"`
+	ResultCommit          *string              `json:"result_commit"`
+	Diffstat              *TaskDiffstat        `json:"diffstat"`
+	ChangedPaths          []string             `json:"changed_paths"`
+	ChangedPathsTruncated bool                 `json:"changed_paths_truncated"`
+	ChangedPathsNextAfter *string              `json:"changed_paths_next_after"`
+	Workspace             *TaskWorkspaceResult `json:"workspace"`
 }
 
-// MarshalJSON renders the result with null workspace fields and [].
+// MarshalJSON renders the result with an empty (never null) changed_paths.
 func (r TaskResult) MarshalJSON() ([]byte, error) {
 	type plain TaskResult
 	p := plain(r)
-	p.ResultCommit, p.Diffstat, p.ChangedPaths = nil, nil, []string{}
+	if p.ChangedPaths == nil {
+		p.ChangedPaths = []string{}
+	}
 	return compact(p)
 }
 
@@ -236,6 +243,12 @@ type TaskView struct {
 	TailTruncated       bool             `json:"tail_truncated"`
 	Result              *TaskResult      `json:"result"`
 	LateResult          *TaskLateSummary `json:"late_result"`
+	// WorkspaceBinding and WorkspacePhase (iteration 10b): the immutable
+	// admission binding (null without a workspace) and the nonterminal
+	// workspace phase (preparing, executing or publishing; null when
+	// terminal or without a workspace).
+	WorkspaceBinding *WorkspaceBinding `json:"workspace_binding"`
+	WorkspacePhase   *string           `json:"workspace_phase"`
 }
 
 // MarshalJSON renders the view with an empty (never null) candidate list.
@@ -378,8 +391,35 @@ func (v TaskView) validate() error {
 	if (v.Result != nil) != TaskTerminal(v.State) {
 		return errInvalid("%s result must be present exactly for terminal tasks", what)
 	}
-	if r := v.Result; r != nil && (r.State != v.State || r.ResultCommit != nil || r.Diffstat != nil || len(r.ChangedPaths) != 0 || r.LogTail != v.LogTail) {
+	if r := v.Result; r != nil && (r.State != v.State || r.LogTail != v.LogTail) {
 		return errInvalid("%s result is inconsistent with the task", what)
+	}
+	if r := v.Result; r != nil {
+		if err := r.checkMirrors(what); err != nil {
+			return err
+		}
+		if w := r.Workspace; w != nil && (v.WorkspaceBinding == nil || w.Name != v.WorkspaceBinding.Name || w.Instance != v.WorkspaceBinding.Instance ||
+			!sameHash(w.BaseCommit, v.WorkspaceBinding.BaseCommit)) {
+			return errInvalid("%s result workspace does not match the task's binding", what)
+		}
+	}
+	if b := v.WorkspaceBinding; b != nil {
+		if err := b.Validate(); err != nil {
+			return err
+		}
+		if err := CheckBinding(v.Request, b); err != nil {
+			return err
+		}
+	} else if v.Request.Workspace != nil {
+		return errInvalid("%s: a workspace request has its binding", what)
+	}
+	switch p := v.WorkspacePhase; {
+	case p == nil && v.WorkspaceBinding != nil && !TaskTerminal(v.State):
+		return errInvalid("%s: a nonterminal workspace task has its workspace_phase", what)
+	case p != nil && (v.WorkspaceBinding == nil || TaskTerminal(v.State)):
+		return errInvalid("%s workspace_phase is null when terminal or without a workspace", what)
+	case p != nil && *p != WorkspacePhasePreparing && *p != WorkspacePhaseExecuting && *p != WorkspacePhasePublishing:
+		return errInvalid("%s workspace_phase must be preparing, executing or publishing", what)
 	}
 	if v.Reason != nil {
 		if err := v.Reason.validate(v.State, what); err != nil {

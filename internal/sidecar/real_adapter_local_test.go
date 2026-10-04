@@ -335,27 +335,29 @@ func TestRealAdapterLocal(t *testing.T) {
 	})
 	t.Run("ordering", func(t *testing.T) {
 		// Extraction happens after the group is gone and before the
-		// scratch directory is removed; stdout is never the answer.
+		// journal-owned work directory is removed; stdout is never the
+		// answer.
 		type readAt struct {
-			dirs    []string
+			present bool
 			cleaned int
 		}
 		var mu sync.Mutex
 		var seen []readAt
+		var work string
 		var vr *vendorRun
 		fp := startFakePlane(t)
 		vr = startVendorRun(t, fp, runtime.GOOS, nil, func(d *deps) {
 			d.taskFinalRead = func(fin *finalSource, ext adapter.FinalExtractor) (adapter.FinalMessage, error) {
-				entries, _ := os.ReadDir(vr.tmp)
-				var dirs []string
-				for _, e := range entries {
-					dirs = append(dirs, e.Name())
-				}
+				mu.Lock()
+				dir := work
+				mu.Unlock()
+				fi, err := os.Stat(dir)
+				present := dir != "" && err == nil && fi.IsDir()
 				vr.groups.mu.Lock()
 				cleaned := len(vr.groups.cleaned)
 				vr.groups.mu.Unlock()
 				mu.Lock()
-				seen = append(seen, readAt{dirs: dirs, cleaned: cleaned})
+				seen = append(seen, readAt{present: present, cleaned: cleaned})
 				mu.Unlock()
 				return readFinalFile(fin, ext)
 			}
@@ -364,6 +366,9 @@ func TestRealAdapterLocal(t *testing.T) {
 		s := vr.connect(t, 1, 1, vendorRole("codex", "a", ins, run))
 		stdout := realCapture(t, "runs-scratch/codex-skip-success/stdout.bin")
 		st, ch := s.run(t, 1, 0, "codex")
+		mu.Lock()
+		work = ch.spec.dir
+		mu.Unlock()
 		if prompt := ch.prompt(t); !bytes.Contains(prompt, []byte(`"goal":"codex"`)) {
 			t.Fatalf("prompt %q", prompt)
 		}
@@ -375,7 +380,7 @@ func TestRealAdapterLocal(t *testing.T) {
 			t.Fatalf("codex result %+v logs %q", res, logs)
 		}
 		mu.Lock()
-		if len(seen) != 1 || !slices.Contains(seen[0].dirs, filepath.Base(ch.spec.dir)) || seen[0].cleaned != 1 {
+		if len(seen) != 1 || !seen[0].present || seen[0].cleaned != 1 {
 			t.Fatalf("read order %+v (scratch %s)", seen, ch.spec.dir)
 		}
 		mu.Unlock()

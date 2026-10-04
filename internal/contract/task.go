@@ -63,11 +63,14 @@ const (
 	MaxTaskListLimit     = 100
 
 	// TaskRecordSchemaVersion is tasks/<id>.json's schema written by this
-	// build (iteration 06b: stop intent and enforced timeout policy);
-	// TaskRecordSchema2 is iteration 06a's and LegacyTaskRecordSchemaVersion
-	// iteration 05's, both still decoded strictly with their exact wire
-	// structs and normalized in memory (never rewritten by a read).
-	TaskRecordSchemaVersion       = 3
+	// build (iteration 10b: the workspace binding, publication intent and
+	// workspace result); TaskRecordSchema3 is iteration 06b's (stop intent
+	// and enforced timeout policy), TaskRecordSchema2 iteration 06a's and
+	// LegacyTaskRecordSchemaVersion iteration 05's, all still decoded
+	// strictly with their exact wire structs and normalized in memory (never
+	// rewritten by a read).
+	TaskRecordSchemaVersion       = 4
+	TaskRecordSchema3             = 3
 	TaskRecordSchema2             = 2
 	LegacyTaskRecordSchemaVersion = 1
 
@@ -190,6 +193,8 @@ var StartRefusalReasons = []string{
 	ReasonRoleMissing, ReasonRoleChanged, ReasonLocalFull, ReasonManualUnreadable, ReasonManualNotRegular,
 	ReasonManualTooLarge, ReasonManualInvalidText, ReasonAdapterDisabled, ReasonExecutableUnavailable,
 	ReasonPreparationTimeout, ReasonScratchUnavailable, ReasonStartFailed,
+	// Iteration 10b: a workspace start's fixed preparation reasons.
+	ReasonWorkspaceUnavailable, ReasonWorkspaceBaseUnavailable, ReasonWorkspaceCheckoutFailed, ReasonWorkspacePrepareTimeout,
 }
 
 func knownRefusal(r string) bool {
@@ -379,28 +384,38 @@ func (o *TaskOverride) unmarshalStrict(raw json.RawMessage, what string) error {
 }
 
 // DispatchRequest is POST /api/v1/tasks: what a coordinator asks for.
-// It never carries manual bodies, argv or environment.
+// It never carries manual bodies, argv or environment. Workspace, Base and
+// WorkspaceInstance (iteration 10b) are the optional workspace selection:
+// an omitted workspace means none, base defaults to refs/heads/main, and
+// the instance is a compare-only admission precondition.
 type DispatchRequest struct {
-	Target      TaskTarget
-	Goal        string
-	Payload     []string
-	Acceptance  string
-	RequestedBy RequestedBy
-	Override    *TaskOverride
+	Target            TaskTarget
+	Goal              string
+	Payload           []string
+	Acceptance        string
+	RequestedBy       RequestedBy
+	Override          *TaskOverride
+	Workspace         *string
+	Base              *string
+	WorkspaceInstance *string
 }
 
-// MarshalJSON renders the canonical request in field order; override is
-// omitted when nil.
+// MarshalJSON renders the canonical request in field order; override and
+// the workspace selection are omitted when nil.
 func (r DispatchRequest) MarshalJSON() ([]byte, error) {
 	type wire struct {
-		Target      TaskTarget    `json:"target"`
-		Goal        string        `json:"goal"`
-		Payload     []string      `json:"payload"`
-		Acceptance  string        `json:"acceptance"`
-		RequestedBy RequestedBy   `json:"requested_by"`
-		Override    *TaskOverride `json:"override,omitempty"`
+		Target            TaskTarget    `json:"target"`
+		Goal              string        `json:"goal"`
+		Payload           []string      `json:"payload"`
+		Acceptance        string        `json:"acceptance"`
+		RequestedBy       RequestedBy   `json:"requested_by"`
+		Override          *TaskOverride `json:"override,omitempty"`
+		Workspace         *string       `json:"workspace,omitempty"`
+		Base              *string       `json:"base,omitempty"`
+		WorkspaceInstance *string       `json:"workspace_instance,omitempty"`
 	}
-	w := wire{Target: r.Target, Goal: r.Goal, Payload: r.Payload, Acceptance: r.Acceptance, RequestedBy: r.RequestedBy, Override: r.Override}
+	w := wire{Target: r.Target, Goal: r.Goal, Payload: r.Payload, Acceptance: r.Acceptance, RequestedBy: r.RequestedBy, Override: r.Override,
+		Workspace: r.Workspace, Base: r.Base, WorkspaceInstance: r.WorkspaceInstance}
 	if w.Payload == nil {
 		w.Payload = []string{}
 	}
@@ -441,6 +456,9 @@ func (r DispatchRequest) Validate() error {
 		if o.Timeout != nil && *o.Timeout < 0 {
 			return taskErr(CodeInvalidArgument, "timeout", "", "timeout must not be negative")
 		}
+	}
+	if err := checkWorkspaceFields(r.Workspace, r.Base, r.WorkspaceInstance); err != nil {
+		return err
 	}
 	b, err := compact(r)
 	if err != nil || len(b) > MaxDispatchRequestBytes {
@@ -577,12 +595,7 @@ func ParseDispatchEnvelope(data []byte) (DispatchRequest, *time.Duration, error)
 func parseDispatchObject(o object, what string) (DispatchRequest, error) {
 	var r DispatchRequest
 	var err error
-	for _, k := range []string{"workspace", "base"} {
-		if _, ok := o.raw[k]; ok {
-			return r, taskErr(CodeInvalidArgument, k, ReasonWorkspaceNotSupported, "workspace and base are not supported in this build (iteration 10 adds workspaces); nothing was dispatched")
-		}
-	}
-	if err := rejectUnknown(o, what, append(append([]string{}, dispatchFields...), "override")); err != nil {
+	if err := rejectUnknown(o, what, append(append([]string{}, dispatchFields...), "override", "workspace", "base", "workspace_instance")); err != nil {
 		return r, err
 	}
 	for _, k := range dispatchFields {
@@ -639,6 +652,32 @@ func parseDispatchObject(o object, what string) (DispatchRequest, error) {
 		if err := r.Override.unmarshalStrict(bytes.TrimSpace(v), "override"); err != nil {
 			return r, err
 		}
+	}
+	// Iteration 10b: the optional workspace selection. A present field is a
+	// nonnull string (an empty or null workspace is invalid, never "none").
+	for _, k := range []string{"workspace", "base", "workspace_instance"} {
+		v, ok := o.raw[k]
+		if !ok {
+			continue
+		}
+		if isNull(v) {
+			return r, taskErr(CodeInvalidArgument, k, "", "%s field %q must not be null", what, k)
+		}
+		s, err := strictString(bytes.TrimSpace(v), what+" field "+strconvQuote(k))
+		if err != nil {
+			return r, taskErr(CodeInvalidArgument, k, "", "%s", err.(*Error).Message)
+		}
+		switch k {
+		case "workspace":
+			r.Workspace = &s
+		case "base":
+			r.Base = &s
+		default:
+			r.WorkspaceInstance = &s
+		}
+	}
+	if err := checkWorkspaceFields(r.Workspace, r.Base, r.WorkspaceInstance); err != nil {
+		return r, err
 	}
 	return r, nil
 }
@@ -756,6 +795,38 @@ type TaskStartBody struct {
 	Role          RoleRecord      `json:"role"`
 	Request       DispatchRequest `json:"request"`
 	Effective     TaskEffective   `json:"effective"`
+	// Workspace (protocol 6) is the immutable admission binding of a
+	// workspace task, part of the start digest; absent for no workspace
+	// (a no-workspace start keeps its earlier canonical bytes).
+	Workspace *WorkspaceBinding `json:"workspace,omitempty"`
+}
+
+// CheckBinding verifies that a request's workspace selection and a binding
+// agree: both absent, or the binding names the requested workspace, its
+// requested instance and the canonical form of the requested base.
+func CheckBinding(r DispatchRequest, b *WorkspaceBinding) error {
+	if (r.Workspace == nil) != (b == nil) {
+		return errInvalid("a workspace task carries its binding exactly when its request names a workspace")
+	}
+	if b == nil {
+		return nil
+	}
+	if err := b.Validate(); err != nil {
+		return err
+	}
+	sel, err := ParseTaskBase(r.Base)
+	if err != nil {
+		return err
+	}
+	switch {
+	case *r.Workspace != b.Name:
+		return errInvalid("the workspace binding names another workspace than the request")
+	case r.WorkspaceInstance != nil && *r.WorkspaceInstance != b.Instance:
+		return errInvalid("the workspace binding names another instance than the request")
+	case SelectorString(sel) != b.BaseSelector:
+		return errInvalid("the workspace binding's base selector is not the request's canonical base")
+	}
+	return nil
 }
 
 // Digest is the SHA-256 of the canonical encoding (start deduplication).
@@ -772,14 +843,23 @@ func (b TaskStartBody) Digest() [32]byte {
 func DecodeTaskStart(body json.RawMessage, lookup AdapterLookup) (TaskStartBody, error) {
 	const what = "task_start body"
 	var w struct {
-		TaskID        string          `json:"task_id"`
-		Execution     ExecutionToken  `json:"execution"`
-		RolesRevision int             `json:"roles_revision"`
-		Role          json.RawMessage `json:"role"`
-		Request       DispatchRequest `json:"request"`
-		Effective     TaskEffective   `json:"effective"`
+		TaskID        string            `json:"task_id"`
+		Execution     ExecutionToken    `json:"execution"`
+		RolesRevision int               `json:"roles_revision"`
+		Role          json.RawMessage   `json:"role"`
+		Request       DispatchRequest   `json:"request"`
+		Effective     TaskEffective     `json:"effective"`
+		Workspace     *WorkspaceBinding `json:"workspace,omitempty"`
+	}
+	if o, err := decodeObject(body, what); err == nil {
+		if v, ok := o.raw["workspace"]; ok && isNull(v) {
+			return TaskStartBody{}, errInvalid("%s workspace must be omitted, not null, for a task without a workspace", what)
+		}
 	}
 	if err := decodeStrict(body, &w, what); err != nil {
+		return TaskStartBody{}, err
+	}
+	if err := CheckBinding(w.Request, w.Workspace); err != nil {
 		return TaskStartBody{}, err
 	}
 	if !ValidTaskID(w.TaskID) {
@@ -795,20 +875,28 @@ func DecodeTaskStart(body json.RawMessage, lookup AdapterLookup) (TaskStartBody,
 	if err := CheckEffort(role.Adapter, w.Effective.Effort, lookup); err != nil {
 		return TaskStartBody{}, err
 	}
-	return TaskStartBody{TaskID: w.TaskID, Execution: w.Execution, RolesRevision: w.RolesRevision, Role: role, Request: w.Request, Effective: w.Effective}, nil
+	return TaskStartBody{TaskID: w.TaskID, Execution: w.Execution, RolesRevision: w.RolesRevision, Role: role, Request: w.Request, Effective: w.Effective,
+		Workspace: w.Workspace}, nil
 }
 
 // TaskStartResult is the sidecar's task_start_result: {task_id, ok:true}
-// (a child exists) or {task_id, ok:false, error} (definitely no child).
+// (a child exists), {task_id, ok:false, error} (definitely no child) or
+// (protocol 6, a workspace start) {task_id, ok:true, preparing:true}: a
+// durable local reservation and journal, definitely no adapter yet; the
+// outcome follows as task_prepared.
 type TaskStartResult struct {
-	TaskID string
-	Err    *Error
+	TaskID    string
+	Err       *Error
+	Preparing bool
 }
 
-// MarshalJSON renders the exact success or refusal shape.
+// MarshalJSON renders the exact success, preparing or refusal shape.
 func (r TaskStartResult) MarshalJSON() ([]byte, error) {
 	id, _ := compact(r.TaskID)
 	if r.Err == nil {
+		if r.Preparing {
+			return []byte(`{"task_id":` + string(id) + `,"ok":true,"preparing":true}`), nil
+		}
 		return []byte(`{"task_id":` + string(id) + `,"ok":true}`), nil
 	}
 	e, err := r.Err.MarshalJSON()
@@ -836,7 +924,7 @@ func DecodeTaskStartResult(body json.RawMessage) (TaskStartResult, error) {
 	}
 	var r TaskStartResult
 	if okv {
-		err = o.only(what, []string{"task_id", "ok"})
+		err = o.only(what, []string{"task_id", "ok"}, "preparing")
 	} else {
 		err = o.only(what, []string{"task_id", "ok", "error"})
 	}
@@ -847,6 +935,13 @@ func DecodeTaskStartResult(body json.RawMessage) (TaskStartResult, error) {
 		return r, errInvalid("%s task_id is not a task ID", what)
 	}
 	if okv {
+		if v, ok := o.raw["preparing"]; ok {
+			// Only the exact preparing shape: preparing:true, never false.
+			if p, err := o.boolean(what, "preparing"); err != nil || !p || isNull(v) {
+				return r, errInvalid("%s preparing must be true when present", what)
+			}
+			r.Preparing = true
+		}
 		return r, nil
 	}
 	e, err := ParseErrorBody(append(append([]byte(`{"error":`), o.raw["error"]...), '}'))
@@ -951,7 +1046,12 @@ type TaskResultBody struct {
 	LogIncomplete         bool           `json:"log_incomplete"`
 	CounterOverflow       bool           `json:"counter_overflow"`
 	StopID                *string        `json:"stop_id"`
-	Digest                string         `json:"digest"`
+	// Workspace (protocol 6) is a workspace task's publication DTO; absent
+	// for a task without a workspace, whose digest keeps the protocol 4/5
+	// field sequence. A present DTO is digested with a domain-separated
+	// version 6 encoding.
+	Workspace *TaskWorkspaceResult `json:"workspace,omitempty"`
+	Digest    string               `json:"digest"`
 }
 
 // resultDigestBody is TaskResultBody without its digest and stop_id, in
@@ -979,6 +1079,9 @@ type resultDigestStop struct {
 // null stop_id is omitted (the old field sequence), a nonnull one is
 // included last.
 func (b TaskResultBody) ResultDigest() string {
+	if b.Workspace != nil {
+		return workspaceDigest(b)
+	}
 	base := resultDigestBody{b.TaskID, b.Execution, b.Outcome, b.ExitCode, b.Signal, b.FinalMessage, b.FinalMessageTruncated,
 		b.OutputBytes, b.LogIncomplete, b.CounterOverflow}
 	var enc []byte
@@ -1031,6 +1134,14 @@ func (b TaskResultBody) Validate() error {
 	case b.Digest != b.ResultDigest():
 		return errInvalid("%s digest does not cover its fields", what)
 	}
+	if w := b.Workspace; w != nil {
+		if err := w.Validate(); err != nil {
+			return err
+		}
+		if b.Outcome == OutcomeLost && w.Publication != PublicationNotApplicable {
+			return errInvalid("%s: a lost outcome's workspace result is not_applicable", what)
+		}
+	}
 	return checkFinalMessage(b.FinalMessage, b.FinalMessageTruncated, what)
 }
 
@@ -1050,6 +1161,11 @@ func checkFinalMessage(m *string, truncated bool, what string) error {
 // DecodeTaskResult decodes a task_result body.
 func DecodeTaskResult(body json.RawMessage) (TaskResultBody, error) {
 	var b TaskResultBody
+	if o, err := decodeObject(body, "task_result body"); err == nil {
+		if v, ok := o.raw["workspace"]; ok && isNull(v) {
+			return b, errInvalid("task_result body workspace must be omitted, not null, for a task without a workspace")
+		}
+	}
 	if err := decodeStrict(body, &b, "task_result body"); err != nil {
 		return b, err
 	}

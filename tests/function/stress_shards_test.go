@@ -62,7 +62,7 @@ var shardPlan = []struct {
 	steps     [][2]string
 	cpuGroups [][][2]string
 }{
-	{"packages", false, [][2]string{{"stress packages", "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/workspacetransfer"}},
+	{"packages", false, [][2]string{{"stress packages", "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/workspacetransfer ./internal/taskworkspace ./internal/taskpublication"}},
 		[][][2]string{{
 			{"stress contract cpu1", "go test -race -count=20 -cpu=1 -timeout=6m ./internal/contract"},
 			{"stress contract cpu2", "go test -race -count=20 -cpu=2 -timeout=6m ./internal/contract"},
@@ -136,6 +136,13 @@ var shard09a = []string{
 // package, in the packages shard only, after the workspace hub.
 var shard09b = []string{
 	"go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/workspacetransfer",
+}
+
+// shard10b is iteration 10b's literal addition: the task workspace and
+// task publication packages, in the combined packages invocation after
+// the local transfers, in that order.
+var shard10b = []string{
+	"go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/taskworkspace ./internal/taskpublication",
 }
 
 // shardArgv returns the literal commands of the named shards, in order.
@@ -311,6 +318,17 @@ func TestStressShardSelection(t *testing.T) {
 	if len(want) != 48 {
 		t.Fatalf("09b selection = %d tuples, want 09a plus 1 package at 3 CPU settings", len(want))
 	}
+	for _, argv := range shard10b {
+		for _, tp := range tuples(t, argv) {
+			if want[tp] != 0 {
+				t.Fatalf("10b addition %+v overlaps", tp)
+			}
+			want[tp]++
+		}
+	}
+	if len(want) != 54 {
+		t.Fatalf("10b selection = %d tuples, want 09b plus 2 packages at 3 CPU settings", len(want))
+	}
 	for _, goos := range []string{"linux", "darwin"} {
 		shards, err := devcheck.StressShards(goos)
 		if err != nil || len(shards) != len(shardPlan) {
@@ -353,11 +371,11 @@ func TestStressShardSelection(t *testing.T) {
 		}
 		for tp, n := range got {
 			if want[tp] != n {
-				t.Errorf("%s: %+v selected %d times, 02b, 03, 04, 07a, 07b, 09a and 09b selected it %d times", goos, tp, n, want[tp])
+				t.Errorf("%s: %+v selected %d times, 02b, 03, 04, 07a, 07b, 09a, 09b and 10b selected it %d times", goos, tp, n, want[tp])
 			}
 		}
-		if len(got) != 48 {
-			t.Fatalf("%s: %d distinct tuples, want 48", goos, len(got))
+		if len(got) != 54 {
+			t.Fatalf("%s: %d distinct tuples, want 54", goos, len(got))
 		}
 		ownerOf := map[string]string{"1": "-cpu1", "2": "", "4": ""}
 		for _, pkg := range []string{"plane", "sidecar"} {

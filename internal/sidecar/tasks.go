@@ -2,6 +2,7 @@ package sidecar
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -19,6 +20,8 @@ import (
 
 	"github.com/wedevwork/callsheet/internal/adapter"
 	"github.com/wedevwork/callsheet/internal/contract"
+	"github.com/wedevwork/callsheet/internal/taskworkspace"
+	"github.com/wedevwork/callsheet/internal/workspacetransfer"
 )
 
 // Task execution on the worker (iterations 05 and 06a). Task workers
@@ -174,6 +177,32 @@ type taskWorker struct {
 	jmu     sync.Mutex
 	jphase  string
 	jnonce  *string
+
+	// Iteration 10b. work is the journal-owned work directory (the child's
+	// cwd). A workspace execution's prepReply lets the session answer its
+	// start preparing; prepOut is the task_prepared awaiting its exchange
+	// (prepSent: written on the current attachment) and release receives
+	// the plane's decision; pathMap and runtimeDir are its checkout's
+	// pathname map and owned final-output directory; cleanupCh closes when
+	// a recovered execution's group cleanup was confirmed; resuming marks a
+	// recovered publication holding its slot until its outbox is durable.
+	work       string
+	prepReply  bool
+	prepOut    *contract.TaskPreparedBody
+	prepSent   bool
+	release    chan bool
+	pathMap    *workspacetransfer.PathMap
+	runtimeDir string
+	cleanupCh  chan struct{}
+	resuming   bool
+	// workPending: the work directory's removal failed after a confirmed
+	// cleanup; the slot stays held until the janitor's journal removal
+	// (which deletes the whole task directory) succeeds.
+	workPending bool
+	// ownsWork: a recovered (not resumed) execution's journal-owned work
+	// directory still holds its slot; recovery deletes it once the group's
+	// absence is proved and the outcome is durable (the janitor waits).
+	ownsWork bool
 }
 
 // latched returns w's latched control, or nil.
@@ -259,6 +288,15 @@ type taskSupervisor struct {
 	// notify is the coalesced work-availability signal to the session: it
 	// carries no data.
 	notify chan struct{}
+
+	// Iteration 10b workspace execution: the plane surface, the shared
+	// object cache, this node's ID (the assignment headers) and base, a
+	// context ended at shutdown (publication observation).
+	ws     wsPlane
+	cache  *taskworkspace.Manager
+	nodeID string
+	base   context.Context
+	cancel context.CancelFunc
 }
 
 func (d *deps) newSupervisor(env roleEnv, goos string, logger *slog.Logger, l layout) *taskSupervisor {
@@ -289,6 +327,7 @@ func (d *deps) newSupervisor(env roleEnv, goos string, logger *slog.Logger, l la
 	var b [16]byte
 	io.ReadFull(d.rand, b[:])
 	s.runID = hex.EncodeToString(b[:])
+	s.base, s.cancel = context.WithCancel(context.Background())
 	return s
 }
 
@@ -390,7 +429,8 @@ func (s *taskSupervisor) begin(start contract.TaskStartBody, tag *attachTag, dea
 		ringCap = s.d.taskRingCap
 	}
 	w := &taskWorker{sup: s, start: start, digest: start.StartDigestHex(), key: keyOf(start.Role), tag: tag, deadline: deadline,
-		ring: newOutputRing(ringCap), exitedCh: make(chan struct{}), stopCh: make(chan struct{}), commitCh: make(chan struct{}), ctlCh: make(chan struct{})}
+		ring: newOutputRing(ringCap), exitedCh: make(chan struct{}), stopCh: make(chan struct{}), commitCh: make(chan struct{}), ctlCh: make(chan struct{}),
+		release: make(chan bool, 1)}
 	s.mu.Lock()
 	s.workers[w] = true
 	s.mu.Unlock()
@@ -420,8 +460,18 @@ func (s *taskSupervisor) complete(w *taskWorker) {
 // journalOf is w's journal document in phase, with its latched stop
 // intent. Every protocol 5 start is enforced (iteration 06b).
 func (s *taskSupervisor) journalOf(w *taskWorker, phase string, nonce *string) contract.ExecutionJournal {
-	return contract.ExecutionJournal{TaskID: w.id(), Execution: w.start.Execution, StartDigest: w.digest, Role: w.start.Role,
-		Effective: w.start.Effective, TimeoutPolicy: contract.TimeoutPolicyEnforced, OwnerNonce: nonce, Phase: phase, StopIntent: w.latched()}
+	j := contract.ExecutionJournal{TaskID: w.id(), Execution: w.start.Execution, StartDigest: w.digest, Role: w.start.Role,
+		Effective: w.start.Effective, TimeoutPolicy: contract.TimeoutPolicyEnforced, OwnerNonce: nonce, Phase: phase, StopIntent: w.latched(),
+		Work: true, Workspace: w.start.Workspace}
+	// Iteration 10b: the journal-owned work directory and, for a
+	// workspace task, its binding and owned runtime directory.
+	w.mu.Lock()
+	if w.runtimeDir != "" {
+		rt := w.runtimeDir
+		j.RuntimeDir = &rt
+	}
+	w.mu.Unlock()
+	return j
 }
 
 // writeJournal publishes w's journal in phase (created when first),
@@ -461,7 +511,9 @@ func (s *taskSupervisor) control(w *taskWorker, in contract.StopIntent) bool {
 	// A launched (or launching) execution's group cleanup is unresolved
 	// until its disappearance is proved: the node accepts nothing
 	// meanwhile, whatever became of its role (as for stop_lost).
-	active := w.phase != phasePreparing
+	// A group already proved gone (a workspace execution finalizing, since
+	// iteration 10b) has no cleanup left: the plane arbitrates the intent.
+	active := w.phase != phasePreparing && !w.cleanupOK
 	if active {
 		w.cleaning = true
 	}
@@ -580,38 +632,70 @@ func (s *taskSupervisor) run(w *taskWorker) {
 		return
 	}
 	a, exe := prep.a, prep.exe
-	scratch, err := s.plat.scratch(s.tmpRoot(), w.id())
-	if err != nil {
-		s.refuseStart(w, contract.ReasonScratchUnavailable, nil, "", false)
+	// Barrier 1: the durable task directory and prepared journal, before
+	// anything is spawned (iteration 10b: first, so the journal owns the
+	// work directory every crash leftover is found from).
+	if err := s.writeJournal(w, s.journalOf(w, contract.JournalPrepared, nil), true); err != nil {
+		// A creation that failed after its rename leaves a published
+		// directory: the deletion removes it (or resyncs tasks/ only).
+		s.logger.Error("task journal unavailable", "task_id", w.id(), "error", err)
+		s.refuseStart(w, contract.ReasonStartFailed, nil, "", true)
 		return
+	}
+	scratch, err := s.makeWork(w)
+	if err != nil {
+		s.refuseStart(w, contract.ReasonScratchUnavailable, nil, "", true)
+		return
+	}
+	w.mu.Lock()
+	w.work = scratch
+	w.mu.Unlock()
+	// Iteration 10b: a workspace start answers preparing and prepares its
+	// private checkout (its owned final-output directory inside it).
+	finalDir := ""
+	if w.start.Workspace != nil {
+		rt, ok := s.prepareWorkspace(w, scratch)
+		if !ok {
+			return
+		}
+		finalDir = rt
 	}
 	// Iteration 08: the invocation is built once the scratch directory
 	// exists (Codex names its final file there), then the declared final
 	// file's ownership is established; either failure is a definite
-	// refusal before any journal or guardian.
+	// refusal before any guardian.
 	inv, err := a.Invocation(adapter.TaskInput{TaskID: w.id(), Model: w.start.Effective.Model, Effort: w.start.Effective.Effort, Prompt: prep.prompt,
-		ScratchDir: scratch})
+		ScratchDir: scratch, FinalDir: finalDir})
+	if err == nil && finalDir != "" && inv.FinalFile == "" {
+		// A stdout-based adapter needs no runtime directory: ours, empty,
+		// removed before launch.
+		if err = os.Remove(finalDir); err == nil {
+			w.mu.Lock()
+			w.runtimeDir = ""
+			w.mu.Unlock()
+			finalDir = ""
+		}
+	}
+	if err == nil && finalDir != "" {
+		err = s.writeJournal(w, s.journalOf(w, contract.JournalPrepared, nil), false)
+	}
 	if err != nil {
 		s.logger.Warn("task invocation refused", "task_id", w.id(), "adapter", w.start.Role.Adapter, "reason", "invalid_invocation")
-		s.refuseStart(w, contract.ReasonStartFailed, nil, scratch, false)
+		s.refuseOwned(w, contract.ReasonStartFailed, scratch)
 		return
 	}
-	fin, err := ownFinal(inv, scratch)
+	if finalDir == "" {
+		finalDir = scratch
+	}
+	fin, err := ownFinal(inv, finalDir)
 	if err != nil {
 		s.logger.Warn("task final-message file unavailable", "task_id", w.id(), "adapter", w.start.Role.Adapter, "reason", "final_file_setup")
-		s.refuseStart(w, contract.ReasonStartFailed, nil, scratch, false)
+		s.refuseOwned(w, contract.ReasonStartFailed, scratch)
 		return
 	}
 	// The retained directory handle lives until extraction or cleanup
 	// finishes; every start, refusal, cancellation or error path closes it.
 	defer fin.close()
-	// Barrier 1: the durable task directory and prepared journal, before
-	// anything is spawned.
-	if err := s.writeJournal(w, s.journalOf(w, contract.JournalPrepared, nil), true); err != nil {
-		s.logger.Error("task journal unavailable", "task_id", w.id(), "error", err)
-		s.refuseStart(w, contract.ReasonStartFailed, nil, scratch, true)
-		return
-	}
 	if w.latched() != nil {
 		// Cancelled while preparing: nothing is spawned.
 		s.cancelBeforeStart(w, scratch, nil)
@@ -619,17 +703,17 @@ func (s *taskSupervisor) run(w *taskWorker) {
 	}
 	nonce, err := s.newNonce()
 	if err != nil {
-		s.refuseStart(w, contract.ReasonStartFailed, nil, scratch, true)
+		s.refuseOwned(w, contract.ReasonStartFailed, scratch)
 		return
 	}
 	self, err := s.exe()
 	if err != nil {
-		s.refuseStart(w, contract.ReasonStartFailed, nil, scratch, true)
+		s.refuseOwned(w, contract.ReasonStartFailed, scratch)
 		return
 	}
 	p, err := newPipes()
 	if err != nil {
-		s.refuseStart(w, contract.ReasonStartFailed, nil, scratch, true)
+		s.refuseOwned(w, contract.ReasonStartFailed, scratch)
 		return
 	}
 	spec := guardianSpec{exe: self, inv: contract.GuardianInvocation{Version: contract.GuardianInvocationVersion, TaskID: w.id(),
@@ -642,17 +726,23 @@ func (s *taskSupervisor) run(w *taskWorker) {
 	// adapter before the release byte.
 	if err := g.Start(); err != nil {
 		p.closeParent()
-		s.refuseStart(w, contract.ReasonStartFailed, nil, scratch, true)
+		s.refuseOwned(w, contract.ReasonStartFailed, scratch)
 		return
 	}
 	pgid := g.PID()
 	w.mu.Lock()
 	w.pgid, w.g = pgid, g
 	w.mu.Unlock()
-	abandon := func(reason string) {
-		// Never released, so no adapter can exist: revoke, reap the
-		// guardian, confirm its group is gone, then refuse definitely (or,
-		// under a latched control, cancel before start).
+	ws := w.start.Workspace != nil
+	timeoutReason := contract.ReasonPreparationTimeout
+	if ws {
+		timeoutReason = contract.ReasonWorkspacePrepareTimeout
+	}
+	// abandon revokes a never released guardian (so no adapter can exist),
+	// reaps it, confirms its group is gone, then refuses definitely (or,
+	// under a latched control, cancels before start). decided: the plane
+	// already resolved the start (a workspace refusal needs no report).
+	abandon := func(reason string, decided bool) {
 		g.Revoke()
 		g.Wait()
 		err := s.groups.gone(pgid)
@@ -660,24 +750,38 @@ func (s *taskSupervisor) run(w *taskWorker) {
 			s.logger.Error("task process group cleanup unconfirmed", "task_id", w.id(), "role_id", w.key.id, "reason", cleanupUnconfirmed)
 		}
 		p.closeParent()
-		if w.latched() != nil {
+		switch {
+		case w.latched() != nil:
 			s.cancelBeforeStart(w, scratch, err)
-			return
+		case decided:
+			s.refuseStart(w, reason, nil, scratch, true)
+		default:
+			s.refuseOwned(w, reason, scratch)
 		}
-		s.refuseStart(w, reason, nil, scratch, true)
 	}
 	// Barrier 3: durable ownership (owner.json armed, the FIFO) and ready.
 	m, ok, timedOut := s.waitStatus(w, g, true)
 	if timedOut {
-		abandon(contract.ReasonPreparationTimeout)
+		abandon(timeoutReason, s.isClosing())
 		return
 	}
 	if !ok || m.Type != contract.GuardianReady || m.PID != pgid || m.PGID != pgid || pgid <= 1 || pgid == s.ownGroup {
-		abandon(contract.ReasonStartFailed)
+		abandon(contract.ReasonStartFailed, false)
 		return
 	}
+	if ws {
+		// Iteration 10b: the prepared checkout and armed guardian are
+		// reported; only the plane's durable authorization releases.
+		release, ok := s.exchangePrepared(w, contract.TaskPreparedBody{TaskID: w.id(), Execution: w.start.Execution, StartDigest: w.digest, OK: true})
+		s.event(evPreparedAcked, w)
+		if !ok || !release {
+			abandon(contract.ReasonWorkspacePrepareTimeout, true)
+			return
+		}
+	}
 	// Barrier 4: the running authorization, decided under the lock that
-	// publishes it; a timer can never later reject an authorized start.
+	// publishes it; a timer can never later reject an authorized start (a
+	// workspace start's authorization is the plane's release decision).
 	w.mu.Lock()
 	if s.d.taskAuthHook != nil {
 		s.d.taskAuthHook(w.id())
@@ -685,9 +789,9 @@ func (s *taskSupervisor) run(w *taskWorker) {
 	s.mu.Lock()
 	closing := s.closing
 	s.mu.Unlock()
-	if w.expired || closing || w.ctl != nil || !s.d.clock.Now().Before(w.deadline) {
+	if w.expired || closing || w.ctl != nil || (!ws && !s.d.clock.Now().Before(w.deadline)) {
 		w.mu.Unlock()
-		abandon(contract.ReasonPreparationTimeout)
+		abandon(contract.ReasonPreparationTimeout, ws)
 		return
 	}
 	w.phase = phaseAuthorized
@@ -696,7 +800,7 @@ func (s *taskSupervisor) run(w *taskWorker) {
 	if err := s.writeJournal(w, s.journalOf(w, contract.JournalRunning, &nonce), false); err != nil {
 		// Not released: no adapter can exist.
 		s.logger.Error("task journal unavailable", "task_id", w.id(), "error", err)
-		abandon(contract.ReasonStartFailed)
+		abandon(contract.ReasonStartFailed, ws)
 		return
 	}
 	g.Release()
@@ -732,11 +836,16 @@ func (s *taskSupervisor) run(w *taskWorker) {
 			s.logger.Error("task process group cleanup unconfirmed", "task_id", w.id(), "role_id", w.key.id, "reason", cleanupUnconfirmed)
 		}
 		p.closeParent()
-		if w.latched() != nil {
+		switch {
+		case w.latched() != nil:
 			s.cancelBeforeStart(w, scratch, err)
-			return
+		case ws:
+			// The plane authorized the start durably (iteration 10b): no
+			// refusal can answer it any more; the execution is lost.
+			s.lostBeforeLaunch(w, scratch, err)
+		default:
+			s.refuseStart(w, contract.ReasonStartFailed, nil, scratch, true)
 		}
-		s.refuseStart(w, contract.ReasonStartFailed, nil, scratch, true)
 		return
 	default:
 		// The guardian ended without confirming a launch: an adapter may
@@ -803,7 +912,7 @@ func (s *taskSupervisor) refuseStart(w *taskWorker, reason string, p *pipes, scr
 		p.closeAll()
 	}
 	if scratch != "" {
-		removeScratch(scratch)
+		removeWork(scratch)
 	}
 	if journaled {
 		s.removeJournal(w)
@@ -827,9 +936,6 @@ func (s *taskSupervisor) refuseStart(w *taskWorker, reason string, p *pipes, scr
 // is lost instead (still naming the intent): its slot, scratch directory
 // and ownership are kept and the instance stays blocked.
 func (s *taskSupervisor) cancelBeforeStart(w *taskWorker, scratch string, cleanupErr error) {
-	if scratch != "" && cleanupErr == nil {
-		removeScratch(scratch)
-	}
 	c := w.latched()
 	w.mu.Lock()
 	w.cleaning = false
@@ -843,8 +949,6 @@ func (s *taskSupervisor) cancelBeforeStart(w *taskWorker, scratch string, cleanu
 		s.mu.Lock()
 		s.blocked[w.key] = true
 		s.mu.Unlock()
-	} else {
-		s.release(w.key)
 	}
 	s.refreshBlocker(w)
 	id := c.ID
@@ -853,7 +957,13 @@ func (s *taskSupervisor) cancelBeforeStart(w *taskWorker, scratch string, cleanu
 		outcome = contract.OutcomeLost
 		s.logger.Warn("task execution lost", "task_id", w.id(), "reason", cleanupUnconfirmed)
 	}
-	s.freeze(w, contract.TaskResultBody{TaskID: w.id(), Execution: w.start.Execution, Outcome: outcome, StopID: &id}.Sealed())
+	// The outcome is journaled first; the journal-owned work directory is
+	// removed and the slot released before it is offered (iteration 10b).
+	var after func()
+	if cleanupErr == nil {
+		after = func() { s.releaseWork(w, scratch) }
+	}
+	s.freezeThen(w, workspaceCancelled(w.start.Workspace, contract.TaskResultBody{TaskID: w.id(), Execution: w.start.Execution, Outcome: outcome, StopID: &id}), after)
 	close(w.exitedCh)
 	s.event(evTaskExited, w)
 	s.signal()
@@ -1168,11 +1278,6 @@ func (s *taskSupervisor) supervise(w *taskWorker, g guardianProc, a adapter.Adap
 		w.cleanupOK, w.cleaning = true, false
 		w.mu.Unlock()
 		s.refreshBlocker(w)
-		if scratch != "" {
-			if err := removeScratch(scratch); err != nil {
-				s.logger.Warn("task scratch cleanup failed", "task_id", w.id(), "path", scratch)
-			}
-		}
 	}
 	end, incomplete, overflow := w.ring.totals()
 	res := contract.TaskResultBody{TaskID: w.id(), Execution: w.start.Execution, Outcome: contract.OutcomeNatural, FinalMessage: fm.Message,
@@ -1239,15 +1344,32 @@ func (s *taskSupervisor) supervise(w *taskWorker, g guardianProc, a adapter.Adap
 		}
 		lost(why)
 	}
-	if cleanupErr == nil {
-		// Release after the group's verified disappearance, before the
-		// outcome is offered (a heartbeat after the result never counts
-		// the slot); an unconfirmed cleanup retains the slot and keeps the
-		// role locally blocked. While the outcome's journal publication
-		// fails the node stays nonaccepting (freeze's blocker).
-		s.release(w.key)
+	final := res.Sealed()
+	if w.start.Workspace != nil {
+		// Iteration 10b: the result snapshot and its publication, after the
+		// group's disappearance and the final extraction.
+		r := s.finalizeWorkspace(w, res, cleanupErr)
+		if r == nil {
+			// Run shutdown before the publication ended: its checkpoint and
+			// journal are resumed or resolved by the next Run.
+			s.event(evTaskExited, w)
+			s.signal()
+			return
+		}
+		final = *r
 	}
-	s.freeze(w, res.Sealed())
+	var after func()
+	if cleanupErr == nil {
+		// The work directory is removed and the slot released after the
+		// group's verified disappearance and the outbox's durability, before
+		// the outcome is offered (a heartbeat after the result never counts
+		// the slot); an unconfirmed cleanup retains both and keeps the role
+		// locally blocked. While the outcome's journal publication fails the
+		// node stays nonaccepting (freeze's blocker). A failed removal keeps
+		// the slot held until the janitor removes the task directory.
+		after = func() { s.releaseWork(w, scratch) }
+	}
+	s.freezeThen(w, final, after)
 	s.event(evTaskExited, w)
 	s.signal()
 }
@@ -1300,6 +1422,14 @@ func (s *taskSupervisor) isClosing() bool {
 // fails, then offers it (the outbox): a result is never offered before it
 // is durable.
 func (s *taskSupervisor) freeze(w *taskWorker, res contract.TaskResultBody) {
+	s.freezeThen(w, res, nil)
+}
+
+// freezeThen is freeze running after (when non-nil) once the outcome is
+// durable and before it is offered (iteration 10b: the work directory's
+// removal and the slot's release). A Run shutdown before durability runs
+// nothing.
+func (s *taskSupervisor) freezeThen(w *taskWorker, res contract.TaskResultBody, after func()) {
 	phase := contract.JournalCompleted
 	if res.Outcome == contract.OutcomeLost {
 		phase = contract.JournalLost
@@ -1324,6 +1454,9 @@ func (s *taskSupervisor) freeze(w *taskWorker, res contract.TaskResultBody) {
 			// offered; the next Run reports the execution lost.
 			return
 		}
+	}
+	if after != nil {
+		after()
 	}
 	w.mu.Lock()
 	failing := w.journalFailing
@@ -1352,7 +1485,7 @@ func (s *taskSupervisor) janitorLoop() {
 		}
 		for _, w := range s.snapshot() {
 			w.mu.Lock()
-			ready := w.committed && w.cleanupOK && !w.forgotten && (w.recovered || w.done)
+			ready := w.committed && w.cleanupOK && !w.forgotten && !w.ownsWork && (w.recovered || w.done)
 			w.mu.Unlock()
 			if !ready {
 				continue
@@ -1362,7 +1495,15 @@ func (s *taskSupervisor) janitorLoop() {
 			}
 			w.mu.Lock()
 			w.forgotten = true
+			pending := w.workPending
+			w.workPending = false
 			w.mu.Unlock()
+			if pending {
+				// Iteration 10b: the task directory, its work directory
+				// included, is gone: the held slot is free.
+				s.release(w.key)
+				s.event(evWorkReleased, w)
+			}
 			s.event(evTaskForgotten, w)
 		}
 		s.gc()
@@ -1494,6 +1635,8 @@ func (s *taskSupervisor) fence(tag *attachTag) {
 	for _, w := range s.attached(tag) {
 		w.mu.Lock()
 		w.tag, w.replied, w.late = nil, false, false
+		// A task_prepared in flight is resent on the next attachment.
+		w.prepSent = false
 		if w.waitAck {
 			w.waitAck, w.unconfirmed = false, true
 			s.logger.Warn("task result receipt unconfirmed", "task_id", w.id(), "reason", "result_receipt_unconfirmed")
@@ -1527,6 +1670,7 @@ func (s *taskSupervisor) shutdown() {
 	s.mu.Unlock()
 	if !already {
 		close(s.stopAll)
+		s.cancel()
 	}
 	s.d.emit(event{kind: evSupervisorClosing})
 	s.wg.Wait()

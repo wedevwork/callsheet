@@ -64,19 +64,19 @@ func TestWorkspaceClient(t *testing.T) {
 		return hits
 	}
 	ctx := context.Background()
-	set(contract.PathWorkspaces, jsonRoute("5", 201, view("alpha")))
+	set(contract.PathWorkspaces, jsonRoute("6", 201, view("alpha")))
 	if v, err := c.CreateWorkspace(ctx, "alpha"); err != nil || v.Name != "alpha" || got().body != `{"name":"alpha"}` {
 		t.Fatalf("create %+v %v %+v", v, err, got())
 	}
-	set(contract.PathWorkspaces, jsonRoute("5", 201, view("beta")))
+	set(contract.PathWorkspaces, jsonRoute("6", 201, view("beta")))
 	if _, err := c.CreateWorkspace(ctx, "alpha"); codeOf(err) != contract.CodeInvalidArgument {
 		t.Fatalf("answer naming another workspace: %v", err)
 	}
-	set(contract.PathWorkspaces, jsonRoute("5", 200, view("alpha")))
+	set(contract.PathWorkspaces, jsonRoute("6", 200, view("alpha")))
 	if _, err := c.CreateWorkspace(ctx, "alpha"); codeOf(err) != contract.CodeInvalidArgument {
 		t.Fatalf("unexpected status: %v", err)
 	}
-	set(contract.PathWorkspaces, jsonRoute("5", 409, `{"error":{"code":"conflict","message":"exists"}}`))
+	set(contract.PathWorkspaces, jsonRoute("6", 409, `{"error":{"code":"conflict","message":"exists"}}`))
 	if _, err := c.CreateWorkspace(ctx, "alpha"); codeOf(err) != contract.CodeConflict {
 		t.Fatalf("conflict: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestWorkspaceClient(t *testing.T) {
 		t.Fatal("an invalid input reached the plane")
 	}
 	// Queries are percent-encoded; answers must match the continuation.
-	set(contract.PathWorkspaces+"/alpha/status", jsonRoute("5", 200, `{"name":"alpha","instance":"`+inst+`","generation":"`+gen+`","default_branch":"refs/heads/main","refs":[{"name":"refs/heads/x","commit":"`+h+`","published_at":null}],"next_after":null}`))
+	set(contract.PathWorkspaces+"/alpha/status", jsonRoute("6", 200, `{"name":"alpha","instance":"`+inst+`","generation":"`+gen+`","default_branch":"refs/heads/main","refs":[{"name":"refs/heads/x","commit":"`+h+`","published_at":null}],"next_after":null}`))
 	if _, err := c.WorkspaceStatus(ctx, "alpha", StatusPage{After: "refs/heads/main", Instance: inst, Generation: gen, Limit: 5}); err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestWorkspaceClient(t *testing.T) {
 	if _, err := c.WorkspaceStatus(ctx, "alpha", StatusPage{After: "refs/heads/main", Instance: inst, Generation: strings.Repeat("d", 32), Limit: 5}); codeOf(err) != contract.CodeInvalidArgument {
 		t.Fatalf("mismatched generation: %v", err)
 	}
-	set(contract.PathWorkspaces+"/alpha/diff", jsonRoute("5", 200, `{"name":"alpha","instance":"`+inst+`","generation":"`+gen+`","base_commit":null,"target_commit":"`+h+`","changes":[],"next_after":null}`))
+	set(contract.PathWorkspaces+"/alpha/diff", jsonRoute("6", 200, `{"name":"alpha","instance":"`+inst+`","generation":"`+gen+`","base_commit":null,"target_commit":"`+h+`","changes":[],"next_after":null}`))
 	if _, err := c.WorkspaceDiff(ctx, "alpha", DiffPage{Base: "empty", Target: h, Limit: 5}); err != nil {
 		t.Fatal(err)
 	}
@@ -124,15 +124,15 @@ func TestWorkspaceClient(t *testing.T) {
 		t.Fatalf("target mismatch: %v", err)
 	}
 	// Remove sends DELETE with a JSON body; prune and ref set POST.
-	set(contract.PathWorkspaces+"/alpha", jsonRoute("5", 200, `{"name":"alpha","instance":"`+inst+`","removed":true}`))
+	set(contract.PathWorkspaces+"/alpha", jsonRoute("6", 200, `{"name":"alpha","instance":"`+inst+`","removed":true}`))
 	if _, err := c.RemoveWorkspace(ctx, "alpha", inst); err != nil || got().method != http.MethodDelete || got().body != `{"instance":"`+inst+`"}` {
 		t.Fatalf("remove %v %+v", err, got())
 	}
-	set(contract.PathWorkspaces+"/alpha/prune", jsonRoute("5", 200, `{"name":"alpha","instance":"`+inst+`","generation":"`+gen+`","removed_task_refs":1,"reclaimed_bytes":5,"size_bytes":10}`))
+	set(contract.PathWorkspaces+"/alpha/prune", jsonRoute("6", 200, `{"name":"alpha","instance":"`+inst+`","generation":"`+gen+`","removed_task_refs":1,"reclaimed_bytes":5,"size_bytes":10}`))
 	if r, err := c.PruneWorkspace(ctx, "alpha", inst, "2026-09-30T12:00:00Z"); err != nil || r.RemovedTaskRefs != 1 {
 		t.Fatalf("prune %+v %v", r, err)
 	}
-	set(contract.PathWorkspaces+"/alpha/refs/set", jsonRoute("5", 200, `{"name":"alpha","instance":"`+inst+`","generation":"`+gen+`","ref":"refs/heads/x","old_commit":null,"new_commit":"`+h+`"}`))
+	set(contract.PathWorkspaces+"/alpha/refs/set", jsonRoute("6", 200, `{"name":"alpha","instance":"`+inst+`","generation":"`+gen+`","ref":"refs/heads/x","old_commit":null,"new_commit":"`+h+`"}`))
 	f := false
 	if _, err := c.SetWorkspaceRef(ctx, "alpha", contract.WorkspaceRefSetRequest{Instance: inst, Branch: "x", Expected: "absent", Target: &target, Delete: &f}); err != nil || strings.Contains(got().body, "delete") {
 		t.Fatalf("ref set %v %+v", err, got())
@@ -140,12 +140,12 @@ func TestWorkspaceClient(t *testing.T) {
 	if _, err := c.SetWorkspaceRef(ctx, "alpha", contract.WorkspaceRefSetRequest{Instance: inst, Branch: "y", Expected: "absent", Target: &target}); codeOf(err) != contract.CodeInvalidArgument {
 		t.Fatalf("answer for another ref: %v", err)
 	}
-	set(contract.PathWorkspaces, jsonRoute("5", 200, `{"workspaces":[],"next_after":null}`))
+	set(contract.PathWorkspaces, jsonRoute("6", 200, `{"workspaces":[],"next_after":null}`))
 	if r, err := c.ListWorkspaces(ctx, "a b", 3); err != nil || len(r.Workspaces) != 0 || !strings.Contains(got().uri, "after=a+b") {
 		t.Fatalf("list %+v %v %q", r, err, got().uri)
 	}
 	// An oversized answer is refused, never truncated.
-	set(contract.PathWorkspaces+"/alpha", jsonRoute("5", 200, view("alpha")+strings.Repeat(" ", contract.MaxWorkspaceResponse)))
+	set(contract.PathWorkspaces+"/alpha", jsonRoute("6", 200, view("alpha")+strings.Repeat(" ", contract.MaxWorkspaceResponse)))
 	if _, err := c.ShowWorkspace(ctx, "alpha"); codeOf(err) != contract.CodeInvalidArgument {
 		t.Fatalf("oversized: %v", err)
 	}

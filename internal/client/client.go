@@ -312,11 +312,21 @@ func (c *Client) request(ctx context.Context, method, path string, body []byte, 
 // reports a failure before any plane answer (dial, TLS, write, EOF or a
 // response header timeout), the only kind a bounded wait may retry.
 func (c *Client) requestVia(ctx context.Context, hc *http.Client, timeout time.Duration, method, path string, body []byte, limit int64) (int, []byte, error, bool) {
+	return c.requestWith(ctx, hc, timeout, method, path, body, limit, nil)
+}
+
+// requestWith is requestVia with extra request headers (iteration 10b: a
+// node's assignment headers on the publication endpoints).
+func (c *Client) requestWith(ctx context.Context, hc *http.Client, timeout time.Duration, method, path string, body []byte, limit int64,
+	hdr map[string]string) (int, []byte, error, bool) {
 	octx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(octx, method, c.ep.url+path, bytes.NewReader(body))
 	if err != nil {
 		return 0, nil, contract.Wrap(contract.CodeInternal, "cannot build the request", err), false
+	}
+	for k, v := range hdr {
+		req.Header.Set(k, v)
 	}
 	req.Header.Set(contract.ProtocolHeader, strconv.Itoa(contract.ProtocolVersion))
 	if body != nil {

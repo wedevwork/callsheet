@@ -22,7 +22,7 @@ const (
 	// invocation, and since the contract headroom fix ./internal/contract
 	// and later ./internal/mcpqual and ./internal/workspace are in the
 	// packages shard's per-CPU groups.
-	wantRoleStressPackages = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/workspacetransfer"
+	wantRoleStressPackages = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/workspacetransfer ./internal/taskworkspace ./internal/taskpublication"
 	wantRoleBenchPlan      = "go test ./internal/spikes/gittransport -run ^$ -bench . -benchmem -benchtime=3x -count=1 -timeout=180s|" +
 		"go test ./internal/plane -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s|" +
 		"go test ./internal/contract -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s|" +
@@ -32,6 +32,7 @@ const (
 		"go test ./internal/mcpqual -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s|" +
 		"go test ./internal/workspace -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s|" +
 		"go test ./internal/workspacetransfer -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s|" +
+		"go test ./internal/taskworkspace -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s|" +
 		"go test ./internal/sidecar -tags=realadaptercheck -run=^$ -bench=^BenchmarkRealAdapterFile$ -benchmem -benchtime=3x -count=1 -timeout=180s"
 )
 
@@ -121,7 +122,7 @@ func TestRolePolicy(t *testing.T) {
 		// role tests and their 20 subtests (iteration 05's 41 task names
 		// and iteration 06a's 13 control names follow them).
 		req := NativeRequiredTests()
-		if len(req) != 145+len(mcpNames())+len(qualNames())+len(realNames())+len(wsNames())+len(trNames())+len(latNames()) || strings.Join(req[58:87], ",") != strings.Join(roleNames(), ",") || len(roleNames()) != 29 {
+		if len(req) != 145+len(mcpNames())+len(qualNames())+len(realNames())+len(wsNames())+len(trNames())+len(latNames())+len(wsTaskNames()) || strings.Join(req[58:87], ",") != strings.Join(roleNames(), ",") || len(roleNames()) != 29 {
 			t.Fatalf("native required = %v", req)
 		}
 		f := &fakeRunner{native: stream(qualification()...)}

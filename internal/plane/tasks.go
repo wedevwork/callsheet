@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/wedevwork/callsheet/internal/contract"
+	"github.com/wedevwork/callsheet/internal/workspace"
 )
 
 // Task lifecycle and admission on the plane (iterations 05 and 06a). The
@@ -101,6 +102,11 @@ type terminalCand struct {
 	outcome terminalOutcome
 	at      time.Time
 	digest  string
+	// pub and workspace (iteration 10b) are a workspace task's settled
+	// publication and its result DTO (workspace without pub: a result
+	// reported through the ordinary path).
+	pub       *contract.TaskPublication
+	workspace *contract.TaskWorkspaceResult
 }
 
 // lateCand is a worker outcome received after a different terminal
@@ -190,6 +196,30 @@ type taskEntry struct {
 	ctlInflight   bool
 	waiters       []chan struct{}
 	waitRegs      []*waitReg
+
+	// Iteration 10b workspace execution. preparing: the worker answered
+	// the start preparing (no adapter yet) and prepDeadline is the
+	// preparation deadline; pendingPub is the selected publication intent
+	// not yet visible (the writer's intent publication owns it).
+	preparing    bool
+	prepDeadline time.Time
+	pendingPub   *contract.TaskPublication
+}
+
+// pubLocked is e's selected publication intent (pending or visible), or
+// nil.
+func (e *taskEntry) pubLocked() *contract.TaskPublication {
+	if e.pendingPub != nil {
+		return e.pendingPub
+	}
+	return e.rec.Publication
+}
+
+// publishingLocked reports an authorized (unsettled) publication intent:
+// the outcome is fixed and the task awaits its settlement.
+func (e *taskEntry) publishingLocked() bool {
+	p := e.pubLocked()
+	return p != nil && p.Phase == contract.PubPhaseAuthorized && !e.terminal()
 }
 
 // intentLocked is e's selected stop intent (pending or visible), or nil.
@@ -208,7 +238,9 @@ func (e *taskEntry) held() bool { return !e.terminal() || !e.released }
 
 // isReconciling is the derived public flag: a nonterminal task without a
 // latched terminal candidate whose execution awaits reconciliation.
-func (e *taskEntry) isReconciling() bool { return !e.terminal() && e.cand == nil && e.reconciling }
+func (e *taskEntry) isReconciling() bool {
+	return !e.terminal() && e.cand == nil && !e.publishingLocked() && e.reconciling
+}
 
 // taskService owns tasks: admission, the start dispatcher callbacks,
 // reconciliation, receipt of output and results, persistence writers,
@@ -258,6 +290,9 @@ type taskService struct {
 	maxWait     time.Duration
 	ctlNodes    map[string]map[string]bool
 	onRelease   func(instanceKey)
+
+	// ws is the workspace hub (iteration 10b): admission's base resolution.
+	ws *workspace.Manager
 }
 
 func newTaskService(st *taskStore, reg *nodeRegistry, roles *roleRegistry, gate *atomic.Bool, d *deps, logger *slog.Logger, loaded []loadedTask) (*taskService, error) {
@@ -504,6 +539,14 @@ func (ts *taskService) live(ctx context.Context, deadline time.Time) error {
 // admit runs with the gate held.
 func (ts *taskService) admit(ctx context.Context, deadline time.Time, req contract.DispatchRequest) (contract.TaskView, *taskEntry, error) {
 	goal := req.Goal
+	// Iteration 10b: the workspace selection is resolved once (instance,
+	// base commit and its verified closure) under the workspace read lock,
+	// within the admission bound and before any reservation; a failure
+	// leaves nothing visible.
+	binding, err := ts.resolveBinding(ctx, req)
+	if err != nil {
+		return contract.TaskView{}, nil, err
+	}
 	if _, resynced, err := ts.roles.resync(); err != nil {
 		return contract.TaskView{}, nil, err
 	} else if resynced {
@@ -544,7 +587,7 @@ func (ts *taskService) admit(ctx context.Context, deadline time.Time, req contra
 	now := ts.clock.Now().UTC()
 	rec := contract.TaskRecord{Request: req, Role: role, RolesRevision: ob.roles.visible.revision, Effective: eff,
 		Execution: contract.ExecutionToken{Epoch: ts.epoch, Attachment: int(gen)}, State: contract.TaskPending, CreatedAt: now, Revision: 1,
-		TimeoutPolicy: contract.TimeoutPolicyEnforced, Schema: contract.TaskRecordSchemaVersion}
+		TimeoutPolicy: contract.TimeoutPolicyEnforced, Schema: contract.TaskRecordSchemaVersion, Workspace: binding}
 	ts.at("before-task-publication", goal, ctx)
 	// recheck is the authorization check: caller liveness, the registry
 	// revision, the attachment generation and lease, the capacity and the
@@ -626,7 +669,7 @@ func (ts *taskService) admit(ctx context.Context, deadline time.Time, req contra
 // record's stable start digest.
 func startBody(rec contract.TaskRecord) contract.TaskStartBody {
 	return contract.TaskStartBody{TaskID: rec.TaskID, Execution: rec.Execution, RolesRevision: rec.RolesRevision, Role: rec.Role,
-		Request: rec.Request, Effective: rec.Effective}
+		Request: rec.Request, Effective: rec.Effective, Workspace: rec.Workspace}
 }
 
 // afterCommit transfers the committed task to the dispatcher: a confirmed
@@ -785,6 +828,7 @@ func (ts *taskService) startUncertain(id string) {
 	}
 	e.reconciling = true
 	ts.refreshLocked(e)
+	ts.notifyLocked(e)
 	ts.event("start-uncertain " + id)
 }
 
@@ -792,7 +836,7 @@ func (ts *taskService) startUncertain(id string) {
 // (running is published durably before any terminal record) and
 // authorizes the attachment to report; a refusal becomes rejected with
 // its safe reason.
-func (ts *taskService) startReplied(id string, gen uint64, refusal *contract.Error) {
+func (ts *taskService) startReplied(id string, gen uint64, refusal *contract.Error, preparing bool) {
 	if ts == nil {
 		return
 	}
@@ -803,6 +847,22 @@ func (ts *taskService) startReplied(id string, gen uint64, refusal *contract.Err
 		return
 	}
 	e.send = sendReplied
+	// A node transfer that overtook this reply (AwaitStart) rechecks.
+	defer ts.notifyLocked(e)
+	if preparing && refusal == nil {
+		// Iteration 10b: a workspace start's durable local reservation and
+		// journal, definitely no adapter yet. The task stays pending (phase
+		// preparing) under the explicit preparation deadline, and this
+		// attachment may report its task_prepared.
+		if e.cand == nil && !e.terminal() {
+			e.preparing, e.prepDeadline = true, ts.clock.Now().Add(contract.WorkspacePrepareTimeout)
+			e.rgen, e.lateOK, e.reconciling = gen, false, false
+			ts.refreshLocked(e)
+			ts.wantControlLocked(e)
+		}
+		ts.event("task-preparing " + id)
+		return
+	}
 	if refusal != nil {
 		reason, _ := refusal.Details["reason"].(string)
 		ts.latchRefusalLocked(e, &contract.TaskReason{Code: reason, Message: sanitizeReason(refusal.Message)})
@@ -826,7 +886,7 @@ func (ts *taskService) startReplied(id string, gen uint64, refusal *contract.Err
 // candidate unless one is already latched. Under a selected stop intent
 // the definite no-start is a cancellation before start (iteration 06b).
 func (ts *taskService) latchRefusalLocked(e *taskEntry, reason *contract.TaskReason) {
-	if e.terminal() || e.cand != nil {
+	if e.terminal() || e.cand != nil || e.publishingLocked() {
 		return
 	}
 	if e.intentLocked() != nil {
@@ -856,6 +916,7 @@ func (ts *taskService) detached(node string, gen uint64) {
 		if e.rgen == gen || (e.gen == gen && e.send == sendSending) {
 			e.reconciling = true
 			ts.refreshLocked(e)
+			ts.notifyLocked(e)
 		}
 	}
 }

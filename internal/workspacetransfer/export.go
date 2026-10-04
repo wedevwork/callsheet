@@ -577,6 +577,19 @@ type materializer struct {
 	stack []openDir
 	order []string
 	bytes int64
+	// noSync (iteration 10b task checkouts) skips the per-file and
+	// per-directory syncs: a task's work directory is never recovery
+	// evidence (a crash before publication discards it); its trusted
+	// objects are what is made durable.
+	noSync bool
+}
+
+// sync syncs fd unless the materialization needs no durability.
+func (m *materializer) sync(fd int, op string) error {
+	if m.noSync {
+		return m.d.check(op)
+	}
+	return m.d.sync(fd, op)
 }
 
 type openDir struct {
@@ -721,7 +734,7 @@ func (m *materializer) file(dfd int, name string, e exportEntry) error {
 		if err := unix.Fchmod(fd, perm); err != nil {
 			return err
 		}
-		return m.d.sync(fd, "export-sync")
+		return m.sync(fd, "export-sync")
 	}()
 	if cerr := f.Close(); werr == nil {
 		werr = cerr
@@ -748,7 +761,7 @@ func (m *materializer) finishDirs(rootPerm uint32) error {
 		}
 		err = unix.Fchmod(fd, 0o755)
 		if err == nil {
-			err = m.d.sync(fd, "export-dirsync")
+			err = m.sync(fd, "export-dirsync")
 		}
 		closeFD(fd)
 		if err != nil {
@@ -758,7 +771,7 @@ func (m *materializer) finishDirs(rootPerm uint32) error {
 	if err := unix.Fchmod(m.rootFD, rootPerm); err != nil {
 		return errStorage("cannot write the export", err)
 	}
-	if err := m.d.sync(m.rootFD, "export-dirsync"); err != nil {
+	if err := m.sync(m.rootFD, "export-dirsync"); err != nil {
 		return errStorage("cannot sync the export", err)
 	}
 	return nil

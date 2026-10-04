@@ -100,6 +100,19 @@ func (s *nodeService) handleTasks(w http.ResponseWriter, r *http.Request) {
 	logs, cancel := false, false
 	if rest != "" {
 		parts := strings.Split(strings.TrimPrefix(rest, "/"), "/")
+		if len(parts) >= 2 && "/"+parts[1] == contract.PublicationSuffix {
+			// Iteration 10b: the workspace publication endpoints.
+			pub, finish, ok := contract.SplitPublicationPath("/" + strings.Join(parts[1:], "/"))
+			switch {
+			case !strings.HasPrefix(rest, "/") || !contract.ValidTaskID(parts[0]):
+				writeError(w, invalid("invalid task ID; want t_ followed by 32 lowercase hex digits"))
+			case !ok:
+				writeError(w, contract.New(contract.CodeNotFound, "no such endpoint"))
+			default:
+				s.handlePublication(w, r, parts[0], pub, finish)
+			}
+			return
+		}
 		switch {
 		case len(parts) == 1:
 			id = parts[0]

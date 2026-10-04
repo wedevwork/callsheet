@@ -103,7 +103,9 @@ func (ts *taskService) cancel(ctx context.Context, id string) (contract.TaskView
 	durableTerminal := e.terminal() && e.released
 	withIntent := false
 	if !durableTerminal {
-		if e.intentLocked() == nil && !e.terminal() && e.cand == nil {
+		// An authorized workspace publication (iteration 10b) fixed the
+		// outcome like a latched candidate: completion pending, no new stop.
+		if e.intentLocked() == nil && !e.terminal() && e.cand == nil && !e.publishingLocked() {
 			if err := mctx.Err(); err != nil {
 				ts.mu.Unlock()
 				return contract.TaskView{}, false, ts.cancelAbort(ctx, id)
@@ -159,7 +161,7 @@ func (ts *taskService) requestCancel(id string) error {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 	e := ts.tasks[id]
-	if e == nil || e.terminal() || e.cand != nil || e.intentLocked() != nil {
+	if e == nil || e.terminal() || e.cand != nil || e.intentLocked() != nil || e.publishingLocked() {
 		return nil
 	}
 	ts.selectIntentLocked(e, stopID)

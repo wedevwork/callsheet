@@ -151,6 +151,22 @@ func (ts *taskService) receiveResult(node string, gen uint64, b contract.TaskRes
 		return false, err
 	}
 	d := b.Digest
+	// Iteration 10b: a workspace task's result carries its workspace DTO
+	// (and only such a task's). A published DTO is only ever the plane's
+	// own settlement, replayed; any other result of a task with an
+	// authorized intent waits for the settlement (never a second decision).
+	if bw := e.rec.Workspace; (bw == nil) != (b.Workspace == nil) || (bw != nil && (b.Workspace.Name != bw.Name || b.Workspace.Instance != bw.Instance ||
+		!sameHashPtr(b.Workspace.BaseCommit, bw.BaseCommit))) {
+		return false, errf(contract.CodeInvalidArgument, "task %s's result must carry its own workspace result exactly for a workspace task", b.TaskID)
+	}
+	if b.Workspace != nil && b.Workspace.Publication == contract.PublicationPublished && !ts.committedLocked(e, d) &&
+		!(e.terminal() && e.rec.ResultDigest != nil && *e.rec.ResultDigest == d) {
+		return false, errf(contract.CodeInvalidArgument, "task %s's published workspace result is not its settled publication", b.TaskID)
+	}
+	if e.publishingLocked() {
+		ts.event("result-awaits-settlement " + b.TaskID)
+		return false, nil
+	}
 	now := ts.clock.Now()
 	conflict := func(have string) error {
 		return &contract.Error{Code: contract.CodeConflict, Details: map[string]any{"reason": contract.ReasonResultConflict, "task_id": b.TaskID, "digest": d, "recorded_digest": have},
@@ -189,7 +205,7 @@ func (ts *taskService) receiveResult(node string, gen uint64, b contract.TaskRes
 			e.started, e.needRunning, e.startedAt = true, true, now.UTC()
 		}
 		o, kind := ts.resultOutcome(e, b, now)
-		e.cand = &terminalCand{kind: kind, outcome: o, at: now, digest: d}
+		e.cand = &terminalCand{kind: kind, outcome: o, at: now, digest: d, workspace: b.Workspace}
 		e.reconciling = false
 		ts.refreshLocked(e)
 		ts.wakeLocked(e)
@@ -268,7 +284,9 @@ func (ts *taskService) applyLossesLocked() {
 // latchLostLocked latches a plane lost decision on an undecided task: its
 // frozen tail is the live ring's (or the loaded record's) at this instant.
 func (ts *taskService) latchLostLocked(e *taskEntry, reason, msg string) {
-	if e.terminal() || e.cand != nil {
+	// An authorized publication intent fixed the outcome (iteration 10b):
+	// a later lease loss or a restart never turns it into lost.
+	if e.terminal() || e.cand != nil || e.publishingLocked() {
 		return
 	}
 	now := ts.clock.Now().UTC()
@@ -496,6 +514,13 @@ func (ts *taskService) disposeLocked(e *taskEntry, gen uint64, in contract.TaskI
 	if in.ResultDigest != nil && ts.committedLocked(e, *in.ResultDigest) {
 		return contract.ActionForget
 	}
+	if p := e.rec.Publication; active && p != nil && p.Phase == contract.PubPhaseSettled && in.ResultDigest == nil {
+		// Iteration 10b: a worker still observing a publication the plane
+		// settled continues on this attachment: it adopts the settlement and
+		// reports it (committed at once), never stop_lost.
+		e.rgen, e.lateOK, e.lateBound = gen, false, ""
+		return contract.ActionContinue
+	}
 	e.rgen, e.lateOK, e.lateBound = gen, true, ""
 	if in.ResultDigest != nil {
 		e.lateBound = *in.ResultDigest
@@ -533,8 +558,9 @@ func (ts *taskService) viewLocked(e *taskEntry, lines int, doc *roleDoc, now tim
 	}
 	v := contract.TaskView{TaskID: rec.TaskID, Request: rec.Request, Role: contract.PublicRole(rec.Role), Effective: rec.Effective,
 		TimeoutPolicy: policy, State: rec.State, StopRequested: rec.StopIntent != nil, CreatedAt: contract.FormatTime(rec.CreatedAt),
-		DurabilityConfirmed: e.confirmed, Reason: rec.Reason, Candidates: rec.Candidates, CompletionPending: e.cand != nil && !e.terminal(),
-		Reconciling: e.isReconciling()}
+		DurabilityConfirmed: e.confirmed, Reason: rec.Reason, Candidates: rec.Candidates,
+		CompletionPending: (e.cand != nil && !e.terminal()) || e.publishingLocked(), Reconciling: e.isReconciling(),
+		WorkspaceBinding: rec.Workspace, WorkspacePhase: contract.WorkspacePhaseOf(rec.Workspace, rec.State, e.publishingLocked())}
 	if rec.StartedAt != nil {
 		s := contract.FormatTime(*rec.StartedAt)
 		v.StartedAt = &s
@@ -564,8 +590,9 @@ func (ts *taskService) viewLocked(e *taskEntry, lines int, doc *roleDoc, now tim
 		v.LogTail, v.TailTruncated = contract.LogTail(lg.Data, lines)
 	}
 	if contract.TaskTerminal(rec.State) {
-		v.Result = &contract.TaskResult{State: rec.State, ExitCode: rec.ExitCode, Signal: rec.Signal, FinalMessage: rec.FinalMessage,
-			FinalMessageTruncated: rec.FinalMessageTruncated, LogTail: v.LogTail}
+		r := contract.TaskResult{State: rec.State, ExitCode: rec.ExitCode, Signal: rec.Signal, FinalMessage: rec.FinalMessage,
+			FinalMessageTruncated: rec.FinalMessageTruncated, LogTail: v.LogTail}.WithWorkspace(rec.WorkspaceResult)
+		v.Result = &r
 		if rec.Late != nil {
 			v.LateResult = lateSummary(*rec.Late, e.lateRetained)
 		}

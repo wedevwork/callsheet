@@ -88,7 +88,7 @@ func (rs *roleSession) answerStart(rid, taskID string, e *startEntry) {
 		rs.reply = &reply{typ: contract.FrameTaskStartResult, id: rid, body: contract.TaskStartResult{TaskID: taskID, Err: e.refusal}}
 	case e.started:
 		// A duplicate of an answered start: its recorded outcome.
-		rs.reply = &reply{typ: contract.FrameTaskStartResult, id: rid, body: contract.TaskStartResult{TaskID: taskID}}
+		rs.reply = &reply{typ: contract.FrameTaskStartResult, id: rid, body: contract.TaskStartResult{TaskID: taskID, Preparing: e.preparing}}
 	default:
 		rs.pend = &pendingStart{id: rid, w: e.w, e: e}
 		rs.pend.timer.set(rs.d.clock, e.w.deadline)
@@ -109,16 +109,24 @@ func (rs *roleSession) pollStart() error {
 	}
 	w := p.w
 	w.mu.Lock()
-	switch w.phase {
-	case phaseStarted:
+	switch {
+	case w.phase == phaseStarted:
 		w.mu.Unlock()
 		rs.reply = &reply{typ: contract.FrameTaskStartResult, id: p.id, body: contract.TaskStartResult{TaskID: w.id()}, started: w}
 		p.e.settle(nil)
-	case phaseRefused:
+	case w.phase == phaseRefused:
 		refusal := w.refusal
 		w.mu.Unlock()
 		rs.reply = &reply{typ: contract.FrameTaskStartResult, id: p.id, body: contract.TaskStartResult{TaskID: w.id(), Err: refusal}}
 		p.e.settle(refusal)
+	case w.prepReply:
+		// Iteration 10b: a workspace start's durable reservation and
+		// journal, definitely no adapter yet: answered preparing (the
+		// outcome follows as task_prepared).
+		w.mu.Unlock()
+		rs.reply = &reply{typ: contract.FrameTaskStartResult, id: p.id, body: contract.TaskStartResult{TaskID: w.id(), Preparing: true}, started: w}
+		p.e.settle(nil)
+		p.e.preparing = true
 	default:
 		if rs.d.clock.Now().Before(w.deadline) {
 			w.mu.Unlock()
@@ -151,13 +159,15 @@ type outputState struct {
 	cleaning bool
 	outcome  *contract.TaskResultBody
 	nextSend time.Time
+	// prepared: a task_prepared awaits its exchange on this attachment.
+	prepared bool
 }
 
 func (w *taskWorker) outputState() outputState {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return outputState{replied: w.replied, late: w.late, waitAck: w.waitAck, committed: w.committed, cleaning: w.recovered && w.cleaning,
-		outcome: w.outcome, nextSend: w.nextSend}
+		outcome: w.outcome, nextSend: w.nextSend, prepared: w.prepOut != nil && !w.prepSent}
 }
 
 // nextOutput picks the next task output exchange for this attachment (a
@@ -175,6 +185,11 @@ func (rs *roleSession) nextOutput(now time.Time) (*taskWorker, reqKind, time.Tim
 		st := w.outputState()
 		if !st.replied || st.cleaning {
 			continue
+		}
+		if st.prepared {
+			// Iteration 10b: a preparation outcome goes first (its child
+			// waits behind the release barrier).
+			return w, reqPrepared, retry
 		}
 		switch {
 		case w.ring.pending() && (!st.late || st.outcome != nil):
@@ -223,6 +238,27 @@ func (rs *roleSession) writeOutput(w *taskWorker, kind reqKind) error {
 	var typ string
 	var body any
 	st := w.outputState()
+	if kind == reqPrepared {
+		w.mu.Lock()
+		b := w.prepOut
+		w.prepSent = b != nil
+		w.mu.Unlock()
+		if b == nil {
+			return nil
+		}
+		rs.k++
+		if err := rs.s.writeBy(rs.ctx, o.deadline, contract.FrameTaskPrepared, o.id, *b); err != nil {
+			return err
+		}
+		rs.out = o
+		if o.deadline.After(rs.d.clock.Now()) {
+			o.timer.set(rs.d.clock, o.deadline)
+		} else {
+			o.expired = true
+		}
+		rs.emit(event{kind: evOutputWritten, id: o.id})
+		return nil
+	}
 	if kind == reqLog {
 		c := w.ring.next()
 		if c == nil {
@@ -265,6 +301,9 @@ func (rs *roleSession) writeOutput(w *taskWorker, kind reqKind) error {
 func (rs *roleSession) onOutputAck(f contract.NodeFrame, at time.Time) error {
 	o := rs.out
 	var committed bool
+	if o.kind == reqPrepared {
+		return rs.onPreparedAck(f, at)
+	}
 	if o.kind == reqLog {
 		a, err := contract.DecodeTaskLogAck(f.Body)
 		if err != nil {
@@ -309,6 +348,37 @@ func (rs *roleSession) onOutputAck(f contract.NodeFrame, at time.Time) error {
 		rs.tasks.kickJanitor()
 		rs.emit(event{kind: evResultCommitted, id: o.w.id()})
 	}
+	return nil
+}
+
+// onPreparedAck handles the plane's task_prepared_ack (iteration 10b): it
+// must name the outstanding execution and counts only strictly before the
+// exchange's deadline; its release decision is handed to the worker (a
+// late acknowledgement is not counted: the request is resent on the next
+// attachment, where the plane replays the same decision).
+func (rs *roleSession) onPreparedAck(f contract.NodeFrame, at time.Time) error {
+	o := rs.out
+	a, err := contract.DecodeTaskPreparedAck(f.Body)
+	if err != nil {
+		return &protocolError{requestID: f.RequestID, err: err.(*contract.Error)}
+	}
+	if a.TaskID != o.w.id() || a.Execution != o.w.start.Execution {
+		return invalid(f.RequestID, "task_prepared_ack "+f.RequestID+" names another execution")
+	}
+	if !at.Before(o.deadline) {
+		o.expired = true
+		return nil
+	}
+	o.timer.clear()
+	rs.out = nil
+	o.w.mu.Lock()
+	pending := o.w.prepOut != nil
+	o.w.prepOut, o.w.prepSent = nil, false
+	o.w.mu.Unlock()
+	if pending {
+		o.w.release <- a.Release
+	}
+	rs.emit(event{kind: evPreparedAcked, id: o.w.id()})
 	return nil
 }
 

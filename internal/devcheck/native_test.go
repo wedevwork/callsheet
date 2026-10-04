@@ -243,6 +243,21 @@ var latRequired = []struct {
 // latNames lists every required iteration 10a name.
 func latNames() []string { return requiredNames(latRequired) }
 
+// wsTaskRequired are iteration 10b's nine workspace execution function
+// tests in FP order (FP-1..FP-9), each named acceptance scenario right
+// after its parent, a separate group after the 10a names.
+var wsTaskRequired = []struct {
+	test string
+	subs []string
+}{
+	{"TestTaskWorkspaceAdmission", nil}, {"TestTaskWorkspaceAccess", nil}, {"TestTaskWorkspaceCache", nil}, {"TestTaskWorkspaceCheckout", nil},
+	{"TestTaskWorkspaceCommit", []string{"AC-WS-1"}}, {"TestTaskWorkspacePublication", []string{"AC-WS-5"}}, {"TestTaskWorkspaceMetadata", nil},
+	{"TestTaskWorkspaceRecovery", nil}, {"TestTaskWorkspaceIsolation", []string{"AC-WS-2"}},
+}
+
+// wsTaskNames lists every required iteration 10b name.
+func wsTaskNames() []string { return requiredNames(wsTaskRequired) }
+
 // realLocal is iteration 08's tagged sidecar contract with its five
 // subtests, required in the sidecar package (NativeTaskProcessPackage).
 var realLocal = []string{"TestRealAdapterLocal", "TestRealAdapterLocal/selection", "TestRealAdapterLocal/file", "TestRealAdapterLocal/ordering",
@@ -283,7 +298,7 @@ func qualification() []evt {
 		evs = append(evs, ev("pass", NativePackage, fp6+"/"+s))
 	}
 	evs = append(evs, ev("pass", NativePackage, fp6))
-	for _, p := range append(append(append(append(append(append(append(append(append(append(append(planeRequired[:0:0], planeRequired...), nodeRequired...), roleRequired...), taskRequired...), controlRequired...), mcpRequired...), qualRequired...), realRequired...), wsRequired...), trRequired...), latRequired...) {
+	for _, p := range append(append(append(append(append(append(append(append(append(append(append(append(planeRequired[:0:0], planeRequired...), nodeRequired...), roleRequired...), taskRequired...), controlRequired...), mcpRequired...), qualRequired...), realRequired...), wsRequired...), trRequired...), latRequired...), wsTaskRequired...) {
 		evs = append(evs, ev("run", NativePackage, p.test))
 		for _, s := range p.subs {
 			evs = append(evs, ev("run", NativePackage, p.test+"/"+s), ev("pass", NativePackage, p.test+"/"+s))
@@ -452,7 +467,7 @@ func TestNativeStepsAndUnsupportedOS(t *testing.T) {
 		"TestControlLateResult,TestControlLegacy,TestControlNativeGroups,TestControlNativeGroups/cooperative,TestControlNativeGroups/resistant,"+
 		"TestControlNativeGroups/orphan-restart,TestControlNativeGroups/plane-restart,"+
 		"TestControlCancellation,TestControlExecutionTimeout,TestControlBoundedWait,TestControlForceRemove,"+strings.Join(mcpNames(), ",")+","+strings.Join(qualNames(), ",")+
-		","+strings.Join(realNames(), ",")+","+strings.Join(wsNames(), ",")+","+strings.Join(trNames(), ",")+","+strings.Join(latNames(), ",") || len(req) != 312+11+10+2 {
+		","+strings.Join(realNames(), ",")+","+strings.Join(wsNames(), ",")+","+strings.Join(trNames(), ",")+","+strings.Join(latNames(), ",")+","+strings.Join(wsTaskNames(), ",") || len(req) != 312+11+10+2+12 {
 		t.Fatalf("required = %v", req)
 	}
 	req[0] = "mutated"
@@ -733,10 +748,12 @@ func TestNativeStageRunFor(t *testing.T) {
 		t.Fatalf("native = %d %s", code, errOut)
 	}
 	// Iteration 09a: the qualification, then the coverage stage and the
-	// workspace benchmarks; iteration 09b: then the transfer benchmarks.
-	if len(f.calls) != 6 || strings.Join(f.calls[0].argv, " ") != "go test -json -tags=realadaptercheck -count=1 -timeout=300s ./..." || f.calls[0].dir != "" ||
+	// workspace benchmarks; iteration 09b: then the transfer benchmarks;
+	// iteration 10b: then the task workspace benchmarks.
+	if len(f.calls) != 7 || strings.Join(f.calls[0].argv, " ") != "go test -json -tags=realadaptercheck -count=1 -timeout=300s ./..." || f.calls[0].dir != "" ||
 		strings.Join(f.calls[4].argv, " ") != strings.Join(WorkspaceBenchStep().Argv, " ") ||
-		strings.Join(f.calls[5].argv, " ") != strings.Join(TransferBenchStep().Argv, " ") {
+		strings.Join(f.calls[5].argv, " ") != strings.Join(TransferBenchStep().Argv, " ") ||
+		strings.Join(f.calls[6].argv, " ") != strings.Join(TaskWorkspaceBenchStep().Argv, " ") {
 		t.Fatalf("calls = %+v", f.argvs())
 	}
 	if !strings.Contains(strings.Join(f.calls[0].env, "\n"), "PATH=") {
@@ -970,7 +987,7 @@ func TestNativeQualificationEvidence(t *testing.T) {
 		t.Fatalf("complete evidence: %v", err)
 	}
 	req := NativeRequiredTests()
-	if n := len(qualNames()); n != 8+43 || len(req) != 222+n+len(realNames())+len(wsNames())+len(trNames())+len(latNames()) || strings.Join(req[222:273], ",") != strings.Join(qualNames(), ",") ||
+	if n := len(qualNames()); n != 8+43 || len(req) != 222+n+len(realNames())+len(wsNames())+len(trNames())+len(latNames())+len(wsTaskNames()) || strings.Join(req[222:273], ",") != strings.Join(qualNames(), ",") ||
 		strings.Join(req[145:222], ",") != strings.Join(mcpNames(), ",") {
 		t.Fatalf("%d 07b names; native suffix %v", n, req[222:])
 	}

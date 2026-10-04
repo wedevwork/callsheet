@@ -2,8 +2,6 @@ package sidecar
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 
 	"github.com/wedevwork/callsheet/internal/adapter"
 )
@@ -31,45 +29,6 @@ func taskPlatformFor(goos string) (taskPlatform, error) {
 		return taskPlatform{goos: goos, physicalScratch: true}, nil
 	}
 	return taskPlatform{}, fmt.Errorf("task execution is unsupported on %q; supported: linux, darwin", goos)
-}
-
-// scratchPrefix starts every task's scratch directory name.
-const scratchPrefix = "callsheet-task-"
-
-// scratch creates the task's fresh private working directory under the
-// host's normal temp root (TMPDIR honored): mode 0700, an absolute
-// cleaned native path, one unique directory per task.
-func (p taskPlatform) scratch(tempRoot, taskID string) (string, error) {
-	dir, err := os.MkdirTemp(tempRoot, scratchPrefix+taskID+"-")
-	if err != nil {
-		return "", err
-	}
-	fail := func(err error) (string, error) {
-		os.Remove(dir)
-		return "", err
-	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		return fail(err)
-	}
-	abs, err := filepath.Abs(dir)
-	if err != nil {
-		return fail(err)
-	}
-	if p.physicalScratch {
-		if abs, err = filepath.EvalSymlinks(abs); err != nil {
-			return fail(err)
-		}
-	}
-	return filepath.Clean(abs), nil
-}
-
-// removeScratch deletes the known private directory of a task after its
-// group cleanup was verified, without following symlinks out of it.
-func removeScratch(dir string) error {
-	if fi, err := os.Lstat(dir); err != nil || !fi.IsDir() {
-		return fmt.Errorf("the scratch directory is not a directory")
-	}
-	return os.RemoveAll(dir)
 }
 
 // childEnv is a task child's environment: the sidecar's, without the

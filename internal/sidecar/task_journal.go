@@ -11,6 +11,8 @@ import (
 	"strings"
 
 	"github.com/wedevwork/callsheet/internal/contract"
+	"github.com/wedevwork/callsheet/internal/taskworkspace"
+	"github.com/wedevwork/callsheet/internal/workspacetransfer"
 )
 
 // The sidecar task journal (iteration 06a, resilience.md "Recoverable
@@ -27,6 +29,15 @@ const (
 	executionName = "execution.json"
 	ownerName     = "owner.json"
 	controlName   = "control"
+	// Iteration 10b owned task storage: the work directory (the child's
+	// cwd), a workspace task's trusted object database and its publication
+	// checkpoint. Their contents are the child's or the sidecar's own and
+	// are never scanned; only the entries' kinds are checked.
+	workName        = taskworkspace.WorkName
+	objectsName     = taskworkspace.ObjectsName
+	publicationName = taskworkspace.PublicationName
+	// cacheDirName is the state root's disposable workspace cache.
+	cacheDirName = taskworkspace.CacheDirName
 )
 
 // taskDirRel is the state-relative path of a task directory.
@@ -146,10 +157,12 @@ func (l layout) scanJournalsFull() (ids, leftovers []string, err error) {
 				return nil, nil, wrapf(contract.CodeInternal, err, "cannot inspect %s: %v", fp, err)
 			}
 			switch n := f.Name(); {
-			case n == executionName, n == ownerName:
+			case n == executionName, n == ownerName, n == publicationName:
 				err = checkPrivateFile(fp, fi)
 			case n == controlName:
 				err = checkControl(fp, fi)
+			case n == workName, n == objectsName:
+				err = checkOwnedDir(fp, fi)
 			case strings.HasPrefix(n, tempPrefix):
 				err = checkRegular(fp, fi)
 			default:
@@ -173,6 +186,16 @@ func (l layout) scanJournalsFull() (ids, leftovers []string, err error) {
 	sort.Strings(ids)
 	sort.Strings(leftovers)
 	return ids, leftovers, nil
+}
+
+// checkOwnedDir accepts an owned task directory entry (work or objects):
+// a real directory, never a symlink. Its mode is the child's business
+// (a child may change its own cwd's permissions).
+func checkOwnedDir(p string, fi fs.FileInfo) error {
+	if fi.Mode()&fs.ModeSymlink != 0 || !fi.IsDir() {
+		return errf(contract.CodeTrustFailed, "%s is not a real directory; owned task storage is never followed", p)
+	}
+	return nil
 }
 
 // readBounded reads one private journal file, at most limit bytes (a
@@ -371,6 +394,80 @@ func (jr journal) writeIn(dirRel string, j contract.ExecutionJournal) error {
 	return jr.d.syncDirAt(jr.l, dirRel)
 }
 
+// writeCheckpoint atomically replaces c's task's publication.json (a
+// synced private temporary, a rename, the directory's sync).
+func (jr journal) writeCheckpoint(c contract.PublicationCheckpoint) error {
+	b, err := contract.EncodePublicationCheckpoint(c)
+	if err != nil {
+		return err
+	}
+	return jr.writeFileIn(taskDirRel(c.TaskID), publicationName, b)
+}
+
+// readCheckpoint reads id's publication.json (nil when absent).
+func (l layout) readCheckpoint(id string) (*contract.PublicationCheckpoint, error) {
+	p := filepath.Join(l.path(taskDirRel(id)), publicationName)
+	if _, err := os.Lstat(p); errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	b, err := readPrivate(p, contract.MaxPublicationCheckpoint)
+	if err != nil {
+		return nil, journalCorrupt(p, err)
+	}
+	c, err := contract.ParsePublicationCheckpoint(b)
+	if err != nil {
+		return nil, journalCorrupt(p, err)
+	}
+	if c.TaskID != id {
+		return nil, journalCorrupt(p, errors.New("task_id does not match the directory name"))
+	}
+	return &c, nil
+}
+
+// writeFileIn atomically replaces dirRel/name with b: a synced private
+// temporary, a rename, then the directory's sync.
+func (jr journal) writeFileIn(dirRel, name string, b []byte) error {
+	rel := filepath.Join(dirRel, name)
+	if err := jr.d.hook("create", rel); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(jr.l.path(dirRel), tempPrefix+name+"-")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	fail := func(err error) error {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := jr.d.hook("write", rel); err != nil {
+		return fail(err)
+	}
+	if _, err := f.Write(b); err != nil {
+		return fail(err)
+	}
+	if err := jr.d.hook("sync", rel); err != nil {
+		return fail(err)
+	}
+	if err := f.Sync(); err != nil {
+		return fail(err)
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	if err := jr.d.hook("rename", rel); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, jr.l.path(rel)); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return jr.d.syncDirAt(jr.l, dirRel)
+}
+
 // remove deletes id's task directory crash-recoverably: a staged
 // leftover is removed; the published directory is renamed to its deleting
 // name (tasks/ synced) and then emptied and removed, each directory
@@ -421,7 +518,16 @@ func (jr journal) removeTree(rel string) error {
 		if err := jr.d.hook("remove", filepath.Join(rel, e.Name())); err != nil {
 			return err
 		}
-		if err := os.Remove(filepath.Join(dir, e.Name())); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		p := filepath.Join(dir, e.Name())
+		if n := e.Name(); (n == workName || n == objectsName) && e.IsDir() {
+			// Owned task storage (iteration 10b): removed recursively,
+			// descriptor-rooted, never following a link out of it.
+			if err := workspacetransfer.RemoveTree(p); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := os.Remove(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return err
 		}
 	}

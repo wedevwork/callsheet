@@ -144,7 +144,7 @@ func runTask(env Env, opts Options) int {
 	}
 	mode := getenv(EnvTaskMode)
 	switch mode {
-	case "", "success", "fail", "output", "group":
+	case "", "success", "fail", "output", "group", WorkspaceMode:
 	default:
 		fmt.Fprintf(stderr, "fake-adapter: unknown %s %q\n", EnvTaskMode, mode)
 		return 2
@@ -178,6 +178,8 @@ func runTask(env Env, opts Options) int {
 		return TaskFailExit
 	case "group":
 		return runGroup(env, stdout, stderr, getenv)
+	case WorkspaceMode:
+		return runWorkspace(env, b, stdout, stderr, getenv)
 	case "output":
 		w := bufio.NewWriterSize(stdout, 64<<10)
 		for n := 0; n < OutputBytes; {

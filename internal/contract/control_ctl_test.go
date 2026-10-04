@@ -241,7 +241,7 @@ func TestControlTimeout(t *testing.T) {
 			t.Fatalf("schema 1 journal %+v %v", j, err)
 		}
 		b, err := EncodeExecutionJournal(j)
-		if err != nil || !bytes.Contains(b, []byte(`"schema_version": 2`)) || !bytes.Contains(b, []byte(`"stop_intent": null`)) {
+		if err != nil || !bytes.Contains(b, []byte(`"schema_version": 3`)) || !bytes.Contains(b, []byte(`"stop_intent": null`)) || !bytes.Contains(b, []byte(`"work": false`)) {
 			t.Fatalf("schema 2 rewrite %s %v", b, err)
 		}
 		again, err := ParseExecutionJournal(b, testLookup)

@@ -37,7 +37,7 @@ import (
 // it is compared against StressShards and StressSteps, never derived from
 // them.
 const (
-	wantStressPackages      = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/workspacetransfer"
+	wantStressPackages      = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/workspacetransfer ./internal/taskworkspace ./internal/taskpublication"
 	wantStressContract1     = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/contract"
 	wantStressContract2     = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/contract"
 	wantStressContract4     = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/contract"
@@ -108,6 +108,14 @@ var want09aAdditions = []string{
 // after ./internal/workspace; no selector, count, shard or CPU1 changes.
 var want09bAdditions = []string{
 	"go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/workspacetransfer",
+}
+
+// want10bAdditions is iteration 10b's literal addition (design 10b, CI
+// plan): the task workspace and task publication packages, complete, in
+// the combined packages invocation after the local transfers, in that
+// order; no selector, count, shard or CPU1 changes.
+var want10bAdditions = []string{
+	"go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/taskworkspace ./internal/taskpublication",
 }
 
 // want02bSelection is iteration 02b's literal stress selection, the
@@ -468,6 +476,17 @@ func TestStressShardUnion(t *testing.T) {
 	if len(want) != (5+2+3+1+1+1+1+1+1)*3 {
 		t.Fatalf("09b selection has %d tuples", len(want))
 	}
+	for _, argv := range want10bAdditions {
+		for _, s := range normalize(t, argv) {
+			if want[s] != 0 {
+				t.Fatalf("10b addition %v overlaps", s)
+			}
+			want[s]++
+		}
+	}
+	if len(want) != (5+2+3+1+1+1+1+1+1+2)*3 {
+		t.Fatalf("10b selection has %d tuples", len(want))
+	}
 	for _, goos := range []string{"linux", "darwin"} {
 		shards, err := StressShards(goos)
 		if err != nil {
@@ -520,7 +539,7 @@ func TestStressShardUnion(t *testing.T) {
 		}
 		for s := range got {
 			if want[s] == 0 {
-				t.Errorf("%s: %v is not in the 02b, 03, 04, 07a, 07b or 09a selection", goos, s)
+				t.Errorf("%s: %v is not in the 02b, 03, 04, 07a, 07b, 09a, 09b or 10b selection", goos, s)
 			}
 		}
 		for s, sh := range owner {
@@ -718,8 +737,8 @@ func TestStressStageDispatch(t *testing.T) {
 	}
 	// all stays test, coverage, bench, cross: stress is explicit.
 	f := &fakeRunner{coverTotal: "81%", cmdList: cmdList, profile: goodProfile}
-	// test(4, iteration 08) + coverage(3) + bench(10, iteration 09b) + cross(12).
-	if code, _, errOut := runDriver(t, "linux", f, "all"); code != 0 || len(f.calls) != 29 {
+	// test(4, iteration 08) + coverage(3) + bench(11, iteration 10b) + cross(12).
+	if code, _, errOut := runDriver(t, "linux", f, "all"); code != 0 || len(f.calls) != 30 {
 		t.Fatalf("all = %d with %d calls %s", code, len(f.calls), errOut)
 	}
 	for _, c := range f.argvs() {
@@ -2255,10 +2274,11 @@ func TestPlatformSeamContract(t *testing.T) {
 			}
 			// Iteration 09a: a qualified native run adds the coverage stage
 			// (3 children) and the workspace benchmark step; iteration 09b
-			// the transfer benchmark step.
+			// the transfer benchmark step; iteration 10b the task workspace
+			// benchmark step.
 			nativeCalls := len(native)
 			if goos == "darwin" {
-				nativeCalls += 5
+				nativeCalls += 6
 			}
 			for stage, want := range map[string]int{"test": wantTest, "stress": 22, "stress-packages": 10, "stress-plane-cpu1": 1, "stress-plane": 2,
 				"stress-sidecar-cpu1": 1, "stress-sidecar": 2, "stress-processgroup": 3, "stress-functions": 3, "native": nativeCalls} {

@@ -68,7 +68,14 @@ func withField(t testing.TB, b []byte, key, raw string) []byte {
 // schema-2 form (no stop intent, timeout_enforced false).
 func asSchema2(t testing.TB, b []byte) []byte {
 	t.Helper()
-	return withField(t, withField(t, withField(t, b, "stop_intent", ""), "timeout_enforced", "false"), "schema_version", "2")
+	return withField(t, withField(t, withField(t, asSchema3(t, b), "stop_intent", ""), "timeout_enforced", "false"), "schema_version", "2")
+}
+
+// asSchema3 is a schema-4 document's exact 06b schema-3 form (no workspace
+// binding, publication or workspace result).
+func asSchema3(t testing.TB, b []byte) []byte {
+	t.Helper()
+	return withField(t, withField(t, withField(t, withField(t, b, "workspace_binding", ""), "publication", ""), "workspace_result", ""), "schema_version", "3")
 }
 
 func mustCompact(t testing.TB, v any) []byte {
@@ -85,12 +92,12 @@ func mustCompact(t testing.TB, v any) []byte {
 // digest and the committed acknowledgement.
 func TestControlProtocol(t *testing.T) {
 	t.Run("version", func(t *testing.T) {
-		if ProtocolVersion != 5 {
+		if ProtocolVersion != 6 {
 			t.Fatalf("protocol %d", ProtocolVersion)
 		}
-		// A protocol 3 (05) peer and an unknown future version are
+		// A protocol 5 (06b) peer and an unknown future version are
 		// refused before the body, naming both versions.
-		for _, v := range []int{4, 6} {
+		for _, v := range []int{5, 7} {
 			b := frame(v, FrameTaskInventory, "i1", `{"garbage":true}`)
 			f, err := DecodeFrame(b, FromSidecar)
 			ce, ok := err.(*Error)
@@ -99,7 +106,7 @@ func TestControlProtocol(t *testing.T) {
 			}
 			l, _ := ce.DetailInt("local_version")
 			r, _ := ce.DetailInt("remote_version")
-			if l != 5 || r != v || !strings.Contains(ce.Message, "local=5 remote="+FormatInt(v)) {
+			if l != 6 || r != v || !strings.Contains(ce.Message, "local=6 remote="+FormatInt(v)) {
 				t.Fatalf("version %d mismatch %+v", v, ce)
 			}
 		}
@@ -482,17 +489,22 @@ func TestControlMigration(t *testing.T) {
 				rec.ResultDigest != nil || rec.Late != nil {
 				t.Fatalf("%s converted %+v", name, rec)
 			}
-			// A schema-3 rewrite round-trips (timeout still unenforced, no
-			// stop intent, no timeout_enforced member).
+			// A schema-4 rewrite round-trips (timeout still unenforced, no
+			// stop intent, no timeout_enforced member, no workspace).
 			b, err := EncodeTaskRecord(rec)
 			if err != nil {
 				t.Fatalf("%s encode: %v", name, err)
 			}
-			if !bytes.Contains(b, []byte(`"schema_version": 3`)) || bytes.Contains(b, []byte(`"timeout_enforced"`)) || !bytes.Contains(b, []byte(`"stop_intent": null`)) ||
-				!bytes.Contains(b, []byte(`"timeout_policy": "legacy_unenforced"`)) || !bytes.Contains(b, []byte(`"start_digest": null`)) {
-				t.Fatalf("%s schema 3:\n%s", name, b)
+			if !bytes.Contains(b, []byte(`"schema_version": 4`)) || bytes.Contains(b, []byte(`"timeout_enforced"`)) || !bytes.Contains(b, []byte(`"stop_intent": null`)) ||
+				!bytes.Contains(b, []byte(`"timeout_policy": "legacy_unenforced"`)) || !bytes.Contains(b, []byte(`"start_digest": null`)) ||
+				!bytes.Contains(b, []byte(`"workspace_binding": null`)) || !bytes.Contains(b, []byte(`"workspace_result": null`)) {
+				t.Fatalf("%s schema 4:\n%s", name, b)
 			}
-			// Its exact 06a schema-2 form decodes too, reported as schema 2.
+			// Its exact 06b schema-3 and 06a schema-2 forms decode too,
+			// reported as such.
+			if three, err := ParseTaskRecord(asSchema3(t, b), testLookup); err != nil || three.Schema != TaskRecordSchema3 || three.State != rec.State {
+				t.Fatalf("%s schema 3 %+v %v", name, three, err)
+			}
 			if two, err := ParseTaskRecord(asSchema2(t, b), testLookup); err != nil || two.Schema != TaskRecordSchema2 || two.State != rec.State {
 				t.Fatalf("%s schema 2 %+v %v", name, two, err)
 			}
@@ -648,7 +660,8 @@ func TestControlJournalCodec(t *testing.T) {
 		}
 		b, _ := EncodeExecutionJournal(base)
 		for name, doc := range map[string][]byte{
-			"schema":  withField(t, b, "schema_version", "3"),
+			"schema":  withField(t, b, "schema_version", "4"),
+			"v2 work": withField(t, b, "schema_version", "2"),
 			"unknown": withField(t, b, "prompt", `"x"`),
 			"policy":  withField(t, b, "timeout_policy", `"odd"`),
 			"digest":  withField(t, b, "start_digest", `"x"`),

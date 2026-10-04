@@ -158,6 +158,22 @@ const (
 	evStopping        eventKind = "stopping"
 	evGroupGone       eventKind = "group-gone"
 	evCancelAcked     eventKind = "cancel-acked"
+	// Iteration 10b workspace events (id = task ID): the preparation and
+	// finalization timers armed, the checkout prepared, a task_prepared
+	// written (id = request ID) and its release decision received, a
+	// publication stage (action = the stage), a failed work directory
+	// removal holding its slot, and that slot's release by the janitor.
+	evPrepArmed         eventKind = "prep-armed"
+	evFinalizeArmed     eventKind = "finalize-armed"
+	evWorkspacePrepared eventKind = "workspace-prepared"
+	evPreparedAcked     eventKind = "prepared-acked"
+	evPublication       eventKind = "publication"
+	evWorkPending       eventKind = "work-pending"
+	evWorkReleased      eventKind = "work-released"
+	// evHeartbeatArmed: the periodic heartbeat timer was registered for
+	// instant at, with no exchange outstanding after request number acks
+	// (a fake clock advances only after its target timer is armed).
+	evHeartbeatArmed eventKind = "heartbeat-armed"
 )
 
 // event is one observed transition: the session number (1-based), the
@@ -246,6 +262,14 @@ type deps struct {
 	// taskFinalRead, when non-nil, replaces the final-file reader
 	// (iteration 08; tests injecting read faults).
 	taskFinalRead func(*finalSource, adapter.FinalExtractor) (adapter.FinalMessage, error)
+	// taskWorkspacePlane, when non-nil, replaces the workspace execution's
+	// plane surface (iteration 10b; tests).
+	taskWorkspacePlane wsPlane
+	// heartbeatHook, when non-nil, runs on the session goroutine after
+	// each heartbeat's write, with whether it was a prompt report and the
+	// session's inbox (tests only: an acknowledgement queued before the
+	// session resumes).
+	heartbeatHook func(prompt bool, in *inbox)
 }
 
 // closeGrace is the production bound of a graceful stream close.

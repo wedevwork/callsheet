@@ -185,6 +185,31 @@ type nodeStream struct {
 	// state: no roles_replace, role_validate or task_start is sent before
 	// its final reconcile page is acknowledged.
 	recon *reconciliation
+	// prep is the task_prepared awaiting its durable decision (iteration
+	// 10b), session state.
+	prep *prepWait
+}
+
+// prepWait is one task_prepared whose acknowledgement waits for a
+// confirmed publication.
+type prepWait struct {
+	id   string
+	body contract.TaskPreparedBody
+	wait <-chan struct{}
+}
+
+// ackPrepared writes the release decision; false ends the session.
+func (st *nodeStream) ackPrepared(rid string, b contract.TaskPreparedBody, release bool) bool {
+	ack := contract.TaskPreparedAckBody{TaskID: b.TaskID, Execution: b.Execution, Release: release}
+	if err := st.write(contract.FrameTaskPreparedAck, rid, ack, time.Time{}); err != nil {
+		return false
+	}
+	if release {
+		st.svc.event("prepared-released " + st.nodeID + " " + rid + " " + b.TaskID)
+	} else {
+		st.svc.event("prepared-refused " + st.nodeID + " " + rid + " " + b.TaskID)
+	}
+	return true
 }
 
 // handleStream serves GET /api/v1/node-stream. Browser origins, other
@@ -760,7 +785,24 @@ func (st *nodeStream) session() {
 		if inflight != nil && !inflight.expired {
 			timer = inflight.timer
 		}
+		var prepC <-chan struct{}
+		if st.prep != nil {
+			prepC = st.prep.wait
+		}
 		select {
+		case <-prepC:
+			// A confirmed publication: decide the pending task_prepared again
+			// (a durable authorization releases it).
+			p := st.prep
+			wait, release := s.tasks.preparedRecheck(p.body)
+			if wait != nil {
+				p.wait = wait
+				continue
+			}
+			st.prep = nil
+			if !st.ackPrepared(p.id, p.body, release) {
+				return
+			}
 		case <-st.inbox.ready:
 		case <-st.kick:
 		case <-timer:
@@ -1027,6 +1069,31 @@ func (st *nodeStream) handleFrame(r readResult, inflight **planeRequest, hb *int
 		}
 		st.reject(f.RequestID, err, "invalid message")
 		return false
+	case contract.FrameTaskPrepared:
+		// Iteration 10b: a workspace start's preparation outcome, a sidecar
+		// request in the b sequence. Its acknowledgement waits for the
+		// durable running authorization without blocking the session: the
+		// session loop answers once the writer confirms it.
+		if !st.nextSidecarID(f, hb) {
+			return false
+		}
+		body, err := contract.DecodeTaskPrepared(f.Body)
+		var wait <-chan struct{}
+		var release bool
+		if err == nil {
+			wait, release, err = s.tasks.prepared(st.nodeID, st.gen, body)
+		}
+		if err != nil {
+			st.reject(f.RequestID, err, "invalid message")
+			return false
+		}
+		*hb++
+		if wait != nil {
+			st.prep = &prepWait{id: f.RequestID, body: body, wait: wait}
+			s.event("prepared-waiting " + st.nodeID + " " + f.RequestID)
+			return true
+		}
+		return st.ackPrepared(f.RequestID, body, release)
 	case contract.FrameTaskInventory:
 		// Inventory pages carry their own strict sequence i1, i2, ...
 		// (page 0, 1, ...), in the sidecar's one request slot.
@@ -1106,6 +1173,10 @@ func (st *nodeStream) handleFrame(r readResult, inflight **planeRequest, hb *int
 		if err == nil && res.TaskID != req.start.id {
 			err = contract.New(contract.CodeInvalidArgument, "task_start_result names another task")
 		}
+		if err == nil && res.Preparing && req.start.body.Workspace == nil {
+			// Only a workspace start answers preparing (protocol 6).
+			err = contract.New(contract.CodeInvalidArgument, "task_start_result preparing answers a start without a workspace")
+		}
 		if err != nil {
 			st.reject(f.RequestID, err, "invalid message")
 			return false
@@ -1117,7 +1188,7 @@ func (st *nodeStream) handleFrame(r readResult, inflight **planeRequest, hb *int
 		}
 		req.stop()
 		*inflight = nil
-		s.tasks.startReplied(req.start.id, st.gen, res.Err)
+		s.tasks.startReplied(req.start.id, st.gen, res.Err, res.Preparing)
 		req.start.res.release()
 		s.event("start-result " + st.nodeID + " " + f.RequestID)
 		return true

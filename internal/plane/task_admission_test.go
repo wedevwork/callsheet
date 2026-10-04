@@ -409,29 +409,29 @@ func TestTaskAdmission(t *testing.T) {
 		}{
 			{"GET", contract.PathTasks, "", "", "", 400, contract.CodeInvalidArgument},
 			{"GET", contract.PathTasks, "2", "", "", 409, contract.CodeProtocolMismatch},
-			{"GET", contract.PathTasks + "/t_%30000000000000000000000000000001", "5", "", "", 400, contract.CodeInvalidArgument},
-			{"GET", contract.PathTasks + "/" + id + "/logs/x", "5", "", "", 404, contract.CodeNotFound},
-			{"GET", contract.PathTasks + "/SECRET-ID", "5", "", "", 400, contract.CodeInvalidArgument},
-			{"PUT", contract.PathTasks, "5", js, "{}", 400, contract.CodeInvalidArgument},
-			{"POST", contract.PathTasks + "/" + id, "5", js, "{}", 400, contract.CodeInvalidArgument},
-			{"GET", contract.PathTasks, "5", "", "SECRET-BODY", 400, contract.CodeInvalidArgument},
-			{"POST", contract.PathTasks + "?x=1", "5", js, string(good), 400, contract.CodeInvalidArgument},
-			{"GET", contract.PathTasks + "?", "5", "", "", 400, contract.CodeInvalidArgument},
-			{"GET", contract.PathTasks + "?=1", "5", "", "", 400, contract.CodeInvalidArgument},
-			{"GET", contract.PathTasks + "?SECRET-KEY=1", "5", "", "", 400, contract.CodeInvalidArgument},
-			{"GET", contract.PathTasks + "?limit=", "5", "", "", 400, contract.CodeInvalidArgument},
-			{"GET", contract.PathTasks + "?limit=1&limit=2", "5", "", "", 400, contract.CodeInvalidArgument},
-			{"GET", contract.PathTasks + "?limit=0", "5", "", "", 400, contract.CodeInvalidArgument},
-			{"GET", contract.PathTasks + "?limit=101", "5", "", "", 400, contract.CodeInvalidArgument},
-			{"GET", contract.PathTasks + "?after=SECRET-AFTER", "5", "", "", 400, contract.CodeInvalidArgument},
-			{"GET", contract.PathTasks + "/" + id + "/logs?lines=1", "5", "", "", 400, contract.CodeInvalidArgument},
-			{"GET", contract.PathTasks + "/" + id + "/logs", "5", "", "", 404, contract.CodeNotFound},
-			{"GET", contract.PathTasks + "/" + id + "?lines=1001", "5", "", "", 400, contract.CodeInvalidArgument},
-			{"GET", contract.PathTasks + "/" + id + "?limit=1", "5", "", "", 400, contract.CodeInvalidArgument},
-			{"GET", contract.PathTasks + "/" + id, "5", "", "", 404, contract.CodeNotFound},
-			{"POST", contract.PathTasks, "5", "text/plain", string(good), 400, contract.CodeInvalidArgument},
-			{"POST", contract.PathTasks, "5", js, strings.Repeat(" ", contract.MaxDispatchRequestBytes+1), 400, contract.CodeInvalidArgument},
-			{"POST", contract.PathTasks, "5", js, `{"extra":"SECRET-VALUE"}`, 400, contract.CodeInvalidArgument},
+			{"GET", contract.PathTasks + "/t_%30000000000000000000000000000001", "6", "", "", 400, contract.CodeInvalidArgument},
+			{"GET", contract.PathTasks + "/" + id + "/logs/x", "6", "", "", 404, contract.CodeNotFound},
+			{"GET", contract.PathTasks + "/SECRET-ID", "6", "", "", 400, contract.CodeInvalidArgument},
+			{"PUT", contract.PathTasks, "6", js, "{}", 400, contract.CodeInvalidArgument},
+			{"POST", contract.PathTasks + "/" + id, "6", js, "{}", 400, contract.CodeInvalidArgument},
+			{"GET", contract.PathTasks, "6", "", "SECRET-BODY", 400, contract.CodeInvalidArgument},
+			{"POST", contract.PathTasks + "?x=1", "6", js, string(good), 400, contract.CodeInvalidArgument},
+			{"GET", contract.PathTasks + "?", "6", "", "", 400, contract.CodeInvalidArgument},
+			{"GET", contract.PathTasks + "?=1", "6", "", "", 400, contract.CodeInvalidArgument},
+			{"GET", contract.PathTasks + "?SECRET-KEY=1", "6", "", "", 400, contract.CodeInvalidArgument},
+			{"GET", contract.PathTasks + "?limit=", "6", "", "", 400, contract.CodeInvalidArgument},
+			{"GET", contract.PathTasks + "?limit=1&limit=2", "6", "", "", 400, contract.CodeInvalidArgument},
+			{"GET", contract.PathTasks + "?limit=0", "6", "", "", 400, contract.CodeInvalidArgument},
+			{"GET", contract.PathTasks + "?limit=101", "6", "", "", 400, contract.CodeInvalidArgument},
+			{"GET", contract.PathTasks + "?after=SECRET-AFTER", "6", "", "", 400, contract.CodeInvalidArgument},
+			{"GET", contract.PathTasks + "/" + id + "/logs?lines=1", "6", "", "", 400, contract.CodeInvalidArgument},
+			{"GET", contract.PathTasks + "/" + id + "/logs", "6", "", "", 404, contract.CodeNotFound},
+			{"GET", contract.PathTasks + "/" + id + "?lines=1001", "6", "", "", 400, contract.CodeInvalidArgument},
+			{"GET", contract.PathTasks + "/" + id + "?limit=1", "6", "", "", 400, contract.CodeInvalidArgument},
+			{"GET", contract.PathTasks + "/" + id, "6", "", "", 404, contract.CodeNotFound},
+			{"POST", contract.PathTasks, "6", "text/plain", string(good), 400, contract.CodeInvalidArgument},
+			{"POST", contract.PathTasks, "6", js, strings.Repeat(" ", contract.MaxDispatchRequestBytes+1), 400, contract.CodeInvalidArgument},
+			{"POST", contract.PathTasks, "6", js, `{"extra":"SECRET-VALUE"}`, 400, contract.CodeInvalidArgument},
 		} {
 			status, body := do(c.method, c.path, c.version, c.ctype, c.body)
 			e, err := contract.ParseErrorBody(bytes.TrimSpace([]byte(body)))
@@ -443,13 +443,13 @@ func TestTaskAdmission(t *testing.T) {
 			t.Fatalf("a refused request created %d tasks", n)
 		}
 		// The success envelopes: 202 dispatch, then show, logs and list.
-		status, body := do("POST", contract.PathTasks, "5", js, string(good))
+		status, body := do("POST", contract.PathTasks, "6", js, string(good))
 		v, err := contract.ParseDispatchResponse(bytes.TrimSpace([]byte(body)))
 		if status != http.StatusAccepted || err != nil || !strings.HasSuffix(body, "}\n") {
 			t.Fatalf("dispatch = %d %q %v", status, body, err)
 		}
 		for _, p := range []string{"/" + v.TaskID + "?lines=0", "/" + v.TaskID + "/logs", "?limit=1&after=" + id} {
-			if status, body := do("GET", contract.PathTasks+p, "5", "", ""); status != 200 || !strings.HasPrefix(body, `{"version":5,`) {
+			if status, body := do("GET", contract.PathTasks+p, "6", "", ""); status != 200 || !strings.HasPrefix(body, `{"version":6,`) {
 				t.Fatalf("GET %s = %d %q", p, status, body)
 			}
 		}

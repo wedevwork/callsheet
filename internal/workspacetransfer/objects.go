@@ -90,6 +90,12 @@ type looseDB struct {
 	// needs a sync before a ref may point at the objects).
 	created bool
 	dirty   map[string]bool
+	// batch (iteration 10b task databases) defers durability: new objects
+	// are not synced one by one (an object that already exists is not
+	// rewritten or synced at all) but recorded in pending, and syncDirs
+	// makes them and their directories durable in one platform batch.
+	batch   bool
+	pending []string
 }
 
 // write stores one object streamed from r (size bytes of type t) and
@@ -132,7 +138,7 @@ func (db *looseDB) write(ctx context.Context, t plumbing.ObjectType, size int64,
 		if err := unix.Fchmod(fd, 0o444); err != nil {
 			return plumbing.ZeroHash, err
 		}
-		if db.sync {
+		if db.sync && !db.batch {
 			if err := db.d.sync(fd, db.opPref+"object-sync"); err != nil {
 				return plumbing.ZeroHash, err
 			}
@@ -177,10 +183,12 @@ func (db *looseDB) publish(tmp string, h plumbing.Hash) error {
 	if err := db.d.check(db.opPref + "object-rename"); err != nil {
 		return err
 	}
+	fresh := false
 	err = db.d.linkAt(db.objFD, tmp, dfd, name, 0)
 	switch {
 	case err == nil:
 		unix.Unlinkat(db.objFD, tmp, 0)
+		fresh = true
 	case errors.Is(err, unix.EEXIST):
 		unix.Unlinkat(db.objFD, tmp, 0)
 		if err := verifyLoose(dfd, name, h); err != nil {
@@ -195,6 +203,7 @@ func (db *looseDB) publish(tmp string, h plumbing.Hash) error {
 			}
 			return err
 		}
+		fresh = true
 	default:
 		return err
 	}
@@ -202,6 +211,10 @@ func (db *looseDB) publish(tmp string, h plumbing.Hash) error {
 		db.dirty = map[string]bool{}
 	}
 	db.dirty[fan] = true
+	if db.batch && fresh {
+		// A newly published object (an existing one was verified instead).
+		db.pending = append(db.pending, fan+"/"+name)
+	}
 	return nil
 }
 
@@ -232,6 +245,30 @@ func verifyLoose(dfd int, name string, h plumbing.Hash) error {
 // created, the objects directory.
 func (db *looseDB) syncDirs() error {
 	if !db.sync {
+		return nil
+	}
+	if db.batch {
+		// One platform batch: the new objects, their fan-out directories
+		// and (when one was created) the objects directory.
+		if len(db.pending) == 0 && len(db.dirty) == 0 && !db.created {
+			return nil
+		}
+		for _, op := range []string{"object-sync", "object-dirsync"} {
+			if err := db.d.check(db.opPref + op); err != nil {
+				return err
+			}
+		}
+		dirs := make([]string, 0, len(db.dirty)+1)
+		for fan := range db.dirty {
+			dirs = append(dirs, fan)
+		}
+		if db.created {
+			dirs = append(dirs, ".")
+		}
+		if err := db.d.syncBatch(db.objFD, db.pending, dirs); err != nil {
+			return err
+		}
+		db.pending = nil
 		return nil
 	}
 	for fan := range db.dirty {

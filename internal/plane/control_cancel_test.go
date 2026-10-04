@@ -570,7 +570,7 @@ func TestControlCancel(t *testing.T) {
 		wantCode(t, func() error { _, err := tp.cl.CancelTask(bg, "bad"); return err }(), contract.CodeInvalidArgument)
 		for _, c := range []struct{ path, body string }{{"/cancel", `{"x":1}`}, {"/cancel", ``}, {"/cancel?x=1", `{}`}} {
 			req, _ := http.NewRequest(http.MethodPost, tp.url+contract.PathTasks+"/"+st.TaskID+c.path, bytes.NewReader([]byte(c.body)))
-			req.Header.Set(contract.ProtocolHeader, "5")
+			req.Header.Set(contract.ProtocolHeader, "6")
 			req.Header.Set("Content-Type", "application/json")
 			resp, err := client(t, readCA(t, tp.root), "127.0.0.1", 0).Do(req)
 			if err != nil || resp.StatusCode != 400 {

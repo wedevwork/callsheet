@@ -343,7 +343,7 @@ func newJSONPost(url, body string) (*http.Request, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set(contract.ProtocolHeader, "5")
+	req.Header.Set(contract.ProtocolHeader, "6")
 	req.Header.Set("Content-Type", "application/json")
 	return req, nil
 }

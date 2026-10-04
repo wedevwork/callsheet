@@ -39,7 +39,7 @@ import (
 // and mcpqual headroom fix;
 // the function commands are unchanged.
 const (
-	speedPackages      = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/workspacetransfer"
+	speedPackages      = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/workspacetransfer ./internal/taskworkspace ./internal/taskpublication"
 	speedContract1     = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/contract"
 	speedContract2     = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/contract"
 	speedContract4     = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/contract"
@@ -234,6 +234,15 @@ var speedTransferNative = []string{
 // speedLatencyNative are iteration 10a's two latency function tests in FP
 // order, after the 09b names.
 var speedLatencyNative = []string{"TestTaskPromptReadiness", "TestTaskFastGroupCleanup"}
+
+// speedWorkspaceTaskNative are iteration 10b's nine workspace execution
+// function tests in FP order, each named acceptance scenario after its
+// parent, after the 10a names.
+var speedWorkspaceTaskNative = []string{
+	"TestTaskWorkspaceAdmission", "TestTaskWorkspaceAccess", "TestTaskWorkspaceCache", "TestTaskWorkspaceCheckout",
+	"TestTaskWorkspaceCommit", "TestTaskWorkspaceCommit/AC-WS-1", "TestTaskWorkspacePublication", "TestTaskWorkspacePublication/AC-WS-5",
+	"TestTaskWorkspaceMetadata", "TestTaskWorkspaceRecovery", "TestTaskWorkspaceIsolation", "TestTaskWorkspaceIsolation/AC-WS-2",
+}
 
 // taskProcessEvents is a passing sidecar-package stream for the tuple
 // except drop.
@@ -712,7 +721,7 @@ func TestCISpeedJobs(t *testing.T) {
 func qualifyingStream(drop string) string {
 	pkg := devcheck.NativePackage
 	evs := []map[string]any{synth("start", pkg, "")}
-	for _, name := range append(append(append(append(append(append(append(append(append(append(slices.Clone(speedNative), speedNodeNative...), speedRoleNative...), speedTaskNative...), speedControlNative...), speedMCPNative...), speedQualNative...), speedRealNative...), speedWorkspaceNative...), speedTransferNative...), speedLatencyNative...) {
+	for _, name := range append(append(append(append(append(append(append(append(append(append(append(slices.Clone(speedNative), speedNodeNative...), speedRoleNative...), speedTaskNative...), speedControlNative...), speedMCPNative...), speedQualNative...), speedRealNative...), speedWorkspaceNative...), speedTransferNative...), speedLatencyNative...), speedWorkspaceTaskNative...) {
 		if name != drop {
 			evs = append(evs, synth("run", pkg, name), synth("pass", pkg, name))
 		}
@@ -724,9 +733,10 @@ func qualifyingStream(drop string) string {
 // FP-3: validator, plans, native evidence and documentation agree.
 func TestCISpeedPolicy(t *testing.T) {
 	t.Run("native", func(t *testing.T) {
-		if got := devcheck.NativeRequiredTests(); len(got) != 335 || len(speedQualNative) != 51 || len(speedRealNative) != 39 || !slices.Equal(got[:28], speedNative) || !slices.Equal(got[28:58], speedNodeNative) || !slices.Equal(got[58:87], speedRoleNative) || !slices.Equal(got[87:128], speedTaskNative) ||
+		if got := devcheck.NativeRequiredTests(); len(got) != 347 || len(speedQualNative) != 51 || len(speedRealNative) != 39 || !slices.Equal(got[:28], speedNative) || !slices.Equal(got[28:58], speedNodeNative) || !slices.Equal(got[58:87], speedRoleNative) || !slices.Equal(got[87:128], speedTaskNative) ||
 			!slices.Equal(got[128:145], speedControlNative) || !slices.Equal(got[145:222], speedMCPNative) || !slices.Equal(got[222:273], speedQualNative) || !slices.Equal(got[273:312], speedRealNative) ||
-			!slices.Equal(got[312:323], speedWorkspaceNative) || !slices.Equal(got[323:333], speedTransferNative) || !slices.Equal(got[333:335], speedLatencyNative) {
+			!slices.Equal(got[312:323], speedWorkspaceNative) || !slices.Equal(got[323:333], speedTransferNative) || !slices.Equal(got[333:335], speedLatencyNative) ||
+			!slices.Equal(got[335:347], speedWorkspaceTaskNative) {
 			t.Fatalf("native required = %v", got)
 		}
 		if err := devcheck.CheckNativeResults("darwin", strings.NewReader(qualifyingStream(""))); err != nil {

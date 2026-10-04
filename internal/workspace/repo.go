@@ -73,10 +73,13 @@ type identity struct {
 	CreatedAt string `json:"created_at"`
 }
 
-// taskMeta is one refs.json entry.
+// taskMeta is one refs.json entry. PublicationID (iteration 10b) is the
+// publication transaction's provenance of a ref a task published; planted
+// refs without it stay readable and prunable but never satisfy an intent.
 type taskMeta struct {
-	Commit      string `json:"commit"`
-	PublishedAt string `json:"published_at"`
+	Commit        string `json:"commit"`
+	PublishedAt   string `json:"published_at"`
+	PublicationID string `json:"publication_id,omitempty"`
 }
 
 // refsDoc is refs.json: the plane publication time of every task ref.
@@ -174,7 +177,8 @@ func readRefsDoc(p string) (map[string]taskMeta, error) {
 		return nil, corrupt(p, "refs.json needs schema 1 and task_refs")
 	}
 	for name, m := range doc.TaskRefs {
-		if _, ok := contract.ParseTime(m.PublishedAt); !contract.ValidTaskRef(name) || !contract.ValidCommitHash(m.Commit) || !ok {
+		if _, ok := contract.ParseTime(m.PublishedAt); !contract.ValidTaskRef(name) || !contract.ValidCommitHash(m.Commit) || !ok ||
+			(m.PublicationID != "" && !contract.ValidWorkspaceToken(m.PublicationID)) {
 			return nil, corrupt(p, "refs.json has an invalid task entry")
 		}
 	}

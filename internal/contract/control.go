@@ -265,29 +265,34 @@ type LateResult struct {
 	OutputBytes           int
 	LogIncomplete         bool
 	CounterOverflow       bool
-	Log                   TaskLog
+	// Workspace (iteration 10b) is a workspace worker's reported DTO (never
+	// a published claim: the task was decided otherwise).
+	Workspace *TaskWorkspaceResult
+	Log       TaskLog
 }
 
-// lateWire is a late result's persisted form.
+// lateWire is a late result's persisted form; workspace (schema 4) is
+// omitted without a workspace DTO.
 type lateWire struct {
-	Digest                string          `json:"digest"`
-	ReceivedAt            string          `json:"received_at"`
-	Outcome               string          `json:"outcome"`
-	ExitCode              *int            `json:"exit_code"`
-	Signal                *string         `json:"signal"`
-	FinalMessage          *string         `json:"final_message"`
-	FinalMessageTruncated bool            `json:"final_message_truncated"`
-	OutputBytes           int             `json:"output_bytes"`
-	LogIncomplete         bool            `json:"log_incomplete"`
-	CounterOverflow       bool            `json:"counter_overflow"`
-	Log                   json.RawMessage `json:"log"`
+	Digest                string               `json:"digest"`
+	ReceivedAt            string               `json:"received_at"`
+	Outcome               string               `json:"outcome"`
+	ExitCode              *int                 `json:"exit_code"`
+	Signal                *string              `json:"signal"`
+	FinalMessage          *string              `json:"final_message"`
+	FinalMessageTruncated bool                 `json:"final_message_truncated"`
+	OutputBytes           int                  `json:"output_bytes"`
+	LogIncomplete         bool                 `json:"log_incomplete"`
+	CounterOverflow       bool                 `json:"counter_overflow"`
+	Workspace             *TaskWorkspaceResult `json:"workspace,omitempty"`
+	Log                   json.RawMessage      `json:"log"`
 }
 
 // LateFrom builds the late evidence of result b received at t.
 func LateFrom(b TaskResultBody, at time.Time, lg TaskLog) LateResult {
 	return LateResult{Digest: b.Digest, ReceivedAt: at.UTC(), Outcome: b.Outcome, ExitCode: b.ExitCode, Signal: b.Signal,
 		FinalMessage: b.FinalMessage, FinalMessageTruncated: b.FinalMessageTruncated, OutputBytes: b.OutputBytes,
-		LogIncomplete: b.LogIncomplete, CounterOverflow: b.CounterOverflow, Log: lg}
+		LogIncomplete: b.LogIncomplete, CounterOverflow: b.CounterOverflow, Workspace: b.Workspace, Log: lg}
 }
 
 func (l LateResult) validate(what string) error {
@@ -309,6 +314,11 @@ func (l LateResult) validate(what string) error {
 	}
 	if err := checkFinalMessage(l.FinalMessage, l.FinalMessageTruncated, what+" late_result"); err != nil {
 		return err
+	}
+	if l.Workspace != nil {
+		if err := l.Workspace.Validate(); err != nil {
+			return err
+		}
 	}
 	return l.Log.Validate()
 }

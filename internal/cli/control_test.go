@@ -27,7 +27,7 @@ func TestControlCancel(t *testing.T) {
 	sp := startStubPlane(t)
 	trust := []string{"--plane", sp.url, "--ca", sp.caFile}
 	t.Run("accepted", func(t *testing.T) {
-		resp := contract.CancelResponse{Version: 5, TaskID: cliTask, Accepted: true, Task: stopView(cliTask)}
+		resp := contract.CancelResponse{Version: 6, TaskID: cliTask, Accepted: true, Task: stopView(cliTask)}
 		sp.answer(202, envelope(t, resp))
 		code, out, errOut := exec(t, "linux", append([]string{"task", "cancel", cliTask}, trust...)...)
 		if code != 0 || out != "cancel accepted: "+cliTask+"\n" || errOut != "" {
@@ -42,7 +42,7 @@ func TestControlCancel(t *testing.T) {
 		}
 	})
 	t.Run("terminal", func(t *testing.T) {
-		sp.answer(200, envelope(t, contract.CancelResponse{Version: 5, TaskID: cliTask, Task: cliView(cliTask, contract.TaskSucceeded)}))
+		sp.answer(200, envelope(t, contract.CancelResponse{Version: 6, TaskID: cliTask, Task: cliView(cliTask, contract.TaskSucceeded)}))
 		code, out, _ := exec(t, "linux", append([]string{"task", "cancel", cliTask}, trust...)...)
 		if code != 0 || out != "task already terminal: "+cliTask+" succeeded\n" {
 			t.Fatalf("terminal %d %q", code, out)
@@ -81,7 +81,7 @@ func TestControlWait(t *testing.T) {
 	trust := []string{"--plane", sp.url, "--ca", sp.caFile}
 	rows := []contract.WaitRow{{TaskID: cliTask, State: contract.TaskRunning, ElapsedMS: 1500, LastLogLine: "tab\there\x1b[2J", LogTruncated: true, DurabilityConfirmed: true},
 		{TaskID: cliTaskB, State: contract.TaskPending, ElapsedMS: 0}}
-	still := contract.WaitResponse{Version: 5, Status: contract.WaitStillRunning, EffectiveWaitMS: 5000, Tasks: rows}
+	still := contract.WaitResponse{Version: 6, Status: contract.WaitStillRunning, EffectiveWaitMS: 5000, Tasks: rows}
 	t.Run("text", func(t *testing.T) {
 		b, _ := contract.EncodeWaitResponse(still)
 		sp.answer(200, string(b))
@@ -95,7 +95,7 @@ func TestControlWait(t *testing.T) {
 			t.Fatalf("default wait request %+v", r)
 		}
 		v := cliView(cliTaskB, contract.TaskSucceeded)
-		term := contract.WaitResponse{Version: 5, Status: contract.WaitTerminal, EffectiveWaitMS: 1000, Winner: cliTaskB, Task: &v}
+		term := contract.WaitResponse{Version: 6, Status: contract.WaitTerminal, EffectiveWaitMS: 1000, Winner: cliTaskB, Task: &v}
 		tb, _ := contract.EncodeWaitResponse(term)
 		sp.answer(200, string(tb))
 		code, out, _ = exec(t, "linux", append([]string{"task", "wait", cliTask, cliTaskB, "--wait", "1s"}, trust...)...)
@@ -103,8 +103,8 @@ func TestControlWait(t *testing.T) {
 			t.Fatalf("terminal %d\n%s", code, out)
 		}
 		// dispatch --wait: task_id first, then the same renderings.
-		one := contract.WaitResponse{Version: 5, Status: contract.WaitStillRunning, EffectiveWaitMS: 2000, Tasks: rows[:1]}
-		sp.answer(202, envelope(t, contract.DispatchResponse{Version: 5, TaskID: cliTask, WaitResult: &one}))
+		one := contract.WaitResponse{Version: 6, Status: contract.WaitStillRunning, EffectiveWaitMS: 2000, Tasks: rows[:1]}
+		sp.answer(202, envelope(t, contract.DispatchResponse{Version: 6, TaskID: cliTask, WaitResult: &one}))
 		code, out, _ = exec(t, "linux", append([]string{"dispatch", "--role-name", "coder", "--goal", "g", "--acceptance", "a", "--wait", "2s"}, trust...)...)
 		if code != 0 || !strings.HasPrefix(out, "task_id: "+cliTask+"\nTASK_ID\t") || len(out) > contract.MaxStillRunningOneBytes {
 			t.Fatalf("dispatch wait %d\n%s", code, out)
@@ -125,8 +125,8 @@ func TestControlWait(t *testing.T) {
 		if r := sp.last(); !strings.Contains(r.body, `"wait":"0s"`) {
 			t.Fatalf("zero wait %s", r.body)
 		}
-		one := contract.WaitResponse{Version: 5, Status: contract.WaitStillRunning, EffectiveWaitMS: 2000, Tasks: rows[:1]}
-		d := contract.DispatchResponse{Version: 5, TaskID: cliTask, WaitResult: &one}
+		one := contract.WaitResponse{Version: 6, Status: contract.WaitStillRunning, EffectiveWaitMS: 2000, Tasks: rows[:1]}
+		d := contract.DispatchResponse{Version: 6, TaskID: cliTask, WaitResult: &one}
 		sp.answer(202, envelope(t, d))
 		code, out, _ = exec(t, "linux", append([]string{"dispatch", "--role-name", "coder", "--goal", "g", "--acceptance", "a", "--wait", "2s", "--json"}, trust...)...)
 		if code != 0 || out != envelope(t, d)+"\n" {
@@ -140,7 +140,7 @@ func TestControlWait(t *testing.T) {
 		v.State = contract.TaskFailed
 		one := 1
 		v.Result.State, v.Result.ExitCode = contract.TaskFailed, &one
-		term := contract.WaitResponse{Version: 5, Status: contract.WaitTerminal, EffectiveWaitMS: 1000, Winner: cliTask, Task: &v}
+		term := contract.WaitResponse{Version: 6, Status: contract.WaitTerminal, EffectiveWaitMS: 1000, Winner: cliTask, Task: &v}
 		tb, _ := contract.EncodeWaitResponse(term)
 		sp.answer(200, string(tb))
 		if code, _, _ := exec(t, "linux", append([]string{"task", "wait", cliTask}, trust...)...); code != 0 {
@@ -182,9 +182,9 @@ func TestControlRemove(t *testing.T) {
 	sp := startStubPlane(t)
 	trust := []string{"--plane", sp.url, "--ca", sp.caFile}
 	op := strings.Repeat("ab", 16)
-	pending := contract.RoleRemovePendingResponse{Version: 5, OperationID: op, RoleID: "worker-a", RegistrationOrder: 3, Removing: true}
+	pending := contract.RoleRemovePendingResponse{Version: 6, OperationID: op, RoleID: "worker-a", RegistrationOrder: 3, Removing: true}
 	t.Run("completed", func(t *testing.T) {
-		sp.answer(200, `{"version":5,"removed":"worker-a"}`)
+		sp.answer(200, `{"version":6,"removed":"worker-a"}`)
 		code, out, _ := exec(t, "linux", append([]string{"role", "rm", "worker-a", "--force"}, trust...)...)
 		if code != 0 || out != "removed: worker-a\n"+roleRmNotice {
 			t.Fatalf("completed %d %q", code, out)
@@ -193,7 +193,7 @@ func TestControlRemove(t *testing.T) {
 			t.Fatalf("request %+v", r)
 		}
 		code, out, _ = exec(t, "linux", append([]string{"role", "rm", "worker-a", "--force", "--json"}, trust...)...)
-		if code != 0 || out != `{"version":5,"removed":"worker-a"}`+"\n" {
+		if code != 0 || out != `{"version":6,"removed":"worker-a"}`+"\n" {
 			t.Fatalf("json %d %q", code, out)
 		}
 	})

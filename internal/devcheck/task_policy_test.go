@@ -186,7 +186,7 @@ func TestTaskPolicy(t *testing.T) {
 		// 41-name task suffix (iteration 06a's 13 control names follow it);
 		// plus the separate sidecar package tuple.
 		req := NativeRequiredTests()
-		if len(req) != 145+len(mcpNames())+len(qualNames())+len(realNames())+len(wsNames())+len(trNames())+len(latNames()) || strings.Join(req[87:128], ",") != strings.Join(wantTaskSuffix, ",") || strings.Join(req[58:87], ",") != strings.Join(roleNames(), ",") ||
+		if len(req) != 145+len(mcpNames())+len(qualNames())+len(realNames())+len(wsNames())+len(trNames())+len(latNames())+len(wsTaskNames()) || strings.Join(req[87:128], ",") != strings.Join(wantTaskSuffix, ",") || strings.Join(req[58:87], ",") != strings.Join(roleNames(), ",") ||
 			strings.Join(taskNames(), ",") != strings.Join(wantTaskSuffix, ",") {
 			t.Fatalf("native required = %v", req[87:128])
 		}

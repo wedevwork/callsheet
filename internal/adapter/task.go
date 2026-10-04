@@ -25,13 +25,18 @@ const (
 // and effort, the composed prompt (at most contract.MaxPromptBytes) and
 // (iteration 08) the task's private scratch directory, the child's working
 // directory: an absolute clean path the sidecar created. Only Codex uses
-// it (its final-message file); fake and Claude ignore it.
+// it (its final-message file); fake and Claude ignore it. FinalDir
+// (iteration 10b), when nonempty, is the explicit owned final-output
+// directory of a workspace task, separate from the working directory (an
+// absolute clean path inside it the sidecar allocated): a file-based
+// final source is declared there instead of in ScratchDir.
 type TaskInput struct {
 	TaskID     string
 	Model      string
 	Effort     string
 	Prompt     []byte
 	ScratchDir string
+	FinalDir   string
 }
 
 // Invocation is how to run one task: argument vector (arguments only; the

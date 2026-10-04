@@ -32,7 +32,14 @@ import (
 // forced role removal APIs change their shapes. A strict protocol 4 peer
 // cannot receive any of them, so it is refused at the version gate before
 // any mutation; plane, sidecars and clients upgrade together.
-const ProtocolVersion = 5
+// Iteration 10b raised it to 6: workspace execution. Dispatch accepts the
+// workspace selection; task_start carries the immutable workspace binding,
+// a workspace start answers preparing and reports task_prepared (answered
+// by task_prepared_ack); results and views carry the workspace DTO and its
+// mirrors; task records gain schema 4 and execution journals schema 3. A
+// protocol 5 peer cannot interpret them and is refused at the version gate;
+// upgrade plane, nodes and clients together.
+const ProtocolVersion = 6
 
 // Code is a stable, machine-readable error code.
 type Code string

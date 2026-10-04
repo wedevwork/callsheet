@@ -33,12 +33,9 @@ var WorkspaceCoverageManifest = []CoverageEntry{
 	// only touch comments, imports, constants, variables or struct fields
 	// hold no executable block and are not listed).
 	{Group: GroupChanged, File: modulePath + "/internal/cli/cli.go", Ranges: [][2]int{{151, 151}}},
-	{Group: GroupChanged, File: modulePath + "/internal/devcheck/devcheck.go", Ranges: [][2]int{{265, 267}, {278, 283}, {372, 380}}},
-	{Group: GroupChanged, File: modulePath + "/internal/devcheck/native.go", Ranges: [][2]int{{739, 746}}},
 	{Group: GroupChanged, File: modulePath + "/internal/mcp/schemas.go", Ranges: [][2]int{{153, 245}}},
 	{Group: GroupChanged, File: modulePath + "/internal/mcp/server.go", Ranges: [][2]int{{491, 491}}},
 	{Group: GroupChanged, File: modulePath + "/internal/mcp/tools.go", Ranges: [][2]int{{142, 142}, {170, 488}}},
-	{Group: GroupChanged, File: modulePath + "/internal/plane/server.go", Ranges: [][2]int{{107, 117}, {121, 121}, {151, 151}, {161, 161}, {221, 225}, {234, 236}, {279, 282}}},
 	{Group: GroupChanged, File: modulePath + "/internal/plane/service.go", Ranges: [][2]int{{58, 62}}},
 	{Group: GroupChanged, File: modulePath + "/internal/plane/state.go", Ranges: [][2]int{{162, 162}, {208, 210}, {238, 238}, {246, 248}, {272, 272}, {278, 278}, {280, 281}}},
 	{Group: GroupChanged, File: modulePath + "/internal/plane/status.go", Ranges: [][2]int{{92, 100}}},
@@ -91,6 +88,55 @@ var WorkspaceCoverageManifest = []CoverageEntry{
 	{Group: GroupChanged, File: modulePath + "/internal/sidecar/session.go"},
 	{Group: GroupChanged, File: modulePath + "/internal/sidecar/task_process_unix.go"},
 	{Group: GroupChanged, File: modulePath + "/internal/sidecar/tasks.go"},
+
+	// Iteration 10b (base 7f2e534): every new or changed production file
+	// as a whole file (no build constraint: evaluated on both systems).
+	// The hub's task routes and the transfer package's task primitives
+	// join their package groups; everything else is GroupChanged. The
+	// 09a partial plane/server.go entry is superseded by its whole file, and
+	// the 09a partial devcheck.go and native.go entries are removed (their
+	// 09b whole-file entries remain).
+	{Group: GroupWorkspace, File: modulePath + "/internal/workspace/tasks.go"},
+	{Group: GroupTransfer, File: modulePath + "/internal/workspacetransfer/task.go"},
+	{Group: GroupTransfer, File: modulePath + "/internal/workspacetransfer/task_snapshot.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/taskworkspace/cache.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/taskworkspace/prepare.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/taskworkspace/publish.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/taskworkspace/result.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/taskpublication/service.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/contract/contract.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/contract/control.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/contract/frame.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/contract/journal.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/contract/journal_workspace.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/contract/node.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/contract/task.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/contract/task_record.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/contract/task_view.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/contract/task_workspace.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/adapter/task.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/adapter/vendor.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/client/client.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/client/node_workspace.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/plane/node_stream.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/plane/nodes.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/plane/server.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/plane/task_api.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/plane/task_controls.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/plane/task_recon.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/plane/task_workspace.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/plane/task_writer.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/plane/tasks.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/sidecar/run.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/sidecar/session_tasks.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/sidecar/sidecar.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/sidecar/state.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/sidecar/task_journal.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/sidecar/task_platform.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/sidecar/task_recovery.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/sidecar/task_workspace.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/sidecar/task_storage.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/devcheck/stress.go"},
 }
 
 // modulePath is the profile's import-path prefix.

@@ -339,7 +339,7 @@ func TestProtocolSaturation(t *testing.T) {
 	seen := map[any]bool{}
 	for range 2 {
 		a := h.answer()
-		if a.isError || a.text != `{"version":5,"nodes":[]}` {
+		if a.isError || a.text != `{"version":6,"nodes":[]}` {
 			t.Fatalf("answer %+v", a)
 		}
 		seen[a.id] = true

@@ -71,6 +71,12 @@ var (
 		// plane and tiny fixtures; one shared production plane per
 		// process; no real subprocess).
 		"./internal/workspacetransfer",
+		// Iteration 10b: the task workspace's cache, preparation, snapshot
+		// and publication state machine, then the plane-owned publication
+		// transaction with its external plane-wiring harness, complete
+		// (fake clocks, tiny fixtures, no repeated real child).
+		"./internal/taskworkspace",
+		"./internal/taskpublication",
 	}
 	// stressSplitPackages are the packages shard's per-CPU packages, in
 	// execution order. Each left the combined -cpu=1,2,4 invocation for

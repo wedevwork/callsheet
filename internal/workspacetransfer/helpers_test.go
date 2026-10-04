@@ -516,6 +516,8 @@ func envOf(m map[string]string) Env {
 func fastDeps() *deps {
 	d := defaultDeps()
 	d.syncFD = func(int) error { return nil }
+	// Batches fall back to the per-path walk over the no-op sync.
+	d.syncBatchFD = nil
 	return d
 }
 

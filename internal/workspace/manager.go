@@ -45,6 +45,8 @@ type Manager struct {
 	mu     sync.Mutex
 	live   map[string]*handle
 	fenced bool
+	// pubs are the active task publication fences (iteration 10b).
+	pubs *fences
 
 	base   context.Context
 	cancel context.CancelFunc
@@ -73,6 +75,31 @@ type handle struct {
 // state root without workspaces/ is an empty registry.
 func Open(ctx context.Context, root string) (*Manager, error) {
 	return defaultDeps().open(ctx, root, true)
+}
+
+// OpenOptions are OpenWith's injected persistence primitives (iteration
+// 10b: the cross-store publication crash tests fail a directory sync at a
+// named boundary). The zero value is production.
+type OpenOptions struct {
+	// DirSyncFault, when non-nil, is consulted with a directory's path
+	// before its production sync; a non-nil error is returned instead of
+	// syncing.
+	DirSyncFault func(dir string) error
+}
+
+// OpenWith is Open with o's persistence primitives.
+func OpenWith(ctx context.Context, root string, o OpenOptions) (*Manager, error) {
+	d := defaultDeps()
+	if fault := o.DirSyncFault; fault != nil {
+		sync := d.syncDir
+		d.syncDir = func(f *os.File) error {
+			if err := fault(f.Name()); err != nil {
+				return err
+			}
+			return sync(f)
+		}
+	}
+	return d.open(ctx, root, true)
 }
 
 // Inspect validates root's workspaces read-only (plane status): the same
@@ -630,15 +657,34 @@ func (m *Manager) Remove(ctx context.Context, name, instance string) (contract.W
 	if m.managerFenced() {
 		return resp, fencedError()
 	}
-	if err := m.reg.Lock(ctx); err != nil {
-		return resp, opError("remove", err)
+	// Iteration 10b: a task publication between its workspace commit and
+	// its terminal record holds removal off. The fence is waited for
+	// cancellably with no lock held, and rechecked once both locks are
+	// held: a publication may have fenced and committed while this removal
+	// was queued for them (then both are released and the wait repeats).
+	var h *handle
+	for {
+		if err := m.awaitFences(ctx, name); err != nil {
+			return resp, opError("remove", err)
+		}
+		if err := m.reg.Lock(ctx); err != nil {
+			return resp, opError("remove", err)
+		}
+		hh, release, err := m.write(ctx, name, instance)
+		if err != nil {
+			m.reg.Unlock()
+			return resp, opError("remove", err)
+		}
+		if !m.Fenced(name) {
+			h = hh
+			defer m.reg.Unlock()
+			defer release()
+			break
+		}
+		release()
+		m.reg.Unlock()
+		m.d.stage("remove-refenced", ctx)
 	}
-	defer m.reg.Unlock()
-	h, release, err := m.write(ctx, name, instance)
-	if err != nil {
-		return resp, opError("remove", err)
-	}
-	defer release()
 	d := m.d
 	tok, err := d.token()
 	if err != nil {

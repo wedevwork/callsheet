@@ -104,6 +104,15 @@ func (ts *taskService) nextJobLocked(e *taskEntry, now time.Time) (job *publicat
 			e.logDirty, e.lastCheckpoint = false, now
 		}
 		return &publication{kind: "stop-intent", rec: next, live: len(next.Log.Data)}, false
+	case e.pendingPub != nil && !e.terminal():
+		// Iteration 10b: the selected publication intent, nonterminal, with
+		// the live tail (its outcome is fixed; the task awaits settlement).
+		next.Publication = e.pendingPub
+		if e.ring != nil {
+			next.Log = e.ring.snapshot()
+			e.logDirty, e.lastCheckpoint = false, now
+		}
+		return &publication{kind: "publication-intent", rec: next, live: len(next.Log.Data)}, false
 	case e.cand != nil && !e.terminal():
 		rec := e.cand.outcome.apply(next)
 		if e.cand.digest != "" {
@@ -112,6 +121,9 @@ func (ts *taskService) nextJobLocked(e *taskEntry, now time.Time) (job *publicat
 		}
 		if e.cand.kind == candRefusal {
 			rec.Candidates = ts.observeLocked(e.rec.Request.Target).cands
+		}
+		if rec.Workspace != nil {
+			rec.Publication, rec.WorkspaceResult = workspaceTerminal(rec, e.cand)
 		}
 		return &publication{kind: candKindName(e.cand.kind), rec: rec, live: len(rec.Log.Data)}, false
 	case e.late != nil && e.terminal() && e.released:
@@ -235,6 +247,8 @@ func (ts *taskService) applyLocked(e *taskEntry, job *publication, err error) {
 			e.needRunning = false
 		case "stop-intent":
 			e.pendingIntent = nil
+		case "publication-intent":
+			e.pendingPub = nil
 		case "terminal", "lost", "rejected":
 			e.cand = nil
 		case "late":
@@ -249,7 +263,7 @@ func (ts *taskService) applyLocked(e *taskEntry, job *publication, err error) {
 	default:
 		e.fault, e.retryAt = true, now.Add(storageRetry)
 		switch job.kind {
-		case "terminal", "lost", "rejected", "late", "stop-intent":
+		case "terminal", "lost", "rejected", "late", "stop-intent", "publication-intent":
 			e.commitFailed = true
 		case "checkpoint":
 			e.logDirty = true
@@ -329,6 +343,8 @@ func (ts *taskService) tick() {
 			ts.wakeLocked(e)
 		}
 	}
+	// Iteration 10b: a workspace preparation past its deadline is refused.
+	ts.expirePreparationsLocked(now)
 	ts.mu.Unlock()
 	if resync {
 		ts.resyncStore()

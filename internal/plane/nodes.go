@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/wedevwork/callsheet/internal/contract"
+	"github.com/wedevwork/callsheet/internal/taskpublication"
 	"github.com/wedevwork/callsheet/internal/workspace"
 )
 
@@ -28,7 +29,10 @@ type nodeService struct {
 	tasks *taskService
 	// ws serves the workspace control API and git transport (iteration
 	// 09a); nil serves neither.
-	ws     *workspace.Manager
+	ws *workspace.Manager
+	// pub is the workspace publication state machine (iteration 10b); nil
+	// serves no publication or node transfer route.
+	pub    *taskpublication.Service
 	clock  nodeClock
 	logger *slog.Logger
 	caPEM  []byte

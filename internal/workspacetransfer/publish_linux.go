@@ -17,3 +17,12 @@ func renameNoReplaceAt(fromDir int, from string, toDir int, to string) error {
 
 // fsyncFD makes an open file's or directory's content durable.
 func fsyncFD(fd int) error { return unix.Fsync(fd) }
+
+// syncBatch makes a batch of new files and directories below dirFD durable
+// together (iteration 10b task databases): one syncfs(2) of their
+// filesystem writes every dirty inode, data and directory entry back, so
+// a thousand loose objects cost one flush instead of a journal commit
+// each. The paths are already on that filesystem.
+func syncBatch(dirFD int, files, dirs []string) error {
+	return unix.Syncfs(dirFD)
+}
