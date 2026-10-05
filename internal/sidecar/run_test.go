@@ -156,11 +156,12 @@ func TestBackoffAndTimers(t *testing.T) {
 // TestReconnectUnavailable: an absent plane is retried forever on the
 // capped schedule; Run never exits for it.
 func TestReconnectUnavailable(t *testing.T) {
-	ln, _ := net.Listen("tcp", "127.0.0.1:0")
-	addr := ln.Addr().String()
-	ln.Close()
+	// The fixture plane serves only its CA. The dial target is held and
+	// refusing for the whole test: a released ephemeral port could be
+	// rebound by that fixture, and the sidecar would then complete the
+	// handshake and wait for hello_ok on the fake clock.
 	fp := startFakePlane(t)
-	f := startFakeRun(t, nil, "https://"+addr, fp.caPEM)
+	f := startFakeRun(t, nil, "https://"+testkit.RefusingAddr(t), fp.caPEM)
 	f.ev.await(t, evStarted)
 	for i := range 8 {
 		ev := f.ev.await(t, evEnded)
