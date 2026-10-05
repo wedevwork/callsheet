@@ -90,8 +90,13 @@ func (rs *roleSession) answerStart(rid, taskID string, e *startEntry) {
 		// A duplicate of an answered start: its recorded outcome.
 		rs.reply = &reply{typ: contract.FrameTaskStartResult, id: rid, body: contract.TaskStartResult{TaskID: taskID, Preparing: e.preparing}}
 	default:
+		// A workspace start's worker replaces the deadline under w.mu
+		// (prepareWorkspace) concurrently with this read.
+		e.w.mu.Lock()
+		deadline := e.w.deadline
+		e.w.mu.Unlock()
 		rs.pend = &pendingStart{id: rid, w: e.w, e: e}
-		rs.pend.timer.set(rs.d.clock, e.w.deadline)
+		rs.pend.timer.set(rs.d.clock, deadline)
 	}
 }
 
