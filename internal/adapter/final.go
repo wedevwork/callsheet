@@ -9,17 +9,22 @@ import (
 	"github.com/wedevwork/callsheet/internal/contract"
 )
 
-// Vendor final-message extraction (iteration 08). Both extractors bound
-// what they keep by MaxVendorFinalBytes, own every retained byte, seal at
-// Finish (idempotent, owned values) and ignore Feed afterwards.
+// Vendor final-message extraction (iteration 08, extended by iteration
+// 11). Every extractor bounds what it keeps by MaxVendorFinalBytes, owns
+// every retained byte, seals at Finish (idempotent, owned values) and
+// ignores Feed afterwards.
 
-// claudeExtractor buffers Claude's stdout (at most MaxVendorFinalBytes)
-// and at Finish requires exactly one UTF-8 JSON object followed only by
-// whitespace: no duplicate top-level key, "type" the string "result",
-// "is_error" a boolean and "result" a string, returned exactly (an empty
-// string included) even when is_error is true. Unknown metadata fields are
-// ignored and never decide the task's status. Overflow discards the input
-// and reports FinalTooLarge; anything else malformed FinalInvalid.
+// claudeExtractor buffers a stdout JSON result document (at most
+// MaxVendorFinalBytes) and at Finish requires exactly one UTF-8 JSON
+// object followed only by whitespace: no duplicate top-level key, "type"
+// the string "result", "is_error" a boolean and "result" a string,
+// returned exactly (an empty string included) even when is_error is true.
+// Unknown metadata fields (subtype, usage included) are ignored and never
+// decide the task's status. Overflow discards the input and reports
+// FinalTooLarge; anything else malformed (empty stdout included)
+// FinalInvalid. It is the common result schema of Claude's stdout and
+// (iteration 11) Cursor's captured json output: Cursor's extractor is this
+// one, with no Grok shape, plain text or stream event accepted.
 type claudeExtractor struct {
 	buf    []byte
 	over   bool
@@ -134,6 +139,110 @@ func parseClaudeResult(b []byte) (string, bool) {
 		return "", false
 	}
 	return *result, true
+}
+
+// grokExtractor (iteration 11) buffers Grok's stdout (at most
+// MaxVendorFinalBytes) and at Finish requires exactly one UTF-8 JSON object
+// followed only by whitespace, with no duplicate top-level key, in one of
+// two mutually exclusive shapes: normal, a string "text" and a string
+// "stopReason" (any value: it has no lifecycle meaning) and neither "type"
+// nor "message", whose answer is the decoded text; or error, "type" the
+// string "error" and a string "message" and neither "text" nor
+// "stopReason", whose answer is the decoded message. Either may be empty.
+// Other metadata (thought, usage, session and request IDs, modelUsage) is
+// ignored and never extracted; it stays in the bounded stdout log only.
+// Overflow reports FinalTooLarge; anything else malformed, a missing, null
+// or wrong-typed required field and an ambiguous mixture FinalInvalid. A
+// stopReason of cancelled is not a Callsheet cancellation.
+type grokExtractor struct {
+	buf    []byte
+	over   bool
+	sealed bool
+	out    FinalMessage
+}
+
+func (g *grokExtractor) Feed(b []byte) {
+	if g.sealed || g.over || len(b) == 0 {
+		return
+	}
+	if len(b) > MaxVendorFinalBytes-len(g.buf) {
+		g.over, g.buf = true, nil
+		return
+	}
+	g.buf = append(g.buf, b...)
+}
+
+func (g *grokExtractor) Finish() FinalMessage {
+	if !g.sealed {
+		g.sealed = true
+		switch {
+		case g.over:
+			g.out = FinalMessage{Error: FinalTooLarge}
+		default:
+			if s, ok := parseGrokResult(g.buf); ok {
+				g.out = truncatedMessage(s)
+			} else {
+				g.out = FinalMessage{Error: FinalInvalid}
+			}
+		}
+		g.buf = nil
+	}
+	return g.out.clone()
+}
+
+// grokField is one of Grok's four shape fields: present, and its decoded
+// string when it is one.
+type grokField struct {
+	present, str bool
+	s            string
+}
+
+// parseGrokResult decodes Grok's one JSON object strictly.
+func parseGrokResult(b []byte) (string, bool) {
+	if !utf8.Valid(b) || !pairedEscapes(b) {
+		return "", false
+	}
+	dec := json.NewDecoder(bytes.NewReader(b))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return "", false
+	}
+	seen := map[string]bool{}
+	fields := map[string]*grokField{"text": {}, "stopReason": {}, "type": {}, "message": {}}
+	for dec.More() {
+		tok, err := dec.Token()
+		key, ok := tok.(string)
+		if err != nil || !ok || seen[key] {
+			return "", false
+		}
+		seen[key] = true
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err != nil {
+			return "", false
+		}
+		if f, ok := fields[key]; ok {
+			f.present = true
+			f.s, f.str = contract.JSONString(raw)
+		}
+	}
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('}') {
+		return "", false
+	}
+	// Only whitespace may follow the object.
+	if _, err := dec.Token(); err != io.EOF {
+		return "", false
+	}
+	text, stop, typ, msg := fields["text"], fields["stopReason"], fields["type"], fields["message"]
+	switch {
+	case text.present || stop.present:
+		if text.str && stop.str && !typ.present && !msg.present {
+			return text.s, true
+		}
+	case typ.present || msg.present:
+		if typ.str && typ.s == "error" && msg.str {
+			return msg.s, true
+		}
+	}
+	return "", false
 }
 
 // pairedEscapes reports whether every \u surrogate escape in the JSON text

@@ -279,10 +279,13 @@ func TestCodexFinal(t *testing.T) {
 	}
 }
 
-// BenchmarkVendorFinal measures both vendor extractors over the captured
+// BenchmarkVendorFinal measures every vendor extractor over the captured
 // outputs, near-limit valid inputs and oversized inputs at chunk sizes 1,
 // 4096 and 65536, checking the exact answer, truncation or error code and
-// that nothing is retained after sealing or overflow.
+// that nothing is retained after sealing or overflow. Iteration 11 adds
+// Grok's success, error and cancelled captures, Cursor's result and absent
+// output, and synthetic near-8-MiB valid and oversized Grok and Cursor
+// documents.
 func BenchmarkVendorFinal(b *testing.B) {
 	captured := readCapture(b, "runs-scratch/claude-stdin-success/stdout.bin")
 	nearDoc := claudeDoc(false, strings.Repeat("a", MaxVendorFinalBytes-128))
@@ -290,6 +293,15 @@ func BenchmarkVendorFinal(b *testing.B) {
 	pong := readCapture(b, "runs-scratch/codex-skip-success/final.saved.txt")
 	cap64 := bytes.Repeat([]byte("é"), contract.MaxFinalMessageBytes/2)
 	big := bytes.Repeat([]byte("ab"), MaxVendorFinalBytes/2)
+	grokSuccess := wave2Capture(b, "runs/grok-stdin-success/stdout.bin")
+	grokError := wave2Capture(b, "runs/grok-stdin-fail/stdout.bin")
+	grokCancelled := wave2Capture(b, "runs/grok-shell-home/stdout.bin")
+	var cancelledDoc struct{ Text string }
+	json.Unmarshal(grokCancelled, &cancelledDoc)
+	grokNear := grokDoc(strings.Repeat("é", (MaxVendorFinalBytes-256)/2))
+	grokOver := append(slices.Clone(grokNear), bytes.Repeat([]byte(" "), MaxVendorFinalBytes-len(grokNear)+1)...)
+	cursorResult := wave2Capture(b, "runs/cursor-stdin-success/stdout.bin")
+	cursorOver := append(slices.Clone(nearDoc), bytes.Repeat([]byte(" "), MaxVendorFinalBytes-len(nearDoc)+1)...)
 	cases := []struct {
 		name  string
 		a     Adapter
@@ -306,6 +318,21 @@ func BenchmarkVendorFinal(b *testing.B) {
 		{"codex/8MiB", NewCodex(""), big, func(m FinalMessage) bool {
 			return m.Truncated && len(*m.Message) == contract.MaxFinalMessageBytes && m.Error == ""
 		}},
+		{"grok/success", NewGrok(""), grokSuccess, func(m FinalMessage) bool { return finalOf(m) == "pong" && !m.Truncated }},
+		{"grok/error", NewGrok(""), grokError, func(m FinalMessage) bool { return finalOf(m) == grokFailMessage && !m.Truncated }},
+		{"grok/cancelled", NewGrok(""), grokCancelled, func(m FinalMessage) bool {
+			return cancelledDoc.Text != "" && finalOf(m) == cancelledDoc.Text && !m.Truncated
+		}},
+		{"grok/near-8MiB", NewGrok(""), grokNear, func(m FinalMessage) bool {
+			return m.Truncated && len(*m.Message) == contract.MaxFinalMessageBytes && utf8.ValidString(*m.Message) && m.Error == ""
+		}},
+		{"grok/oversized", NewGrok(""), grokOver, func(m FinalMessage) bool { return m.Message == nil && m.Error == FinalTooLarge }},
+		{"cursor/result", NewCursor(""), cursorResult, func(m FinalMessage) bool { return finalOf(m) == "pong" && !m.Truncated }},
+		{"cursor/absent", NewCursor(""), nil, func(m FinalMessage) bool { return m.Message == nil && m.Error == FinalInvalid }},
+		{"cursor/near-8MiB", NewCursor(""), nearDoc, func(m FinalMessage) bool {
+			return m.Truncated && len(*m.Message) == contract.MaxFinalMessageBytes && m.Error == ""
+		}},
+		{"cursor/oversized", NewCursor(""), cursorOver, func(m FinalMessage) bool { return m.Message == nil && m.Error == FinalTooLarge }},
 	}
 	for _, c := range cases {
 		for _, size := range []int{1, 4096, 65536} {
@@ -326,6 +353,10 @@ func BenchmarkVendorFinal(b *testing.B) {
 						if x.buf != nil {
 							b.Fatal("claude retained its buffer after sealing")
 						}
+					case *grokExtractor:
+						if x.buf != nil {
+							b.Fatal("grok retained its buffer after sealing")
+						}
 					case *rawExtractor:
 						if x.kept != nil {
 							b.Fatal("codex retained its prefix after sealing")
@@ -341,14 +372,44 @@ func BenchmarkVendorFinal(b *testing.B) {
 	}
 }
 
-// BenchmarkVendorInvocation measures building both vendors' invocations
-// with a small and the maximum legal prompt, checking the literal argv and
-// that stdin is an owned copy.
+// BenchmarkVendorInvocation measures building Claude's and Codex's
+// invocations with a small and the maximum legal prompt, checking the
+// literal argv and that stdin is an owned copy; iteration 11 adds Grok's
+// with a small and the 32 KiB prompt (the prompt the last, owned argv
+// element, stdin empty) and Cursor's refusal (a zero Invocation).
 func BenchmarkVendorInvocation(b *testing.B) {
 	scratch := "/tmp/callsheet-task-" + taskID + "-1"
+	for _, size := range []int{64, MaxGrokPromptBytes} {
+		prompt := bytes.Repeat([]byte("p"), size)
+		b.Run("grok/prompt="+itoa(size), func(b *testing.B) {
+			grok := NewGrok("")
+			b.SetBytes(int64(size))
+			b.ReportAllocs()
+			for b.Loop() {
+				inv, err := grok.Invocation(TaskInput{TaskID: taskID, Model: "grok-4.7", Effort: "low", Prompt: prompt, ScratchDir: scratch})
+				if err != nil || len(inv.Argv) != 10 || inv.Argv[9] != string(prompt) || inv.Stdin != nil || inv.Argv[3] != "grok-4.7" {
+					b.Fatalf("grok invocation %v", err)
+				}
+			}
+		})
+	}
+	b.Run("cursor/refused", func(b *testing.B) {
+		cursor := NewCursor("")
+		prompt := []byte("Reply with exactly the single word pong.")
+		b.ReportAllocs()
+		for b.Loop() {
+			inv, err := cursor.Invocation(TaskInput{TaskID: taskID, Model: "grok-4.7", Effort: "low", Prompt: prompt, ScratchDir: scratch})
+			if err == nil || inv.Argv != nil || inv.Stdin != nil {
+				b.Fatalf("cursor invocation %+v %v", inv, err)
+			}
+		}
+	})
 	for _, size := range []int{64, contract.MaxPromptBytes} {
 		prompt := bytes.Repeat([]byte("p"), size)
-		for _, q := range Qualifications() {
+		for _, q := range Qualifications()[:2] {
+			if q.ID != ClaudeID && q.ID != CodexID {
+				b.Fatalf("qualification order %+v", Qualifications())
+			}
 			a, _ := Builtin("").Lookup(q.ID)
 			b.Run(q.ID+"/prompt="+itoa(size), func(b *testing.B) {
 				b.SetBytes(int64(size))

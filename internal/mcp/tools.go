@@ -700,7 +700,7 @@ func (a roleSetArgs) patch() (contract.RolePatch, error) {
 	}
 	if p.Adapter != nil {
 		if _, known := adapter.Lookup()(*p.Adapter); !known {
-			return p, contract.RoleError(contract.CodeInvalidArgument, a.ID, "", "adapter", "", "unknown adapter; registered adapters: claude, codex, fake")
+			return p, contract.RoleError(contract.CodeInvalidArgument, a.ID, "", "adapter", "", "unknown adapter; registered adapters: claude, codex, cursor, fake, grok")
 		}
 	}
 	return p, nil

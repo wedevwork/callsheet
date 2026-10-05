@@ -148,14 +148,16 @@ type scenario struct {
 	ExpectedArgv  []string `json:"expected_argv"`
 	Normalization string   `json:"normalization"`
 	ExpectedStdin *string  `json:"expected_stdin"`
-	Capture       string   `json:"capture"`
-	Synthetic     bool     `json:"synthetic"`
-	Stdout        *string  `json:"stdout"`
-	Stderr        *string  `json:"stderr"`
-	Exit          *int     `json:"exit"`
-	FinalMode     string   `json:"final_mode"`
-	Final         string   `json:"final"`
-	Hold          bool     `json:"hold"`
+	// ExpectedPrompt (iteration 11) is Grok's exact -p value.
+	ExpectedPrompt *string `json:"expected_prompt"`
+	Capture        string  `json:"capture"`
+	Synthetic      bool    `json:"synthetic"`
+	Stdout         *string `json:"stdout"`
+	Stderr         *string `json:"stderr"`
+	Exit           *int    `json:"exit"`
+	FinalMode      string  `json:"final_mode"`
+	Final          string  `json:"final"`
+	Hold           bool    `json:"hold"`
 }
 
 // productionArgv is the vendor's qualified argv, the final path a
@@ -451,6 +453,7 @@ type launch struct {
 	Cwd      string   `json:"cwd"`
 	CwdMode  string   `json:"cwd_mode"`
 	Stdin    []byte   `json:"stdin"`
+	Prompt   []byte   `json:"prompt"`
 	TaskID   string   `json:"task_id"`
 	Scenario string   `json:"scenario"`
 	Final    string   `json:"final"`
@@ -1402,7 +1405,7 @@ func TestRealAdapterSmokeGate(t *testing.T) {
 				t.Fatalf("%s: %+v", path, d)
 			}
 		}
-		if d := g.Vendor("grok"); d.Fail == "" {
+		if d := g.Vendor("unknown-vendor"); d.Fail == "" || !strings.Contains(d.Fail, "unknown vendor") {
 			t.Fatalf("an unknown vendor: %+v", d)
 		}
 	})

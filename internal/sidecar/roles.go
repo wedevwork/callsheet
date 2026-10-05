@@ -34,12 +34,28 @@ const FakeAdapterWarning = "fake adapter enabled: test/demo adapter; never calls
 // macOS starts with the Claude or Codex adapter enabled (iteration 08).
 const DarwinVendorWarning = "claude/codex adapter enabled on macOS: the worker recipe is Linux-qualified and macOS vendor sandbox and exit behavior are UNVERIFIED; consult the support catalog before production use"
 
+// CursorVendorWarning is the fixed warning logged once when a sidecar
+// starts with the Cursor adapter enabled (iteration 11).
+const CursorVendorWarning = "cursor adapter enabled for version probing only: unattended worker execution is refused because no qualified recipe preserves the operator posture; consult the support catalog"
+
+// GrokVendorWarning is the fixed warning logged once when a sidecar starts
+// with the Grok adapter enabled (iteration 11); on macOS the same single
+// warning carries " " + GrokDarwinWarningSuffix.
+const GrokVendorWarning = "grok adapter enabled: prompts are passed in argv and may be visible to process inspection; the composed prompt limit is 32 KiB; dontAsk cancelled all measured writes, including permitted writes; exit 0 does not prove requested work completed"
+
+// GrokDarwinWarningSuffix completes GrokVendorWarning on macOS.
+const GrokDarwinWarningSuffix = "grok worker execution on macOS is refused pending qualification; consult the support catalog"
+
 // roleEnv is the worker's role configuration for one Run: the adapter
-// registry and the enabled executables (adapter ID to absolute path),
-// never sent to the plane.
+// registry, the enabled executables (adapter ID to absolute path), never
+// sent to the plane, and (iteration 11) goos, the OS the worker posture is
+// decided for: in production only Run's validated RunOptions.GOOS. Role
+// checks and task preparation read it; task filesystem and platform
+// operations keep the supervisor's native platform.
 type roleEnv struct {
 	adapters    adapter.Registry
 	executables map[string]string
+	goos        string
 }
 
 func (e roleEnv) lookup() contract.AdapterLookup { return adapter.ContractLookup(e.adapters) }
@@ -111,7 +127,12 @@ func openManual(p string) (*os.File, error) {
 	return os.OpenFile(p, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 }
 
-// probe runs the adapter's probe of its enabled executable.
+// probe runs the adapter's probe of its enabled executable, then
+// (iteration 11) checks the worker posture for env.goos: a probe error
+// keeps its precedence, and a refused posture (Cursor everywhere, Grok
+// outside Linux) is invalid_argument, field adapter, reason probe_failed
+// with the fixed posture text, so candidate validation and every
+// ready-check cycle refuse it however the version matches.
 func (d *deps) probe(ctx context.Context, env roleEnv, adapterID string) error {
 	exe, ok := env.executables[adapterID]
 	if !ok {
@@ -134,6 +155,9 @@ func (d *deps) probe(ctx context.Context, env roleEnv, adapterID string) error {
 			reason = pe.Error()
 		}
 		return checkError("adapter", contract.ReasonProbeFailed, "the %s adapter cannot be invoked on this node: %s", adapterID, reason)
+	}
+	if err := adapter.ValidateWorkerPosture(adapterID, env.goos); err != nil {
+		return checkError("adapter", contract.ReasonProbeFailed, "%s", err.Error())
 	}
 	return nil
 }

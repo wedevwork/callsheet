@@ -424,19 +424,68 @@ var nativeRequired = []string{
 	"TestWorkspaceTaskMCP",
 	"TestWorkspaceMultiHop",
 	"TestWorkspaceOperatorWorkflow",
+	// Iteration 11 (real adapters, wave 2: Grok and Cursor): the nine
+	// function parents in FP order (FP-1..FP-9), a separate group after the
+	// 10c names, each followed by its mandatory direct subtests in the
+	// design's order; absence or a skip never satisfies native
+	// qualification.
+	"TestWave2Registration",
+	"TestWave2Registration/registry",
+	"TestWave2Registration/paths",
+	"TestWave2Registration/selection",
+	"TestWave2Registration/posture",
+	"TestWave2Probe",
+	"TestWave2Probe/grok",
+	"TestWave2Probe/cursor",
+	"TestWave2Probe/refusal",
+	"TestWave2Invocation",
+	"TestWave2Invocation/grok",
+	"TestWave2Invocation/cursor-refused",
+	"TestWave2Invocation/prompt",
+	"TestWave2GrokFinal",
+	"TestWave2GrokFinal/success",
+	"TestWave2GrokFinal/error",
+	"TestWave2GrokFinal/cancelled",
+	"TestWave2GrokFinal/malformed",
+	"TestWave2CursorFinal",
+	"TestWave2CursorFinal/success",
+	"TestWave2CursorFinal/absent",
+	"TestWave2CursorFinal/malformed",
+	"TestWave2CursorFinal/blocked",
+	"TestWave2Outcomes",
+	"TestWave2Outcomes/exits",
+	"TestWave2Outcomes/controls",
+	"TestWave2Outcomes/refusal",
+	"TestWave2Outcomes/retry",
+	"TestWave2Catalog",
+	"TestWave2Catalog/recipes",
+	"TestWave2Catalog/evidence",
+	"TestWave2Catalog/ownership",
+	"TestWave2Dispatch",
+	"TestWave2Dispatch/grok",
+	"TestWave2Dispatch/cursor-refused",
+	"TestWave2Dispatch/no-vendors",
+	"TestWave2SmokeGate",
+	"TestWave2SmokeGate/default-off",
+	"TestWave2SmokeGate/ci-off",
+	"TestWave2SmokeGate/absent",
+	"TestWave2SmokeGate/enabled",
+	"TestWave2SmokeGate/posture",
 }
 
 // NativeTaskProcessPackage and nativeTaskProcess are the separate native
 // tuple (iteration 05): the real task-process qualification must run and
 // pass in the sidecar's own package within the same full-suite stream.
 // Iteration 08 appends its realadaptercheck-tagged sidecar contract and its
-// five subtests: the native command compiles the tag, and names passing in
-// tests/function never satisfy these.
+// five subtests, and iteration 11 that contract's four wave-2 subtests
+// (direct subtests of the same parent): the native command compiles the
+// tag, and names passing in tests/function never satisfy these.
 const NativeTaskProcessPackage = "github.com/wedevwork/callsheet/internal/sidecar"
 
 var nativeTaskProcess = []string{"TestTaskExecutionContract", "TestTaskExecutionContract/process",
 	"TestRealAdapterLocal", "TestRealAdapterLocal/selection", "TestRealAdapterLocal/file", "TestRealAdapterLocal/ordering",
-	"TestRealAdapterLocal/diagnostic", "TestRealAdapterLocal/restart"}
+	"TestRealAdapterLocal/diagnostic", "TestRealAdapterLocal/restart",
+	"TestRealAdapterLocal/wave2-posture", "TestRealAdapterLocal/wave2-invocation", "TestRealAdapterLocal/wave2-outcomes", "TestRealAdapterLocal/wave2-retry"}
 
 // RealAdapterTag is iteration 08's ordinary-only build tag: it adds the
 // sidecar's TestRealAdapterLocal and BenchmarkRealAdapterFile to the

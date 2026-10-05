@@ -21,7 +21,7 @@ import (
 const (
 	trustUsage   = "--plane URL (--ca FILE | --ca-fingerprint SHA256)"
 	enrollUsage  = trustUsage + " [--state-dir PATH]"
-	sidecarUsage = "[--state-dir PATH] [--claude-adapter PATH] [--codex-adapter PATH] [--fake-adapter PATH]"
+	sidecarUsage = "[--state-dir PATH] [--claude-adapter PATH] [--codex-adapter PATH] [--grok-adapter PATH] [--cursor-adapter PATH] [--fake-adapter PATH]"
 
 	trustHelp = "  --plane URL        the plane's https origin, e.g. https://plane.example:8443; a DNS name\n" +
 		"                     or IP address the plane's certificate names (callsheet plane status)\n" +
@@ -53,6 +53,20 @@ const (
 		"                     enable the codex worker adapter with this absolute path to the\n" +
 		"                     Codex CLI executable (qualified: version codex-cli 0.159.0, model\n" +
 		"                     gpt-6.1-sol, effort low)\n" +
+		"  --grok-adapter PATH\n" +
+		"                     enable the grok worker adapter with this absolute path to the\n" +
+		"                     Grok Build executable (qualified: version grok 1.0.46\n" +
+		"                     (2765805b9442) [stable], model grok-4.7, effort low; Linux only).\n" +
+		"                     The composed prompt (at most 32 KiB) is passed in argv and may be\n" +
+		"                     visible to process inspection; dontAsk cancelled every measured\n" +
+		"                     write, so exit 0 does not prove requested work completed. On macOS\n" +
+		"                     grok roles are refused pending qualification\n" +
+		"  --cursor-adapter PATH\n" +
+		"                     enable the cursor adapter with this absolute path to the Cursor\n" +
+		"                     Agent executable (cursor-agent; known: version 2026.10.01-e373342,\n" +
+		"                     model grok-4.7, effort low) for version probing only: its roles\n" +
+		"                     are refused on every OS because no qualified unattended recipe\n" +
+		"                     preserves the operator posture\n" +
 		"  --fake-adapter PATH\n" +
 		"                     enable the fake adapter with this absolute executable path:\n" +
 		"                     test/demo adapter; never calls a model. Without it roles using\n" +
@@ -62,7 +76,9 @@ const (
 		"plane and never persisted: give it on every start. Without it roles using that\n" +
 		"adapter fail validation on this node, whatever is installed. The claude and codex\n" +
 		"recipes are qualified on Linux only; on macOS they run with a warning that vendor\n" +
-		"sandbox and exit behavior are unverified (see docs/support-catalog.md).\n\n" +
+		"sandbox and exit behavior are unverified (see docs/support-catalog.md). A grok or\n" +
+		"cursor flag is accepted even where its execution is refused, so role registration\n" +
+		"reports the precise refusal and other enabled adapters keep working.\n\n" +
 		"Connects out to the enrolled plane over verified TLS (it listens on nothing), proves\n" +
 		"the protocol version and heartbeats every 5 s, reporting each configured role's\n" +
 		"readiness (its manuals readable and its adapter executable invocable, checked locally\n" +
@@ -208,10 +224,12 @@ func sidecarEnroll(ctx context.Context, goos string, c *Command, args []string, 
 }
 
 func sidecarRun(ctx context.Context, goos string, c *Command, args []string, out, errOut io.Writer) int {
-	var fake, claude, codex single
+	var fake, claude, codex, grok, cursor single
 	f, _, code, ok := parseRemote(c, args, false, true, false, 0, errOut, func(fs *flag.FlagSet) {
 		fs.Var(&claude, "claude-adapter", "")
 		fs.Var(&codex, "codex-adapter", "")
+		fs.Var(&grok, "grok-adapter", "")
+		fs.Var(&cursor, "cursor-adapter", "")
 		fs.Var(&fake, "fake-adapter", "")
 	})
 	if !ok {
@@ -223,7 +241,7 @@ func sidecarRun(ctx context.Context, goos string, c *Command, args []string, out
 	for _, v := range []struct {
 		id string
 		f  *single
-	}{{"claude", &claude}, {"codex", &codex}} {
+	}{{"claude", &claude}, {"codex", &codex}, {"grok", &grok}, {"cursor", &cursor}} {
 		if v.f.set && (v.f.val == "" || !filepath.IsAbs(v.f.val)) {
 			return usageError(errOut, c, "--"+v.id+"-adapter must be an absolute path to the "+v.id+" executable")
 		}
@@ -234,7 +252,7 @@ func sidecarRun(ctx context.Context, goos string, c *Command, args []string, out
 	}
 	logger := logging.Component(logging.New(errOut, slog.LevelInfo), "sidecar")
 	err = runSidecar(ctx, sidecar.RunOptions{StateDir: dir, SoftwareVersion: Version, Logger: logger, FakeAdapterPath: fake.val,
-		ClaudeAdapterPath: claude.val, CodexAdapterPath: codex.val, GOOS: goos})
+		ClaudeAdapterPath: claude.val, CodexAdapterPath: codex.val, GrokAdapterPath: grok.val, CursorAdapterPath: cursor.val, GOOS: goos})
 	return planeFail(errOut, err)
 }
 

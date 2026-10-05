@@ -1,0 +1,11 @@
+/home/max/.local/bin/grok
+--output-format
+json
+--model
+does-not-exist
+--reasoning-effort
+low
+--permission-mode
+dontAsk
+-p
+Reply with exactly the single word pong. Do not call any tools.

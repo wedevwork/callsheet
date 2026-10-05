@@ -222,7 +222,8 @@ func qualifyingEvents(drop, skip string) string {
 	evs := []map[string]any{synth("start", pkg, "")}
 	for _, name := range devcheck.NativeRequiredTests() {
 		if strings.HasPrefix(name, "TestPlane") || strings.HasPrefix(name, "TestNode") || strings.HasPrefix(name, "TestRole") || strings.HasPrefix(name, "TestTask") ||
-			strings.HasPrefix(name, "TestControl") || strings.HasPrefix(name, "TestMCP") || strings.HasPrefix(name, "TestRealAdapter") || strings.HasPrefix(name, "TestWorkspace") {
+			strings.HasPrefix(name, "TestControl") || strings.HasPrefix(name, "TestMCP") || strings.HasPrefix(name, "TestRealAdapter") || strings.HasPrefix(name, "TestWorkspace") ||
+			strings.HasPrefix(name, "TestWave2") {
 			evs = append(evs, synth("run", pkg, name), synth("pass", pkg, name))
 		}
 	}

@@ -1,0 +1,1 @@
+Using only a file editing tool and not the shell, write the exact bytes permitted with no newline to canary-ok.txt in the current directory. Do not write any other file.

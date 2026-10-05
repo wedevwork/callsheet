@@ -272,10 +272,33 @@ var wsDoorRequired = []struct {
 // wsDoorNames lists every required iteration 10c name.
 func wsDoorNames() []string { return requiredNames(wsDoorRequired) }
 
+// wave2Required are iteration 11's nine wave-2 real-adapter function
+// parents in FP order (FP-1..FP-9) with their mandatory direct subtests in
+// the design's order, a separate group after the 10c names.
+var wave2Required = []struct {
+	test string
+	subs []string
+}{
+	{"TestWave2Registration", []string{"registry", "paths", "selection", "posture"}},
+	{"TestWave2Probe", []string{"grok", "cursor", "refusal"}},
+	{"TestWave2Invocation", []string{"grok", "cursor-refused", "prompt"}},
+	{"TestWave2GrokFinal", []string{"success", "error", "cancelled", "malformed"}},
+	{"TestWave2CursorFinal", []string{"success", "absent", "malformed", "blocked"}},
+	{"TestWave2Outcomes", []string{"exits", "controls", "refusal", "retry"}},
+	{"TestWave2Catalog", []string{"recipes", "evidence", "ownership"}},
+	{"TestWave2Dispatch", []string{"grok", "cursor-refused", "no-vendors"}},
+	{"TestWave2SmokeGate", []string{"default-off", "ci-off", "absent", "enabled", "posture"}},
+}
+
+// wave2Names lists every required iteration 11 name.
+func wave2Names() []string { return requiredNames(wave2Required) }
+
 // realLocal is iteration 08's tagged sidecar contract with its five
-// subtests, required in the sidecar package (NativeTaskProcessPackage).
+// subtests and iteration 11's four wave-2 subtests, required in the
+// sidecar package (NativeTaskProcessPackage).
 var realLocal = []string{"TestRealAdapterLocal", "TestRealAdapterLocal/selection", "TestRealAdapterLocal/file", "TestRealAdapterLocal/ordering",
-	"TestRealAdapterLocal/diagnostic", "TestRealAdapterLocal/restart"}
+	"TestRealAdapterLocal/diagnostic", "TestRealAdapterLocal/restart",
+	"TestRealAdapterLocal/wave2-posture", "TestRealAdapterLocal/wave2-invocation", "TestRealAdapterLocal/wave2-outcomes", "TestRealAdapterLocal/wave2-retry"}
 
 // roleNames lists every required role name, parents before subtests.
 func roleNames() []string { return requiredNames(roleRequired) }
@@ -312,7 +335,7 @@ func qualification() []evt {
 		evs = append(evs, ev("pass", NativePackage, fp6+"/"+s))
 	}
 	evs = append(evs, ev("pass", NativePackage, fp6))
-	for _, p := range append(append(append(append(append(append(append(append(append(append(append(append(append(planeRequired[:0:0], planeRequired...), nodeRequired...), roleRequired...), taskRequired...), controlRequired...), mcpRequired...), qualRequired...), realRequired...), wsRequired...), trRequired...), latRequired...), wsTaskRequired...), wsDoorRequired...) {
+	for _, p := range append(append(append(append(append(append(append(append(append(append(append(append(append(append(planeRequired[:0:0], planeRequired...), nodeRequired...), roleRequired...), taskRequired...), controlRequired...), mcpRequired...), qualRequired...), realRequired...), wsRequired...), trRequired...), latRequired...), wsTaskRequired...), wsDoorRequired...), wave2Required...) {
 		evs = append(evs, ev("run", NativePackage, p.test))
 		for _, s := range p.subs {
 			evs = append(evs, ev("run", NativePackage, p.test+"/"+s), ev("pass", NativePackage, p.test+"/"+s))
@@ -392,10 +415,10 @@ func TestNativeRealAdapterEvidence(t *testing.T) {
 	if err := check(stream(q...)); err != nil {
 		t.Fatalf("complete single-start stream: %v", err)
 	}
-	if n := len(realNames()); n != 9+30 || len(NativeTaskProcessTests()) != 8 {
-		t.Fatalf("%d iteration 08 names, %d sidecar names", n, len(NativeTaskProcessTests()))
+	if n := len(realNames()); n != 9+30 || len(NativeTaskProcessTests()) != 12 || len(wave2Names()) != 9+33 {
+		t.Fatalf("%d iteration 08 names, %d sidecar names, %d iteration 11 names", n, len(NativeTaskProcessTests()), len(wave2Names()))
 	}
-	for _, name := range realNames() {
+	for _, name := range append(realNames(), wave2Names()...) {
 		mustFail(t, "missing "+name, stream(without(without(q, "run", name), "pass", name)...), name+" has no run event", unobserved)
 		mustFail(t, "no pass "+name, stream(without(q, "pass", name)...), name+" has no pass event", unobserved)
 		mustFail(t, "skipped "+name, stream(replacing(q, "pass", name, ev("skip", NativePackage, name))...), "test "+name+" in "+NativePackage+" skipped: "+unobserved)
@@ -481,7 +504,8 @@ func TestNativeStepsAndUnsupportedOS(t *testing.T) {
 		"TestControlLateResult,TestControlLegacy,TestControlNativeGroups,TestControlNativeGroups/cooperative,TestControlNativeGroups/resistant,"+
 		"TestControlNativeGroups/orphan-restart,TestControlNativeGroups/plane-restart,"+
 		"TestControlCancellation,TestControlExecutionTimeout,TestControlBoundedWait,TestControlForceRemove,"+strings.Join(mcpNames(), ",")+","+strings.Join(qualNames(), ",")+
-		","+strings.Join(realNames(), ",")+","+strings.Join(wsNames(), ",")+","+strings.Join(trNames(), ",")+","+strings.Join(latNames(), ",")+","+strings.Join(wsTaskNames(), ",")+","+strings.Join(wsDoorNames(), ",") || len(req) != 312+11+10+2+12+6 {
+		","+strings.Join(realNames(), ",")+","+strings.Join(wsNames(), ",")+","+strings.Join(trNames(), ",")+","+strings.Join(latNames(), ",")+","+strings.Join(wsTaskNames(), ",")+","+strings.Join(wsDoorNames(), ",")+
+		","+strings.Join(wave2Names(), ",") || len(req) != 312+11+10+2+12+6+42 {
 		t.Fatalf("required = %v", req)
 	}
 	req[0] = "mutated"
@@ -1001,7 +1025,7 @@ func TestNativeQualificationEvidence(t *testing.T) {
 		t.Fatalf("complete evidence: %v", err)
 	}
 	req := NativeRequiredTests()
-	if n := len(qualNames()); n != 8+43 || len(req) != 222+n+len(realNames())+len(wsNames())+len(trNames())+len(latNames())+len(wsTaskNames())+len(wsDoorNames()) || strings.Join(req[222:273], ",") != strings.Join(qualNames(), ",") ||
+	if n := len(qualNames()); n != 8+43 || len(req) != 222+n+len(realNames())+len(wsNames())+len(trNames())+len(latNames())+len(wsTaskNames())+len(wsDoorNames())+len(wave2Names()) || strings.Join(req[222:273], ",") != strings.Join(qualNames(), ",") ||
 		strings.Join(req[145:222], ",") != strings.Join(mcpNames(), ",") {
 		t.Fatalf("%d 07b names; native suffix %v", n, req[222:])
 	}

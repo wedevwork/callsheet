@@ -1,0 +1,2 @@
+. 4096
+./canary-ok.txt 9

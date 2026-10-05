@@ -76,7 +76,7 @@ func schemaFor(name string) schema {
 			"id":          slug("The new role's unique ID (a slug of lowercase letters, digits and internal hyphens, 1-63 bytes)."),
 			"name":        slug("The logical role name; several roles may share it."),
 			"node":        nodeID("The worker node ID (see node_ls)."),
-			"adapter":     slug("A registered adapter ID: claude (Claude Code), codex (Codex CLI) or fake (a test/demo adapter that never calls a model)."),
+			"adapter":     slug("A registered adapter ID: claude (Claude Code), codex (Codex CLI), grok (Grok Build; Linux workers only), cursor (Cursor Agent; registered but its roles are refused on every OS) or fake (a test/demo adapter that never calls a model)."),
 			"instruction": roleText("Absolute path of the instruction manual on the worker node (never opened by the coordinator)."),
 			"runbook":     roleText("Absolute path of the runbook manual on the worker node (never opened by the coordinator)."),
 			"model":       roleText("Model name passed to the adapter (never inferred or defaulted); claude accepts only sonnet and codex only gpt-6.1-sol (their qualified pairs, checked by the worker node); fake: free text."),

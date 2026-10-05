@@ -1,0 +1,10 @@
+/home/max/.local/bin/grok
+--output-format
+json
+--model
+grok-4.7
+--reasoning-effort
+low
+--permission-mode
+dontAsk
+-p

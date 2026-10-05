@@ -392,3 +392,28 @@ func TestTaskDeliveryBudgets(t *testing.T) {
 		}
 	}
 }
+
+// TestWave2NativeDocs (iteration 11): docs/ci.md's Checks names every
+// wave-2 function name and tagged sidecar subtest with the new counts, and
+// keeps every earlier count.
+func TestWave2NativeDocs(t *testing.T) {
+	doc, err := os.ReadFile(filepath.Join(testkit.MustRepoRoot(t), "docs", "ci.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(doc)
+	for _, w := range []string{"42 more names, 395 in all", "with the 353 earlier names unchanged and first", "(12\nnames in all)",
+		"6 more names, 353 in all", "39 more names, 312 in all", "CI stays 18 jobs"} {
+		if !strings.Contains(s, w) {
+			t.Fatalf("docs/ci.md lacks %q", w)
+		}
+	}
+	for _, n := range append(wave2Names(), realLocal[len(realLocal)-4:]...) {
+		if !strings.Contains(s, "`"+n+"`") {
+			t.Fatalf("docs/ci.md does not name %s", n)
+		}
+	}
+	if len(NativeRequiredTests()) != 395 || len(NativeTaskProcessTests()) != 12 {
+		t.Fatalf("%d native names, %d sidecar names", len(NativeRequiredTests()), len(NativeTaskProcessTests()))
+	}
+}

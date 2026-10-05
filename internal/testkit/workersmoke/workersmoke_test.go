@@ -58,7 +58,8 @@ func TestGate(t *testing.T) {
 			t.Fatalf("%v: %+v (%d stats)", c.env, d, *n)
 		}
 	}
-	if PathEnv("claude") != "CALLSHEET_CLAUDE_PATH" || PathEnv("codex") != "CALLSHEET_CODEX_PATH" || PathEnv("grok") != "" {
+	if PathEnv("claude") != "CALLSHEET_CLAUDE_PATH" || PathEnv("codex") != "CALLSHEET_CODEX_PATH" || PathEnv("grok") != "CALLSHEET_GROK_PATH" ||
+		PathEnv("cursor") != "CALLSHEET_CURSOR_PATH" || PathEnv("unknown-vendor") != "" {
 		t.Fatal("path variables")
 	}
 	files := map[string]fs.FileMode{"/bin/claude": 0o755, "/bin/plain": 0o644, "/bin/dir": fs.ModeDir | 0o755}
@@ -74,7 +75,13 @@ func TestGate(t *testing.T) {
 		{"codex", "/bin/plain", false, "", "no executable permission bit", ""},
 		{"codex", "/bin/dir", false, "", "not a regular file", ""},
 		{"codex", "/bin/claude", false, "", "cannot be inspected", "boom"},
-		{"grok", "/bin/claude", false, "", "unknown vendor", ""},
+		{"grok", "", false, "CALLSHEET_GROK_PATH is unset", "", ""},
+		{"grok", "/bin/claude", true, "", "", ""},
+		{"grok", "grok", false, "", "CALLSHEET_GROK_PATH must be an absolute path", ""},
+		{"cursor", "/bin/missing", false, "absent on this machine", "", ""},
+		{"cursor", "/bin/plain", false, "", "no executable permission bit", ""},
+		{"cursor", "cursor-agent", false, "", "CALLSHEET_CURSOR_PATH must be an absolute path", ""},
+		{"unknown-vendor", "/bin/claude", false, "", "unknown vendor", ""},
 	} {
 		var serr error
 		if c.statE != "" {
@@ -91,6 +98,20 @@ func TestGate(t *testing.T) {
 	}
 	if !strings.Contains(Command, "-tags="+Tag+" ./tests/smoke") || OuterBound != 2*time.Minute {
 		t.Fatal("the documented command or bound changed")
+	}
+	// Iteration 11: the wave-2 command keeps the same test and tag with the
+	// Grok/Cursor variables; the posture plan is decided from the OS value.
+	if !strings.Contains(Wave2Command, "CALLSHEET_GROK_PATH=/absolute/path/to/grok \\\n") || !strings.Contains(Wave2Command, "CALLSHEET_CURSOR_PATH=/absolute/path/to/cursor-agent \\\n") ||
+		!strings.HasSuffix(Wave2Command, "go test -tags="+Tag+" ./tests/smoke -run '^TestRealWorkerSmoke$' -count=1 -timeout=5m") {
+		t.Fatal("the wave-2 command changed")
+	}
+	for _, c := range []struct {
+		vendor, goos string
+		refused      bool
+	}{{"grok", "linux", false}, {"grok", "darwin", true}, {"cursor", "linux", true}, {"cursor", "darwin", true}, {"claude", "darwin", false}, {"codex", "linux", false}} {
+		if Refused(c.vendor, c.goos) != c.refused {
+			t.Fatalf("Refused(%s, %s) = %v", c.vendor, c.goos, !c.refused)
+		}
 	}
 }
 
@@ -180,8 +201,8 @@ func TestDeployment(t *testing.T) {
 		t.Fatalf("run %+v %q %v", sm.res.View, sm.res.Logs, sm.err)
 	}
 	// Refusals: an unqualified vendor, a missing role, a broken binary.
-	if err := d.AddVendorRole(ctx, "x", "grok", s.NodeID, ins, run, 1); err == nil {
-		t.Fatal("an unqualified vendor was registered")
+	if err := d.AddVendorRole(ctx, "x", "unknown-vendor", s.NodeID, ins, run, 1); err == nil || err.Error() != "unknown-vendor is not a qualified vendor" {
+		t.Fatalf("an unqualified vendor: %v", err)
 	}
 	if _, err := d.Dispatch(ctx, "nobody", "g", time.Second); err == nil {
 		t.Fatal("a dispatch to a missing role succeeded")

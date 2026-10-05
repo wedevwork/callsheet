@@ -1,0 +1,6 @@
+/home/max/.local/bin/cursor-agent
+-p
+--output-format
+json
+--model
+grok-4.7-low
