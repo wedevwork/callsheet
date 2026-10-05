@@ -63,9 +63,17 @@ type RunOptions struct {
 	// empty disables that vendor on this node whatever is installed.
 	ClaudeAdapterPath string
 	CodexAdapterPath  string
+	// GrokAdapterPath and CursorAdapterPath (iteration 11) enable the Grok
+	// and Cursor adapters likewise (absolute paths, validated here as for
+	// the CLI). Enablement is not eligibility: Grok executes on Linux only
+	// and Cursor is version-probed but refused on every OS
+	// (adapter.ValidateWorkerPosture, decided from GOOS).
+	GrokAdapterPath   string
+	CursorAdapterPath string
 	// GOOS is the host OS the CLI's runtime entrypoint supplies
 	// (iteration 05): task execution decisions take it explicitly; an
-	// empty or unsupported value refuses every task start.
+	// empty or unsupported value refuses every task start. Since
+	// iteration 11 it also decides the worker posture (roleEnv.goos).
 	GOOS string
 }
 

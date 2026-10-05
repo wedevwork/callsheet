@@ -1,0 +1,1082 @@
+{
+  "provenance": "Byte-identical copies of the coordinator's Linux qualification captures of 2026-10-04 (iteration 11: Grok and Cursor) and of the same session's Grok/Cursor --help and --version captures; this manifest records provenance, not a new run.",
+  "source_root": "design/iterations/11-real-adapters/design-check",
+  "files": [
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/NOTES.md",
+      "source": "linux-2026-10-04/NOTES.md",
+      "bytes": 4492,
+      "sha256": "90962508389f0efdf299711ef9b2da437de3a7e92adcf3144e268e45de1cf37c"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/host.txt",
+      "source": "linux-2026-10-04/host.txt",
+      "bytes": 222,
+      "sha256": "77646f074f4e38d56effcc2223318aa815490c780a13c516e4dde5617757acae"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/grok-models.txt",
+      "source": "linux-2026-10-04/grok-models.txt",
+      "bytes": 150,
+      "sha256": "761b89325e8ad709b7b3db273ba1b0427f82d046bdbc5bb26be46af8e4516995"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/cursor-models.txt",
+      "source": "linux-2026-10-04/cursor-models.txt",
+      "bytes": 12145,
+      "sha256": "5860d20488482ac73ee8cb9a2bcdf7852b68dabd3e2269c73f597571dd9de150"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-baseline-home/argv.txt",
+      "source": "linux-2026-10-04/runs/cursor-baseline-home/argv.txt",
+      "bytes": 79,
+      "sha256": "d431588287a39dda9a22cfe185e6e450f5e57798e39512a0a09d6de890031cfc"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-baseline-home/exit.txt",
+      "source": "linux-2026-10-04/runs/cursor-baseline-home/exit.txt",
+      "bytes": 2,
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-baseline-home/pwd.txt",
+      "source": "linux-2026-10-04/runs/cursor-baseline-home/pwd.txt",
+      "bytes": 52,
+      "sha256": "01fa4b09f0bef4eacf99fb19cadc8cd9e4618fec597b0e371c2e12339c83f777"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-baseline-home/scratch.txt",
+      "source": "linux-2026-10-04/runs/cursor-baseline-home/scratch.txt",
+      "bytes": 7,
+      "sha256": "f20095e6f8cea5167a3b27674660f394beae97c8222b097e97a8a4abdcb16fd3"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-baseline-home/stderr.bin",
+      "source": "linux-2026-10-04/runs/cursor-baseline-home/stderr.bin",
+      "bytes": 342,
+      "sha256": "10d9caae81bfd56b215b5c3efe0388a62fd93425bf0849aa22943a7b414afe85"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-baseline-home/stdin.txt",
+      "source": "linux-2026-10-04/runs/cursor-baseline-home/stdin.txt",
+      "bytes": 176,
+      "sha256": "46e3f2029ba6109783d381ff9849e542ec5dfddbb426b3f34099c517c0b59f34"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-baseline-home/stdout.bin",
+      "source": "linux-2026-10-04/runs/cursor-baseline-home/stdout.bin",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-baseline-permitted/argv.txt",
+      "source": "linux-2026-10-04/runs/cursor-baseline-permitted/argv.txt",
+      "bytes": 79,
+      "sha256": "d431588287a39dda9a22cfe185e6e450f5e57798e39512a0a09d6de890031cfc"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-baseline-permitted/exit.txt",
+      "source": "linux-2026-10-04/runs/cursor-baseline-permitted/exit.txt",
+      "bytes": 2,
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-baseline-permitted/pwd.txt",
+      "source": "linux-2026-10-04/runs/cursor-baseline-permitted/pwd.txt",
+      "bytes": 57,
+      "sha256": "b41281b74e94fe0ec141b0aa4b1762923f5219e07a210f1eee141c24b8fe9523"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-baseline-permitted/scratch.txt",
+      "source": "linux-2026-10-04/runs/cursor-baseline-permitted/scratch.txt",
+      "bytes": 7,
+      "sha256": "f20095e6f8cea5167a3b27674660f394beae97c8222b097e97a8a4abdcb16fd3"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-baseline-permitted/stderr.bin",
+      "source": "linux-2026-10-04/runs/cursor-baseline-permitted/stderr.bin",
+      "bytes": 347,
+      "sha256": "3e2b5391171fbf7b14af6982a6e26c43030222c3fd8bcec52b29466f7b7db356"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-baseline-permitted/stdin.txt",
+      "source": "linux-2026-10-04/runs/cursor-baseline-permitted/stdin.txt",
+      "bytes": 141,
+      "sha256": "736470b4081405b437493ffa5c47148c0fb955e2ddab870dc033504997cd1aeb"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-baseline-permitted/stdout.bin",
+      "source": "linux-2026-10-04/runs/cursor-baseline-permitted/stdout.bin",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-edit-home/argv.txt",
+      "source": "linux-2026-10-04/runs/cursor-edit-home/argv.txt",
+      "bytes": 95,
+      "sha256": "165517b68f229521f27cb9e854736625c7d96d0acce85d4ed143e14ca8fcf78a"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-edit-home/escape-home.txt",
+      "source": "linux-2026-10-04/runs/cursor-edit-home/escape-home.txt",
+      "bytes": 7,
+      "sha256": "31207a2065f46a5b948fce6fe5c13e85abaf5631e2f894b47dcd4fce14f6c57b"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-edit-home/exit.txt",
+      "source": "linux-2026-10-04/runs/cursor-edit-home/exit.txt",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-edit-home/pwd.txt",
+      "source": "linux-2026-10-04/runs/cursor-edit-home/pwd.txt",
+      "bytes": 48,
+      "sha256": "89f586e16f3aa24de607763f630fb317399faa31c7216ec967f3933d315f0760"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-edit-home/scratch.txt",
+      "source": "linux-2026-10-04/runs/cursor-edit-home/scratch.txt",
+      "bytes": 7,
+      "sha256": "f20095e6f8cea5167a3b27674660f394beae97c8222b097e97a8a4abdcb16fd3"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-edit-home/stderr.bin",
+      "source": "linux-2026-10-04/runs/cursor-edit-home/stderr.bin",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-edit-home/stdin.txt",
+      "source": "linux-2026-10-04/runs/cursor-edit-home/stdin.txt",
+      "bytes": 203,
+      "sha256": "e71828d866c2a92a380120865e814371187e7a39b33e406e7957c774948f7707"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-edit-home/stdout.bin",
+      "source": "linux-2026-10-04/runs/cursor-edit-home/stdout.bin",
+      "bytes": 540,
+      "sha256": "f18ba2cfb8550c31ebe53c53c39efc9c6759733f0b0f7a003a7377946aa0581b"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-edit-permitted/argv.txt",
+      "source": "linux-2026-10-04/runs/cursor-edit-permitted/argv.txt",
+      "bytes": 95,
+      "sha256": "165517b68f229521f27cb9e854736625c7d96d0acce85d4ed143e14ca8fcf78a"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-edit-permitted/canary-ok.txt",
+      "source": "linux-2026-10-04/runs/cursor-edit-permitted/canary-ok.txt",
+      "bytes": 9,
+      "sha256": "739ffeedc343fd36de0fd870ef6f2b07b53a0e48b14978ec8d0ddcfc43a56504"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-edit-permitted/exit.txt",
+      "source": "linux-2026-10-04/runs/cursor-edit-permitted/exit.txt",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-edit-permitted/pwd.txt",
+      "source": "linux-2026-10-04/runs/cursor-edit-permitted/pwd.txt",
+      "bytes": 53,
+      "sha256": "b1f8ca1a124785876e8a99c1ceac32d59a9ec676abb4fbcc23c3e58bc19ada68"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-edit-permitted/scratch.txt",
+      "source": "linux-2026-10-04/runs/cursor-edit-permitted/scratch.txt",
+      "bytes": 25,
+      "sha256": "9c8157ca88b1701cdfa1dd9e8e5b415786967be0986e4696cb8f64008296ec2e"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-edit-permitted/stderr.bin",
+      "source": "linux-2026-10-04/runs/cursor-edit-permitted/stderr.bin",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-edit-permitted/stdin.txt",
+      "source": "linux-2026-10-04/runs/cursor-edit-permitted/stdin.txt",
+      "bytes": 169,
+      "sha256": "6cd19751512ed5db8cce3e1ab911d3f77c2663c6bc5ae2c86df67e8987065ae0"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-edit-permitted/stdout.bin",
+      "source": "linux-2026-10-04/runs/cursor-edit-permitted/stdout.bin",
+      "bytes": 599,
+      "sha256": "4bcca8d7644d32ae61b1e208eebd35a69ab5d0346cc1b223e44ad5d33c6257c0"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-sandbox-home/argv.txt",
+      "source": "linux-2026-10-04/runs/cursor-sandbox-home/argv.txt",
+      "bytes": 113,
+      "sha256": "4110ea1a4f161cb49405c680e8a41e15666b0755e5973084edaba173a01ba9b8"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-sandbox-home/exit.txt",
+      "source": "linux-2026-10-04/runs/cursor-sandbox-home/exit.txt",
+      "bytes": 2,
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-sandbox-home/pwd.txt",
+      "source": "linux-2026-10-04/runs/cursor-sandbox-home/pwd.txt",
+      "bytes": 51,
+      "sha256": "19213f02ceacefbaf61f46e57fbe493fb4fe685def4a4029c22508a1c740a282"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-sandbox-home/scratch.txt",
+      "source": "linux-2026-10-04/runs/cursor-sandbox-home/scratch.txt",
+      "bytes": 5598,
+      "sha256": "ed8afe462eea7ffe3b8c5216f2d0f32b5bdd6ae68bc93a6336e74a046f42986d"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-sandbox-home/stderr.bin",
+      "source": "linux-2026-10-04/runs/cursor-sandbox-home/stderr.bin",
+      "bytes": 108,
+      "sha256": "4de7608ae6736aa85dde5c2817bc1ee0f62662e311cd742bcf09ec6ad788d225"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-sandbox-home/stdin.txt",
+      "source": "linux-2026-10-04/runs/cursor-sandbox-home/stdin.txt",
+      "bytes": 178,
+      "sha256": "4b869d2e7d57a388d0eccd31f81f9ea51c3317cc951ade5592d14d5cfd253a64"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-sandbox-home/stdout.bin",
+      "source": "linux-2026-10-04/runs/cursor-sandbox-home/stdout.bin",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-sandbox-permitted/argv.txt",
+      "source": "linux-2026-10-04/runs/cursor-sandbox-permitted/argv.txt",
+      "bytes": 113,
+      "sha256": "4110ea1a4f161cb49405c680e8a41e15666b0755e5973084edaba173a01ba9b8"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-sandbox-permitted/exit.txt",
+      "source": "linux-2026-10-04/runs/cursor-sandbox-permitted/exit.txt",
+      "bytes": 2,
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-sandbox-permitted/pwd.txt",
+      "source": "linux-2026-10-04/runs/cursor-sandbox-permitted/pwd.txt",
+      "bytes": 56,
+      "sha256": "92fe6901796f10247191f24a9efbaded65e52d889a5872e3812943a66a8d676e"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-sandbox-permitted/scratch.txt",
+      "source": "linux-2026-10-04/runs/cursor-sandbox-permitted/scratch.txt",
+      "bytes": 5598,
+      "sha256": "ed8afe462eea7ffe3b8c5216f2d0f32b5bdd6ae68bc93a6336e74a046f42986d"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-sandbox-permitted/stderr.bin",
+      "source": "linux-2026-10-04/runs/cursor-sandbox-permitted/stderr.bin",
+      "bytes": 108,
+      "sha256": "4de7608ae6736aa85dde5c2817bc1ee0f62662e311cd742bcf09ec6ad788d225"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-sandbox-permitted/stdin.txt",
+      "source": "linux-2026-10-04/runs/cursor-sandbox-permitted/stdin.txt",
+      "bytes": 141,
+      "sha256": "736470b4081405b437493ffa5c47148c0fb955e2ddab870dc033504997cd1aeb"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-sandbox-permitted/stdout.bin",
+      "source": "linux-2026-10-04/runs/cursor-sandbox-permitted/stdout.bin",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-shell-home/argv.txt",
+      "source": "linux-2026-10-04/runs/cursor-shell-home/argv.txt",
+      "bytes": 95,
+      "sha256": "165517b68f229521f27cb9e854736625c7d96d0acce85d4ed143e14ca8fcf78a"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-shell-home/escape-home.txt",
+      "source": "linux-2026-10-04/runs/cursor-shell-home/escape-home.txt",
+      "bytes": 7,
+      "sha256": "31207a2065f46a5b948fce6fe5c13e85abaf5631e2f894b47dcd4fce14f6c57b"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-shell-home/exit.txt",
+      "source": "linux-2026-10-04/runs/cursor-shell-home/exit.txt",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-shell-home/pwd.txt",
+      "source": "linux-2026-10-04/runs/cursor-shell-home/pwd.txt",
+      "bytes": 49,
+      "sha256": "c4da2cc09b22ecda41b801b65289a172aab4b6effffcb9ced903adad0ebb6859"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-shell-home/scratch.txt",
+      "source": "linux-2026-10-04/runs/cursor-shell-home/scratch.txt",
+      "bytes": 7,
+      "sha256": "f20095e6f8cea5167a3b27674660f394beae97c8222b097e97a8a4abdcb16fd3"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-shell-home/stderr.bin",
+      "source": "linux-2026-10-04/runs/cursor-shell-home/stderr.bin",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-shell-home/stdin.txt",
+      "source": "linux-2026-10-04/runs/cursor-shell-home/stdin.txt",
+      "bytes": 176,
+      "sha256": "46e3f2029ba6109783d381ff9849e542ec5dfddbb426b3f34099c517c0b59f34"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-shell-home/stdout.bin",
+      "source": "linux-2026-10-04/runs/cursor-shell-home/stdout.bin",
+      "bytes": 639,
+      "sha256": "61f4e664994ea65d746082bd6a85b8e39d3add12a83b4a39be278619cfe00952"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-shell-permitted/argv.txt",
+      "source": "linux-2026-10-04/runs/cursor-shell-permitted/argv.txt",
+      "bytes": 95,
+      "sha256": "165517b68f229521f27cb9e854736625c7d96d0acce85d4ed143e14ca8fcf78a"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-shell-permitted/canary-ok.txt",
+      "source": "linux-2026-10-04/runs/cursor-shell-permitted/canary-ok.txt",
+      "bytes": 9,
+      "sha256": "739ffeedc343fd36de0fd870ef6f2b07b53a0e48b14978ec8d0ddcfc43a56504"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-shell-permitted/exit.txt",
+      "source": "linux-2026-10-04/runs/cursor-shell-permitted/exit.txt",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-shell-permitted/pwd.txt",
+      "source": "linux-2026-10-04/runs/cursor-shell-permitted/pwd.txt",
+      "bytes": 54,
+      "sha256": "7597e020ae22cff82754e177721da7268c202695d5c763244c245ce176b2788e"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-shell-permitted/scratch.txt",
+      "source": "linux-2026-10-04/runs/cursor-shell-permitted/scratch.txt",
+      "bytes": 25,
+      "sha256": "9c8157ca88b1701cdfa1dd9e8e5b415786967be0986e4696cb8f64008296ec2e"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-shell-permitted/stderr.bin",
+      "source": "linux-2026-10-04/runs/cursor-shell-permitted/stderr.bin",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-shell-permitted/stdin.txt",
+      "source": "linux-2026-10-04/runs/cursor-shell-permitted/stdin.txt",
+      "bytes": 141,
+      "sha256": "736470b4081405b437493ffa5c47148c0fb955e2ddab870dc033504997cd1aeb"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-shell-permitted/stdout.bin",
+      "source": "linux-2026-10-04/runs/cursor-shell-permitted/stdout.bin",
+      "bytes": 659,
+      "sha256": "d0ea851c5ffc50bbe101c4ffd244586af56c199f806af53fa70cea722f2bc48d"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-shell-tmp/argv.txt",
+      "source": "linux-2026-10-04/runs/cursor-shell-tmp/argv.txt",
+      "bytes": 95,
+      "sha256": "165517b68f229521f27cb9e854736625c7d96d0acce85d4ed143e14ca8fcf78a"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-shell-tmp/escape-tmp.txt",
+      "source": "linux-2026-10-04/runs/cursor-shell-tmp/escape-tmp.txt",
+      "bytes": 7,
+      "sha256": "31207a2065f46a5b948fce6fe5c13e85abaf5631e2f894b47dcd4fce14f6c57b"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-shell-tmp/exit.txt",
+      "source": "linux-2026-10-04/runs/cursor-shell-tmp/exit.txt",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-shell-tmp/pwd.txt",
+      "source": "linux-2026-10-04/runs/cursor-shell-tmp/pwd.txt",
+      "bytes": 48,
+      "sha256": "28cd84e0af74315207fb4945560891336bf24a637033fc1c5eb8bebd8efba13d"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-shell-tmp/scratch.txt",
+      "source": "linux-2026-10-04/runs/cursor-shell-tmp/scratch.txt",
+      "bytes": 7,
+      "sha256": "f20095e6f8cea5167a3b27674660f394beae97c8222b097e97a8a4abdcb16fd3"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-shell-tmp/stderr.bin",
+      "source": "linux-2026-10-04/runs/cursor-shell-tmp/stderr.bin",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-shell-tmp/stdin.txt",
+      "source": "linux-2026-10-04/runs/cursor-shell-tmp/stdin.txt",
+      "bytes": 170,
+      "sha256": "752c263658b039414262a309a52ad25960c2208b31438657bcbd893f23f3176d"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-shell-tmp/stdout.bin",
+      "source": "linux-2026-10-04/runs/cursor-shell-tmp/stdout.bin",
+      "bytes": 576,
+      "sha256": "3f5842ad3c7018365cd60ad0c62fefaa4bf6491aa9a182a41f5ff8dfe1738e44"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-stdin-fail/argv.txt",
+      "source": "linux-2026-10-04/runs/cursor-stdin-fail/argv.txt",
+      "bytes": 97,
+      "sha256": "d641f1be7102348cb532e0f4bf2f70dccc8d577f93ab9f393b23b968208c4de3"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-stdin-fail/exit.txt",
+      "source": "linux-2026-10-04/runs/cursor-stdin-fail/exit.txt",
+      "bytes": 2,
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-stdin-fail/pwd.txt",
+      "source": "linux-2026-10-04/runs/cursor-stdin-fail/pwd.txt",
+      "bytes": 49,
+      "sha256": "5e4cf111c8ae76dca6f5a1dc78c3c3528c6f5592109a97442fa24cae03df16d7"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-stdin-fail/scratch.txt",
+      "source": "linux-2026-10-04/runs/cursor-stdin-fail/scratch.txt",
+      "bytes": 7,
+      "sha256": "f20095e6f8cea5167a3b27674660f394beae97c8222b097e97a8a4abdcb16fd3"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-stdin-fail/stderr.bin",
+      "source": "linux-2026-10-04/runs/cursor-stdin-fail/stderr.bin",
+      "bytes": 5797,
+      "sha256": "12912211550bcf9def542fa11e3c9dfd7160cec3e502fba83f42da5e92499b20"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-stdin-fail/stdin.txt",
+      "source": "linux-2026-10-04/runs/cursor-stdin-fail/stdin.txt",
+      "bytes": 63,
+      "sha256": "1e4002841ee6e85c753e1fda233d30cb83b2263b67b0bb977ae440fd8a8bfee8"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-stdin-fail/stdout.bin",
+      "source": "linux-2026-10-04/runs/cursor-stdin-fail/stdout.bin",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-stdin-success/argv.txt",
+      "source": "linux-2026-10-04/runs/cursor-stdin-success/argv.txt",
+      "bytes": 95,
+      "sha256": "165517b68f229521f27cb9e854736625c7d96d0acce85d4ed143e14ca8fcf78a"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-stdin-success/exit.txt",
+      "source": "linux-2026-10-04/runs/cursor-stdin-success/exit.txt",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-stdin-success/pwd.txt",
+      "source": "linux-2026-10-04/runs/cursor-stdin-success/pwd.txt",
+      "bytes": 52,
+      "sha256": "d03e1560e92a0daa872e0b1b1d9b7a7a8218311b2e71b2cd1f9ce15d8c1e6918"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-stdin-success/scratch.txt",
+      "source": "linux-2026-10-04/runs/cursor-stdin-success/scratch.txt",
+      "bytes": 7,
+      "sha256": "f20095e6f8cea5167a3b27674660f394beae97c8222b097e97a8a4abdcb16fd3"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-stdin-success/stderr.bin",
+      "source": "linux-2026-10-04/runs/cursor-stdin-success/stderr.bin",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-stdin-success/stdin.txt",
+      "source": "linux-2026-10-04/runs/cursor-stdin-success/stdin.txt",
+      "bytes": 63,
+      "sha256": "1e4002841ee6e85c753e1fda233d30cb83b2263b67b0bb977ae440fd8a8bfee8"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-stdin-success/stdout.bin",
+      "source": "linux-2026-10-04/runs/cursor-stdin-success/stdout.bin",
+      "bytes": 306,
+      "sha256": "9e5ed611b0102333ddf78d6a3bc02cb9267a6bb8a662aa72ee04745a4077da5c"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-baseline-home/argv.txt",
+      "source": "linux-2026-10-04/runs/grok-baseline-home/argv.txt",
+      "bytes": 265,
+      "sha256": "ac874ed753bc09980a98a0dea7cf8a496b190ae55c299a416d0a6960ad5e684e"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-baseline-home/exit.txt",
+      "source": "linux-2026-10-04/runs/grok-baseline-home/exit.txt",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-baseline-home/pwd.txt",
+      "source": "linux-2026-10-04/runs/grok-baseline-home/pwd.txt",
+      "bytes": 50,
+      "sha256": "a8919f1af527b83e64001cbd803466f7c55422e3a3ea92aabc21f2da644f0388"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-baseline-home/scratch.txt",
+      "source": "linux-2026-10-04/runs/grok-baseline-home/scratch.txt",
+      "bytes": 18,
+      "sha256": "2fc8dac28305b9225b552c0ccbe8124e25514879fa1d7eb969bfd1ec13a0a4e9"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-baseline-home/stderr.bin",
+      "source": "linux-2026-10-04/runs/grok-baseline-home/stderr.bin",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-baseline-home/stdin.txt",
+      "source": "linux-2026-10-04/runs/grok-baseline-home/stdin.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-baseline-home/stdout.bin",
+      "source": "linux-2026-10-04/runs/grok-baseline-home/stdout.bin",
+      "bytes": 1987,
+      "sha256": "61537c8f7a3dcf29e884b3dc8c9fe69d5eb74a4b17f021ffb67c11b740d40b7f"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-baseline-permitted/argv.txt",
+      "source": "linux-2026-10-04/runs/grok-baseline-permitted/argv.txt",
+      "bytes": 232,
+      "sha256": "0118e44daf13456a6a3825874266d8293a51201f625cdedf16a798a19d566d5b"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-baseline-permitted/canary-ok.txt",
+      "source": "linux-2026-10-04/runs/grok-baseline-permitted/canary-ok.txt",
+      "bytes": 9,
+      "sha256": "739ffeedc343fd36de0fd870ef6f2b07b53a0e48b14978ec8d0ddcfc43a56504"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-baseline-permitted/exit.txt",
+      "source": "linux-2026-10-04/runs/grok-baseline-permitted/exit.txt",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-baseline-permitted/pwd.txt",
+      "source": "linux-2026-10-04/runs/grok-baseline-permitted/pwd.txt",
+      "bytes": 55,
+      "sha256": "ce3e4a655c4b63a92f4c96d215aa3ba5aa75c2500487f2b43badb454a250f589"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-baseline-permitted/scratch.txt",
+      "source": "linux-2026-10-04/runs/grok-baseline-permitted/scratch.txt",
+      "bytes": 25,
+      "sha256": "9c8157ca88b1701cdfa1dd9e8e5b415786967be0986e4696cb8f64008296ec2e"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-baseline-permitted/stderr.bin",
+      "source": "linux-2026-10-04/runs/grok-baseline-permitted/stderr.bin",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-baseline-permitted/stdin.txt",
+      "source": "linux-2026-10-04/runs/grok-baseline-permitted/stdin.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-baseline-permitted/stdout.bin",
+      "source": "linux-2026-10-04/runs/grok-baseline-permitted/stdout.bin",
+      "bytes": 1085,
+      "sha256": "915e3659e2037d62a417e36107fab1db8cd8dbb65a552d9a33da2b1fa28e6a77"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-edit-home/argv.txt",
+      "source": "linux-2026-10-04/runs/grok-edit-home/argv.txt",
+      "bytes": 318,
+      "sha256": "683762a6a856f91cbb653465f00897b5a455a04286b639c8eb19e2cc9f31af57"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-edit-home/exit.txt",
+      "source": "linux-2026-10-04/runs/grok-edit-home/exit.txt",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-edit-home/pwd.txt",
+      "source": "linux-2026-10-04/runs/grok-edit-home/pwd.txt",
+      "bytes": 46,
+      "sha256": "b221f48e9562a7edacf37b83b66c6f76f95fab28f22c2baf45e0b98e47623427"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-edit-home/scratch.txt",
+      "source": "linux-2026-10-04/runs/grok-edit-home/scratch.txt",
+      "bytes": 7,
+      "sha256": "f20095e6f8cea5167a3b27674660f394beae97c8222b097e97a8a4abdcb16fd3"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-edit-home/stderr.bin",
+      "source": "linux-2026-10-04/runs/grok-edit-home/stderr.bin",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-edit-home/stdin.txt",
+      "source": "linux-2026-10-04/runs/grok-edit-home/stdin.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-edit-home/stdout.bin",
+      "source": "linux-2026-10-04/runs/grok-edit-home/stdout.bin",
+      "bytes": 759,
+      "sha256": "95596a7ad79738bcf4f90cbc1ce40bf6454bb91977c13f89d588122c1287178c"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-edit-permitted/argv.txt",
+      "source": "linux-2026-10-04/runs/grok-edit-permitted/argv.txt",
+      "bytes": 286,
+      "sha256": "31b0aa0d060474a76b4001a5b1e317c185423730815151b5fe2080fb11dcdf89"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-edit-permitted/exit.txt",
+      "source": "linux-2026-10-04/runs/grok-edit-permitted/exit.txt",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-edit-permitted/pwd.txt",
+      "source": "linux-2026-10-04/runs/grok-edit-permitted/pwd.txt",
+      "bytes": 51,
+      "sha256": "fa9fe706f327b50df0191e087a68566aaf5f27cb5dfa80ef57043bdf37027e5d"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-edit-permitted/scratch.txt",
+      "source": "linux-2026-10-04/runs/grok-edit-permitted/scratch.txt",
+      "bytes": 7,
+      "sha256": "f20095e6f8cea5167a3b27674660f394beae97c8222b097e97a8a4abdcb16fd3"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-edit-permitted/stderr.bin",
+      "source": "linux-2026-10-04/runs/grok-edit-permitted/stderr.bin",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-edit-permitted/stdin.txt",
+      "source": "linux-2026-10-04/runs/grok-edit-permitted/stdin.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-edit-permitted/stdout.bin",
+      "source": "linux-2026-10-04/runs/grok-edit-permitted/stdout.bin",
+      "bytes": 978,
+      "sha256": "713403c324ebd229e7c23b504160b85ba487686133da0afdbf7f55d886e20906"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-shell-home/argv.txt",
+      "source": "linux-2026-10-04/runs/grok-shell-home/argv.txt",
+      "bytes": 291,
+      "sha256": "dfcb49d2b1c215a296cb1c521ebe4988414a98bd9d968ac9e606e65b5ba7c4d2"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-shell-home/exit.txt",
+      "source": "linux-2026-10-04/runs/grok-shell-home/exit.txt",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-shell-home/pwd.txt",
+      "source": "linux-2026-10-04/runs/grok-shell-home/pwd.txt",
+      "bytes": 47,
+      "sha256": "b914477c967bc284f2cd570ed6daf0c7fb7ed86f8efcfcf242ac862fa541711a"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-shell-home/scratch.txt",
+      "source": "linux-2026-10-04/runs/grok-shell-home/scratch.txt",
+      "bytes": 7,
+      "sha256": "f20095e6f8cea5167a3b27674660f394beae97c8222b097e97a8a4abdcb16fd3"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-shell-home/stderr.bin",
+      "source": "linux-2026-10-04/runs/grok-shell-home/stderr.bin",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-shell-home/stdin.txt",
+      "source": "linux-2026-10-04/runs/grok-shell-home/stdin.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-shell-home/stdout.bin",
+      "source": "linux-2026-10-04/runs/grok-shell-home/stdout.bin",
+      "bytes": 1216,
+      "sha256": "941783b6790b742c5a92493f2c45f305a4c4713d78417184424300ea3328001e"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-shell-permitted/argv.txt",
+      "source": "linux-2026-10-04/runs/grok-shell-permitted/argv.txt",
+      "bytes": 258,
+      "sha256": "c04e7bbfab701d8224f7445620d0584131eb0a72e5c78011f725675af35f7236"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-shell-permitted/exit.txt",
+      "source": "linux-2026-10-04/runs/grok-shell-permitted/exit.txt",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-shell-permitted/pwd.txt",
+      "source": "linux-2026-10-04/runs/grok-shell-permitted/pwd.txt",
+      "bytes": 52,
+      "sha256": "954c169371f7eb7fc3073e5107c398c97283d3e976c81412a5011a65707ede4f"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-shell-permitted/scratch.txt",
+      "source": "linux-2026-10-04/runs/grok-shell-permitted/scratch.txt",
+      "bytes": 7,
+      "sha256": "f20095e6f8cea5167a3b27674660f394beae97c8222b097e97a8a4abdcb16fd3"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-shell-permitted/stderr.bin",
+      "source": "linux-2026-10-04/runs/grok-shell-permitted/stderr.bin",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-shell-permitted/stdin.txt",
+      "source": "linux-2026-10-04/runs/grok-shell-permitted/stdin.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-shell-permitted/stdout.bin",
+      "source": "linux-2026-10-04/runs/grok-shell-permitted/stdout.bin",
+      "bytes": 780,
+      "sha256": "ac03e4225f2621853cc5987eb34035fa980c063872c3b73c49620035bdc7fbc4"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-shell-tmp/argv.txt",
+      "source": "linux-2026-10-04/runs/grok-shell-tmp/argv.txt",
+      "bytes": 285,
+      "sha256": "791bd331a7b3dcf11749209bce2614670ea2b7fc833ea0c0ff1a850242f7a69b"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-shell-tmp/exit.txt",
+      "source": "linux-2026-10-04/runs/grok-shell-tmp/exit.txt",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-shell-tmp/pwd.txt",
+      "source": "linux-2026-10-04/runs/grok-shell-tmp/pwd.txt",
+      "bytes": 46,
+      "sha256": "75251f6d1701da92b51ffcbeed959b739d7dc020d8095f81161b0c6dd96fa9e2"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-shell-tmp/scratch.txt",
+      "source": "linux-2026-10-04/runs/grok-shell-tmp/scratch.txt",
+      "bytes": 7,
+      "sha256": "f20095e6f8cea5167a3b27674660f394beae97c8222b097e97a8a4abdcb16fd3"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-shell-tmp/stderr.bin",
+      "source": "linux-2026-10-04/runs/grok-shell-tmp/stderr.bin",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-shell-tmp/stdin.txt",
+      "source": "linux-2026-10-04/runs/grok-shell-tmp/stdin.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-shell-tmp/stdout.bin",
+      "source": "linux-2026-10-04/runs/grok-shell-tmp/stdout.bin",
+      "bytes": 794,
+      "sha256": "59e05822300d65ba72abe917e87720d0c7bfc51a2193c95af8da59de74e211d1"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-stdin-fail/argv.txt",
+      "source": "linux-2026-10-04/runs/grok-stdin-fail/argv.txt",
+      "bytes": 186,
+      "sha256": "b48fcaa3f4cc5cd5b5d348df356007a7ae7ffb6aed86a77243b239186e3d4555"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-stdin-fail/exit.txt",
+      "source": "linux-2026-10-04/runs/grok-stdin-fail/exit.txt",
+      "bytes": 2,
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-stdin-fail/pwd.txt",
+      "source": "linux-2026-10-04/runs/grok-stdin-fail/pwd.txt",
+      "bytes": 47,
+      "sha256": "c69de1f2b7f3698938e059d9417da9946f5c53bdf923e09efd1c0161b9483dba"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-stdin-fail/scratch.txt",
+      "source": "linux-2026-10-04/runs/grok-stdin-fail/scratch.txt",
+      "bytes": 7,
+      "sha256": "f20095e6f8cea5167a3b27674660f394beae97c8222b097e97a8a4abdcb16fd3"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-stdin-fail/stderr.bin",
+      "source": "linux-2026-10-04/runs/grok-stdin-fail/stderr.bin",
+      "bytes": 123,
+      "sha256": "4ed9995cb92f0663751d9e8b512f70f7f3920085fe4cac8daf24c8e88fecddd9"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-stdin-fail/stdin.txt",
+      "source": "linux-2026-10-04/runs/grok-stdin-fail/stdin.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-stdin-fail/stdout.bin",
+      "source": "linux-2026-10-04/runs/grok-stdin-fail/stdout.bin",
+      "bytes": 147,
+      "sha256": "57f30774f84ac1ea52c898d38716591541dcdbcbd49ccbe57511e8341b02c3eb"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-stdin-missing/argv.txt",
+      "source": "linux-2026-10-04/runs/grok-stdin-missing/argv.txt",
+      "bytes": 116,
+      "sha256": "de625f32d70b0e023d35641460c2019fa7a6610776a99ceba842503a25f9e07d"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-stdin-missing/exit.txt",
+      "source": "linux-2026-10-04/runs/grok-stdin-missing/exit.txt",
+      "bytes": 2,
+      "sha256": "53c234e5e8472b6ac51c1ae1cab3fe06fad053beb8ebfd8977b010655bfdd3c3"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-stdin-missing/pwd.txt",
+      "source": "linux-2026-10-04/runs/grok-stdin-missing/pwd.txt",
+      "bytes": 50,
+      "sha256": "32fa69583b1e078b47662868d816840da4c72254716af7d610b9953480076822"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-stdin-missing/scratch.txt",
+      "source": "linux-2026-10-04/runs/grok-stdin-missing/scratch.txt",
+      "bytes": 7,
+      "sha256": "f20095e6f8cea5167a3b27674660f394beae97c8222b097e97a8a4abdcb16fd3"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-stdin-missing/stderr.bin",
+      "source": "linux-2026-10-04/runs/grok-stdin-missing/stderr.bin",
+      "bytes": 110,
+      "sha256": "77bd628424deb68f3a6c6dfd28930c45660a5e4a1ee86c1f8ab36dd7ea5278f9"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-stdin-missing/stdin.txt",
+      "source": "linux-2026-10-04/runs/grok-stdin-missing/stdin.txt",
+      "bytes": 63,
+      "sha256": "1e4002841ee6e85c753e1fda233d30cb83b2263b67b0bb977ae440fd8a8bfee8"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-stdin-missing/stdout.bin",
+      "source": "linux-2026-10-04/runs/grok-stdin-missing/stdout.bin",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-stdin-success/argv.txt",
+      "source": "linux-2026-10-04/runs/grok-stdin-success/argv.txt",
+      "bytes": 180,
+      "sha256": "8d294016caf510b480e26302b452f6357e4ba7be09fe8069179b927bd3561c1b"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-stdin-success/exit.txt",
+      "source": "linux-2026-10-04/runs/grok-stdin-success/exit.txt",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-stdin-success/pwd.txt",
+      "source": "linux-2026-10-04/runs/grok-stdin-success/pwd.txt",
+      "bytes": 50,
+      "sha256": "52035079c796ce86ac08f61cdbb15d95fc1d34146a65dab484046cd814b59f51"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-stdin-success/scratch.txt",
+      "source": "linux-2026-10-04/runs/grok-stdin-success/scratch.txt",
+      "bytes": 7,
+      "sha256": "f20095e6f8cea5167a3b27674660f394beae97c8222b097e97a8a4abdcb16fd3"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-stdin-success/stderr.bin",
+      "source": "linux-2026-10-04/runs/grok-stdin-success/stderr.bin",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-stdin-success/stdin.txt",
+      "source": "linux-2026-10-04/runs/grok-stdin-success/stdin.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-stdin-success/stdout.bin",
+      "source": "linux-2026-10-04/runs/grok-stdin-success/stdout.bin",
+      "bytes": 676,
+      "sha256": "ac6e0a40aa1be2e13e2d5dff089ba71685ec6f081058eecfefaea6fa7c806484"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/help/cursor-help.json",
+      "source": "local-help-2026-10-04/cursor-help.json",
+      "bytes": 87,
+      "sha256": "896cd2b9defd71688959534ba4a01456b10090e62892b6d222e987b257c16c6c"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/help/cursor-help.stderr.txt",
+      "source": "local-help-2026-10-04/cursor-help.stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/help/cursor-help.stdout.txt",
+      "source": "local-help-2026-10-04/cursor-help.stdout.txt",
+      "bytes": 5991,
+      "sha256": "c24026e17118188478fcb47ed8113fa842f93df2043da5116660a368d3dc64b0"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/help/cursor-version.json",
+      "source": "local-help-2026-10-04/cursor-version.json",
+      "bytes": 90,
+      "sha256": "579c475409de223ad7fda5f196ec876f925a308a160001c4101160b4a1595937"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/help/cursor-version.stderr.txt",
+      "source": "local-help-2026-10-04/cursor-version.stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/help/cursor-version.stdout.txt",
+      "source": "local-help-2026-10-04/cursor-version.stdout.txt",
+      "bytes": 19,
+      "sha256": "59af10e3e2483f58e970517d139e48c0484a78405767fb44578594ff0a03115a"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/help/grok-help.json",
+      "source": "local-help-2026-10-04/grok-help.json",
+      "bytes": 79,
+      "sha256": "cf83f163ea24a49ae2ca6c11118f9ec2685c6366a7e1ea90f461f58ac5124234"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/help/grok-help.stderr.txt",
+      "source": "local-help-2026-10-04/grok-help.stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/help/grok-help.stdout.txt",
+      "source": "local-help-2026-10-04/grok-help.stdout.txt",
+      "bytes": 7512,
+      "sha256": "cda6873e2f90a7d77de94c2e3026794671fac04b2e40ac74e4d91f429f829403"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/help/grok-version.json",
+      "source": "local-help-2026-10-04/grok-version.json",
+      "bytes": 82,
+      "sha256": "f08e4f53dd3a493f6ca5c28ca25ebe3d79c56b8612c0807b0de7f780c0002afa"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/help/grok-version.stderr.txt",
+      "source": "local-help-2026-10-04/grok-version.stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "destination": "tests/testdata/real-adapters/linux-2026-10-04/help/grok-version.stdout.txt",
+      "source": "local-help-2026-10-04/grok-version.stdout.txt",
+      "bytes": 36,
+      "sha256": "3c3f1b3575e3504b73dc29949ae5d436e3751389a2c964eee7aa154a299687fc"
+    }
+  ],
+  "absent": [
+    "runs/cursor-baseline-home/canary-ok.txt",
+    "runs/cursor-baseline-home/escape-home.txt",
+    "runs/cursor-baseline-home/escape-tmp.txt",
+    "runs/cursor-baseline-permitted/canary-ok.txt",
+    "runs/cursor-baseline-permitted/escape-home.txt",
+    "runs/cursor-baseline-permitted/escape-tmp.txt",
+    "runs/cursor-edit-home/canary-ok.txt",
+    "runs/cursor-edit-home/escape-tmp.txt",
+    "runs/cursor-edit-permitted/escape-home.txt",
+    "runs/cursor-edit-permitted/escape-tmp.txt",
+    "runs/cursor-sandbox-home/canary-ok.txt",
+    "runs/cursor-sandbox-home/escape-home.txt",
+    "runs/cursor-sandbox-home/escape-tmp.txt",
+    "runs/cursor-sandbox-permitted/canary-ok.txt",
+    "runs/cursor-sandbox-permitted/escape-home.txt",
+    "runs/cursor-sandbox-permitted/escape-tmp.txt",
+    "runs/cursor-shell-home/canary-ok.txt",
+    "runs/cursor-shell-home/escape-tmp.txt",
+    "runs/cursor-shell-permitted/escape-home.txt",
+    "runs/cursor-shell-permitted/escape-tmp.txt",
+    "runs/cursor-shell-tmp/canary-ok.txt",
+    "runs/cursor-shell-tmp/escape-home.txt",
+    "runs/cursor-stdin-fail/canary-ok.txt",
+    "runs/cursor-stdin-fail/escape-home.txt",
+    "runs/cursor-stdin-fail/escape-tmp.txt",
+    "runs/cursor-stdin-success/canary-ok.txt",
+    "runs/cursor-stdin-success/escape-home.txt",
+    "runs/cursor-stdin-success/escape-tmp.txt",
+    "runs/grok-baseline-home/canary-ok.txt",
+    "runs/grok-baseline-home/escape-home.txt",
+    "runs/grok-baseline-home/escape-tmp.txt",
+    "runs/grok-baseline-permitted/escape-home.txt",
+    "runs/grok-baseline-permitted/escape-tmp.txt",
+    "runs/grok-edit-home/canary-ok.txt",
+    "runs/grok-edit-home/escape-home.txt",
+    "runs/grok-edit-home/escape-tmp.txt",
+    "runs/grok-edit-permitted/canary-ok.txt",
+    "runs/grok-edit-permitted/escape-home.txt",
+    "runs/grok-edit-permitted/escape-tmp.txt",
+    "runs/grok-shell-home/canary-ok.txt",
+    "runs/grok-shell-home/escape-home.txt",
+    "runs/grok-shell-home/escape-tmp.txt",
+    "runs/grok-shell-permitted/canary-ok.txt",
+    "runs/grok-shell-permitted/escape-home.txt",
+    "runs/grok-shell-permitted/escape-tmp.txt",
+    "runs/grok-shell-tmp/canary-ok.txt",
+    "runs/grok-shell-tmp/escape-home.txt",
+    "runs/grok-shell-tmp/escape-tmp.txt",
+    "runs/grok-stdin-fail/canary-ok.txt",
+    "runs/grok-stdin-fail/escape-home.txt",
+    "runs/grok-stdin-fail/escape-tmp.txt",
+    "runs/grok-stdin-missing/canary-ok.txt",
+    "runs/grok-stdin-missing/escape-home.txt",
+    "runs/grok-stdin-missing/escape-tmp.txt",
+    "runs/grok-stdin-success/canary-ok.txt",
+    "runs/grok-stdin-success/escape-home.txt",
+    "runs/grok-stdin-success/escape-tmp.txt"
+  ],
+  "errata": [
+    "The copied NOTES shorthand `unknown model id` is not the exact message; `runs/grok-stdin-fail/stdout.bin` is authoritative for the exact message."
+  ]
+}

@@ -410,7 +410,7 @@ func (rs *roleService) set(w http.ResponseWriter, r *http.Request, id string, bo
 	p, err := contract.ParseRolePatch(body)
 	if err == nil && p.Adapter != nil {
 		if _, ok := rs.lookup(*p.Adapter); !ok {
-			err = contract.RoleError(contract.CodeInvalidArgument, id, "", "adapter", "", "unknown adapter; registered adapters: claude, codex, fake")
+			err = contract.RoleError(contract.CodeInvalidArgument, id, "", "adapter", "", "unknown adapter; registered adapters: claude, codex, cursor, fake, grok")
 		}
 	}
 	if err == nil {

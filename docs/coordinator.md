@@ -78,7 +78,7 @@ Timeouts: all three UNVERIFIED; no supported override is established—run local
 
 ## Grok Build
 
-Captured version `grok 1.0.41 (4220f3b224a6) [stable]` ([version](../tests/testdata/cli-help/grok-version.txt), [help](../tests/testdata/cli-help/grok-help.txt)). Registration command syntax is VERIFIED by [mcp add help](../tests/testdata/cli-help/grok-mcp-add.txt); the TOML table schema is a candidate.
+Captured version `grok 1.0.41 (4220f3b224a6) [stable]` ([version](../tests/testdata/cli-help/grok-version.txt), [help](../tests/testdata/cli-help/grok-help.txt)). Registration command syntax is VERIFIED by [mcp add help](../tests/testdata/cli-help/grok-mcp-add.txt); the TOML table schema is a candidate. The catalog's version is now the worker adapter's qualified `grok 1.0.46 (2765805b9442) [stable]` ([host capture](../tests/testdata/real-adapters/linux-2026-10-04/host.txt), iteration 11); this coordinator help was not recaptured from it, and a local timeout qualification must observe the catalog's version before it can publish.
 
 Register:
 
@@ -104,7 +104,7 @@ Timeouts: all three UNVERIFIED; no supported override is established—run local
 
 ## Cursor Agent
 
-Captured version `2026.09.23-86fc751` ([version](../tests/testdata/cli-help/cursor-version.txt), [help](../tests/testdata/cli-help/cursor-help.txt)). The configuration locations `.cursor/mcp.json` (project) and `~/.cursor/mcp.json` (user) are VERIFIED by [mcp help](../tests/testdata/cli-help/cursor-mcp.txt); the exact entry shape is UNVERIFIED. There is no `cursor-agent mcp add`: edit the user-owned file with your editor. `cursor-agent mcp list-tools callsheet` can list the tools where the installed version supports it, but a help command alone does not verify that the configuration loaded or that a tool call works.
+Captured version `2026.09.23-86fc751` ([version](../tests/testdata/cli-help/cursor-version.txt), [help](../tests/testdata/cli-help/cursor-help.txt)). The catalog's version is now the known worker version `2026.10.01-e373342` ([host capture](../tests/testdata/real-adapters/linux-2026-10-04/host.txt), iteration 11; Cursor worker execution is refused); this coordinator help was not recaptured from it, and a local timeout qualification must observe the catalog's version before it can publish. The configuration locations `.cursor/mcp.json` (project) and `~/.cursor/mcp.json` (user) are VERIFIED by [mcp help](../tests/testdata/cli-help/cursor-mcp.txt); the exact entry shape is UNVERIFIED. There is no `cursor-agent mcp add`: edit the user-owned file with your editor. `cursor-agent mcp list-tools callsheet` can list the tools where the installed version supports it, but a help command alone does not verify that the configuration loaded or that a tool call works.
 
 Candidate entry (UNVERIFIED until an actual registration plus tools/list evidence):
 

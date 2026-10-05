@@ -198,10 +198,12 @@ var speedTaskNative = []string{
 }
 
 // speedTaskProcess is the sidecar package's native tuple (iteration 05),
-// with iteration 08's tagged contract and its five subtests appended.
+// with iteration 08's tagged contract and its five subtests appended, then
+// iteration 11's four wave-2 subtests of that contract.
 var speedTaskProcess = []string{"TestTaskExecutionContract", "TestTaskExecutionContract/process",
 	"TestRealAdapterLocal", "TestRealAdapterLocal/selection", "TestRealAdapterLocal/file", "TestRealAdapterLocal/ordering",
-	"TestRealAdapterLocal/diagnostic", "TestRealAdapterLocal/restart"}
+	"TestRealAdapterLocal/diagnostic", "TestRealAdapterLocal/restart",
+	"TestRealAdapterLocal/wave2-posture", "TestRealAdapterLocal/wave2-invocation", "TestRealAdapterLocal/wave2-outcomes", "TestRealAdapterLocal/wave2-retry"}
 
 // speedRealNative are iteration 08's nine function parents, each followed
 // by its mandatory children.
@@ -248,6 +250,21 @@ var speedWorkspaceTaskNative = []string{
 // function tests in FP order, after the 10b names.
 var speedWorkspaceDoorNative = []string{
 	"TestWorkspaceDispatchDoors", "TestWorkspaceTaskPull", "TestWorkspaceTaskInspect", "TestWorkspaceTaskMCP", "TestWorkspaceMultiHop", "TestWorkspaceOperatorWorkflow",
+}
+
+// speedWave2Native are iteration 11's nine wave-2 real-adapter function
+// parents in FP order, each followed by its mandatory children, after the
+// 10c names.
+var speedWave2Native = []string{
+	"TestWave2Registration", "TestWave2Registration/registry", "TestWave2Registration/paths", "TestWave2Registration/selection", "TestWave2Registration/posture",
+	"TestWave2Probe", "TestWave2Probe/grok", "TestWave2Probe/cursor", "TestWave2Probe/refusal",
+	"TestWave2Invocation", "TestWave2Invocation/grok", "TestWave2Invocation/cursor-refused", "TestWave2Invocation/prompt",
+	"TestWave2GrokFinal", "TestWave2GrokFinal/success", "TestWave2GrokFinal/error", "TestWave2GrokFinal/cancelled", "TestWave2GrokFinal/malformed",
+	"TestWave2CursorFinal", "TestWave2CursorFinal/success", "TestWave2CursorFinal/absent", "TestWave2CursorFinal/malformed", "TestWave2CursorFinal/blocked",
+	"TestWave2Outcomes", "TestWave2Outcomes/exits", "TestWave2Outcomes/controls", "TestWave2Outcomes/refusal", "TestWave2Outcomes/retry",
+	"TestWave2Catalog", "TestWave2Catalog/recipes", "TestWave2Catalog/evidence", "TestWave2Catalog/ownership",
+	"TestWave2Dispatch", "TestWave2Dispatch/grok", "TestWave2Dispatch/cursor-refused", "TestWave2Dispatch/no-vendors",
+	"TestWave2SmokeGate", "TestWave2SmokeGate/default-off", "TestWave2SmokeGate/ci-off", "TestWave2SmokeGate/absent", "TestWave2SmokeGate/enabled", "TestWave2SmokeGate/posture",
 }
 
 // taskProcessEvents is a passing sidecar-package stream for the tuple
@@ -727,7 +744,7 @@ func TestCISpeedJobs(t *testing.T) {
 func qualifyingStream(drop string) string {
 	pkg := devcheck.NativePackage
 	evs := []map[string]any{synth("start", pkg, "")}
-	for _, name := range append(append(append(append(append(append(append(append(append(append(append(append(slices.Clone(speedNative), speedNodeNative...), speedRoleNative...), speedTaskNative...), speedControlNative...), speedMCPNative...), speedQualNative...), speedRealNative...), speedWorkspaceNative...), speedTransferNative...), speedLatencyNative...), speedWorkspaceTaskNative...), speedWorkspaceDoorNative...) {
+	for _, name := range append(append(append(append(append(append(append(append(append(append(append(append(append(slices.Clone(speedNative), speedNodeNative...), speedRoleNative...), speedTaskNative...), speedControlNative...), speedMCPNative...), speedQualNative...), speedRealNative...), speedWorkspaceNative...), speedTransferNative...), speedLatencyNative...), speedWorkspaceTaskNative...), speedWorkspaceDoorNative...), speedWave2Native...) {
 		if name != drop {
 			evs = append(evs, synth("run", pkg, name), synth("pass", pkg, name))
 		}
@@ -739,7 +756,8 @@ func qualifyingStream(drop string) string {
 // FP-3: validator, plans, native evidence and documentation agree.
 func TestCISpeedPolicy(t *testing.T) {
 	t.Run("native", func(t *testing.T) {
-		if got := devcheck.NativeRequiredTests(); len(got) != 353 || len(speedQualNative) != 51 || len(speedRealNative) != 39 || !slices.Equal(got[:28], speedNative) || !slices.Equal(got[28:58], speedNodeNative) || !slices.Equal(got[58:87], speedRoleNative) || !slices.Equal(got[87:128], speedTaskNative) ||
+		if got := devcheck.NativeRequiredTests(); len(got) != 395 || len(speedQualNative) != 51 || len(speedRealNative) != 39 || len(speedWave2Native) != 42 ||
+			!slices.Equal(got[353:395], speedWave2Native) || !slices.Equal(got[:28], speedNative) || !slices.Equal(got[28:58], speedNodeNative) || !slices.Equal(got[58:87], speedRoleNative) || !slices.Equal(got[87:128], speedTaskNative) ||
 			!slices.Equal(got[128:145], speedControlNative) || !slices.Equal(got[145:222], speedMCPNative) || !slices.Equal(got[222:273], speedQualNative) || !slices.Equal(got[273:312], speedRealNative) ||
 			!slices.Equal(got[312:323], speedWorkspaceNative) || !slices.Equal(got[323:333], speedTransferNative) || !slices.Equal(got[333:335], speedLatencyNative) ||
 			!slices.Equal(got[335:347], speedWorkspaceTaskNative) || !slices.Equal(got[347:353], speedWorkspaceDoorNative) {

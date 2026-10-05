@@ -284,6 +284,98 @@ func (d *Deployment) AddVendorRole(ctx context.Context, id, vendor, node, ins, r
 	})
 }
 
+// ErrNotRefused is RefuseVendorRole's outcome when the registration did
+// not fail with the expected posture refusal (it succeeded, or failed for
+// another reason such as a wrong version, authentication or a start
+// error): an arbitrary error is never the expected refusal.
+var ErrNotRefused = errors.New("the role registration was not the expected posture refusal")
+
+// RefuseVendorRole (iteration 11) registers role id for vendor on node with
+// the vendor's known model/effort pair and requires the worker's posture
+// refusal for goos: invalid_argument, field adapter, reason probe_failed
+// and exactly adapter.ValidateWorkerPosture's message (as the plane relays
+// a node's rejection: "node NODE rejected role ID: MESSAGE"). It never enters
+// AddVendorRole's readiness poll and never retries with other flags; only
+// the plane's documented transient refusal (unavailable, nothing changed:
+// another role change holds it, "retry") is repeated within ctx. It
+// returns nil only for that posture refusal; anything else wraps
+// ErrNotRefused (a registration that succeeded is reported as such).
+func (d *Deployment) RefuseVendorRole(ctx context.Context, id, vendor, node, ins, run, goos string) error {
+	var q adapter.Qualification
+	for _, c := range adapter.Qualifications() {
+		if c.ID == vendor {
+			q = c
+		}
+	}
+	if q.ID == "" {
+		return fmt.Errorf("%s is not a qualified vendor", vendor)
+	}
+	posture := adapter.ValidateWorkerPosture(vendor, goos)
+	if posture == nil {
+		return fmt.Errorf("%w: %s is eligible on %s", ErrNotRefused, vendor, goos)
+	}
+	rc := contract.RoleConfig{ID: id, Name: id, Node: node, Adapter: vendor, Instruction: ins, Runbook: run, Model: q.Model, Effort: q.Effort, Concurrency: 1}
+	_, err := d.Client.AddRole(ctx, rc)
+	for err != nil && contract.CodeOf(err) == contract.CodeUnavailable && strings.Contains(err.Error(), "retry") && ctx.Err() == nil {
+		time.Sleep(10 * time.Millisecond)
+		_, err = d.Client.AddRole(ctx, rc)
+	}
+	var ce *contract.Error
+	switch {
+	case err == nil:
+		return fmt.Errorf("%w: role %s was registered", ErrNotRefused, id)
+	case !errors.As(err, &ce) || ce.Code != contract.CodeInvalidArgument || ce.Details["field"] != "adapter" ||
+		ce.Details["reason"] != contract.ReasonProbeFailed || ce.Message != "node "+node+" rejected role "+id+": "+posture.Error():
+		return fmt.Errorf("%w: %v", ErrNotRefused, err)
+	}
+	return nil
+}
+
+// Refusal is a finished refusal smoke: the refused registration's message
+// and the sidecar's logs.
+type Refusal struct {
+	Message string
+	Logs    string
+}
+
+// Refuse is one vendor's refusal smoke (iteration 11): a fresh deployment
+// under dir whose sidecar enables vendor with the explicit executable exe
+// (a version probe is its only call), the registration refused with the
+// posture message for goos (RefuseVendorRole), and proof that the role was
+// not recorded and cannot dispatch. The deployment is always stopped
+// before Refuse returns. No model is called and no task is launched.
+func Refuse(ctx context.Context, bin, dir string, env, sidecarEnv []string, vendor, exe, goos string) (res Refusal, err error) {
+	d, err := Start(ctx, bin, dir, env)
+	if err != nil {
+		return Refusal{}, err
+	}
+	defer func() {
+		if cerr := d.Close(); err == nil {
+			err = cerr
+		}
+	}()
+	s, err := d.StartSidecar(ctx, "sidecar-"+vendor, sidecarEnv, "--"+vendor+"-adapter", exe)
+	if err != nil {
+		return Refusal{}, err
+	}
+	ins, run, err := d.Manuals(vendor, SmokeInstruction, SmokeRunbook)
+	if err != nil {
+		return Refusal{}, err
+	}
+	id := "smoke-" + vendor
+	if err := d.RefuseVendorRole(ctx, id, vendor, s.NodeID, ins, run, goos); err != nil {
+		return Refusal{Logs: s.Logs.String()}, err
+	}
+	res = Refusal{Message: adapter.ValidateWorkerPosture(vendor, goos).Error(), Logs: s.Logs.String()}
+	if _, err := d.Client.ShowRole(ctx, id); contract.CodeOf(err) != contract.CodeNotFound {
+		return res, fmt.Errorf("the refused role %s is visible: %v", id, err)
+	}
+	if _, err := d.Dispatch(ctx, id, "pong", time.Second); err == nil {
+		return res, fmt.Errorf("the refused role %s accepted a dispatch", id)
+	}
+	return res, nil
+}
+
 // poll checks cond every 20 ms until it holds or ctx ends.
 func poll(ctx context.Context, what string, cond func() (bool, error)) error {
 	for {

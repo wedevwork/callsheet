@@ -1,0 +1,27 @@
+{
+  "text": "I'll write `outside` with no trailing newline to that path using the file tool only.",
+  "stopReason": "cancelled",
+  "sessionId": "01a10894-bc1c-7273-9711-36112446aefb",
+  "requestId": "1528d130-a6e9-45ec-9808-ceb0085e76e7",
+  "usage": {
+    "input_tokens": 24185,
+    "cache_read_input_tokens": 1152,
+    "cache_creation_input_tokens": 0,
+    "output_tokens": 113,
+    "reasoning_tokens": 60,
+    "total_tokens": 25450
+  },
+  "num_turns": 1,
+  "total_cost_usd": 0.01687216,
+  "total_cost_usd_ticks": 168721600,
+  "modelUsage": {
+    "grok-4.7-build": {
+      "inputTokens": 24185,
+      "outputTokens": 113,
+      "cacheReadInputTokens": 1152,
+      "cacheCreationInputTokens": 0,
+      "modelCalls": 1,
+      "costUSD": 0.01687216
+    }
+  }
+}

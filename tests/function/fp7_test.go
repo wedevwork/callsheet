@@ -32,9 +32,10 @@ func TestFP7CatalogContract(t *testing.T) {
 	for _, e := range entries {
 		// The recorded version is backed by the captured --version output:
 		// iteration 08's worker qualification host capture for Claude and
-		// Codex, the offline help captures for Grok and Cursor.
-		evidence := filepath.Join(root, "tests", "testdata", "cli-help", e.ID+"-version.txt")
-		want := e.Version
+		// Codex, iteration 11's for Grok and Cursor (the 2026-09-25 help
+		// captures stay evidence of the older versions only).
+		evidence := filepath.Join(root, "tests", "testdata", "real-adapters", "linux-2026-10-04", "host.txt")
+		want := "\n" + e.ID + " " + e.Version + "\n"
 		if e.ID == "claude" || e.ID == "codex" {
 			evidence, want = filepath.Join(root, "tests", "testdata", "real-adapters", "linux-2026-09-30", "host.txt"), e.ID+": "+e.Version+"\n"
 		}

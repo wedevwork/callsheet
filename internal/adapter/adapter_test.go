@@ -209,18 +209,24 @@ func TestAdapterContract(t *testing.T) {
 		wg.Wait()
 	})
 	t.Run("fake", func(t *testing.T) {
-		// The fake is unchanged beside the iteration 08 vendors: all three
-		// efforts, test-only, no model list.
+		// The fake is unchanged beside the iteration 08 and 11 vendors (sorted
+		// claude, codex, cursor, fake, grok): all three efforts, test-only, no
+		// model list, and the only test-only descriptor.
 		ds := Builtin("").Descriptors()
-		if len(ds) != 3 || ds[2].ID != FakeID || !slices.Equal(ds[2].Efforts, []string{"low", "medium", "high"}) || !ds[2].TestOnly {
+		if len(ds) != 5 || ds[3].ID != FakeID || !slices.Equal(ds[3].Efforts, []string{"low", "medium", "high"}) || !ds[3].TestOnly {
 			t.Fatalf("builtin = %+v", ds)
+		}
+		for i, d := range ds {
+			if d.TestOnly != (i == 3) {
+				t.Fatalf("builtin %d test-only %v: %+v", i, d.TestOnly, ds)
+			}
 		}
 		look := Lookup()
 		info, ok := look("fake")
 		if !ok || !info.TestOnly || len(info.Efforts) != 3 {
 			t.Fatalf("lookup = %+v %v", info, ok)
 		}
-		if _, ok := look("grok"); ok {
+		if _, ok := look("unknown-vendor"); ok {
 			t.Fatal("unknown adapter found")
 		}
 		// No model allowlist: any valid model text passes with every effort.

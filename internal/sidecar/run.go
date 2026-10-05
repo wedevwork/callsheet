@@ -44,9 +44,11 @@ func terminal(err error) bool {
 // vendorPath is one real vendor's enablement option.
 type vendorPath struct{ id, path string }
 
-// vendorPaths returns the real vendors' configured paths in ID order.
+// vendorPaths returns the real vendors' configured paths in ID order
+// (iteration 11 adds cursor and grok).
 func (o RunOptions) vendorPaths() []vendorPath {
-	return []vendorPath{{adapter.ClaudeID, o.ClaudeAdapterPath}, {adapter.CodexID, o.CodexAdapterPath}}
+	return []vendorPath{{adapter.ClaudeID, o.ClaudeAdapterPath}, {adapter.CodexID, o.CodexAdapterPath},
+		{adapter.CursorID, o.CursorAdapterPath}, {adapter.GrokID, o.GrokAdapterPath}}
 }
 
 // run is Run: it validates the enrollment under the state lock, which it
@@ -107,25 +109,37 @@ func (d *deps) run(ctx context.Context, o RunOptions) error {
 	}
 	defer c.Close()
 	logger = logger.With("node_id", id)
-	env := roleEnv{adapters: d.adapters(l.root), executables: map[string]string{}}
+	env := roleEnv{adapters: d.adapters(l.root), executables: map[string]string{}, goos: o.GOOS}
 	if o.FakeAdapterPath != "" {
 		env.executables[adapter.FakeID] = o.FakeAdapterPath
 	}
-	vendors := false
 	for _, v := range o.vendorPaths() {
 		if v.path != "" {
 			env.executables[v.id] = v.path
-			vendors = true
 		}
 	}
 	logger.Info("sidecar starting", "plane_url", e.PlaneURL, "state_dir", l.root)
 	if o.FakeAdapterPath != "" {
 		logger.Warn(FakeAdapterWarning)
 	}
-	// The recipes are Linux-qualified: explicit enablement permits use on
-	// macOS without claiming qualification (decided by the explicit GOOS).
-	if vendors && o.GOOS == "darwin" {
+	// The Claude/Codex recipes are Linux-qualified: explicit enablement
+	// permits use on macOS without claiming qualification (decided by the
+	// explicit GOOS). Grok and Cursor never trigger that warning.
+	if (o.ClaudeAdapterPath != "" || o.CodexAdapterPath != "") && o.GOOS == "darwin" {
 		logger.Warn(DarwinVendorWarning)
+	}
+	// Iteration 11: each enabled wave-2 adapter's single fixed warning (the
+	// flags stay accepted for a refused posture, so the role check can name
+	// it and other adapters keep working).
+	if o.GrokAdapterPath != "" {
+		w := GrokVendorWarning
+		if o.GOOS == "darwin" {
+			w += " " + GrokDarwinWarningSuffix
+		}
+		logger.Warn(w)
+	}
+	if o.CursorAdapterPath != "" {
+		logger.Warn(CursorVendorWarning)
 	}
 	d.emit(event{kind: evStarted})
 	w := newWorkers()

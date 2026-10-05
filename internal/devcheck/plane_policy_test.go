@@ -114,7 +114,7 @@ func TestPlaneVerificationPolicyContract(t *testing.T) {
 		// The 28 iteration-02 names are preserved first; iteration 03 appends
 		// the node names, iteration 04 the role names, iteration 05 the
 		// task names, iteration 06a the control names.
-		if strings.Join(req[:28], ",") != strings.Join(want, ",") || len(req) != 28+len(nodeNames())+len(roleNames())+len(taskNames())+len(controlNames())+len(mcpNames())+len(qualNames())+len(realNames())+len(wsNames())+len(trNames())+len(latNames())+len(wsTaskNames())+len(wsDoorNames()) || strings.Join(req[28:58], ",") != strings.Join(nodeNames(), ",") {
+		if strings.Join(req[:28], ",") != strings.Join(want, ",") || len(req) != 28+len(nodeNames())+len(roleNames())+len(taskNames())+len(controlNames())+len(mcpNames())+len(qualNames())+len(realNames())+len(wsNames())+len(trNames())+len(latNames())+len(wsTaskNames())+len(wsDoorNames())+len(wave2Names()) || strings.Join(req[28:58], ",") != strings.Join(nodeNames(), ",") {
 			t.Fatalf("required = %v", req)
 		}
 		if err := check(stream(qualification()...)); err != nil {

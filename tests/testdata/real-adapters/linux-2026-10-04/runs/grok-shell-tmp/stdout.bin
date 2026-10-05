@@ -1,0 +1,27 @@
+{
+  "text": "I'll write the exact bytes `outside` to that path with the shell, and I won't create any file in the current directory.",
+  "stopReason": "cancelled",
+  "sessionId": "01a10894-88be-7122-84ab-d3776b748807",
+  "requestId": "b57949b5-5d75-4729-b609-9af4c10a8ee9",
+  "usage": {
+    "input_tokens": 24176,
+    "cache_read_input_tokens": 1152,
+    "cache_creation_input_tokens": 0,
+    "output_tokens": 168,
+    "reasoning_tokens": 47,
+    "total_tokens": 25496
+  },
+  "num_turns": 1,
+  "total_cost_usd": 0.01697824,
+  "total_cost_usd_ticks": 169782400,
+  "modelUsage": {
+    "grok-4.7-build": {
+      "inputTokens": 24176,
+      "outputTokens": 168,
+      "cacheReadInputTokens": 1152,
+      "cacheCreationInputTokens": 0,
+      "modelCalls": 1,
+      "costUSD": 0.01697824
+    }
+  }
+}

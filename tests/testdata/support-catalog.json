@@ -264,71 +264,99 @@
   },
   {
     "id": "grok",
-    "version": "grok 1.0.41 (4220f3b224a6) [stable]",
+    "version": "grok 1.0.46 (2765805b9442) [stable]",
     "platform": "linux/amd64",
     "facts": {
       "headless": {
         "status": "VERIFIED",
-        "value": "`grok -p/--single <prompt>` prints the response to stdout and exits; `--prompt-file <path>` is another single-turn input. Use this, not `grok agent serve/headless`.",
+        "value": "Narrow Linux observation (grok 1.0.46, 2026-10-04): `grok --output-format json --model grok-4.7 --reasoning-effort low --permission-mode dontAsk -p <composed-prompt>`, the whole prompt as the one -p argument and stdin empty, in a fresh mode-0700 non-git working directory: the success run answered and exited 0. In the exit-2 capture the -p flag was present with no value (the prompt only on stdin): stderr `a value is required for '--single <PROMPT>'`, stdout empty. Neither --prompt-file nor a - sentinel was run.",
         "evidence": [
-          "tests/testdata/cli-help/grok-help.txt",
-          "tests/testdata/cli-help/grok-agent.txt"
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-stdin-success/argv.txt",
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-stdin-success/pwd.txt",
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-stdin-success/exit.txt",
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-stdin-missing/argv.txt",
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-stdin-missing/stdin.txt",
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-stdin-missing/stderr.bin",
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-stdin-missing/exit.txt",
+          "tests/testdata/real-adapters/linux-2026-10-04/host.txt"
         ],
         "verification_iteration": "11"
       },
       "model": {
         "status": "VERIFIED",
-        "value": "`--model <model>` flag (help); Callsheet supplies the model explicitly.",
+        "value": "`--model grok-4.7` ran with grok 1.0.46 on the recorded Linux recipe (exit 0, text `pong`); Callsheet passes exactly `grok-4.7` for grok. The success output's modelUsage key `grok-4.7-build` is evidence of that run, not an extra alias or accepted selection.",
         "evidence": [
-          "tests/testdata/cli-help/grok-help.txt"
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-stdin-success/argv.txt",
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-stdin-success/stdout.bin",
+          "tests/testdata/real-adapters/linux-2026-10-04/grok-models.txt"
         ],
         "verification_iteration": "11"
       },
       "effort": {
-        "status": "UNVERIFIED",
-        "value": "Verified subset: `--reasoning-effort <effort>` (alias `--effort`). The allowed effort set and per-model mapping are unverified; iteration 11 must qualify them.",
+        "status": "VERIFIED",
+        "value": "`--reasoning-effort low` with `--model grok-4.7` ran with grok 1.0.46 on the recorded Linux recipe (exit 0); Callsheet passes only `low` for grok. The other listed or accepted efforts (xhigh, high, medium) were not run and are refused.",
         "evidence": [
-          "tests/testdata/cli-help/grok-help.txt"
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-stdin-success/argv.txt",
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-stdin-success/exit.txt",
+          "tests/testdata/real-adapters/linux-2026-10-04/help/grok-help.stdout.txt"
         ],
         "verification_iteration": "11"
       },
       "approval": {
-        "status": "UNVERIFIED",
-        "value": "Verified subset: `--permission-mode dontAsk` is a supported mode; `--always-approve` auto-approves all tools. The exact dontAsk no-prompt/denial behaviour is unverified; iteration 11 qualifies dontAsk first and must not assume always-approve preserves containment.",
+        "status": "VERIFIED",
+        "value": "Narrow dontAsk observation on the recorded Linux host: `--permission-mode dontAsk` answered the no-tools prompt (exit 0), and all five write canaries (shell and file-edit tools; in-directory, home and /tmp targets) exited 0 with stopReason `cancelled` and wrote no file, permitted in-directory writes included. This is no claim that every tool is denied.",
         "evidence": [
-          "tests/testdata/cli-help/grok-help.txt"
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-stdin-success/exit.txt",
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-shell-permitted/stdout.bin",
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-shell-permitted/scratch.txt",
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-shell-home/stdout.bin",
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-shell-tmp/stdout.bin",
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-edit-permitted/stdout.bin",
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-edit-permitted/scratch.txt",
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-edit-home/stdout.bin",
+          "tests/testdata/real-adapters/linux-2026-10-04/NOTES.md"
         ],
         "verification_iteration": "11"
       },
       "sandbox_linux": {
         "status": "UNVERIFIED",
-        "value": "Verified subset: `--sandbox <profile>` / `GROK_SANDBOX` select a filesystem/network profile; the candidate leaves both unchanged. Default/profile discovery, approval-flag interaction and Linux/TTY requirements are unverified; iteration 11 must document enforcement from vendor evidence.",
+        "value": "The enforcement or configuration mechanism behind the dontAsk outcome is UNVERIFIED (iteration 11): no sanitized effective configuration was captured. Recorded: under dontAsk no in-directory canary and no home or /tmp sentinel was written; the baseline without --permission-mode wrote the in-directory canary (bytes `permitted`) and no home file, its text claiming a permission-denied redirect (model prose, not proof of a mechanism). The baseline comparison is incomplete (no baseline /tmp or file-edit run) and claims no OS isolation.",
         "evidence": [
-          "tests/testdata/cli-help/grok-help.txt"
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-baseline-permitted/canary-ok.txt",
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-baseline-permitted/argv.txt",
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-baseline-home/stdout.bin",
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-shell-permitted/scratch.txt",
+          "tests/testdata/real-adapters/linux-2026-10-04/NOTES.md"
         ],
         "verification_iteration": "11"
       },
       "sandbox_macos": {
         "status": "UNVERIFIED",
-        "value": "Verified subset as on Linux (help-level flags only). macOS enforcement and profile format are unverified; iteration 11 must document them from vendor evidence on a native Mac.",
+        "value": "UNVERIFIED; iteration 11 did not measure it: no Darwin capture exists, and product execution of grok on macOS is refused until a separate qualification.",
         "evidence": [
-          "tests/testdata/cli-help/grok-help.txt"
+          "tests/testdata/real-adapters/linux-2026-10-04/NOTES.md"
         ],
         "verification_iteration": "11"
       },
       "final_message": {
-        "status": "UNVERIFIED",
-        "value": "Verified subset: `--output-format plain|json|streaming-json|streaming-messages-json`; `-p` prints the response. The JSON final-record schema and error extraction are unverified; iteration 11 needs saved success/failure transcripts.",
+        "status": "VERIFIED",
+        "value": "With `--output-format json` stdout was one JSON object: on success a string `text` (`pong`) and a string `stopReason` (`end_turn`, and `cancelled` on the dontAsk canaries); on the model failure `type` `error` and a string `message` (exit 1). Callsheet extracts the decoded text or error message exactly (input bounded to 8 MiB, answer to 64 KiB) and never thought, usage or session metadata; malformed or absent output is a null final message with a diagnostic, not an empty answer.",
         "evidence": [
-          "tests/testdata/cli-help/grok-help.txt"
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-stdin-success/stdout.bin",
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-stdin-fail/stdout.bin",
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-stdin-fail/exit.txt",
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-shell-home/stdout.bin"
         ],
         "verification_iteration": "11"
       },
       "exit_codes": {
         "status": "UNVERIFIED",
-        "value": "Help/version exited 0 only. Runtime success, authentication, tool failure and cancellation exit codes are unverified; iteration 11 verifies them.",
+        "value": "The complete mapping is UNVERIFIED (iteration 11): on Linux 0 was observed for normal and cancelled-tool answers, 1 for an unknown model, and 2 when the -p flag was present with no value; authentication, tool failure, interruption and every macOS exit were not measured. Callsheet reports the observed exit; stopReason never decides the task's state.",
         "evidence": [
-          "tests/testdata/cli-help/grok-version.txt"
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-stdin-success/exit.txt",
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-shell-home/exit.txt",
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-stdin-fail/exit.txt",
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-stdin-missing/exit.txt"
         ],
         "verification_iteration": "11"
       },
@@ -377,70 +405,94 @@
   },
   {
     "id": "cursor",
-    "version": "2026.09.23-86fc751",
+    "version": "2026.10.01-e373342",
     "platform": "linux/amd64",
     "facts": {
       "headless": {
         "status": "VERIFIED",
-        "value": "`cursor-agent -p/--print <prompt>` has write/shell tools; `--output-format text|json|stream-json`.",
+        "value": "Narrow Linux observation (cursor-agent 2026.10.01-e373342, 2026-10-04) of a rejected candidate, not production argv: `cursor-agent -p --output-format json --model grok-4.7-low --force --trust` in print mode with json output and the prompt only on stdin (no positional prompt) answered `pong` and exited 0 in a fresh mode-0700 non-git working directory. Callsheet never emits this candidate: the same flags wrote outside the scratch directory, so Cursor task execution is refused.",
         "evidence": [
-          "tests/testdata/cli-help/cursor-help.txt"
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-stdin-success/argv.txt",
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-stdin-success/stdin.txt",
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-stdin-success/pwd.txt",
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-stdin-success/stdout.bin",
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-stdin-success/exit.txt",
+          "tests/testdata/real-adapters/linux-2026-10-04/host.txt"
         ],
         "verification_iteration": "11"
       },
       "model": {
         "status": "VERIFIED",
-        "value": "`--model <model>`; help documents bracket parameterization (e.g. a quoted model with effort=high) as syntax only.",
+        "value": "The measured vendor model argument is `grok-4.7-low` (listed by the CLI; it ran with exit 0 under the rejected candidate). Callsheet's role pair model `grok-4.7`, effort `low` maps to that literal argument; Cursor execution itself is refused.",
         "evidence": [
-          "tests/testdata/cli-help/cursor-help.txt"
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-stdin-success/argv.txt",
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-stdin-success/stdout.bin",
+          "tests/testdata/real-adapters/linux-2026-10-04/cursor-models.txt"
         ],
         "verification_iteration": "11"
       },
       "effort": {
-        "status": "UNVERIFIED",
-        "value": "No standalone effort flag in captured help; bracket override syntax is verified but the Q12 suffix mapping and allowed model/effort sets are unverified. Iteration 11 must establish a mapping table, not blindly concatenate models and efforts.",
+        "status": "VERIFIED",
+        "value": "Only the literal mapping of (`grok-4.7`, `low`) to `grok-4.7-low` is recorded; the CLI has no standalone effort flag and Callsheet applies no general model-plus-effort concatenation. The listed medium, high and xhigh variants and the bracket syntax were not run and are refused.",
         "evidence": [
-          "tests/testdata/cli-help/cursor-help.txt"
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-stdin-success/argv.txt",
+          "tests/testdata/real-adapters/linux-2026-10-04/cursor-models.txt",
+          "tests/testdata/real-adapters/linux-2026-10-04/help/cursor-help.stdout.txt"
         ],
         "verification_iteration": "11"
       },
       "approval": {
-        "status": "VERIFIED",
-        "value": "`--force`/`-f` force-allows commands unless explicitly denied (`--yolo` alias); `--auto-review` may still prompt; `--trust` suppresses the workspace trust prompt; `--approve-mcps` approves all MCP servers and is a distinct, wider permission.",
+        "status": "UNVERIFIED",
+        "value": "A safe unattended approval posture is UNVERIFIED (iteration 11). Recorded, not a success qualification: the `--force --trust` candidate ran unattended and its shell and file tools wrote outside the scratch directory (home and /tmp sentinels `outside`); without both flags the baseline refused workspace trust before any model call (exit 1).",
         "evidence": [
-          "tests/testdata/cli-help/cursor-help.txt"
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-shell-home/escape-home.txt",
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-edit-home/escape-home.txt",
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-shell-tmp/escape-tmp.txt",
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-baseline-permitted/argv.txt",
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-baseline-permitted/stderr.bin",
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-baseline-permitted/exit.txt"
         ],
         "verification_iteration": "11"
       },
       "sandbox_linux": {
         "status": "UNVERIFIED",
-        "value": "Verified subset: `--sandbox enabled|disabled` overrides configuration; the candidate omits it and uses `--force --trust`. The interaction of force with the configured sandbox, shell versus file-tool sandboxing and Linux boundaries are unverified; iteration 11 must qualify them behaviourally.",
+        "value": "No recipe preserving the operator posture is qualified (UNVERIFIED, iteration 11): `--force --trust` wrote outside the scratch directory, and adding `--sandbox enabled` failed authentication (exit 1, empty stdout) before containment could be tested; the absent write after an authentication failure is not containment.",
         "evidence": [
-          "tests/testdata/cli-help/cursor-help.txt"
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-shell-home/escape-home.txt",
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-sandbox-permitted/argv.txt",
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-sandbox-permitted/stderr.bin",
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-sandbox-home/stderr.bin",
+          "tests/testdata/real-adapters/linux-2026-10-04/NOTES.md"
         ],
         "verification_iteration": "11"
       },
       "sandbox_macos": {
         "status": "UNVERIFIED",
-        "value": "Verified subset as on Linux (help-level flag only). macOS boundaries and config keys are unverified; iteration 11 must qualify them on a native Mac.",
+        "value": "UNVERIFIED; iteration 11 did not measure it: no Darwin capture exists, and product execution of cursor is refused on every OS.",
         "evidence": [
-          "tests/testdata/cli-help/cursor-help.txt"
+          "tests/testdata/real-adapters/linux-2026-10-04/NOTES.md"
         ],
         "verification_iteration": "11"
       },
       "final_message": {
-        "status": "UNVERIFIED",
-        "value": "Verified subset: print output formats. The final JSON field/event, error text and distinction from tool/status output are unverified; iteration 11 must capture fixtures before parser design.",
+        "status": "VERIFIED",
+        "value": "With `--output-format json` the successful runs printed one JSON object with `type` `result`, a boolean `is_error` and a string `result` (`pong` on success); the failed model, workspace-trust and authentication runs printed no stdout. Callsheet's offline parser extracts `result` exactly (input bounded to 8 MiB, answer to 64 KiB) and leaves absent output null with a diagnostic; it is fixture handling only until a safe recipe is qualified.",
         "evidence": [
-          "tests/testdata/cli-help/cursor-help.txt"
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-stdin-success/stdout.bin",
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-shell-home/stdout.bin",
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-stdin-fail/stderr.bin",
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-stdin-fail/exit.txt"
         ],
         "verification_iteration": "11"
       },
       "exit_codes": {
         "status": "UNVERIFIED",
-        "value": "Help/version exited 0 only. Worker success, error, authentication, denial and cancellation exit codes are unverified; iteration 11 verifies them.",
+        "value": "The complete mapping is UNVERIFIED (iteration 11): on Linux 0 was observed for result runs and 1 for an unknown model, the workspace-trust refusal and the authentication failures (the trust and authentication cases made no model call); interruption, tool failure and every macOS exit were not measured.",
         "evidence": [
-          "tests/testdata/cli-help/cursor-version.txt"
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-stdin-success/exit.txt",
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-stdin-fail/exit.txt",
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-baseline-home/exit.txt",
+          "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-sandbox-home/exit.txt"
         ],
         "verification_iteration": "11"
       },

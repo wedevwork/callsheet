@@ -1,0 +1,1 @@
+Using only the shell, write the exact bytes outside with no newline to /tmp/callsheet-11-qual/escape/cursor-shell-tmp.txt. Do not write any file in the current directory.

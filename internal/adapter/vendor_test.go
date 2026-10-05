@@ -40,12 +40,14 @@ func readCapture(t testing.TB, rel string) []byte {
 }
 
 // TestRealAdapterRegistry is UT FP-1: the built-in registry of claude,
-// codex and fake, their immutable descriptors, the qualification table
-// and ValidateSelection.
+// codex and fake (with iteration 11's cursor and grok between and after
+// them), their immutable descriptors, the qualification table and
+// ValidateSelection.
 func TestRealAdapterRegistry(t *testing.T) {
 	r := Builtin(t.TempDir())
 	ds := r.Descriptors()
-	want := []Descriptor{{ID: "claude", Efforts: []string{"low"}}, {ID: "codex", Efforts: []string{"low"}}, {ID: "fake", Efforts: []string{"low", "medium", "high"}, TestOnly: true}}
+	want := []Descriptor{{ID: "claude", Efforts: []string{"low"}}, {ID: "codex", Efforts: []string{"low"}}, {ID: "cursor", Efforts: []string{"low"}},
+		{ID: "fake", Efforts: []string{"low", "medium", "high"}, TestOnly: true}, {ID: "grok", Efforts: []string{"low"}}}
 	if len(ds) != len(want) {
 		t.Fatalf("descriptors = %+v", ds)
 	}
@@ -72,15 +74,18 @@ func TestRealAdapterRegistry(t *testing.T) {
 		t.Fatalf("registry mutated: %+v", again)
 	}
 	look := Lookup()
-	for id, testOnly := range map[string]bool{"claude": false, "codex": false, "fake": true} {
+	for id, testOnly := range map[string]bool{"claude": false, "codex": false, "fake": true, "grok": false, "cursor": false} {
 		if info, ok := look(id); !ok || info.TestOnly != testOnly {
 			t.Fatalf("lookup %s = %+v %v", id, info, ok)
 		}
 	}
-	// Exactly the captured pairs and versions.
+	// Exactly the captured pairs and versions (iteration 11's two rows after
+	// the unchanged iteration 08 rows, the table sorted by ID).
 	qs := Qualifications()
-	if len(qs) != 2 || qs[0] != (Qualification{ID: "claude", Version: "2.1.285 (Claude Code)", Model: "sonnet", Effort: "low"}) ||
-		qs[1] != (Qualification{ID: "codex", Version: "codex-cli 0.159.0", Model: "gpt-6.1-sol", Effort: "low"}) {
+	if len(qs) != 4 || qs[0] != (Qualification{ID: "claude", Version: "2.1.285 (Claude Code)", Model: "sonnet", Effort: "low"}) ||
+		qs[1] != (Qualification{ID: "codex", Version: "codex-cli 0.159.0", Model: "gpt-6.1-sol", Effort: "low"}) ||
+		qs[2] != (Qualification{ID: "cursor", Version: "2026.10.01-e373342", Model: "grok-4.7", Effort: "low"}) ||
+		qs[3] != (Qualification{ID: "grok", Version: "grok 1.0.46 (2765805b9442) [stable]", Model: "grok-4.7", Effort: "low"}) {
 		t.Fatalf("qualifications = %+v", qs)
 	}
 	qs[0].Model = "opus"
@@ -103,7 +108,7 @@ func TestRealAdapterRegistry(t *testing.T) {
 		{"codex", "gpt-6.1-sol", "medium", "effort", "the codex model/effort selection is not qualified; supported: model gpt-6.1-sol, effort low"},
 		{"codex", secret, "low", "model", "codex"},
 		{"codex", "GPT-6.1-SOL", "low", "model", "codex"},
-		{"grok", "m", "low", "adapter", "unknown adapter; registered adapters: claude, codex, fake"},
+		{"unknown-vendor", "m", "low", "adapter", "unknown adapter; registered adapters: claude, codex, cursor, fake, grok"},
 		{secret, "m", "low", "adapter", "unknown adapter"},
 		{"fake", " ", "low", "model", "invalid model"},
 		{"fake", "m", "extreme", "effort", "allowed: low, medium, high"},

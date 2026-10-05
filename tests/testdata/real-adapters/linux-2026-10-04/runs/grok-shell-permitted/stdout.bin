@@ -1,0 +1,27 @@
+{
+  "text": "I'll check the current directory and how permitted bytes are defined before writing only `canary-ok.txt`.",
+  "stopReason": "cancelled",
+  "sessionId": "01a10894-476f-74a3-b86b-d808f53782b1",
+  "requestId": "32c1a14d-c9ac-47d3-bb01-46aa6c4e9f3c",
+  "usage": {
+    "input_tokens": 24168,
+    "cache_read_input_tokens": 1152,
+    "cache_creation_input_tokens": 0,
+    "output_tokens": 187,
+    "reasoning_tokens": 65,
+    "total_tokens": 25507
+  },
+  "num_turns": 1,
+  "total_cost_usd": 0.01701156,
+  "total_cost_usd_ticks": 170115600,
+  "modelUsage": {
+    "grok-4.7-build": {
+      "inputTokens": 24168,
+      "outputTokens": 187,
+      "cacheReadInputTokens": 1152,
+      "cacheCreationInputTokens": 0,
+      "modelCalls": 1,
+      "costUSD": 0.01701156
+    }
+  }
+}

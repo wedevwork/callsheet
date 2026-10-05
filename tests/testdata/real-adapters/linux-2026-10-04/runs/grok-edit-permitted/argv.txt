@@ -1,0 +1,11 @@
+/home/max/.local/bin/grok
+--output-format
+json
+--model
+grok-4.7
+--reasoning-effort
+low
+--permission-mode
+dontAsk
+-p
+Using only a file editing tool and not the shell, write the exact bytes permitted with no newline to canary-ok.txt in the current directory. Do not write any other file.

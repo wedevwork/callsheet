@@ -17,6 +17,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/wedevwork/callsheet/internal/adapter"
 )
 
 // The smoke's opt-in and parameters.
@@ -36,15 +38,26 @@ const (
 		"CALLSHEET_CLAUDE_PATH=/absolute/path/to/claude \\\n" +
 		"CALLSHEET_CODEX_PATH=/absolute/path/to/codex \\\n" +
 		"go test -tags=realadaptersmoke ./tests/smoke -run '^TestRealWorkerSmoke$' -count=1 -timeout=5m"
+	// Wave2Command is the documented wave-2 invocation (iteration 11): the
+	// same test with the Grok and Cursor paths, so Command stays valid.
+	Wave2Command = "CALLSHEET_REAL_ADAPTER_SMOKE=1 \\\n" +
+		"CALLSHEET_GROK_PATH=/absolute/path/to/grok \\\n" +
+		"CALLSHEET_CURSOR_PATH=/absolute/path/to/cursor-agent \\\n" +
+		"go test -tags=realadaptersmoke ./tests/smoke -run '^TestRealWorkerSmoke$' -count=1 -timeout=5m"
 )
 
-// PathEnv returns the explicit executable variable of vendor id.
+// PathEnv returns the explicit executable variable of vendor id (iteration
+// 11 adds grok and cursor), or "" for an unknown vendor.
 func PathEnv(id string) string {
 	switch id {
 	case "claude":
 		return "CALLSHEET_CLAUDE_PATH"
 	case "codex":
 		return "CALLSHEET_CODEX_PATH"
+	case "grok":
+		return "CALLSHEET_GROK_PATH"
+	case "cursor":
+		return "CALLSHEET_CURSOR_PATH"
 	}
 	return ""
 }
@@ -124,3 +137,9 @@ func (g Gate) Vendor(id string) VendorDecision {
 
 // OSGate is the real smoke's gate.
 func OSGate() Gate { return Gate{Getenv: os.Getenv, Stat: os.Stat} }
+
+// Refused reports whether vendor's smoke on goos is an expected posture
+// refusal rather than a paid run (iteration 11): Cursor on every OS and
+// Grok outside Linux, as adapter.ValidateWorkerPosture decides from the
+// explicit OS value. It needs no filesystem or process activity.
+func Refused(vendor, goos string) bool { return adapter.ValidateWorkerPosture(vendor, goos) != nil }

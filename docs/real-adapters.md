@@ -1,4 +1,4 @@
-# Real worker adapters: Claude and Codex
+# Real worker adapters: Claude, Codex, Grok and Cursor
 
 Iteration 08 adds production `claude` and `codex` worker adapters beside the
 test-only `fake`. A worker runs a goal-and-answer task through the vendor CLI
@@ -6,6 +6,9 @@ it is explicitly given, with the prompt on stdin, and returns the vendor's
 final message; no workspace, checkout or pushed result is involved. The
 qualification evidence and every per-fact status are in the
 [support catalog](support-catalog.md); this page is the operator procedure.
+Iteration 11 adds `grok`, which runs on Linux only with narrow limits, and
+`cursor`, which is registered and version-probed but refused for task
+execution; see [Wave 2: Grok and Cursor](#wave-2-grok-and-cursor).
 
 ## What is qualified
 
@@ -75,8 +78,11 @@ status` and your Claude `settings.json`, or Codex's `config.toml`.
 
 Each task gets a fresh private scratch directory (mode 0700, not a git
 checkout) as its working directory, in its own process group led by the
-task guardian. The composed prompt is the only stdin; it is never an argument
-or a prompt file.
+task guardian. For Claude and Codex, the composed prompt is the only stdin;
+it is never an argument or a prompt file. Grok differs: it receives the
+complete composed prompt as its `-p` argument, with stdin empty, so the
+prompt is visible to process inspection; see the argv exposure warning in
+[Wave 2: Grok and Cursor](#wave-2-grok-and-cursor).
 
 - **Claude**: the final message is the `result` string of the single JSON
   object on stdout, exactly as decoded (an empty string is a valid answer),
@@ -111,14 +117,87 @@ the file was not read). A missing answer on a nonzero exit keeps that exit.
 Denial prose in an answer ("Read-only file system") is the model's text, not
 evidence that a tool ran or failed.
 
+## Wave 2: Grok and Cursor
+
+The coordinator's Linux captures of 2026-10-04 ([host](../tests/testdata/real-adapters/linux-2026-10-04/host.txt),
+[captures](../tests/testdata/real-adapters/linux-2026-10-04/)) decide two
+explicit support limits:
+
+| Adapter | Version (`--version` output) | Model | Effort | Worker execution |
+|---|---|---|---|---|
+| `grok` | `grok 1.0.46 (2765805b9442) [stable]` | `grok-4.7` | `low` | Linux only: `--output-format json --model grok-4.7 --reasoning-effort low --permission-mode dontAsk -p <composed-prompt>`, stdin empty |
+| `cursor` | `2026.10.01-e373342` | `grok-4.7` | `low` | Refused on every OS |
+
+Enable them like the others, with absolute paths on every start (the
+captured Cursor executable is `cursor-agent`; its `agent` alias was not
+qualified):
+
+```sh
+callsheet sidecar run --grok-adapter /opt/vendor/bin/grok --cursor-adapter /opt/vendor/bin/cursor-agent
+```
+
+An omitted flag disables that adapter; an empty, relative or repeated flag
+is a usage error (exit 2). The flags are accepted even where execution is
+refused, so other enabled adapters keep working and role registration
+reports the precise refusal. Each probe runs only `<path> --version` and
+accepts exactly the version above; a matching version is invocability, not
+permission to execute tasks.
+
+**Grok** answers, but under `dontAsk` every measured write was cancelled,
+including permitted in-directory writes (`stopReason` `cancelled`, exit 0).
+Every measured write was cancelled; useful tool execution remains
+unqualified. Exit 0 does not prove the requested work completed. Grok requires the prompt in its `-p` argument, so
+the complete composed prompt (manuals and task envelope) is visible to
+process inspection by the OS and same-user tools; Callsheet never logs or
+journals it. The composed prompt is limited to 32 KiB (a product argv
+policy, not a measured vendor limit): a larger, empty, non-UTF-8 or
+NUL-containing prompt is refused before launch as `start_failed`. The final
+message is the decoded `text` of Grok's one JSON object, or its `message`
+when `type` is `error`; `stopReason` is kept in the log and never decides
+the task's state. On macOS Grok roles are refused pending qualification.
+At start the sidecar logs once:
+
+```text
+grok adapter enabled: prompts are passed in argv and may be visible to process inspection; the composed prompt limit is 32 KiB; dontAsk cancelled all measured writes, including permitted writes; exit 0 does not prove requested work completed
+```
+
+with ` grok worker execution on macOS is refused pending qualification; consult the support catalog` appended on macOS.
+
+**Cursor** is refused: its measured `--force --trust` candidate wrote
+outside its scratch directory (home and `/tmp`), the baseline without those
+flags refused workspace trust, and adding `--sandbox enabled` failed
+authentication before any containment could be observed. Registering a
+`cursor` role after a matching version probe returns `invalid_argument`,
+field `adapter`, reason `probe_failed` and the message `cursor worker
+execution is refused: no qualified unattended recipe preserves the operator
+posture; consult the support catalog`; a role can never become ready, and a
+stale role's task is refused `start_failed` before any launch (sidecar log
+`task worker posture not qualified`, `reason=worker_posture_not_qualified`).
+At start the sidecar logs once `cursor adapter enabled for version probing
+only: unattended worker execution is refused because no qualified recipe
+preserves the operator posture; consult the support catalog`. Its JSON
+result parser exists for offline fixtures only. This fail-closed boundary
+is the delivered Cursor outcome.
+
+Neither adapter passes a sandbox override, approval bypass, trust or force
+flag, edits operator configuration, selects a profile or retries with
+broader permissions. Run sidecars under a dedicated OS user. No
+configuration profile, key or enforcement mechanism can be prescribed as
+verified from these captures: they hold no sanitized effective
+configuration and no proof of all-tool containment. What a later
+qualification must record to change either limit is in the catalog's
+qualification handoff.
+
 ## Offline proof in CI
 
 CI never runs a vendor CLI or a model. The function tests replay the
 checked-in captures byte for byte through a stub enabled with the real
-`--claude-adapter` and `--codex-adapter` flags, against a real plane,
-sidecar and `callsheet mcp`, with an isolated HOME and a PATH of
-launch-recording traps. They prove Callsheet's argv, stdin, extraction and
-exit handling of the captured contract, not that vendor behavior is stable.
+`--claude-adapter`, `--codex-adapter`, `--grok-adapter` and
+`--cursor-adapter` flags, against a real plane, sidecar and `callsheet
+mcp`, with an isolated HOME and a PATH of launch-recording traps. They
+prove Callsheet's argv, stdin, extraction and exit handling of the captured
+contract, and Cursor's refusal with zero task launches, not that vendor
+behavior is stable.
 
 ## Opt-in real smoke
 
@@ -142,6 +221,25 @@ no-tools prompt and expects exit 0 and the final bytes `pong` within two
 minutes (on timeout it cancels the task and waits for its cleanup). A skipped
 smoke is not qualification, and a passing one is not the remote acceptance
 below.
+
+The wave-2 smoke uses the same test with its own variables, so the command
+above stays valid:
+
+```sh
+CALLSHEET_REAL_ADAPTER_SMOKE=1 \
+CALLSHEET_GROK_PATH=/absolute/path/to/grok \
+CALLSHEET_CURSOR_PATH=/absolute/path/to/cursor-agent \
+go test -tags=realadaptersmoke ./tests/smoke -run '^TestRealWorkerSmoke$' -count=1 -timeout=5m
+```
+
+On Linux the Grok subtest dispatches the no-tools goal and expects exit 0
+and the final bytes `pong`: answer-path operability, not useful tool work
+or containment. On macOS it is an expected-refusal smoke: the role is
+refused with Grok's posture message and nothing is launched. The Cursor
+subtest, on either system, is a non-model refusal smoke: after a matching
+version probe the role registration returns Cursor's posture refusal and
+the role never becomes ready or dispatches. Neither refusal is vendor
+qualification. Unset Claude/Codex paths skip those subtests as before.
 
 ## Remote acceptance (M3)
 

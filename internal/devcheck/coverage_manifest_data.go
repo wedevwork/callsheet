@@ -147,6 +147,22 @@ var WorkspaceCoverageManifest = []CoverageEntry{
 	// (their 09b whole-file entries remain).
 	{Group: GroupChanged, File: modulePath + "/internal/client/tasks.go"},
 	{Group: GroupChanged, File: modulePath + "/internal/cli/task.go"},
+
+	// Iteration 11 (base 1d9d663): the production files it changes that no
+	// earlier entry lists whole, as whole files (no build constraint:
+	// evaluated on both systems); the smoke harness in internal/testkit is
+	// test support, not production. Its other changed files are already
+	// listed whole: adapter/vendor.go,
+	// contract/task.go, contract/journal.go, mcp/schemas.go, mcp/tools.go,
+	// sidecar/run.go, sidecar/sidecar.go, sidecar/tasks.go and
+	// devcheck/native.go.
+	{Group: GroupChanged, File: modulePath + "/internal/adapter/adapter.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/adapter/final.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/sidecar/roles.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/cli/sidecar.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/cli/role.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/contract/role.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/plane/roles.go"},
 }
 
 // modulePath is the profile's import-path prefix.

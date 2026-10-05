@@ -16,9 +16,12 @@ import (
 // The sidecar's task journal and guardian codecs (iteration 06a,
 // resilience.md "Recoverable launch"): private local documents and
 // messages, strictly decoded with the contract's machinery. They never
-// cross the network and never carry prompts or manual content (the
-// guardian invocation carries the adapter's argv and environment on a
-// private inherited pipe only).
+// cross the network, and the persisted journal and owner documents never
+// carry prompts or manual content. The guardian invocation carries the
+// adapter's argv and environment on a private inherited pipe only, so it
+// is transient, never persisted: since iteration 11 a Grok invocation's
+// argv holds the complete composed prompt (manuals and envelope) as its
+// -p value, bounded to 32 KiB by the adapter.
 const (
 	// ExecutionJournalSchemaVersion is execution.json's schema (iteration
 	// 10b: the journal-owned work directory, the workspace binding and the

@@ -7,8 +7,11 @@
 // names a failed task reports. The fake adapter is a test/demo adapter
 // that never calls a model. Iteration 08 adds the production Claude and
 // Codex adapters with their qualified versions and model/effort pairs.
-// Every adapter is enabled only by an explicit absolute executable path on
-// the worker.
+// Iteration 11 adds Grok (prompt in its -p argument, Linux execution
+// only) and Cursor (registered and version-probed, execution refused on
+// every OS), with ValidateWorkerPosture deciding execution eligibility
+// separately from selection and version. Every adapter is enabled only by
+// an explicit absolute executable path on the worker.
 //
 // The package imports neither plane, sidecar, devcheck nor testkit. Its
 // process and clock dependencies are private and injectable for package
@@ -123,12 +126,13 @@ func ContractLookup(r Registry) contract.AdapterLookup {
 	}
 }
 
-// Builtin is the product registry: claude, codex and the fake adapter
-// (sorted by ID), whose probes run in the given working directory (the
-// sidecar state root; the plane and coordinators, which never probe, pass
-// ""). Construction performs no I/O.
+// Builtin is the product registry: claude, codex, cursor, the fake adapter
+// and grok (sorted by ID), whose probes run in the given working directory
+// (the sidecar state root; the plane and coordinators, which never probe,
+// pass ""). Construction performs no I/O. Registration is not execution
+// eligibility (ValidateWorkerPosture).
 func Builtin(dir string) Registry {
-	r, err := NewRegistry(NewClaude(dir), NewCodex(dir), NewFake(dir))
+	r, err := NewRegistry(NewClaude(dir), NewCodex(dir), NewCursor(dir), NewFake(dir), NewGrok(dir))
 	if err != nil {
 		panic(err) // unreachable: the built-in descriptors are valid
 	}

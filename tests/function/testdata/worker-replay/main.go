@@ -25,6 +25,14 @@
 // scenario's file fault), and exits with the captured exit status. A failed
 // validation is recorded and reported as a distinct fixture failure: exit
 // 97.
+//
+// Iteration 11 adds the grok and cursor impersonations (a link named grok,
+// or cursor-agent or cursor, selects them) for version calls. In Grok's task
+// mode the task envelope is the final -p argument and stdin must be empty
+// (zero bytes); the scenario's ExpectedPrompt (one task-ID placeholder) is
+// compared with that argument and its ExpectedStdin must be the explicit
+// empty string. Cursor has no task mode: any attempted Cursor task launch
+// is recorded and fails as a fixture failure.
 package main
 
 import (
@@ -58,8 +66,13 @@ type Scenario struct {
 	SourceArgv    []string `json:"source_argv"`
 	ExpectedArgv  []string `json:"expected_argv"`
 	Normalization string   `json:"normalization"`
-	// ExpectedStdin, when set, is the exact stdin with "{task_id}".
+	// ExpectedStdin, when set, is the exact stdin with "{task_id}" (for
+	// Grok it must be set, to the empty string).
 	ExpectedStdin *string `json:"expected_stdin"`
+	// ExpectedPrompt (iteration 11), when set, is Grok's exact -p value
+	// (the composed prompt) with "{task_id}"; ExpectedArgv names that
+	// element "{prompt}".
+	ExpectedPrompt *string `json:"expected_prompt"`
 	// Capture is the capture directory (absolute); Stdout, Stderr and Exit
 	// override it for synthetic robustness cases (Synthetic true).
 	Capture   string  `json:"capture"`
@@ -85,6 +98,7 @@ type Launch struct {
 	Cwd      string   `json:"cwd"`
 	CwdMode  string   `json:"cwd_mode"`
 	Stdin    []byte   `json:"stdin"`
+	Prompt   []byte   `json:"prompt"`
 	TaskID   string   `json:"task_id"`
 	Scenario string   `json:"scenario"`
 	Final    string   `json:"final"`
@@ -111,8 +125,11 @@ func run() int {
 	if !filepath.IsAbs(dir) {
 		return fail("%s is not an absolute directory", EnvDir)
 	}
-	if l.Vendor != "claude" && l.Vendor != "codex" {
-		return fail("invoked as %q, not claude or codex", l.Vendor)
+	if l.Vendor == "cursor-agent" {
+		l.Vendor = "cursor"
+	}
+	if l.Vendor != "claude" && l.Vendor != "codex" && l.Vendor != "grok" && l.Vendor != "cursor" {
+		return fail("invoked as %q, not claude, codex, grok or cursor-agent", l.Vendor)
 	}
 	if len(l.Argv) == 1 && l.Argv[0] == "--version" {
 		l.Mode = "version"
@@ -131,6 +148,23 @@ func run() int {
 	if err != nil || len(stdin) > 16<<20 {
 		return fail("stdin unreadable or over 16 MiB")
 	}
+	if l.Vendor == "cursor" {
+		// The refused adapter: no production path may launch a task.
+		return fail("cursor has no task mode: a task launch of the refused adapter")
+	}
+	// The envelope: stdin for claude and codex; Grok's final -p argument,
+	// with zero stdin bytes.
+	envelope := stdin
+	if l.Vendor == "grok" {
+		if len(l.Argv) < 2 || l.Argv[len(l.Argv)-2] != "-p" {
+			return fail("grok argv %q does not end with -p and the prompt", l.Argv)
+		}
+		if len(stdin) != 0 {
+			return fail("grok stdin carries %d bytes, want none", len(stdin))
+		}
+		envelope = []byte(l.Argv[len(l.Argv)-1])
+		l.Prompt = envelope
+	}
 	var env struct {
 		Format string `json:"format"`
 		Task   struct {
@@ -138,8 +172,8 @@ func run() int {
 			Goal   string `json:"goal"`
 		} `json:"task"`
 	}
-	if err := json.Unmarshal(stdin, &env); err != nil || env.Format != "callsheet-task-v1" {
-		return fail("stdin is not a callsheet-task-v1 envelope")
+	if err := json.Unmarshal(envelope, &env); err != nil || env.Format != "callsheet-task-v1" {
+		return fail("the task input is not a callsheet-task-v1 envelope")
 	}
 	l.TaskID = env.Task.TaskID
 	sc, name, err := scenario(dir, env.Task.Goal)
@@ -166,6 +200,12 @@ func run() int {
 		return fail("argv %q, want %q", l.Argv, sc.ExpectedArgv)
 	}
 	for i, want := range sc.ExpectedArgv {
+		if want == "{prompt}" {
+			if l.Vendor != "grok" || i != len(sc.ExpectedArgv)-1 {
+				return fail("a prompt placeholder outside grok's last argument")
+			}
+			continue
+		}
 		if want == "{final}" {
 			final = l.Argv[i]
 			if final != filepath.Join(l.Cwd, "callsheet-final.txt") {
@@ -178,6 +218,16 @@ func run() int {
 		}
 	}
 	l.Final = final
+	if l.Vendor == "grok" {
+		if sc.ExpectedStdin == nil || *sc.ExpectedStdin != "" {
+			return fail("a grok scenario must expect the explicit empty stdin")
+		}
+		if sc.ExpectedPrompt != nil {
+			if want := strings.ReplaceAll(*sc.ExpectedPrompt, "{task_id}", l.TaskID); !bytes.Equal(l.Prompt, []byte(want)) {
+				return fail("the -p value differs from the expected composed prompt (%d bytes, want %d)", len(l.Prompt), len(want))
+			}
+		}
+	}
 	if sc.ExpectedStdin != nil {
 		if want := strings.ReplaceAll(*sc.ExpectedStdin, "{task_id}", l.TaskID); !bytes.Equal(stdin, []byte(want)) {
 			return fail("stdin differs from the expected composed prompt (%d bytes, want %d)", len(stdin), len(want))

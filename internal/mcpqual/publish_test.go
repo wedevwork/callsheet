@@ -555,7 +555,9 @@ func TestPublishConflictsAndRetry(t *testing.T) {
 	}
 	t.Run("unrelated-json-edit", func(t *testing.T) {
 		defer reset()
-		edited := bytes.Replace(baseJSON, []byte("prints the response to stdout and exits"), []byte("prints its response to stdout and exits"), 1)
+		// A phrase of Grok's frozen mcp_config fact (iteration 11 replaced
+		// the help-level worker facts this edit used to touch).
+		edited := bytes.Replace(baseJSON, []byte("rather than inventing tables"), []byte("instead of inventing tables"), 1)
 		if bytes.Equal(edited, baseJSON) {
 			t.Fatal("the unrelated edit's phrase is not in the catalog")
 		}

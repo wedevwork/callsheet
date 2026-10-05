@@ -585,6 +585,13 @@ func TestRealAdapterLocal(t *testing.T) {
 			tr2.noChild(t)
 		}
 	})
+	// Iteration 11 (wave 2: Grok and Cursor), direct subtests of this
+	// contract in real_adapter_wave2_local_test.go; required by name in the
+	// native stream.
+	t.Run("wave2-posture", wave2Posture)
+	t.Run("wave2-invocation", wave2Invocation)
+	t.Run("wave2-outcomes", wave2Outcomes)
+	t.Run("wave2-retry", wave2Retry)
 }
 
 // hasLog reports a JSON log record with msg whose attribute key is value.
