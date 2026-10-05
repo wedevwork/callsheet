@@ -361,7 +361,10 @@ var (
 )
 
 // opError maps an operation failure to a safe contract error naming the
-// operation; causes are kept for local diagnosis and never serialized.
+// operation. Specific branches keep the cause off the serialized message.
+// The generic storage failure includes the cause type and text because
+// contract.Error omits the wrapped value, and a stress log otherwise
+// cannot tell a pack error from a corrupt ref or a runner error.
 func opError(op string, err error) error {
 	var ce *contract.Error
 	switch {
@@ -381,7 +384,7 @@ func opError(op string, err error) error {
 	if errors.Is(err, errPathBudget) {
 		return contract.Wrap(contract.CodeInternal, "workspace "+op+" failed: a storage path exceeds its length budget; nothing changed", err)
 	}
-	return contract.Wrap(contract.CodeInternal, "workspace "+op+" failed: storage failure; nothing changed", err)
+	return contract.Wrap(contract.CodeInternal, fmt.Sprintf("workspace %s failed: storage failure; nothing changed [%T] %s", op, err, err.Error()), err)
 }
 
 func fencedError() error {
