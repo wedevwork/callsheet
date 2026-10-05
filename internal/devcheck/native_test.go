@@ -710,7 +710,7 @@ func TestTailBuffer(t *testing.T) {
 // --- driver (UT-2 stage dispatch, UT-4 native execution) ---
 
 func TestStagesMatchDispatch(t *testing.T) {
-	want := "test coverage bench cross all native stress stress-packages stress-plane-cpu1 stress-plane stress-sidecar-cpu1 stress-sidecar stress-processgroup stress-functions"
+	want := "test coverage bench cross all native stress stress-packages stress-plane-cpu1 stress-plane stress-sidecar-cpu1 stress-sidecar stress-processgroup stress-functions container-e2e"
 	got := Stages()
 	if strings.Join(got, " ") != want {
 		t.Fatalf("Stages = %v", got)
@@ -725,19 +725,30 @@ func TestStagesMatchDispatch(t *testing.T) {
 	for _, goos := range []string{"linux", "darwin"} {
 		for _, st := range Stages() {
 			f := &fakeRunner{coverTotal: "90%", cmdList: cmdList, profile: goodProfile, native: stream(qualification()...)}
-			code, out, errOut := runDriver(t, goos, f, st)
+			// Linux test, all and container-e2e need the synthetic
+			// container evidence; Darwin never invokes the container.
+			var r runnerLike = f
+			cr := newContainerRunnerFixture(t, f).(*containerRunner)
+			if goos == "linux" && (st == "test" || st == "all" || st == "container-e2e") {
+				r = cr
+			}
+			code, out, errOut := runDriver(t, goos, r, st)
 			if code == 2 || strings.Contains(errOut, "unknown subcommand") {
 				t.Fatalf("%s %s not recognized: %s", goos, st, errOut)
 			}
 			wantCode := 0
-			if st == "native" && goos != "darwin" {
+			if (st == "native" && goos != "darwin") || (st == "container-e2e" && goos != "linux") {
 				wantCode = 1
 			}
 			if code != wantCode || (code == 0 && !strings.Contains(out, "stage "+st+" ok") && st != "all") {
 				t.Fatalf("%s %s = %d\n%s\n%s", goos, st, code, out, errOut)
 			}
-			if code == 0 && len(f.calls) == 0 {
+			if code == 0 && len(f.calls) == 0 && len(cr.calls) == 0 {
 				t.Fatalf("%s %s succeeded without running anything", goos, st)
+			}
+			if st == "container-e2e" && goos == "darwin" && (len(f.calls) != 0 || out != "" ||
+				errOut != "devcheck: stage container-e2e FAILED: container-e2e is unsupported on \"darwin\"\n") {
+				t.Fatalf("darwin container-e2e = %d calls=%d %q %q", code, len(f.calls), out, errOut)
 			}
 			os.RemoveAll(scratchFrom(out))
 		}
@@ -749,19 +760,19 @@ func TestStagesMatchDispatch(t *testing.T) {
 
 // usageLiteral is design 06a-perf's exact usage line, final newline
 // included, written independently of devcheck.go.
-const usageLiteral = "usage: devcheck test | coverage [-o profile] | bench | cross | all | native | stress | stress-packages | stress-plane-cpu1 | stress-plane | stress-sidecar-cpu1 | stress-sidecar | stress-processgroup | stress-functions\n"
+const usageLiteral = "usage: devcheck test | coverage [-o profile] | bench | cross | all | native | stress | stress-packages | stress-plane-cpu1 | stress-plane | stress-sidecar-cpu1 | stress-sidecar | stress-processgroup | stress-functions | container-e2e [--count=N]\n"
 
 // TestUsageLiteral pins the usage constant and its stage order to the
-// fourteen advertised stages.
+// fifteen advertised stages (container-e2e since m3-m4-container-e2e).
 func TestUsageLiteral(t *testing.T) {
 	if usage != usageLiteral {
 		t.Fatalf("usage = %q", usage)
 	}
-	if len(stageNames) != 14 {
+	if len(stageNames) != 15 {
 		t.Fatalf("%d stages advertised", len(stageNames))
 	}
 	var out, errOut bytes.Buffer
-	if code := runFor(context.Background(), "linux", nil, &out, &errOut, (&fakeRunner{}).run); code != 2 || errOut.String() != usageLiteral || out.Len() != 0 {
+	if code := runFor(context.Background(), "linux", nil, &out, &errOut, (&fakeRunner{}).run, testOpts(t)); code != 2 || errOut.String() != usageLiteral || out.Len() != 0 {
 		t.Fatalf("no arguments = %d %q", code, errOut.String())
 	}
 }
@@ -851,7 +862,7 @@ func TestNativeStageFailuresRetainScratch(t *testing.T) {
 	cancelRunner := func(ctx context.Context, argv, env []string, dir string, stdout, stderr io.Writer) error {
 		return ctx.Err()
 	}
-	if code := runFor(ctx, "darwin", []string{"native"}, &o, &e, cancelRunner); code != 1 || !strings.Contains(e.String(), "context canceled") {
+	if code := runFor(ctx, "darwin", []string{"native"}, &o, &e, cancelRunner, testOpts(t)); code != 1 || !strings.Contains(e.String(), "context canceled") {
 		t.Fatalf("canceled = %d %s", code, e.String())
 	}
 	os.RemoveAll(scratchFrom(o.String()))
@@ -945,7 +956,7 @@ func TestOldStagesStillMergeStderr(t *testing.T) {
 		return nil
 	}
 	var out, errOut bytes.Buffer
-	if code := runFor(context.Background(), "darwin", []string{"test"}, &out, &errOut, run); code != 0 {
+	if code := runFor(context.Background(), "darwin", []string{"test"}, &out, &errOut, run, testOpts(t)); code != 0 {
 		t.Fatal(code)
 	}
 	if !strings.Contains(out.String(), "from-stderr") || strings.Contains(errOut.String(), "from-stderr") {

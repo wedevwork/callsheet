@@ -54,6 +54,32 @@ sidecar CPU 1 invocations to a sixth and seventh worker per platform, so
 the plane and sidecar workers now run CPU 2 and CPU 4 only. The main jobs
 keep their stages and budgets.
 
+`ci-linux`'s `devcheck test` also runs the M3/M4 container acceptance
+(design m3-m4-container-e2e) after its native, race and tagged commands,
+as a separate operation of the same stage: it builds static `callsheet`,
+`fake-adapter` and the `containeracceptance`-tagged test binary offline,
+runs them in one fresh isolated Linux container (`--network none`,
+read-only root, an executable 1 GiB `/tmp` tmpfs, no capabilities, user
+65532) and accepts the stage only with complete evidence: the 14 case
+records, the end record written after cleanup, every container parent and
+required subtest passing, a zero exit and the container and image removed.
+devcheck retains that evidence in `/tmp/callsheet-container-e2e-evidence`
+(`report.txt`, `ledger.jsonl` and `runtime.log`, replaced by each run,
+outside the disposable scratch tree, on success and on failure; diagnostic
+text is bounded to 8 MiB per run, the ledger is complete). The job's eighth
+and final step, `Publish container E2E evidence`, is the workflow's only
+step condition: the literal `if: always()` with the single command
+`cat /tmp/callsheet-container-e2e-evidence/report.txt`, so the report
+reaches the job log even after a failed check step. It is a plain run step
+(no action, no expression, no other key); the evidence is published in the
+Actions job log under the repository's existing log retention, not as a
+downloadable artifact, and the check steps' exit statuses remain the gate.
+If setup failed before devcheck created the report, the `cat` fails
+visibly; `always()` does not guarantee the step after infrastructure loss
+or a forced job termination. The container stage never runs on macOS:
+Darwin's `native`, `test` and `all` never invoke it, and the standalone
+`container-e2e` stage refuses any non-Linux host before anything starts.
+
 Only the two summaries have dependencies, each on its own platform's seven
 workers, and they keep the required stress contexts, so branch protection
 needs no change. Each summary is the same small template with literal
@@ -396,7 +422,8 @@ the 347 earlier names unchanged and first: `TestWorkspaceDispatchDoors`,
 subtests (`status`, `diff`; `schemas`, `content`, `lifetime`;
 `documentation`, `local`, `manual_checklist`) assert inside each parent and
 are not inventory entries; `manual_checklist` checks that the operator guide
-names the manual M4 checks, never that the two-machine session ran.
+maps every M4 check to its container acceptance case and keeps the
+two-machine session an optional, non-gating observation.
 The same run/pass rule applies. Separately, the sidecar tuple
 (`NativeTaskProcessPackage`) appends `TestRealAdapterLocal` and its
 `selection`, `file`, `ordering`, `diagnostic` and `restart` subtests after
@@ -2630,12 +2657,13 @@ handoff:
 - for iteration 06a-perf, the owner's pre-decided post-push qualification (not the local code-review bar): record all eighteen job conclusions and step and job times, setup and queue costs, the runner's architecture and core count, and every plane and sidecar CPU-labelled `devcheck` outcome. Use `devcheck: stress <package> cpu1: ok in Xs` as each CPU 1 invocation's elapsed value (it includes the command's build), and keep the binary's own time separately. Evaluate all four CPU1 invocations, Linux and macOS, plane and sidecar. If every CPU1 invocation passes and is ≤300.0 seconds, and all ordinary correctness, coverage and CI gates pass, this slice is done. A value above 250 but at or below 300 succeeds under the owner's rule; record that the aspirational target was missed. Otherwise report the measured values and failures to the owner. Missing, cancelled or timed-out invocations do not count as passes. In that case make no automatic further change to topology, waves, flags, counts, timeouts, workload tests or fixtures. Do not discard a failed first run by retrying until green. The ≤250-second macOS CPU1 goal is a first-run hypothesis, not an additional acceptance gate. There is no two-run requirement. All CPU 2 and CPU 4 invocations and every other job must still pass their unchanged gates, and until that run exists hosted qualification is pending, not passed.
 - for iteration 06b (owner decision on DW6, 2026-09-28: build with the current matrix and measure on the pull request): native evidence for the four task-control parents (145 names) on `ci-macos`, and all four CPU1 invocations' `devcheck: stress <package> cpu1: ok in Xs` values, Linux and macOS, plane and sidecar, against the screening estimates in Budgets. A value strictly greater than 300.0 s, or that invocation's timeout, triggers the pre-authorised CPU1 split for that package on both platforms, through the light flow (a fix brief preserving the triggering log, implementation and review), without another design round; exactly 300.0 s does not trigger. An assertion failure is a correctness failure, never cured by splitting. Until that run exists hosted qualification is pending, not passed.
 - for iteration 07a: native evidence for the eight MCP parents and their 69 mandatory subtests (222 names) on `ci-macos`, notably `TestMCPLifetime/closed-stdout` (exit 5, not signaled, on Darwin), `stalled-reader` and `slow-reader-max-logs`; the `stress packages` step with `internal/mcp` and its binary time on both platforms; the `bench mcp` step; the `tests/function` package time in the normal and race invocations against its 180 s bound; and the unchanged plane and sidecar CPU1 invocation times. Until that run exists hosted qualification is pending, not passed.
-- for iteration 08: native evidence for the nine real-adapter parents and their 30 mandatory subtests (312 names) on `ci-macos`, and for `TestRealAdapterLocal` and its five subtests in `internal/sidecar` from the single tagged native stream (no duplicate package start, no skip event from this iteration, no `tests/smoke` package); the tagged `test`, `test -race` and `bench sidecar realadaptercheck` steps and the tagged coverage profile on `ci-linux`; the `tests/function` package time in the normal, race and native invocations against its unchanged 180 s bound; and the `stress packages` step with the grown `internal/adapter` binary on both platforms. No vendor CLI or model is involved; M3's remote acceptance is a separate manual record (see [real adapters](real-adapters.md)).
+- for iteration 08: native evidence for the nine real-adapter parents and their 30 mandatory subtests (312 names) on `ci-macos`, and for `TestRealAdapterLocal` and its five subtests in `internal/sidecar` from the single tagged native stream (no duplicate package start, no skip event from this iteration, no `tests/smoke` package); the tagged `test`, `test -race` and `bench sidecar realadaptercheck` steps and the tagged coverage profile on `ci-linux`; the `tests/function` package time in the normal, race and native invocations against its unchanged 180 s bound; and the `stress packages` step with the grown `internal/adapter` binary on both platforms. No vendor CLI or model is involved; M3's acceptance is the Linux container gate described in [real adapters](real-adapters.md), not this iteration's record.
 - for iteration 11: native evidence for the nine wave-2 parents and their 33 mandatory subtests (395 names) on `ci-macos`, and for `TestRealAdapterLocal` with its four `wave2-*` subtests (12 sidecar names) in `internal/sidecar` from the single tagged native stream; on Linux the Grok replay parents, the tagged `test`, `test -race` and `bench sidecar realadaptercheck` steps, the tagged coverage profile and the extended `BenchmarkVendorFinal` and `BenchmarkVendorInvocation`; the `tests/function` package time against its unchanged bound and the `stress packages` step with the grown `internal/adapter` binary on both platforms, investigated within the existing budgets. No vendor CLI, credential or model is involved, and the opt-in wave-2 smoke is never run by CI.
 - for iteration 07b: native evidence for the eight setup and qualification parents and their 43 mandatory subtests (273 names) on `ci-macos`, notably `TestMCPQualificationReaping/parent-exits-first` (a surviving descendant, then ESRCH, on Darwin) and `cleanup-failure`; the `stress packages` step with `internal/mcpqual` and its binary time on both platforms against the 10 s (Linux) and 15 s (macOS) allocation; the `bench mcpqual` step; the `tests/function` package time in the normal, race and native invocations against its 180 s bound and the 10 s / 15 s allocation; and the unchanged plane and sidecar CPU1 invocation times, with OS, architecture and cache state. Until that run exists hosted qualification is pending, not passed.
 - for iteration 10a: native evidence for `TestTaskPromptReadiness` and `TestTaskFastGroupCleanup` (335 names) on `ci-macos`, where the second exercises the process-group list proof (`proc_listpids`) with real guardians, descendants and fork/exit churn, and on `ci-linux` the child subreaper; each FP latency the tests log (ready visibility under 500 ms, exit status to proven absence under 750 ms) on both hosts; and all four CPU1 invocations' binary and command times (Linux and macOS, plane and sidecar) against run 37022060367 and the 10a planning targets in Budgets, recorded without a numerical gate. Until that run exists hosted qualification is pending, not passed.
 - for iteration 10b: native evidence for the nine `TestTaskWorkspace*` parents and the three acceptance scenarios `TestTaskWorkspaceCommit/AC-WS-1`, `TestTaskWorkspacePublication/AC-WS-5` and `TestTaskWorkspaceIsolation/AC-WS-2` (347 names) on `ci-macos` (APFS aliases, the physical work path, darwin's batched `F_FULLFSYNC` durability and the native group proof) and `ci-linux`; the per-file coverage of every 10b manifest entry on both hosts; the `bench taskworkspace` step on both hosts; and the stress, function and benchmark times against the 10b planning allowances in Budgets, recorded without a numerical gate. Until that run exists hosted qualification is pending, not passed.
-- for iteration 10c: native evidence for the six coordinator delivery parents `TestWorkspaceDispatchDoors`, `TestWorkspaceTaskPull`, `TestWorkspaceTaskInspect`, `TestWorkspaceTaskMCP`, `TestWorkspaceMultiHop` and `TestWorkspaceOperatorWorkflow` (353 names) on `ci-macos` and `ci-linux`; the per-file coverage of every 10c manifest entry on both hosts; the unchanged bench call count (30, seven on the native tail) with the extended `BenchmarkMCPCodec` (Linux), `BenchmarkTransferPullGit` and `BenchmarkTaskWorkspaceMetadata` (both hosts); and the `stress packages` and function binary and command times against landed 10b and the 10c planning allowances in Budgets, recorded without a numerical gate. The manual two-machine M4 checks named in [workspaces.md](workspaces.md#manual-m4-checks) remain unobserved until performed separately. Until that run exists hosted qualification is pending, not passed.
+- for iteration 10c: native evidence for the six coordinator delivery parents `TestWorkspaceDispatchDoors`, `TestWorkspaceTaskPull`, `TestWorkspaceTaskInspect`, `TestWorkspaceTaskMCP`, `TestWorkspaceMultiHop` and `TestWorkspaceOperatorWorkflow` (353 names) on `ci-macos` and `ci-linux`; the per-file coverage of every 10c manifest entry on both hosts; the unchanged bench call count (30, seven on the native tail) with the extended `BenchmarkMCPCodec` (Linux), `BenchmarkTransferPullGit` and `BenchmarkTaskWorkspaceMetadata` (both hosts); and the `stress packages` and function binary and command times against landed 10b and the 10c planning allowances in Budgets, recorded without a numerical gate. The M4 checks named in [workspaces.md](workspaces.md#manual-m4-checks) are gated by the container acceptance, not by a two-machine session. Until that run exists hosted qualification is pending, not passed.
+- for m3-m4-container-e2e: the `ci-linux` run whose `devcheck test` passes with the container acceptance (its revision, the run URL and the published `Publish container E2E evidence` report with all 14 case records and the end record) is the first M3/M4 demonstration; until it is observed M3/M4 remain undemonstrated. Record the cold build and container elapsed times printed by the stage and the complete `ci-linux` job time against its unchanged 45-minute limit; if the added ten-minute allocation does not fit in practice, report the blocker instead of moving or weakening tests.
 
 The local validator checks action identity and full-SHA format only, not that
 a SHA exists or matches its release comment. Confirm each pin against its
@@ -2676,6 +2704,23 @@ go test -tags=realadaptercheck -count=1 -run '^TestRealAdapterLocal$' -v ./inter
 The real worker smoke is never part of these commands or of CI; it needs
 the `realadaptersmoke` tag, installed CLIs and an explicit opt-in (see
 [real adapters](real-adapters.md)).
+
+The M3/M4 container acceptance runs on its own on a Linux host with Docker
+(it is also part of the Linux `test` stage, once):
+
+```
+go run ./cmd/devcheck container-e2e
+go run ./cmd/devcheck container-e2e --count=20
+```
+
+`--count=N` (1 to 20, accepted only by this stage) builds once and runs N
+fresh containers in sequence, each with `-test.count=1 -test.timeout=6m`,
+each within its own ten-minute deadline (the first also covers the build),
+and stops at the first failed iteration. Every run replaces the report in
+`/tmp/callsheet-container-e2e-evidence`; a missing Docker executable fails
+with `docker executable not found`, an unreachable daemon with `docker
+daemon unavailable`, and neither is ever a skip. Implementers and reviewers
+run the count-20 form locally on Linux; CI runs one iteration.
 
 A single shard, as one CI worker runs it, is also available on its own:
 

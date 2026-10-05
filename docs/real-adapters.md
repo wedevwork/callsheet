@@ -243,10 +243,30 @@ qualification. Unset Claude/Codex paths skip those subtests as before.
 
 ## Remote acceptance (M3)
 
-M3 has not been demonstrated. It is demonstrated only when the following
-manual procedure passes on real machines; the checked-in captures and the
-local smoke are qualification inputs, not a remote coordinator run. Record
-the results beside the evidence when it is done.
+M3 is gated by the container acceptance, `go run ./cmd/devcheck
+container-e2e`, which the Linux `go run ./cmd/devcheck test` stage that
+`ci-linux` requires also runs. In one isolated Linux container its
+deterministic coordinator prepares four fake roles on two real sidecars
+through the real CLI and checks the two-worker goal-and-answer exchange in
+one session: FP-2, `TestContainerCoordinator` with its `prepare` and
+`goal_answer` subtests (the ordered design, design-review, code and
+code-review stub flow is FP-11, `TestContainerSampleFlow`). The M4 mapping
+and the required evidence are in [Manual M4 checks](workspaces.md#manual-m4-checks).
+
+A complete green run demonstrates M3/M4 under Linux loopback, fake workers
+and a deterministic CLI coordinator; it does not demonstrate two machines,
+two operating systems, a real vendor process, vendor authentication or
+paid model calls. No macOS container proof is required. Until the first
+passing CI run records its revision and evidence, M3 has not been
+demonstrated. Fake roles do not qualify vendor models: the
+unqualified-selection refusal stays covered by the adapter tests and the
+optional observation below.
+
+The former manual procedure is an optional, non-gating deployment
+observation on real machines, never a second milestone requirement; the
+checked-in captures and the local smoke are qualification inputs, not a
+remote coordinator run. If you run it, record the results beside the
+evidence:
 
 1. Use the existing coordinator setup ([coordinator guide](coordinator.md)):
    a plane, and a real coordinator CLI registered with `callsheet mcp`.

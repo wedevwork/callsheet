@@ -244,20 +244,26 @@ What to expect:
 
 ## Manual M4 checks
 
-These are manual checks for the two-machine M3+M4 acceptance session (a laptop coordinator and a remote worker node). Local automation, including `TestWorkspaceOperatorWorkflow`, does not perform or qualify them.
+The M4 checks are demonstrated by the container acceptance, the blocking gate: `go run ./cmd/devcheck container-e2e` on a Linux host with Docker (the Linux `go run ./cmd/devcheck test` stage that `ci-linux` requires runs it once too). It builds static `callsheet`, `fake-adapter` and a tagged test binary and runs them in one isolated container (no network, read-only root, no capabilities): a real plane, two real sidecars with the fake worker, and a deterministic coordinator that uses only the real CLI over verified TLS on loopback, in one coordinator session. The host accepts a run only with its complete evidence: one record for each of the 14 required cases (`TestContainerRuntime`, `TestContainerCoordinator`, `TestContainerPublication`, `TestContainerContinuation`, `TestContainerPartialResults`, `TestContainerPartialResults/failed`, `TestContainerPartialResults/cancelled`, `TestContainerPartialResults/timed_out`, `TestContainerLost`, `TestContainerPublicationRestart`, `TestContainerDirtyPull`, `TestContainerClaims`, `TestContainerEvidence` and `TestContainerSampleFlow`), audited against a static per-task catalog, an end record written after cleanup, passing test events and a zero exit; the report is retained in `/tmp/callsheet-container-e2e-evidence/report.txt` and CI publishes it in the job log.
 
-1. **M4-1 Laptop push:** push a project from the laptop into a new workspace.
-2. **M4-2 Remote cwd is the base:** task A on the remote node reports a working directory whose files equal the selected base commit.
-3. **M4-3 A metadata and diff:** A's task ref, `ws status TASK_ID` metadata and `ws diff TASK_ID` are visible from the laptop.
-4. **M4-4 Second hop:** task B dispatched on A's exact result hash and instance sees A's changes, and B's result parent is A's commit.
-5. **M4-5 Parallel sibling:** a sibling task on the original base sees neither A's nor B's changes.
-6. **M4-6 Partial results:** a failed, a cancelled and a timed-out task each publish an inspectable partial result.
-7. **M4-7 Lost task:** a lost task has no ref.
-8. **M4-8 Restart around publication:** a node or plane restart around a publication yields one stable receipt.
-9. **M4-9 Laptop pull:** pulling a result preserves the laptop's dirty checkout, and `main` never moves.
-10. **M4-10 External delivery (optional):** the user pushes a pulled result to an external remote with their own `git push`.
+| M4 check | Gate | Container case |
+|---|---|---|
+| **M4-1 Laptop push:** push a project into a new workspace | FP-3 | `TestContainerPublication` |
+| **M4-2 Remote cwd is the base:** task A's working directory files equal the selected base commit | FP-3 | `TestContainerPublication` |
+| **M4-3 A metadata and diff:** A's task ref, `ws status TASK_ID` metadata and `ws diff TASK_ID` | FP-3 | `TestContainerPublication` |
+| **M4-4 Second hop:** task B on A's exact result hash and instance sees A's changes, and B's only parent is A's commit | FP-4 | `TestContainerContinuation` |
+| **M4-5 Parallel sibling:** a sibling on the original base sees neither A's nor B's changes, while B is held | FP-4 | `TestContainerContinuation` |
+| **M4-6 Partial results:** a failed, a cancelled and a timed-out task each publish inspectable partial files | FP-5 | `TestContainerPartialResults` |
+| **M4-7 Lost task:** a worker lost before publication leaves no ref, no result commit and no usable partial result | FP-6 | `TestContainerLost` |
+| **M4-8 Restart around publication:** a node restart after acknowledged publication, before coordinator delivery, keeps one stable receipt and result ref | FP-7 | `TestContainerPublicationRestart` |
+| **M4-9 Laptop pull:** pulling a result preserves the dirty checkout, and `main` never moves | FP-8 | `TestContainerDirtyPull` |
+| **M4-10 External delivery (optional):** the user pushes a pulled result with their own `git push` | optional, not gated | none |
 
-Record for each check: the OS of both machines, the Callsheet and adapter versions, the task IDs, the workspace instance, the base and result hashes, and the terminal state and publication status. Never record file contents or credentials.
+M4-8's boundary is a sidecar (node) restart after acknowledged publication, before coordinator delivery; this slice does not restart the plane, so the plane-restart half of M4-8 is outside this container claim. Finer crash windows stay with the supplementary `TestTaskWorkspaceRecovery/crash-boundaries`, `internal/taskpublication`'s `TestPublicationCrash` and `internal/sidecar`'s `TestTaskWorkspaceSession/restart`. No general exactly-once distributed execution claim follows.
+
+A complete green run demonstrates M3/M4 under Linux loopback, fake workers and a deterministic CLI coordinator; it does not demonstrate two machines, two operating systems, a real vendor process, vendor authentication or paid model calls. No macOS container proof is required. The first passing CI run supplies the demonstrated revision and evidence.
+
+The former two-machine session (a laptop coordinator and a remote worker node, with real adapters) is an optional, non-gating deployment observation, never a second milestone requirement. If you run it, record for each check: the OS of both machines, the Callsheet and adapter versions, the task IDs, the workspace instance, the base and result hashes, and the terminal state and publication status. Never record file contents or credentials.
 
 ## Errors
 

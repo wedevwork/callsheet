@@ -33,7 +33,8 @@ const (
 		"go test ./internal/workspace -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s|" +
 		"go test ./internal/workspacetransfer -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s|" +
 		"go test ./internal/taskworkspace -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s|" +
-		"go test ./internal/sidecar -tags=realadaptercheck -run=^$ -bench=^BenchmarkRealAdapterFile$ -benchmem -benchtime=3x -count=1 -timeout=180s"
+		"go test ./internal/sidecar -tags=realadaptercheck -run=^$ -bench=^BenchmarkRealAdapterFile$ -benchmem -benchtime=3x -count=1 -timeout=180s|" +
+		"go test ./internal/devcheck -run=^$ -bench=^BenchmarkContainerEvidence$ -benchmem -benchtime=3x -count=1 -timeout=180s"
 )
 
 // wantRoleDelegations is the design's four-column table, literally.

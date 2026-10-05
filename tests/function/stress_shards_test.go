@@ -482,7 +482,7 @@ func TestStressShardExecution(t *testing.T) {
 	} {
 		r := &syncRunner{}
 		var out, errOut bytes.Buffer
-		code := devcheck.Run(context.Background(), []string{stage}, &out, &errOut, r.run)
+		code := devcheck.Run(context.Background(), []string{stage}, &out, &errOut, r.run, evidenceOpts(t))
 		scratch := scratchOf(out.String())
 		if code != 0 || !strings.Contains(out.String(), "devcheck: stage "+stage+" ok") || !sameGroups(r.calls, want) {
 			t.Fatalf("%s = %d, calls %q: %s", stage, code, r.calls, errOut.String())
@@ -529,7 +529,7 @@ func TestStressShardExecution(t *testing.T) {
 	} {
 		r := &syncRunner{failOn: c.failOn}
 		var out, errOut bytes.Buffer
-		code := devcheck.Run(context.Background(), []string{c.stage}, &out, &errOut, r.run)
+		code := devcheck.Run(context.Background(), []string{c.stage}, &out, &errOut, r.run, evidenceOpts(t))
 		scratch := scratchOf(out.String())
 		if code != 1 || !sameGroups(r.calls, c.want) || !strings.Contains(errOut.String(), "stage "+c.stage+" FAILED: "+c.failed+" failed: go test -race") ||
 			!strings.Contains(errOut.String(), "logs retained in "+scratch) {
@@ -565,7 +565,7 @@ func TestStressShardExecution(t *testing.T) {
 	}
 	o := &overlapRunner{groups: gates}
 	var out, errOut bytes.Buffer
-	if code := devcheck.Run(context.Background(), []string{"stress"}, &out, &errOut, o.run); code != 0 {
+	if code := devcheck.Run(context.Background(), []string{"stress"}, &out, &errOut, o.run, evidenceOpts(t)); code != 0 {
 		t.Fatalf("stress with overlap gates = %d: %s", code, errOut.String())
 	}
 	o.mu.Lock()
@@ -970,7 +970,7 @@ func TestStressShardPolicy(t *testing.T) {
 			workerJobs++
 			r := &syncRunner{}
 			var out, errOut bytes.Buffer
-			if code := devcheck.Run(context.Background(), j.Stages[0:1], &out, &errOut, r.run); code != 0 ||
+			if code := devcheck.Run(context.Background(), j.Stages[0:1], &out, &errOut, r.run, evidenceOpts(t)); code != 0 ||
 				!sameGroups(r.calls, shardArgv(strings.TrimPrefix(j.Stages[0], "stress-"))) {
 				t.Fatalf("%s dispatch = %d %q %s", j.ID, code, r.calls, errOut.String())
 			}

@@ -786,12 +786,19 @@ func valueOf(out, key string) (string, bool) {
 	return "", false
 }
 
-// M4 checks and evidence fields the guide must name.
+// M4 checks, their container acceptance mapping (m3-m4-container-e2e: FP
+// and container case; M4-10 stays optional external delivery) and the
+// evidence fields of the optional two-machine observation the guide must
+// name.
 var (
 	m4Checks = []string{"M4-1 Laptop push", "M4-2 Remote cwd is the base", "M4-3 A metadata and diff", "M4-4 Second hop", "M4-5 Parallel sibling",
 		"M4-6 Partial results", "M4-7 Lost task", "M4-8 Restart around publication", "M4-9 Laptop pull", "M4-10 External delivery (optional)"}
-	m4Phrases = []string{"laptop", "files equal the selected base commit", "`ws diff TASK_ID`", "A's exact result hash and instance", "neither A's nor B's changes",
-		"a failed, a cancelled and a timed-out task", "has no ref", "one stable receipt", "dirty checkout, and `main` never moves", "their own `git push`"}
+	m4Phrases = []string{"push a project into a new workspace", "files equal the selected base commit", "`ws diff TASK_ID`", "A's exact result hash and instance",
+		"neither A's nor B's changes", "a failed, a cancelled and a timed-out task", "no ref", "one stable receipt", "dirty checkout, and `main` never moves",
+		"their own `git push`"}
+	m4Gates = []string{"| FP-3 | `TestContainerPublication` |", "| FP-3 | `TestContainerPublication` |", "| FP-3 | `TestContainerPublication` |",
+		"| FP-4 | `TestContainerContinuation` |", "| FP-4 | `TestContainerContinuation` |", "| FP-5 | `TestContainerPartialResults` |",
+		"| FP-6 | `TestContainerLost` |", "| FP-7 | `TestContainerPublicationRestart` |", "| FP-8 | `TestContainerDirtyPull` |", "| optional, not gated | none |"}
 	m4Evidence = []string{"the OS of both machines", "the Callsheet and adapter versions", "the task IDs", "the workspace instance", "the base and result hashes",
 		"the terminal state and publication status", "Never record file contents or credentials"}
 )
@@ -945,14 +952,38 @@ func TestWorkspaceOperatorWorkflow(t *testing.T) {
 		t.Logf("local workflow evidence: %s", rec)
 	})
 	t.Run("manual_checklist", func(t *testing.T) {
-		_, section, ok := strings.Cut(doc, "## Manual M4 checks")
+		// The M4 section (anchor kept) names the container acceptance as the
+		// blocking demonstration, maps every check to its FP and container
+		// case, states the bounded claim and keeps the two-machine session
+		// an optional, non-gating observation; the superseded mandatory
+		// manual claim is gone.
+		_, section, ok := strings.Cut(doc, "\n## Manual M4 checks\n")
 		section, _, _ = strings.Cut(section, "\n## ")
-		if !ok || !strings.Contains(section, "does not perform or qualify them") {
-			t.Fatal("the guide has no manual M4 section stating it is not automated")
+		if !ok {
+			t.Fatal("the guide has no Manual M4 checks section")
+		}
+		requireTerms(t, "Manual M4 checks", section, "`go run ./cmd/devcheck container-e2e`", "the blocking gate",
+			"after acknowledged publication, before coordinator delivery", "this slice does not restart the plane",
+			"does not demonstrate two machines, two operating systems, a real vendor process, vendor authentication or paid model calls",
+			"optional, non-gating deployment observation, never a second milestone requirement")
+		for _, stale := range []string{"does not perform or qualify them", "These are manual checks for the two-machine M3+M4 acceptance session"} {
+			if strings.Contains(section, stale) {
+				t.Fatalf("the guide keeps the superseded claim %q", stale)
+			}
+		}
+		rows := map[string]string{}
+		for _, line := range strings.Split(section, "\n") {
+			if rest, ok := strings.CutPrefix(line, "| **"); ok {
+				check, _, _ := strings.Cut(rest, ":**")
+				rows[check] = line
+			}
+		}
+		if len(rows) != len(m4Checks) {
+			t.Fatalf("the guide maps %d M4 checks: %v", len(rows), rows)
 		}
 		for i, c := range m4Checks {
-			if !strings.Contains(section, "**"+c+":**") || !strings.Contains(section, m4Phrases[i]) {
-				t.Fatalf("the guide lacks %q (%q)", c, m4Phrases[i])
+			if row := rows[c]; !strings.Contains(row, m4Phrases[i]) || !strings.HasSuffix(strings.TrimSpace(row), m4Gates[i]) {
+				t.Fatalf("the guide maps %q as %q, want %q and %q", c, row, m4Phrases[i], m4Gates[i])
 			}
 		}
 		for _, e := range m4Evidence {

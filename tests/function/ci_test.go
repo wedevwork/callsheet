@@ -181,11 +181,19 @@ func (r *ciRunner) run(_ context.Context, argv, env []string, _ string, stdout, 
 	return nil
 }
 
-// devcheckRun calls devcheck.Run with r and removes any retained scratch.
+// evidenceOpts returns devcheck options with a fresh temporary evidence
+// directory: no test creates, locks or writes the command's fixed path.
+func evidenceOpts(t *testing.T) devcheck.RunOptions {
+	t.Helper()
+	return devcheck.RunOptions{EvidenceDir: filepath.Join(t.TempDir(), "evidence")}
+}
+
+// devcheckRun calls devcheck.Run with r and a fresh evidence directory and
+// removes any retained scratch.
 func devcheckRun(t *testing.T, r *ciRunner, args ...string) (int, string, string) {
 	t.Helper()
 	var out, errOut bytes.Buffer
-	code := devcheck.Run(context.Background(), args, &out, &errOut, r.run)
+	code := devcheck.Run(context.Background(), args, &out, &errOut, r.run, evidenceOpts(t))
 	for _, line := range strings.Split(out.String(), "\n") {
 		if p, ok := strings.CutPrefix(line, "devcheck: scratch "); ok {
 			os.RemoveAll(p)
@@ -352,6 +360,42 @@ func TestCIWorkflowContract(t *testing.T) {
 	if strings.Contains(string(data), "pull_request_target") {
 		t.Fatal("pull_request_target present")
 	}
+	// FP-12 (m3-m4-container-e2e): the Linux job's eighth and final step
+	// publishes the retained container evidence report to the job log,
+	// always, with exactly name, if and run; no other job has it.
+	ev := node(t, &doc, "jobs", "linux", "steps", 7)
+	if len(node(t, &doc, "jobs", "linux", "steps").Content) != 8 || len(ev.Content) != 6 ||
+		node(t, ev, "name").Value != cicheck.ContainerEvidenceName || node(t, ev, "if").Value != "always()" ||
+		node(t, ev, "run").Value != "cat /tmp/callsheet-container-e2e-evidence/report.txt" || cicheck.ContainerEvidenceIf != "always()" ||
+		cicheck.ContainerEvidenceRun != "cat /tmp/callsheet-container-e2e-evidence/report.txt" || cicheck.ContainerEvidenceName != "Publish container E2E evidence" {
+		t.Fatalf("linux evidence step = %+v", ev)
+	}
+	if got := node(t, &doc, "jobs", "linux", "steps", 6, "run").Value; got != "go run ./cmd/devcheck cross" {
+		t.Fatalf("devcheck cross is not index 6: %q", got)
+	}
+	for _, j := range cicheck.Jobs() {
+		if j.ID == "linux" {
+			continue
+		}
+		for i, st := range node(t, &doc, "jobs", j.ID, "steps").Content {
+			if strings.Contains(fmt.Sprint(yamlScalars(st)), "callsheet-container-e2e-evidence") {
+				t.Fatalf("%s step %d publishes container evidence", j.ID, i)
+			}
+		}
+	}
+	mustReject(t, "evidence step omitted", mutated(t, func(r *yaml.Node) {
+		s := node(t, r, "jobs", "linux", "steps")
+		s.Content = s.Content[:7]
+	}), "jobs.linux.steps: must have exactly 8 steps (checkout, setup-go, go mod download, then devcheck test, coverage, bench, cross, then container evidence), got 7")
+	mustReject(t, "evidence path", mutated(t, func(r *yaml.Node) {
+		node(t, r, "jobs", "linux", "steps", 7, "run").Value = "cat /tmp/other/report.txt"
+	}), `jobs.linux.steps[7].run: must be exactly "cat /tmp/callsheet-container-e2e-evidence/report.txt"`)
+	mustReject(t, "evidence condition", mutated(t, func(r *yaml.Node) {
+		node(t, r, "jobs", "linux", "steps", 7, "if").Value = "${{ always() }}"
+	}), `jobs.linux.steps[7].if: must be exactly "always()"`)
+	mustReject(t, "evidence extra field", mutated(t, func(r *yaml.Node) {
+		setKey(node(t, r, "jobs", "linux", "steps", 7), "continue-on-error", "true")
+	}), "jobs.linux.steps[7].continue-on-error: unknown field")
 	mustReject(t, "trigger removed", mutated(t, func(r *yaml.Node) { deleteKey(t, node(t, r, "on"), "push") }), "on.push: missing required field")
 	mustReject(t, "pin removed", mutated(t, func(r *yaml.Node) {
 		node(t, r, "jobs", "macos", "steps", 1, "uses").Value = "actions/setup-go@v6"
@@ -377,21 +421,20 @@ func TestCILinuxBar(t *testing.T) {
 		strings.Join(plan[3].Argv, " ") != "go test -race -tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$ -count=1" || strings.Join(plan[3].Env, " ") != "CGO_ENABLED=1" {
 		t.Fatalf("linux test plan = %+v", plan)
 	}
-	r := &ciRunner{}
-	if code, _, errOut := devcheckRun(t, r, "test"); code != 0 {
-		t.Fatalf("test = %d %s", code, errOut)
-	}
+	// The host's test plan (m3-m4-container-e2e: plan-level; the Linux
+	// stage's added container operation is driven by internal/devcheck's
+	// container driver contract tests, never from here).
 	host := devcheck.TestSteps(runtime.GOOS)
-	if len(r.calls) != len(host) {
-		t.Fatalf("calls = %v", r.calls)
+	if runtime.GOOS == "linux" && (len(host) != 4 || host[1].Argv[2] != "-race" || host[3].Argv[2] != "-race") {
+		t.Fatalf("linux must run test then race: %+v", host)
 	}
-	for i, s := range host {
-		if strings.Join(r.calls[i], " ") != strings.Join(s.Argv, " ") {
-			t.Fatalf("call %d = %v", i, r.calls[i])
+	if runtime.GOOS == "darwin" && (len(host) != 2 || strings.Join(host[1].Argv, " ") != "go test -tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$ -count=1") {
+		t.Fatalf("darwin test plan = %+v", host)
+	}
+	for _, s := range host {
+		if strings.Contains(strings.Join(s.Argv, " "), "docker") || strings.Contains(strings.Join(s.Argv, " "), "containeracceptance") {
+			t.Fatalf("the container operation is a Step of the test plan: %v", s.Argv)
 		}
-	}
-	if runtime.GOOS == "linux" && (len(r.calls) != 4 || r.calls[1][2] != "-race" || r.calls[3][2] != "-race") {
-		t.Fatalf("linux must run test then race: %v", r.calls)
 	}
 	// Coverage: exactly 80.0% fails, anything above passes.
 	code, _, errOut := devcheckRun(t, &ciRunner{coverTotal: "80.0%"}, "coverage")
@@ -406,7 +449,7 @@ func TestCILinuxBar(t *testing.T) {
 	if code != 1 || !strings.Contains(errOut, "stage bench FAILED") || !strings.Contains(errOut, "injected child failure") {
 		t.Fatalf("bench = %d %s", code, errOut)
 	}
-	r = &ciRunner{failOn: "darwin-arm64"}
+	r := &ciRunner{failOn: "darwin-arm64"}
 	code, _, errOut = devcheckRun(t, r, "cross")
 	if code != 1 || !strings.Contains(errOut, "stage cross FAILED") || !strings.Contains(errOut, "darwin-arm64") {
 		t.Fatalf("cross = %d %s", code, errOut)
@@ -613,6 +656,28 @@ func TestCIWorkflowDrift(t *testing.T) {
 	mustReject(t, "permissive job", mutated(t, func(r *yaml.Node) {
 		setKey(node(t, r, "jobs", "macos"), "continue-on-error", "true")
 	}), "jobs.macos.continue-on-error: unknown field")
+	// FP-12: the evidence step cannot drift: relocated before cross,
+	// duplicated, or copied into the macOS job or a stress worker.
+	mustReject(t, "evidence relocated", mutated(t, func(r *yaml.Node) {
+		s := node(t, r, "jobs", "linux", "steps")
+		s.Content[6], s.Content[7] = s.Content[7], s.Content[6]
+	}), `jobs.linux.steps[6].run: must be "go run ./cmd/devcheck cross"`)
+	mustReject(t, "evidence duplicated", mutated(t, func(r *yaml.Node) {
+		s := node(t, r, "jobs", "linux", "steps")
+		s.Content = append(s.Content, s.Content[7])
+	}), "jobs.linux.steps[8]: unexpected extra step")
+	for _, id := range []string{"macos", "linux-stress-functions", "macos-stress-packages"} {
+		mustReject(t, "evidence in "+id, mutated(t, func(r *yaml.Node) {
+			ev := node(t, r, "jobs", "linux", "steps", 7)
+			s := node(t, r, "jobs", id, "steps")
+			s.Content = append(s.Content, ev)
+		}), "jobs."+id+".steps[")
+	}
+	// ExtractStages still yields the four Linux check stages: cat is not a
+	// devcheck command.
+	if got := strings.Join(stages["linux"], " "); got != "test coverage bench cross" {
+		t.Fatalf("linux stages = %q", got)
+	}
 }
 
 // ownerAddContexts is the only repository mutation docs/ci.md may contain:

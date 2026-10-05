@@ -31,7 +31,10 @@ const (
 	wantBenchRealAdapter = "go test ./internal/sidecar -tags=realadaptercheck -run=^$ -bench=^BenchmarkRealAdapterFile$ -benchmem -benchtime=3x -count=1 -timeout=180s"
 	// wantBenchPlan is the complete bench plan in order.
 	wantBenchPlan = wantBenchGit + "|" + wantBenchPlane + "|" + wantBenchContract + "|" + wantBenchSidecar + "|" + wantBenchAdapter + "|" + wantBenchMCP + "|" +
-		wantBenchMCPQual + "|" + wantBenchWorkspace + "|" + wantBenchTransfer + "|" + wantBenchTaskWorkspace + "|" + wantBenchRealAdapter
+		wantBenchMCPQual + "|" + wantBenchWorkspace + "|" + wantBenchTransfer + "|" + wantBenchTaskWorkspace + "|" + wantBenchRealAdapter + "|" + wantBenchContainer
+	// wantBenchContainer is m3-m4-container-e2e's appended evidence parser
+	// benchmark command.
+	wantBenchContainer = "go test ./internal/devcheck -run=^$ -bench=^BenchmarkContainerEvidence$ -benchmem -benchtime=3x -count=1 -timeout=180s"
 	// wantBenchTaskWorkspace is iteration 10b's task workspace benchmark
 	// command, immediately after the transfer one.
 	wantBenchTaskWorkspace = "go test ./internal/taskworkspace -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s"
@@ -78,7 +81,7 @@ func TestPlaneVerificationPolicyContract(t *testing.T) {
 			t.Fatal("linux native plan accepted")
 		}
 		for stage, want := range map[string][][]string{
-			"bench":               {{wantBenchGit}, {wantBenchPlane}, {wantBenchContract}, {wantBenchSidecar}, {wantBenchAdapter}, {wantBenchMCP}, {wantBenchMCPQual}, {wantBenchWorkspace}, {wantBenchTransfer}, {wantBenchTaskWorkspace}, {wantBenchRealAdapter}},
+			"bench":               {{wantBenchGit}, {wantBenchPlane}, {wantBenchContract}, {wantBenchSidecar}, {wantBenchAdapter}, {wantBenchMCP}, {wantBenchMCPQual}, {wantBenchWorkspace}, {wantBenchTransfer}, {wantBenchTaskWorkspace}, {wantBenchRealAdapter}, {wantBenchContainer}},
 			"stress":              wantStageGroups["stress"],
 			"stress-packages":     wantStageGroups["stress-packages"],
 			"stress-plane-cpu1":   wantStageGroups["stress-plane-cpu1"],
@@ -87,7 +90,9 @@ func TestPlaneVerificationPolicyContract(t *testing.T) {
 			"stress-sidecar":      wantStageGroups["stress-sidecar"],
 			"stress-processgroup": wantStageGroups["stress-processgroup"],
 			"stress-functions":    wantStageGroups["stress-functions"],
-			"test":                {{wantTestNative}, {wantTestRace}, {wantTestTagged}, {wantTestTaggedRace}},
+			// "test" is checked as the exact wantTestPlanLinux plan above:
+			// its full dispatch also runs the container operation, whose
+			// execution the container driver contract tests cover.
 		} {
 			f := &fakeRunner{}
 			code, out, errOut := runDriver(t, "linux", f, stage)

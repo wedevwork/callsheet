@@ -139,6 +139,18 @@ const (
 	SetupGoAction  = "actions/setup-go"
 )
 
+// The Linux job's final container evidence step (m3-m4-container-e2e): a
+// plain run step, no action, at jobs.linux.steps[7], publishing the
+// retained report to the job log even after a failed check step. Its
+// condition is the literal always(), never an expression.
+const (
+	ContainerEvidenceName = "Publish container E2E evidence"
+	ContainerEvidenceIf   = "always()"
+	ContainerEvidenceRun  = "cat /tmp/callsheet-container-e2e-evidence/report.txt"
+	// containerEvidenceJob is the only job with the evidence step.
+	containerEvidenceJob = "linux"
+)
+
 var (
 	shaRE   = regexp.MustCompile(`^[0-9a-f]{40}$`)
 	usesRE  = regexp.MustCompile(`^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)@(.*)$`)
@@ -393,7 +405,12 @@ func (v *validator) job(n *yaml.Node, path string, j Job) {
 		return
 	}
 	want := 3 + len(j.Stages)
-	if len(steps.Content) != want {
+	evidence := j.ID == containerEvidenceJob
+	switch {
+	case evidence && len(steps.Content) != want+1:
+		v.addf(sp, "must have exactly %d steps (checkout, setup-go, go mod download, then devcheck %s, then container evidence), got %d",
+			want+1, strings.Join(j.Stages, ", "), len(steps.Content))
+	case !evidence && len(steps.Content) != want:
 		v.addf(sp, "must have exactly %d steps (checkout, setup-go, go mod download, then devcheck %s), got %d",
 			want, strings.Join(j.Stages, ", "), len(steps.Content))
 	}
@@ -411,6 +428,8 @@ func (v *validator) job(n *yaml.Node, path string, j Job) {
 			v.download(st, p)
 		case i-3 < len(j.Stages):
 			present[v.check(st, p, j.Stages[i-3])]++
+		case evidence && i == want:
+			v.containerEvidence(st, p)
 		default:
 			v.addf(p, "unexpected extra step")
 		}
@@ -512,6 +531,26 @@ func (v *validator) action(n *yaml.Node, path, identity string, with, tags map[s
 		}
 	}
 	v.exactMap(f["with"], join(path, "with"), with, tags)
+}
+
+// containerEvidence checks the Linux job's final evidence publication step:
+// exactly the string fields name, if and run with their constant values,
+// no other key, and a run command within the literal command grammar.
+func (v *validator) containerEvidence(n *yaml.Node, path string) {
+	f := v.fields(n, path, []string{"name", "if", "run"}, nil)
+	if f == nil {
+		return
+	}
+	for _, c := range []struct{ key, want string }{{"name", ContainerEvidenceName}, {"if", ContainerEvidenceIf}, {"run", ContainerEvidenceRun}} {
+		node := f[c.key]
+		if node == nil {
+			continue
+		}
+		if node.Kind != yaml.ScalarNode || node.Tag != "!!str" || node.Value != c.want {
+			v.addf(join(path, c.key), "must be exactly %q", c.want)
+		}
+	}
+	v.command(f["run"], join(path, "run"))
 }
 
 func (v *validator) download(n *yaml.Node, path string) {

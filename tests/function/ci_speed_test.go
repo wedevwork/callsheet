@@ -683,7 +683,17 @@ func TestCISpeedJobs(t *testing.T) {
 		}
 		names = append(names, j.name)
 		steps := node(t, job, "steps")
-		if len(steps.Content) != 3+len(j.checks) {
+		// The Linux job ends with the always-run container evidence
+		// publication (m3-m4-container-e2e), after its check steps.
+		extra := 0
+		if j.id == "linux" {
+			extra = 1
+			if ev := node(t, steps, 3+len(j.checks)); node(t, ev, "name").Value != "Publish container E2E evidence" || node(t, ev, "if").Value != "always()" ||
+				node(t, ev, "run").Value != "cat /tmp/callsheet-container-e2e-evidence/report.txt" {
+				t.Fatalf("linux evidence step = %+v", ev)
+			}
+		}
+		if len(steps.Content) != 3+len(j.checks)+extra {
 			t.Fatalf("%s has %d steps", j.id, len(steps.Content))
 		}
 		// Identical pinned setup in every job.

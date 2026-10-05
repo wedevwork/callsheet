@@ -17,7 +17,7 @@ import (
 //
 //	file                                          wrapper    required body
 //	internal/cli/cli.go                           Run        return runFor(ctx, runtime.GOOS, args, in, out, errOut)
-//	internal/devcheck/devcheck.go                 Run        return runFor(ctx, runtime.GOOS, args, out, errOut, run)
+//	internal/devcheck/devcheck.go                 Run        return runFor(ctx, runtime.GOOS, args, out, errOut, run, opts)
 //	internal/spikes/processgroup/experiment.go    evaluate   evaluateFor(r, runtime.GOOS)
 //	internal/spikes/processgroup/experiment.go    RunHelper  return runHelperFor(getenv, runtime.GOOS, runtime.GOARCH)
 //	internal/testkit/fakeadapter/fakeadapter.go   Parse      return parseFor(args, runtime.GOOS, signalsSupported)
@@ -68,11 +68,13 @@ import (
 
 type Runner func()
 
-func Run(ctx context.Context, args []string, out, errOut io.Writer, run Runner) int {
-	return runFor(ctx, runtime.GOOS, args, out, errOut, run)
+func Run(ctx context.Context, args []string, out, errOut io.Writer, run Runner, opts RunOptions) int {
+	return runFor(ctx, runtime.GOOS, args, out, errOut, run, opts)
 }
 
-func runFor(ctx context.Context, goos string, args []string, out, errOut io.Writer, run Runner) int { return 0 }
+func runFor(ctx context.Context, goos string, args []string, out, errOut io.Writer, run Runner, opts RunOptions) int { return 0 }
+
+type RunOptions struct{ EvidenceDir string }
 
 func label() string { return runtime.GOARCH }
 `,
@@ -291,8 +293,8 @@ func TestPlatformGuardWrapperShapes(t *testing.T) {
 		{"not a return", replaceCLI("\trunFor(ctx, runtime.GOOS, args, in, out, errOut)\n\treturn 0\n"),
 			[]string{cliShape + " (no branches, extra statements, closures or host aliases): the body must be a single statement", "internal/cli/cli.go:11:14: unapproved host OS read"}},
 		{"wrong argument count", func(f map[string]string) {
-			f["internal/devcheck/devcheck.go"] = strings.Replace(f["internal/devcheck/devcheck.go"], "errOut, run)\n}", "errOut, run, nil)\n}", 1)
-		}, []string{"internal/devcheck/devcheck.go:11:1: approved wrapper Run must be exactly \"return runFor(ctx, runtime.GOOS, args, out, errOut, run)\" (no branches, extra statements, closures or host aliases): it must pass 6 arguments, got 7", "internal/devcheck/devcheck.go:12:21: unapproved"}},
+			f["internal/devcheck/devcheck.go"] = strings.Replace(f["internal/devcheck/devcheck.go"], "errOut, run, opts)\n}", "errOut, run, opts, nil)\n}", 1)
+		}, []string{"internal/devcheck/devcheck.go:11:1: approved wrapper Run must be exactly \"return runFor(ctx, runtime.GOOS, args, out, errOut, run, opts)\" (no branches, extra statements, closures or host aliases): it must pass 7 arguments, got 8", "internal/devcheck/devcheck.go:12:21: unapproved"}},
 		{"evaluate returns", func(f map[string]string) {
 			f["internal/spikes/processgroup/experiment.go"] = strings.Replace(f["internal/spikes/processgroup/experiment.go"],
 				"func evaluate(r *CaseResult) { evaluateFor(r, runtime.GOOS) }", "func evaluate(r *CaseResult) { return; evaluateFor(r, runtime.GOOS) }", 1)
