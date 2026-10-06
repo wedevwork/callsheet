@@ -83,6 +83,9 @@ jobs:
         env:
           GOPROXY: "off"
           GOSUMDB: "off"
+      - run: cat /tmp/callsheet-container-e2e-evidence/report.txt
+        if: always()
+        name: Publish container E2E evidence
   macos-stress:
     name: ci-macos-stress
     runs-on: ubuntu-24.04
@@ -571,6 +574,14 @@ const (
 `
 )
 
+// evidenceStep is the fixture's final Linux evidence publication step
+// (m3-m4-container-e2e), with its keys in another order than the
+// checked-in workflow.
+const evidenceStep = `      - run: cat /tmp/callsheet-container-e2e-evidence/report.txt
+        if: always()
+        name: Publish container E2E evidence
+`
+
 const benchStep = `      - name: bench
         run: go run ./cmd/devcheck bench
         env:
@@ -665,7 +676,32 @@ func TestMutationsFailWithPath(t *testing.T) {
 		{"extra step", "  push:\n", "  push:\n", nil}, // placeholder replaced below
 		{"reordered steps", coverageStep + benchStep, benchStep + coverageStep,
 			[]string{`jobs.linux.steps[4].run: must run devcheck stage "coverage", got "bench"`, `jobs.linux.steps[5].run: must run devcheck stage "bench", got "coverage"`}},
-		{"omitted coverage gate", coverageStep, "", []string{"jobs.linux.steps: must have exactly 7 steps", `jobs.linux.steps: missing check step for devcheck stage "coverage"`}},
+		{"omitted coverage gate", coverageStep, "", []string{"jobs.linux.steps: must have exactly 8 steps (checkout, setup-go, go mod download, then devcheck test, coverage, bench, cross, then container evidence), got 7",
+			`jobs.linux.steps: missing check step for devcheck stage "coverage"`}},
+		// m3-m4-container-e2e: the exact final evidence step.
+		{"evidence omitted", evidenceStep, "", []string{"jobs.linux.steps: must have exactly 8 steps (checkout, setup-go, go mod download, then devcheck test, coverage, bench, cross, then container evidence), got 7"}},
+		{"evidence name", "        name: Publish container E2E evidence\n", "        name: Publish evidence\n", []string{`jobs.linux.steps[7].name: must be exactly "Publish container E2E evidence"`}},
+		{"evidence name omitted", "        name: Publish container E2E evidence\n", "", []string{"jobs.linux.steps[7].name: missing required field"}},
+		{"evidence condition", "        if: always()\n", "        if: success()\n", []string{`jobs.linux.steps[7].if: must be exactly "always()"`}},
+		{"evidence condition expression", "        if: always()\n", "        if: ${{ always() }}\n", []string{`jobs.linux.steps[7].if: must be exactly "always()"`,
+			`jobs.linux.steps[7].if: expressions are not allowed`}},
+		{"evidence condition omitted", "        if: always()\n", "", []string{"jobs.linux.steps[7].if: missing required field"}},
+		{"evidence path", "run: cat /tmp/callsheet-container-e2e-evidence/report.txt", "run: cat /tmp/other/report.txt",
+			[]string{`jobs.linux.steps[7].run: must be exactly "cat /tmp/callsheet-container-e2e-evidence/report.txt"`}},
+		{"evidence operator", "run: cat /tmp/callsheet-container-e2e-evidence/report.txt", "run: cat /tmp/callsheet-container-e2e-evidence/report.txt || true",
+			[]string{`jobs.linux.steps[7].run: must be exactly`, `jobs.linux.steps[7].run: token "||" contains a shell operator`}},
+		{"evidence run omitted", "      - run: cat /tmp/callsheet-container-e2e-evidence/report.txt\n        if: always()\n", "      - if: always()\n",
+			[]string{"jobs.linux.steps[7].run: missing required field"}},
+		{"evidence action", "        if: always()\n", "        if: always()\n        uses: actions/upload-artifact@" + strings.Repeat("a", 40) + "\n",
+			[]string{"jobs.linux.steps[7].uses: unknown field"}},
+		{"evidence env", "        if: always()\n", "        if: always()\n        env: {X: y}\n", []string{"jobs.linux.steps[7].env: unknown field"}},
+		{"evidence with", "        if: always()\n", "        if: always()\n        with: {path: x}\n", []string{"jobs.linux.steps[7].with: unknown field"}},
+		{"evidence relocated", coverageStep + benchStep + crossStep + evidenceStep, evidenceStep + coverageStep + benchStep + crossStep,
+			[]string{`jobs.linux.steps[4].run: must be "go run ./cmd/devcheck coverage"`, `jobs.linux.steps[7].name: must be exactly "Publish container E2E evidence"`,
+				"jobs.linux.steps[7].env: unknown field", "jobs.linux.steps[7].if: missing required field"}},
+		{"evidence in macos", nativeStep, nativeStep + evidenceStep, []string{"jobs.macos.steps: must have exactly 4 steps", "jobs.macos.steps[4]: unexpected extra step"}},
+		{"evidence in a stress worker", linuxWorkerStep, linuxWorkerStep + evidenceStep,
+			[]string{"jobs.linux-stress-processgroup.steps: must have exactly 4 steps", "jobs.linux-stress-processgroup.steps[4]: unexpected extra step"}},
 		{"network env on download", "        run: go mod download\n", "        run: go mod download\n        env: {GOPROXY: \"off\"}\n", []string{"jobs.linux.steps[2].env: unknown field"}},
 		{"network env missing", "        run: go run ./cmd/devcheck test\n        env:\n          GOPROXY: \"off\"\n          GOSUMDB: \"off\"\n", "        run: go run ./cmd/devcheck test\n", []string{"jobs.linux.steps[3].env: missing required field"}},
 		{"network env wrong", "          GOPROXY: \"off\"\n", "          GOPROXY: direct\n", []string{`jobs.linux.steps[3].env.GOPROXY: must be "off", got "direct"`}},
@@ -689,8 +725,8 @@ func TestMutationsFailWithPath(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			data := rep(t, validYAML, c.old, c.new)
 			if c.name == "extra step" {
-				data = rep(t, validYAML, crossStep, crossStep+"      - run: go run ./cmd/devcheck all\n        env: {GOPROXY: \"off\", GOSUMDB: \"off\"}\n")
-				c.wantErr = []string{"jobs.linux.steps: must have exactly 7 steps", "jobs.linux.steps[7]: unexpected extra step"}
+				data = rep(t, validYAML, evidenceStep, evidenceStep+"      - run: go run ./cmd/devcheck all\n        env: {GOPROXY: \"off\", GOSUMDB: \"off\"}\n")
+				c.wantErr = []string{"jobs.linux.steps: must have exactly 8 steps", "jobs.linux.steps[8]: unexpected extra step"}
 			}
 			err := ValidateWorkflow([]byte(data))
 			if err == nil {
@@ -1193,8 +1229,10 @@ func TestOrdinaryJobContract(t *testing.T) {
 	}
 	for _, j := range []struct {
 		id, name, runner string
-		timeout, last    int
-		stages           []string
+		// last is the last check step; steps is the job's step count (the
+		// Linux job's eighth step is the container evidence publication).
+		timeout, last int
+		stages        []string
 	}{
 		{"linux", "ci-linux", "ubuntu-24.04", 45, 6, []string{"test", "coverage", "bench", "cross"}},
 		{"macos", "ci-macos", "macos-15", 30, 3, []string{"native"}},
@@ -1215,6 +1253,10 @@ func TestOrdinaryJobContract(t *testing.T) {
 	} {
 		p := "jobs." + j.id
 		last := fmt.Sprintf("%s.steps[%d]", p, j.last)
+		steps := 3 + len(j.stages)
+		if j.id == "linux" {
+			steps = 8
+		}
 		cases := []struct {
 			name   string
 			mutate func(jobs map[string]*yaml.Node)
@@ -1284,7 +1326,7 @@ func TestOrdinaryJobContract(t *testing.T) {
 				steps := at(t, js[j.id], "steps")
 				steps.Content = append(steps.Content, &yaml.Node{Kind: yaml.MappingNode, Content: []*yaml.Node{
 					str("run"), str("go run ./cmd/devcheck stress"), str("env"), mapping("GOPROXY", "off", "GOSUMDB", "off")}})
-			}, []string{fmt.Sprintf("%s.steps: must have exactly %d steps", p, 3+len(j.stages)), fmt.Sprintf("%s.steps[%d]: unexpected extra step", p, j.last+1)}},
+			}, []string{fmt.Sprintf("%s.steps: must have exactly %d steps", p, steps), fmt.Sprintf("%s.steps[%d]: unexpected extra step", p, steps)}},
 		}
 		for _, c := range cases {
 			t.Run(j.id+" "+c.name, func(t *testing.T) { mustRejectJobs(t, c.mutate, c.want) })

@@ -737,14 +737,34 @@ func TestStressStageDispatch(t *testing.T) {
 	}
 	// all stays test, coverage, bench, cross: stress is explicit.
 	f := &fakeRunner{coverTotal: "81%", cmdList: cmdList, profile: goodProfile}
-	// test(4, iteration 08) + coverage(3) + bench(11, iteration 10b) + cross(12).
-	if code, _, errOut := runDriver(t, "linux", f, "all"); code != 0 || len(f.calls) != 30 {
+	cr := newContainerRunnerFixture(t, f).(*containerRunner)
+	// Ordinary calls: test(4, iteration 08) + coverage(3) + bench(12,
+	// m3-m4-container-e2e) + cross(12); the container operation's calls
+	// (one iteration) run between test and coverage.
+	if code, _, errOut := runDriver(t, "linux", cr, "all"); code != 0 || len(f.calls) != 31 {
 		t.Fatalf("all = %d with %d calls %s", code, len(f.calls), errOut)
 	}
-	for _, c := range f.argvs() {
+	if got := strings.Join(cr.containerKinds(), "|"); got != strings.Join(oneIterationKinds, "|") {
+		t.Fatalf("all container calls = %s", got)
+	}
+	if !cr.ordered("go test -race -tags=realadaptercheck ./internal/sidecar", "docker context inspect") ||
+		!cr.ordered("docker image ls", "-coverprofile=") {
+		t.Fatal("the container operation does not run between test and coverage")
+	}
+	runs := 0
+	for _, c := range append(f.argvs(), cr.argvs()...) {
 		if strings.Contains(c, "-count=20") || strings.Contains(c, "-cpu=") {
 			t.Fatalf("all ran a stress command: %s", c)
 		}
+		if strings.HasPrefix(c, "docker run ") {
+			runs++
+			if !strings.Contains(c, "--env "+ContainerEnvIter+"=1 --env "+ContainerEnvTotal+"=1 ") {
+				t.Fatalf("all ran more than one iteration: %s", c)
+			}
+		}
+	}
+	if runs != 1 {
+		t.Fatalf("all ran %d containers", runs)
 	}
 	// No operands, count, CPU or output flags, for every stress stage.
 	for _, stage := range stressStages {
@@ -1076,7 +1096,7 @@ func TestStressCancellationAndExpiry(t *testing.T) {
 		return nil
 	}}
 	var out, errOut bytes.Buffer
-	code := runFor(expiring, "darwin", []string{"stress"}, &out, &errOut, r.run)
+	code := runFor(expiring, "darwin", []string{"stress"}, &out, &errOut, r.run, testOpts(t))
 	if code != 1 || len(r.ctxs) != 1 || strings.Contains(out.String(), "stage stress ok") ||
 		!strings.Contains(errOut.String(), "stage stress FAILED: devcheck: stress watchdog (15m0s) ended during stress packages: context deadline exceeded") {
 		t.Fatalf("dispatch expired = %d after %d calls: %s", code, len(r.ctxs), errOut.String())
@@ -1464,7 +1484,7 @@ func TestStressConcurrencyContract(t *testing.T) {
 			return err
 		}
 		var dout, derr bytes.Buffer
-		if code := runFor(context.Background(), "darwin", []string{"stress"}, &dout, &derr, rec); code != 0 {
+		if code := runFor(context.Background(), "darwin", []string{"stress"}, &dout, &derr, rec, testOpts(t)); code != 0 {
 			t.Fatalf("stress = %d %s", code, derr.String())
 		}
 		if len(events) != 44 || events[0] != "start "+wantStressPackages || events[1] != "end "+wantStressPackages ||
@@ -2098,7 +2118,7 @@ func TestStressConcurrencyContract(t *testing.T) {
 			return err
 		}
 		var dout, derr bytes.Buffer
-		if code := runFor(context.Background(), "darwin", []string{"stress"}, &dout, &derr, rec); code != 0 {
+		if code := runFor(context.Background(), "darwin", []string{"stress"}, &dout, &derr, rec, testOpts(t)); code != 0 {
 			t.Fatalf("stress with processgroup waves = %d %s", code, derr.String())
 		}
 		if len(events) != 44 || events[0] != "start "+wantStressPackages || events[1] != "end "+wantStressPackages ||
@@ -2280,7 +2300,10 @@ func TestPlatformSeamContract(t *testing.T) {
 			if goos == "darwin" {
 				nativeCalls += 6
 			}
-			for stage, want := range map[string]int{"test": wantTest, "stress": 22, "stress-packages": 10, "stress-plane-cpu1": 1, "stress-plane": 2,
+			// "test" is a plan-only check (TestSteps above): its combined
+			// execution with the Linux container operation belongs to
+			// TestContainerDriverContract.
+			for stage, want := range map[string]int{"stress": 22, "stress-packages": 10, "stress-plane-cpu1": 1, "stress-plane": 2,
 				"stress-sidecar-cpu1": 1, "stress-sidecar": 2, "stress-processgroup": 3, "stress-functions": 3, "native": nativeCalls} {
 				f := &fakeRunner{native: stream(qualification()...)}
 				code, out, errOut := runDriver(t, goos, f, stage)

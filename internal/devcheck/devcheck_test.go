@@ -295,10 +295,17 @@ type runnerLike interface {
 	run(ctx context.Context, argv, env []string, dir string, stdout, stderr io.Writer) error
 }
 
+// testOpts returns run options with a fresh temporary evidence directory
+// (never the command's fixed /tmp path).
+func testOpts(t *testing.T) RunOptions {
+	t.Helper()
+	return RunOptions{EvidenceDir: filepath.Join(t.TempDir(), "evidence")}
+}
+
 func runDriver(t *testing.T, goos string, f runnerLike, args ...string) (int, string, string) {
 	t.Helper()
 	var out, errOut bytes.Buffer
-	code := runFor(context.Background(), goos, args, &out, &errOut, f.run)
+	code := runFor(context.Background(), goos, args, &out, &errOut, f.run, testOpts(t))
 	return code, out.String(), errOut.String()
 }
 
@@ -312,10 +319,13 @@ func scratchFrom(out string) string {
 }
 
 func TestStagePlanning(t *testing.T) {
+	// The Linux test stage: the original four commands unchanged and first,
+	// then the container operation (synthetic container fixture).
 	f := &fakeRunner{}
-	code, out, _ := runDriver(t, "linux", f, "test")
+	cr := newContainerRunnerFixture(t, f).(*containerRunner)
+	code, out, errOut := runDriver(t, "linux", cr, "test")
 	if code != 0 {
-		t.Fatal(code)
+		t.Fatalf("linux test = %d %s", code, errOut)
 	}
 	if got := strings.Join(f.argvs(), "|"); got != "go test -count=1 -timeout=180s ./...|go test -race -count=1 -timeout=180s ./..."+
 		"|go test -tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$ -count=1|go test -race -tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$ -count=1" {
@@ -324,9 +334,21 @@ func TestStagePlanning(t *testing.T) {
 	if !strings.Contains(strings.Join(f.calls[1].env, " "), "CGO_ENABLED=1") || !strings.Contains(strings.Join(f.calls[3].env, " "), "CGO_ENABLED=1") {
 		t.Fatal("race runs need CGO_ENABLED=1")
 	}
+	if got := strings.Join(cr.containerKinds(), "|"); got != strings.Join(oneIterationKinds, "|") {
+		t.Fatalf("linux test container calls = %s", got)
+	}
 	if _, err := os.Stat(scratchFrom(out)); !os.IsNotExist(err) {
 		t.Fatal("successful scratch not deleted")
 	}
+	// A plain fake Runner that exits zero but emits no ledger fails the
+	// evidence gate: there is no empty-ledger exemption.
+	f = &fakeRunner{}
+	code, out, errOut = runDriver(t, "linux", f, "test")
+	if code != 1 || !strings.Contains(errOut, "devcheck: stage test FAILED: container-e2e: ") || !strings.Contains(errOut, "missing end record") ||
+		!strings.Contains(errOut, "case TestContainerRuntime: missing case record") {
+		t.Fatalf("linux test without evidence = %d %s", code, errOut)
+	}
+	os.RemoveAll(scratchFrom(out))
 	f = &fakeRunner{}
 	runDriver(t, "darwin", f, "test")
 	if len(f.calls) != 2 || !strings.Contains(f.argvs()[1], "-tags=realadaptercheck ./internal/sidecar") || strings.Contains(f.argvs()[1], "-race") {
@@ -344,11 +366,12 @@ func TestStagePlanning(t *testing.T) {
 		"go test ./internal/workspace -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s|"+
 		"go test ./internal/workspacetransfer -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s|"+
 		"go test ./internal/taskworkspace -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s|"+
-		"go test ./internal/sidecar -tags=realadaptercheck -run=^$ -bench=^BenchmarkRealAdapterFile$ -benchmem -benchtime=3x -count=1 -timeout=180s" {
+		"go test ./internal/sidecar -tags=realadaptercheck -run=^$ -bench=^BenchmarkRealAdapterFile$ -benchmem -benchtime=3x -count=1 -timeout=180s|"+
+		"go test ./internal/devcheck -run=^$ -bench=^BenchmarkContainerEvidence$ -benchmem -benchtime=3x -count=1 -timeout=180s" {
 		t.Fatalf("bench = %s", got)
 	}
 	f = &fakeRunner{}
-	code, out, errOut := runDriver(t, "linux", f, "cross")
+	code, out, errOut = runDriver(t, "linux", f, "cross")
 	if code != 0 || len(f.calls) != 12 || !strings.Contains(out, "devcheck: cross: verified 12 artifacts (exist, nonempty, ELF/Mach-O header matches GOOS/GOARCH)\n") {
 		t.Fatalf("cross = %d %v %s %s", code, len(f.calls), out, errOut)
 	}
@@ -425,24 +448,33 @@ func (n *noProfileRunner) run(ctx context.Context, argv, env []string, dir strin
 
 func TestAllStopsAtFirstFailure(t *testing.T) {
 	f := &fakeRunner{coverTotal: "81%", cmdList: cmdList, profile: goodProfile}
-	code, _, errOut := runDriver(t, "linux", f, "all")
+	cr := newContainerRunnerFixture(t, f).(*containerRunner)
+	code, _, errOut := runDriver(t, "linux", cr, "all")
 	if code != 0 {
 		t.Fatalf("all = %d %s", code, errOut)
 	}
-	// test(4) + coverage(3) + bench(11) + cross(12), in that order.
+	// Ordinary calls: test(4) + coverage(3) + bench(12) + cross(12), in
+	// that order; the container operation's own calls run inside the test
+	// stage (asserted separately: one iteration).
 	a := f.argvs()
-	if len(a) != 30 || !strings.Contains(a[0], "go test -count=1") || !strings.Contains(a[2], "-tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$") ||
+	if got := strings.Join(cr.containerKinds(), "|"); got != strings.Join(oneIterationKinds, "|") {
+		t.Fatalf("all container calls = %s", got)
+	}
+	if len(a) != 31 || !strings.Contains(a[0], "go test -count=1") || !strings.Contains(a[2], "-tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$") ||
 		!strings.Contains(a[4], "-coverprofile") || !strings.Contains(a[7], "-bench") ||
 		!strings.Contains(a[8], "./internal/plane -run=^$ -bench=.") || !strings.Contains(a[9], "./internal/contract -run=^$ -bench=.") ||
 		!strings.Contains(a[10], "./internal/sidecar -run=^$ -bench=.") || !strings.Contains(a[11], "./internal/adapter -run=^$ -bench=.") ||
 		!strings.Contains(a[12], "./internal/mcp -run=^$ -bench=.") || !strings.Contains(a[13], "./internal/mcpqual -run=^$ -bench=.") ||
 		!strings.Contains(a[14], "./internal/workspace -run=^$ -bench=.") || !strings.Contains(a[15], "./internal/workspacetransfer -run=^$ -bench=.") ||
 		!strings.Contains(a[16], "./internal/taskworkspace -run=^$ -bench=.") ||
-		!strings.Contains(a[17], "-bench=^BenchmarkRealAdapterFile$") || !strings.Contains(a[18], "go build") {
+		!strings.Contains(a[17], "-bench=^BenchmarkRealAdapterFile$") || !strings.Contains(a[18], "-bench=^BenchmarkContainerEvidence$") ||
+		!strings.Contains(a[19], "go build") {
 		t.Fatalf("all order = %v", a)
 	}
+	// A later bench failure is reached only past successful synthetic
+	// container evidence.
 	f = &fakeRunner{fail: "-bench", coverTotal: "81%", cmdList: cmdList, profile: goodProfile}
-	code, out, errOut := runDriver(t, "linux", f, "all")
+	code, out, errOut := runDriver(t, "linux", newContainerRunnerFixture(t, f), "all")
 	if code != 1 || !strings.Contains(errOut, "stage bench FAILED") || !strings.Contains(errOut, "go test ./internal/spikes/gittransport") {
 		t.Fatalf("bench failure = %d %s", code, errOut)
 	}
@@ -473,8 +505,19 @@ func TestUsageErrors(t *testing.T) {
 		}
 	}
 	var out, errOut bytes.Buffer
-	if code := Run(context.Background(), []string{"nope"}, &out, &errOut, (&fakeRunner{}).run); code != 2 {
+	if code := Run(context.Background(), []string{"nope"}, &out, &errOut, (&fakeRunner{}).run, testOpts(t)); code != 2 {
 		t.Fatal("Run usage")
+	}
+	// The evidence directory is required and absolute: no fallback, exit 2
+	// before any child or evidence.
+	for _, opts := range []RunOptions{{}, {EvidenceDir: "relative/evidence"}} {
+		f := &fakeRunner{}
+		out.Reset()
+		errOut.Reset()
+		if code := Run(context.Background(), []string{"bench"}, &out, &errOut, f.run, opts); code != 2 || len(f.calls) != 0 ||
+			!strings.Contains(errOut.String(), "the evidence directory must be an absolute path") || out.Len() != 0 {
+			t.Fatalf("options %+v = %d calls=%d %q", opts, code, len(f.calls), errOut.String())
+		}
 	}
 }
 

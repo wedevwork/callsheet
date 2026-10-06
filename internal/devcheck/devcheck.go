@@ -1,8 +1,8 @@
 // Package devcheck is the development-only, pure-Go check driver behind
-// cmd/devcheck: test, coverage, bench, cross, all, native, stress and the
+// cmd/devcheck: test, coverage, bench, cross, all, native, stress, the
 // seven stress shards stress-packages, stress-plane-cpu1, stress-plane,
 // stress-sidecar-cpu1, stress-sidecar, stress-processgroup and
-// stress-functions. It is
+// stress-functions, and the Linux container acceptance container-e2e. It is
 // not distributed and imports no product services. Child tools run with argv
 // (no shell).
 package devcheck
@@ -23,6 +23,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Runner runs argv (argv[0] is the executable) with the complete child
@@ -374,8 +375,8 @@ func TestSteps(goos string) []Step {
 // (iteration 04), then the MCP codec, relay and wait-budget benchmarks
 // (iteration 07a), then the qualification harness's transcript and probe
 // benchmarks (iteration 07b), then the workspace hub (iteration 09a), then
-// the local workspace transfers (iteration 09b). Timings are reported,
-// never gated.
+// the local workspace transfers (iteration 09b), then the container
+// evidence parser (m3-m4-container-e2e). Timings are reported, never gated.
 func BenchSteps() []Step {
 	pkg := func(name, dir string) Step {
 		return Step{Name: name, Argv: []string{"go", "test", dir, "-run=^$", "-bench=.", "-benchmem", "-benchtime=3x", "-count=1", "-timeout=180s"}}
@@ -401,6 +402,10 @@ func BenchSteps() []Step {
 		// extractor and invocation benchmarks run in "bench adapter").
 		{Name: "bench sidecar " + RealAdapterTag, Argv: []string{"go", "test", "./internal/sidecar", "-tags=" + RealAdapterTag, "-run=^$",
 			"-bench=^BenchmarkRealAdapterFile$", "-benchmem", "-benchtime=3x", "-count=1", "-timeout=180s"}},
+		// Container acceptance (m3-m4-container-e2e): the evidence parser
+		// over a complete one-iteration ledger; reported, never gated.
+		{Name: "bench container evidence", Argv: []string{"go", "test", "./internal/devcheck", "-run=^$", "-bench=^BenchmarkContainerEvidence$", "-benchmem",
+			"-benchtime=3x", "-count=1", "-timeout=180s"}},
 	}
 }
 
@@ -440,6 +445,56 @@ type driver struct {
 	errOut  io.Writer
 	scratch string
 	goos    string
+	// evidenceDir is the selected container evidence directory
+	// (RunOptions.EvidenceDir); evidence is its open report while the
+	// Linux test stage or the container-e2e stage runs.
+	evidenceDir string
+	evidence    *evidenceReport
+	// dockerEnv is the docker children's private client configuration
+	// and daemon endpoint (set by the container probe).
+	dockerEnv []string
+}
+
+// withEvidence opens the evidence directory for stage (count iterations),
+// runs f and closes the report, releasing the lock after the final flush.
+// A failure f returns is recorded in the report.
+func (d *driver) withEvidence(stage string, count int, f func() error) error {
+	rep, err := openEvidence(d.evidenceDir, stage, count, time.Now())
+	if err != nil {
+		return err
+	}
+	d.evidence = rep
+	defer func() { d.evidence = nil }()
+	err = f()
+	if err != nil && rep.outcome != "fail" {
+		rep.fail(err)
+	}
+	if cerr := rep.close(); cerr != nil && err == nil {
+		err = cerr
+	}
+	return err
+}
+
+// test runs the host's test plan; on Linux the container acceptance runs
+// after it as a separate operation (never a Step of TestSteps), within the
+// evidence directory opened before any child. A failed plan command
+// leaves the report "not started" with its failure phase.
+func (d *driver) test() error {
+	if d.goos != "linux" {
+		return d.steps(TestSteps(d.goos))
+	}
+	return d.withEvidence("test", 1, func() error {
+		for _, s := range TestSteps(d.goos) {
+			if err := d.steps([]Step{s}); err != nil {
+				d.evidence.phases = append(d.evidence.phases, "failed before container setup: "+s.Name)
+				return err
+			}
+		}
+		if err := d.containerE2E(1); err != nil {
+			return fmt.Errorf("container-e2e: %w", err)
+		}
+		return nil
+	})
 }
 
 func (d *driver) steps(steps []Step) error {
@@ -528,7 +583,7 @@ func (d *driver) cross() error {
 	return nil
 }
 
-const usage = "usage: devcheck test | coverage [-o profile] | bench | cross | all | native | stress | stress-packages | stress-plane-cpu1 | stress-plane | stress-sidecar-cpu1 | stress-sidecar | stress-processgroup | stress-functions\n"
+const usage = "usage: devcheck test | coverage [-o profile] | bench | cross | all | native | stress | stress-packages | stress-plane-cpu1 | stress-plane | stress-sidecar-cpu1 | stress-sidecar | stress-processgroup | stress-functions | container-e2e [--count=N]\n"
 
 // stageNames is the single stage definition used by argument dispatch and
 // advertised by Stages. The seven stress-* stages each run one stress shard
@@ -536,8 +591,10 @@ const usage = "usage: devcheck test | coverage [-o profile] | bench | cross | al
 // iteration 05b, stress-sidecar since its sidecar follow-up, and
 // stress-plane-cpu1 and stress-sidecar-cpu1 since design 06a-perf, which
 // leaves stress-plane and stress-sidecar with CPU 2 and 4 only); "stress"
-// runs all seven.
-var stageNames = [...]string{"test", "coverage", "bench", "cross", "all", "native", "stress", "stress-packages", "stress-plane-cpu1", "stress-plane", "stress-sidecar-cpu1", "stress-sidecar", "stress-processgroup", "stress-functions"}
+// runs all seven. container-e2e (m3-m4-container-e2e) is the Linux-only
+// container acceptance, standalone with --count=N fresh containers; the
+// Linux test stage also runs it once.
+var stageNames = [...]string{"test", "coverage", "bench", "cross", "all", "native", "stress", "stress-packages", "stress-plane-cpu1", "stress-plane", "stress-sidecar-cpu1", "stress-sidecar", "stress-processgroup", "stress-functions", "container-e2e"}
 
 // allStages is the stage sequence of "all". "native" and the stress stages
 // are selected explicitly: stress repeats subprocess builds and process
@@ -558,12 +615,13 @@ func isStage(name string) bool {
 }
 
 // Run executes a devcheck subcommand and returns the process exit code:
-// 0 success, 1 failed stage, 2 usage error.
-func Run(ctx context.Context, args []string, out, errOut io.Writer, run Runner) int {
-	return runFor(ctx, runtime.GOOS, args, out, errOut, run)
+// 0 success, 1 failed stage, 2 usage error. opts.EvidenceDir must be
+// absolute (there is no fallback).
+func Run(ctx context.Context, args []string, out, errOut io.Writer, run Runner, opts RunOptions) int {
+	return runFor(ctx, runtime.GOOS, args, out, errOut, run, opts)
 }
 
-func runFor(ctx context.Context, goos string, args []string, out, errOut io.Writer, run Runner) int {
+func runFor(ctx context.Context, goos string, args []string, out, errOut io.Writer, run Runner, opts RunOptions) int {
 	if len(args) == 0 {
 		io.WriteString(errOut, usage)
 		return 2
@@ -572,7 +630,14 @@ func runFor(ctx context.Context, goos string, args []string, out, errOut io.Writ
 	fs := flag.NewFlagSet("devcheck "+sub, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	coverOut := fs.String("o", "", "coverage profile output path")
-	if err := fs.Parse(rest); err != nil || fs.NArg() != 0 || (*coverOut != "" && sub != "coverage" && sub != "all") {
+	count := fs.Int("count", 1, "container-e2e iterations (1 to 20)")
+	parseErr := fs.Parse(rest)
+	// Explicit use of --count (even --count=1) is accepted only for
+	// container-e2e.
+	countSet := false
+	fs.Visit(func(f *flag.Flag) { countSet = countSet || f.Name == "count" })
+	if parseErr != nil || fs.NArg() != 0 || (*coverOut != "" && sub != "coverage" && sub != "all") ||
+		(countSet && sub != "container-e2e") || *count < 1 || *count > ContainerMaxCount {
 		fmt.Fprintf(errOut, "devcheck: invalid arguments for %s\n%s", sub, usage)
 		return 2
 	}
@@ -580,12 +645,16 @@ func runFor(ctx context.Context, goos string, args []string, out, errOut io.Writ
 		fmt.Fprintf(errOut, "devcheck: unknown subcommand %q\n%s", sub, usage)
 		return 2
 	}
+	if err := validateRunOptions(opts); err != nil {
+		fmt.Fprintf(errOut, "%v\n%s", err, usage)
+		return 2
+	}
 	stages := []string{sub}
 	if sub == "all" {
 		stages = allStages
 	}
-	// An unsupported native or stress host is rejected before any scratch
-	// exists and before any child runs.
+	// An unsupported native, stress or container host is rejected before
+	// any scratch or evidence exists and before any child runs.
 	var nativeSteps []Step
 	var stressShards []StressShard
 	var planErr error
@@ -594,6 +663,8 @@ func runFor(ctx context.Context, goos string, args []string, out, errOut io.Writ
 		nativeSteps, planErr = NativeSteps(goos)
 	case isStressStage(sub):
 		stressShards, planErr = stressPlan(goos, sub)
+	case sub == "container-e2e":
+		planErr = containerUnsupported(goos)
 	}
 	if planErr != nil {
 		fmt.Fprintf(errOut, "devcheck: stage %s FAILED: %v\n", sub, planErr)
@@ -605,12 +676,12 @@ func runFor(ctx context.Context, goos string, args []string, out, errOut io.Writ
 		return 1
 	}
 	fmt.Fprintf(out, "devcheck: scratch %s\n", scratch)
-	d := &driver{ctx: ctx, run: run, out: out, errOut: errOut, scratch: scratch, goos: goos}
+	d := &driver{ctx: ctx, run: run, out: out, errOut: errOut, scratch: scratch, goos: goos, evidenceDir: opts.EvidenceDir}
 	for _, st := range stages {
 		var err error
 		switch st {
 		case "test":
-			err = d.steps(TestSteps(goos))
+			err = d.test()
 		case "coverage":
 			err = d.coverage(*coverOut)
 		case "bench":
@@ -621,6 +692,9 @@ func runFor(ctx context.Context, goos string, args []string, out, errOut io.Writ
 			err = d.native(nativeSteps)
 		case "stress", "stress-packages", "stress-plane-cpu1", "stress-plane", "stress-sidecar-cpu1", "stress-sidecar", "stress-processgroup", "stress-functions":
 			err = d.stress(stressShards)
+		case "container-e2e":
+			n := *count
+			err = d.withEvidence("container-e2e", n, func() error { return d.containerE2E(n) })
 		default:
 			err = fmt.Errorf("devcheck: stage %q is advertised but not implemented", st)
 		}

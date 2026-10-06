@@ -163,6 +163,24 @@ var WorkspaceCoverageManifest = []CoverageEntry{
 	{Group: GroupChanged, File: modulePath + "/internal/cli/role.go"},
 	{Group: GroupChanged, File: modulePath + "/internal/contract/role.go"},
 	{Group: GroupChanged, File: modulePath + "/internal/plane/roles.go"},
+
+	// m3-m4-container-e2e (base 49559af): the new container driver and
+	// evidence files of devcheck, the changed workflow validator, and the
+	// new acceptance helper package (its executable helper logic is
+	// measured, never exempted as fixture code), as whole files (no build
+	// constraint: evaluated on both systems). devcheck.go is already listed
+	// whole; platform.go's change is a policy variable (no executable
+	// block); cmd/devcheck's wrapper is covered by the cmd-package check.
+	{Group: GroupChanged, File: modulePath + "/internal/devcheck/container_e2e.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/devcheck/container_expected.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/devcheck/container_report.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/cicheck/workflow.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/testkit/containeracceptance/claims.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/testkit/containeracceptance/config.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/testkit/containeracceptance/record.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/testkit/containeracceptance/scenarios.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/testkit/containeracceptance/suite.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/testkit/containeracceptance/synthetic.go"},
 }
 
 // modulePath is the profile's import-path prefix.

@@ -17,7 +17,10 @@
 // and 4 as concurrent invocations), stress-sidecar-cpu1 and
 // stress-sidecar (likewise for sidecar), stress-processgroup (its three
 // CPU settings as concurrent invocations) and stress-functions. None takes
-// arguments.
+// arguments. container-e2e (Linux only) runs the M3/M4 container
+// acceptance in fresh isolated Docker containers (--count=N, 1 to 20; the
+// Linux test stage also runs it once) and retains its evidence in
+// /tmp/callsheet-container-e2e-evidence.
 package main
 
 import (
@@ -29,12 +32,18 @@ import (
 	"github.com/wedevwork/callsheet/internal/devcheck"
 )
 
+// defaultEvidenceDir is the container acceptance's retained evidence
+// directory (m3-m4-container-e2e): outside the disposable scratch tree,
+// published by the CI workflow's final always-run step. Only main selects
+// it; tests pass their own temporary directories.
+const defaultEvidenceDir = "/tmp/callsheet-container-e2e-evidence"
+
 func main() {
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, devcheck.ExecRunner))
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, devcheck.ExecRunner, devcheck.RunOptions{EvidenceDir: defaultEvidenceDir}))
 }
 
-func run(args []string, out, errOut io.Writer, runner devcheck.Runner) int {
+func run(args []string, out, errOut io.Writer, runner devcheck.Runner, opts devcheck.RunOptions) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	return devcheck.Run(ctx, args, out, errOut, runner)
+	return devcheck.Run(ctx, args, out, errOut, runner, opts)
 }

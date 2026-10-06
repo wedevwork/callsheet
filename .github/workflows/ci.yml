@@ -8,7 +8,9 @@
 # workers) are independent; the two stress summaries keep the required
 # stress contexts and pass only if all seven of their platform's workers
 # concluded success. All verification policy lives in ./cmd/devcheck; the
-# contract is checked offline by internal/cicheck and tests/function.
+# contract is checked offline by internal/cicheck and tests/function. The
+# Linux job's devcheck test also runs the M3/M4 container acceptance; its
+# final always-run step publishes the retained evidence report to the log.
 name: CI
 
 on:
@@ -65,6 +67,9 @@ jobs:
         env:
           GOPROXY: "off"
           GOSUMDB: "off"
+      - name: Publish container E2E evidence
+        if: always()
+        run: cat /tmp/callsheet-container-e2e-evidence/report.txt
 
   macos:
     name: ci-macos

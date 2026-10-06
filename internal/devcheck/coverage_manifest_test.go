@@ -208,7 +208,10 @@ func TestCoverageManifestFiles(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel))); err != nil {
 			t.Fatalf("manifest file %s: %v", e.File, err)
 		}
-		if strings.HasSuffix(rel, "_test.go") || strings.HasPrefix(rel, "internal/testkit/") {
+		// m3-m4-container-e2e: the container acceptance helper package is the
+		// one test-support package whose executable logic the design
+		// requires in the manifest; every other testkit path stays out.
+		if strings.HasSuffix(rel, "_test.go") || (strings.HasPrefix(rel, "internal/testkit/") && !strings.HasPrefix(rel, "internal/testkit/containeracceptance/")) {
 			t.Fatalf("manifest lists non-production %s", rel)
 		}
 		if os := buildOS(t, filepath.Join(root, filepath.FromSlash(rel))); os != e.OS {
@@ -320,6 +323,28 @@ func TestCoverageManifestFiles(t *testing.T) {
 	if !slices.ContainsFunc(WorkspaceCoverageManifest, func(e CoverageEntry) bool { return e.OS == "linux" }) ||
 		!slices.ContainsFunc(WorkspaceCoverageManifest, func(e CoverageEntry) bool { return e.OS == "darwin" }) {
 		t.Fatal("native-only publication files missing")
+	}
+	// m3-m4-container-e2e: every non-test file of the acceptance helper
+	// package, the new driver and evidence files and the changed workflow
+	// validator, whole in the changed group with its build OS.
+	m3m4 := []string{"internal/devcheck/container_e2e.go", "internal/devcheck/container_expected.go", "internal/devcheck/container_report.go",
+		"internal/cicheck/workflow.go"}
+	helpers, _ := filepath.Glob(filepath.Join(root, "internal", "testkit", "containeracceptance", "*.go"))
+	n := 0
+	for _, f := range helpers {
+		if !strings.HasSuffix(f, "_test.go") {
+			m3m4 = append(m3m4, "internal/testkit/containeracceptance/"+filepath.Base(f))
+			n++
+		}
+	}
+	if n == 0 {
+		t.Fatal("no production files in internal/testkit/containeracceptance")
+	}
+	for _, rel := range m3m4 {
+		e, ok := listed[rel]
+		if !ok || e.Group != GroupChanged || len(e.Ranges) != 0 || e.OS != buildOS(t, filepath.Join(root, filepath.FromSlash(rel))) {
+			t.Fatalf("m3-m4 file %s missing from the changed group as a whole file", rel)
+		}
 	}
 }
 

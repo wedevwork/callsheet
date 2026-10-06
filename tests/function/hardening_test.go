@@ -190,14 +190,24 @@ func TestHardeningStress(t *testing.T) {
 			t.Fatalf("%v = %d", args, code)
 		}
 	}
-	r = &ciRunner{coverTotal: "81.0%"}
-	if code, _, errOut := devcheckRun(t, r, "all"); code != 0 {
-		t.Fatalf("all = %d %s", code, errOut)
+	// all's policy, plan-level (m3-m4-container-e2e: the full all dispatch,
+	// with its Linux container operation, is tested inside internal/devcheck
+	// with the synthetic container fixture): test, coverage, bench and cross
+	// with no stress count or CPU setting in any of their plans.
+	coverTest, coverReport, coverList := devcheck.CoverageSteps("/p")
+	crossPlan, err := devcheck.CrossPlan("/o", devcheck.Matrix)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, c := range r.calls {
-		if strings.Contains(strings.Join(c, " "), "-count=20") {
-			t.Fatalf("all ran stress: %v", c)
+	plans := append(append(append(devcheck.TestSteps(runtime.GOOS), coverTest, coverReport, coverList), devcheck.BenchSteps()...), crossPlan...)
+	for _, s := range plans {
+		joined := strings.Join(s.Argv, " ")
+		if strings.Contains(joined, "-count=20") || strings.Contains(joined, "-cpu=") {
+			t.Fatalf("all's plans include a stress setting: %s", joined)
 		}
+	}
+	if got := strings.Join(cicheck.Jobs()[0].Stages, " "); got != "test coverage bench cross" {
+		t.Fatalf("all's stages = %s", got)
 	}
 }
 
@@ -223,7 +233,8 @@ func validGuardTree() map[string]string {
 		"internal/cli/cli.go": "package cli\n\nimport (\n\t\"context\"\n\t\"io\"\n\t\"runtime\"\n)\n\n" +
 			"func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer) int {\n\treturn runFor(ctx, runtime.GOOS, args, in, out, errOut)\n}\n",
 		"internal/devcheck/devcheck.go": "package devcheck\n\nimport (\n\t\"context\"\n\t\"io\"\n\t\"runtime\"\n)\n\n" +
-			"func Run(ctx context.Context, args []string, out, errOut io.Writer, run Runner) int {\n\treturn runFor(ctx, runtime.GOOS, args, out, errOut, run)\n}\n",
+			"type RunOptions struct{ EvidenceDir string }\n\n" +
+			"func Run(ctx context.Context, args []string, out, errOut io.Writer, run Runner, opts RunOptions) int {\n\treturn runFor(ctx, runtime.GOOS, args, out, errOut, run, opts)\n}\n",
 		"internal/spikes/processgroup/experiment.go": "//go:build linux || darwin\n\npackage processgroup\n\nimport \"runtime\"\n\n" +
 			"func evaluate(r *CaseResult) { evaluateFor(r, runtime.GOOS) }\n\n" +
 			"func RunHelper(getenv func(string) string) int {\n\treturn runHelperFor(getenv, runtime.GOOS, runtime.GOARCH)\n}\n",
@@ -349,10 +360,16 @@ func TestHardeningCIStress(t *testing.T) {
 		}
 		steps := node(t, &doc, "jobs", j.id, "steps")
 		last := len(steps.Content) - 1
-		if last != 2+len(got) {
+		// The Linux job's eighth step publishes the container evidence
+		// (m3-m4-container-e2e); its check steps end at index 6.
+		lastCheck := last
+		if j.id == "linux" {
+			lastCheck = last - 1
+		}
+		if lastCheck != 2+len(got) {
 			t.Fatalf("%s has %d steps", j.id, last+1)
 		}
-		for i := 3; i <= last; i++ {
+		for i := 3; i <= lastCheck; i++ {
 			stage := got[i-3]
 			mustReject(t, fmt.Sprintf("%s without step %d", j.id, i), mutated(t, func(r *yaml.Node) {
 				s := node(t, r, "jobs", j.id, "steps")
