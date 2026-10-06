@@ -37,6 +37,9 @@ func TestMain(m *testing.M) {
 	if shared.dir != "" {
 		os.RemoveAll(shared.dir)
 	}
+	if processFixtures.dir != "" {
+		os.RemoveAll(processFixtures.dir)
+	}
 	os.Exit(code)
 }
 

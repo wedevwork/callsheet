@@ -8,7 +8,10 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
+	"io/fs"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -378,6 +381,118 @@ func newRepoAt(t testing.TB, root string, files map[string]fspec) *fixtureRepo {
 	if files != nil {
 		r.commit(files, "initial")
 	}
+	return r
+}
+
+// processFixtures is the directory of the fixtures built once per test
+// process (repoTemplate, the git-config oracle's push repository), created
+// on first use and removed by TestMain.
+var processFixtures struct {
+	mu   sync.Mutex
+	dir  string
+	next int
+}
+
+// processDir returns a new canonical directory below processFixtures.
+func processDir(t testing.TB) string {
+	t.Helper()
+	processFixtures.mu.Lock()
+	defer processFixtures.mu.Unlock()
+	if processFixtures.dir == "" {
+		dir, err := os.MkdirTemp("", "callsheet-transfer-fixtures-")
+		if err == nil {
+			dir, err = filepath.EvalSymlinks(dir)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		processFixtures.dir = dir
+	}
+	processFixtures.next++
+	d := filepath.Join(processFixtures.dir, strconv.Itoa(processFixtures.next))
+	if err := os.Mkdir(d, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return d
+}
+
+// repoTemplate is a newRepo of files committed once per test process and
+// copied for each use. A per-row repository of the oracle tests is the
+// same one-commit tree every time; committing it (objects deflated and
+// hashed, the index encoded) on every row was most of the rows' fixture
+// cost under the race detector. The template is never handed out: copy
+// returns a fresh directory, so a row that breaks its repository cannot
+// reach the next row (TestRepoTemplatePerUse).
+type repoTemplate struct {
+	files map[string]fspec
+	once  sync.Once
+	root  string
+	head  plumbing.Hash
+	// print is the template's fingerprint, taken when it was built.
+	print string
+}
+
+var (
+	oneFileTemplate = &repoTemplate{files: map[string]fspec{"f": reg("f\n")}}
+	stateTemplate   = &repoTemplate{files: map[string]fspec{"f": reg("f\n"), "d/g": reg("g\n")}}
+)
+
+// build commits the template on first use.
+func (tm *repoTemplate) build(t testing.TB) {
+	t.Helper()
+	tm.once.Do(func() {
+		r := newRepoAt(t, filepath.Join(processDir(t), "repo"), maps.Clone(tm.files))
+		tm.root, tm.head, tm.print = r.root, r.head, fingerprint(t, r.root)
+	})
+	if tm.root == "" {
+		t.Fatal("the repository template failed to build in an earlier use")
+	}
+}
+
+// copy returns a new repository equal to newRepo(t, tm.files): the
+// template's files, modes and links copied to a new directory.
+func (tm *repoTemplate) copy(t testing.TB) *fixtureRepo {
+	t.Helper()
+	tm.build(t)
+	root := filepath.Join(tempDir(t), "repo")
+	if err := filepath.WalkDir(tm.root, func(p string, e fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(tm.root, p)
+		dst := filepath.Join(root, rel)
+		fi, err := e.Info()
+		if err != nil {
+			return err
+		}
+		switch {
+		case e.IsDir():
+			if err := os.Mkdir(dst, 0o700); err != nil {
+				return err
+			}
+		case e.Type()&fs.ModeSymlink != 0:
+			l, err := os.Readlink(p)
+			if err != nil {
+				return err
+			}
+			return os.Symlink(l, dst)
+		case e.Type().IsRegular():
+			b, err := os.ReadFile(p)
+			if err != nil {
+				return err
+			}
+			if err := os.WriteFile(dst, b, 0o600); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("%s: unexpected file type %v", p, e.Type())
+		}
+		return os.Chmod(dst, fi.Mode().Perm())
+	}); err != nil {
+		t.Fatalf("copy the repository template: %v", err)
+	}
+	r := &fixtureRepo{t: t, root: root, head: tm.head, files: maps.Clone(tm.files)}
+	r.store = &fixtureStore{objects: filepath.Join(root, ".git", "objects"), r: r}
 	return r
 }
 

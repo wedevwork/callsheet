@@ -2,6 +2,7 @@ package workspacetransfer
 
 import (
 	"bufio"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -64,7 +65,7 @@ func TestMetadataFilesMatchGit(t *testing.T) {
 		if !run(i) {
 			continue
 		}
-		r := newRepo(t, map[string]fspec{"f": reg("f\n")})
+		r := oneFileTemplate.copy(t)
 		p := filepath.Join(r.root, ".git", filepath.FromSlash(c.file))
 		content := c.value
 		switch c.file {
@@ -79,6 +80,42 @@ func TestMetadataFilesMatchGit(t *testing.T) {
 		if want != (err == nil) {
 			t.Errorf("%s = %q: Git %v, policy %v; Push: %v", c.file, c.value, map[bool]string{true: "accepts", false: "refuses"}[c.accept],
 				metadataPolicy(c.file, c.value), err)
+		}
+	}
+}
+
+// TestRepoTemplatePerUse proves a repoTemplate copy is newRepo's
+// repository and is private to its use: each repetition overwrites every
+// file of a copy and adds metadata, and both a second copy in the same
+// repetition and the first copy of every later repetition (-count) must
+// match the template's fingerprint taken when it was built.
+func TestRepoTemplatePerUse(t *testing.T) {
+	for name, tm := range map[string]*repoTemplate{"one file": oneFileTemplate, "state": stateTemplate} {
+		first := tm.copy(t)
+		if fingerprint(t, first.root) != tm.print {
+			t.Fatalf("%s: a previous use's mutation leaked into the template", name)
+		}
+		if fresh := newRepo(t, tm.files); fingerprint(t, fresh.root) != tm.print || fresh.head != tm.head || first.head != tm.head {
+			t.Fatalf("%s: the copy is not newRepo's repository", name)
+		}
+		if err := filepath.WalkDir(first.root, func(p string, e fs.DirEntry, err error) error {
+			if err != nil || !e.Type().IsRegular() {
+				return err
+			}
+			if err := os.Chmod(p, 0o600); err != nil {
+				return err
+			}
+			return os.WriteFile(p, []byte("scribbled"), 0o600)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		mustWrite(t, filepath.Join(first.root, ".git", "shallow"), first.head.String()+"\n")
+		again := tm.copy(t)
+		if again.root == first.root || fingerprint(t, again.root) != tm.print {
+			t.Fatalf("%s: a use's mutation reached the next use", name)
+		}
+		if fingerprint(t, tm.root) != tm.print {
+			t.Fatalf("%s: the template changed", name)
 		}
 	}
 }

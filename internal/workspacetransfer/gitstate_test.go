@@ -188,8 +188,9 @@ func TestGitStateOracle(t *testing.T) {
 		if !ok {
 			t.Fatalf("no verdict for %q", s.name)
 		}
-		files := map[string]fspec{"f": reg("f\n"), "d/g": reg("g\n")}
-		r := newRepo(t, files)
+		// A copy of newRepo(t, {"f": "f\n", "d/g": "g\n"}).
+		r := stateTemplate.copy(t)
+		files := r.files
 		other, err := testkit.WriteCommit(r.store, r.treeOf(files), nil, "other", testkit.FixedWhen)
 		if err != nil {
 			t.Fatal(err)

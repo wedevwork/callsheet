@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"compress/zlib"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -38,23 +40,6 @@ func countingDeps(n *atomic.Int64) *deps {
 		return objfile.NewWriter(w)
 	}
 	return d
-}
-
-// looseEncoding returns the loose encoding of content as typ, the header
-// declaring size, compressed at level.
-func looseEncoding(t testing.TB, typ string, size int, content []byte, level int) []byte {
-	t.Helper()
-	var b bytes.Buffer
-	zw, err := zlib.NewWriterLevel(&b, level)
-	if err != nil {
-		t.Fatal(err)
-	}
-	fmt.Fprintf(zw, "%s %d\x00", typ, size)
-	zw.Write(content)
-	if err := zw.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return b.Bytes()
 }
 
 // looseOf returns h's loose file path in db.
@@ -107,11 +92,12 @@ type genericStore struct{ storer.EncodedObjectStorer }
 // TestTaskCompressedCopy is UT-B3's compressed-copy instrumentation through
 // the package-private writer-construction seam.
 func TestTaskCompressedCopy(t *testing.T) {
-	content := []byte(strings.Repeat("compressed copy line\n", 400))
+	in := compressedCopyFixtures(t)
+	content := []byte(compressedCopyContent)
 	h := plumbing.ComputeHash(plumbing.BlobObject, content)
 	// Stored (level 0) blocks: an encoding the default deflater never
 	// produces, so equal destination bytes prove they were not re-deflated.
-	stored := looseEncoding(t, "blob", len(content), content, zlib.NoCompression)
+	stored := in.get("stored")
 
 	t.Run("loose-preserved", func(t *testing.T) {
 		var n atomic.Int64
@@ -231,24 +217,23 @@ func TestTaskCompressedCopy(t *testing.T) {
 	})
 
 	t.Run("integrity", func(t *testing.T) {
-		other := []byte("other content\n")
 		bad := map[string]struct {
 			raw  []byte
 			hash plumbing.Hash
 		}{
-			"wrong-id":      {looseEncoding(t, "blob", len(other), other, zlib.DefaultCompression), h},
+			"wrong-id":      {in.get("wrong-id"), h},
 			"checksum":      {flipAt(stored, len(stored)-1), h},
-			"data":          {flipAt(looseEncoding(t, "blob", len(content), content, zlib.DefaultCompression), 20), h},
+			"data":          {flipAt(in.get("data"), 20), h},
 			"truncated":     {stored[:len(stored)-10], h},
 			"not-zlib":      {[]byte("not a zlib stream at all"), h},
-			"type":          {looseEncoding(t, "bogus", len(content), content, zlib.DefaultCompression), h},
-			"delta-type":    {looseEncoding(t, "ofs-delta", len(content), content, zlib.DefaultCompression), h},
-			"negative-size": {looseEncoding(t, "blob", -1, content, zlib.DefaultCompression), h},
-			"size-short":    {looseEncoding(t, "blob", len(content)-1, content, zlib.DefaultCompression), h},
-			"size-long":     {looseEncoding(t, "blob", len(content)+1, content, zlib.DefaultCompression), h},
+			"type":          {in.get("type"), h},
+			"delta-type":    {in.get("delta-type"), h},
+			"negative-size": {in.get("negative-size"), h},
+			"size-short":    {in.get("size-short"), h},
+			"size-long":     {in.get("size-long"), h},
 			"empty":         {nil, h},
-			"long-type":     {zlibRaw(t, zlib.DefaultCompression, append([]byte("blob"), bytes.Repeat([]byte("x"), 4096)...)), h},
-			"long-size":     {zlibRaw(t, zlib.DefaultCompression, append([]byte("blob "), bytes.Repeat([]byte("1"), 4096)...)), h},
+			"long-type":     {in.get("long-type"), h},
+			"long-size":     {in.get("long-size"), h},
 		}
 		for name, c := range bad {
 			var n atomic.Int64
@@ -427,27 +412,22 @@ func TestTaskCompressedCopy(t *testing.T) {
 		// Header decoding is bounded and observes cancellation (review r0.5
 		// C1): a header without its delimiters is neither accumulated nor
 		// consumed to the end of the stream.
-		// oversized builds a malformed header stream of prefix and body at
-		// level: the compressed stream must exceed the 64 KiB read bound
-		// below, and the body is kept small enough for the stress run.
-		oversized := func(level int, prefix string, body []byte) []byte {
+		// oversized is one of the malformed header streams of prefix and
+		// body (compressedCopyHeaders): the compressed stream must exceed
+		// the 64 KiB read bound below, and the body is kept small enough
+		// for the stress run.
+		oversized := func(name string) []byte {
 			t.Helper()
-			raw := zlibRaw(t, level, append([]byte(prefix), body...))
+			raw := in.get(name)
 			if len(raw) <= 64<<10 {
-				t.Errorf("oversized %q fixture: %d compressed bytes, not above the 64 KiB read bound", prefix, len(raw))
+				t.Errorf("oversized %s fixture: %d compressed bytes, not above the 64 KiB read bound", name, len(raw))
 			}
-			if len(body) > 128<<10 {
-				t.Errorf("oversized %q fixture: %d-byte body, above 128 KiB", prefix, len(body))
+			if body := in.headerBody[name]; body == 0 || body > 128<<10 {
+				t.Errorf("oversized %s fixture: %d-byte body, not in (0, 128 KiB]", name, body)
 			}
 			return raw
 		}
-		// The deflated fixtures are Huffman-coded over a 26-letter cycle,
-		// which has neither a space nor a NUL and stays above the bound.
-		alphabet := make([]byte, 128<<10)
-		for i := range alphabet {
-			alphabet[i] = byte('A' + i%26)
-		}
-		noDelim := oversized(zlib.NoCompression, "blob", bytes.Repeat([]byte("x"), 128<<10))
+		noDelim := oversized("type-stored")
 		// Cancelled during header parsing: the stream is served one
 		// compressed byte per read and cancelled during the tenth read (the
 		// zlib and stored-block headers take seven), so parsing stops at the
@@ -468,9 +448,9 @@ func TestTaskCompressedCopy(t *testing.T) {
 		// the stream's end.
 		for name, raw := range map[string][]byte{
 			"type-stored":   noDelim,
-			"type-deflated": oversized(zlib.HuffmanOnly, "blob", alphabet),
-			"size-stored":   oversized(zlib.NoCompression, "blob ", bytes.Repeat([]byte("1"), 128<<10)),
-			"size-deflated": oversized(zlib.HuffmanOnly, "blob ", alphabet),
+			"type-deflated": oversized("type-deflated"),
+			"size-stored":   oversized("size-stored"),
+			"size-deflated": oversized("size-deflated"),
 		} {
 			sr := &stepReader{data: raw, step: 1 << 10}
 			_, err := verifyCompressed(context.Background(), sr, h)
@@ -482,11 +462,10 @@ func TestTaskCompressedCopy(t *testing.T) {
 		// exactly maxSizeField digits (leading zeros) verifies, one more is
 		// rejected.
 		for _, extra := range []int{0, 1} {
-			field := fmt.Sprintf("%0*d", maxSizeField+extra, len(content))
-			raw := zlibRaw(t, zlib.DefaultCompression, append([]byte("blob "+field+"\x00"), content...))
+			raw := in.get(fmt.Sprintf("size-field+%d", extra))
 			size, err := verifyCompressed(context.Background(), bytes.NewReader(raw), h)
 			if ok := err == nil && size == int64(len(content)); ok != (extra == 0) {
-				t.Fatalf("size field of %d digits: %d %v", len(field), size, err)
+				t.Fatalf("size field of %d digits: %d %v", maxSizeField+extra, size, err)
 			}
 		}
 	})
@@ -560,26 +539,148 @@ func TestTaskCompressedCopy(t *testing.T) {
 	})
 }
 
+// compressedCopyContent is the blob TestTaskCompressedCopy copies.
+var compressedCopyContent = strings.Repeat("compressed copy line\n", 400)
+
+// compressedCopyInputs are TestTaskCompressedCopy's constant zlib
+// streams, a pure function of constants: the stored encoding of
+// compressedCopyContent, the integrity subtest's malformed encodings and
+// the header subtest's oversized malformed headers (128 KiB bodies,
+// Huffman-coded or stored) and size-field streams. Deflating them is most
+// of the header subtest's cost under the race detector, which the stress
+// stage would otherwise pay 60 times per process, so they are built once
+// per process (compressedCopyFixtures). They are held as strings, which
+// are immutable, and get hands every use its own []byte copy: a mutation
+// in one use cannot reach the next (TestCompressedCopyInputsPerUse). Only
+// the inputs are shared; every copy, verification and assertion runs on
+// every repetition.
+type compressedCopyInputs struct {
+	raw map[string]string
+	// sums are the SHA-256 digests of raw, taken when it was built.
+	sums map[string][sha256.Size]byte
+	// headerBody is each oversized header stream's body length.
+	headerBody map[string]int
+}
+
+// get returns a fresh copy of the named input.
+func (in compressedCopyInputs) get(name string) []byte {
+	s, ok := in.raw[name]
+	if !ok {
+		panic("no compressed-copy input " + name)
+	}
+	return []byte(s)
+}
+
+// compressedCopyBuilds counts buildCompressedCopyInputs calls in this
+// process (TestCompressedCopyInputsPerUse requires one).
+var compressedCopyBuilds atomic.Int64
+
+func buildCompressedCopyInputs() (compressedCopyInputs, error) {
+	compressedCopyBuilds.Add(1)
+	content := []byte(compressedCopyContent)
+	in := compressedCopyInputs{raw: map[string]string{}, sums: map[string][sha256.Size]byte{}, headerBody: map[string]int{}}
+	var firstErr error
+	put := func(name string, level int, parts ...[]byte) {
+		var b bytes.Buffer
+		zw, err := zlib.NewWriterLevel(&b, level)
+		for _, p := range parts {
+			if err == nil {
+				_, err = zw.Write(p)
+			}
+		}
+		if err == nil {
+			err = zw.Close()
+		}
+		if err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("%s: %w", name, err)
+		}
+		in.raw[name] = b.String()
+		in.sums[name] = sha256.Sum256(b.Bytes())
+	}
+	loose := func(name, typ string, size int, body []byte, level int) {
+		put(name, level, fmt.Appendf(nil, "%s %d\x00", typ, size), body)
+	}
+	loose("stored", "blob", len(content), content, zlib.NoCompression)
+	other := []byte("other content\n")
+	loose("wrong-id", "blob", len(other), other, zlib.DefaultCompression)
+	loose("data", "blob", len(content), content, zlib.DefaultCompression)
+	loose("type", "bogus", len(content), content, zlib.DefaultCompression)
+	loose("delta-type", "ofs-delta", len(content), content, zlib.DefaultCompression)
+	loose("negative-size", "blob", -1, content, zlib.DefaultCompression)
+	loose("size-short", "blob", len(content)-1, content, zlib.DefaultCompression)
+	loose("size-long", "blob", len(content)+1, content, zlib.DefaultCompression)
+	put("long-type", zlib.DefaultCompression, []byte("blob"), bytes.Repeat([]byte("x"), 4096))
+	put("long-size", zlib.DefaultCompression, []byte("blob "), bytes.Repeat([]byte("1"), 4096))
+	// The deflated header fixtures are Huffman-coded over a 26-letter
+	// cycle, which has neither a space nor a NUL and stays above the bound.
+	alphabet := make([]byte, 128<<10)
+	for i := range alphabet {
+		alphabet[i] = byte('A' + i%26)
+	}
+	oversized := func(name string, level int, prefix string, body []byte) {
+		put(name, level, []byte(prefix), body)
+		in.headerBody[name] = len(body)
+	}
+	oversized("type-stored", zlib.NoCompression, "blob", bytes.Repeat([]byte("x"), 128<<10))
+	oversized("type-deflated", zlib.HuffmanOnly, "blob", alphabet)
+	oversized("size-stored", zlib.NoCompression, "blob ", bytes.Repeat([]byte("1"), 128<<10))
+	oversized("size-deflated", zlib.HuffmanOnly, "blob ", alphabet)
+	// A size field of exactly maxSizeField digits (leading zeros), and one
+	// more.
+	for _, extra := range []int{0, 1} {
+		field := fmt.Sprintf("%0*d", maxSizeField+extra, len(content))
+		put(fmt.Sprintf("size-field+%d", extra), zlib.DefaultCompression, []byte("blob "+field+"\x00"), content)
+	}
+	return in, firstErr
+}
+
+// compressedCopyOnce builds the process's compressedCopyInputs.
+var compressedCopyOnce = sync.OnceValues(buildCompressedCopyInputs)
+
+// compressedCopyFixtures returns the process's compressedCopyInputs.
+func compressedCopyFixtures(t testing.TB) compressedCopyInputs {
+	t.Helper()
+	in, err := compressedCopyOnce()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return in
+}
+
+// TestCompressedCopyInputsPerUse proves compressedCopyInputs are built
+// once per process and copied per use: each repetition overwrites its
+// copies with bytes no zlib stream of them holds (all 0xff: an invalid
+// zlib header), and both a second copy in the same repetition and the
+// first copy of every later repetition (-count) must match the digest
+// taken when the inputs were built.
+func TestCompressedCopyInputsPerUse(t *testing.T) {
+	in := compressedCopyFixtures(t)
+	if n := compressedCopyBuilds.Load(); n != 1 {
+		t.Fatalf("the compressed-copy inputs were built %d times in this process, want once", n)
+	}
+	if len(in.raw) != 16 {
+		t.Fatalf("%d compressed-copy inputs", len(in.raw))
+	}
+	for name := range in.raw {
+		first := in.get(name)
+		if len(first) == 0 || sha256.Sum256(first) != in.sums[name] {
+			t.Fatalf("%s: a previous use's mutation leaked into the input", name)
+		}
+		for i := range first {
+			first[i] = 0xff
+		}
+		again := in.get(name)
+		if sha256.Sum256(again) != in.sums[name] || &again[0] == &first[0] {
+			t.Fatalf("%s: a use's mutation reached the next use", name)
+		}
+	}
+}
+
 // flipAt returns a copy of b with byte i inverted.
 func flipAt(b []byte, i int) []byte {
 	c := append([]byte(nil), b...)
 	c[i] ^= 0xff
 	return c
-}
-
-// zlibRaw returns data as one zlib stream compressed at level.
-func zlibRaw(t testing.TB, level int, data []byte) []byte {
-	t.Helper()
-	var b bytes.Buffer
-	zw, err := zlib.NewWriterLevel(&b, level)
-	if err != nil {
-		t.Fatal(err)
-	}
-	zw.Write(data)
-	if err := zw.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return b.Bytes()
 }
 
 // stepReader serves data at most step bytes per read, counting reads and
