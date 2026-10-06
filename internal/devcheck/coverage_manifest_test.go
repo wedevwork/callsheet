@@ -346,6 +346,23 @@ func TestCoverageManifestFiles(t *testing.T) {
 			t.Fatalf("m3-m4 file %s missing from the changed group as a whole file", rel)
 		}
 	}
+	// Non-blocking coordinator waits: every new or changed production file,
+	// whole in the changed group with its build OS, none keeping an older
+	// partial-range entry.
+	for _, rel := range []string{"internal/client/until_done.go", "internal/cli/task.go", "internal/cli/mcp.go", "internal/mcp/wait.go", "internal/mcp/tools.go",
+		"internal/mcpqual/facts.go", "internal/mcpqual/plan.go", "internal/mcpqual/publish.go", "internal/mcpqual/report.go", "internal/devcheck/devcheck.go", "internal/devcheck/native.go",
+		"internal/devcheck/container_expected.go", "internal/testkit/containeracceptance/record.go", "internal/testkit/containeracceptance/scenarios.go",
+		"internal/testkit/containeracceptance/suite.go", "internal/testkit/containeracceptance/synthetic.go"} {
+		e, ok := listed[rel]
+		if !ok || e.Group != GroupChanged || e.OS != buildOS(t, filepath.Join(root, filepath.FromSlash(rel))) {
+			t.Fatalf("non-blocking waits file %s missing from the changed group with its build OS", rel)
+		}
+		for _, x := range WorkspaceCoverageManifest {
+			if x.File == modulePath+"/"+rel && len(x.Ranges) != 0 {
+				t.Fatalf("non-blocking waits file %s keeps a partial-range entry %v", rel, x.Ranges)
+			}
+		}
+	}
 }
 
 // taskWorkspaceBudget is design 10b r0.2's Budgets entry, verbatim.
@@ -438,7 +455,54 @@ func TestWave2NativeDocs(t *testing.T) {
 			t.Fatalf("docs/ci.md does not name %s", n)
 		}
 	}
-	if len(NativeRequiredTests()) != 395 || len(NativeTaskProcessTests()) != 12 {
+	if len(NativeRequiredTests()) != 403 || len(NativeTaskProcessTests()) != 12 {
 		t.Fatalf("%d native names, %d sidecar names", len(NativeRequiredTests()), len(NativeTaskProcessTests()))
+	}
+}
+
+// nonblockingWaitBudget is design nonblocking-coordinator-waits r0.2's
+// Budgets entry, verbatim.
+const nonblockingWaitBudget = "Nonblocking waits: preserve 18 jobs, four required checks and every timeout. Against green main run 37415353383 attempt 2 (a09b711), main-job growth allowance is 20s Linux / 20s macOS (764→784s / 464→484s); " +
+	"packages-job growth is 10s each (711→721s / 731→741s), combined packages command 433.9→443.9s / 455.3→465.3s. Client binary growth is 8s each (127.5→135.5s / 106.9→114.9s); " +
+	"each mcpqual CPU binary and the MCP binary gets 2s. Workspacetransfer gets zero new stress work (308.9s Linux / 280.1s macOS against 360s limit). " +
+	"Normal/race function binary growth is 5s each (Linux 110.9→115.9s / 126.6→131.6s); new benchmark execution allocation is 2s per platform. " +
+	"The container-e2e iteration inside ci-linux test gets 2s growth (9.8→11.8s); its static binary build allocation is unchanged at 24.2s. " +
+	"Separately, the internal/testkit/containeracceptance test binary in ci-linux gets 3s growth (94.7→97.7s). " +
+	"Stress-function execution is unchanged (Linux function/plane/node 24.8/19.6/7.9s, macOS 30.6/46.7/17.2s). " +
+	"Other shards get no execution growth and at most 5s shared compilation growth. Reserve a separate ±30s runner-variance envelope; do not spend it as test workload. " +
+	"Compare binary, command and job times separately, retaining all first-run evidence. " +
+	"An allocation miss requires investigation or design revision, never weakened assertions, skips, changed repetition counts or timeout increases."
+
+// TestNonblockingWaitDocs (design nonblocking-coordinator-waits):
+// docs/ci.md carries the exact Budgets entry once, as a labelled planning
+// allocation before the measurements, and Checks names the eight function
+// parents with the 403-name inventory, the client wait benchmark step and
+// the container's background_wait subtest.
+func TestNonblockingWaitDocs(t *testing.T) {
+	doc, err := os.ReadFile(filepath.Join(testkit.MustRepoRoot(t), "docs", "ci.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(doc)
+	at := strings.Index(s, nonblockingWaitBudget)
+	budgets, measured := strings.Index(s, "\nBudgets:\n"), strings.Index(s, "\nMeasurements, newest first.")
+	switch {
+	case at < 0 || strings.Count(s, nonblockingWaitBudget) != 1:
+		t.Fatal("docs/ci.md does not carry the non-blocking waits budgets entry exactly once")
+	case budgets < 0 || measured < 0 || at < budgets || at > measured:
+		t.Fatal("the budgets entry is not a Budgets allocation before the measurements")
+	case !strings.Contains(s[:at], "Non-blocking coordinator waits allocation (design\n  nonblocking-coordinator-waits r0.2 Budgets; planning allocations, not\n  measured deltas"):
+		t.Fatal("the budgets entry is not labelled as planning allocations")
+	}
+	for _, w := range []string{"8 more names,\n403 in all", "with the 395 earlier names unchanged and first", "`bench client wait`", "(13 steps; Linux `all`\nmakes 32 ordinary calls)",
+		"(8 ordinary calls)", "`background_wait` subtest", "CI stays 18 jobs", "the client wait benchmark step (non-blocking coordinator waits)", "`BenchmarkWaitUntilDone`"} {
+		if !strings.Contains(s, w) {
+			t.Fatalf("docs/ci.md lacks %q", w)
+		}
+	}
+	for _, n := range nbwNames() {
+		if !strings.Contains(s, "`"+n+"`") {
+			t.Fatalf("docs/ci.md does not name %s", n)
+		}
 	}
 }

@@ -276,8 +276,9 @@ evidence:
    pair and existing manuals.
 3. From the coordinator, dispatch one no-workspace goal-and-answer task to
    each role (no workspace or base fields). Follow each with short
-   `task_wait` calls, repeated as needed under the unchanged interim wait
-   budget; do not change the 07b timeout policy or run `mcpqual` for this.
+   `task_wait` calls, repeated as needed under the unchanged short-poll wait
+   budget (or the background wait of the coordinator guide's runbook
+   example); do not change the 07b timeout policy or run `mcpqual` for this.
 4. Inspect `task_show` and `task_logs` for each task. Record the
    coordinator's and each worker's OS, architecture and CLI versions, the
    node and task IDs, the final message bytes, the process exits, and that

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // ReportSchema is the report.json version.
@@ -391,8 +392,118 @@ func (r *Report) Markdown() string {
 			}
 			fmt.Fprintf(&sb, "- Phase %s: %s%s%s%s (%d cases).\n", ph.Name, ph.Status, res, bracketText(ph.LowerBoundMS, ph.UpperBoundMS), reasonSuffix(ph.Reason), len(ph.Cases))
 		}
+		fmt.Fprintf(&sb, "- %s\n", ShortPollDecision(ShortPollBudget, r, c))
 	}
 	return sb.String()
+}
+
+// ShortPollBudget is the shipping MCP call budget B (internal/mcp's
+// DefaultBudget) that the short confirmation checks.
+const ShortPollBudget = 10 * time.Second
+
+// ShortPollMargin is the response margin max(2s, 10% of t).
+func ShortPollMargin(t time.Duration) time.Duration { return max(2*time.Second, t/10) }
+
+// ShortPollCompatible is the conservative decision B + max(2s, 0.1L) < L
+// for a measured lower bound L (sufficient for the unknown timeout T >= L,
+// since T - max(2s, 0.1T) grows with T).
+func ShortPollCompatible(b, l time.Duration) bool { return b+ShortPollMargin(l) < l }
+
+// shortPollSum renders "B + max(2s, 0.1L) = S <op> L" with values.
+func shortPollSum(b, l time.Duration) string {
+	op := "<"
+	if !ShortPollCompatible(b, l) {
+		op = ">="
+	}
+	return fmt.Sprintf("%v + max(2s, %v) = %v %s %v", b, l/10, b+ShortPollMargin(l), op, l)
+}
+
+// ShortPollDecision renders client c's short-poll compatibility for
+// budget b from its default phase in run rep (design
+// nonblocking-coordinator-waits, Short confirmation): compatible only on a
+// measured lower bound L with B + max(2s, 0.1L) < L, stated as a lower
+// bound and never as the timeout; incompatible when a typed timeout's
+// upper bound itself fails the inequality; otherwise not established. A
+// verdict about the vendor needs qualified, correlated evidence (a decoder
+// qualified by an actual transcript, a conclusive setup, the successful
+// bound repeated, a clean and uninterrupted run); without it the decision
+// is UNVERIFIED and the numbers are shown as measurement only. A
+// conclusive timeout observation is never by itself a compatibility pass,
+// and an upper bound never proves safety.
+func ShortPollDecision(b time.Duration, rep *Report, c ClientReport) string {
+	head := fmt.Sprintf("Short-poll decision (B=%v, B + max(2s, 0.1L) < L): ", b)
+	ph := phaseOf(c, PhaseDefault)
+	switch {
+	case ph == nil:
+		return head + "compatibility UNVERIFIED: the default phase was not requested."
+	case ph.Status != StatusConclusive:
+		return head + "compatibility UNVERIFIED: the default phase is " + ph.Status + reasonSuffix(ph.Reason) + "; a failed, interrupted or unmeasured run is never a pass."
+	}
+	verdict, detail := shortPollVerdict(b, ph)
+	if detail == "" {
+		return head + "compatibility UNVERIFIED: the default phase measured no bound."
+	}
+	if why := shortPollBlock(rep, c, ph, verdict); why != "" {
+		return head + "vendor compatibility UNVERIFIED (" + why + "): measurement only, " + detail
+	}
+	return head + verdict + detail
+}
+
+// Short-poll verdicts.
+const (
+	verdictCompatible     = "compatible for this measured tuple: "
+	verdictNotEstablished = "not established: "
+	verdictIncompatible   = "not compatible: "
+	verdictInconclusive   = "not established (failed or inconclusive): "
+)
+
+// shortPollVerdict is the default phase's verdict and its numbers ("" and
+// "" without any bound).
+func shortPollVerdict(b time.Duration, ph *PhaseReport) (string, string) {
+	upper := ""
+	if ph.UpperBoundMS != nil {
+		upper = fmt.Sprintf(" A typed timeout was observed at or below %v; it is reported, never used as the safe value.", time.Duration(*ph.UpperBoundMS)*time.Millisecond)
+	}
+	if ph.LowerBoundMS != nil {
+		l := time.Duration(*ph.LowerBoundMS) * time.Millisecond
+		if ShortPollCompatible(b, l) {
+			return verdictCompatible, fmt.Sprintf("L = %v is the longest silent call that completed (a lower bound, not the timeout): %s.", l, shortPollSum(b, l)) + upper
+		}
+		if ph.UpperBoundMS == nil {
+			return verdictNotEstablished, fmt.Sprintf("the lower bound L = %v is too short: %s; a longer silent call must complete.", l, shortPollSum(b, l))
+		}
+	}
+	if ph.UpperBoundMS != nil {
+		u := time.Duration(*ph.UpperBoundMS) * time.Millisecond
+		if !ShortPollCompatible(b, u) {
+			return verdictIncompatible, fmt.Sprintf("the client timed out at or below %v, and even that bound fails: %s.", u, shortPollSum(b, u))
+		}
+		return verdictInconclusive, fmt.Sprintf("a typed timeout at or below %v without a lower bound that satisfies the inequality; an upper bound never proves safety.", u)
+	}
+	return "", ""
+}
+
+// shortPollBlock says why the evidence cannot carry a vendor verdict (""
+// when it can): a decoder qualified by an actual transcript, a conclusive
+// setup, for a compatible verdict the successful bound repeated, and a
+// clean, uninterrupted run.
+func shortPollBlock(rep *Report, c ClientReport, ph *PhaseReport, verdict string) string {
+	setup := phaseOf(c, PhaseSetup)
+	switch {
+	case c.DecoderVersion == nil:
+		return "no decoder version was selected"
+	case !c.DecoderVersion.Qualified:
+		return "decoder " + c.DecoderVersion.Fixture + " is a synthetic fixture, not an actual-transcript qualification"
+	case setup == nil || setup.Status != StatusConclusive:
+		return "the setup phase is not conclusive"
+	case verdict == verdictCompatible && ph.Observations < 2:
+		return "the successful bound was not repeated"
+	case rep != nil && rep.Interrupted:
+		return "the run was interrupted"
+	case rep != nil && !rep.Cleanup.OK:
+		return "the run's cleanup failed"
+	}
+	return ""
 }
 
 func reasonSuffix(r *string) string {

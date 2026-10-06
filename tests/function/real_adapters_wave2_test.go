@@ -936,9 +936,12 @@ func TestWave2Catalog(t *testing.T) {
 				coord = append(coord, byID[vendor].Facts[key])
 			}
 		}
+		// Apart from the short-poll policy that replaced each mcp_timeout's
+		// retired interim suffix (design nonblocking-coordinator-waits).
+		timeouts, restored := preShortPoll(timeouts)
 		tb, _ := json.Marshal(timeouts)
 		cb, _ := json.Marshal(coord)
-		if ts, cs := sha256.Sum256(tb), sha256.Sum256(cb); hex.EncodeToString(ts[:]) != wave2TimeoutsSHA256 || hex.EncodeToString(cs[:]) != wave2CoordSHA256 {
+		if ts, cs := sha256.Sum256(tb), sha256.Sum256(cb); hex.EncodeToString(ts[:]) != wave2TimeoutsSHA256 || hex.EncodeToString(cs[:]) != wave2CoordSHA256 || restored != 4 {
 			t.Fatal("a frozen 07b timeout or coordinator fact changed")
 		}
 		for _, s := range []string{"## Grok Build", "## Cursor Agent", `<a id="interim-mcp-wait-exception"></a>`, "`07b` for the three coordinator timeout facts"} {

@@ -1237,8 +1237,11 @@ func TestRealAdapterCatalog(t *testing.T) {
 				timeouts = append(timeouts, byID[vendor].Facts[key])
 			}
 		}
+		// (Apart from the short-poll policy that replaced each mcp_timeout's
+		// retired interim suffix, design nonblocking-coordinator-waits.)
+		timeouts, restored := preShortPoll(timeouts)
 		b, _ := json.Marshal(timeouts)
-		if sum := sha256.Sum256(b); hex.EncodeToString(sum[:]) != timeoutFactsSHA256 {
+		if sum := sha256.Sum256(b); hex.EncodeToString(sum[:]) != timeoutFactsSHA256 || restored != 2 {
 			t.Fatalf("the Claude/Codex timeout facts changed: %s", hex.EncodeToString(sum[:]))
 		}
 		// The operator guide describes the manual remote procedure and does

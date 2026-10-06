@@ -75,7 +75,7 @@ func SyntheticRecords(c Common) ([]CaseRecord, EndRecord) {
 	runtimeRec.NodeBindings = map[string]string{"a": SyntheticNodeA, "b": SyntheticNodeB}
 	coord := mk(CaseCoordinator, synthTask(CaseCoordinator, "answer-a", "proof-a", "a", "answer", "", "", ""),
 		synthTask(CaseCoordinator, "answer-b", "proof-b", "b", "answer", "", "", ""))
-	coord.Subcases = map[string]string{"prepare": OutcomePass, "goal_answer": OutcomePass}
+	coord.Subcases = map[string]string{"prepare": OutcomePass, "goal_answer": OutcomePass, "background_wait": OutcomePass}
 	var flow []Task
 	prev := synthHex("sample-seed", 40)
 	for _, st := range sampleSteps {
@@ -111,7 +111,7 @@ func SyntheticRecords(c Common) ([]CaseRecord, EndRecord) {
 // SyntheticTests are the verbose test names of one passing iteration, in
 // run order: each parent, then its mandatory subtests.
 var SyntheticTests = []string{
-	CaseRuntime, CaseCoordinator, PhasePrepare, PhaseGoalAnswer, CaseSampleFlow, CasePublication,
+	CaseRuntime, CaseCoordinator, PhasePrepare, PhaseGoalAnswer, PhaseBackgroundWait, CaseSampleFlow, CasePublication,
 	CaseContinuation, PhaseSibling, PhaseContinuation, CasePartialResults, CasePartialFailed, CasePartialCancelled,
 	CasePartialTimedOut, CaseLost, CasePublicationRestart, CaseDirtyPull, CaseClaims, CaseEvidence,
 }

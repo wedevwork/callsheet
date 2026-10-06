@@ -13,10 +13,23 @@ import (
 	"github.com/wedevwork/callsheet/internal/testkit/catalog"
 )
 
-// InterimSentence is iteration 07a's owner-authorized interim exception,
-// preserved verbatim in every UNVERIFIED mcp_timeout value.
-const InterimSentence = "Owner-authorized interim exception: iteration 07a ships task_wait and dispatch-with-wait with an UNVERIFIED 10s outer call budget, " +
+// LegacyInterimSentence is iteration 07a's retired owner-authorized
+// interim exception, verbatim. A catalog that still carries it anywhere is
+// an old-policy catalog: publication refuses it (update the catalog
+// policy first) rather than mix the old paragraph with new facts.
+const LegacyInterimSentence = "Owner-authorized interim exception: iteration 07a ships task_wait and dispatch-with-wait with an UNVERIFIED 10s outer call budget, " +
 	"shorter plane waits reserve transport/admission/response time, and any increase requires local timeout qualification with an explicit response margin."
+
+// ShortPollPolicy is the support catalog's short-poll policy (design
+// nonblocking-coordinator-waits), verbatim: the retired interim anchor's
+// paragraph and the shipped UNVERIFIED mcp_timeout values carry it.
+const ShortPollPolicy = "The default 10s MCP call budget is a deliberately short poll. Long waits use a harness-managed background CLI command. " +
+	"Vendor timeout compatibility is claimed only by named local evidence; an unmeasured client remains UNVERIFIED. " +
+	"Increasing the budget requires local timeout qualification with response margin."
+
+// ShortPollAnchor is the policy paragraph's opening in
+// docs/support-catalog.md: the kept compatibility anchor and its label.
+const ShortPollAnchor = `<a id="interim-mcp-wait-exception"></a>**Retired: short-poll policy.** `
 
 // TimeoutKeys are the three coordinator timeout facts publication updates.
 var TimeoutKeys = []string{"mcp_timeout", "mcp_timeout_override", "mcp_progress_extension"}
@@ -113,9 +126,7 @@ func proposeFacts(rep *Report, c ClientReport, e catalog.Entry, reportPath strin
 		out["mcp_timeout"] = fb.verified(fmt.Sprintf("silent tool calls of up to %d ms completed (%d observations); this is a lower bound, not the default.",
 			ms(def.LowerBoundMS), def.Observations))
 	default:
-		f := fb.unverified(phaseSummary(def), missing(b.block, def))
-		f.Value += " " + InterimSentence
-		out["mcp_timeout"] = f
+		out["mcp_timeout"] = fb.unverified(phaseSummary(def), missing(b.block, def))
 	}
 
 	ovr := phaseOf(c, PhaseOverride)

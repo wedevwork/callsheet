@@ -21,11 +21,11 @@ import (
 )
 
 // FP-1/FP-7: mcp help is ordinary help (no connection) and states the
-// shipping 10s budget as UNVERIFIED.
+// shipping 10s budget as a short poll (ShortPollNotice).
 func TestMCPHelp(t *testing.T) {
 	for _, args := range [][]string{{"mcp", "--help"}, {"help", "mcp"}, {"mcp", "--plane", "https://x", "-h"}} {
 		code, out, errOut := exec(t, "linux", args...)
-		if code != 0 || errOut != "" || !strings.HasPrefix(out, "Usage: callsheet mcp "+mcpUsage+"\n") || !strings.Contains(out, mcp.UnverifiedNotice) ||
+		if code != 0 || errOut != "" || !strings.HasPrefix(out, "Usage: callsheet mcp "+mcpUsage+"\n") || !strings.Contains(out, mcp.ShortPollNotice) ||
 			!strings.Contains(out, "1s to 5m (default\n                     10s)") || !strings.Contains(out, "Status: implemented.") {
 			t.Fatalf("%v = %d %q %q", args, code, out, errOut)
 		}

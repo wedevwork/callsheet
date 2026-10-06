@@ -41,7 +41,7 @@ const (
 		"call resolves trust afresh and reads the plane, nothing is cached, and a plane outage\n" +
 		"fails the call instead of serving an earlier answer. Dispatches are attributed to the\n" +
 		"MCP client's self-reported name and version and this machine's hostname.\n\n" +
-		mcp.UnverifiedNotice + "\n\n" +
+		mcp.ShortPollNotice + "\n\n" +
 		"It exits 0 when stdin ends, 130 on SIGINT or SIGTERM, 5 when stdout breaks or stops\n" +
 		"accepting output, and 2 on an input line over 512 KiB or an unterminated last line.\n" +
 		"Exiting never cancels a task, removes a role or stops the plane.\n\n" +

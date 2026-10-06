@@ -738,10 +738,10 @@ func TestStressStageDispatch(t *testing.T) {
 	// all stays test, coverage, bench, cross: stress is explicit.
 	f := &fakeRunner{coverTotal: "81%", cmdList: cmdList, profile: goodProfile}
 	cr := newContainerRunnerFixture(t, f).(*containerRunner)
-	// Ordinary calls: test(4, iteration 08) + coverage(3) + bench(12,
-	// m3-m4-container-e2e) + cross(12); the container operation's calls
-	// (one iteration) run between test and coverage.
-	if code, _, errOut := runDriver(t, "linux", cr, "all"); code != 0 || len(f.calls) != 31 {
+	// Ordinary calls: test(4, iteration 08) + coverage(3) + bench(13,
+	// non-blocking coordinator waits) + cross(12); the container
+	// operation's calls (one iteration) run between test and coverage.
+	if code, _, errOut := runDriver(t, "linux", cr, "all"); code != 0 || len(f.calls) != 32 {
 		t.Fatalf("all = %d with %d calls %s", code, len(f.calls), errOut)
 	}
 	if got := strings.Join(cr.containerKinds(), "|"); got != strings.Join(oneIterationKinds, "|") {
@@ -2295,10 +2295,11 @@ func TestPlatformSeamContract(t *testing.T) {
 			// Iteration 09a: a qualified native run adds the coverage stage
 			// (3 children) and the workspace benchmark step; iteration 09b
 			// the transfer benchmark step; iteration 10b the task workspace
+			// benchmark step; non-blocking coordinator waits the client wait
 			// benchmark step.
 			nativeCalls := len(native)
 			if goos == "darwin" {
-				nativeCalls += 6
+				nativeCalls += 7
 			}
 			// "test" is a plan-only check (TestSteps above): its combined
 			// execution with the Linux container operation belongs to
@@ -2330,6 +2331,39 @@ func TestPlatformSeamContract(t *testing.T) {
 		}
 		if len(TestSteps(goos)) != 1 {
 			t.Fatalf("TestSteps(%q) must be the plain suite only", goos)
+		}
+	}
+}
+
+// TestNonblockingWaitStressUnchanged (design nonblocking-coordinator-waits):
+// the packages shard's argv, in its exact package order, and every
+// 60-repeat selector stay byte-identical: the renewable wait's injected
+// matrix rides in the existing ./internal/client package of the combined
+// invocation, no CLI package, function selector or container case enters
+// any shard, and workspacetransfer gets no new stress work.
+func TestNonblockingWaitStressUnchanged(t *testing.T) {
+	for _, goos := range []string{"linux", "darwin"} {
+		steps, err := StressSteps(goos)
+		if err != nil {
+			t.Fatal(err)
+		}
+		all := strings.Join(argvOf(steps), "|")
+		if steps[0].Name != "stress packages" || strings.Join(steps[0].Argv, " ") != wantStressPackages ||
+			strings.Join(stressPackages, " ") != "./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/workspacetransfer ./internal/taskworkspace ./internal/taskpublication" {
+			t.Fatalf("%s packages step %v", goos, steps[0].Argv)
+		}
+		for _, tok := range strings.Fields(strings.ReplaceAll(all, "|", " ")) {
+			if tok == "./internal/cli" {
+				t.Fatalf("%s stress plan gained the CLI package", goos)
+			}
+		}
+		for _, banned := range []string{"UntilDone", "BackgroundWait", "ShortPoll", "ShortConfirmation", "containeracceptance", "container-e2e", "./tests/container"} {
+			if strings.Contains(all, banned) {
+				t.Fatalf("%s stress plan gained %q: %s", goos, banned, all)
+			}
+		}
+		if !strings.Contains(all, wantStressFunction) || !strings.Contains(all, wantStressPlaneFunction) || !strings.Contains(all, wantStressNodeFunction) {
+			t.Fatalf("%s function selectors changed", goos)
 		}
 	}
 }

@@ -69,7 +69,7 @@ func TestBudgetAlgebra(t *testing.T) {
 		}
 	}
 	if DefaultBudget != 10*time.Second || NewBudget(DefaultBudget).String() != "10s" {
-		t.Fatal("the shipping interim budget is 10s")
+		t.Fatal("the shipping short-poll budget is 10s")
 	}
 }
 

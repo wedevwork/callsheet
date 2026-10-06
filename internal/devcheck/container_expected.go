@@ -35,8 +35,10 @@ var containerCaseIDs = []string{
 
 // containerSubcases are the mandatory nested subtests of each parent that
 // has them; their outcomes are recorded in the parent's subcases map.
+// The coordinator's background_wait (design nonblocking-coordinator-waits)
+// is its non-blocking wait proof on the goal-and-answer tasks.
 var containerSubcases = map[string][]string{
-	CaseCoordinator:    {"prepare", "goal_answer"},
+	CaseCoordinator:    {"prepare", "goal_answer", "background_wait"},
 	CaseContinuation:   {"continuation", "sibling"},
 	CasePartialResults: {"failed", "cancelled", "timed_out"},
 }

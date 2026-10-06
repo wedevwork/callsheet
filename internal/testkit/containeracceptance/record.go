@@ -35,10 +35,13 @@ const (
 // Phase IDs: the nested subtests of the coordinator and continuation
 // parents, executable through RunCase but never emitted as records.
 const (
-	PhasePrepare      = CaseCoordinator + "/prepare"
-	PhaseGoalAnswer   = CaseCoordinator + "/goal_answer"
-	PhaseSibling      = CaseContinuation + "/sibling"
-	PhaseContinuation = CaseContinuation + "/continuation"
+	PhasePrepare    = CaseCoordinator + "/prepare"
+	PhaseGoalAnswer = CaseCoordinator + "/goal_answer"
+	// PhaseBackgroundWait (design nonblocking-coordinator-waits) verifies
+	// goal_answer's stored background-wait proof; it dispatches nothing.
+	PhaseBackgroundWait = CaseCoordinator + "/background_wait"
+	PhaseSibling        = CaseContinuation + "/sibling"
+	PhaseContinuation   = CaseContinuation + "/continuation"
 )
 
 // RequiredCaseIDs returns the exact 14 required case IDs.

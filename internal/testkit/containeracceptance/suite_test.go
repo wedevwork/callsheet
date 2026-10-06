@@ -141,7 +141,7 @@ func fixtureConfig(t *testing.T) (Config, *fakePlane) {
 }
 
 // runOrder is every case and phase in the tagged wrappers' order.
-var runOrder = []string{CaseRuntime, PhasePrepare, PhaseGoalAnswer, CaseCoordinator, CaseSampleFlow, CasePublication, PhaseSibling, PhaseContinuation,
+var runOrder = []string{CaseRuntime, PhasePrepare, PhaseGoalAnswer, PhaseBackgroundWait, CaseCoordinator, CaseSampleFlow, CasePublication, PhaseSibling, PhaseContinuation,
 	CaseContinuation, CasePartialFailed, CasePartialCancelled, CasePartialTimedOut, CasePartialResults, CaseLost, CasePublicationRestart,
 	CaseDirtyPull, CaseClaims, CaseEvidence}
 
@@ -961,3 +961,125 @@ func TestClaims(t *testing.T) {
 		t.Fatalf("missing docs: %v", err)
 	}
 }
+
+// TestBackgroundWaitHarness (design nonblocking-coordinator-waits, UT-5):
+// the simulated harness's notification handling is idempotent by wait
+// handle and winner; a finished background wait is accepted only with
+// exit 0, a silent stderr and exactly one durably terminal envelope
+// naming an outstanding task; the exit notification's wait reports a
+// bound or a cancellation only when no notification arrived; a stopped
+// child is joined and Close stops a running one; and the background_wait
+// phase fails when the proof never ran or failed.
+func TestBackgroundWaitHarness(t *testing.T) {
+	ctx := context.Background()
+	cfg, f := fixtureConfig(t)
+	s, err := newSuite(ctx, cfg, f.seams())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close(ctx)
+	s.bgWait.handled = map[string]bool{}
+	if !s.wake("w", taskIDA) || s.wake("w", taskIDA) || !s.wake("w2", taskIDA) {
+		t.Fatal("wake is not idempotent by handle and winner")
+	}
+	now, zero, msg := "2026-10-06T12:00:00Z", 0, FinalMessage
+	v := contract.TaskView{TaskID: taskIDB, State: contract.TaskSucceeded, DurabilityConfirmed: true, TimeoutPolicy: contract.TimeoutPolicyEnforced,
+		Request: contract.DispatchRequest{Target: contract.TaskTarget{Kind: contract.TargetID, Value: "proof-b"}, Goal: "g", Acceptance: "a", Payload: []string{},
+			RequestedBy: contract.RequestedBy{Name: "callsheet", Version: "dev", Hostname: "container"}},
+		Role:      contract.TaskRole{ID: "proof-b", Name: "design-review", Node: fmt.Sprintf("n_%032x", 0xb1), Adapter: "fake", RegistrationOrder: 3},
+		Effective: contract.TaskEffective{Model: "m", Effort: "medium", Timeout: time.Hour}, CreatedAt: now, StartedAt: &now, FinishedAt: &now,
+		Result: &contract.TaskResult{State: contract.TaskSucceeded, ExitCode: &zero, FinalMessage: &msg}}
+	term, err := contract.EncodeWaitResponse(contract.WaitResponse{Version: 6, Status: contract.WaitTerminal, Winner: taskIDB, Task: &v})
+	if err != nil {
+		t.Fatal(err)
+	}
+	finished := func(code int, out, errOut string) *bgChild {
+		c := &bgChild{done: make(chan struct{}), out: &syncBuffer{}, errOut: &syncBuffer{}, code: code, cancel: func() {}}
+		c.out.Write([]byte(out))
+		c.errOut.Write([]byte(errOut))
+		close(c.done)
+		return c
+	}
+	ids := []string{taskIDA, taskIDB}
+	for name, c := range map[string]*bgChild{
+		"exit":      finished(5, "", "callsheet: unavailable: x\n"),
+		"stderr":    finished(0, string(term)+"\n", "noise\n"),
+		"two lines": finished(0, string(term)+"\n"+string(term)+"\n", ""),
+		"no LF":     finished(0, string(term), ""),
+		"malformed": finished(0, "{}\n", ""),
+		"foreign":   finished(0, string(term)+"\n", ""),
+	} {
+		want := ids
+		if name == "foreign" {
+			want = []string{taskIDA}
+		}
+		if _, err := s.handleWake(c, "h-"+name, want); err == nil {
+			t.Fatalf("%s accepted", name)
+		}
+	}
+	good := finished(0, string(term)+"\n", "")
+	if w, err := s.handleWake(good, "h", ids); err != nil || w != taskIDB {
+		t.Fatalf("good wake %s %v", w, err)
+	}
+	if _, err := s.handleWake(good, "h", ids); err == nil {
+		t.Fatal("a handled wake was handled again")
+	}
+	// The notification wait: arrived, bounded, cancelled.
+	if err := good.await(ctx, time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	pending := &bgChild{done: make(chan struct{}), out: &syncBuffer{}, errOut: &syncBuffer{}}
+	if err := pending.await(ctx, time.Millisecond); err == nil || !strings.Contains(err.Error(), "no exit notification") {
+		t.Fatalf("bound %v", err)
+	}
+	cctx, cancel := context.WithCancel(ctx)
+	cancel()
+	if err := pending.await(cctx, time.Minute); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled %v", err)
+	}
+	// A real background child (this test binary as a hanging helper) is
+	// stopped and joined by Close; one that cannot start ends at once.
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.seams.run = execCommand
+	s.cfg.CallsheetPath = self
+	s.cliEnv = append(s.cliEnv, helperEnv+"=hang")
+	hung := s.startBackground(ctx, "task", "wait")
+	if hung.exited() {
+		t.Fatal("the hanging helper ended at once")
+	}
+	s.cfg.CallsheetPath = filepath.Join(t.TempDir(), "missing")
+	if never := s.startBackground(ctx, "task", "wait"); never.await(ctx, time.Minute) != nil || never.err == nil {
+		t.Fatalf("a missing executable started: %v", never.err)
+	}
+	s.Close(ctx)
+	if !hung.exited() {
+		t.Fatal("Close left a background child running")
+	}
+	// The phase: never run (a failed preparation) and a failed proof.
+	cfg, f = fixtureConfig(t)
+	cfg.FixtureDir = filepath.Join(cfg.WorkDir, "empty-fixtures")
+	s2, err := newSuite(ctx, cfg, f.seams())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s2.ensureBackgroundWait(ctx); err == nil || !strings.Contains(err.Error(), "prepare") {
+		t.Fatalf("unprepared %v", err)
+	}
+	s2.Close(ctx)
+	s3 := &Suite{once: map[string]*onceResult{"goal_answer": {done: true}}}
+	if err := s3.ensureBackgroundWait(ctx); err == nil || !strings.Contains(err.Error(), "did not run") {
+		t.Fatalf("not run %v", err)
+	}
+	s3.bgWait = bgProof{ran: true, err: errors.New("no wake")}
+	if err := s3.ensureBackgroundWait(ctx); err == nil || err.Error() != "no wake" {
+		t.Fatalf("failed proof %v", err)
+	}
+}
+
+const (
+	taskIDA = "t_0000000000000000000000000000000a"
+	taskIDB = "t_0000000000000000000000000000000b"
+)

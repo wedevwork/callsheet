@@ -9,9 +9,11 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
+	"github.com/wedevwork/callsheet/internal/client"
 	"github.com/wedevwork/callsheet/internal/contract"
 )
 
@@ -26,7 +28,7 @@ var hostname = os.Hostname
 const (
 	dispatchUsage   = "(--role-id ID | --role-name NAME) --goal TEXT --acceptance TEXT [--payload POINTER ...] [--model MODEL] [--effort EFFORT] [--timeout DURATION] [--wait DURATION] [--workspace NAME [--base SELECTOR] [--workspace-instance TOKEN]] " + trustUsage + " [--json]"
 	taskCancelUsage = "ID " + trustUsage + " [--json]"
-	taskWaitUsage   = "ID [ID ...] [--wait DURATION] " + trustUsage + " [--json]"
+	taskWaitUsage   = "ID [ID ...] [--wait DURATION | --until-done] " + trustUsage + " [--json]"
 	taskLsUsage     = "[--limit N] [--after ID] " + trustUsage + " [--json]"
 	taskShowUsage   = "ID [--lines N] " + trustUsage + " [--json]"
 	taskLogsUsage   = "ID [--late] " + trustUsage + " [--json]"
@@ -92,6 +94,8 @@ const (
 		"nothing; a lost response may hide an accepted cancel: repeat it or run task show.\n"
 	taskWaitDetails = "Flags:\n" +
 		"  --wait DURATION    wait at most this long (0 to 5m, default 5s; 0 answers at once)\n" +
+		"  --until-done       wait with no overall deadline until one of the tasks ends\n" +
+		"                     durably (not with --wait; see below)\n" +
 		trustHelp + taskJSONHelp + "\n" +
 		"Waits for the first of up to 16 tasks to end durably and prints winner: ID and that\n" +
 		"task as task show does. When none ends in time it prints one tab-separated line per\n" +
@@ -99,7 +103,20 @@ const (
 		"96 bytes, control bytes escaped), LOG_TRUNCATED and DURABILITY_CONFIRMED. Both exit 0,\n" +
 		"whatever the task's own result. The plane may answer sooner than asked (plane run\n" +
 		"--max-task-wait, default 30s); a plane restart is retried within the same overall\n" +
-		"wait. These bounds are CLI and operator choices, not a verified MCP tool-call limit.\n"
+		"wait. These bounds are CLI and operator choices, not a verified MCP tool-call limit.\n\n" +
+		"With --until-done it prints nothing at all (no progress, no retry notice) until a task\n" +
+		"ends: then exactly the winner as above (first line winner: ID), or with --json the one\n" +
+		"terminal wait envelope; it never prints a still-running answer. It asks the plane for\n" +
+		"30s at a time (each request bounded by 40s and by --max-task-wait) and renews at once,\n" +
+		"at most ten requests a second. Unavailability (a plane restart, refused or dropped\n" +
+		"connections, a full wait capacity, HTTP 503) is retried silently after 250ms, 500ms,\n" +
+		"1s, 2s, 4s, then every 5s, with no retry limit: a plane gone for good is waited on\n" +
+		"until the command is stopped. Trust is resolved once and kept; trust failures (6),\n" +
+		"unknown IDs (3, also when other IDs are known), invalid answers (2), conflicts (4),\n" +
+		"protocol mismatch (7) and other errors (1) end it with one diagnostic on stderr.\n" +
+		"SIGINT or SIGTERM ends it with 130 and callsheet: interrupted; no task is cancelled.\n" +
+		"Run it as a harness-managed background command (docs/coordinator.md); after a\n" +
+		"connection loss the first task already ended, in the given order, may win.\n"
 	taskLsDetails = "Flags:\n" +
 		"  --limit N          at most N tasks (1-100, default 100)\n" +
 		"  --after ID         start after this task ID (the previous page's next_after)\n" +
@@ -135,6 +152,8 @@ type taskFlags struct {
 	payload                                                          multi
 	limit, after, lines                                              single
 	late                                                             boolFlag
+	// untilDone selects task wait's renewable, unbounded wait.
+	untilDone boolFlag
 	// Iteration 10c: the optional workspace selection.
 	workspace, base, workspaceInstance single
 }
@@ -304,7 +323,10 @@ func taskCancel(ctx context.Context, goos string, c *Command, args []string, out
 
 func taskWait(ctx context.Context, goos string, c *Command, args []string, out, errOut io.Writer) int {
 	tf := &taskFlags{}
-	f, ops, code, ok := parseRemote(c, args, true, false, true, contract.MaxWaitIDs, errOut, func(fs *flag.FlagSet) { fs.Var(&tf.wait, "wait", "") })
+	f, ops, code, ok := parseRemote(c, args, true, false, true, contract.MaxWaitIDs, errOut, func(fs *flag.FlagSet) {
+		fs.Var(&tf.wait, "wait", "")
+		fs.Var(&tf.untilDone, "until-done", "")
+	})
 	if !ok {
 		return code
 	}
@@ -313,6 +335,9 @@ func taskWait(ctx context.Context, goos string, c *Command, args []string, out, 
 	}
 	if err := contract.ValidateWaitIDs(ops); err != nil {
 		return planeFail(errOut, err)
+	}
+	if tf.untilDone.set {
+		return taskWaitUntilDone(ctx, c, f, tf, ops, out, errOut)
 	}
 	wait, err := tf.waitFlag(contract.DefaultTaskWait)
 	if err != nil {
@@ -338,6 +363,51 @@ func taskWait(ctx context.Context, goos string, c *Command, args []string, out, 
 	if err != nil {
 		return planeFail(errOut, err)
 	}
+	return writeOut(out, errOut, text)
+}
+
+// taskWaitUntilDone is task wait --until-done (design
+// nonblocking-coordinator-waits): after the local checks it delegates the
+// whole call, trust resolution included, to client.WaitTasksUntilDone,
+// which retries outages silently; nothing is printed before its terminal
+// answer or permanent error.
+func taskWaitUntilDone(ctx context.Context, c *Command, f *remoteFlags, tf *taskFlags, ids []string, out, errOut io.Writer) int {
+	if tf.wait.set {
+		return usageError(errOut, c, "give at most one of --wait and --until-done")
+	}
+	u, err := f.trustSyntax()
+	if err != nil {
+		return planeFail(errOut, err)
+	}
+	r, err := client.WaitTasksUntilDone(ctx, client.TrustOptions{PlaneURL: u, CAFile: f.ca.val, CAFingerprint: f.pin.val}, ids)
+	if err != nil {
+		return planeFail(errOut, err)
+	}
+	// The answer is rendered completely before anything is written, and
+	// the caller's cancellation, once observed, takes precedence over
+	// writing it (a write already begun cannot be recalled).
+	var text string
+	if f.json.val {
+		b, err := contract.EncodeWaitResponse(r)
+		if err != nil {
+			return planeFail(errOut, err)
+		}
+		text = string(b) + "\n"
+	} else {
+		var err error
+		if text, err = RenderWait("", r); err != nil {
+			return planeFail(errOut, err)
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return planeFail(errOut, err)
+	}
+	// SIGPIPE is registered for the write only (the mcp leaf's pattern): a
+	// stdout pipe whose reader is gone then fails the write (exit 1 with
+	// the diagnostic) instead of Go's default death by SIGPIPE on fd 1.
+	sigpipe := make(chan os.Signal, 1)
+	signalNotify(sigpipe, syscall.SIGPIPE)
+	defer signalStop(sigpipe)
 	return writeOut(out, errOut, text)
 }
 

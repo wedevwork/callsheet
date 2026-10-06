@@ -181,6 +181,20 @@ var WorkspaceCoverageManifest = []CoverageEntry{
 	{Group: GroupChanged, File: modulePath + "/internal/testkit/containeracceptance/scenarios.go"},
 	{Group: GroupChanged, File: modulePath + "/internal/testkit/containeracceptance/suite.go"},
 	{Group: GroupChanged, File: modulePath + "/internal/testkit/containeracceptance/synthetic.go"},
+
+	// Non-blocking coordinator waits (base a09b711): the new renewable wait
+	// and every production file it changes that no earlier entry lists
+	// whole, as whole files (no build constraint: evaluated on both
+	// systems). Its other changed files are already listed whole:
+	// cli/task.go, cli/mcp.go, mcp/tools.go, devcheck/devcheck.go,
+	// devcheck/native.go, devcheck/container_expected.go and the container
+	// acceptance helpers (record.go, scenarios.go, suite.go, synthetic.go).
+	{Group: GroupChanged, File: modulePath + "/internal/client/until_done.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/mcp/wait.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/mcpqual/facts.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/mcpqual/plan.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/mcpqual/publish.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/mcpqual/report.go"},
 }
 
 // modulePath is the profile's import-path prefix.

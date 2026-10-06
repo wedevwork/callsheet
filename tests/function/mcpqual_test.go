@@ -141,7 +141,7 @@ func TestMCPSetup(t *testing.T) {
 				t.Fatalf("%s: a runbook reaches the Callsheet argv: %q", id, callee)
 			}
 		}
-		for _, s := range []string{mcp.BudgetDeferralNote, mcp.UnverifiedNotice, "never Callsheet reading it",
+		for _, s := range []string{mcp.BudgetDeferralNote, mcp.ShortPollNotice, "never Callsheet reading it",
 			"Initial-prompt loading is the established fallback for Codex and Cursor", "not a claim about automatic `AGENTS.md` precedence",
 			"Shell substitution strips trailing newlines and is subject to argument-length limits", "no runbook bytes are sent to Callsheet"} {
 			if strings.Count(doc, s) < 1 {
@@ -578,7 +578,7 @@ func TestMCPQualificationPublish(t *testing.T) {
 			}
 		}
 		md, _ := os.ReadFile(filepath.Join(repo, mcpqual.CatalogMDPath))
-		if err := catalog.CheckDocLinks(filepath.Join(repo, mcpqual.CatalogMDPath)); err != nil || strings.Count(string(md), mcpqual.InterimSentence) != 1 {
+		if err := catalog.CheckDocLinks(filepath.Join(repo, mcpqual.CatalogMDPath)); err != nil || strings.Count(string(md), mcpqual.ShortPollAnchor+mcpqual.ShortPollPolicy) != 1 {
 			t.Fatalf("markdown: %v", err)
 		}
 	})

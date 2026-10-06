@@ -465,7 +465,9 @@ func replaceRecord(stream []byte, caseID string, f func(string) string) string {
 // cannot pass the driver even with a complete ledger.
 func TestContainerEvidenceContract(t *testing.T) {
 	// The fixed manifest: 14 case IDs (eleven parents and three
-	// partial-result subcases), the seven required subtests, fresh copies.
+	// partial-result subcases), the eight required subtests (the
+	// coordinator's background_wait since design
+	// nonblocking-coordinator-waits: 3+2+3), fresh copies.
 	ids, subs := ContainerCaseIDs(), ContainerSubcases()
 	parents := 0
 	for _, id := range ids {
@@ -473,7 +475,8 @@ func TestContainerEvidenceContract(t *testing.T) {
 			parents++
 		}
 	}
-	if len(ids) != 14 || parents != 11 || len(subs[CaseCoordinator])+len(subs[CaseContinuation])+len(subs[CasePartialResults]) != 7 ||
+	if len(ids) != 14 || parents != 11 || len(subs[CaseCoordinator]) != 3 || len(subs[CaseContinuation]) != 2 || len(subs[CasePartialResults]) != 3 ||
+		len(subs[CaseCoordinator])+len(subs[CaseContinuation])+len(subs[CasePartialResults]) != 8 || strings.Join(subs[CaseCoordinator], ",") != "prepare,goal_answer,background_wait" ||
 		ContainerBoundary(CasePublicationRestart) != "after_acknowledged_publication_before_coordinator_delivery" || ContainerBoundary(CaseClaims) != "" {
 		t.Fatalf("manifest %v %v", ids, subs)
 	}
@@ -531,6 +534,10 @@ func TestContainerEvidenceContract(t *testing.T) {
 		}), "case TestContainerLost: outcome \"fail\"")
 		reject("subcase failed", strings.Replace(vs, `"goal_answer":"pass"`, `"goal_answer":"fail"`, 1), "subcase goal_answer is \"fail\"")
 		reject("subcase missing", strings.Replace(vs, `"failed":"pass",`, ``, 1), "case TestContainerPartialResults: subcases")
+		// The coordinator's background-wait proof is mandatory: a record
+		// without it, or with it failed, never passes.
+		reject("background_wait missing", strings.Replace(vs, `"background_wait":"pass",`, ``, 1), "case TestContainerCoordinator: subcases")
+		reject("background_wait failed", strings.Replace(vs, `"background_wait":"pass"`, `"background_wait":"fail"`, 1), "subcase background_wait is \"fail\"")
 		reject("subcase extra", strings.Replace(vs, `"subcases":{}`, `"subcases":{"x":"pass"}`, 1), "subcases map[x:pass], want exactly []")
 		reject("boundary", strings.Replace(vs, BoundaryPublicationRestart, "anywhere", 1), "boundary \"anywhere\"")
 	})
@@ -585,6 +592,9 @@ func TestContainerEvidenceContract(t *testing.T) {
 			"test TestContainerPartialResults/timed_out: SKIP, want PASS")
 		reject("failed parent", strings.Replace(vs, "--- PASS: TestContainerLost", "--- FAIL: TestContainerLost", 1), "test TestContainerLost: FAIL, want PASS")
 		reject("missing subtest", strings.Replace(vs, "    --- PASS: TestContainerContinuation/sibling (0.01s)\n", "", 1), "test TestContainerContinuation/sibling: no result")
+		reject("missing background_wait", strings.Replace(strings.Replace(vs, "    --- PASS: TestContainerCoordinator/background_wait (0.01s)\n", "", 1),
+			"=== RUN   TestContainerCoordinator/background_wait\n", "", 1), "test TestContainerCoordinator/background_wait: no run event",
+			"test TestContainerCoordinator/background_wait: no result")
 		reject("missing run", strings.Replace(vs, "=== RUN   TestContainerClaims\n", "", 1), "test TestContainerClaims: no run event")
 		reject("other failure", strings.Replace(vs, "PASS\n"+ContainerEvidencePrefix, "--- FAIL: TestOther (0.00s)\nPASS\n"+ContainerEvidencePrefix, 1), "test TestOther FAIL")
 		reject("no PASS", strings.Replace(vs, "\nPASS\n", "\n", 1), "did not report PASS")
