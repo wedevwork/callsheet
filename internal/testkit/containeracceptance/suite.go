@@ -68,10 +68,13 @@ type deployment interface {
 }
 
 // command is one coordinator CLI invocation (argv, never a shell).
+// started, when set, is the start acknowledgement: called once the
+// process has started (before its exit is awaited).
 type command struct {
 	bin, dir       string
 	args, env      []string
 	stdout, stderr io.Writer
+	started        func()
 }
 
 // seams are the suite's injected command and process operations.
@@ -128,12 +131,19 @@ func (m *smokeDeployment) restart(ctx context.Context, n *node) error {
 
 func (m *smokeDeployment) close() error { return m.d.Close() }
 
-// execCommand runs c as a child process under ctx.
+// execCommand runs c as a child process under ctx (a context end kills
+// it), acknowledging its start before waiting for its exit.
 func execCommand(ctx context.Context, c command) (int, error) {
 	cmd := exec.CommandContext(ctx, c.bin, c.args...)
 	cmd.Dir, cmd.Env = c.dir, c.env
 	cmd.Stdout, cmd.Stderr = c.stdout, c.stderr
-	err := cmd.Run()
+	err := cmd.Start()
+	if err == nil {
+		if c.started != nil {
+			c.started()
+		}
+		err = cmd.Wait()
+	}
 	var ee *exec.ExitError
 	switch {
 	case err == nil:
@@ -174,6 +184,22 @@ type Suite struct {
 	contB   observed
 	sibling observed
 	partial map[string]observed
+	// The background-wait proof (design nonblocking-coordinator-waits):
+	// its outcome, its ordered harness events and the background commands
+	// it started (stopped and reaped by Close at the latest).
+	bgWait bgProof
+	bg     []*bgChild
+}
+
+// bgProof is the stored outcome of the coordinator's background-wait
+// proof: whether it ran, its error and its ordered harness events.
+type bgProof struct {
+	ran    bool
+	err    error
+	events []string
+	// handled are the wake notifications already acted on, by wait
+	// handle and winner task ID.
+	handled map[string]bool
 }
 
 // onceResult is one ensure-once step's cached outcome.
@@ -350,6 +376,11 @@ func (s *Suite) Close(ctx context.Context) error {
 			errs = append(errs, err)
 		}
 	}
+	// A background command never outlives the suite: each is stopped and
+	// its process Wait path joined before the deployment stops.
+	for _, b := range s.bg {
+		b.stop()
+	}
 	var pids []int
 	if s.dep != nil {
 		for _, sc := range s.nodes {
@@ -483,6 +514,93 @@ func (s *Suite) cliRaw(ctx context.Context, args ...string) (cliResult, error) {
 		return cliResult{}, fmt.Errorf("callsheet %s: %w", strings.Join(args[:min(2, len(args))], " "), err)
 	}
 	return cliResult{code, out.String(), errOut.String()}, nil
+}
+
+// bgChild is one background coordinator command: the harness runs it in
+// one joined goroutine through the run seam, whose return (the process's
+// Wait path) is the exit notification.
+type bgChild struct {
+	cancel      context.CancelFunc
+	done        chan struct{} // closed once code and err are set
+	out, errOut *syncBuffer
+	code        int
+	err         error
+}
+
+// syncBuffer is a buffer the child's output copier and the harness share.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.String()
+}
+
+// startBackground starts the CLI with args (plane and CA appended) as a
+// background command and returns after its start acknowledgement (or its
+// end, when it never started). The child is registered for Close.
+func (s *Suite) startBackground(ctx context.Context, args ...string) *bgChild {
+	cctx, cancel := context.WithCancel(ctx)
+	b := &bgChild{cancel: cancel, done: make(chan struct{}), out: &syncBuffer{}, errOut: &syncBuffer{}}
+	started := make(chan struct{})
+	var once sync.Once
+	ack := func() { once.Do(func() { close(started) }) }
+	full := append(append([]string(nil), args...), "--plane", s.url, "--ca", s.ca)
+	go func() {
+		code, err := s.seams.run(cctx, command{bin: s.cfg.CallsheetPath, dir: s.root, args: full, env: s.cliEnv, stdout: b.out, stderr: b.errOut, started: ack})
+		b.code, b.err = code, err
+		ack()
+		close(b.done)
+	}()
+	<-started
+	s.bg = append(s.bg, b)
+	return b
+}
+
+// exited reports, without waiting, whether the exit notification arrived.
+func (b *bgChild) exited() bool {
+	select {
+	case <-b.done:
+		return true
+	default:
+		return false
+	}
+}
+
+// await waits (bounded) for the exit notification. Whichever wake came
+// first, the child's recorded state decides: an arrived notification is
+// never reported as a timeout or a cancellation.
+func (b *bgChild) await(ctx context.Context, bound time.Duration) error {
+	t := time.NewTimer(bound)
+	defer t.Stop()
+	select {
+	case <-b.done:
+	case <-t.C:
+	case <-ctx.Done():
+	}
+	switch {
+	case b.exited():
+		return nil
+	case ctx.Err() != nil:
+		return ctx.Err()
+	}
+	return fmt.Errorf("no exit notification from the background wait within %v", bound)
+}
+
+// stop cancels the child (a running process is killed) and joins its
+// goroutine; it is idempotent.
+func (b *bgChild) stop() {
+	b.cancel()
+	<-b.done
 }
 
 // cliOK runs a command that must exit 0 and returns its stdout without the

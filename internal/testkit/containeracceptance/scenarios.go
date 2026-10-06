@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -124,6 +125,7 @@ func (s *Suite) scenarios() map[string]func(context.Context, *CaseRecord) error 
 		CaseRuntime:            s.caseRuntime,
 		PhasePrepare:           func(ctx context.Context, _ *CaseRecord) error { return s.ensurePrepared(ctx) },
 		PhaseGoalAnswer:        func(ctx context.Context, _ *CaseRecord) error { return s.ensureAnswers(ctx) },
+		PhaseBackgroundWait:    func(ctx context.Context, _ *CaseRecord) error { return s.ensureBackgroundWait(ctx) },
 		CaseCoordinator:        s.caseCoordinator,
 		CaseSampleFlow:         s.caseSampleFlow,
 		CasePublication:        s.casePublication,
@@ -285,25 +287,50 @@ func (s *Suite) assignment(v contract.TaskView, role, alias string) error {
 	return nil
 }
 
-// ensureAnswers dispatches the two no-workspace goals (proof-a on node a,
-// proof-b on node b), requires success, exit 0, the exact fixed answer,
-// the marker in the logs and no workspace binding or result, and checks
-// the consolidated two-entry ledger.
+// answerTask is one goal-and-answer task: its label, role and node alias,
+// its hold barriers and its admitted view.
+type answerTask struct {
+	label, role, alias string
+	in, release        string
+	v                  contract.TaskView
+}
+
+// ensureAnswers admits the two no-workspace goals (proof-a on node a,
+// proof-b on node b) before waiting on either: each is a fake-adapter
+// script in its scratch directory that touches its in-barrier and holds
+// until released (no workspace binding, edit or report). The background
+// wait proof runs on them and records its own outcome; both are then
+// released (on any proof failure too) and, in answer-a/answer-b order,
+// must succeed with exit 0, the exact fixed answer, the marker in the
+// logs, the frozen assignment and no workspace binding or result, and
+// form the consolidated two-entry ledger.
 func (s *Suite) ensureAnswers(ctx context.Context) error {
 	return s.ensure("goal_answer", func() error {
 		if err := s.ensurePrepared(ctx); err != nil {
 			return err
 		}
-		ledger := map[string]string{}
-		for _, a := range []struct{ label, role, alias string }{{"answer-a", "proof-a", "a"}, {"answer-b", "proof-b", "b"}} {
-			v, err := s.dispatch(ctx, a.role, "M3 goal-and-answer check "+a.label+": reply with your fixed answer")
+		tasks := []*answerTask{{label: "answer-a", role: "proof-a", alias: "a"}, {label: "answer-b", role: "proof-b", alias: "b"}}
+		for _, a := range tasks {
+			a.in, a.release = s.hold(a.label+"-in"), s.hold(a.label+"-go")
+			goal := fakeadapter.WorkspaceGoal(fakeadapter.WorkspaceScript{Ops: []fakeadapter.WorkspaceOp{{Touch: a.in}, {WaitFor: a.release}}})
+			v, err := s.dispatch(ctx, a.role, goal)
 			if err != nil {
 				return err
 			}
 			if v.WorkspaceBinding != nil || v.Request.Workspace != nil {
 				return fmt.Errorf("%s was admitted with a workspace", a.label)
 			}
-			done, err := s.await(ctx, v.TaskID)
+			a.v = v
+		}
+		s.bgWait.err = s.backgroundWait(ctx, tasks[0], tasks[1])
+		for _, a := range tasks {
+			if err := os.WriteFile(a.release, nil, 0o600); err != nil {
+				return err
+			}
+		}
+		ledger := map[string]string{}
+		for _, a := range tasks {
+			done, err := s.await(ctx, a.v.TaskID)
 			if err != nil {
 				return err
 			}
@@ -319,7 +346,7 @@ func (s *Suite) ensureAnswers(ctx context.Context) error {
 			if err := s.assignment(done, a.role, a.alias); err != nil {
 				return err
 			}
-			b, err := s.cliOK(ctx, "task", "logs", "--json", v.TaskID)
+			b, err := s.cliOK(ctx, "task", "logs", "--json", a.v.TaskID)
 			if err != nil {
 				return err
 			}
@@ -330,7 +357,7 @@ func (s *Suite) ensureAnswers(ctx context.Context) error {
 			if !strings.Contains(string(logs.Data), strings.TrimSuffix(fakeadapter.FinalMarker, "\n")) {
 				return fmt.Errorf("%s logs lack the final marker", a.label)
 			}
-			ledger[v.TaskID] = a.role + "@" + done.Role.Node
+			ledger[a.v.TaskID] = a.role + "@" + done.Role.Node
 			s.answers = append(s.answers, observed{a.label, done})
 		}
 		ids := make([]string, 0, len(ledger))
@@ -346,16 +373,171 @@ func (s *Suite) ensureAnswers(ctx context.Context) error {
 	})
 }
 
-// caseCoordinator is FP-2's parent record: both phases and the two
+// Background-wait harness events, in their required order.
+const (
+	bgStarted      = "wait-started"
+	bgIndependent  = "independent-work"
+	bgNotified     = "exit-notified"
+	bgWinner       = "winner-handled"
+	bgRearmed      = "re-armed"
+	bgDuplicate    = "duplicate-ignored"
+	bgWantedEvents = bgStarted + "," + bgIndependent + "," + bgNotified + "," + bgWinner + "," + bgDuplicate + "," + bgRearmed + "," + bgNotified + "," + bgWinner
+)
+
+// backgroundWait is the coordinator's non-blocking wait proof on the two
+// held answer tasks (design nonblocking-coordinator-waits): a simulated
+// harness starts a real callsheet task wait --until-done child on both
+// (in caller order a, b) and has its start acknowledged; the coordinator
+// then does independent work (node ls) while the child stays alive and
+// silent and both tasks are still held; b is released first, the child's
+// exit arrives through the harness's process Wait path and its winner (b)
+// is validated and handled once (a duplicate notification is ignored);
+// the wait is re-armed for the outstanding a, which is released and wins
+// in turn. Every child is stopped and reaped on every path. It proves
+// Callsheet with a simulated harness, never a vendor's wake.
+func (s *Suite) backgroundWait(ctx context.Context, a, b *answerTask) error {
+	s.bgWait.ran = true
+	s.bgWait.handled = map[string]bool{}
+	note := func(e string) { s.bgWait.events = append(s.bgWait.events, e) }
+	for _, t := range []*answerTask{a, b} {
+		if err := s.awaitFile(ctx, t.in, t.v.TaskID); err != nil {
+			return err
+		}
+	}
+	outstanding := []string{a.v.TaskID, b.v.TaskID}
+	child := s.startBackground(ctx, append([]string{"task", "wait"}, append(append([]string(nil), outstanding...), "--until-done", "--json")...)...)
+	defer child.stop()
+	note(bgStarted)
+	nb, err := s.cliOK(ctx, "node", "ls", "--json")
+	if err != nil {
+		return err
+	}
+	if nodes, err := contract.ParseNodeListResponse(nb); err != nil || len(nodes) != 2 {
+		return fmt.Errorf("independent work: node ls listed %d nodes (%v)", len(nodes), err)
+	}
+	note(bgIndependent)
+	if child.exited() || child.out.String() != "" || child.errOut.String() != "" {
+		return fmt.Errorf("the background wait ended or printed during independent work (exit %d %v, %q %q)", child.code, child.err, child.out.String(), child.errOut.String())
+	}
+	// Both tasks are still held: one immediate snapshot of the pair.
+	sb, err := s.cliOK(ctx, "task", "wait", "--json", "--wait", "0", a.v.TaskID, b.v.TaskID)
+	if err != nil {
+		return err
+	}
+	snap, err := contract.ParseWaitResponse(sb, outstanding, 0)
+	if err != nil {
+		return err
+	}
+	if snap.Status != contract.WaitStillRunning {
+		return fmt.Errorf("%s ended while both tasks were held", snap.Winner)
+	}
+	if err := os.WriteFile(b.release, nil, 0o600); err != nil {
+		return err
+	}
+	if err := child.await(ctx, taskBound); err != nil {
+		return err
+	}
+	note(bgNotified)
+	winner, err := s.handleWake(child, "wait-1", outstanding)
+	if err != nil {
+		return err
+	}
+	if winner != b.v.TaskID {
+		return fmt.Errorf("the background wait's winner is %s, want the released %s", winner, b.label)
+	}
+	note(bgWinner)
+	outstanding = slices.DeleteFunc(outstanding, func(id string) bool { return id == winner })
+	// The same wake again (an output and an exit notification of one
+	// wait): idempotent by handle and winner.
+	if s.wake("wait-1", winner) {
+		return errors.New("a duplicate notification was handled twice")
+	}
+	note(bgDuplicate)
+	again := s.startBackground(ctx, append([]string{"task", "wait"}, append(append([]string(nil), outstanding...), "--until-done", "--json")...)...)
+	defer again.stop()
+	note(bgRearmed)
+	if again.exited() {
+		return fmt.Errorf("the re-armed wait ended while %s was held (exit %d %v %q)", a.label, again.code, again.err, again.errOut.String())
+	}
+	if err := os.WriteFile(a.release, nil, 0o600); err != nil {
+		return err
+	}
+	if err := again.await(ctx, taskBound); err != nil {
+		return err
+	}
+	note(bgNotified)
+	if winner, err = s.handleWake(again, "wait-2", outstanding); err != nil {
+		return err
+	}
+	if winner != a.v.TaskID {
+		return fmt.Errorf("the re-armed wait's winner is %s, want %s", winner, a.label)
+	}
+	note(bgWinner)
+	if got := strings.Join(s.bgWait.events, ","); got != bgWantedEvents {
+		return fmt.Errorf("background wait events %s, want %s", got, bgWantedEvents)
+	}
+	return nil
+}
+
+// wake records the notification of handle's winner and reports whether
+// it is new (a repeated notification is ignored).
+func (s *Suite) wake(handle, winner string) bool {
+	key := handle + "\x00" + winner
+	if s.bgWait.handled[key] {
+		return false
+	}
+	s.bgWait.handled[key] = true
+	return true
+}
+
+// handleWake reads a finished background wait: exit 0, nothing on
+// stderr and exactly one terminal wait envelope naming a durably terminal
+// winner among ids; the notification is handled once.
+func (s *Suite) handleWake(c *bgChild, handle string, ids []string) (string, error) {
+	out := c.out.String()
+	if c.err != nil || c.code != 0 || c.errOut.String() != "" {
+		return "", fmt.Errorf("background wait %s exited %d (%v): %q", handle, c.code, c.err, c.errOut.String())
+	}
+	if !strings.HasSuffix(out, "\n") || strings.Count(out, "\n") != 1 {
+		return "", fmt.Errorf("background wait %s printed %q, not one envelope line", handle, out)
+	}
+	r, err := contract.ParseWaitResponse([]byte(strings.TrimSuffix(out, "\n")), ids, 30*time.Second)
+	if err != nil {
+		return "", fmt.Errorf("background wait %s: %w", handle, err)
+	}
+	if r.Status != contract.WaitTerminal {
+		return "", fmt.Errorf("background wait %s answered %s", handle, r.Status)
+	}
+	if !s.wake(handle, r.Winner) {
+		return "", fmt.Errorf("background wait %s was already handled", handle)
+	}
+	return r.Winner, nil
+}
+
+// ensureBackgroundWait is the background_wait phase: it verifies
+// goal_answer's stored proof outcome (never dispatching again).
+func (s *Suite) ensureBackgroundWait(ctx context.Context) error {
+	err := s.ensureAnswers(ctx)
+	if !s.bgWait.ran {
+		if err != nil {
+			return err
+		}
+		return errors.New("the background wait proof did not run")
+	}
+	return s.bgWait.err
+}
+
+// caseCoordinator is FP-2's parent record: the three phases and the two
 // no-workspace tasks.
 func (s *Suite) caseCoordinator(ctx context.Context, rec *CaseRecord) error {
 	errP := s.ensurePrepared(ctx)
 	errA := s.ensureAnswers(ctx)
-	rec.Subcases = map[string]string{"prepare": outcome(errP), "goal_answer": outcome(errA)}
+	errB := s.ensureBackgroundWait(ctx)
+	rec.Subcases = map[string]string{"prepare": outcome(errP), "goal_answer": outcome(errA), "background_wait": outcome(errB)}
 	for _, o := range s.answers {
 		rec.Tasks = append(rec.Tasks, o.task())
 	}
-	return errors.Join(errP, errA)
+	return errors.Join(errP, errA, errB)
 }
 
 func outcome(err error) string {

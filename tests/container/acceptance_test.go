@@ -163,10 +163,14 @@ func TestContainerRuntime(t *testing.T) {
 	runCase(t, ca.CaseRuntime, containerEnv())
 }
 
-// FP-2: four roles prepared and the two-worker goal-and-answer exchange.
+// FP-2: four roles prepared and the two-worker goal-and-answer exchange;
+// its background_wait subtest verifies the stored proof that a background
+// task wait --until-done let the coordinator work, woke it and was
+// re-armed (design nonblocking-coordinator-waits).
 func TestContainerCoordinator(t *testing.T) {
 	t.Run("prepare", runPhase(ca.PhasePrepare))
 	t.Run("goal_answer", runPhase(ca.PhaseGoalAnswer))
+	t.Run("background_wait", runPhase(ca.PhaseBackgroundWait))
 	runCase(t, ca.CaseCoordinator, nil)
 }
 

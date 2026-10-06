@@ -244,8 +244,8 @@ func TestProtocolDiscovery(t *testing.T) {
 				t.Fatalf("%s description %q", tl.Name, tl.Description)
 			}
 			waiting := tl.Name == toolTaskWait || tl.Name == toolDispatch
-			if waiting != strings.Contains(tl.Description, "B="+NewBudget(b).String()+". "+BudgetDeferralNote+" "+UnverifiedNotice) ||
-				waiting != strings.Contains(tl.Description, UnverifiedNotice) || strings.Contains(tl.Description, "ends within it") {
+			if waiting != strings.Contains(tl.Description, "B="+NewBudget(b).String()+". "+BudgetDeferralNote+" "+ShortPollNotice) ||
+				waiting != strings.Contains(tl.Description, ShortPollNotice) || strings.Contains(tl.Description, "ends within it") {
 				t.Fatalf("%s budget description %q", tl.Name, tl.Description)
 			}
 			mutating := map[string]bool{toolRoleAdd: true, toolRoleSet: true, toolRoleRm: true, toolDispatch: true, toolTaskCancel: true,

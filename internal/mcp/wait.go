@@ -5,14 +5,17 @@ import (
 	"time"
 )
 
-// The interim waiting-call budget (iteration 07a, FP-7). B is an outer
-// wall-clock budget for task_wait and dispatch with a wait, from handler
-// admission through response delivery; trust setup counts against it.
-// It is separate from worker execution timeouts and from the CLI/API wait
-// defaults. The shipping default of 10 s is UNVERIFIED against the
-// coordinator clients' tool-call timeouts (docs/support-catalog.md).
+// The waiting-call budget (iteration 07a, FP-7). B is an outer wall-clock
+// budget for task_wait and dispatch with a wait, from handler admission
+// through response delivery; trust setup counts against it. It is
+// separate from worker execution timeouts and from the CLI/API wait
+// defaults. The shipping default of 10 s is a deliberately short poll
+// (design nonblocking-coordinator-waits): long waits use the CLI's
+// callsheet task wait --until-done in a harness-managed background
+// command, and no coordinator client's tool-call timeout is claimed
+// beyond named local evidence (docs/support-catalog.md).
 const (
-	// DefaultBudget is the shipping interim budget B.
+	// DefaultBudget is the shipping short-poll budget B.
 	DefaultBudget = 10 * time.Second
 	// MinBudget and MaxBudget bound --wait-call-budget inclusively.
 	MinBudget = time.Second
@@ -32,9 +35,9 @@ const BudgetDeferralNote = "The budget includes trust setup and response deliver
 	"then a reply not fully written before the deadline ends the session once it is written, or the 1 s writer progress watchdog ends it first, " +
 	"and a short final write returning at or after the deadline also ends the session."
 
-// UnverifiedNotice is the sentence every waiting tool's description and
-// the help text carry.
-const UnverifiedNotice = "Default 10s interim call budget is UNVERIFIED against coordinator client timeouts; repeat task_wait. Raising it requires local timeout qualification."
+// ShortPollNotice is the sentence every waiting tool's description, the
+// mcp help text and the coordinator guide carry verbatim.
+const ShortPollNotice = "Default 10s call budget is a short poll, not a verified coordinator timeout. For long tasks, run callsheet task wait --until-done in a harness-managed background command; without wake support, poll task_wait on the next turn. Raising the budget requires local timeout qualification."
 
 // Budget is the configured outer budget B with its response reserve R
 // and transport reserve N, each min(1s, B/4).

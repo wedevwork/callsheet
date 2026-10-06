@@ -233,10 +233,23 @@ func (f *fakePlane) run(ctx context.Context, c command) (int, error) {
 		return -1, errors.New("the coordinator command has no directory or environment")
 	}
 	f.calls = append(f.calls, strings.Join(c.args[:min(2, len(c.args))], " "))
+	n := len(f.calls)
+	if c.started != nil {
+		c.started()
+	}
 	var a fakeAnswer
-	if f.fail == len(f.calls) {
+	switch {
+	case f.fail == n:
 		a = fakeAnswer{code: 1, stderr: "callsheet: synthetic failure\n"}
-	} else {
+	case parseCLI(c.args).flags["until-done"] != "":
+		// A background task wait --until-done: silent until a named task
+		// ends (its scripted worker polls its release barrier as the real
+		// one does), or the harness stops it.
+		var err error
+		if a, err = f.untilDone(ctx, c.args); err != nil {
+			return -1, err
+		}
+	default:
 		a = f.answer(c.args)
 	}
 	if f.mutate != nil {
@@ -245,6 +258,41 @@ func (f *fakePlane) run(ctx context.Context, c command) (int, error) {
 	io.WriteString(c.stdout, a.stdout)
 	io.WriteString(c.stderr, a.stderr)
 	return a.code, nil
+}
+
+// untilDone answers task wait --until-done (called with f.mu held): the
+// first named task that is terminal, in the given order, after advancing
+// the scripted workers; it releases the lock between polls and ends with
+// the context (a stopped child).
+func (f *fakePlane) untilDone(ctx context.Context, args []string) (fakeAnswer, error) {
+	a := parseCLI(args)
+	if a.flags["plane"] != f.url || a.flags["ca"] != f.ca {
+		return refused(6, "TLS verification of %s failed", f.url), nil
+	}
+	ids := a.pos[2:]
+	for _, id := range ids {
+		if f.tasks[id] == nil {
+			return refused(3, "task %s not found", id), nil
+		}
+	}
+	for {
+		f.advance()
+		for _, id := range ids {
+			if t := f.tasks[id]; contract.TaskTerminal(t.state) {
+				v := f.view(t)
+				return doc(contract.WaitResponse{Version: contract.ProtocolVersion, Status: contract.WaitTerminal, EffectiveWaitMS: 10, Winner: id, Task: &v}), nil
+			}
+		}
+		f.mu.Unlock()
+		select {
+		case <-ctx.Done():
+		case <-time.After(time.Millisecond):
+		}
+		f.mu.Lock()
+		if err := ctx.Err(); err != nil {
+			return fakeAnswer{}, err
+		}
+	}
 }
 
 // cliArgs is a parsed command line: positionals, flag values and --json.
@@ -260,6 +308,8 @@ func parseCLI(args []string) cliArgs {
 		switch x := args[i]; {
 		case x == "--json":
 			a.json = true
+		case x == "--until-done":
+			a.flags["until-done"] = "true"
 		case strings.HasPrefix(x, "--") && i+1 < len(args):
 			a.flags[x[2:]] = args[i+1]
 			i++
@@ -312,6 +362,22 @@ func (f *fakePlane) answer(args []string) fakeAnswer {
 		return doc(contract.RoleResponse{Version: contract.ProtocolVersion, Role: f.roleView(r)})
 	case a.arg(0) == "dispatch":
 		return f.dispatch(a)
+	case verb == "task wait" && len(a.pos) > 3:
+		// A snapshot of several tasks: the first terminal one in the given
+		// order wins, else one row each.
+		rows := []contract.WaitRow{}
+		for _, id := range a.pos[2:] {
+			t := f.tasks[id]
+			if t == nil {
+				return refused(3, "task %s not found", id)
+			}
+			if contract.TaskTerminal(t.state) {
+				v := f.view(t)
+				return doc(contract.WaitResponse{Version: contract.ProtocolVersion, Status: contract.WaitTerminal, Winner: id, Task: &v})
+			}
+			rows = append(rows, contract.WaitRow{TaskID: id, State: t.state, DurabilityConfirmed: true})
+		}
+		return doc(contract.WaitResponse{Version: contract.ProtocolVersion, Status: contract.WaitStillRunning, Tasks: rows})
 	case verb == "task show", verb == "task wait", verb == "task logs", verb == "task cancel":
 		t := f.tasks[a.arg(2)]
 		if t == nil {

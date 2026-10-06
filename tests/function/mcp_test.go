@@ -20,6 +20,7 @@ import (
 	"github.com/wedevwork/callsheet/internal/cli"
 	"github.com/wedevwork/callsheet/internal/contract"
 	"github.com/wedevwork/callsheet/internal/mcp"
+	"github.com/wedevwork/callsheet/internal/mcpqual"
 	"github.com/wedevwork/callsheet/internal/testkit"
 	"github.com/wedevwork/callsheet/internal/testkit/catalog"
 )
@@ -801,7 +802,7 @@ func waitOf(t *testing.T, text string, ids []string) contract.WaitResponse {
 	return r
 }
 
-// FP-7: cancellation and bounded waits under the interim call budget.
+// FP-7: cancellation and bounded waits under the short-poll call budget.
 func TestMCPWaitCancel(t *testing.T) {
 	p := startMCPPlane(t, 0)
 	w := startMCPWorker(t, p, nodeIDN('a'))
@@ -908,8 +909,8 @@ func TestMCPWaitCancel(t *testing.T) {
 		if r.Status != contract.WaitTerminal || r.EffectiveWaitMS <= 6000 || r.EffectiveWaitMS > 8000 {
 			t.Fatalf("interim default %+v", r)
 		}
-		if l := m.request("tools/list", nil); !strings.Contains(string(l.Result), "B=10s") || !strings.Contains(string(l.Result), "UNVERIFIED") {
-			t.Fatal("the interim budget is not described")
+		if l := m.request("tools/list", nil); !strings.Contains(string(l.Result), "B=10s") || !strings.Contains(string(l.Result), "a short poll, not a verified coordinator timeout") {
+			t.Fatal("the short-poll budget is not described")
 		}
 	})
 	t.Run("budget-deadline", func(t *testing.T) {
@@ -1082,6 +1083,11 @@ func TestMCPWaitCancel(t *testing.T) {
 		}
 	})
 	t.Run("catalog-interim", func(t *testing.T) {
+		// The retired 07a interim anchor now carries the short-poll policy
+		// (design nonblocking-coordinator-waits): the catalog is consistent
+		// with it, and a promotion without published evidence, a lost or
+		// revived interim sentence, a lost policy or a surviving prohibition
+		// is rejected, while a properly evidenced VERIFIED fact passes.
 		root := testkit.MustRepoRoot(t)
 		doc, err := os.ReadFile(filepath.Join(root, "docs", "support-catalog.md"))
 		if err != nil {
@@ -1091,28 +1097,45 @@ func TestMCPWaitCancel(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := checkInterimCatalog(string(doc), raw); err != nil {
+		if err := checkShortPollCatalog(string(doc), raw); err != nil {
 			t.Fatal(err)
 		}
-		// A promotion to VERIFIED without new evidence, a lost sentence or
-		// a surviving prohibition is rejected.
+		promote := func(value, evidence string) func(string, []byte) (string, []byte) {
+			return func(d string, j []byte) (string, []byte) {
+				es, _ := catalog.Decode(j)
+				f := es[0].Facts["mcp_timeout"]
+				f.Status, f.Value, f.Evidence = catalog.Verified, value, append(f.Evidence, evidence)
+				es[0].Facts["mcp_timeout"] = f
+				b, _ := mcpqual.RenderCatalog(es)
+				return d, b
+			}
+		}
+		d, j := promote("Measured by qualification run run-7 on linux/amd64: silent tool calls of up to 15000 ms completed (2 observations); this is a lower bound, not the default.",
+			mcpqual.EvidenceRoot+"/run-7/report.json")(string(doc), raw)
+		if err := checkShortPollCatalog(d, j); err != nil {
+			t.Fatalf("an evidenced VERIFIED lower bound was refused: %v", err)
+		}
 		for _, mutate := range []func(string, []byte) (string, []byte){
 			func(d string, j []byte) (string, []byte) {
 				return d, []byte(strings.Replace(string(j), `"status": "UNVERIFIED",
         "value": "MCP tool-call timeout`, `"status": "VERIFIED",
         "value": "MCP tool-call timeout`, 1))
 			},
-			func(d string, j []byte) (string, []byte) { return strings.Replace(d, interimSentence, "", 1), j },
+			promote("Measured by qualification run run-7: a lower bound.", "tests/testdata/cli-help/claude-help.txt"),
+			func(d string, j []byte) (string, []byte) { return strings.Replace(d, shortPollPolicy, "", 1), j },
+			func(d string, j []byte) (string, []byte) {
+				return strings.Replace(d, shortPollPolicy, shortPollPolicy+" "+mcpqual.LegacyInterimSentence, 1), j
+			},
 			func(d string, j []byte) (string, []byte) {
 				return d + "\nIteration 07 must verify the effective MCP timeout before any MCP tool exposes a wait.\n", j
 			},
 			func(d string, j []byte) (string, []byte) {
-				return d, []byte(strings.Replace(string(j), " "+interimSentence, "", 1))
+				return d, []byte(strings.Replace(string(j), " "+mcpqual.ShortPollPolicy, " "+mcpqual.LegacyInterimSentence, 1))
 			},
 		} {
 			d, j := mutate(string(doc), raw)
-			if checkInterimCatalog(d, j) == nil {
-				t.Fatal("a broken catalog passed the interim check")
+			if checkShortPollCatalog(d, j) == nil {
+				t.Fatal("a broken catalog passed the short-poll policy check")
 			}
 		}
 	})
@@ -1128,17 +1151,17 @@ func rawInit(t *testing.T, m *mcpProc, br *bufio.Reader) {
 	io.WriteString(m.stdin, `{"jsonrpc":"2.0","method":"notifications/initialized"}`+"\n")
 }
 
-// interimSentence is coordinator.md's normative sentence.
-const interimSentence = "Owner-authorized interim exception: iteration 07a ships task_wait and dispatch-with-wait with an UNVERIFIED 10s outer call budget, " +
-	"shorter plane waits reserve transport/admission/response time, and any increase requires local timeout qualification with an explicit response margin."
-
-// checkInterimCatalog is the 07a catalog policy: both prose locations
-// carry the sentence (the second links to the first), the old
-// prohibitions are gone, and every mcp_timeout fact ends with the
-// sentence while staying UNVERIFIED with its evidence and owner.
-func checkInterimCatalog(doc string, raw []byte) error {
-	if strings.Count(doc, interimSentence) != 1 || !strings.Contains(doc, "(#interim-mcp-wait-exception)") || !strings.Contains(doc, `<a id="interim-mcp-wait-exception"></a>`) {
-		return errors.New("docs/support-catalog.md lacks the interim sentence or its link")
+// checkShortPollCatalog is the catalog's short-poll policy (design
+// nonblocking-coordinator-waits): the retired interim anchor carries the
+// policy verbatim once (shortPollPolicy, this test's own copy of the
+// design's sentence) and the old prohibitions are gone; mcpqual's
+// consistency check then rejects the retired interim sentence anywhere and
+// any VERIFIED timeout fact without a published qualification report,
+// keeps the 07b owners and evidence, and accepts the four entries' shipped
+// values.
+func checkShortPollCatalog(doc string, raw []byte) error {
+	if strings.Count(doc, shortPollPolicy) != 1 || !strings.Contains(doc, "(#interim-mcp-wait-exception)") {
+		return errors.New("docs/support-catalog.md lacks the short-poll policy or its link")
 	}
 	for _, old := range []string{"must expose the dependency as a blocker, not manufacture a timeout default", "before any MCP tool exposes a wait"} {
 		if strings.Contains(doc, old) {
@@ -1152,18 +1175,7 @@ func checkInterimCatalog(doc string, raw []byte) error {
 	if len(entries) != 4 {
 		return fmt.Errorf("%d catalog entries", len(entries))
 	}
-	for _, e := range entries {
-		f := e.Facts["mcp_timeout"]
-		if f.Status != catalog.Unverified || !strings.HasSuffix(f.Value, " "+interimSentence) || len(f.Evidence) == 0 || f.VerificationIteration != catalog.Owner(e.ID, "mcp_timeout") {
-			return fmt.Errorf("%s mcp_timeout %+v", e.ID, f)
-		}
-		for _, k := range []string{"mcp_timeout_override", "mcp_progress_extension"} {
-			if e.Facts[k].Status != catalog.Unverified || strings.Contains(e.Facts[k].Value, interimSentence) {
-				return fmt.Errorf("%s %s changed", e.ID, k)
-			}
-		}
-	}
-	return nil
+	return mcpqual.CheckShortPollCatalog(doc, entries)
 }
 
 // FP-8: process lifetime, isolation and shutdown.

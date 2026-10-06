@@ -168,6 +168,13 @@ func ProposePatch(rep *Report, base *CatalogBase, outDir string) (*Patch, error)
 	}
 	evDir := path.Join(EvidenceRoot, rep.RunID)
 	reportPath := path.Join(evDir, "report.json")
+	// An old-policy catalog (the retired 07a interim exception) is refused
+	// before anything is proposed: never a mixed old paragraph and new
+	// facts. A short-poll catalog accepts properly evidenced VERIFIED
+	// lower bounds and measured timeouts.
+	if err := CheckShortPollCatalog(string(base.Markdown), base.Entries); err != nil {
+		return nil, conflict("%v; update catalog policy first", err)
+	}
 	p := &Patch{Schema: 1, RunID: rep.RunID, BaseJSONSHA256: sha256Hex(base.JSON), BaseMarkdownSHA256: sha256Hex(base.Markdown), Facts: []FactChange{}}
 	for _, name := range []string{"report.json", "report.md", "manifest.json"} {
 		b, err := os.ReadFile(filepath.Join(outDir, name))
@@ -203,13 +210,6 @@ func ProposePatch(rep *Report, base *CatalogBase, outDir string) (*Patch, error)
 			return nil, conflict("%s: the run's observed version does not equal the catalog's %q", c.ID, e.Version)
 		}
 		facts := proposeFacts(rep, c, e, reportPath)
-		// The 07a interim exception (checkInterimCatalog) requires every
-		// mcp_timeout to stay UNVERIFIED with the interim sentence; a VERIFIED
-		// one needs a design decision on ending that exception first.
-		if f := facts["mcp_timeout"]; f.Status == catalog.Verified && strings.Contains(e.Facts["mcp_timeout"].Value, InterimSentence) {
-			return nil, conflict("%s: a VERIFIED mcp_timeout would end the 07a interim exception, which the catalog contract still requires; "+
-				"publishing it needs a design decision first", c.ID)
-		}
 		for _, key := range append(append([]string(nil), TimeoutKeys...), "mcp_config") {
 			f, ok := facts[key]
 			if !ok {
@@ -228,6 +228,9 @@ func ProposePatch(rep *Report, base *CatalogBase, outDir string) (*Patch, error)
 		return nil, err
 	}
 	if err := validateStaged(base, outDir, p, final); err != nil {
+		return nil, conflict("the proposed catalog is invalid: %v", err)
+	}
+	if err := CheckShortPollCatalog(md, final); err != nil {
 		return nil, conflict("the proposed catalog is invalid: %v", err)
 	}
 	p.FinalJSONSHA256, p.FinalMarkdownSHA256 = sha256Hex(jb), sha256Hex([]byte(md))
@@ -322,8 +325,7 @@ func patchMarkdown(md, vendor string, facts map[string]catalog.Fact, reportPath 
 			return "", conflict("%s section has no %q bullet", head, anchor)
 		}
 		f := facts[key]
-		value := strings.TrimSuffix(strings.TrimSuffix(f.Value, InterimSentence), " ")
-		lines[found] = fmt.Sprintf("%s %s.** %s See the [qualification report](../%s).\n", anchor, f.Status, value, reportPath)
+		lines[found] = fmt.Sprintf("%s %s.** %s See the [qualification report](../%s).\n", anchor, f.Status, f.Value, reportPath)
 		section = strings.Join(lines, "")
 	}
 	return md[:start] + section + md[end:], nil
@@ -514,4 +516,55 @@ func installFile(repo, rel string, data []byte, recheck func() error) error {
 		return err
 	}
 	return os.Rename(tmp.Name(), dst)
+}
+
+// CheckShortPollCatalog is the support catalog's short-poll policy
+// consistency (design nonblocking-coordinator-waits): the Markdown keeps
+// the interim anchor once, labelled retired, with the exact policy; the
+// retired interim sentence appears nowhere (prose or JSON); and each
+// vendor's three timeout facts keep owner 07b and their evidence. A
+// VERIFIED timeout fact must be a qualification measurement backed by a
+// published report under EvidenceRoot; an UNVERIFIED mcp_timeout is the
+// shipped policy value (ending with the policy) or a published
+// established-subset fact. Nothing here promotes or requires a fact.
+func CheckShortPollCatalog(md string, entries []catalog.Entry) error {
+	switch {
+	case strings.Contains(md, LegacyInterimSentence):
+		return fmt.Errorf("%s still carries the retired 07a interim exception", CatalogMDPath)
+	case strings.Count(md, ShortPollAnchor+ShortPollPolicy) != 1 || strings.Count(md, `<a id="interim-mcp-wait-exception"></a>`) != 1:
+		return fmt.Errorf("%s lacks the retired interim anchor's short-poll policy", CatalogMDPath)
+	}
+	for _, e := range entries {
+		for key, f := range e.Facts {
+			if strings.Contains(f.Value, LegacyInterimSentence) {
+				return fmt.Errorf("%s.%s still carries the retired 07a interim exception", e.ID, key)
+			}
+		}
+		for _, key := range TimeoutKeys {
+			f, ok := e.Facts[key]
+			switch {
+			case !ok || len(f.Evidence) == 0 || f.VerificationIteration != catalog.Owner(e.ID, key):
+				return fmt.Errorf("%s.%s lacks its evidence or owner", e.ID, key)
+			case f.Status == catalog.Verified && (!strings.HasPrefix(f.Value, "Measured by qualification run ") || !publishedReport(f.Evidence)):
+				return fmt.Errorf("%s.%s is VERIFIED without a published qualification report", e.ID, key)
+			case f.Status == catalog.Unverified && key == "mcp_timeout" && !strings.HasSuffix(f.Value, " "+ShortPollPolicy) &&
+				!strings.HasPrefix(f.Value, "Established subset from qualification run "):
+				return fmt.Errorf("%s.mcp_timeout is neither the short-poll policy value nor a published measurement", e.ID)
+			case f.Status != catalog.Verified && f.Status != catalog.Unverified:
+				return fmt.Errorf("%s.%s has status %q", e.ID, key, f.Status)
+			}
+		}
+	}
+	return nil
+}
+
+// publishedReport reports whether evidence names a published
+// qualification report (EvidenceRoot/<run>/report.json).
+func publishedReport(evidence []string) bool {
+	for _, ev := range evidence {
+		if rel, ok := strings.CutPrefix(ev, EvidenceRoot+"/"); ok && strings.Count(rel, "/") == 1 && strings.HasSuffix(rel, "/report.json") {
+			return true
+		}
+	}
+	return false
 }

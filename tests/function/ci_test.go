@@ -231,7 +231,7 @@ func qualifyingEvents(drop, skip string) string {
 	for _, name := range devcheck.NativeRequiredTests() {
 		if strings.HasPrefix(name, "TestPlane") || strings.HasPrefix(name, "TestNode") || strings.HasPrefix(name, "TestRole") || strings.HasPrefix(name, "TestTask") ||
 			strings.HasPrefix(name, "TestControl") || strings.HasPrefix(name, "TestMCP") || strings.HasPrefix(name, "TestRealAdapter") || strings.HasPrefix(name, "TestWorkspace") ||
-			strings.HasPrefix(name, "TestWave2") {
+			strings.HasPrefix(name, "TestWave2") || strings.HasPrefix(name, "TestWaitUntilDone") || name == "TestCoordinatorBackgroundWait" || name == "TestShortPollCatalogPolicy" {
 			evs = append(evs, synth("run", pkg, name), synth("pass", pkg, name))
 		}
 	}

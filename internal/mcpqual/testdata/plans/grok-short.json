@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "limits": {
+    "max_sessions_per_client": 3,
+    "max_case_ms": 120000,
+    "max_client_ms": 360000
+  },
+  "clients": [
+    {
+      "id": "grok",
+      "executable": "<absolute-path-to-grok>",
+      "expected_version": "<exact-cli-version>",
+      "version_argv": [
+        "--version"
+      ],
+      "help_argv": [
+        "--help"
+      ],
+      "driver": "model",
+      "model": "<model>",
+      "decoder": "grok-json",
+      "decoder_fixture": "grok-json/synthetic",
+      "session": {
+        "argv": [
+          "-p",
+          "{prompt}",
+          "--output-format",
+          "json",
+          "-m",
+          "<model>"
+        ]
+      },
+      "config": {
+        "default": {
+          "path": ".grok/config.toml",
+          "content": "[mcp_servers.probe]\ncommand = \"{server}\"\nargs = [\"serve\", \"--case-file\", \"{case_file}\", \"--events\", \"{events}\"]\n",
+          "prerequisite": "the project .grok/config.toml table schema is a candidate; if this session cannot see the probe, register it with grok mcp add in an owner-prepared isolated configuration and name that here"
+        }
+      },
+      "phases": {
+        "default": {
+          "delays_ms": [
+            15000
+          ]
+        }
+      }
+    }
+  ]
+}

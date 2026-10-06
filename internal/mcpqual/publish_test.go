@@ -180,6 +180,15 @@ func publishRun(t *testing.T, repo string, m vendorModel, p *Plan, q bool) (*Run
 	return &Runner{OutDir: out}, rep, patch, err
 }
 
+func loadEntries(t *testing.T, repo string) []catalog.Entry {
+	t.Helper()
+	es, err := catalog.Load(filepath.Join(repo, CatalogJSONPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return es
+}
+
 func loadFacts(t *testing.T, repo string) map[string]catalog.Entry {
 	t.Helper()
 	es, err := catalog.Load(filepath.Join(repo, CatalogJSONPath))
@@ -234,10 +243,11 @@ func TestRenderCatalogCanonical(t *testing.T) {
 	}
 }
 
-// withoutInterim removes the 07a interim sentence from the repo's
-// mcp_timeout values (the state after a future design decision ends the
-// exception), keeping the catalog canonical and valid.
-func withoutInterim(t *testing.T, repo string) {
+// withInterim turns the repo's catalog back into an old-policy catalog:
+// the retired 07a interim sentence in the anchor paragraph and as the
+// suffix of every mcp_timeout value, as it was before the short-poll
+// policy (kept canonical and valid).
+func withInterim(t *testing.T, repo string) {
 	t.Helper()
 	p := filepath.Join(repo, CatalogJSONPath)
 	es, err := catalog.Load(p)
@@ -246,36 +256,60 @@ func withoutInterim(t *testing.T, repo string) {
 	}
 	for i := range es {
 		f := es[i].Facts["mcp_timeout"]
-		f.Value = strings.TrimSuffix(f.Value, " "+InterimSentence)
+		f.Value = strings.TrimSuffix(f.Value, ShortPollPolicy) + LegacyInterimSentence
 		es[i].Facts["mcp_timeout"] = f
 	}
 	b, _ := RenderCatalog(es)
 	os.WriteFile(p, b, 0o644)
+	mp := filepath.Join(repo, CatalogMDPath)
+	md, _ := os.ReadFile(mp)
+	os.WriteFile(mp, []byte(strings.Replace(string(md), ShortPollAnchor+ShortPollPolicy, `<a id="interim-mcp-wait-exception"></a>`+LegacyInterimSentence, 1)), 0o644)
 }
 
-// W2: while the 07a interim exception is in the catalog contract, a
-// VERIFIED mcp_timeout is refused (exit 4) and nothing is installed.
-func TestPublishRefusesVerifiedTimeoutUnderInterim(t *testing.T) {
-	repo := tempRepo(t)
-	jsonBefore, _ := os.ReadFile(filepath.Join(repo, CatalogJSONPath))
-	_, _, _, err := publishRun(t, repo, fullModel(), planWith(defaultOnly(900)), true)
-	if contract.ExitCode(err) != 4 || !strings.Contains(err.Error(), "interim exception") {
-		t.Fatalf("a VERIFIED mcp_timeout under the interim contract: %v", err)
-	}
-	jsonAfter, _ := os.ReadFile(filepath.Join(repo, CatalogJSONPath))
-	if !bytes.Equal(jsonBefore, jsonAfter) {
-		t.Fatal("the refused proposal changed the catalog")
-	}
-	if _, err := os.Stat(filepath.Join(repo, EvidenceRoot)); err == nil {
-		t.Fatal("evidence installed by a refused proposal")
+// UT-7 (design nonblocking-coordinator-waits): an old-policy catalog (the
+// retired 07a interim exception, in its prose or any fact) is refused
+// with "update catalog policy first" (exit 4) before anything is
+// proposed or installed, whatever the run measured; a catalog that lost
+// its short-poll paragraph is refused alike.
+func TestPublishRefusesOldPolicyCatalog(t *testing.T) {
+	for name, mut := range map[string]func(t *testing.T, repo string){
+		"interim": withInterim,
+		"json-only": func(t *testing.T, repo string) {
+			withInterim(t, repo)
+			mp := filepath.Join(repo, CatalogMDPath)
+			md, _ := os.ReadFile(mp)
+			os.WriteFile(mp, []byte(strings.Replace(string(md), `<a id="interim-mcp-wait-exception"></a>`+LegacyInterimSentence, ShortPollAnchor+ShortPollPolicy, 1)), 0o644)
+		},
+		"no-policy": func(t *testing.T, repo string) {
+			mp := filepath.Join(repo, CatalogMDPath)
+			md, _ := os.ReadFile(mp)
+			os.WriteFile(mp, []byte(strings.Replace(string(md), ShortPollPolicy, "Anything goes.", 1)), 0o644)
+		},
+	} {
+		repo := tempRepo(t)
+		mut(t, repo)
+		jsonBefore, _ := os.ReadFile(filepath.Join(repo, CatalogJSONPath))
+		// A run that measured every phase with a qualified decoder (VERIFIED
+		// facts otherwise). Its evidence directory is a shared cached run, so
+		// the refusal is checked on the returned patch, not on its files.
+		_, _, patch, err := publishRun(t, repo, fullModel(), fullPlan(), true)
+		if contract.ExitCode(err) != 4 || !strings.Contains(err.Error(), "update catalog policy first") || patch != nil {
+			t.Fatalf("%s: an old-policy catalog: %v (patch %v)", name, err, patch)
+		}
+		jsonAfter, _ := os.ReadFile(filepath.Join(repo, CatalogJSONPath))
+		if !bytes.Equal(jsonBefore, jsonAfter) {
+			t.Fatalf("%s: the refused proposal changed the catalog", name)
+		}
+		if _, err := os.Stat(filepath.Join(repo, EvidenceRoot)); err == nil {
+			t.Fatalf("%s: evidence installed by a refused proposal", name)
+		}
 	}
 }
 
-// VERIFIED rendering and installation, once the interim exception has been
-// ended by a design decision (simulated by removing its sentence).
+// VERIFIED rendering and installation against the shipped short-poll
+// catalog: a measured timeout and its override and progress facts.
 func TestPublishVerified(t *testing.T) {
 	repo := tempRepo(t)
-	withoutInterim(t, repo)
 	before := loadFacts(t, repo)
 	baseMD, _ := os.ReadFile(filepath.Join(repo, CatalogMDPath))
 	r, rep, patch, err := publishRun(t, repo, fullModel(), fullPlan(), true)
@@ -318,8 +352,12 @@ func TestPublishVerified(t *testing.T) {
 		}
 	}
 	md, _ := os.ReadFile(filepath.Join(repo, CatalogMDPath))
-	if strings.Count(string(md), InterimSentence) != 1 || !strings.Contains(string(md), "- **MCP call timeout: VERIFIED.** Measured by qualification run run-1") {
-		t.Fatal("markdown bullets not rewritten or the interim sentence duplicated")
+	if strings.Count(string(md), ShortPollAnchor+ShortPollPolicy) != 1 || strings.Contains(string(md), LegacyInterimSentence) ||
+		!strings.Contains(string(md), "- **MCP call timeout: VERIFIED.** Measured by qualification run run-1") {
+		t.Fatal("markdown bullets not rewritten or the policy paragraph changed")
+	}
+	if err := CheckShortPollCatalog(string(md), loadEntries(t, repo)); err != nil {
+		t.Fatal(err)
 	}
 	if err := catalog.CheckDocLinks(filepath.Join(repo, CatalogMDPath)); err != nil {
 		t.Fatal(err)
@@ -370,14 +408,15 @@ func TestPublishSyntheticStaysUnverified(t *testing.T) {
 			t.Fatalf("fake evidence published as %s: %s", f.Status, f.Value)
 		}
 	}
-	if !strings.HasSuffix(c.Facts["mcp_timeout"].Value, " "+InterimSentence) {
-		t.Fatal("the interim sentence was lost")
+	// The published value is the measurement alone: no retired interim
+	// suffix and no policy suffix (the policy is the anchor paragraph's).
+	if v := c.Facts["mcp_timeout"].Value; strings.Contains(v, LegacyInterimSentence) || strings.Contains(v, ShortPollPolicy) || !strings.HasPrefix(v, "Established subset from qualification run ") {
+		t.Fatalf("published mcp_timeout %q", v)
 	}
 }
 
 func TestPublishPartialAndMixed(t *testing.T) {
 	shared := tempRepo(t) // for subtests that only propose a patch
-	withoutInterim(t, shared)
 	t.Run("lower-bound-only", func(t *testing.T) {
 		_, rep, patch, err := publishRun(t, shared, vendorModel{}, planWith(Phases{Default: &DefaultPhase{DelaysMS: []int64{100}}, Override: &DelayPhase{DelayMS: 600}, Progress: &struct{}{}}), true)
 		if err != nil || rep.ExitCode() != 5 {

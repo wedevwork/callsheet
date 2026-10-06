@@ -376,7 +376,8 @@ func TestSteps(goos string) []Step {
 // (iteration 07a), then the qualification harness's transcript and probe
 // benchmarks (iteration 07b), then the workspace hub (iteration 09a), then
 // the local workspace transfers (iteration 09b), then the container
-// evidence parser (m3-m4-container-e2e). Timings are reported, never gated.
+// evidence parser (m3-m4-container-e2e), then the renewable wait's loop
+// (nonblocking-coordinator-waits). Timings are reported, never gated.
 func BenchSteps() []Step {
 	pkg := func(name, dir string) Step {
 		return Step{Name: name, Argv: []string{"go", "test", dir, "-run=^$", "-bench=.", "-benchmem", "-benchtime=3x", "-count=1", "-timeout=180s"}}
@@ -406,7 +407,17 @@ func BenchSteps() []Step {
 		// over a complete one-iteration ledger; reported, never gated.
 		{Name: "bench container evidence", Argv: []string{"go", "test", "./internal/devcheck", "-run=^$", "-bench=^BenchmarkContainerEvidence$", "-benchmem",
 			"-benchtime=3x", "-count=1", "-timeout=180s"}},
+		// Non-blocking coordinator waits: the renewable wait's loop on a
+		// fake connection and clock (no real hour, process or network).
+		ClientWaitBenchStep(),
 	}
+}
+
+// ClientWaitBenchStep is the renewable wait's benchmark step (design
+// nonblocking-coordinator-waits), shared by the bench stage and the native
+// driver.
+func ClientWaitBenchStep() Step {
+	return Step{Name: "bench client wait", Argv: []string{"go", "test", "./internal/client", "-run=^$", "-bench=^BenchmarkWaitUntilDone$", "-benchmem", "-benchtime=3x", "-count=1", "-timeout=180s"}}
 }
 
 // WorkspaceBenchStep is the workspace hub's benchmark step (iteration

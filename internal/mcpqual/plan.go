@@ -248,6 +248,11 @@ func (c *PlanClient) validate(reg Registry, template bool, lim Limits) error {
 	if strings.TrimSpace(c.ExpectedVersion) == "" {
 		return errors.New("expected_version is required")
 	}
+	// The exact version the owner's CLI reports is an owner input of a
+	// template (the short plans), never filled in for them.
+	if err := filled("expected_version", c.ExpectedVersion); err != nil {
+		return err
+	}
 	if !MetadataAllowed(c.VersionArgv, allowedVersionArgv) {
 		return fmt.Errorf("version_argv %q is not an allowed metadata command (it runs before the --allow-model-calls gate): use %q", c.VersionArgv, allowedVersionArgv)
 	}

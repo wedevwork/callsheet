@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -125,6 +126,18 @@ const (
 	wave2ProductionPlaceholder = "<composed-prompt>"
 )
 
+// shortPollPolicy and retiredInterim are the catalog's short-poll policy
+// and the retired 07a interim sentence it replaced (design
+// nonblocking-coordinator-waits; mcpqual's ShortPollPolicy and
+// LegacyInterimSentence, which this package cannot import).
+const (
+	shortPollPolicy = "The default 10s MCP call budget is a deliberately short poll. Long waits use a harness-managed background CLI command. " +
+		"Vendor timeout compatibility is claimed only by named local evidence; an unmeasured client remains UNVERIFIED. " +
+		"Increasing the budget requires local timeout qualification with response margin."
+	retiredInterim = "Owner-authorized interim exception: iteration 07a ships task_wait and dispatch-with-wait with an UNVERIFIED 10s outer call budget, " +
+		"shorter plane waits reserve transport/admission/response time, and any increase requires local timeout qualification with an explicit response margin."
+)
+
 // wave2Runs is the complete iteration 11 run inventory.
 var wave2Runs = []string{"grok-stdin-missing", "grok-stdin-success", "grok-stdin-fail", "grok-shell-permitted", "grok-shell-home", "grok-shell-tmp",
 	"grok-edit-permitted", "grok-edit-home", "grok-baseline-permitted", "grok-baseline-home", "cursor-stdin-success", "cursor-stdin-fail",
@@ -220,7 +233,21 @@ func wave2Evidence(t *testing.T, root string, entries []Entry) {
 	for _, e := range entries {
 		byID[e.ID] = e
 	}
-	// The frozen subtrees.
+	// The frozen subtrees. The non-blocking coordinator waits design's one
+	// change to them, every mcp_timeout value's retired interim suffix
+	// replaced by the short-poll policy, is undone first, so the digests
+	// still prove each subtree equal to the base fixtures apart from it.
+	for id, e := range byID {
+		f := e.Facts["mcp_timeout"]
+		if !strings.HasSuffix(f.Value, " "+shortPollPolicy) || strings.Contains(f.Value, retiredInterim) {
+			t.Fatalf("%s.mcp_timeout does not carry the short-poll policy: %s", id, f.Value)
+		}
+		f.Value = strings.TrimSuffix(f.Value, shortPollPolicy) + retiredInterim
+		facts := maps.Clone(e.Facts)
+		facts["mcp_timeout"] = f
+		e.Facts = facts
+		byID[id] = e
+	}
 	var timeouts, coord []Fact
 	for _, id := range []string{"claude", "codex", "grok", "cursor"} {
 		for _, k := range []string{"mcp_timeout", "mcp_timeout_override", "mcp_progress_extension"} {

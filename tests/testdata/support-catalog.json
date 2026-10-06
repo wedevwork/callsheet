@@ -97,7 +97,7 @@
       },
       "mcp_timeout": {
         "status": "UNVERIFIED",
-        "value": "MCP tool-call timeout is unknown (distinct from startup timeout); iteration 07b must measure it with a local deterministic MCP test server. Owner-authorized interim exception: iteration 07a ships task_wait and dispatch-with-wait with an UNVERIFIED 10s outer call budget, shorter plane waits reserve transport/admission/response time, and any increase requires local timeout qualification with an explicit response margin.",
+        "value": "MCP tool-call timeout is unknown (distinct from startup timeout); iteration 07b must measure it with a local deterministic MCP test server. The default 10s MCP call budget is a deliberately short poll. Long waits use a harness-managed background CLI command. Vendor timeout compatibility is claimed only by named local evidence; an unmeasured client remains UNVERIFIED. Increasing the budget requires local timeout qualification with response margin.",
         "evidence": [
           "tests/testdata/cli-help/claude-help.txt"
         ],
@@ -230,7 +230,7 @@
       },
       "mcp_timeout": {
         "status": "UNVERIFIED",
-        "value": "MCP tool-call timeout is unknown; iteration 07b must measure it with a local deterministic MCP test server. Owner-authorized interim exception: iteration 07a ships task_wait and dispatch-with-wait with an UNVERIFIED 10s outer call budget, shorter plane waits reserve transport/admission/response time, and any increase requires local timeout qualification with an explicit response margin.",
+        "value": "MCP tool-call timeout is unknown; iteration 07b must measure it with a local deterministic MCP test server. The default 10s MCP call budget is a deliberately short poll. Long waits use a harness-managed background CLI command. Vendor timeout compatibility is claimed only by named local evidence; an unmeasured client remains UNVERIFIED. Increasing the budget requires local timeout qualification with response margin.",
         "evidence": [
           "tests/testdata/cli-help/codex-help.txt"
         ],
@@ -371,7 +371,7 @@
       },
       "mcp_timeout": {
         "status": "UNVERIFIED",
-        "value": "MCP tool-call timeout is unknown; iteration 07b must measure it with a local deterministic MCP test server. Owner-authorized interim exception: iteration 07a ships task_wait and dispatch-with-wait with an UNVERIFIED 10s outer call budget, shorter plane waits reserve transport/admission/response time, and any increase requires local timeout qualification with an explicit response margin.",
+        "value": "MCP tool-call timeout is unknown; iteration 07b must measure it with a local deterministic MCP test server. The default 10s MCP call budget is a deliberately short poll. Long waits use a harness-managed background CLI command. Vendor timeout compatibility is claimed only by named local evidence; an unmeasured client remains UNVERIFIED. Increasing the budget requires local timeout qualification with response margin.",
         "evidence": [
           "tests/testdata/cli-help/grok-help.txt"
         ],
@@ -507,7 +507,7 @@
       },
       "mcp_timeout": {
         "status": "UNVERIFIED",
-        "value": "MCP tool-call timeout is unknown; iteration 07b must measure it with a local deterministic MCP test server. Owner-authorized interim exception: iteration 07a ships task_wait and dispatch-with-wait with an UNVERIFIED 10s outer call budget, shorter plane waits reserve transport/admission/response time, and any increase requires local timeout qualification with an explicit response margin.",
+        "value": "MCP tool-call timeout is unknown; iteration 07b must measure it with a local deterministic MCP test server. The default 10s MCP call budget is a deliberately short poll. Long waits use a harness-managed background CLI command. Vendor timeout compatibility is claimed only by named local evidence; an unmeasured client remains UNVERIFIED. Increasing the budget requires local timeout qualification with response margin.",
         "evidence": [
           "tests/testdata/cli-help/cursor-mcp.txt"
         ],

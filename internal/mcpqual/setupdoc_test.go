@@ -102,7 +102,7 @@ func TestSetupGuide(t *testing.T) {
 			}
 		}
 	}
-	for _, s := range []string{mcp.BudgetDeferralNote, mcp.UnverifiedNotice, "<callsheet-binary>", "<plane-url>", "<ca-path>", "<runbook>",
+	for _, s := range []string{mcp.BudgetDeferralNote, mcp.ShortPollNotice, "<callsheet-binary>", "<plane-url>", "<ca-path>", "<runbook>",
 		"`--ca-fingerprint <sha256>` can replace `--ca <ca-path>`; never pass both", "wrong URL or certificate name (SAN), the CA file and the clock",
 		"Initial-prompt loading is the established fallback for Codex and Cursor", "strips trailing newlines", "no runbook bytes are sent to Callsheet",
 		"a space-containing name is a dispatch compatibility failure", "never normalized", "B + max(2s, 10% of T) < T", "keep the shared B at 10s",

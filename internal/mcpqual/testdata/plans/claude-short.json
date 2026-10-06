@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "limits": {
+    "max_sessions_per_client": 3,
+    "max_case_ms": 120000,
+    "max_client_ms": 360000
+  },
+  "clients": [
+    {
+      "id": "claude",
+      "executable": "<absolute-path-to-claude>",
+      "expected_version": "<exact-cli-version>",
+      "version_argv": [
+        "--version"
+      ],
+      "help_argv": [
+        "--help"
+      ],
+      "driver": "model",
+      "model": "<model>",
+      "decoder": "claude-json",
+      "decoder_fixture": "claude-json/synthetic",
+      "session": {
+        "argv": [
+          "-p",
+          "{prompt}",
+          "--output-format",
+          "json",
+          "--verbose",
+          "--model",
+          "<model>",
+          "--mcp-config",
+          "{config}",
+          "--strict-mcp-config",
+          "--allowed-tools",
+          "mcp__probe__slow"
+        ]
+      },
+      "config": {
+        "default": {
+          "path": "probe-mcp.json",
+          "content": "{\"mcpServers\":{\"probe\":{\"command\":\"{server}\",\"args\":[\"serve\",\"--case-file\",\"{case_file}\",\"--events\",\"{events}\"]}}}"
+        }
+      },
+      "phases": {
+        "default": {
+          "delays_ms": [
+            15000
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "limits": {
+    "max_sessions_per_client": 3,
+    "max_case_ms": 120000,
+    "max_client_ms": 360000
+  },
+  "clients": [
+    {
+      "id": "codex",
+      "executable": "<absolute-path-to-codex>",
+      "expected_version": "<exact-cli-version>",
+      "version_argv": [
+        "--version"
+      ],
+      "help_argv": [
+        "exec",
+        "--help"
+      ],
+      "driver": "model",
+      "model": "<model>",
+      "decoder": "codex-jsonl",
+      "decoder_fixture": "codex-jsonl/synthetic",
+      "session": {
+        "argv": [
+          "exec",
+          "--json",
+          "--skip-git-repo-check",
+          "-C",
+          "{workspace}",
+          "-m",
+          "<model>",
+          "-c",
+          "mcp_servers.probe.command=\"{server}\"",
+          "-c",
+          "mcp_servers.probe.args=[\"serve\",\"--case-file\",\"{workspace}/case.json\",\"--events\",\"{workspace}/server-events.jsonl\"]",
+          "{prompt}"
+        ]
+      },
+      "config": {
+        "default": {
+          "path": "probe-config.toml",
+          "content": "[mcp_servers.probe]\ncommand = \"{server}\"\nargs = [\"serve\", \"--case-file\", \"{case_file}\", \"--events\", \"{events}\"]\n"
+        }
+      },
+      "phases": {
+        "default": {
+          "delays_ms": [
+            15000
+          ]
+        }
+      }
+    }
+  ]
+}

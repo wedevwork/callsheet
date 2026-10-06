@@ -471,6 +471,18 @@ var nativeRequired = []string{
 	"TestWave2SmokeGate/absent",
 	"TestWave2SmokeGate/enabled",
 	"TestWave2SmokeGate/posture",
+	// Non-blocking coordinator waits: the eight function parents in FP
+	// order (FP-1..FP-8), a separate group after the iteration 11 names;
+	// their scenarios assert within each parent and are not inventory
+	// entries. Absence or a skip never satisfies native qualification.
+	"TestWaitUntilDoneCLI",
+	"TestWaitUntilDoneRenewal",
+	"TestWaitUntilDoneFailure",
+	"TestWaitUntilDoneOutput",
+	"TestCoordinatorBackgroundWait",
+	"TestMCPShortPollGuidance",
+	"TestShortPollCatalogPolicy",
+	"TestMCPShortConfirmation",
 }
 
 // NativeTaskProcessPackage and nativeTaskProcess are the separate native
@@ -822,11 +834,12 @@ func (d *driver) native(steps []Step) error {
 	// parsed JSON event stream, the coverage gates (project-wide and the
 	// new/changed manifest) and the workspace benchmarks run natively;
 	// iteration 09b adds the transfer benchmarks after them, iteration 10b
-	// the task workspace benchmarks after those.
+	// the task workspace benchmarks after those, and the non-blocking
+	// coordinator waits design the client wait benchmark last.
 	if err := d.coverage(""); err != nil {
 		return err
 	}
-	return d.steps([]Step{WorkspaceBenchStep(), TransferBenchStep(), TaskWorkspaceBenchStep()})
+	return d.steps([]Step{WorkspaceBenchStep(), TransferBenchStep(), TaskWorkspaceBenchStep(), ClientWaitBenchStep()})
 }
 
 func (d *driver) nativeChildren(steps []Step, events, stderrLog io.Writer) error {
