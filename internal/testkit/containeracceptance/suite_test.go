@@ -589,13 +589,19 @@ func TestProcessSeams(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
+	// The child reports os.Getwd, which resolves symlinked ancestors (on
+	// Darwin /var is /private/var), so compare against the resolved path.
+	wd, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx := context.Background()
 	for _, code := range []int{0, 3} {
 		var out, errOut bytes.Buffer
 		got, err := execCommand(ctx, command{bin: self, dir: dir, args: []string{"node", "ls"}, env: []string{helperEnv + "=exit=" + strconv.Itoa(code)},
 			stdout: &out, stderr: &errOut})
 		// (A coverage build's child may append its own GOCOVERDIR warning.)
-		if err != nil || got != code || out.String() != "args=node,ls cwd="+dir+"\n" || !strings.HasPrefix(errOut.String(), "helper stderr\n") {
+		if err != nil || got != code || out.String() != "args=node,ls cwd="+wd+"\n" || !strings.HasPrefix(errOut.String(), "helper stderr\n") {
 			t.Fatalf("exit %d: %d %v %q %q", code, got, err, out.String(), errOut.String())
 		}
 	}
