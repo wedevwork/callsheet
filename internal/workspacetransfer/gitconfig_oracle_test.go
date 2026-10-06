@@ -3,10 +3,14 @@ package workspacetransfer
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/wedevwork/callsheet/internal/contract"
@@ -24,14 +28,20 @@ type oracleRow struct {
 	noValue, accept bool
 }
 
-func loadOracle(t testing.TB) []oracleRow {
-	t.Helper()
+// oracleLoads counts parseOracle calls in this process
+// (TestOracleInputsPerUse requires one).
+var oracleLoads atomic.Int64
+
+// parseOracle expands testdata/gitconfig_oracle.tsv into its rows (more
+// than 30,000).
+func parseOracle() ([]oracleRow, error) {
+	oracleLoads.Add(1)
 	f, err := os.Open(filepath.Join("testdata", "gitconfig_oracle.tsv"))
 	if err != nil {
-		t.Fatal(err)
+		return nil, err
 	}
 	defer f.Close()
-	values := func(l string) []string {
+	values := func(l string) ([]string, error) {
 		var out []string
 		for rest := l; rest != ""; {
 			rest = strings.TrimLeft(rest, " ")
@@ -41,12 +51,12 @@ func loadOracle(t testing.TB) []oracleRow {
 			}
 			q, err := strconv.QuotedPrefix(rest)
 			if err != nil {
-				t.Fatalf("bad oracle header %q", l)
+				return nil, fmt.Errorf("bad oracle header %q", l)
 			}
 			v, _ := strconv.Unquote(q)
 			out, rest = append(out, v), rest[len(q):]
 		}
-		return out
+		return out, nil
 	}
 	var standard, vocabulary []string
 	var rows []oracleRow
@@ -56,10 +66,14 @@ func loadOracle(t testing.TB) []oracleRow {
 		l := sc.Text()
 		switch {
 		case strings.HasPrefix(l, "# standard values: "):
-			standard = values(strings.TrimPrefix(l, "# standard values: "))
+			if standard, err = values(strings.TrimPrefix(l, "# standard values: ")); err != nil {
+				return nil, err
+			}
 			continue
 		case strings.HasPrefix(l, "# vocabulary: "):
-			vocabulary = values(strings.TrimPrefix(l, "# vocabulary: "))
+			if vocabulary, err = values(strings.TrimPrefix(l, "# vocabulary: ")); err != nil {
+				return nil, err
+			}
 			continue
 		case strings.HasPrefix(l, "#"):
 			continue
@@ -67,7 +81,7 @@ func loadOracle(t testing.TB) []oracleRow {
 		p := strings.Split(l, "\t")
 		all := append(append([]string(nil), standard...), vocabulary...)
 		if len(p) != 3 || (len(p[2]) != len(standard) && len(p[2]) != len(all)) {
-			t.Fatalf("bad oracle row %q", l)
+			return nil, fmt.Errorf("bad oracle row %q", l)
 		}
 		for i, v := range p[2] {
 			r := oracleRow{key: p[0], ctx: p[1], value: all[i], accept: v == 'A'}
@@ -77,10 +91,113 @@ func loadOracle(t testing.TB) []oracleRow {
 			rows = append(rows, r)
 		}
 	}
-	if len(standard) != 7 || len(vocabulary) < 100 || len(rows) < 30000 {
-		t.Fatalf("oracle table truncated: %d standard, %d vocabulary values, %d rows", len(standard), len(vocabulary), len(rows))
+	if err := sc.Err(); err != nil {
+		return nil, err
 	}
-	return rows
+	if len(standard) != 7 || len(vocabulary) < 100 || len(rows) < 30000 {
+		return nil, fmt.Errorf("oracle table truncated: %d standard, %d vocabulary values, %d rows", len(standard), len(vocabulary), len(rows))
+	}
+	return rows, nil
+}
+
+// oracleTable is the process's parsed oracle table.
+var oracleTable = sync.OnceValues(parseOracle)
+
+// loadOracle returns a fresh copy of the oracle table. The table, and the
+// push cases derived from it (oraclePushCases), are a pure function of
+// testdata: parsing them is a fixed prefix the stress stage would
+// otherwise pay on every repetition although the sampler already spreads
+// the rows over the repetitions, so they are parsed once per process and
+// every use gets its own copy (oracleRow holds only strings and bools, so
+// a slice copy is a deep copy): a mutation in one use cannot reach the
+// next (TestOracleInputsPerUse). Only the input is shared; every row
+// check and push runs as before.
+func loadOracle(t testing.TB) []oracleRow {
+	t.Helper()
+	rows, err := oracleTable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return slices.Clone(rows)
+}
+
+// derivePushCases is TestGitConfigOraclePush's case list: one refused
+// value of every key and context Git refuses, every 151st accepted row,
+// and the reviewer's cases.
+func derivePushCases() ([]oracleRow, error) {
+	rows, err := oracleTable()
+	if err != nil {
+		return nil, err
+	}
+	var cases []oracleRow
+	seen := map[string]bool{}
+	for i, r := range rows {
+		switch {
+		case !r.accept && !seen[r.key+"\x00"+r.ctx]:
+			seen[r.key+"\x00"+r.ctx] = true
+			cases = append(cases, r)
+		case r.accept && i%151 == 0:
+			cases = append(cases, r)
+		}
+	}
+	// The reviewer's cases.
+	cases = append(cases,
+		oracleRow{key: "extensions.preciousObjects", ctx: "v1", value: "0\v"},
+		oracleRow{key: "core.safecrlf", ctx: "v0", value: "0\v"},
+		oracleRow{key: "core.logAllRefUpdates", ctx: "v0", value: "0\v"},
+		oracleRow{key: "core.protectHFS", ctx: "v0", value: "0\v"},
+		oracleRow{key: "core.sparseCheckoutCone", ctx: "v0", value: "0\v"},
+	)
+	return cases, nil
+}
+
+// oraclePushTable is the process's push case list.
+var oraclePushTable = sync.OnceValues(derivePushCases)
+
+// oraclePushCases returns a fresh copy of the push case list.
+func oraclePushCases(t testing.TB) []oracleRow {
+	t.Helper()
+	cases, err := oraclePushTable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return slices.Clone(cases)
+}
+
+// TestOracleInputsPerUse proves the oracle table and the push case list
+// are parsed once per process and copied per use: each repetition
+// overwrites its copies with zero rows, which no table holds (every row
+// has a key), and both a second copy in the same repetition and the first
+// copy of every later repetition (-count) must hold none of them.
+func TestOracleInputsPerUse(t *testing.T) {
+	clean := func(name string, rows []oracleRow, want int) {
+		t.Helper()
+		if len(rows) != want {
+			t.Fatalf("%s: %d rows, want %d", name, len(rows), want)
+		}
+		for i := range rows {
+			if rows[i].key == "" {
+				t.Fatalf("%s: row %d is %+v: a use's mutation reached another use", name, i, rows[i])
+			}
+		}
+	}
+	for _, in := range []struct {
+		name string
+		get  func(testing.TB) []oracleRow
+	}{{"oracle table", loadOracle}, {"push cases", oraclePushCases}} {
+		first := in.get(t)
+		n := len(first)
+		clean(in.name, first, n)
+		clear(first)
+		again := in.get(t)
+		clean(in.name, again, n)
+		if &again[0] == &first[0] {
+			t.Fatalf("%s: two uses share one slice", in.name)
+		}
+	}
+	if n := oracleLoads.Load(); n != 1 {
+		t.Fatalf("the oracle table was parsed %d times in this process, want once", n)
+	}
 }
 
 // line is the row's configuration text (the generator's oracleLine).
@@ -181,45 +298,25 @@ func TestGitConfigOracleRules(t *testing.T) {
 // accepted rows, in the value's real place (.git/config, an included
 // file, the global configuration or .git/config.worktree).
 func TestGitConfigOraclePush(t *testing.T) {
-	rows := loadOracle(t)
-	var cases []oracleRow
-	seen := map[string]bool{}
-	for i, r := range rows {
-		switch {
-		case !r.accept && !seen[r.key+"\x00"+r.ctx]:
-			seen[r.key+"\x00"+r.ctx] = true
-			cases = append(cases, r)
-		case r.accept && i%151 == 0:
-			cases = append(cases, r)
-		}
-	}
-	// The reviewer's cases.
-	cases = append(cases,
-		oracleRow{key: "extensions.preciousObjects", ctx: "v1", value: "0\v"},
-		oracleRow{key: "core.safecrlf", ctx: "v0", value: "0\v"},
-		oracleRow{key: "core.logAllRefUpdates", ctx: "v0", value: "0\v"},
-		oracleRow{key: "core.protectHFS", ctx: "v0", value: "0\v"},
-		oracleRow{key: "core.sparseCheckoutCone", ctx: "v0", value: "0\v"},
-	)
-	r := newRepo(t, map[string]fspec{"f": reg("f\n")})
-	home := tempDir(t)
+	cases := oraclePushCases(t)
+	root, home := oraclePushFixture(t)
 	env := envOf(map[string]string{"HOME": home, "GIT_CONFIG_NOSYSTEM": "1"})
 	run := sampler(t)
 	for i, c := range cases {
 		if !run(i) {
 			continue
 		}
-		files := map[string]string{filepath.Join(r.root, ".git/config"): baseFor(c.ctx), filepath.Join(r.root, ".git/included.cfg"): "",
-			filepath.Join(home, ".gitconfig"): "", filepath.Join(r.root, ".git/config.worktree"): ""}
+		files := map[string]string{filepath.Join(root, ".git/config"): baseFor(c.ctx), filepath.Join(root, ".git/included.cfg"): "",
+			filepath.Join(home, ".gitconfig"): "", filepath.Join(root, ".git/config.worktree"): ""}
 		switch c.ctx {
 		case "v0", "v1":
-			files[filepath.Join(r.root, ".git/config")] += c.line()
+			files[filepath.Join(root, ".git/config")] += c.line()
 		case "include":
-			files[filepath.Join(r.root, ".git/included.cfg")] = c.line()
+			files[filepath.Join(root, ".git/included.cfg")] = c.line()
 		case "global":
 			files[filepath.Join(home, ".gitconfig")] = c.line()
 		case "worktree":
-			files[filepath.Join(r.root, ".git/config.worktree")] = c.line()
+			files[filepath.Join(root, ".git/config.worktree")] = c.line()
 		}
 		for p, s := range files {
 			if err := os.WriteFile(p, []byte(s), 0o644); err != nil {
@@ -227,7 +324,7 @@ func TestGitConfigOraclePush(t *testing.T) {
 			}
 		}
 		_, err := fastDeps().push(context.Background(), Options{GOOS: "linux", Env: env, Cwd: "/", Plane: &localPlane{t: t}},
-			PushRequest{Name: "ws", Instance: tInst, Path: r.root, PathSet: true})
+			PushRequest{Name: "ws", Instance: tInst, Path: root, PathSet: true})
 		want := c.accept && !policyRefusal(c)
 		switch {
 		case want && err != nil:
@@ -238,6 +335,55 @@ func TestGitConfigOraclePush(t *testing.T) {
 			t.Errorf("%s (%s) = %q: refused with %v, want unsupported_repository", c.key, c.ctx, c.value, err)
 		}
 	}
+}
+
+// oraclePushRepo is TestGitConfigOraclePush's repository and HOME, built
+// once per process (committing the repository on every repetition was a
+// fixed prefix of the stress stage). Push leaves its source repository
+// unchanged, and every case rewrites all four configuration files it
+// reads (.git/config, .git/included.cfg, ~/.gitconfig and
+// .git/config.worktree) before its push, so the cases of one repetition
+// already share one repository. Across repetitions, each repetition's
+// cleanup restores those files and the next one first requires the
+// repository and HOME to match their fingerprint taken when they were
+// built.
+var oraclePushRepo struct {
+	once       sync.Once
+	dir, print string
+	root, home string
+}
+
+// oraclePushFixture returns the process's push repository root and HOME,
+// unchanged since they were built.
+func oraclePushFixture(t *testing.T) (root, home string) {
+	t.Helper()
+	o := &oraclePushRepo
+	o.once.Do(func() {
+		dir := processDir(t)
+		repo := newRepoAt(t, filepath.Join(dir, "repo"), map[string]fspec{"f": reg("f\n")})
+		home := filepath.Join(dir, "home")
+		if err := os.Mkdir(home, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		o.dir, o.root, o.home, o.print = dir, repo.root, home, fingerprint(t, dir)
+	})
+	if o.root == "" {
+		t.Fatal("the oracle push repository failed to build in an earlier repetition")
+	}
+	if fingerprint(t, o.dir) != o.print {
+		t.Fatal("the oracle push repository or HOME changed since it was built")
+	}
+	t.Cleanup(func() {
+		if err := os.WriteFile(filepath.Join(o.root, ".git/config"), []byte(baseConfig), 0o644); err != nil {
+			t.Error(err)
+		}
+		for _, p := range []string{filepath.Join(o.root, ".git/included.cfg"), filepath.Join(o.home, ".gitconfig"), filepath.Join(o.root, ".git/config.worktree")} {
+			if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+				t.Error(err)
+			}
+		}
+	})
+	return o.root, o.home
 }
 
 // TestGitValueParsers covers the special parsers directly.

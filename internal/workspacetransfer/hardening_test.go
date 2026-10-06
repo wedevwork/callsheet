@@ -725,8 +725,24 @@ func openDescriptors(t *testing.T) int {
 // C1 (review r2): an alias-probe error and an unsafe-link refusal both
 // happen after the staging directory is opened. Each call must close that
 // descriptor; repeated failures must not accumulate them.
+//
+// Every call is checked on its own: its transfer reason and, on Linux,
+// the process's open descriptor count right after it returns, which must
+// equal the count before the first call. A call that leaks fails at that
+// call, so the proof does not rest on the number of calls. The
+// descriptors under test (the destination's parent, the staging root and
+// those removeTreeAt opens to remove the staging directory) are raw, with
+// no finalizer, so a leak of one stays open until it is counted. Object
+// and HEAD reads go through *os.File, whose finalizer a collection could
+// run behind a leak; counting right after each call leaves it the least
+// time to. Nothing in the path is keyed to a call count: the calls differ
+// only in the random staging name and in the first call reading the
+// fixture's objects from disk while later calls find them in the store's
+// object cache. Ten calls cover that cold call and nine warm ones (the
+// test made 100 calls with one count after the last before the stress
+// stage's cost was cut).
 func TestExportAliasFailuresReleaseDescriptor(t *testing.T) {
-	const calls = 100
+	const calls = 10
 	run := func(what string, files map[string]testkit.FileSpec, probe func(int) (bool, error), reason string) {
 		t.Run(what, func(t *testing.T) {
 			f := newExportFixture(t, files)
@@ -739,19 +755,18 @@ func TestExportAliasFailuresReleaseDescriptor(t *testing.T) {
 				if contract.TransferReason(err) != reason {
 					t.Fatalf("%s call %d: %v", what, i, err)
 				}
+				if before < 0 {
+					continue
+				}
+				if after := openDescriptors(t); after != before {
+					t.Fatalf("%s call %d: descriptors before=%d after=%d leaked=%d", what, i, before, after, after-before)
+				}
 			}
 			if s := staging(t, parent); len(s) != 0 {
 				t.Fatalf("%s: staging left %v", what, s)
 			}
 			if _, err := os.Lstat(filepath.Join(parent, "out")); !os.IsNotExist(err) {
 				t.Fatalf("%s: published", what)
-			}
-			if before < 0 {
-				return
-			}
-			after := openDescriptors(t)
-			if after != before {
-				t.Fatalf("100 %s: descriptors before=%d after=%d leaked=%d", what, before, after, after-before)
 			}
 		})
 	}
