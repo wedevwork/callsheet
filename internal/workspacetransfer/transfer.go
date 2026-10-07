@@ -140,12 +140,12 @@ func checkGOOS(goos string) error {
 
 // Push pushes a clean repository's HEAD or a folder snapshot.
 func Push(ctx context.Context, o Options, req PushRequest) (contract.WorkspacePushResult, error) {
-	return defaultDeps().push(ctx, o, req)
+	return entryDeps().push(ctx, o, req)
 }
 
 // Pull pulls a selected commit into a repository or a folder.
 func Pull(ctx context.Context, o Options, req PullRequest) (contract.WorkspacePullResult, error) {
-	return defaultDeps().pull(ctx, o, req)
+	return entryDeps().pull(ctx, o, req)
 }
 
 // pushSource is a scanned source ready to be packed.

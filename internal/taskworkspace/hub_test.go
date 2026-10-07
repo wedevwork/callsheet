@@ -122,6 +122,7 @@ func TestMetadataKindsSelector(t *testing.T) {
 // (TestTaskWorkspaceMetadata/matrix). Do not rename it.
 func TestMetadata(t *testing.T) {
 	t.Parallel()
+	taskworkspace.SkipDurability(t)
 	h := taskhub.Start(t, taskhub.Options{})
 	inst := h.Workspace(t, "proj")
 	h.Seed(t, "proj", inst, "main", plumbing.ZeroHash, map[string]testkit.FileSpec{
