@@ -1,7 +1,6 @@
 package mcpqual
 
 import (
-	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -162,65 +161,4 @@ func TestSetupDocParsing(t *testing.T) {
 	if _, err := CalleeArgv([]string{"claude", "mcp", "add"}, "b", "p", "c"); err == nil {
 		t.Fatal("a registration without -- parsed")
 	}
-}
-
-// UT-8 (design decoder-enrollment): the guide's capture section documents
-// exactly the executable interface: its example command parses with the
-// capture flags (reaching the plan's owner placeholders, before any
-// launch), it links the four short templates, and it states the owner
-// gates, the cost, the CI refusal and the approval limits.
-func TestCaptureRunbookDoc(t *testing.T) {
-	doc, err := os.ReadFile(filepath.Join("..", "..", SetupDocPath))
-	if err != nil {
-		t.Fatal(err)
-	}
-	s := string(doc)
-	start, end := strings.Index(s, "### Decoder enrollment: setup capture\n"), strings.Index(s, "### Short confirmation\n")
-	if start < 0 || end < start {
-		t.Fatal("no capture section before the short confirmation")
-	}
-	sec := s[start:end]
-	m := regexp.MustCompile("(?s)```text\n(.*?)\n```").FindStringSubmatch(sec)
-	if m == nil {
-		t.Fatal("no capture example")
-	}
-	words, err := ShellWords(m[1])
-	if err != nil || len(words) != 7 || words[0] != "<absolute-mcpqual>" || words[1] != "capture" {
-		t.Fatalf("example %q", words)
-	}
-	for _, id := range []string{"claude", "codex", "grok", "cursor"} {
-		if !strings.Contains(sec, "](../internal/mcpqual/testdata/plans/"+id+"-short.json)") {
-			t.Fatalf("%s template not linked", id)
-		}
-		args := append([]string(nil), words[1:]...)
-		args[2] = filepath.Join(mustAbs(t, "testdata/plans"), id+"-short.json")
-		args[4] = filepath.Join(t.TempDir(), "capture-dir")
-		w := newWorld(t, fullModel())
-		env, _, errOut := testEnv(t, w, args...)
-		if code := Main(context.Background(), env); code != 2 || !strings.Contains(errOut.String(), "unfilled owner placeholder") || len(w.launches) != 0 {
-			t.Fatalf("%s example = %d %s", id, code, errOut)
-		}
-	}
-	for _, want := range []string{"Real execution is never part of CI", "even empty", "`! <absolute-mcpqual> capture ...`", "`!` is the UI escape, not a shell negation",
-		"Claude must run in the owner's unsandboxed shell", "One capture plus at most three confirmation sessions per client", "Never add `--approve-mcps`",
-		"Owner capture gate", "Owner short-confirmation gate", "Optional publication gate", "never retried until green", "macOS timeout compatibility remains UNVERIFIED",
-		"`vendor_behavior` `not_evaluated`", "720 s", "Credential words in prose", "`XDG_SESSION_CLASS` and `XDG_SESSION_TYPE`", "an inherited `XDG_SESSION_ID` whose value is a decimal session number"} {
-		if !strings.Contains(sec, want) {
-			t.Fatalf("the capture section lacks %q", want)
-		}
-	}
-	for _, want := range []string{"Publication preflight", "initial invocation", "exits 4", "only retries an existing patch"} {
-		if !strings.Contains(s, want) {
-			t.Fatalf("the guide lacks %q", want)
-		}
-	}
-}
-
-func mustAbs(t *testing.T, p string) string {
-	t.Helper()
-	a, err := filepath.Abs(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return a
 }

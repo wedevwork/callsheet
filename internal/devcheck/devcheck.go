@@ -373,9 +373,8 @@ func TestSteps(goos string) []Step {
 // then the wire-contract frame benchmarks (iteration 03 nodes, iteration 04
 // role frames), then the sidecar ready checks and the adapter's fake probe
 // (iteration 04), then the MCP codec, relay and wait-budget benchmarks
-// (iteration 07a), then the qualification harness's transcript, probe and
-// capture evidence benchmarks (iteration 07b, decoder-enrollment), then
-// the workspace hub (iteration 09a), then
+// (iteration 07a), then the qualification harness's transcript and probe
+// benchmarks (iteration 07b), then the workspace hub (iteration 09a), then
 // the local workspace transfers (iteration 09b), then the container
 // evidence parser (m3-m4-container-e2e), then the renewable wait's loop
 // (nonblocking-coordinator-waits). Timings are reported, never gated.
@@ -390,7 +389,7 @@ func BenchSteps() []Step {
 		pkg("bench sidecar", "./internal/sidecar"),
 		pkg("bench adapter", "./internal/adapter"),
 		pkg("bench mcp", "./internal/mcp"),
-		MCPQualBenchStep(),
+		pkg("bench mcpqual", "./internal/mcpqual"),
 		// Iteration 09a: the workspace hub's transfer, transaction,
 		// pagination, accounting, diff and prune benchmarks.
 		WorkspaceBenchStep(),
@@ -412,22 +411,6 @@ func BenchSteps() []Step {
 		// fake connection and clock (no real hour, process or network).
 		ClientWaitBenchStep(),
 	}
-}
-
-// MCPQualBenchStep is the qualification harness's benchmark step
-// (iteration 07b: transcript and probe; design decoder-enrollment: capture
-// evidence), shared by the bench stage and, since decoder-enrollment, the
-// native driver.
-func MCPQualBenchStep() Step {
-	return Step{Name: "bench mcpqual", Argv: []string{"go", "test", "./internal/mcpqual", "-run=^$", "-bench=.", "-benchmem", "-benchtime=3x", "-count=1", "-timeout=180s"}}
-}
-
-// NativeBenchSteps are the benchmark steps the native driver runs after
-// its qualification and coverage, in order: the workspace (09a), transfer
-// (09b), task workspace (10b) and client wait (non-blocking coordinator
-// waits) benchmarks, then the qualification harness's (decoder-enrollment).
-func NativeBenchSteps() []Step {
-	return []Step{WorkspaceBenchStep(), TransferBenchStep(), TaskWorkspaceBenchStep(), ClientWaitBenchStep(), MCPQualBenchStep()}
 }
 
 // ClientWaitBenchStep is the renewable wait's benchmark step (design

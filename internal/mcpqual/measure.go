@@ -9,7 +9,6 @@ package mcpqual
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/wedevwork/callsheet/internal/contract"
@@ -35,7 +34,6 @@ type measure struct {
 	pc         *PlanClient
 	cr         *ClientReport
 	decode     func(Transcript) Decoded
-	dv         DecoderVersion // the selected exact version and its evidence
 	start      time.Time
 	deadline   time.Time // start + max_client_ms; every launch is capped by it
 	sessions   int
@@ -83,23 +81,6 @@ func (m *measure) run(ctx context.Context) {
 	}
 	if !ran {
 		m.cr.Outcome = "unqualified"
-	}
-}
-
-// checkCapability (design decoder-enrollment, Enrollment contract): a
-// qualified decoder's outcome counts only when its evidence demonstrates
-// the outcome's capabilities on the run's platform (Runner.GOOS/GOARCH,
-// from Env, never the runtime's); otherwise the case is inconclusive with
-// unverified_decoder_event. Synthetic (unqualified) classification is
-// unchanged and can never qualify a fact.
-func (m *measure) checkCapability(cs *CaseReport) {
-	if !m.dv.Qualified {
-		return
-	}
-	platform := m.r.GOOS + "/" + m.r.GOARCH
-	if missing := m.dv.MissingCapabilities(platform, RequiredCapabilities(cs.Outcome)...); len(missing) > 0 {
-		cs.Reason = sptr(fmt.Sprintf("%s: %s without %s evidence for %s", ReasonUnverifiedEvent, cs.Outcome, strings.Join(missing, ", "), platform))
-		cs.Outcome = OutcomeInconclusive
 	}
 }
 

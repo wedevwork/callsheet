@@ -11,25 +11,15 @@ import (
 )
 
 // ProcSpec is one launch: an absolute executable (never a PATH lookup),
-// its arguments, its complete environment, working directory and either a
-// file for its stderr or (CaptureStderr) a harness-owned stderr pipe.
-// Stdin is the null device.
+// its arguments, its complete environment, working directory and a file
+// for its stderr. Stdin is the null device.
 type ProcSpec struct {
 	Path       string
 	Args       []string
 	Env        []string
 	Dir        string
 	StderrPath string
-	// CaptureStderr (design decoder-enrollment, capture) gives the process a
-	// second explicit OS pipe for stderr, read through StderrProc; it
-	// excludes a nonempty StderrPath, which Launcher.Start rejects before
-	// any process starts.
-	CaptureStderr bool
 }
-
-// ErrStderrConflict is Launcher.Start's refusal of a spec that asks for
-// both a captured stderr pipe and a stderr file.
-var ErrStderrConflict = errors.New("mcpqual: CaptureStderr and a nonempty StderrPath are mutually exclusive")
 
 // Proc is a launched process leading its own process group.
 type Proc interface {
@@ -43,17 +33,6 @@ type Proc interface {
 	Status() (exit *int, signal *string)
 	// CloseStdout closes the read end (after cleanup).
 	CloseStdout()
-}
-
-// StderrProc is a Proc launched with CaptureStderr: its stderr is a pipe
-// the harness owns, drained concurrently with stdout and closed after
-// cleanup like it.
-type StderrProc interface {
-	Proc
-	// Stderr is the leader's stderr; descendants may hold it open.
-	Stderr() io.Reader
-	// CloseStderr closes the read end (after cleanup).
-	CloseStderr()
 }
 
 // Launcher starts processes; tests inject fakes, production uses the exec

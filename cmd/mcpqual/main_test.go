@@ -2,8 +2,6 @@ package main
 
 import (
 	"bytes"
-	"os"
-	"reflect"
 	"strings"
 	"testing"
 )
@@ -17,34 +15,7 @@ func TestRunWrapper(t *testing.T) {
 	}
 }
 
-// noCI replaces the presence lookup for the duration of t, so a hosted
-// runner's own CI variable cannot decide these tests.
-func noCI(t *testing.T) {
-	saved := lookupEnv
-	lookupEnv = func(string) (string, bool) { return "", false }
-	t.Cleanup(func() { lookupEnv = saved })
-}
-
-// Design decoder-enrollment: the production lookup is the presence lookup
-// behind the CI prohibition of qualify and capture.
-func TestLookupEnvWiring(t *testing.T) {
-	if reflect.ValueOf(lookupEnv).Pointer() != reflect.ValueOf(os.LookupEnv).Pointer() {
-		t.Fatal("lookupEnv is not os.LookupEnv")
-	}
-	saved := lookupEnv
-	defer func() { lookupEnv = saved }()
-	lookupEnv = func(k string) (string, bool) { return "", k == "CI" }
-	for _, cmd := range []string{"qualify", "capture"} {
-		var out, errOut bytes.Buffer
-		code := runFor("linux", "amd64", []string{cmd, "--plan", "/p.json", "--out", "/o", "--allow-model-calls"}, func(string) string { return "" }, strings.NewReader(""), &out, &errOut)
-		if code != 2 || !strings.Contains(errOut.String(), cmd+" refused: CI is set") {
-			t.Fatalf("%s with an empty CI = %d %q", cmd, code, errOut.String())
-		}
-	}
-}
-
 func TestFaultVariable(t *testing.T) {
-	noCI(t)
 	for _, tc := range []struct {
 		fault string
 		code  int

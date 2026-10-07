@@ -83,18 +83,8 @@ func alignVersions(t *testing.T, repo string, versions map[string]string) {
 	}
 }
 
-// qualifiedRegistry is a test-only qualified registry. Its explicit fake
-// evidence (design decoder-enrollment) names a fixture that no production
-// index may hold; it demonstrates the success and typed-timeout paths on
-// the two platforms the publication tests run as.
 func qualifiedRegistry() Registry {
-	return Registry{"claude-json": {versions: []DecoderVersion{{Version: "2.1.282 (Claude Code)", Fixture: "claude-json/actual-test", Qualified: true,
-		Evidence: []DecoderEvidence{testEvidence("linux/amd64"), testEvidence("darwin/arm64")}}}, decode: decodeClaude}}
-}
-
-// testEvidence is fake evidence for platform: success and typed timeout.
-func testEvidence(platform string) DecoderEvidence {
-	return DecoderEvidence{Platform: platform, Fixture: "claude-json/actual-test", Kinds: []string{CapToolCall, CapToolResult, CapTerminalSuccess, CapMCPTimeout}}
+	return Registry{"claude-json": {versions: []DecoderVersion{{Version: "2.1.282 (Claude Code)", Fixture: "claude-json/actual-test", Qualified: true}}, decode: decodeClaude}}
 }
 
 // Shared fixture runs: a completed run used only as publication input is

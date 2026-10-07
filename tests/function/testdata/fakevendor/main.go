@@ -13,16 +13,6 @@
 // delay at or above T cancels after T, so a slow machine cannot turn a
 // success into a timeout. Its settings are FAKE_VENDOR_* variables supplied
 // as explicit plan data.
-//
-// Design decoder-enrollment adds the capture recipes: --help and exec
-// --help print a fixed help text, the session finds its probe from the
-// real recipes' shapes (claude --mcp-config, codex -c mcp_servers.probe.*,
-// grok .grok/config.toml and cursor .cursor/mcp.json in its working
-// directory) and its case from the prompt, records its argv, working
-// directory and configuration (FAKE_VENDOR_ARGV_LOG), and plays the
-// lifecycle scenarios (no probe, no tool, an extra or marker call, a
-// flood of either stream, a descendant holding both pipes outside the
-// group).
 package main
 
 import (
@@ -33,8 +23,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -87,55 +75,26 @@ func run(args []string) int {
 		fakeSleepForever()
 	case "resistant":
 		signal.Ignore(syscall.SIGTERM)
-	case "holder":
-		// Holds the inherited stdout and stderr until killed.
-		fakeSleepForever()
 	}
 	if len(args) > 0 && args[0] == "--version" {
 		fakeLog("version %d", os.Getpid())
 		fmt.Println(fakeEnv("VERSION"))
-		fmt.Fprint(os.Stderr, fakeEnv("VERSION_STDERR"))
-		return int(fakeInt("VERSION_EXIT"))
-	}
-	if len(args) > 0 && args[len(args)-1] == "--help" {
-		fakeLog("help %d", os.Getpid())
-		help := fakeEnv("HELP")
-		if help == "" {
-			help = "usage: fake [options] (a fake vendor CLI for mcpqual function tests)"
-		}
-		fmt.Println(help)
-		fmt.Fprint(os.Stderr, fakeEnv("HELP_STDERR"))
-		return int(fakeInt("HELP_EXIT"))
+		return 0
 	}
 	var cfgPath, caseID string
 	for i := 0; i+1 < len(args); i++ {
 		switch args[i] {
-		case "--config", "--mcp-config":
+		case "--config":
 			cfgPath = args[i+1]
 		case "--case":
 			caseID = args[i+1]
 		}
 	}
-	if caseID == "" {
-		caseID = promptCase(args)
-	}
-	recordArgv(args, cfgPath)
 	fakeLog("session %d %s", os.Getpid(), caseID)
 	switch mode {
 	case "hang", "resistant":
 		fakeReady("")
 		fakeSleepForever()
-	case "held":
-		// A descendant in its own session (outside the reaped group) keeps
-		// both pipes open after the leader exits; the test kills it.
-		d := exec.Command(os.Args[0])
-		d.Env = append(os.Environ(), "FAKE_VENDOR_MODE=holder")
-		d.Stdout, d.Stderr = os.Stdout, os.Stderr
-		d.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-		if err := d.Start(); err != nil {
-			return 1
-		}
-		fakeLog("escaped %d", d.Process.Pid)
 	case "parent-exits-first":
 		d := exec.Command(os.Args[0])
 		d.Env = append(os.Environ(), "FAKE_VENDOR_MODE=descendant")
@@ -150,145 +109,36 @@ func run(args []string) int {
 		}
 		fakeLog("descendant %d", d.Process.Pid)
 	}
-	transcript, err := fakeSession(args, cfgPath, caseID)
+	transcript, err := fakeSession(cfgPath, caseID)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "fake vendor:", err)
 		return 1
 	}
-	flood(os.Stdout, "FLOOD_STDOUT")
 	os.Stdout.WriteString(transcript)
-	flood(os.Stderr, "FLOOD_STDERR")
-	fmt.Fprint(os.Stderr, fakeEnv("STDERR"))
-	return int(fakeInt("EXIT"))
+	return 0
 }
 
-// flood writes FAKE_VENDOR_<k> bytes of padding lines to w.
-func flood(w io.Writer, k string) {
-	n := fakeInt(k)
-	line := strings.Repeat("f", 99) + "\n"
-	for ; n > 0; n -= int64(len(line)) {
-		io.WriteString(w, line[:min(int64(len(line)), n)])
-	}
-}
-
-var promptCaseRe = regexp.MustCompile(`"case_id": "([^"]+)"`)
-
-// promptCase finds the case named by the scripted prompt.
-func promptCase(args []string) string {
-	for _, a := range args {
-		if m := promptCaseRe.FindStringSubmatch(a); m != nil {
-			return m[1]
-		}
-	}
-	return ""
-}
-
-// recordArgv appends the session's argv, working directory and the bytes
-// of every configuration it can find to FAKE_VENDOR_ARGV_LOG.
-func recordArgv(args []string, cfgPath string) {
-	p := fakeEnv("ARGV_LOG")
-	if p == "" {
-		return
-	}
-	wd, _ := os.Getwd()
-	rec := map[string]any{"argv": args, "cwd": wd}
-	for _, c := range []string{cfgPath, filepath.Join(wd, ".grok", "config.toml"), filepath.Join(wd, ".cursor", "mcp.json"), filepath.Join(wd, "probe-config.toml")} {
-		if b, err := os.ReadFile(c); c != "" && err == nil {
-			rec["config"] = string(b)
-			rec["config_path"] = c
-			break
-		}
-	}
-	b, _ := json.Marshal(rec)
-	if f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600); err == nil {
-		f.Write(append(b, '\n'))
-		f.Close()
-	}
-}
-
-// probeServer finds the probe's command and args in the recipe shapes.
-func probeServer(args []string, cfgPath string) (string, []string, error) {
-	var server struct {
-		Command string   `json:"command"`
-		Args    []string `json:"args"`
-	}
-	for i := 0; i+1 < len(args); i++ {
-		if args[i] != "-c" {
-			continue
-		}
-		k, v, _ := strings.Cut(args[i+1], "=")
-		switch k {
-		case "mcp_servers.probe.command":
-			json.Unmarshal([]byte(v), &server.Command)
-		case "mcp_servers.probe.args":
-			json.Unmarshal([]byte(v), &server.Args)
-		}
-	}
-	if server.Command != "" {
-		return server.Command, server.Args, nil
-	}
-	wd, _ := os.Getwd()
-	if cfgPath == "" {
-		if _, err := os.Stat(filepath.Join(wd, ".cursor", "mcp.json")); err == nil {
-			cfgPath = filepath.Join(wd, ".cursor", "mcp.json")
-		}
-	}
-	if cfgPath == "" {
-		// The grok shape: a TOML table whose values are JSON literals.
-		b, err := os.ReadFile(filepath.Join(wd, ".grok", "config.toml"))
-		if err != nil {
-			return "", nil, err
-		}
-		for _, l := range strings.Split(string(b), "\n") {
-			k, v, _ := strings.Cut(l, " = ")
-			switch k {
-			case "command":
-				json.Unmarshal([]byte(v), &server.Command)
-			case "args":
-				json.Unmarshal([]byte(v), &server.Args)
-			}
-		}
-		return server.Command, server.Args, nil
-	}
+// fakeSession runs one MCP session against the configured probe.
+func fakeSession(cfgPath, caseID string) (string, error) {
 	var cfg struct {
 		MCPServers map[string]struct {
 			Command string   `json:"command"`
 			Args    []string `json:"args"`
 		} `json:"mcpServers"`
+		TimeoutMS int64 `json:"timeout_ms"`
 	}
 	raw, err := os.ReadFile(cfgPath)
 	if err != nil {
-		return "", nil, err
-	}
-	if err := json.Unmarshal(raw, &cfg); err != nil {
-		return "", nil, err
-	}
-	srv := cfg.MCPServers["probe"]
-	return srv.Command, srv.Args, nil
-}
-
-// fakeSession runs one MCP session against the configured probe.
-func fakeSession(args []string, cfgPath, caseID string) (string, error) {
-	var cfg struct {
-		TimeoutMS int64 `json:"timeout_ms"`
-	}
-	if cfgPath != "" {
-		raw, err := os.ReadFile(cfgPath)
-		if err != nil {
-			return "", err
-		}
-		if err := json.Unmarshal(raw, &cfg); err != nil {
-			return "", err
-		}
-	}
-	command, srvArgs, err := probeServer(args, cfgPath)
-	if err != nil {
 		return "", err
 	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return "", err
+	}
+	srv := cfg.MCPServers["probe"]
 	var caseFile string
-	for i, a := range srvArgs {
-		if a == "--case-file" && i+1 < len(srvArgs) {
-			caseFile = srvArgs[i+1]
+	for i, a := range srv.Args {
+		if a == "--case-file" && i+1 < len(srv.Args) {
+			caseFile = srv.Args[i+1]
 		}
 	}
 	cfRaw, err := os.ReadFile(caseFile)
@@ -309,11 +159,8 @@ func fakeSession(args []string, cfgPath, caseID string) (string, error) {
 	switch fakeEnv("SCENARIO") {
 	case "auth":
 		return fakeTranscript(format, "auth", caseID, ""), nil
-	case "noprobe":
-		// An unauthenticated CLI or unknown model: no session, no probe.
-		return "", nil
 	}
-	probe := exec.Command(command, srvArgs...)
+	probe := exec.Command(srv.Command, srv.Args...)
 	in, _ := probe.StdinPipe()
 	outPipe, _ := probe.StdoutPipe()
 	probe.Stderr = os.Stderr
@@ -362,15 +209,6 @@ func fakeSession(args []string, cfgPath, caseID string) (string, error) {
 	if _, err := await("2"); err != nil {
 		return "", err
 	}
-	switch fakeEnv("SCENARIO") {
-	case "no-tool":
-		return fakeTranscript(format, "no-tool", caseID, ""), nil
-	case "marker":
-		send(map[string]any{"jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": map[string]any{"name": "slow", "arguments": map[string]any{"case_id": caseID + "-marker"}}})
-		if _, err := await("9"); err != nil {
-			return "", err
-		}
-	}
 	token := fakeEnv("TOKEN") == "1"
 	params := map[string]any{"name": "slow", "arguments": map[string]any{"case_id": caseID}}
 	if token {
@@ -405,13 +243,6 @@ func fakeSession(args []string, cfgPath, caseID string) (string, error) {
 	res, err := await("3")
 	if err != nil {
 		return "", err
-	}
-	if fakeEnv("SCENARIO") == "extra" {
-		// A second call of the same case: an extra receipt.
-		send(map[string]any{"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": params})
-		if _, err := await("4"); err != nil {
-			return "", err
-		}
 	}
 	var r struct {
 		Content []struct {
@@ -450,10 +281,6 @@ func findCase(cf mcpqual.CaseFile, id string) (mcpqual.ProbeCase, bool) {
 func fakeTranscript(format, outcome, caseID, resultText string) string {
 	prose := "The tool call may have timed out; MCP error -32001 is a timeout. " + fakeEnv("SECRET")
 	q := func(s string) string { b, _ := json.Marshal(s); return string(b) }
-	if outcome == "no-tool" {
-		// The model answered without calling the tool.
-		return `{"type":"result","subtype":"success","result":` + q(prose) + `}` + "\n"
-	}
 	switch format {
 	case "claude-json":
 		// FAKE_VENDOR_TOOL_ID_REPEAT sizes the tool-use ID (a count, since
