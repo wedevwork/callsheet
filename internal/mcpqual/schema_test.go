@@ -81,7 +81,7 @@ func TestPlanValidation(t *testing.T) {
 	for name, c := range cases {
 		p := fullPlan()
 		c.f(p)
-		err := p.validate(reg, false)
+		err := p.validate(planCheck{reg: reg})
 		if err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: want %q, got %v", name, c.want, err)
 		}

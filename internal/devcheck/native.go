@@ -27,8 +27,9 @@ const NativePackage = "github.com/wedevwork/callsheet/tests/function"
 // (iteration 06a), the MCP function tests with their mandatory subtests
 // (iteration 07a), the coordinator setup and timeout qualification
 // function tests with their mandatory subtests (iteration 07b), the
-// workspace hub function tests (iteration 09a) and the local transfer
-// function tests (iteration 09b).
+// workspace hub function tests (iteration 09a), the local transfer
+// function tests (iteration 09b) and every later group below, the last the
+// decoder-enrollment function parents.
 var nativeRequired = []string{
 	"TestFP6ProcessGroups",
 	"TestFP6ProcessGroups/cooperative",
@@ -483,6 +484,20 @@ var nativeRequired = []string{
 	"TestMCPShortPollGuidance",
 	"TestShortPollCatalogPolicy",
 	"TestMCPShortConfirmation",
+	// Decoder enrollment (slice A): the nine function parents in FP order
+	// (FP-1..FP-9), a separate group after the non-blocking waits names;
+	// each asserts its literal case inventory within the parent (no
+	// inventory entries). Absence or a skip never satisfies native
+	// qualification.
+	"TestMCPCaptureInvocation",
+	"TestMCPCaptureRecipes",
+	"TestMCPCaptureEvidence",
+	"TestMCPCaptureLifecycle",
+	"TestMCPEnrollmentContract",
+	"TestMCPEnrollmentReplay",
+	"TestMCPEnrolledShortConfirmation",
+	"TestMCPCaptureRunbook",
+	"TestMCPEnrollmentCIPolicy",
 }
 
 // NativeTaskProcessPackage and nativeTaskProcess are the separate native
@@ -835,11 +850,13 @@ func (d *driver) native(steps []Step) error {
 	// new/changed manifest) and the workspace benchmarks run natively;
 	// iteration 09b adds the transfer benchmarks after them, iteration 10b
 	// the task workspace benchmarks after those, and the non-blocking
-	// coordinator waits design the client wait benchmark last.
+	// coordinator waits design the client wait benchmark after those, and
+	// the decoder-enrollment design the qualification harness's benchmark
+	// step last (NativeBenchSteps).
 	if err := d.coverage(""); err != nil {
 		return err
 	}
-	return d.steps([]Step{WorkspaceBenchStep(), TransferBenchStep(), TaskWorkspaceBenchStep(), ClientWaitBenchStep()})
+	return d.steps(NativeBenchSteps())
 }
 
 func (d *driver) nativeChildren(steps []Step, events, stderrLog io.Writer) error {

@@ -25,8 +25,9 @@ type cliRun struct {
 
 func testEnv(t *testing.T, w *fakeLauncher, args ...string) (Env, *bytes.Buffer, *bytes.Buffer) {
 	var out, errOut bytes.Buffer
-	return Env{GOOS: "linux", GOARCH: "amd64", Args: args, Getenv: func(string) string { return "" }, Environ: []string{"PATH=/usr/bin", "CI="},
-		Stdin: strings.NewReader(""), Stdout: &out, Stderr: &errOut, Signaler: worldSignaler{w}, Launcher: w, Clock: w.clock, Registry: DefaultRegistry(),
+	return Env{GOOS: "linux", GOARCH: "amd64", Args: args, Getenv: func(string) string { return "" }, LookupEnv: func(string) (string, bool) { return "", false },
+		Environ: []string{"PATH=/usr/bin", "CI="},
+		Stdin:   strings.NewReader(""), Stdout: &out, Stderr: &errOut, Signaler: worldSignaler{w}, Launcher: w, Clock: w.clock, Registry: DefaultRegistry(),
 		Hostname: "host-1", Executable: "/opt/mcpqual", Home: "/home/owner", User: "owner", Now: func() time.Time { return epoch },
 		Rand: bytes.NewReader(bytes.Repeat([]byte{7}, 64)), Notify: func(ctx context.Context) (context.Context, context.CancelFunc) { return context.WithCancel(ctx) }}, &out, &errOut
 }

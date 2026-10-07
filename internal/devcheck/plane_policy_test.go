@@ -123,7 +123,7 @@ func TestPlaneVerificationPolicyContract(t *testing.T) {
 		// The 28 iteration-02 names are preserved first; iteration 03 appends
 		// the node names, iteration 04 the role names, iteration 05 the
 		// task names, iteration 06a the control names.
-		if strings.Join(req[:28], ",") != strings.Join(want, ",") || len(req) != 28+len(nodeNames())+len(roleNames())+len(taskNames())+len(controlNames())+len(mcpNames())+len(qualNames())+len(realNames())+len(wsNames())+len(trNames())+len(latNames())+len(wsTaskNames())+len(wsDoorNames())+len(wave2Names())+len(nbwNames()) || strings.Join(req[28:58], ",") != strings.Join(nodeNames(), ",") {
+		if strings.Join(req[:28], ",") != strings.Join(want, ",") || len(req) != 28+len(nodeNames())+len(roleNames())+len(taskNames())+len(controlNames())+len(mcpNames())+len(qualNames())+len(realNames())+len(wsNames())+len(trNames())+len(latNames())+len(wsTaskNames())+len(wsDoorNames())+len(wave2Names())+len(nbwNames())+len(dceNames()) || strings.Join(req[28:58], ",") != strings.Join(nodeNames(), ",") {
 			t.Fatalf("required = %v", req)
 		}
 		if err := check(stream(qualification()...)); err != nil {
@@ -135,10 +135,12 @@ func TestPlaneVerificationPolicyContract(t *testing.T) {
 		// the workspace benchmarks run outside the parsed event stream;
 		// iteration 09b: then the transfer benchmarks; iteration 10b: then
 		// the task workspace benchmarks; non-blocking coordinator waits:
-		// then the client wait benchmark (eight invocations).
+		// then the client wait benchmark; decoder enrollment: then the
+		// qualification harness's benchmark (nine invocations).
 		a := f.argvs()
-		if code != 0 || len(a) != 8 || a[0] != wantNative || !strings.Contains(a[1], "-coverprofile=") || !strings.HasPrefix(a[2], "go tool cover") ||
+		if code != 0 || len(a) != 9 || a[0] != wantNative || !strings.Contains(a[1], "-coverprofile=") || !strings.HasPrefix(a[2], "go tool cover") ||
 			!strings.HasPrefix(a[3], "go list") || a[4] != wantBenchWorkspace || a[5] != wantBenchTransfer || a[6] != wantBenchTaskWorkspace || a[7] != wantBenchClientWait ||
+			a[8] != wantBenchMCPQual ||
 			!strings.Contains(out, "TestPlaneStatus/expiry-warnings, TestPlanePlatform") {
 			t.Fatalf("darwin native = %d %v %s", code, a, errOut)
 		}
