@@ -305,25 +305,35 @@ func TestCaptureBounds(t *testing.T) {
 	if _, _, err := bw.put("codex", "clients/codex/a.txt", nil, false); err == nil {
 		t.Fatal("a payload was written twice")
 	}
-	// Integration: flooding either stream of a real capture run.
-	run := func(lim CaptureLimits, b capBehavior) CaptureClient {
-		t.Helper()
-		w := newCapWorld(t)
-		w.script = func(spec ProcSpec) capBehavior {
-			if launchKind(spec) != "session" {
-				return w.defaults(spec)
-			}
-			b.events = goodEvents
-			return b
-		}
-		c := newCapRunner(t, w, capPlan(t, "claude"))
-		c.Limits = lim
-		man, err := c.Run(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
-		return capClient(t, man, "claude")
+	// Integration: flooding either stream of a real capture run, and a
+	// manifest over its bound (both runs once per process; the readers'
+	// bounds above run every repetition).
+	type boundsRuns struct {
+		flood                    CaptureClient
+		manifestErr, manifestHas error
 	}
+	runs := sharedValue("capture-bounds", func() boundsRuns {
+		var r boundsRuns
+		man, _ := capturedOnce(t, "bounds-flood", func(w *capWorld) *CaptureRunner {
+			b := capBehavior{stdout: line(n+1) + capTranscript, floodStdout: 4 * n, stderr: line(n + 1), floodStderr: 4 * n, events: goodEvents}
+			w.script = func(spec ProcSpec) capBehavior {
+				if launchKind(spec) != "session" {
+					return w.defaults(spec)
+				}
+				return b
+			}
+			c := newCapRunner(t, w, capPlan(t, "claude"))
+			c.Limits = CaptureLimits{Stream: n}
+			return c
+		})
+		r.flood = capClient(t, man, "claude")
+		c := newCapRunner(t, newCapWorld(t), capPlan(t, "claude"))
+		c.OutDir = filepath.Join(sharedTempDir(t), "bounds-manifest")
+		c.Limits = CaptureLimits{Manifest: 100}
+		_, r.manifestErr = c.Run(context.Background())
+		_, r.manifestHas = os.Stat(filepath.Join(c.OutDir, CaptureManifestName))
+		return r
+	})
 	stream := func(cc CaptureClient, name string) CaptureStream {
 		for _, s := range cc.Streams {
 			if s.Path == ClientFile("claude", name) {
@@ -333,18 +343,15 @@ func TestCaptureBounds(t *testing.T) {
 		t.Fatalf("no stream %s", name)
 		return CaptureStream{}
 	}
-	cc := run(CaptureLimits{Stream: n}, capBehavior{stdout: line(n+1) + capTranscript, floodStdout: 4 * n, stderr: line(n + 1), floodStderr: 4 * n})
+	cc := runs.flood
 	if !stream(cc, FileVendorEvents).InputTruncated || !stream(cc, FileVendorStderr).InputTruncated || reasonOf(cc) != ReasonEvidenceTruncated || cc.Session.StdoutHeld || cc.Session.StderrHeld {
 		t.Fatalf("flood: %+v %q", cc.Streams, reasonOf(cc))
 	}
 	// A manifest over its bound is a finalization failure: no manifest.
-	w2 := newCapWorld(t)
-	c := newCapRunner(t, w2, capPlan(t, "claude"))
-	c.Limits = CaptureLimits{Manifest: 100}
-	if _, err := c.Run(context.Background()); err == nil || !strings.Contains(err.Error(), "manifest") {
+	if err := runs.manifestErr; err == nil || !strings.Contains(err.Error(), "manifest") {
 		t.Fatalf("manifest bound: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(c.OutDir, CaptureManifestName)); err == nil {
+	if runs.manifestHas == nil {
 		t.Fatal("an oversized manifest was written")
 	}
 }
@@ -416,22 +423,31 @@ func TestCaptureBundleCorruption(t *testing.T) {
 		t.Fatal(err)
 	}
 	// I/O: a payload path that is already a directory ends the capture
-	// with an error and no manifest.
-	w := newCapWorld(t)
-	c := newCapRunner(t, w, capPlan(t, "claude"))
-	w.script = func(spec ProcSpec) capBehavior {
-		if launchKind(spec) == "session" {
-			os.MkdirAll(filepath.Join(c.OutDir, "clients", "claude", FileVendorEvents), 0o700)
+	// with an error and no manifest (the run once per process).
+	type ioFailure struct{ runErr, manifest, work error }
+	io := sharedValue("bundle-corruption-io", func() ioFailure {
+		w := newCapWorld(t)
+		c := newCapRunner(t, w, capPlan(t, "claude"))
+		c.OutDir = filepath.Join(sharedTempDir(t), "bundle-corruption-io")
+		w.script = func(spec ProcSpec) capBehavior {
+			if launchKind(spec) == "session" {
+				os.MkdirAll(filepath.Join(c.OutDir, "clients", "claude", FileVendorEvents), 0o700)
+			}
+			return w.defaults(spec)
 		}
-		return w.defaults(spec)
-	}
-	if _, err := c.Run(context.Background()); err == nil {
+		var r ioFailure
+		_, r.runErr = c.Run(context.Background())
+		_, r.manifest = os.Stat(filepath.Join(c.OutDir, CaptureManifestName))
+		_, r.work = os.Stat(filepath.Join(c.OutDir, workDir))
+		return r
+	})
+	if io.runErr == nil {
 		t.Fatal("a write failure was not reported")
 	}
-	if _, err := os.Stat(filepath.Join(c.OutDir, CaptureManifestName)); err == nil {
+	if io.manifest == nil {
 		t.Fatal("a manifest after a write failure")
 	}
-	if _, err := os.Stat(filepath.Join(c.OutDir, workDir)); err == nil {
+	if io.work == nil {
 		t.Fatal("the workspace survived a write failure")
 	}
 }

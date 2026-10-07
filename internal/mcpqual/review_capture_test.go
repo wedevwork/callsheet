@@ -100,16 +100,17 @@ func TestReviewC1UnicodeCaseFold(t *testing.T) {
 	if out := NewRedactor(nil, nil).Line([]byte(lines[0])); strings.Contains(string(out), opaque) {
 		t.Fatalf("legacy Line kept %s", out)
 	}
-	// Through the capture run.
-	w := newCapWorld(t)
-	w.script = func(spec ProcSpec) capBehavior {
-		b := w.defaults(spec)
-		if launchKind(spec) == "session" {
-			b.stdout = strings.Join(lines, "\n") + "\n"
+	// Through the capture run (once per process).
+	_, b := capturedOnce(t, "r1-c1", func(w *capWorld) *CaptureRunner {
+		w.script = func(spec ProcSpec) capBehavior {
+			b := w.defaults(spec)
+			if launchKind(spec) == "session" {
+				b.stdout = strings.Join(lines, "\n") + "\n"
+			}
+			return b
 		}
-		return b
-	}
-	_, b := runCapture(t, newCapRunner(t, w, capPlan(t, "claude")), context.Background())
+		return newCapRunner(t, w, capPlan(t, "claude"))
+	})
 	for p, data := range b.Files {
 		if strings.Contains(fullyDecoded(string(data)), opaque) {
 			t.Fatalf("%s keeps the value", p)
@@ -163,18 +164,20 @@ var (
 )
 
 // captureLeaks reports whether a capture whose transcript holds line keeps
-// the credential anywhere in its bundle (fully decoded).
-func captureLeaks(t *testing.T, line string) bool {
+// the credential anywhere in its bundle (fully decoded). The capture runs
+// once per process per key.
+func captureLeaks(t *testing.T, key, line string) bool {
 	t.Helper()
-	w := newCapWorld(t)
-	w.script = func(spec ProcSpec) capBehavior {
-		b := w.defaults(spec)
-		if launchKind(spec) == "session" {
-			b.stdout = line + "\n"
+	man, b := capturedOnce(t, key, func(w *capWorld) *CaptureRunner {
+		w.script = func(spec ProcSpec) capBehavior {
+			b := w.defaults(spec)
+			if launchKind(spec) == "session" {
+				b.stdout = line + "\n"
+			}
+			return b
 		}
-		return b
-	}
-	man, b := runCapture(t, newCapRunner(t, w, capPlan(t, "claude")), context.Background())
+		return newCapRunner(t, w, capPlan(t, "claude"))
+	})
 	if capClient(t, man, "claude").State == CaptureNotRun {
 		t.Fatal("the session did not run")
 	}
@@ -200,11 +203,11 @@ func TestReviewC2DepthBudget(t *testing.T) {
 		e := enrolledFixture(t)
 		opts, _ := reenrolled(t, withTranscriptLine(t, e, deepDepthCache[1].line), nil)
 		_, deepEnrollErr = ValidateEnrollment(opts)
-		deepCaptureLeak = captureLeaks(t, deepDepthCache[1].line)
+		deepCaptureLeak = captureLeaks(t, "r1-c2-17", deepDepthCache[1].line)
 	})
-	// Through the capture run: beyond the walk budget (9 layers) every
-	// repetition, beyond both budgets (17 layers) once.
-	if captureLeaks(t, results[9].line) || deepCaptureLeak {
+	// Through the capture run (once per process): beyond the walk budget
+	// (9 layers) and beyond both budgets (17 layers).
+	if captureLeaks(t, "r1-c2-9", results[9].line) || deepCaptureLeak {
 		t.Fatal("a capture kept a deeply encoded credential")
 	}
 	for _, r := range append(results, deepDepthCache...) {
@@ -231,13 +234,34 @@ func TestReviewC2DepthBudget(t *testing.T) {
 
 // C3: owner-controlled manifest strings are sanitized before encoding.
 func TestReviewC3ManifestStrings(t *testing.T) {
-	w := newCapWorld(t)
-	p := mustCapturePlan(t, filledPlan(t, func(c map[string]any) {
-		c["decoder_fixture"] = "token=" + opaque
-		c["config"].(map[string]any)["default"].(map[string]any)["path"] = "cookie=" + opaque + ".txt"
-	}, "claude"))
-	c := newCapRunner(t, w, p)
-	man, b := runCapture(t, c, context.Background())
+	// Both capture runs once per process; every repetition asserts on
+	// their outcomes.
+	type c3Outcome struct {
+		man                     *CaptureManifest
+		b                       *CaptureBundle
+		bundleErr               error
+		failRunErr, manifestErr error
+	}
+	o := sharedValue("r1-c3", func() c3Outcome {
+		var o c3Outcome
+		o.man, o.b = capturedOnce(t, "r1-c3", func(w *capWorld) *CaptureRunner {
+			return newCapRunner(t, w, mustCapturePlan(t, filledPlan(t, func(c map[string]any) {
+				c["decoder_fixture"] = "token=" + opaque
+				c["config"].(map[string]any)["default"].(map[string]any)["path"] = "cookie=" + opaque + ".txt"
+			}, "claude")))
+		})
+		_, o.bundleErr = ValidateCaptureBundle(os.DirFS(filepath.Join(sharedTempDir(t), "once-r1-c3")), ".")
+		// A redaction that breaks the required structure (here a
+		// credential literal equal to the decoder name) fails closed: no
+		// manifest.
+		c := newCapRunner(t, newCapWorld(t), capPlan(t, "claude"))
+		c.OutDir = filepath.Join(sharedTempDir(t), "r1-c3-closed")
+		c.BaseEnv = append(c.BaseEnv, "AUTH_PART=claude-json")
+		_, o.failRunErr = c.Run(context.Background())
+		_, o.manifestErr = os.Stat(filepath.Join(c.OutDir, CaptureManifestName))
+		return o
+	})
+	man, b := o.man, o.b
 	if strings.Contains(fullyDecoded(string(b.ManifestBytes)), opaque) {
 		t.Fatalf("the manifest keeps the value: %s", b.ManifestBytes)
 	}
@@ -250,35 +274,30 @@ func TestReviewC3ManifestStrings(t *testing.T) {
 	if cc.DecoderFixture != "token="+Redacted || cc.Config.Path != "cookie="+Redacted || man.State != CaptureComplete {
 		t.Fatalf("fixture %q path %q state %s", cc.DecoderFixture, cc.Config.Path, man.State)
 	}
-	if _, err := ValidateCaptureBundle(os.DirFS(c.OutDir), "."); err != nil {
-		t.Fatal(err)
+	if o.bundleErr != nil {
+		t.Fatal(o.bundleErr)
 	}
 	if err := RedactionFixedPoint(CaptureManifestName, b.ManifestBytes, NewCaptureRedactor(nil, nil)); err != nil {
 		t.Fatal(err)
 	}
-	// A redaction that breaks the required structure (here a credential
-	// literal equal to the decoder name) fails closed: no manifest.
-	w = newCapWorld(t)
-	c = newCapRunner(t, w, capPlan(t, "claude"))
-	c.BaseEnv = append(c.BaseEnv, "AUTH_PART=claude-json")
-	if _, err := c.Run(context.Background()); err == nil {
+	if o.failRunErr == nil {
 		t.Fatal("an invalid sanitized path was accepted")
 	}
-	if _, err := os.Stat(filepath.Join(c.OutDir, CaptureManifestName)); err == nil {
+	if o.manifestErr == nil {
 		t.Fatal("a manifest was written")
 	}
 }
 
 // C4: plan.json cut by redaction expansion is never complete.
 func TestReviewC4PlanTruncation(t *testing.T) {
-	w := newCapWorld(t)
-	p := mustCapturePlan(t, filledPlan(t, func(c map[string]any) {
-		c["env"] = map[string]any{"NOTE": strings.Repeat("z", 3000)}
-	}, "claude"))
-	c := newCapRunner(t, w, p)
-	c.BaseEnv = append(c.BaseEnv, "TOKEN=z")
-	c.Limits = CaptureLimits{File: 8000}
-	man, b := runCapture(t, c, context.Background())
+	man, b := capturedOnce(t, "r1-c4", func(w *capWorld) *CaptureRunner {
+		c := newCapRunner(t, w, mustCapturePlan(t, filledPlan(t, func(c map[string]any) {
+			c["env"] = map[string]any{"NOTE": strings.Repeat("z", 3000)}
+		}, "claude")))
+		c.BaseEnv = append(c.BaseEnv, "TOKEN=z")
+		c.Limits = CaptureLimits{File: 8000}
+		return c
+	})
 	if man.State == CaptureComplete || man.ExitCode() == 0 || !man.Plan.OutputTruncated || len(b.Files[CapturePlanName]) > 8000 {
 		t.Fatalf("a cut plan: state %s exit %d plan %+v", man.State, man.ExitCode(), man.Plan)
 	}
@@ -295,46 +314,54 @@ func TestReviewC4PlanTruncation(t *testing.T) {
 // C5: a symlinked ancestor of the enrollment tree, through a real
 // os.DirFS and through os.Root.
 func TestReviewC5AncestorSymlink(t *testing.T) {
-	e := enrolledFixture(t)
-	repo, outside := t.TempDir(), t.TempDir()
-	for rel, data := range e.files {
-		dst := filepath.Join(outside, filepath.FromSlash(rel))
-		os.MkdirAll(filepath.Dir(dst), 0o700)
-		os.WriteFile(dst, data, 0o600)
+	// The trees are written and validated once per process (deterministic
+	// outcomes); every repetition asserts on them.
+	type c5Outcome struct{ outside, ancestor, ancestorRoot, bundle error }
+	o := sharedValue("r1-c5", func() c5Outcome {
+		var o c5Outcome
+		e := enrolledFixture(t)
+		top, err := os.MkdirTemp(sharedTempDir(t), "r1-c5-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		repo, outside, repo2 := filepath.Join(top, "repo"), filepath.Join(top, "outside"), filepath.Join(top, "repo2")
+		writeFiles(t, outside, e.files)
+		_, o.outside = ValidateEnrollment(EnrollmentOptions{FS: os.DirFS(outside), Registry: e.reg})
+		os.MkdirAll(filepath.Join(repo, "tests", "testdata"), 0o700)
+		if err := os.Symlink(filepath.Join(outside, "tests", "testdata", "mcp-transcripts"), filepath.Join(repo, "tests", "testdata", "mcp-transcripts")); err != nil {
+			t.Fatal(err)
+		}
+		_, o.ancestor = ValidateEnrollment(EnrollmentOptions{FS: os.DirFS(repo), Registry: e.reg})
+		root, err := os.OpenRoot(repo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, o.ancestorRoot = ValidateEnrollment(EnrollmentOptions{FS: root.FS(), Registry: e.reg})
+		root.Close()
+		// A symlinked bundle directory deeper down.
+		for rel, data := range e.files {
+			if strings.HasPrefix(rel, e.entry.Bundle+"/") {
+				continue
+			}
+			writeFiles(t, repo2, map[string][]byte{rel: data})
+		}
+		link := filepath.Join(repo2, filepath.FromSlash(e.entry.Bundle))
+		os.MkdirAll(filepath.Dir(link), 0o700)
+		os.Symlink(filepath.Join(outside, filepath.FromSlash(e.entry.Bundle)), link)
+		_, o.bundle = ValidateEnrollment(EnrollmentOptions{FS: os.DirFS(repo2), Registry: e.reg})
+		return o
+	})
+	if o.outside != nil {
+		t.Fatal(o.outside)
 	}
-	if _, err := ValidateEnrollment(EnrollmentOptions{FS: os.DirFS(outside), Registry: e.reg}); err != nil {
-		t.Fatal(err)
+	if o.ancestor == nil || !strings.Contains(o.ancestor.Error(), "symbolic link") {
+		t.Fatalf("a symlinked ancestor enrolled: %v", o.ancestor)
 	}
-	os.MkdirAll(filepath.Join(repo, "tests", "testdata"), 0o700)
-	if err := os.Symlink(filepath.Join(outside, "tests", "testdata", "mcp-transcripts"), filepath.Join(repo, "tests", "testdata", "mcp-transcripts")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := ValidateEnrollment(EnrollmentOptions{FS: os.DirFS(repo), Registry: e.reg}); err == nil || !strings.Contains(err.Error(), "symbolic link") {
-		t.Fatalf("a symlinked ancestor enrolled: %v", err)
-	}
-	root, err := os.OpenRoot(repo)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer root.Close()
-	if _, err := ValidateEnrollment(EnrollmentOptions{FS: root.FS(), Registry: e.reg}); err == nil {
+	if o.ancestorRoot == nil {
 		t.Fatal("a symlinked ancestor enrolled through os.Root")
 	}
-	// A symlinked bundle directory deeper down.
-	repo2 := t.TempDir()
-	for rel, data := range e.files {
-		if strings.HasPrefix(rel, e.entry.Bundle+"/") {
-			continue
-		}
-		dst := filepath.Join(repo2, filepath.FromSlash(rel))
-		os.MkdirAll(filepath.Dir(dst), 0o700)
-		os.WriteFile(dst, data, 0o600)
-	}
-	link := filepath.Join(repo2, filepath.FromSlash(e.entry.Bundle))
-	os.MkdirAll(filepath.Dir(link), 0o700)
-	os.Symlink(filepath.Join(outside, filepath.FromSlash(e.entry.Bundle)), link)
-	if _, err := ValidateEnrollment(EnrollmentOptions{FS: os.DirFS(repo2), Registry: e.reg}); err == nil || !strings.Contains(err.Error(), "symbolic link") {
-		t.Fatalf("a symlinked bundle directory enrolled: %v", err)
+	if o.bundle == nil || !strings.Contains(o.bundle.Error(), "symbolic link") {
+		t.Fatalf("a symlinked bundle directory enrolled: %v", o.bundle)
 	}
 }
 
@@ -403,15 +430,16 @@ func TestReviewC7ProbeCorrelation(t *testing.T) {
 		"codex":  probeWith(rid(EvReceipt, `1`), rid(EvCompleted, `1`), rid(EvCompleted, `1`), exitEv()),
 		"grok":   probeWith(rid(EvCompleted, `1`), rid(EvReceipt, `1`), exitEv()),
 	}
-	w := newCapWorld(t)
-	w.script = func(spec ProcSpec) capBehavior {
-		b := w.defaults(spec)
-		if launchKind(spec) == "session" {
-			b.events = seqs[clientOf(spec)]
+	man, _ := capturedOnce(t, "r1-c7", func(w *capWorld) *CaptureRunner {
+		w.script = func(spec ProcSpec) capBehavior {
+			b := w.defaults(spec)
+			if launchKind(spec) == "session" {
+				b.events = seqs[clientOf(spec)]
+			}
+			return b
 		}
-		return b
-	}
-	man, _ := runCapture(t, newCapRunner(t, w, capPlan(t, "claude", "codex", "grok")), context.Background())
+		return newCapRunner(t, w, capPlan(t, "claude", "codex", "grok"))
+	})
 	for id := range seqs {
 		if r := reasonOf(capClient(t, man, id)); !strings.HasPrefix(r, ReasonProbeAnomaly) {
 			t.Errorf("%s: capture reason %q", id, r)
@@ -500,19 +528,21 @@ func TestReviewR2EncodedMemberNames(t *testing.T) {
 			}
 		}
 	}
-	// Through the capture run: in the transcript and in the help output.
-	w := newCapWorld(t)
-	w.script = func(spec ProcSpec) capBehavior {
-		b := w.defaults(spec)
-		switch launchKind(spec) {
-		case "help":
-			b.stdout = strings.Join(lines, "\n") + "\n"
-		case "session":
-			b.stdout = strings.Join(lines, "\n") + "\n"
+	// Through the capture run (once per process): in the transcript and in
+	// the help output.
+	_, b := capturedOnce(t, "r2-c1", func(w *capWorld) *CaptureRunner {
+		w.script = func(spec ProcSpec) capBehavior {
+			b := w.defaults(spec)
+			switch launchKind(spec) {
+			case "help":
+				b.stdout = strings.Join(lines, "\n") + "\n"
+			case "session":
+				b.stdout = strings.Join(lines, "\n") + "\n"
+			}
+			return b
 		}
-		return b
-	}
-	_, b := runCapture(t, newCapRunner(t, w, capPlan(t, "claude")), context.Background())
+		return newCapRunner(t, w, capPlan(t, "claude"))
+	})
 	for p, data := range b.Files {
 		if strings.Contains(fullyDecoded(string(data)), opaque) {
 			t.Errorf("%s keeps the value", p)
@@ -569,19 +599,21 @@ func TestReviewR2ProbeInstances(t *testing.T) {
 	if p := observeProbe([]byte(ok), false, id); len(p.Anomalies) != 0 || !p.Completed || *p.ClientName != nameA {
 		t.Fatalf("two initialized instances: %+v", p)
 	}
-	// Through a capture run and through replay in enrollment.
-	w := newCapWorld(t)
-	w.script = func(spec ProcSpec) capBehavior {
-		b := w.defaults(spec)
-		if launchKind(spec) == "session" {
-			b.events = func(cf CaseFile, c string) string {
-				return probeLog(cf.RunID, start, initA, exit) + probeLog(cf.RunID, start, ProbeEvent{Kind: EvReceipt, CaseID: c, RequestID: json.RawMessage(`1`)},
-					ProbeEvent{Kind: EvCompleted, CaseID: c, RequestID: json.RawMessage(`1`)}, exit)
+	// Through a capture run (once per process) and through replay in
+	// enrollment.
+	man, _ := capturedOnce(t, "r2-c3", func(w *capWorld) *CaptureRunner {
+		w.script = func(spec ProcSpec) capBehavior {
+			b := w.defaults(spec)
+			if launchKind(spec) == "session" {
+				b.events = func(cf CaseFile, c string) string {
+					return probeLog(cf.RunID, start, initA, exit) + probeLog(cf.RunID, start, ProbeEvent{Kind: EvReceipt, CaseID: c, RequestID: json.RawMessage(`1`)},
+						ProbeEvent{Kind: EvCompleted, CaseID: c, RequestID: json.RawMessage(`1`)}, exit)
+				}
 			}
+			return b
 		}
-		return b
-	}
-	man, _ := runCapture(t, newCapRunner(t, w, capPlan(t, "claude")), context.Background())
+		return newCapRunner(t, w, capPlan(t, "claude"))
+	})
 	if r := reasonOf(capClient(t, man, "claude")); !strings.HasPrefix(r, ReasonProbeAnomaly) {
 		t.Errorf("capture reason %q", r)
 	}
@@ -719,14 +751,35 @@ func TestReviewR2SwapAtOpen(t *testing.T) {
 	kinds := []string{"dirfs", "rootfs", "root"}
 	outcomes := sharedValue("swap-at-open", func() map[string]swapOutcome {
 		out := map[string]swapOutcome{}
-		setup := func() string {
+		// setup writes one repository; decoy, when not empty, is the
+		// repository path whose identical copy a far link targets (only
+		// that subtree is copied under decoy/).
+		setup := func(decoy string) string {
 			repo, err := os.MkdirTemp(sharedTempDir(t), "swap-")
 			if err != nil {
 				t.Fatal(err)
 			}
 			writeFiles(t, repo, e.files)
-			writeFiles(t, filepath.Join(repo, "decoy"), e.files)
+			if decoy != "" {
+				p := filepath.ToSlash(decoy)
+				sub := map[string][]byte{}
+				for rel, data := range e.files {
+					if rel == p || strings.HasPrefix(rel, p+"/") {
+						sub[rel] = data
+					}
+				}
+				if len(sub) == 0 {
+					t.Fatalf("no decoy files under %s", p)
+				}
+				writeFiles(t, filepath.Join(repo, "decoy"), sub)
+			}
 			return repo
+		}
+		decoyOf := func(sc swapCase, near bool) string {
+			if near {
+				return ""
+			}
+			return sc.path
 		}
 		swap := func(repo string, sc swapCase, near bool) func() {
 			return func() {
@@ -758,24 +811,52 @@ func TestReviewR2SwapAtOpen(t *testing.T) {
 			}
 			return opts
 		}
+		// The unswapped baselines only read: one repository serves them all.
+		plain := setup("")
 		for _, kind := range kinds {
-			_, err := ValidateEnrollment(options(kind, setup()))
+			_, err := ValidateEnrollment(options(kind, plain))
 			out["unswapped/"+kind] = swapOutcome{err: err}
 		}
+		// undo restores a swapped path (the link removed, the original
+		// renamed back), so one repository serves every filesystem kind of
+		// a case; a repository that cannot be restored exactly fails the
+		// test.
+		undo := func(repo string, sc swapCase, near bool) {
+			at := filepath.Join(repo, sc.path)
+			orig := filepath.Join(repo, "aside-"+filepath.Base(at))
+			if near {
+				orig = at + ".decoy"
+			}
+			if err := os.Remove(at); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(orig, at); err != nil {
+				t.Fatal(err)
+			}
+			if isLink(at) {
+				t.Fatalf("%s was not restored", at)
+			}
+		}
+		repos := map[string]string{}
 		for _, sc := range swaps {
-			for _, kind := range kinds {
-				for _, near := range []bool{false, true} {
-					repo := setup()
+			for _, near := range []bool{false, true} {
+				repo := setup(decoyOf(sc, near))
+				repos[fmt.Sprintf("%s/near=%v", sc.name, near)] = repo
+				for _, kind := range kinds {
 					opts := options(kind, repo)
 					err := swapAt(sc.at, sc.nth, swap(repo, sc, near), func() error { _, err := ValidateEnrollment(opts); return err })
-					out[fmt.Sprintf("%s/%s/near=%v", sc.name, kind, near)] = swapOutcome{err, isLink(filepath.Join(repo, sc.path))}
+					swapped := isLink(filepath.Join(repo, sc.path))
+					out[fmt.Sprintf("%s/%s/near=%v", sc.name, kind, near)] = swapOutcome{err, swapped}
+					if swapped {
+						undo(repo, sc, near)
+					}
 				}
 			}
 		}
 		// The held os.Root reads the file it verified even when the
 		// replaced ancestor's decoy differs: had it followed the link, the
 		// hash would not match.
-		repo := setup()
+		repo := setup(client)
 		os.WriteFile(filepath.Join(repo, "decoy", client, help), []byte("decoy\n"), 0o600)
 		err := swapAt(help, 1, swap(repo, swaps[3], false), func() error {
 			_, err := ValidateEnrollment(EnrollmentOptions{Root: repo, Registry: e.reg})
@@ -784,7 +865,7 @@ func TestReviewR2SwapAtOpen(t *testing.T) {
 		out["held-ancestor/root/differing"] = swapOutcome{err, isLink(filepath.Join(repo, client))}
 		// A FIFO swapped in for a payload neither blocks the open nor is
 		// read.
-		repo = setup()
+		repo = setup("")
 		at := filepath.Join(repo, client, help)
 		err = swapAt(help, 1, func() {
 			if err := os.Rename(at, filepath.Join(repo, "aside")); err != nil {
@@ -796,12 +877,11 @@ func TestReviewR2SwapAtOpen(t *testing.T) {
 		}, func() error { _, err := ValidateEnrollment(EnrollmentOptions{Root: repo, Registry: e.reg}); return err })
 		out["payload/root/fifo"] = swapOutcome{err, true}
 		// ValidateCaptureBundle (always an fs.FS) over the bundle directory.
-		repo = setup()
-		_, err = ValidateCaptureBundle(os.DirFS(repo), e.entry.Bundle, ExpectedName)
+		_, err = ValidateCaptureBundle(os.DirFS(plain), e.entry.Bundle, ExpectedName)
 		out["bundle/unswapped"] = swapOutcome{err: err}
 		for _, sc := range []swapCase{swaps[0], swaps[1], swaps[3]} {
 			for _, near := range []bool{false, true} {
-				repo := setup()
+				repo := repos[fmt.Sprintf("%s/near=%v", sc.name, near)]
 				err := swapAt(sc.at, sc.nth, swap(repo, sc, near), func() error {
 					_, err := ValidateCaptureBundle(os.DirFS(repo), e.entry.Bundle, ExpectedName)
 					return err

@@ -406,6 +406,30 @@ func cachedCapture(t *testing.T, key string, build func(w *capWorld) *CaptureRun
 	return sc
 }
 
+// onceCapture is one capture run's validated outcome.
+type onceCapture struct {
+	man *CaptureManifest
+	b   *CaptureBundle
+}
+
+// capturedOnce runs the capture key once per test process (on its first
+// repetition, so in every stress invocation) and returns the manifest and
+// bundle each repetition asserts on: a deterministic fake-vendor run that
+// is only input to the assertions, not a runner lifecycle under test (those
+// tests run every repetition). build configures the fresh world and
+// returns its runner; its output directory is moved under the shared
+// directory TestMain removes. Callers never modify the result.
+func capturedOnce(t *testing.T, key string, build func(w *capWorld) *CaptureRunner) (*CaptureManifest, *CaptureBundle) {
+	t.Helper()
+	r := sharedValue("capture-once-"+key, func() onceCapture {
+		c := build(newCapWorld(t))
+		c.OutDir = filepath.Join(sharedTempDir(t), "once-"+key)
+		man, b := runCapture(t, c, context.Background())
+		return onceCapture{man, b}
+	})
+	return r.man, r.b
+}
+
 // templateTrees caches each decoded template; templateTree returns a deep
 // copy for one plan.
 var templateTrees sync.Map

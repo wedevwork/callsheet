@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -70,18 +71,23 @@ func panicRegistry() Registry {
 
 // writeCapPlan writes a plan file whose executables are real files under
 // <dir>/fake (the CLI hashes them; the fake world never runs them).
+// writeCapPlan writes the plan b (with its fake executables) once per test
+// process, keyed by its content, in the shared directory TestMain removes:
+// a plan file is only read.
 func writeCapPlan(t *testing.T, b []byte) string {
-	dir := t.TempDir()
-	os.MkdirAll(filepath.Join(dir, "fake"), 0o700)
-	for id := range clientDecoders {
-		os.WriteFile(filepath.Join(dir, "fake", id), []byte("#!/bin/false\n"), 0o600)
-	}
-	b = bytes.ReplaceAll(b, []byte(`"/fake/`), []byte(`"`+filepath.Join(dir, "fake")+`/`))
-	p := filepath.Join(dir, "plan.json")
-	if err := os.WriteFile(p, b, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return p
+	return sharedValue("cap-plan-"+sha256Hex(b), func() string {
+		dir := filepath.Join(sharedTempDir(t), "plan-"+sha256Hex(b)[:16])
+		os.MkdirAll(filepath.Join(dir, "fake"), 0o700)
+		for id := range clientDecoders {
+			os.WriteFile(filepath.Join(dir, "fake", id), []byte("#!/bin/false\n"), 0o600)
+		}
+		b := bytes.ReplaceAll(b, []byte(`"/fake/`), []byte(`"`+filepath.Join(dir, "fake")+`/`))
+		p := filepath.Join(dir, "plan.json")
+		if err := os.WriteFile(p, b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	})
 }
 
 func cliOut(env Env) (string, string) {
@@ -93,7 +99,9 @@ func cliOut(env Env) (string, string) {
 // decoder, and qualify's unchanged exact selection.
 func TestCaptureInvocation(t *testing.T) {
 	plan := writeCapPlan(t, filledPlan(t, nil, "claude"))
-	out := func() string { return filepath.Join(t.TempDir(), "out") }
+	// Fresh, absent output paths under one temporary directory.
+	outBase, outN := t.TempDir(), 0
+	out := func() string { outN++; return filepath.Join(outBase, "out"+strconv.Itoa(outN)) }
 	refusals := []struct {
 		name   string
 		mutate func(*Env)
@@ -141,71 +149,108 @@ func TestCaptureInvocation(t *testing.T) {
 	if Main(context.Background(), env) != 0 || !strings.Contains(env.Stdout.(*bytes.Buffer).String(), "mcpqual capture --plan ABSOLUTE_JSON --out ABSOLUTE_NEW_OR_EMPTY_DIR --allow-model-calls") {
 		t.Fatal("usage lacks capture")
 	}
-	// An unknown exact version (no registry entry) is captured; no decoder
-	// is consulted (the registry's decoders panic).
-	o := out()
-	env = capEnv(t, w, "capture", "--plan", plan, "--out", o, "--allow-model-calls")
-	code := Main(context.Background(), env)
-	stdout, stderr := cliOut(env)
-	if code != 0 || !strings.Contains(stdout, "capture complete; vendor behavior not evaluated") || !strings.Contains(stderr, "setup only; default phase not executed") ||
-		!strings.Contains(stderr, "1 session per client, 120000 ms per session, 180000 ms per client") || !slices.Equal(w.kinds(), []string{"claude:version", "claude:help", "claude:session"}) {
-		t.Fatalf("unknown version capture = %d %q %q %v", code, stdout, stderr, w.kinds())
+	// The three invocations that write a bundle or a report run once per
+	// process (deterministic CLI outcomes); every repetition asserts on
+	// what they returned, launched and wrote.
+	type invocationRuns struct {
+		code, fsCode    int
+		stdout, stderr  string
+		kinds           []string
+		bundleErr       error
+		wrote           []string
+		qualify         cliRun
+		qualifySessions int
+		fsManifest      error
+		interruptCode   int
+		interruptKinds  []string
+		nonemptyCode    int
 	}
-	if _, err := ValidateCaptureBundle(os.DirFS(o), "."); err != nil {
-		t.Fatal(err)
-	}
-	for _, f := range []string{"report.json", "catalog-patch.json"} {
-		if _, err := os.Stat(filepath.Join(o, f)); err == nil {
-			t.Fatalf("capture wrote %s", f)
+	ir := sharedValue("capture-invocation", func() invocationRuns {
+		var ir invocationRuns
+		dir := filepath.Join(sharedTempDir(t), "capture-invocation")
+		// An unknown exact version (no registry entry) is captured; no
+		// decoder is consulted (the registry's decoders panic).
+		w := newCapWorld(t)
+		o := filepath.Join(dir, "unknown")
+		env := capEnv(t, w, "capture", "--plan", plan, "--out", o, "--allow-model-calls")
+		ir.code = Main(context.Background(), env)
+		ir.stdout, ir.stderr = cliOut(env)
+		ir.kinds = w.kinds()
+		_, ir.bundleErr = ValidateCaptureBundle(os.DirFS(o), ".")
+		for _, f := range []string{"report.json", "catalog-patch.json"} {
+			if _, err := os.Stat(filepath.Join(o, f)); err == nil {
+				ir.wrote = append(ir.wrote, f)
+			}
 		}
+		// qualify keeps its exact selection: the same unknown version is
+		// refused before any session.
+		qw := newWorld(t, vendorModel{version: capVersions["claude"]})
+		qenv, _, _ := testEnv(t, qw, "qualify", "--plan", writePlan(t, modelPlan()), "--out", filepath.Join(dir, "qualify"), "--allow-model-calls")
+		ir.qualify = run(qenv)
+		ir.qualifySessions = len(qw.sessions())
+		// A filesystem failure is exit 1, and no manifest is written.
+		w = newCapWorld(t)
+		o = filepath.Join(dir, "fs-failure")
+		w.script = func(spec ProcSpec) capBehavior {
+			if launchKind(spec) == "version" {
+				os.MkdirAll(filepath.Join(o, "clients", "claude", FileVersionStdout), 0o700)
+			}
+			return w.defaults(spec)
+		}
+		env = capEnv(t, w, "capture", "--plan", plan, "--out", o, "--allow-model-calls")
+		ir.fsCode = Main(context.Background(), env)
+		_, ir.fsManifest = os.Stat(filepath.Join(o, CaptureManifestName))
+		// An interrupted capture (cancelled before it starts).
+		w = newCapWorld(t)
+		env = capEnv(t, w, "capture", "--plan", plan, "--out", filepath.Join(dir, "interrupted"), "--allow-model-calls")
+		env.Notify = func(ctx context.Context) (context.Context, context.CancelFunc) {
+			c, cancel := context.WithCancel(ctx)
+			cancel()
+			return c, cancel
+		}
+		ir.interruptCode = Main(context.Background(), env)
+		ir.interruptKinds = w.kinds()
+		// A nonempty output directory.
+		full := filepath.Join(dir, "nonempty")
+		os.MkdirAll(full, 0o700)
+		os.WriteFile(filepath.Join(full, "x"), nil, 0o600)
+		env = capEnv(t, newCapWorld(t), "capture", "--plan", plan, "--out", full, "--allow-model-calls")
+		ir.nonemptyCode = Main(context.Background(), env)
+		return ir
+	})
+	if ir.code != 0 || !strings.Contains(ir.stdout, "capture complete; vendor behavior not evaluated") || !strings.Contains(ir.stderr, "setup only; default phase not executed") ||
+		!strings.Contains(ir.stderr, "1 session per client, 120000 ms per session, 180000 ms per client") || !slices.Equal(ir.kinds, []string{"claude:version", "claude:help", "claude:session"}) {
+		t.Fatalf("unknown version capture = %d %q %q %v", ir.code, ir.stdout, ir.stderr, ir.kinds)
 	}
-	// qualify keeps its exact selection: the same unknown version is
-	// refused before any session.
-	qw := newWorld(t, vendorModel{version: capVersions["claude"]})
-	qenv, _, _ := testEnv(t, qw, "qualify", "--plan", writePlan(t, modelPlan()), "--out", out(), "--allow-model-calls")
-	r := run(qenv)
-	if r.code != 5 || !strings.Contains(r.stdout, "partial") || len(qw.sessions()) != 0 {
+	if ir.bundleErr != nil {
+		t.Fatal(ir.bundleErr)
+	}
+	if len(ir.wrote) != 0 {
+		t.Fatalf("capture wrote %v", ir.wrote)
+	}
+	if r := ir.qualify; r.code != 5 || !strings.Contains(r.stdout, "partial") || ir.qualifySessions != 0 {
 		t.Fatalf("qualify of an unknown version = %+v", r)
 	}
 	// qualify refuses an empty CI= too (the presence rule), launching
 	// nothing.
-	qw = newWorld(t, fullModel())
-	qenv, _, _ = testEnv(t, qw, "qualify", "--plan", writePlan(t, modelPlan()), "--out", out(), "--allow-model-calls")
+	qw := newWorld(t, fullModel())
+	qenv, _, _ := testEnv(t, qw, "qualify", "--plan", writePlan(t, modelPlan()), "--out", out(), "--allow-model-calls")
 	qenv.LookupEnv = func(k string) (string, bool) { return "", k == "CI" }
 	if r := run(qenv); r.code != 2 || !strings.Contains(r.stderr, "qualify refused: CI is set") || len(qw.launches) != 0 {
 		t.Fatalf("qualify with CI= = %+v", r)
 	}
 	// An interrupted capture exits 130; an unusable output directory is an
 	// invalid invocation; a filesystem failure is exit 1.
-	w = newCapWorld(t)
-	env = capEnv(t, w, "capture", "--plan", plan, "--out", out(), "--allow-model-calls")
-	env.Notify = func(ctx context.Context) (context.Context, context.CancelFunc) {
-		c, cancel := context.WithCancel(ctx)
-		cancel()
-		return c, cancel
+	if ir.interruptCode != 130 || len(ir.interruptKinds) != 0 {
+		t.Fatalf("interrupted capture = %d %v", ir.interruptCode, ir.interruptKinds)
 	}
-	if code := Main(context.Background(), env); code != 130 || len(w.kinds()) != 0 {
-		t.Fatalf("interrupted capture = %d %v", code, w.kinds())
+	if ir.nonemptyCode != 2 {
+		t.Fatalf("nonempty --out = %d", ir.nonemptyCode)
 	}
-	full := t.TempDir()
-	os.WriteFile(filepath.Join(full, "x"), nil, 0o600)
-	env = capEnv(t, newCapWorld(t), "capture", "--plan", plan, "--out", full, "--allow-model-calls")
-	if code := Main(context.Background(), env); code != 2 {
-		t.Fatalf("nonempty --out = %d", code)
+	if ir.fsCode != 1 {
+		t.Fatalf("filesystem failure = %d", ir.fsCode)
 	}
-	w = newCapWorld(t)
-	o = out()
-	w.script = func(spec ProcSpec) capBehavior {
-		if launchKind(spec) == "version" {
-			os.MkdirAll(filepath.Join(o, "clients", "claude", FileVersionStdout), 0o700)
-		}
-		return w.defaults(spec)
-	}
-	env = capEnv(t, w, "capture", "--plan", plan, "--out", o, "--allow-model-calls")
-	if code := Main(context.Background(), env); code != 1 {
-		t.Fatalf("filesystem failure = %d", code)
-	}
-	if _, err := os.Stat(filepath.Join(o, CaptureManifestName)); err == nil {
+	if ir.fsManifest == nil {
 		t.Fatal("a manifest was written after a filesystem failure")
 	}
 	env = capEnv(t, newCapWorld(t), "capture", "--plan", plan, "--out", out(), "--allow-model-calls")
@@ -453,49 +498,66 @@ func TestCaptureVersionIdentity(t *testing.T) {
 	}
 	// A different exact version keeps its streams and nothing follows; a
 	// failed help command prevents the session; neither stops the next
-	// client.
-	w := newCapWorld(t)
-	w.script = func(spec ProcSpec) capBehavior {
-		switch {
-		case clientOf(spec) == "grok" && launchKind(spec) == "version":
-			return capBehavior{stdout: exact + "\nwarning: update available\n", stderr: "a version note\n"}
-		case clientOf(spec) == "claude" && launchKind(spec) == "help":
-			return capBehavior{stdout: "usage\n", exit: 2}
-		}
-		return w.defaults(spec)
+	// client. An unreadable executable is never launched; a launch failure
+	// is recorded without files. (Both deterministic runs once per
+	// process, with the launches they made; the metadata watchdog below
+	// runs every repetition.)
+	type identityRuns struct {
+		man, absent        *CaptureManifest
+		b                  *CaptureBundle
+		kinds, absentKinds []string
 	}
-	man, b := runCapture(t, newCapRunner(t, w, capPlan(t, "grok", "claude")), context.Background())
+	runs := sharedValue("version-identity", func() identityRuns {
+		var r identityRuns
+		var w *capWorld
+		r.man, r.b = capturedOnce(t, "version-mismatch", func(cw *capWorld) *CaptureRunner {
+			w = cw
+			w.script = func(spec ProcSpec) capBehavior {
+				switch {
+				case clientOf(spec) == "grok" && launchKind(spec) == "version":
+					return capBehavior{stdout: exact + "\nwarning: update available\n", stderr: "a version note\n"}
+				case clientOf(spec) == "claude" && launchKind(spec) == "help":
+					return capBehavior{stdout: "usage\n", exit: 2}
+				}
+				return w.defaults(spec)
+			}
+			return newCapRunner(t, w, capPlan(t, "grok", "claude"))
+		})
+		r.kinds = w.kinds()
+		r.absent, _ = capturedOnce(t, "version-absent", func(cw *capWorld) *CaptureRunner {
+			w = cw
+			return newCapRunner(t, w, mustCapturePlan(t, filledPlan(t, func(cl map[string]any) { cl["executable"] = "/missing/claude" }, "claude")))
+		})
+		r.absentKinds = w.kinds()
+		return r
+	})
+	man, b := runs.man, runs.b
 	cc := capClient(t, man, "grok")
 	if reasonOf(cc) != ReasonVersionMismatch || cc.Help.State != StageNotRun || cc.Session.State != StageNotRun ||
 		man.ExitCode() != 5 || *cc.ObservedVersion != exact || string(b.Files[ClientFile("grok", FileVersionStderr)]) != "a version note\n" ||
 		!strings.Contains(string(b.Files[ClientFile("grok", FileVersionStdout)]), "warning: update available") {
-		t.Fatalf("mismatch: %q %v", reasonOf(cc), w.kinds())
+		t.Fatalf("mismatch: %q %v", reasonOf(cc), runs.kinds)
 	}
 	if cc := capClient(t, man, "claude"); reasonOf(cc) != ReasonMetadataFailed+": the help command did not succeed" || cc.Session.State != StageNotRun ||
-		!slices.Equal(w.kinds(), []string{"grok:version", "claude:version", "claude:help"}) {
-		t.Fatalf("help failure: %q %v", reasonOf(cc), w.kinds())
+		!slices.Equal(runs.kinds, []string{"grok:version", "claude:version", "claude:help"}) {
+		t.Fatalf("help failure: %q %v", reasonOf(cc), runs.kinds)
 	}
-	// An unreadable executable is never launched; a launch failure is
-	// recorded without files.
-	w = newCapWorld(t)
-	c := newCapRunner(t, w, mustCapturePlan(t, filledPlan(t, func(cl map[string]any) { cl["executable"] = "/missing/claude" }, "claude")))
-	man, _ = runCapture(t, c, context.Background())
-	if cc := capClient(t, man, "claude"); reasonOf(cc) != ReasonAbsentBinary || cc.ExecutableSHA256 != nil || len(w.kinds()) != 0 {
-		t.Fatalf("absent executable: %q %v", reasonOf(cc), w.kinds())
+	if cc := capClient(t, runs.absent, "claude"); reasonOf(cc) != ReasonAbsentBinary || cc.ExecutableSHA256 != nil || len(runs.absentKinds) != 0 {
+		t.Fatalf("absent executable: %q %v", reasonOf(cc), runs.absentKinds)
 	}
 	if st := stageOf(caseRun{launchErr: os.ErrNotExist}, time.Second); st.State != StageLaunchFailed || *st.Reason != ReasonAbsentBinary || st.Cleanup != nil {
 		t.Fatalf("launch failure stage %+v", st)
 	}
 	// A metadata watchdog within the client deadline: the hanging version
 	// command is reaped once its 30 s timer (armed first) fires.
-	w = newCapWorld(t)
+	w := newCapWorld(t)
 	w.script = func(spec ProcSpec) capBehavior {
 		if launchKind(spec) == "version" {
 			return capBehavior{hang: true}
 		}
 		return w.defaults(spec)
 	}
-	c = newCapRunner(t, w, capPlan(t, "claude"))
+	c := newCapRunner(t, w, capPlan(t, "claude"))
 	done := make(chan *CaptureManifest, 1)
 	go func() { m, _ := c.Run(context.Background()); done <- m }()
 	awaitTimer(t, w.clock, versionWatchdog)

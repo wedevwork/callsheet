@@ -1,7 +1,6 @@
 package mcpqual
 
 import (
-	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -22,16 +21,26 @@ var executableHash = regexp.MustCompile(`"executable_sha256": "[0-9a-f]{64}"`)
 // used must be the hashed ones, so the manifest, like every hashed file,
 // is opened once.
 func TestReviewR3ManifestReadOnce(t *testing.T) {
-	e := enrolledFixture(t)
-	manifest := filepath.Join(filepath.FromSlash(e.entry.Bundle), CaptureManifestName)
-	for _, kind := range []string{"root", "dirfs"} {
-		t.Run(kind, func(t *testing.T) {
-			repo := t.TempDir()
-			writeFiles(t, repo, e.files)
-			opts := EnrollmentOptions{Registry: e.reg, Root: repo}
-			if kind == "dirfs" {
-				opts = EnrollmentOptions{Registry: e.reg, FS: os.DirFS(repo)}
-			}
+	// The repositories are written and validated once per process (the
+	// hook's effect is deterministic); every repetition asserts on the
+	// outcomes.
+	type readOnce struct {
+		mutated bool
+		err     error
+		opens   map[string]int
+	}
+	type r3Outcome struct {
+		kinds   map[string]readOnce
+		altered error
+	}
+	o := sharedValue("r3-c1", func() r3Outcome {
+		e := enrolledFixture(t)
+		manifest := filepath.Join(filepath.FromSlash(e.entry.Bundle), CaptureManifestName)
+		top, err := os.MkdirTemp(sharedTempDir(t), "r3-c1-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		forge := func(repo string) []byte {
 			orig, err := os.ReadFile(filepath.Join(repo, manifest))
 			if err != nil {
 				t.Fatal(err)
@@ -40,11 +49,21 @@ func TestReviewR3ManifestReadOnce(t *testing.T) {
 			if string(forged) == string(orig) {
 				t.Fatal("no executable hash in the manifest")
 			}
-			opens := map[string]int{}
-			mutated := false
+			return forged
+		}
+		out := r3Outcome{kinds: map[string]readOnce{}}
+		for _, kind := range []string{"root", "dirfs"} {
+			repo := filepath.Join(top, kind)
+			writeFiles(t, repo, e.files)
+			opts := EnrollmentOptions{Registry: e.reg, Root: repo}
+			if kind == "dirfs" {
+				opts = EnrollmentOptions{Registry: e.reg, FS: os.DirFS(repo)}
+			}
+			forged := forge(repo)
+			r := readOnce{opens: map[string]int{}}
 			openHook = func(n string) {
-				opens[n]++
-				if n == CaptureManifestName && opens[n] == 2 {
+				r.opens[n]++
+				if n == CaptureManifestName && r.opens[n] == 2 {
 					// In place: the same inode, new bytes.
 					f, err := os.OpenFile(filepath.Join(repo, manifest), os.O_WRONLY|os.O_TRUNC, 0)
 					if err != nil {
@@ -52,41 +71,47 @@ func TestReviewR3ManifestReadOnce(t *testing.T) {
 					}
 					f.Write(forged)
 					f.Close()
-					mutated = true
+					r.mutated = true
 				}
 			}
-			defer func() { openHook = nil }()
-			_, err = ValidateEnrollment(opts)
-			if mutated && err == nil {
-				t.Fatal("enrollment accepted a manifest whose hash differs from the index")
-			}
-			if err != nil {
-				t.Fatalf("enrollment: %v", err)
-			}
-			// Every hashed file (the index, the manifest, expected.json and
-			// each payload) is opened exactly once.
-			for n, c := range opens {
-				if strings.Contains(n, ".") && c != 1 {
-					t.Errorf("%s opened %d times", n, c)
-				}
-			}
-			for _, n := range []string{"index.json", CaptureManifestName, ExpectedName, FileServerEvents, FileHelpStdout} {
-				if opens[n] != 1 {
-					t.Errorf("%s opened %d times", n, opens[n])
-				}
-			}
-		})
+			_, r.err = ValidateEnrollment(opts)
+			openHook = nil
+			out.kinds[kind] = r
+		}
+		// A manifest altered before its one read fails the index hash.
+		repo := filepath.Join(top, "altered")
+		writeFiles(t, repo, e.files)
+		if err := os.WriteFile(filepath.Join(repo, manifest), forge(repo), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, out.altered = ValidateEnrollment(EnrollmentOptions{Root: repo, Registry: e.reg})
+		return out
+	})
+	if len(o.kinds) != 2 {
+		t.Fatalf("%d kinds", len(o.kinds))
 	}
-	// A manifest altered before its one read fails the index hash.
-	repo := t.TempDir()
-	writeFiles(t, repo, e.files)
-	orig, _ := os.ReadFile(filepath.Join(repo, manifest))
-	forged := executableHash.ReplaceAll(orig, []byte(`"executable_sha256": "`+strings.Repeat("0", 64)+`"`))
-	if err := os.WriteFile(filepath.Join(repo, manifest), forged, 0o600); err != nil {
-		t.Fatal(err)
+	for kind, r := range o.kinds {
+		if r.mutated && r.err == nil {
+			t.Fatalf("%s: enrollment accepted a manifest whose hash differs from the index", kind)
+		}
+		if r.err != nil {
+			t.Fatalf("%s: enrollment: %v", kind, r.err)
+		}
+		// Every hashed file (the index, the manifest, expected.json and
+		// each payload) is opened exactly once.
+		for n, c := range r.opens {
+			if strings.Contains(n, ".") && c != 1 {
+				t.Errorf("%s: %s opened %d times", kind, n, c)
+			}
+		}
+		for _, n := range []string{"index.json", CaptureManifestName, ExpectedName, FileServerEvents, FileHelpStdout} {
+			if r.opens[n] != 1 {
+				t.Errorf("%s: %s opened %d times", kind, n, r.opens[n])
+			}
+		}
 	}
-	if _, err := ValidateEnrollment(EnrollmentOptions{Root: repo, Registry: e.reg}); err == nil || !strings.Contains(err.Error(), "hash differs from the index") {
-		t.Fatalf("an altered manifest enrolled: %v", err)
+	if o.altered == nil || !strings.Contains(o.altered.Error(), "hash differs from the index") {
+		t.Fatalf("an altered manifest enrolled: %v", o.altered)
 	}
 }
 
@@ -121,19 +146,20 @@ func TestReviewR3ProbeInstanceClosed(t *testing.T) {
 	if p := observeProbe([]byte(probeLog("r", start, initA, exit)+probeLog("r", start, initA, recv, done, exit)), false, id); len(p.Anomalies) != 0 || !p.Completed {
 		t.Errorf("two closed instances: %+v", p)
 	}
-	// Through a capture run.
-	w := newCapWorld(t)
-	w.script = func(spec ProcSpec) capBehavior {
-		b := w.defaults(spec)
-		if launchKind(spec) == "session" {
-			b.events = func(cf CaseFile, c string) string {
-				return probeLog(cf.RunID, start, initA, ProbeEvent{Kind: EvReceipt, CaseID: c, RequestID: json.RawMessage(`1`)},
-					ProbeEvent{Kind: EvCompleted, CaseID: c, RequestID: json.RawMessage(`1`)}) + probeLog(cf.RunID, start, exit)
+	// Through a capture run (once per process).
+	man, _ := capturedOnce(t, "r3-c2", func(w *capWorld) *CaptureRunner {
+		w.script = func(spec ProcSpec) capBehavior {
+			b := w.defaults(spec)
+			if launchKind(spec) == "session" {
+				b.events = func(cf CaseFile, c string) string {
+					return probeLog(cf.RunID, start, initA, ProbeEvent{Kind: EvReceipt, CaseID: c, RequestID: json.RawMessage(`1`)},
+						ProbeEvent{Kind: EvCompleted, CaseID: c, RequestID: json.RawMessage(`1`)}) + probeLog(cf.RunID, start, exit)
+				}
 			}
+			return b
 		}
-		return b
-	}
-	man, _ := runCapture(t, newCapRunner(t, w, capPlan(t, "claude")), context.Background())
+		return newCapRunner(t, w, capPlan(t, "claude"))
+	})
 	if r := reasonOf(capClient(t, man, "claude")); man.State == CaptureComplete || !strings.HasPrefix(r, ReasonProbeAnomaly) {
 		t.Errorf("capture %s with an unclosed receipt-bearing instance (reason %q)", man.State, r)
 	}

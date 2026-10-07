@@ -200,14 +200,26 @@ func TestCaptureWatchdogAndHeld(t *testing.T) {
 		t.Fatalf("cancel: %q %s %v", reasonOf(cc), man.State, w.kinds())
 	}
 	// A cleanup failure is recorded, the capture cannot complete and the
-	// next client is not started.
-	w = newCapWorld(t)
-	w.reapFail = func(pgid int) bool { return pgid == 3003 }
-	_, done = start(t, w, context.Background(), "claude", "grok")
-	man = <-done
+	// next client is not started. (No timer, cancellation or hook order
+	// decides it, the reap failure being injected: the run is once per
+	// process; the three runs above repeat.)
+	type cleanupRun struct {
+		man   *CaptureManifest
+		kinds []string
+	}
+	cr := sharedValue("watchdog-cleanup-failure", func() cleanupRun {
+		var w *capWorld
+		man, _ := capturedOnce(t, "cleanup-failure", func(cw *capWorld) *CaptureRunner {
+			w = cw
+			w.reapFail = func(pgid int) bool { return pgid == 3003 }
+			return newCapRunner(t, w, capPlan(t, "claude", "grok"))
+		})
+		return cleanupRun{man, w.kinds()}
+	})
+	man = cr.man
 	if cc := capClient(t, man, "claude"); reasonOf(cc) != ReasonCleanupFailed || man.Cleanup.OK || man.State != CapturePartial ||
-		reasonOf(capClient(t, man, "grok")) != ReasonCleanupFailed || len(w.kinds()) != 3 || len(man.Cleanup.Failures) != 1 {
-		t.Fatalf("cleanup failure: %q %+v %v", reasonOf(cc), man.Cleanup, w.kinds())
+		reasonOf(capClient(t, man, "grok")) != ReasonCleanupFailed || len(cr.kinds) != 3 || len(man.Cleanup.Failures) != 1 {
+		t.Fatalf("cleanup failure: %q %+v %v", reasonOf(cc), man.Cleanup, cr.kinds)
 	}
 }
 

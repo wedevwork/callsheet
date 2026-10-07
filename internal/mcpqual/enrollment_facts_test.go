@@ -23,15 +23,6 @@ func successOnly(platform string) Registry {
 		Evidence: []DecoderEvidence{{Platform: platform, Fixture: "claude-json/actual-test", Kinds: []string{CapToolCall, CapToolResult, CapTerminalSuccess}}}}}, decode: decodeClaude}}
 }
 
-func qualifiedRun(t *testing.T, m vendorModel, ph Phases, reg Registry, goos, goarch string) *Report {
-	t.Helper()
-	p := planWith(ph)
-	p.Clients[0].DecoderFixture = "claude-json/actual-test"
-	r := newRunner(t, newWorld(t, m), p)
-	r.Registry, r.GOOS, r.GOARCH = reg, goos, goarch
-	return runPlan(t, r, context.Background())
-}
-
 func TestEnrolledShortConfirmation(t *testing.T) {
 	short := defaultOnly(150)
 	// Success evidence on linux/amd64: the lower bound is repeated and
@@ -73,8 +64,11 @@ func TestEnrolledShortConfirmation(t *testing.T) {
 		t.Fatal("facts depend on more than the recorded report")
 	}
 	// A typed timeout without timeout evidence is unverified_decoder_event,
-	// never a conclusive measurement.
-	rep = qualifiedRun(t, vendorModel{timeoutMS: 100}, short, successOnly("linux/amd64"), "linux", "amd64")
+	// never a conclusive measurement (the run once per process).
+	_, rep = cachedRun(t, "enrolled-timeout", vendorModel{timeoutMS: 100}, planWith(short), false, func(r *Runner) {
+		r.Plan.Clients[0].DecoderFixture = "claude-json/actual-test"
+		r.Registry, r.GOOS, r.GOARCH = successOnly("linux/amd64"), "linux", "amd64"
+	})
 	def = phase(t, rep, "claude", PhaseDefault)
 	if def.Status != StatusInconclusive || !strings.Contains(*def.Reason, ReasonUnverifiedEvent+": mcp_timeout without mcp_timeout evidence for linux/amd64") {
 		t.Fatalf("unsupported timeout: %s", def)
