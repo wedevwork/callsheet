@@ -59,7 +59,7 @@ func errMetadataOverflow() error {
 // (blobs streamed to disk, synced) and returns its ID: the canonical empty
 // tree when nothing is included.
 func SnapshotTask(ctx context.Context, o SnapshotOptions) (Snapshot, error) {
-	return defaultDeps().snapshotTask(ctx, o)
+	return entryDeps().snapshotTask(ctx, o)
 }
 
 type taskWalk struct {

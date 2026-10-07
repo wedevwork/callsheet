@@ -50,7 +50,7 @@ type TaskDB struct {
 
 // CreateTaskDB creates the database directory dir (absent; its parent
 // exists) and opens it.
-func CreateTaskDB(dir string) (*TaskDB, error) { return defaultDeps().createTaskDB(dir) }
+func CreateTaskDB(dir string) (*TaskDB, error) { return entryDeps().createTaskDB(dir) }
 
 func (d *deps) createTaskDB(dir string) (*TaskDB, error) {
 	if err := d.check("taskdb-create"); err != nil {
@@ -70,7 +70,7 @@ func (d *deps) createTaskDB(dir string) (*TaskDB, error) {
 // OpenTaskDB opens an existing database directory created by CreateTaskDB:
 // a real directory (never a link) holding real objects and refs
 // directories.
-func OpenTaskDB(dir string) (*TaskDB, error) { return defaultDeps().openTaskDB(dir) }
+func OpenTaskDB(dir string) (*TaskDB, error) { return entryDeps().openTaskDB(dir) }
 
 func (d *deps) openTaskDB(dir string) (*TaskDB, error) {
 	for _, p := range []string{dir, filepath.Join(dir, "objects"), filepath.Join(dir, "objects", "pack"), filepath.Join(dir, "refs")} {
@@ -550,7 +550,7 @@ func (m *PathMap) add(native, raw string) error {
 // unborn refs/heads/main for empty), the exact base index and the minimal
 // configuration.
 func CheckoutTask(ctx context.Context, o CheckoutOptions) (*Checkout, error) {
-	return defaultDeps().checkoutTask(ctx, o)
+	return entryDeps().checkoutTask(ctx, o)
 }
 
 func (d *deps) checkoutTask(ctx context.Context, o CheckoutOptions) (*Checkout, error) {

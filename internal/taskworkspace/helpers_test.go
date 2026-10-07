@@ -155,9 +155,47 @@ func (f *fetcher) nCalls() int {
 	return len(f.calls)
 }
 
+// skipSync holds the durability no-ops of SkipDurability while any test
+// that asked for them runs.
+var skipSync struct {
+	mu   sync.Mutex
+	n    int
+	prev func(fd int) error
+	own  func(*os.File) error
+}
+
+// SkipDurability makes the durability this package's tests do not assert
+// no-ops until t ends (with every other holder): the task databases'
+// fsync and syncfs (workspacetransfer.SetSyncForTest) and this package's
+// own file and directory syncs (SetSyncForTest). The tests assert rows,
+// bytes, transitions and injected faults, never power loss; injected
+// failures still run first. The test helpers call it, never TestMain or
+// init, and it takes a *testing.T, so a benchmark (go test -run=^$
+// -bench) cannot reach it and keeps the real syncs. Exported for the
+// external tests of this binary.
+func SkipDurability(t *testing.T) {
+	t.Helper()
+	skipSync.mu.Lock()
+	defer skipSync.mu.Unlock()
+	if skipSync.n == 0 {
+		skipSync.prev = workspacetransfer.SetSyncForTest(func(int) error { return nil })
+		skipSync.own = SetSyncForTest(func(*os.File) error { return nil })
+	}
+	skipSync.n++
+	t.Cleanup(func() {
+		skipSync.mu.Lock()
+		defer skipSync.mu.Unlock()
+		if skipSync.n--; skipSync.n == 0 {
+			workspacetransfer.SetSyncForTest(skipSync.prev)
+			SetSyncForTest(skipSync.own)
+		}
+	})
+}
+
 // openCache opens a cache under a fresh root.
 func openCache(t *testing.T, target int64) (*Manager, string) {
 	t.Helper()
+	SkipDurability(t)
 	root := t.TempDir()
 	m, err := OpenCache(context.Background(), CacheOptions{Root: root, Origin: "https://plane.test fp", Target: target})
 	if err != nil {
@@ -169,6 +207,7 @@ func openCache(t *testing.T, target int64) (*Manager, string) {
 // taskDB creates a fresh task database.
 func newTaskDB(t *testing.T) *workspacetransfer.TaskDB {
 	t.Helper()
+	SkipDurability(t)
 	db, err := workspacetransfer.CreateTaskDB(filepath.Join(t.TempDir(), "objects"))
 	if err != nil {
 		t.Fatal(err)
@@ -323,6 +362,7 @@ func binding(base plumbing.Hash) contract.WorkspaceBinding {
 // prepared runs Prepare in a fresh task directory.
 func prepared(t *testing.T, m *Manager, f *fetcher, b contract.WorkspaceBinding, runtimeDir bool) (string, *Prepared) {
 	t.Helper()
+	SkipDurability(t)
 	dir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(dir, WorkName), 0o700); err != nil {
 		t.Fatal(err)

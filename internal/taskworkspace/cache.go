@@ -21,6 +21,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"crypto/rand"
 
@@ -286,7 +287,7 @@ func (m *Manager) writeMeta(dir string, meta cacheMeta) error {
 	}
 	f, err := os.Open(tmp)
 	if err == nil {
-		err = f.Sync()
+		err = syncFile(f)
 		f.Close()
 	}
 	if err == nil {
@@ -299,12 +300,55 @@ func (m *Manager) writeMeta(dir string, meta cacheMeta) error {
 	return syncDir(dir)
 }
 
+// syncOverride, when set, is the test durability primitive of this
+// package's own file and directory syncs (SetSyncForTest).
+var syncOverride atomic.Pointer[func(*os.File) error]
+
+// SetSyncForTest replaces this package's own durability primitive (the
+// cache metadata's file sync and every directory sync: cache, staging and
+// the task's work directory) with sync; nil restores (*os.File).Sync
+// (F_FULLFSYNC on darwin). It returns the previous override (nil when
+// none). The task databases' durability is workspacetransfer's
+// (workspacetransfer.SetSyncForTest).
+//
+// Tests only: production never calls it. Injected failures (the
+// manager's fault seam) still run before the sync.
+//
+// Concurrency: sync is called from every goroutine that syncs here (any
+// cache or task operation), so it must tolerate concurrent calls. The
+// override is one process-wide value: the swap is atomic, but independent
+// install and restore sequences (parallel tests each restoring the
+// previous value) can interleave and leave the wrong one installed, so
+// callers must coordinate them (SkipDurability reference-counts its
+// holders). This package's own syncs read the override at each call, so a
+// cache opened while it was set follows its replacement or removal; the
+// task databases the cache, Prepare, Snapshot and StoreCommit open keep
+// the workspacetransfer override they captured when opened.
+func SetSyncForTest(sync func(*os.File) error) (previous func(*os.File) error) {
+	var p *func(*os.File) error
+	if sync != nil {
+		p = &sync
+	}
+	if old := syncOverride.Swap(p); old != nil {
+		return *old
+	}
+	return nil
+}
+
+// syncFile makes f's contents durable: (*os.File).Sync in production.
+func syncFile(f *os.File) error {
+	if p := syncOverride.Load(); p != nil {
+		return (*p)(f)
+	}
+	return f.Sync()
+}
+
 func syncDir(dir string) error {
 	f, err := os.Open(dir)
 	if err != nil {
 		return err
 	}
-	err = f.Sync()
+	err = syncFile(f)
 	return errors.Join(err, f.Close())
 }
 

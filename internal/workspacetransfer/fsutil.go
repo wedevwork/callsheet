@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"sync/atomic"
 
 	"github.com/go-git/go-git/v5/plumbing/format/objfile"
 	"golang.org/x/sys/unix"
@@ -55,6 +56,57 @@ type deps struct {
 
 func defaultDeps() *deps {
 	return &deps{syncFD: fsyncFD, syncBatchFD: syncBatch, linkAt: unix.Linkat, aliasProbe: probeAliasing, rand: rand.Reader}
+}
+
+// entryDeps are the exported entry points' deps: production, with the
+// durability primitives of SetSyncForTest when a test installed them.
+func entryDeps() *deps {
+	d := defaultDeps()
+	if p := syncOverride.Load(); p != nil {
+		sync := *p
+		d.syncFD = sync
+		d.syncBatchFD = func(dirFD int, _, _ []string) error { return sync(dirFD) }
+	}
+	return d
+}
+
+// syncOverride, when set, is the test durability primitive of the
+// exported entry points (SetSyncForTest).
+var syncOverride atomic.Pointer[func(fd int) error]
+
+// SetSyncForTest replaces the durability primitives of the deps that the
+// exported entry points (CreateTaskDB, OpenTaskDB, CheckoutTask,
+// SnapshotTask, Push and Pull) construct from then on: a file or directory
+// sync becomes sync(fd), and a task database's batch (syncfs on Linux,
+// fsyncs and one F_FULLFSYNC on darwin) becomes one sync(fd) of its
+// objects directory. nil restores the platform primitives. It returns the
+// previous override (nil when none).
+//
+// Tests only: production never calls it, so production durability is the
+// platform's. Tests whose assertions do not depend on power-loss
+// durability install a no-op, so repeated stress runs do not flush the
+// shared filesystem on every repetition. Failure seams still run first,
+// deps a test builds itself are unaffected, and fsyncFD and syncBatch
+// themselves are never wrapped.
+//
+// Concurrency: sync is called from every goroutine that syncs through an
+// entry point, so it must tolerate concurrent calls. The override is one
+// process-wide value: the swap is atomic, but independent install and
+// restore sequences (parallel tests each restoring the previous value)
+// can interleave and leave the wrong one installed, so callers must
+// coordinate them (taskworkspace's SkipDurability reference-counts its
+// holders). The override is captured when an entry point constructs its
+// deps: a TaskDB opened (and an operation started) while it was set keeps
+// calling it after it is replaced or removed.
+func SetSyncForTest(sync func(fd int) error) (previous func(fd int) error) {
+	var p *func(fd int) error
+	if sync != nil {
+		p = &sync
+	}
+	if old := syncOverride.Swap(p); old != nil {
+		return *old
+	}
+	return nil
 }
 
 // syncBatch makes a batch durable through the seam (a test deps without a
