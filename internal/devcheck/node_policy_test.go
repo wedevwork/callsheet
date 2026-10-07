@@ -78,14 +78,16 @@ func TestNodeVerificationPolicyContract(t *testing.T) {
 	for _, goos := range []string{"linux", "darwin"} {
 		t.Run(goos, func(t *testing.T) {
 			shards, err := StressShards(goos)
-			if err != nil || len(shards) != 7 || strings.Join(shards[0].Steps[0].Argv, " ") != wantNodeStressPackages || strings.Join(argvOf(slices.Concat(shards[0].CPUGroups...)), "|") != strings.Join(slices.Concat(groupContract, groupMcpqual, groupWorkspace), "|") ||
-				shards[1].Name != "plane-cpu1" || shards[2].Name != "plane" || joinedArgv(shards, 1, 2) != wantStressPlane1+"|"+wantStressPlane2+"|"+wantStressPlane4 ||
-				joinedArgv(shards, 1) != wantStressPlane1 || joinedArgv(shards, 2) != wantStressPlane2+"|"+wantStressPlane4 ||
-				shards[3].Name != "sidecar-cpu1" || shards[4].Name != "sidecar" || joinedArgv(shards, 3, 4) != wantStressSidecar1+"|"+wantStressSidecar2+"|"+wantStressSidecar4 ||
-				joinedArgv(shards, 3) != wantStressSidecar1 || joinedArgv(shards, 4) != wantStressSidecar2+"|"+wantStressSidecar4 {
-				t.Fatalf("packages, plane and sidecar shards = %+v %v", shards, err)
+			if err != nil || len(shards) != 8 || strings.Join(shards[0].Steps[0].Argv, " ") != wantNodeStressPackages || shards[0].CPUGroups != nil ||
+				shards[1].Name != "packages-cpu" || shards[1].Steps != nil ||
+				strings.Join(argvOf(slices.Concat(shards[1].CPUGroups...)), "|") != strings.Join(slices.Concat(groupContract, groupMcpqual, groupWorkspace), "|") ||
+				shards[2].Name != "plane-cpu1" || shards[3].Name != "plane" || joinedArgv(shards, 2, 3) != wantStressPlane1+"|"+wantStressPlane2+"|"+wantStressPlane4 ||
+				joinedArgv(shards, 2) != wantStressPlane1 || joinedArgv(shards, 3) != wantStressPlane2+"|"+wantStressPlane4 ||
+				shards[4].Name != "sidecar-cpu1" || shards[5].Name != "sidecar" || joinedArgv(shards, 4, 5) != wantStressSidecar1+"|"+wantStressSidecar2+"|"+wantStressSidecar4 ||
+				joinedArgv(shards, 4) != wantStressSidecar1 || joinedArgv(shards, 5) != wantStressSidecar2+"|"+wantStressSidecar4 {
+				t.Fatalf("packages, packages-cpu, plane and sidecar shards = %+v %v", shards, err)
 			}
-			fn := shards[6].Steps
+			fn := shards[7].Steps
 			if len(fn) != 3 || fn[2].Name != "stress node function" || strings.Join(fn[2].Argv, " ") != wantNodeStressFunction ||
 				strings.Join(fn[0].Argv, " ") != wantStressFunction || strings.Join(fn[1].Argv, " ") != wantStressPlaneFunction {
 				t.Fatalf("functions shard = %+v", fn)

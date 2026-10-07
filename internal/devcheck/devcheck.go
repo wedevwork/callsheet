@@ -1,8 +1,9 @@
 // Package devcheck is the development-only, pure-Go check driver behind
 // cmd/devcheck: test, coverage, bench, cross, all, native, stress, the
-// seven stress shards stress-packages, stress-plane-cpu1, stress-plane,
-// stress-sidecar-cpu1, stress-sidecar, stress-processgroup and
-// stress-functions, and the Linux container acceptance container-e2e. It is
+// eight stress shards stress-packages, stress-packages-cpu,
+// stress-plane-cpu1, stress-plane, stress-sidecar-cpu1, stress-sidecar,
+// stress-processgroup and stress-functions, and the Linux container
+// acceptance container-e2e. It is
 // not distributed and imports no product services. Child tools run with argv
 // (no shell).
 package devcheck
@@ -31,8 +32,10 @@ import (
 // A Runner must be safe for concurrent calls: the Parallel stress shards,
 // the plane and sidecar CPU2/CPU4 pairs (iteration 05b and its sidecar
 // follow-up, CPU 1 in singleton shards since design 06a-perf) and
-// processgroup (iteration 02c), call it from up to three goroutines at
-// once, each with its own writers.
+// processgroup (iteration 02c), and the per-CPU groups of the packages-cpu
+// shard (the headroom fixes, a shard of their own since the stress worker
+// rebalance), call it from up to three goroutines at once, each with its
+// own writers.
 type Runner func(ctx context.Context, argv []string, env []string, dir string, stdout, stderr io.Writer) error
 
 // ExecRunner implements Runner with exec.CommandContext.
@@ -611,18 +614,20 @@ func (d *driver) cross() error {
 	return nil
 }
 
-const usage = "usage: devcheck test | coverage [-o profile] | bench | cross | all | native | stress | stress-packages | stress-plane-cpu1 | stress-plane | stress-sidecar-cpu1 | stress-sidecar | stress-processgroup | stress-functions | container-e2e [--count=N]\n"
+const usage = "usage: devcheck test | coverage [-o profile] | bench | cross | all | native | stress | stress-packages | stress-packages-cpu | stress-plane-cpu1 | stress-plane | stress-sidecar-cpu1 | stress-sidecar | stress-processgroup | stress-functions | container-e2e [--count=N]\n"
 
 // stageNames is the single stage definition used by argument dispatch and
-// advertised by Stages. The seven stress-* stages each run one stress shard
+// advertised by Stages. The eight stress-* stages each run one stress shard
 // (iteration 02c, one CI worker job per platform each; stress-plane since
-// iteration 05b, stress-sidecar since its sidecar follow-up, and
+// iteration 05b, stress-sidecar since its sidecar follow-up,
 // stress-plane-cpu1 and stress-sidecar-cpu1 since design 06a-perf, which
-// leaves stress-plane and stress-sidecar with CPU 2 and 4 only); "stress"
-// runs all seven. container-e2e (m3-m4-container-e2e) is the Linux-only
+// leaves stress-plane and stress-sidecar with CPU 2 and 4 only, and
+// stress-packages-cpu since the stress worker rebalance, which leaves
+// stress-packages with the combined invocation only); "stress" runs all
+// eight. container-e2e (m3-m4-container-e2e) is the Linux-only
 // container acceptance, standalone with --count=N fresh containers; the
 // Linux test stage also runs it once.
-var stageNames = [...]string{"test", "coverage", "bench", "cross", "all", "native", "stress", "stress-packages", "stress-plane-cpu1", "stress-plane", "stress-sidecar-cpu1", "stress-sidecar", "stress-processgroup", "stress-functions", "container-e2e"}
+var stageNames = [...]string{"test", "coverage", "bench", "cross", "all", "native", "stress", "stress-packages", "stress-packages-cpu", "stress-plane-cpu1", "stress-plane", "stress-sidecar-cpu1", "stress-sidecar", "stress-processgroup", "stress-functions", "container-e2e"}
 
 // allStages is the stage sequence of "all". "native" and the stress stages
 // are selected explicitly: stress repeats subprocess builds and process
@@ -718,7 +723,7 @@ func runFor(ctx context.Context, goos string, args []string, out, errOut io.Writ
 			err = d.cross()
 		case "native":
 			err = d.native(nativeSteps)
-		case "stress", "stress-packages", "stress-plane-cpu1", "stress-plane", "stress-sidecar-cpu1", "stress-sidecar", "stress-processgroup", "stress-functions":
+		case "stress", "stress-packages", "stress-packages-cpu", "stress-plane-cpu1", "stress-plane", "stress-sidecar-cpu1", "stress-sidecar", "stress-processgroup", "stress-functions":
 			err = d.stress(stressShards)
 		case "container-e2e":
 			n := *count

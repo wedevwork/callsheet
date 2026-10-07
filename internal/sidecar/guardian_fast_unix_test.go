@@ -389,12 +389,27 @@ func TestGuardianFastCompletion(t *testing.T) {
 		// without the KILL; a cancel command and the parent's EOF arriving
 		// in that window change nothing (natural stays latched).
 		r := newFastRig(t, "0s", always(probeAnswer{st: groupAlone}))
+		parked, release := make(chan struct{}), make(chan struct{})
+		t.Cleanup(func() { closeOnce(release) })
+		events := r.env.events
+		r.env.events = func(e string) {
+			events(e)
+			if e == "probe alone" {
+				close(parked)
+				<-release
+			}
+		}
 		r.launch(t)
 		a := <-r.started
 		r.status(t)
 		fillPipe(t, r.p.fds.status)
 		a.exit <- procExit{code: 0}
 		r.ev.await(t, "probe alone")
+		select {
+		case <-parked:
+		case <-time.After(testWait):
+			t.Fatal("the observer never parked in its probe event")
+		}
 		b, err := contract.EncodeGuardianCommand(contract.GuardianCommand{TaskID: r.inv.TaskID, Execution: r.inv.Execution, Nonce: ctlNonce,
 			Command: contract.GuardianStop, Cause: contract.CauseCancelled, StopID: strings.Repeat("a", 32)})
 		if err != nil {
@@ -402,6 +417,12 @@ func TestGuardianFastCompletion(t *testing.T) {
 		}
 		r.command(t, b)
 		r.p.lifeW.Close()
+		// "probe alone" is emitted before accept records the proof: the
+		// clock moves only once the proof is accepted, or the grace would
+		// reach the deadline's claim first and its KILL. Never with the
+		// observer still parked: the cleanup joins it before returning.
+		closeOnce(release)
+		r.ev.await(t, "proof-accepted")
 		// The armed delivery and flush bounds expire (advanced only to
 		// armed timers) until the guardian returns.
 		if code := r.finishGrace(t); code != 0 {

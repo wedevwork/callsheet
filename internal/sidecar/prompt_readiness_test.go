@@ -290,10 +290,21 @@ func TestPromptReadinessContract(t *testing.T) {
 		// between two output exchanges, however often the status changes;
 		// exactly one request is outstanding at a time.
 		fp := startFakePlane(t)
-		tr := startTaskRun(t, fp, taskOpts{})
+		// startTaskRun leaves the plane on auto acknowledgement and starts
+		// the dial, so the upgrade handler can snapshot autoAck before any
+		// later change to it. onUpgrade, which runs before that snapshot,
+		// pins it true, and nothing here stores false: every connection
+		// starts on auto acknowledgement. manualAck switches it to manual
+		// before hello_ok, before any heartbeat exists.
 		fp.mu.Lock()
-		fp.autoAck = false
+		fp.onUpgrade = func() {
+			fp.mu.Lock()
+			fp.autoAck = true
+			fp.mu.Unlock()
+		}
 		fp.mu.Unlock()
+		tr := startTaskRun(t, fp, taskOpts{})
+		tr.manualAck = true
 		block := make(chan struct{})
 		tr.script.set(nil, block)
 		ins, run := manuals(t, tr.dir, "a", "m")

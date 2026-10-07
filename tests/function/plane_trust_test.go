@@ -978,8 +978,9 @@ func TestPlanePlatform(t *testing.T) {
 	const stressFn = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestFP4TransportHarness|TestFP5GitRoundTrip)$ ./tests/function"
 	const stressPlaneFn = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestPlaneState|TestPlaneTLS|TestPlaneReissue)$/^(paths|persistence|locking|validation|https-only|prelisten-validation|bounded-shutdown|process)$ ./tests/function"
 	// The headroom fixes moved ./internal/contract, ./internal/mcpqual and
-	// ./internal/workspace to the packages shard's per-CPU groups
-	// (StressSteps indexes 1-9).
+	// ./internal/workspace to the packages shard's per-CPU groups, the
+	// packages-cpu shard's since the stress worker rebalance (StressSteps
+	// indexes 1-9 either way).
 	const stressPkgs = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/workspacetransfer ./internal/taskworkspace ./internal/taskpublication"
 	stressPlane := []string{
 		"go test -race -count=20 -cpu=1 -timeout=6m ./internal/plane",
@@ -994,18 +995,19 @@ func TestPlanePlatform(t *testing.T) {
 			t.Fatalf("%s stress plan = %+v %v", goos, steps, err)
 		}
 		// Design 06a-perf: plane's CPU 1 invocation runs alone in
-		// plane-cpu1 (index 1), CPU 2 and 4 concurrently in plane (index 2);
-		// together they are the unchanged three plane commands, and the
-		// sequential functions shard is index 6.
+		// plane-cpu1 (index 2 since the stress worker rebalance put
+		// packages-cpu at index 1), CPU 2 and 4 concurrently in plane (index
+		// 3); together they are the unchanged three plane commands, and the
+		// sequential functions shard is index 7.
 		shards, err := devcheck.StressShards(goos)
 		var plane []string
-		if err == nil && len(shards) == 7 {
-			for _, s := range append(slices.Clone(shards[1].Steps), shards[2].Steps...) {
+		if err == nil && len(shards) == 8 {
+			for _, s := range append(slices.Clone(shards[2].Steps), shards[3].Steps...) {
 				plane = append(plane, strings.Join(s.Argv, " "))
 			}
 		}
-		if err != nil || len(shards) != 7 || shards[0].Parallel || shards[1].Name != "plane-cpu1" || !shards[1].Parallel || len(shards[1].Steps) != 1 ||
-			shards[2].Name != "plane" || !shards[2].Parallel || len(shards[2].Steps) != 2 || shards[6].Name != "functions" || shards[6].Parallel ||
+		if err != nil || len(shards) != 8 || shards[0].Parallel || shards[1].Name != "packages-cpu" || shards[2].Name != "plane-cpu1" || !shards[2].Parallel || len(shards[2].Steps) != 1 ||
+			shards[3].Name != "plane" || !shards[3].Parallel || len(shards[3].Steps) != 2 || shards[7].Name != "functions" || shards[7].Parallel ||
 			slices.Contains(shards[0].Steps[0].Argv, "./internal/plane") || !slices.Equal(plane, stressPlane) {
 			t.Fatalf("%s: plane must run in its own concurrent plane shards: %+v %v", goos, shards, err)
 		}

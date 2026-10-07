@@ -12,19 +12,21 @@ in v1.
 
 ## Checks
 
-Eighteen fixed jobs run on every trigger. Exactly four of them are the
+Twenty fixed jobs run on every trigger. Exactly four of them are the
 required status check contexts on `main`: `ci-linux`, `ci-macos`,
-`ci-linux-stress` and `ci-macos-stress`. The other fourteen are the stress
+`ci-linux-stress` and `ci-macos-stress`. The other sixteen are the stress
 workers (iteration 02c; the two plane workers since iteration 05b, the two
 sidecar workers since its sidecar follow-up, the two plane CPU1 and the two
-sidecar CPU1 workers since iteration 06a-perf), seven shards per platform;
-their names are unique diagnostic checks, not required contexts:
+sidecar CPU1 workers since iteration 06a-perf, the two packages-cpu workers
+since the stress worker rebalance of 2026-10-07), eight shards per
+platform; their names are unique diagnostic checks, not required contexts:
 
 | Check context | Runner | Timeout | Kind | Steps after setup |
 |---|---|---|---|---|
 | `ci-linux` | `ubuntu-24.04` | 45 min | required | `devcheck test` (native suite, then the same suite with `-race`, then iteration 08's `realadaptercheck`-tagged sidecar contract `TestRealAdapterLocal` and its `-race` counterpart), `devcheck coverage` (unit coverage must be greater than 80.0%; the profile run compiles the `realadaptercheck` tag), `devcheck bench` (git transport payload byte limits and commit/tree invariants, then the plane trust benchmarks: issuance, initialization and verified TLS health, the plane node benchmarks: heartbeat, snapshot of 100 nodes and durable enrollment, and the plane role benchmarks: role list and node views for 1 and 100 roles and durable add/set/rm transactions, then the node and role frame encode/decode benchmarks in `internal/contract`, then the sidecar ready-check benchmark (100 manual pairs, one shared probe) and the adapter's real fake-probe benchmark, then the task benchmarks: plane admission over 100 roles (first, last and no match, no filesystem), full-tail checkpoint writes of 0, 64 KiB and 10 MiB, the task envelope encode/decode at its maximum legal size in `internal/contract`, and the sidecar log-tail ring and maximum prompt composition, then the iteration 06a control benchmarks: the plane's per-task writer committing natural and lost terminal records and late evidence with 0, 64 KiB and 10 MiB tails (`BenchmarkControlCommit`: bytes written and bounded allocation; since iteration 06b also a stop intent's publication followed by its cancelled terminal record and a timed_out late append at the same tails), and one maximum sealed result, one maximum outbox and one 64-entry inventory page (`BenchmarkControlReplay` in `internal/contract` and `internal/sidecar`), then the iteration 06b bounded-wait benchmark (`BenchmarkControlWait` in `internal/plane`: registering and unregistering 1 and 16 IDs, waking 1 and 1,000 waiters; every waiter woken and no registration retained), then the iteration 07a MCP benchmarks in `internal/mcp` (`BenchmarkMCPCodec`: the discovery frame, the maximum 10 MiB log and the maximum 100-role list, bytes encoded and exact round trips; since iteration 10c also the maximum workspace task view and task workspace status (a result DTO of at most 32 KiB, metadata only) and the flat two-form argument validation of `ws_pull`, `ws_status` and `ws_diff`; `BenchmarkMCPRelay`: `node_show` end to end over a real local TLS plane; `BenchmarkMCPWaitBudget`: `task_wait` of 1 and 16 IDs with a fake clock and client, nothing retained), then the iteration 07b qualification-harness benchmarks in `internal/mcpqual` (`BenchmarkMCPQualificationTranscript`: each vendor decoder over its fixture at 1 KiB and at the 8 MiB per-file limit, exact event correlation, no model-prose timeout and an oversized transcript unqualified; `BenchmarkMCPQualificationProbe`: small-frame probe throughput on a fake clock with nonce and progress correlation and nothing retained), then the iteration 08 real-adapter benchmarks (`BenchmarkVendorFinal` and `BenchmarkVendorInvocation` in the `internal/adapter` step: both vendor extractors over the captured outputs, near-8-MiB and oversized inputs at chunk sizes 1, 4096 and 65536, and invocations with the smallest and the maximum legal prompt; since iteration 11 also Grok's success, error and cancelled captures, Cursor's result and absent output and synthetic near-8-MiB valid and oversized Grok and Cursor documents, and Grok invocations with a small and the 32 KiB prompt and Cursor's refusal; then the tagged step `BenchmarkRealAdapterFile` in `internal/sidecar`, `-bench=^BenchmarkRealAdapterFile$`: the final-file reader over a real 8 MiB and an oversized file, at most 8 MiB + 1 bytes consumed), with the iteration 09a workspace benchmarks in `internal/workspace` before that tagged step (`BenchmarkWorkspaceInitialTransfer` and `BenchmarkWorkspaceIncrementalTransfer` over the production TLS endpoint with the 1,024 × 4 KiB fixture: initial payload under 8 MiB, one-file incremental push plus fetch under 256 KiB and under 10% of the initial, each push a full guarded transaction with generation copy, closure validation, sync, publication and cleanup, reporting payload, copied bytes and files and visited objects per operation; then status and list pagination, show disk accounting, tree-metadata diff and prune retaining one branch while collecting an orphan history, each asserting exact output), then the iteration 09b local transfer benchmarks in `internal/workspacetransfer` (`BenchmarkTransferStatus`: clean and dirty cleanliness over the 1,024 × 4 KiB fixture with nested ignores, visited files and bytes read; `BenchmarkTransferSnapshot`: folder snapshots of the same fixture, initial, unchanged and one-change, with parent histories of 1 and 8 commits, inbound full-history bytes and outbound incremental bytes reported separately, objects created and bytes read; `BenchmarkTransferPush`: initial and incremental git-source pushes over the production TLS endpoint, initial payload under 8 MiB and incremental push plus fetch under 256 KiB and under 10% of the initial; `BenchmarkTransferPullGit`: one new commit into a repository holding the history, selected by branch and separately by hash, and since iteration 10c by task ID (a task ref pulled with the expected instance and commit, the exact-ref check reported separately as `ref-check-ns/op`), objects verified and installed; `BenchmarkTransferExport`: a 64-file export, entries, objects verified and bytes copied; every operation with real syncs, exact commits, trees and unchanged checkouts asserted), then the iteration 10b task workspace benchmarks in `internal/taskworkspace` (`BenchmarkTaskWorkspacePrepare`: a task's preparation over the node route of a real local TLS hub with the 1,024 × 4 KiB fixture, cold and warm cache, base history of 1 and 8 commits, fetched, saved and copied bytes and the independent copy's disk bytes reported separately, initial transfer under 8 MiB and a warm one-change fetch under 256 KiB and under 10% of it, and a cancelled preparation's cleanup; `BenchmarkTaskWorkspaceSnapshot`: the result snapshot of that checkout unchanged, with one changed file and with every file changed, scanned paths, bytes read and objects created; `BenchmarkTaskWorkspacePublish`: one publication of a one-file change through production persistence on both sides, base history of 1 and 8 commits: a real in-process plane (its per-task writer persists the intent, the terminal record and the result receipt) and the worker's own task storage (the sealed, authorized, push and settled checkpoints, the outbox journal and the removal of the whole task directory), with Begin, the deterministic commit, the guarded create-once receive with its generation transaction, the settlement's observation and the task_result exchange up to the committed receipt; it reports the measured pack payload (under 256 KiB), the copied hub generation's bytes and allocations; `BenchmarkTaskWorkspaceMetadata`: the plane's recomputed result metadata and bounded DTO for 100 and 10,000 changed paths, exact totals and at most 32 KiB, and since iteration 10c the hub side of a task status and of one task diff page, timed separately as `task-status-ns/op` and `task-diff-page-ns/op`), and, in the `bench sidecar` step, the iteration 10a benchmarks (`BenchmarkPromptReadiness`: event-to-send time of an immediate readiness report and exactly one report per withheld acknowledgement however many changes coalesce; `BenchmarkGuardianCompletion`: the guardian's cleanup decision with an injected group observation, alone, busy and error, probes per cleanup and no observer left armed, plus one native probe calibration in a helper process), then the non-blocking coordinator waits benchmark (`BenchmarkWaitUntilDone` in `internal/client`, the `bench client wait` step, `-bench=^BenchmarkWaitUntilDone$`: the renewable wait's loop over a fake single-attempt connection and an event-armed fake clock, for 1 and 16 IDs, 120 full 30 s slices (one synthetic hour), 600 capped 100 ms slices, ten immediate snapshots, ten failures through the capped backoff and an immediate winner, reporting `requests/op` and `timers/op`, asserting the exact request and timer schedules, a bounded terminal answer and that no timer, connection or goroutine is retained; no real hour, process or network), each checking its invariants; timings are reported, never gated), `devcheck cross` (linux/amd64, linux/arm64, darwin/amd64, darwin/arm64: 12 artifacts, then each verified, never executed: it exists, is nonempty and has an ELF or Mach-O header naming its GOOS/GOARCH; see Cross-build matrix) |
 | `ci-macos` | `macos-15` | 30 min | required | `devcheck native`: the complete suite as one `go test -json -tags=realadaptercheck` invocation, which must show passing run and pass events in `github.com/wedevwork/callsheet/tests/function` for `TestFP6ProcessGroups` and its `cooperative`, `resistant` and `leader-exits-first` scenarios, for the plane trust tests, the node tests, the role tests, the task tests the control tests (iteration 06a: the eight control function parents and the native group qualification; iteration 06b: the four task-control function parents) the MCP tests (iteration 07a: the eight MCP function parents and their mandatory subtests) and the coordinator setup and timeout qualification tests (iteration 07b: the eight function parents and their mandatory subtests) and the real-adapter tests (iteration 08: the nine function parents and their mandatory subtests) and the workspace tests (iteration 09a: the ten function tests and `TestWorkspaceRefSet/max-path`) and the wave-2 real-adapter tests (iteration 11: the nine `TestWave2*` function parents and their mandatory subtests) and the non-blocking coordinator waits tests (the eight function parents), and in `github.com/wedevwork/callsheet/internal/sidecar` for `TestTaskExecutionContract` and its `process` subtest and for the tagged `TestRealAdapterLocal` and its nine subtests (iteration 08's five and iteration 11's four `wave2-*`; see below); and the workspace local transfer tests (iteration 09b: the ten function tests); then, outside that stream, `devcheck coverage`, the workspace benchmark step (iteration 09a), the transfer benchmark step (iteration 09b), the task workspace benchmark step (iteration 10b) and the client wait benchmark step (non-blocking coordinator waits) |
-| `ci-linux-stress-packages` | `ubuntu-24.04` | 20 min | worker | `devcheck stress-packages` on Linux (see Stress checks) |
+| `ci-linux-stress-packages` | `ubuntu-24.04` | 20 min | worker | `devcheck stress-packages` on Linux: the combined nine-package invocation alone (see Stress checks) |
+| `ci-linux-stress-packages-cpu` | `ubuntu-24.04` | 20 min | worker | `devcheck stress-packages-cpu` on Linux: the `internal/contract`, `internal/mcpqual` and `internal/workspace` per-CPU groups, one after another, each three concurrent invocations at CPU 1, 2 and 4 (the stress worker rebalance) |
 | `ci-linux-stress-plane-cpu1` | `ubuntu-24.04` | 20 min | worker | `devcheck stress-plane-cpu1` on Linux: `internal/plane` at CPU 1, one invocation alone on its worker (iteration 06a-perf) |
 | `ci-linux-stress-plane` | `ubuntu-24.04` | 20 min | worker | `devcheck stress-plane` on Linux: `internal/plane` CPU 2 and CPU 4 as two concurrent invocations (iteration 05b; CPU 1 on its own worker since iteration 06a-perf) |
 | `ci-linux-stress-sidecar-cpu1` | `ubuntu-24.04` | 20 min | worker | `devcheck stress-sidecar-cpu1` on Linux: `internal/sidecar` at CPU 1, one invocation alone on its worker (iteration 06a-perf) |
@@ -32,16 +34,17 @@ their names are unique diagnostic checks, not required contexts:
 | `ci-linux-stress-processgroup` | `ubuntu-24.04` | 20 min | worker | `devcheck stress-processgroup` on Linux |
 | `ci-linux-stress-functions` | `ubuntu-24.04` | 20 min | worker | `devcheck stress-functions` on Linux |
 | `ci-macos-stress-packages` | `macos-15` | 20 min | worker | `devcheck stress-packages` on Darwin, with the same commands, repeat count and CPU settings as Linux |
+| `ci-macos-stress-packages-cpu` | `macos-15` | 20 min | worker | `devcheck stress-packages-cpu` on Darwin, likewise |
 | `ci-macos-stress-plane-cpu1` | `macos-15` | 20 min | worker | `devcheck stress-plane-cpu1` on Darwin, likewise |
 | `ci-macos-stress-plane` | `macos-15` | 20 min | worker | `devcheck stress-plane` on Darwin, likewise |
 | `ci-macos-stress-sidecar-cpu1` | `macos-15` | 20 min | worker | `devcheck stress-sidecar-cpu1` on Darwin, likewise |
 | `ci-macos-stress-sidecar` | `macos-15` | 20 min | worker | `devcheck stress-sidecar` on Darwin, likewise |
 | `ci-macos-stress-processgroup` | `macos-15` | 20 min | worker | `devcheck stress-processgroup` on Darwin, likewise |
 | `ci-macos-stress-functions` | `macos-15` | 20 min | worker | `devcheck stress-functions` on Darwin, likewise |
-| `ci-linux-stress` | `ubuntu-24.04` | 5 min | required summary | no setup; succeeds only if the seven Linux workers all concluded `success` |
-| `ci-macos-stress` | `ubuntu-24.04` | 5 min | required summary | no setup; succeeds only if the seven macOS workers all concluded `success` (Ubuntu only evaluates their status; it qualifies nothing about Darwin) |
+| `ci-linux-stress` | `ubuntu-24.04` | 5 min | required summary | no setup; succeeds only if the eight Linux workers all concluded `success` |
+| `ci-macos-stress` | `ubuntu-24.04` | 5 min | required summary | no setup; succeeds only if the eight macOS workers all concluded `success` (Ubuntu only evaluates their status; it qualifies nothing about Darwin) |
 
-The two main jobs and the fourteen workers start together on every trigger
+The two main jobs and the sixteen workers start together on every trigger
 and run independently: none waits for, depends on or is conditional on
 another (no `needs`, matrix, job or step condition, path filter,
 concurrency cancellation or `continue-on-error`), and each fails on its
@@ -51,7 +54,10 @@ parallel with each other and with the main jobs; iteration 05b gave
 `internal/plane` a fourth worker per platform, and its sidecar follow-up
 gave `internal/sidecar` a fifth; iteration 06a-perf moved the plane and
 sidecar CPU 1 invocations to a sixth and seventh worker per platform, so
-the plane and sidecar workers now run CPU 2 and CPU 4 only. The main jobs
+the plane and sidecar workers now run CPU 2 and CPU 4 only; the stress
+worker rebalance (2026-10-07) moved the contract, mcpqual and workspace
+per-CPU groups to an eighth worker per platform, `packages-cpu`, so the
+packages workers now run the combined invocation only. The main jobs
 keep their stages and budgets.
 
 `ci-linux`'s `devcheck test` also runs the M3/M4 container acceptance
@@ -80,13 +86,13 @@ or a forced job termination. The container stage never runs on macOS:
 Darwin's `native`, `test` and `all` never invoke it, and the standalone
 `container-e2e` stage refuses any non-Linux host before anything starts.
 
-Only the two summaries have dependencies, each on its own platform's seven
+Only the two summaries have dependencies, each on its own platform's eight
 workers, and they keep the required stress contexts, so branch protection
 needs no change. Each summary is the same small template with literal
 job IDs, never a matrix or a dynamic expression:
 
 ```yaml
-needs: [linux-stress-packages, linux-stress-plane-cpu1, linux-stress-plane, linux-stress-sidecar-cpu1, linux-stress-sidecar, linux-stress-processgroup, linux-stress-functions]
+needs: [linux-stress-packages, linux-stress-packages-cpu, linux-stress-plane-cpu1, linux-stress-plane, linux-stress-sidecar-cpu1, linux-stress-sidecar, linux-stress-processgroup, linux-stress-functions]
 if: ${{ always() }}
 defaults:
   run:
@@ -95,19 +101,20 @@ steps:
   - name: Require every stress shard
     env:
       PACKAGES_RESULT: ${{ needs['linux-stress-packages'].result }}
+      PACKAGES_CPU_RESULT: ${{ needs['linux-stress-packages-cpu'].result }}
       PLANE_CPU1_RESULT: ${{ needs['linux-stress-plane-cpu1'].result }}
       PLANE_RESULT: ${{ needs['linux-stress-plane'].result }}
       SIDECAR_CPU1_RESULT: ${{ needs['linux-stress-sidecar-cpu1'].result }}
       SIDECAR_RESULT: ${{ needs['linux-stress-sidecar'].result }}
       PROCESSGROUP_RESULT: ${{ needs['linux-stress-processgroup'].result }}
       FUNCTIONS_RESULT: ${{ needs['linux-stress-functions'].result }}
-    run: test "$PACKAGES_RESULT" = success && test "$PLANE_CPU1_RESULT" = success && test "$PLANE_RESULT" = success && test "$SIDECAR_CPU1_RESULT" = success && test "$SIDECAR_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success
+    run: test "$PACKAGES_RESULT" = success && test "$PACKAGES_CPU_RESULT" = success && test "$PLANE_CPU1_RESULT" = success && test "$PLANE_RESULT" = success && test "$SIDECAR_CPU1_RESULT" = success && test "$SIDECAR_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success
 ```
 
 (`ci-macos-stress` is identical with `macos-` job IDs; its `run` line is
 byte-identical.) `if: ${{ always() }}`
 makes the summary evaluate after unsuccessful dependencies instead of being
-skipped. Only all seven results `success` exit zero; `failure`,
+skipped. Only all eight results `success` exit zero; `failure`,
 `cancelled`, `skipped`, an empty or any unknown result in any position fails
 the summary. The all-success
 predicate is never put on the job's `if`, where it could skip the gate
@@ -595,7 +602,7 @@ for the runner's own darwin target and verifies its Mach-O output. A
 darwin-host cross step would repeat the 12 builds on the slower runner to
 prove nothing the Linux stage does not.
 
-The main jobs and all fourteen workers check out the event's revision without
+The main jobs and all sixteen workers check out the event's revision without
 persisted credentials, take the Go version from `go.mod` with module
 caching, run `go mod download`, and then run their check steps with
 `GOPROXY=off` and `GOSUMDB=off`. The summaries have no checkout, Go setup,
@@ -680,17 +687,20 @@ the plane files; function tests never count.
 
 `go run ./cmd/devcheck stress` repeats the timing- and concurrency-sensitive
 tests under the race detector with varied parallelism, on Linux and macOS.
-In CI it runs as seven shards per platform (iteration 02c; the plane shard
+In CI it runs as eight shards per platform (iteration 02c; the plane shard
 since iteration 05b, the sidecar shard since its sidecar follow-up, the
-plane CPU1 and sidecar CPU1 shards since iteration 06a-perf), one worker
-job each: `ci-linux-stress-packages`, `ci-linux-stress-plane-cpu1`,
+plane CPU1 and sidecar CPU1 shards since iteration 06a-perf, the
+packages-cpu shard since the stress worker rebalance), one worker
+job each: `ci-linux-stress-packages`, `ci-linux-stress-packages-cpu`,
+`ci-linux-stress-plane-cpu1`,
 `ci-linux-stress-plane`, `ci-linux-stress-sidecar-cpu1`,
 `ci-linux-stress-sidecar`, `ci-linux-stress-processgroup` and
 `ci-linux-stress-functions` run `devcheck stress-packages`,
+`devcheck stress-packages-cpu`,
 `devcheck stress-plane-cpu1`, `devcheck stress-plane`,
 `devcheck stress-sidecar-cpu1`, `devcheck stress-sidecar`,
 `devcheck stress-processgroup` and `devcheck stress-functions` on Linux,
-and the seven `ci-macos-stress-*` workers run the same stages on macOS.
+and the eight `ci-macos-stress-*` workers run the same stages on macOS.
 The project's declared repeat count is 20 per CPU setting (1, 2, 4). The
 flow's coder and reviewer use this count when they re-run timing-dependent
 tests they add or modify: `devcheck stress` for tests in its covered packages,
@@ -701,7 +711,7 @@ coordinator's own `TestStressConcurrencyContract` (see Local verification).
 The count, CPU list, shards, package groups, selectors, wave schedule and
 time budgets are declared once, in `internal/devcheck/stress.go`
 (`StressCount`, `StressShards`, `stressWaves`, and `StressSteps`, the
-flattened inspection view). The seven shards run twenty-two commands
+flattened inspection view). The eight shards run twenty-two commands
 (argv, never a shell), each with `CGO_ENABLED=1`, named `stress packages`,
 `stress contract cpu1`, `stress contract cpu2`, `stress contract cpu4`
 (the contract headroom fix), `stress mcpqual cpu1`, `stress mcpqual cpu2`,
@@ -727,7 +737,16 @@ contract headroom fix (2026-10-02), and gave `./internal/mcpqual` and
 workspace and mcpqual headroom fix (2026-10-02).
 Iteration 06a-perf changed no command, only the
 grouping: `stress plane cpu1` and `stress sidecar cpu1` each have a shard
-of their own:
+of their own. The stress worker rebalance (2026-10-07) also changed no
+command, flag, selection or order, only command ownership: the packages
+shard (`devcheck stress-packages`) now owns one command, the combined
+nine-package invocation, and the new packages-cpu shard
+(`devcheck stress-packages-cpu`) owns nine, the contract, mcpqual and
+workspace per-CPU groups. packages-cpu contains all three per-CPU groups
+at CPU 1, 2 and 4; unlike plane-cpu1 and sidecar-cpu1 it is not a
+CPU1-only shard, and there is no `packages-cpu1` stage.
+`internal/workspacetransfer` stays in the combined invocation. The
+twenty-two commands, in flattened order:
 
 ```
 go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/workspacetransfer ./internal/taskworkspace ./internal/taskpublication
@@ -756,7 +775,8 @@ go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestNodeEnrollment|TestNod
 
 | Shard | Stage | Commands | Execution |
 |---|---|---|---|
-| `packages` | `devcheck stress-packages` | `stress packages`, then `stress contract cpu1`, `cpu2`, `cpu4`, then `stress mcpqual cpu1`, `cpu2`, `cpu4`, then `stress workspace cpu1`, `cpu2`, `cpu4` | one invocation, then one group per split package (`internal/contract`, `internal/mcpqual`, `internal/workspace`), one group after another, each three concurrent invocations, one per CPU setting (the headroom fixes) |
+| `packages` | `devcheck stress-packages` | `stress packages` | one invocation, the combined nine-package command alone (since the stress worker rebalance) |
+| `packages-cpu` | `devcheck stress-packages-cpu` | `stress contract cpu1`, `cpu2`, `cpu4`, then `stress mcpqual cpu1`, `cpu2`, `cpu4`, then `stress workspace cpu1`, `cpu2`, `cpu4` | one group per split package (`internal/contract`, `internal/mcpqual`, `internal/workspace`), one group after another, each three concurrent invocations, one per CPU setting (the headroom fixes; their own shard since the stress worker rebalance) |
 | `plane-cpu1` | `devcheck stress-plane-cpu1` | `stress plane cpu1` | one invocation, alone on its worker (iteration 06a-perf) |
 | `plane` | `devcheck stress-plane` | `stress plane cpu2`, `cpu4` | two concurrent invocations, one per CPU setting (iteration 05b; CPU 1 moved to `plane-cpu1` in iteration 06a-perf) |
 | `sidecar-cpu1` | `devcheck stress-sidecar-cpu1` | `stress sidecar cpu1` | one invocation, alone on its worker (iteration 06a-perf) |
@@ -768,15 +788,23 @@ go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestNodeEnrollment|TestNod
 shard's sequential commands, then its per-CPU groups in order): thirteen
 until the contract headroom fix, the same commands in the same order as
 before iteration 06a-perf, and sixteen until the workspace and mcpqual
-headroom fix. It is an inspection view, never the execution order:
+headroom fix; the stress worker rebalance left the twenty-two and their
+order unchanged. It is an inspection view, never the execution order:
 a concurrent shard runs its invocations in the waves `stressWaves`
 schedules, and that schedule is empty, so every concurrent shard starts
 all of its invocations at once: the plane and sidecar CPU1 shards their
 one, the plane and sidecar pairs their two and processgroup its three.
-The packages shard's per-CPU groups are not a wave schedule and
-`stressWaves` never applies to them: once `stress packages` has
-succeeded, contract's three invocations start together, then mcpqual's
-once contract's have all succeeded, then workspace's likewise.
+The packages-cpu shard's per-CPU groups are not a wave schedule and
+`stressWaves` never applies to them: the shard is sequential and has no
+step of its own, so contract's three invocations start together, then
+mcpqual's once contract's have all succeeded and been joined, then
+workspace's likewise. In `devcheck stress` the packages-cpu shard starts
+only once `stress packages` has succeeded.
+
+Since the stress worker rebalance `devcheck stress-packages` runs the
+combined invocation only. To repeat everything it ran before, run both
+`devcheck stress-packages` and `devcheck stress-packages-cpu` (or
+`devcheck stress`); each stage then has its own 15-minute watchdog.
 
 Since iteration 06a-perf `devcheck stress-plane` and `devcheck stress-sidecar`
 now run CPU 2 and CPU 4 only. To repeat all three CPU settings of plane,
@@ -800,7 +828,9 @@ their `locking` and `shutdown` subtests below them.
   `internal/adapter`, (iteration 07a) `internal/mcp`, (iteration 07b)
   `internal/mcpqual`, (iteration 09a) `internal/workspace` (each its own
   per-CPU group since the workspace and mcpqual headroom fix) and
-  (iteration 09b) `internal/workspacetransfer` in the packages shard, `internal/plane` in the
+  (iteration 09b) `internal/workspacetransfer` in the packages shard (the
+  contract, mcpqual and workspace groups in the packages-cpu shard since
+  the stress worker rebalance), `internal/plane` in the
   plane shards (iteration 05b; CPU 1 in `plane-cpu1` and CPU 2 and 4 in
   `plane` since iteration 06a-perf), `internal/sidecar` in the sidecar
   shards (its sidecar follow-up; split the same way since iteration
@@ -1007,19 +1037,21 @@ their `locking` and `shutdown` subtests below them.
   cross-built binaries remain CGO-disabled.
 
 Execution. `devcheck stress` runs the shards in order, packages,
-plane-cpu1, plane, sidecar-cpu1, sidecar, processgroup, functions; a shard
-stage runs exactly its own commands. The packages shard runs
-`stress packages` first and then, only if it succeeded, its per-CPU
-groups, one after another: `stress contract cpu1`, `cpu2` and `cpu4`,
+packages-cpu, plane-cpu1, plane, sidecar-cpu1, sidecar, processgroup,
+functions; a shard stage runs exactly its own commands. The packages shard
+runs `stress packages` alone; in `devcheck stress` a failed packages shard
+never starts packages-cpu. The packages-cpu shard (the stress worker
+rebalance) has no sequential command of its own and runs its per-CPU
+groups one after another: `stress contract cpu1`, `cpu2` and `cpu4`,
 then `stress mcpqual cpu1`, `cpu2` and `cpu4`, then
 `stress workspace cpu1`, `cpu2` and `cpu4`. Each group's three
 invocations start together through the same concurrent coordinator as the
 Parallel shards (at most three at once, the same watchdog, logs such as
 `stress-contract-cpu1.log`, `stress-mcpqual-cpu2.log` and
-`stress-workspace-cpu4.log` owned by `devcheck stress-packages`, replayed
-in CPU order, all three joined before the group fails or the next group
-starts), and a failure in a group prevents the later groups, plane-cpu1
-and every later shard from starting. Sequential commands stop at the first
+`stress-workspace-cpu4.log` owned by `devcheck stress-packages-cpu`,
+replayed in CPU order, all three joined before the group fails or the next
+group starts), and a failure in a group prevents the later groups,
+plane-cpu1 and every later shard from starting. Sequential commands stop at the first
 failure, and a failed shard prevents the next. A failure in `plane-cpu1`
 during `devcheck stress` prevents `plane` and every later shard from
 starting, and a failed CPU 2 invocation still waits for CPU 4 before its
@@ -1137,6 +1169,36 @@ combined command fell from 249 s to 171 s after the compressed loose copy
 and the task-upload pack window, reducing the contention that motivated
 the split. The watchdog, binary timeout, repetition counts and jobs are
 unchanged; these figures are historical evidence, not new allowances.
+
+Then the stress worker rebalance (2026-10-07, design stress-rebalance
+r0.2, owner sign-off 2026-10-07). On slow macOS runners
+`ci-macos-stress-packages`, the combined invocation followed by the three
+per-CPU groups under one 15-minute watchdog, no longer fit: main run
+37596057274 (5e02892, slice A) passed 900 s with the combined command at
+574 s, contract at 116 s and mcpqual at 130 s, and the watchdog killed
+workspace; PR #31's run 37640343460 passed 900 s with the combined command
+at 515 s, contract at 123 s and mcpqual at 119 s, and workspace was killed
+at 143 s (a censored observation, not a completion or an upper bound).
+Completed runs between them took 703–837 s (combined 407–508 s; each
+group's time is that of its CPU 1 invocation). Linux has the same
+structure at 733–743 s on recent runs. The owner chose a structural
+rebalance over further test-cost cuts or reverting slice A: the three
+per-CPU groups moved unchanged to a new group-only shard, `packages-cpu`,
+with its own worker per platform (`ci-linux-stress-packages-cpu`,
+`ci-macos-stress-packages-cpu`) and its own 15-minute watchdog, and the
+packages workers keep the combined invocation alone. It adds two jobs
+(18 to 20) and no required context; no test workload, command, flag,
+repetition count, CPU setting, binary timeout or watchdog changed, and
+`internal/workspacetransfer` stays combined. Moving one or two groups to a
+lighter worker, or overlapping the groups with the combined invocation on
+one worker, was rejected: the remaining packages worker would still exceed
+the target, and the overlap adds contention on the same three macOS cores
+(the pool-of-three measurement above saved nothing, and r0.5's transfer
+group grew the Linux step). The per-worker review target for this
+rebalance is 675 seconds (75% of the 900 s watchdog) on a slow runner, a
+review target and not a runtime timeout; values above 675 need an
+explanation and an owner disposition before the headroom objective is
+claimed, and no test is weakened to meet it.
 
 Watchdog and orphans. When the watchdog (or the caller) ends the context,
 every outstanding invocation is canceled and the shard still waits for all
@@ -1343,9 +1405,12 @@ Budgets:
 - Each stress command: a 15-minute watchdog (or the caller's earlier
   deadline) bounds compilation as well as test execution; when it expires
   the command fails and no further step or shard starts. Each shard stage,
-  that is each worker job, has its own. A local `devcheck stress` runs all
-  seven shards in one process, one after another, under one shared
-  15-minute watchdog rather than seven; it is not a simulation of
+  that is each worker job, has its own (`devcheck stress-packages` and
+  `devcheck stress-packages-cpu` each one, since the stress worker
+  rebalance). A local `devcheck stress` runs all
+  eight shards in one process, one after another, under one shared
+  15-minute watchdog rather than eight, with no reset at the
+  packages/packages-cpu boundary; it is not a simulation of
   independent hosted workers, and a local expiry is therefore not evidence
   about any hosted worker.
 - Worker jobs: 20 minutes each, five minutes beyond the unchanged 15-minute
@@ -1370,7 +1435,10 @@ Budgets:
   to `internal/sidecar` likewise when the sidecar binary passed its
   300.0 s trigger. Iteration 06a-perf, by design revision, moved each
   package's CPU 1 invocation to a shard and worker of its own, changing no
-  command.
+  command. The stress worker rebalance (2026-10-07), by design revision and
+  owner sign-off, moved the contract, mcpqual and workspace per-CPU groups
+  to the packages-cpu shard and a worker of its own per platform, changing
+  no command.
 - Function-binary remedy (pre-authorized by design 02): if a function
   step, measured from its `ok  ./tests/function <N>s` line, reaches 5
   minutes on either supported host or hits its 6-minute timeout, it splits
@@ -1606,8 +1674,88 @@ Budgets:
   verbatim:
   Decoder enrollment: baseline is main run 37523901881 (ff8058f), as named by the coordinator. Supplied mcpqual per-CPU stress duration is approximately 60–85s per invocation; allocate at most 5s additional test execution per invocation (planning envelope 65–90s, not a measured result), with unchanged 360s binary timeout. Allocate 10s additional packages-job wall time per host, 15s main-job growth Linux and 20s macOS, 5s function-binary growth per native/race invocation and 5s new benchmark execution per host (macOS adds the mcpqual benchmark command). Other shard execution and container workloads get zero growth; shared compilation allowance is 5s/job. Reserve a separate ±30s runner-variance envelope, not spendable test workload. Keep all eighteen jobs, four required checks and existing watchdogs. Compare binary, command and job times separately against run 37523901881, retain failed first-run evidence, and investigate an allocation miss without reducing counts, skipping cases, weakening assertions or increasing timeouts.
 
+- Stress worker rebalance allocation (design stress-rebalance r0.2,
+  Documentation and timing qualification; planning envelopes and
+  projections, not measurements, guarantees or pass/fail timing gates;
+  owner sign-off 2026-10-07). The 15-minute watchdog, the 20-minute worker
+  limit, the 6-minute binary limit, `-count=20` and CPU 1, 2 and 4 are
+  unchanged. The existing under-10-minute diagnostic target remains
+  aspirational; for this rebalance the review target is 675 seconds (75% of
+  900) per affected worker on a slow runner, with 11–12 minutes the owner's
+  approximate range. It is a review target, not a runtime timeout: a value
+  above 675 needs an explicit explanation and owner disposition before the
+  headroom objective is claimed met, and no test is weakened to achieve it.
+  Planning evidence (seconds; stage time excludes checkout and setup):
+
+  | Platform / affected worker | Expected screening range | Slow-runner planning envelope |
+  |---|---|---|
+  | macOS packages | combined observations 407–574 | 574 + 45 allowance = 619 (10.3 min) |
+  | macOS packages-cpu | completed-run CPU1 group sums 296–333, plus overhead | 123 contract + 130 mcpqual + 191 workspace + 45 allowance = 489 (8.2 min) |
+  | Linux packages | approximately 436–441 before allowance | 441 × 1.5 + 15 ≈ 677 (11.3 min) |
+  | Linux packages-cpu | approximately 297–302 before allowance | 302 × 1.5 + 45 = 498 (8.3 min) |
+
+  PR #31's workspace was killed at 143 s: censored, not a completion or
+  an upper bound; the 191-second workspace figure is this document's
+  earlier 1.5× slow-runner projection. CPU 1 timings are proxies for group
+  wall time, not proof that CPU 1 is always last; the allowance covers the
+  CPU 2/4 tails and changed compilation and cache behaviour and is an
+  assumption, not measured overhead. The observed 574 s is already a slow
+  combined invocation, so it is not multiplied by 1.5 again. The Linux rows
+  are a lower-confidence cross-platform proxy: recent Linux runs give only
+  the 733–743 s total, allocated with PR #29 macOS's combined share
+  (486/818), then the 1.5× factor. Owner dispositions at sign-off: the
+  Linux packages projection of about 677 s (2 s above 675, 223 s below the
+  watchdog) is accepted as a marginal target exception pending the first
+  remote run, with the existing setup-go build cache retained and no saving
+  credited to it; the macOS sensitivity cases are accepted as well: the
+  486 s representative combined value (PR #29) at 1.5× gives about
+  730 + 45 = 775 s (86% of the watchdog, 100 s above the target) and the
+  rounded six-observation median of 497 s about 791 s (88%), both below
+  900 s; they are sensitivity cases, not measured bounds, and 75%
+  utilization is not guaranteed on every runner. A material measured
+  overrun needs owner disposition or a further design revision; neither
+  this exception nor the sensitivity case changes the watchdog. Other
+  workers have unchanged workloads and budgets; their times are recorded
+  for regression context, with no new prediction. The pull request must
+  replace these proxies with actual values (First remote run).
+
 Measurements, newest first. Hosted and local figures come from different
 machines and are never combined into one number.
+
+- Expected per-job wall-clock after the stress worker rebalance: planning
+  envelopes, not measurements (see the stress worker rebalance allocation
+  in Budgets; stage time, checkout and setup excluded). Only the packages
+  workers and the new packages-cpu workers change:
+  - `ci-linux-stress-packages` about 436–441 s before allowance, about
+    677 s slow-runner envelope, and `ci-macos-stress-packages` about
+    407–574 s, about 619 s slow-runner envelope (775–791 s in the owner's
+    sensitivity cases): the combined invocation alone.
+  - `ci-linux-stress-packages-cpu` about 297–302 s before allowance, about
+    498 s slow-runner envelope, and `ci-macos-stress-packages-cpu` about
+    296–333 s of CPU1 group sums plus overhead, about 489 s slow-runner
+    envelope: the three per-CPU groups, one after another.
+  - `ci-linux` about the same as before, `ci-macos` about the same as
+    before, `ci-linux-stress-plane-cpu1` about the same as before,
+    `ci-macos-stress-plane-cpu1` about the same as before,
+    `ci-linux-stress-plane` about the same as before,
+    `ci-macos-stress-plane` about the same as before,
+    `ci-linux-stress-sidecar-cpu1` about the same as before,
+    `ci-macos-stress-sidecar-cpu1` about the same as before,
+    `ci-linux-stress-sidecar` about the same as before,
+    `ci-macos-stress-sidecar` about the same as before,
+    `ci-linux-stress-processgroup` about the same as before,
+    `ci-macos-stress-processgroup` about the same as before,
+    `ci-linux-stress-functions` about the same as before and
+    `ci-macos-stress-functions` about the same as before: unchanged
+    workloads and budgets; their times are recorded for regression context,
+    with no new prediction.
+  - `ci-linux-stress` about 3 s and `ci-macos-stress` about 3 s of
+    execution after the slowest of their platform's eight workers, plus
+    scheduling.
+  - Overall critical path: expected on a packages worker, now the combined
+    invocation alone; the first remote run measures it (see First remote
+    run). Hosted stress worker rebalance times: pending (the implementation
+    pull request's first remote run), not passed.
 
 - Matched base/change observation with iteration 10b (code-review round 2,
   W1), Linux, go1.26.4 linux/amd64 on the same 16-thread developer
@@ -2532,11 +2680,12 @@ blanket API write.
   `ci-linux-stress`, `ci-macos-stress`. Select GitHub Actions as their
   expected source when available. Since iteration 02c the two stress
   contexts are reported by the summary jobs under the same names, and the
-  fourteen worker contexts are not required (six since iteration 02c, the
+  sixteen worker contexts are not required (six since iteration 02c, the
   two plane workers since iteration 05b, the two sidecar workers since its
-  sidecar follow-up and the four CPU1 workers since iteration 06a-perf; the
+  sidecar follow-up, the four CPU1 workers since iteration 06a-perf and the
+  two packages-cpu workers since the stress worker rebalance; the
   summaries gate on them), so no protection change is needed for 02c, 05b,
-  its sidecar follow-up or 06a-perf.
+  its sidecar follow-up, 06a-perf or the stress worker rebalance.
 - Require branches to be up to date before merging.
 - Do not allow bypassing the above settings (include administrators). No pull
   request bypass actors, no force pushes, no branch deletion.
@@ -2644,6 +2793,24 @@ contexts stay exactly `ci-linux`, `ci-macos`, `ci-linux-stress` and
 No skipped, canceled, pending or unobserved result qualifies, and a later
 push requires fresh current-revision evidence (return to step 3).
 
+### packages-cpu workers (stress worker rebalance)
+
+The stress worker rebalance (design stress-rebalance, 2026-10-07) adds the
+workers `ci-linux-stress-packages-cpu` and `ci-macos-stress-packages-cpu`;
+both summaries now take eight results. The new workers are diagnostic
+checks, not required contexts. The required contexts stay exactly
+`ci-linux`, `ci-macos`, `ci-linux-stress` and `ci-macos-stress`, so no
+protection change is made:
+
+1. Finish the flow's code review of the stress worker rebalance (`REVIEW_APPROVED`) and commit the reviewed code on `stress-rebalance`.
+2. Push `stress-rebalance` and open its pull request targeting `main`.
+3. Observe all twenty jobs report success on the current PR merge revision: the sixteen stress workers and all four required checks.
+4. The owner verifies protection with the read-only command above: the same four required contexts, and no packages-cpu worker added as a required context.
+5. Merge only with all four checks green on the current merge revision and the first-remote-run evidence recorded (First remote run).
+
+No skipped, canceled, pending or unobserved result qualifies, and a later
+push requires fresh current-revision evidence (return to step 3).
+
 ## PR flow
 
 Iteration branches are named `iter-NN-<slug>`, for example
@@ -2701,6 +2868,13 @@ required context: the workflow keeps its eighteen jobs, and the
 pre-authorised CPU1 split (Budgets, iteration 06b) is applied only if the
 first remote run triggers it.
 
+The stress worker rebalance (the packages-cpu stress workers) is delivered
+in its own pull request (branch `stress-rebalance`). It adds two worker
+jobs and changes no required context, so it needs no protection change;
+the workflow now has twenty jobs, and the pull request merges only after
+all twenty jobs, and so all four checks, are green on its current merge
+revision (Branch protection, packages-cpu workers).
+
 ## First remote run
 
 Local checks cannot prove runner provisioning, Go and action download or cache
@@ -2709,10 +2883,10 @@ remain pending until observed. After pushing, the owner records in the flow
 handoff:
 
 - the run URL and the commit it ran;
-- the conclusions of all eighteen jobs: all four checks, `ci-linux`, `ci-macos`, `ci-linux-stress` and `ci-macos-stress`, and the fourteen stress workers;
+- the conclusions of all twenty jobs: all four checks, `ci-linux`, `ci-macos`, `ci-linux-stress` and `ci-macos-stress`, and the sixteen stress workers;
 - native evidence from the `ci-macos` log: the line `devcheck: native qualification passed on darwin/<arch>` naming `TestFP6ProcessGroups` and its three scenarios;
-- stress evidence from the fourteen worker logs (the summaries hold none): the lines `devcheck: stage stress-packages ok`, `devcheck: stage stress-plane-cpu1 ok`, `devcheck: stage stress-plane ok`, `devcheck: stage stress-sidecar-cpu1 ok`, `devcheck: stage stress-sidecar ok`, `devcheck: stage stress-processgroup ok` and `devcheck: stage stress-functions ok` on each platform, the `-count=20` commands, every CPU invocation's outcome, and the elapsed time of each stress command with the runner's OS, architecture and cache state;
-- the actual job and step times of all eighteen jobs, setup, queue and summary wait time included, and the overall workflow critical path; compare each worker with the expected per-job wall-clock in Stress checks, and diagnose any miss of the 4–5 minute goal and the remaining bottleneck without weakening tests or reducing counts;
+- stress evidence from the sixteen worker logs (the summaries hold none): the lines `devcheck: stage stress-packages ok`, `devcheck: stage stress-packages-cpu ok`, `devcheck: stage stress-plane-cpu1 ok`, `devcheck: stage stress-plane ok`, `devcheck: stage stress-sidecar-cpu1 ok`, `devcheck: stage stress-sidecar ok`, `devcheck: stage stress-processgroup ok` and `devcheck: stage stress-functions ok` on each platform, the `-count=20` commands, every CPU invocation's outcome, and the elapsed time of each stress command with the runner's OS, architecture and cache state;
+- the actual job and step times of all twenty jobs, setup, queue and summary wait time included, and the overall workflow critical path; compare each worker with the expected per-job wall-clock in Stress checks, and diagnose any miss of the 4–5 minute goal and the remaining bottleneck without weakening tests or reducing counts;
 - the branch protection verification described above (finishing the conditional 02b prerequisite first if it is needed);
 - for iteration 03, native evidence for the 30 node names (see Checks) on `ci-macos`, the `stress node function` step and the enlarged `stress packages` step on both platforms with their times, compared with the iteration 03 allocation in Budgets;
 - for iteration 04, native evidence for the 29 role names (see Checks) on `ci-macos`, the `stress packages` step with `internal/adapter` and the `internal/plane`, `internal/sidecar` and `internal/adapter` binary times on both platforms, the function package time on both platforms, and the before/after job and command durations, compared with the iteration 04 allocation in Budgets. Hosted evidence pending at local review remains pending, not passed;
@@ -2727,6 +2901,7 @@ handoff:
 - for iteration 10a: native evidence for `TestTaskPromptReadiness` and `TestTaskFastGroupCleanup` (335 names) on `ci-macos`, where the second exercises the process-group list proof (`proc_listpids`) with real guardians, descendants and fork/exit churn, and on `ci-linux` the child subreaper; each FP latency the tests log (ready visibility under 500 ms, exit status to proven absence under 750 ms) on both hosts; and all four CPU1 invocations' binary and command times (Linux and macOS, plane and sidecar) against run 37022060367 and the 10a planning targets in Budgets, recorded without a numerical gate. Until that run exists hosted qualification is pending, not passed.
 - for iteration 10b: native evidence for the nine `TestTaskWorkspace*` parents and the three acceptance scenarios `TestTaskWorkspaceCommit/AC-WS-1`, `TestTaskWorkspacePublication/AC-WS-5` and `TestTaskWorkspaceIsolation/AC-WS-2` (347 names) on `ci-macos` (APFS aliases, the physical work path, darwin's batched `F_FULLFSYNC` durability and the native group proof) and `ci-linux`; the per-file coverage of every 10b manifest entry on both hosts; the `bench taskworkspace` step on both hosts; and the stress, function and benchmark times against the 10b planning allowances in Budgets, recorded without a numerical gate. Until that run exists hosted qualification is pending, not passed.
 - for iteration 10c: native evidence for the six coordinator delivery parents `TestWorkspaceDispatchDoors`, `TestWorkspaceTaskPull`, `TestWorkspaceTaskInspect`, `TestWorkspaceTaskMCP`, `TestWorkspaceMultiHop` and `TestWorkspaceOperatorWorkflow` (353 names) on `ci-macos` and `ci-linux`; the per-file coverage of every 10c manifest entry on both hosts; the unchanged bench call count (30, seven on the native tail) with the extended `BenchmarkMCPCodec` (Linux), `BenchmarkTransferPullGit` and `BenchmarkTaskWorkspaceMetadata` (both hosts); and the `stress packages` and function binary and command times against landed 10b and the 10c planning allowances in Budgets, recorded without a numerical gate. The M4 checks named in [workspaces.md](workspaces.md#manual-m4-checks) are gated by the container acceptance, not by a two-machine session. Until that run exists hosted qualification is pending, not passed.
+- for the stress worker rebalance (design stress-rebalance, delivery gate; hosted evidence pending at local code review remains pending, not passed, and is outside the implementation acceptance bar): collect the entire successful run of the implementation pull request on both platforms: every stage's elapsed time (`devcheck: stage stress-packages ok` and `devcheck: stage stress-packages-cpu ok` with the `devcheck: stress packages: ok in Xs` and per-CPU outcome lines), the combined command's time and each of its nine binaries' times, all nine per-CPU invocation times (`devcheck: stress contract cpuN: ok in Xs`, `devcheck: stress mcpqual cpuN: ok in Xs`, `devcheck: stress workspace cpuN: ok in Xs`) and each group's maximum, job setup duration, the setup-go build cache state, the runner's architecture and core count, both summary outcomes and the workflow critical path. Preserve failed runs too; they stay in the evidence, never discarded as retries. Record the results in this document with projections distinguished from measurements, comparing each affected stage (`stress-packages` and `stress-packages-cpu`, Linux and macOS) to the 675-second review target and each binary to its 360-second limit; any timeout or assertion failure blocks qualification. A green fast-runner pull request validates execution but does not establish a slow-runner upper bound; record that uncertainty explicitly. A material measured overrun of the target needs owner disposition or a further design revision, never a raised timeout, a reduced count or a weakened test. Record the other workers' times for regression context. Until that run exists hosted qualification is pending, not passed.
 - for m3-m4-container-e2e: the `ci-linux` run whose `devcheck test` passes with the container acceptance (its revision, the run URL and the published `Publish container E2E evidence` report with all 14 case records and the end record) is the first M3/M4 demonstration; until it is observed M3/M4 remain undemonstrated. Record the cold build and container elapsed times printed by the stage and the complete `ci-linux` job time against its unchanged 45-minute limit; if the added ten-minute allocation does not fit in practice, report the blocker instead of moving or weakening tests.
 
 The local validator checks action identity and full-SHA format only, not that
@@ -2790,6 +2965,7 @@ A single shard, as one CI worker runs it, is also available on its own:
 
 ```
 go run ./cmd/devcheck stress-packages
+go run ./cmd/devcheck stress-packages-cpu
 go run ./cmd/devcheck stress-plane-cpu1
 go run ./cmd/devcheck stress-plane
 go run ./cmd/devcheck stress-sidecar-cpu1
@@ -2801,9 +2977,13 @@ go run ./cmd/devcheck stress-functions
 Measure a shard without other stress work running on the same host, which
 matches a hosted worker's isolation. `devcheck stress-plane` and
 `devcheck stress-sidecar` run CPU 2 and CPU 4 only; add their `-cpu1` stages
-for CPU 1. The `TestStressConcurrencyContract`
+for CPU 1. `devcheck stress-packages` runs the combined invocation only; add
+`devcheck stress-packages-cpu` for the contract, mcpqual and workspace
+per-CPU groups (the stress worker rebalance; there is no
+`stress-packages-cpu1` stage). The `TestStressConcurrencyContract`
 command repeats the concurrent coordinator's timing-dependent contract at
-the declared count, for all five concurrent shards and the wave mechanism
+the declared count, for all five concurrent shards, the packages-cpu
+groups and the wave mechanism
 on the processgroup shard; coder and reviewer run it on both native platforms, and it
 is not part of any stress stage or of CI. The last
 command of the first block is the focused evidence for the plane stress
