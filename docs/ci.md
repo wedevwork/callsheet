@@ -1722,6 +1722,117 @@ Budgets:
 Measurements, newest first. Hosted and local figures come from different
 machines and are never combined into one number.
 
+- Hosted run 37659127131 (pull request #31, the stress worker rebalance at
+  9c749ac, merge revision 42fa953 on 594653b, merged as ad03a60; measured,
+  all twenty jobs green with no failure events; the first hosted run with
+  the packages-cpu workers): jobs ran from 17:26:54 to 17:39:47 UTC on
+  2026-10-07, 12 min 53 s from the first job's start to the last job's
+  completion (the trigger time is not in the saved job data). Runners:
+  `ubuntu-24.04` (x64), image 20261004.327.1 for the packages worker and
+  both summaries and 20260927.320.1 for the other seven Linux workers, and
+  `macos-15-arm64` image 20260907.0337.1 (arm64); Go 1.26.0
+  (`go1.26.0 linux/amd64`, `go1.26.0 darwin/arm64`), with the setup-go
+  module and build cache restored on all sixteen workers. The core count is
+  not printed in the job logs, so the three-core macOS and four-vCPU Linux
+  assumptions stay unverified. Stage times are the `devcheck` outcome
+  lines; setup is job start to stage start (checkout, setup-go and module
+  download); binary times are the `go test` package summaries.
+  - Packages workers (`devcheck stress-packages`, the combined nine-package
+    invocation alone, `devcheck: stage stress-packages ok` on both):
+    Linux `devcheck: stress packages: ok in 304.0s` (step 304 s), binaries
+    `internal/workspacetransfer` 175.590 s, `internal/client` 137.027 s,
+    `internal/adapter` 130.540 s, `internal/taskworkspace` 128.038 s,
+    `internal/testkit/fakeadapter` 119.963 s, `internal/taskpublication`
+    112.358 s, `internal/mcp` 102.339 s, `internal/testkit` 97.281 s and
+    `internal/spikes/gittransport` 52.830 s, job 324 s (5 min 24 s) with
+    16 s of setup (setup-go 11 s); macOS
+    `devcheck: stress packages: ok in 441.7s` (step 443 s), binaries
+    `internal/workspacetransfer` 256.266 s, `internal/taskpublication`
+    219.143 s, `internal/taskworkspace` 200.870 s, `internal/adapter`
+    119.296 s, `internal/client` 110.133 s, `internal/testkit` 99.085 s,
+    `internal/testkit/fakeadapter` 96.600 s, `internal/mcp` 80.049 s and
+    `internal/spikes/gittransport` 64.721 s, job 473 s (7 min 53 s) with
+    24 s of setup (setup-go 18 s).
+  - Packages-cpu workers (`devcheck stress-packages-cpu`, the three groups
+    one after another, each three concurrent invocations,
+    `devcheck: stage stress-packages-cpu ok` on both), invocation times at
+    CPU 1/2/4 from `devcheck: stress <package> cpuN: ok in Xs`: Linux
+    contract 140.7/138.1/141.2 s (binaries 136.216/132.781/136.943 s,
+    group maximum 141.2 s at CPU 4), mcpqual 114.7/115.0/114.6 s (binaries
+    84.128/84.370/83.929 s, maximum 115.0 s at CPU 2) and workspace
+    104.9/106.5/108.8 s (binaries 100.996/102.750/104.837 s, maximum
+    108.8 s at CPU 4); stage 365.0 s from the stage's first line to
+    `devcheck: stage stress-packages-cpu ok`, the sum of the three group
+    maxima (step 366 s); job 387 s (6 min 27 s) with 17 s of setup
+    (setup-go 14 s). macOS contract 101.2/97.4/96.9 s (binaries
+    97.491/93.730/92.785 s, maximum 101.2 s at CPU 1), mcpqual
+    121.7/116.5/114.7 s (binaries 97.948/92.741/90.792 s, maximum 121.7 s
+    at CPU 1) and workspace 132.6/130.1/125.5 s (binaries
+    127.661/125.191/120.627 s, maximum 132.6 s at CPU 1); stage 355.5 s,
+    again the sum of the group maxima (step 358 s); job 391 s (6 min 31 s)
+    with 27 s of setup (setup-go 21 s). The macOS packages-cpu job started
+    only at 17:31:47, 5 s after `ci-macos-stress-plane-cpu1` completed:
+    five macOS jobs started at 17:26:58–17:27:01, and each of the other
+    four started 5–16 s after another macOS job completed, consistent with
+    a five-job macOS runner concurrency limit (its queue wait is not in the
+    saved job data).
+  - Against the review target and limits: every affected stage is below
+    the 675-second review target and the 900 s watchdog: Linux packages
+    304.0 s (371.0 s below the target), Linux packages-cpu 365.0 s
+    (310.0 s below), macOS packages 441.7 s (233.3 s below) and macOS
+    packages-cpu 355.5 s (319.5 s below). Every binary is below its
+    360-second limit: the slowest combined binary is
+    `internal/workspacetransfer` (175.590 s Linux, 256.266 s macOS,
+    103.7 s of headroom), the slowest per-CPU binary contract CPU 4 on
+    Linux (136.943 s) and workspace CPU 1 on macOS (127.661 s). No timeout
+    or assertion failure.
+  - Against the projections in Budgets (planning envelopes, not gates):
+    Linux packages 304.0 s is below its approximately 436–441 s screening
+    range and far below the about 677 s envelope accepted as a marginal
+    target exception; macOS packages 441.7 s is inside the 407–574 s
+    combined observations and below the 619 s envelope; macOS packages-cpu
+    355.5 s (its CPU1 group sum, CPU 1 being the slowest of every macOS
+    group) is 22.5 s above the 296–333 s screening sums and below the
+    489 s envelope; Linux packages-cpu 365.0 s is about 63 s above its
+    approximately 297–302 s screening range and below the 498 s envelope,
+    a screening miss this evidence does not explain, recorded for the
+    owner without a gate. On Linux CPU 1 was the slowest invocation of no
+    group (contract and workspace CPU 4, mcpqual CPU 2), as the
+    allocation's note that CPU 1 timings are only proxies allowed.
+  - Uncertainty: these were fast runners. One green run validates execution
+    but does not establish a slow-runner upper bound: the slow-runner
+    envelopes and the owner's macOS sensitivity cases (775–791 s) in
+    Budgets remain projections, and a slower runner may still approach or
+    exceed the 675-second target.
+  - Other workers (unchanged workloads, regression context only, no new
+    prediction): Linux `stress plane cpu1` 211.1 s (job 232 s), `stress
+    plane` cpu2/cpu4 193.9/162.8 s (job 215 s), `stress sidecar cpu1`
+    181.6 s (job 201 s), `stress sidecar` cpu2/cpu4 207.5/177.2 s (job
+    230 s), `stress processgroup` cpu1/cpu2/cpu4 91.4/93.9/93.9 s (job
+    116 s) and `stress function`, `stress plane function` and `stress node
+    function` 19.3/15.3/6.7 s (job 60 s); macOS `stress plane cpu1`
+    244.8 s (job 281 s), `stress plane` 193.6/170.5 s (job 235 s),
+    `stress sidecar cpu1` 190.5 s (job 219 s), `stress sidecar`
+    172.0/145.7 s (job 202 s), `stress processgroup` 118.0 s each (job
+    170 s) and the three function commands 27.9/39.1/14.9 s (job 120 s).
+    Every CPU1 invocation is at most 244.8 s. Main jobs: `ci-linux` 773 s
+    (12 min 53 s: `devcheck test` 474 s, coverage 57 s, bench 147 s, cross
+    73 s) and `ci-macos` 484 s (8 min 4 s, `devcheck native` 448 s).
+  - Summaries: `ci-linux-stress` succeeded, 17:33:24 to 17:33:27, starting
+    2 s after its last worker (`ci-linux-stress-packages-cpu`, 17:33:22)
+    with all eight results `success`; `ci-macos-stress` succeeded, 17:38:20
+    to 17:38:24, starting 2 s after `ci-macos-stress-packages-cpu`
+    (17:38:18), all eight `success`.
+  - Critical path: `ci-linux` (17:26:54 to 17:39:47, 773 s), not a stress
+    worker as projected. The longest stress path was macOS, ending with
+    `ci-macos-stress` at 17:38:24 (11 min 30 s after the first job
+    started) because its packages-cpu worker waited for a runner; Linux's
+    ended at 17:33:27. The packages and packages-cpu workers (324–473 s)
+    still miss the 4–5 minute goal; their remaining bottleneck is the
+    combined invocation's slowest binaries (`internal/workspacetransfer`,
+    and on macOS `internal/taskpublication` and `internal/taskworkspace`)
+    and, on macOS, the runner queue.
+
 - Expected per-job wall-clock after the stress worker rebalance: planning
   envelopes, not measurements (see the stress worker rebalance allocation
   in Budgets; stage time, checkout and setup excluded). Only the packages
@@ -1754,8 +1865,8 @@ machines and are never combined into one number.
     scheduling.
   - Overall critical path: expected on a packages worker, now the combined
     invocation alone; the first remote run measures it (see First remote
-    run). Hosted stress worker rebalance times: pending (the implementation
-    pull request's first remote run), not passed.
+    run). Hosted stress worker rebalance times: measured by run
+    37659127131 (above).
 
 - Matched base/change observation with iteration 10b (code-review round 2,
   W1), Linux, go1.26.4 linux/amd64 on the same 16-thread developer
@@ -2901,7 +3012,7 @@ handoff:
 - for iteration 10a: native evidence for `TestTaskPromptReadiness` and `TestTaskFastGroupCleanup` (335 names) on `ci-macos`, where the second exercises the process-group list proof (`proc_listpids`) with real guardians, descendants and fork/exit churn, and on `ci-linux` the child subreaper; each FP latency the tests log (ready visibility under 500 ms, exit status to proven absence under 750 ms) on both hosts; and all four CPU1 invocations' binary and command times (Linux and macOS, plane and sidecar) against run 37022060367 and the 10a planning targets in Budgets, recorded without a numerical gate. Until that run exists hosted qualification is pending, not passed.
 - for iteration 10b: native evidence for the nine `TestTaskWorkspace*` parents and the three acceptance scenarios `TestTaskWorkspaceCommit/AC-WS-1`, `TestTaskWorkspacePublication/AC-WS-5` and `TestTaskWorkspaceIsolation/AC-WS-2` (347 names) on `ci-macos` (APFS aliases, the physical work path, darwin's batched `F_FULLFSYNC` durability and the native group proof) and `ci-linux`; the per-file coverage of every 10b manifest entry on both hosts; the `bench taskworkspace` step on both hosts; and the stress, function and benchmark times against the 10b planning allowances in Budgets, recorded without a numerical gate. Until that run exists hosted qualification is pending, not passed.
 - for iteration 10c: native evidence for the six coordinator delivery parents `TestWorkspaceDispatchDoors`, `TestWorkspaceTaskPull`, `TestWorkspaceTaskInspect`, `TestWorkspaceTaskMCP`, `TestWorkspaceMultiHop` and `TestWorkspaceOperatorWorkflow` (353 names) on `ci-macos` and `ci-linux`; the per-file coverage of every 10c manifest entry on both hosts; the unchanged bench call count (30, seven on the native tail) with the extended `BenchmarkMCPCodec` (Linux), `BenchmarkTransferPullGit` and `BenchmarkTaskWorkspaceMetadata` (both hosts); and the `stress packages` and function binary and command times against landed 10b and the 10c planning allowances in Budgets, recorded without a numerical gate. The M4 checks named in [workspaces.md](workspaces.md#manual-m4-checks) are gated by the container acceptance, not by a two-machine session. Until that run exists hosted qualification is pending, not passed.
-- for the stress worker rebalance (design stress-rebalance, delivery gate; hosted evidence pending at local code review remains pending, not passed, and is outside the implementation acceptance bar): collect the entire successful run of the implementation pull request on both platforms: every stage's elapsed time (`devcheck: stage stress-packages ok` and `devcheck: stage stress-packages-cpu ok` with the `devcheck: stress packages: ok in Xs` and per-CPU outcome lines), the combined command's time and each of its nine binaries' times, all nine per-CPU invocation times (`devcheck: stress contract cpuN: ok in Xs`, `devcheck: stress mcpqual cpuN: ok in Xs`, `devcheck: stress workspace cpuN: ok in Xs`) and each group's maximum, job setup duration, the setup-go build cache state, the runner's architecture and core count, both summary outcomes and the workflow critical path. Preserve failed runs too; they stay in the evidence, never discarded as retries. Record the results in this document with projections distinguished from measurements, comparing each affected stage (`stress-packages` and `stress-packages-cpu`, Linux and macOS) to the 675-second review target and each binary to its 360-second limit; any timeout or assertion failure blocks qualification. A green fast-runner pull request validates execution but does not establish a slow-runner upper bound; record that uncertainty explicitly. A material measured overrun of the target needs owner disposition or a further design revision, never a raised timeout, a reduced count or a weakened test. Record the other workers' times for regression context. Until that run exists hosted qualification is pending, not passed.
+- for the stress worker rebalance (design stress-rebalance, delivery gate; hosted evidence pending at local code review remains pending, not passed, and is outside the implementation acceptance bar): collect the entire successful run of the implementation pull request on both platforms: every stage's elapsed time (`devcheck: stage stress-packages ok` and `devcheck: stage stress-packages-cpu ok` with the `devcheck: stress packages: ok in Xs` and per-CPU outcome lines), the combined command's time and each of its nine binaries' times, all nine per-CPU invocation times (`devcheck: stress contract cpuN: ok in Xs`, `devcheck: stress mcpqual cpuN: ok in Xs`, `devcheck: stress workspace cpuN: ok in Xs`) and each group's maximum, job setup duration, the setup-go build cache state, the runner's architecture and core count, both summary outcomes and the workflow critical path. Preserve failed runs too; they stay in the evidence, never discarded as retries. Record the results in this document with projections distinguished from measurements, comparing each affected stage (`stress-packages` and `stress-packages-cpu`, Linux and macOS) to the 675-second review target and each binary to its 360-second limit; any timeout or assertion failure blocks qualification. A green fast-runner pull request validates execution but does not establish a slow-runner upper bound; record that uncertainty explicitly. A material measured overrun of the target needs owner disposition or a further design revision, never a raised timeout, a reduced count or a weakened test. Record the other workers' times for regression context. Until that run exists hosted qualification is pending, not passed. Recorded: hosted run 37659127131 of pull request #31 (9c749ac, merge revision 42fa953, merged as ad03a60), all twenty jobs and both summaries green with no timeout or assertion failure; every affected stage below the 675-second review target (Linux 304.0 s packages and 365.0 s packages-cpu, macOS 441.7 s and 355.5 s), every binary below its 360-second limit. The saved evidence holds only this run; the pull request's earlier run 37640343460, whose watchdog kill before the rebalance motivated it, stays recorded in Stress checks. The stage, binary, per-CPU, setup, cache, runner, summary and critical-path figures, the comparison with the projections and the explicit slow-runner uncertainty are in Stress checks (Stress checks, Hosted run 37659127131).
 - for m3-m4-container-e2e: the `ci-linux` run whose `devcheck test` passes with the container acceptance (its revision, the run URL and the published `Publish container E2E evidence` report with all 14 case records and the end record) is the first M3/M4 demonstration; until it is observed M3/M4 remain undemonstrated. Record the cold build and container elapsed times printed by the stage and the complete `ci-linux` job time against its unchanged 45-minute limit; if the added ten-minute allocation does not fit in practice, report the blocker instead of moving or weakening tests.
 
 The local validator checks action identity and full-SHA format only, not that
