@@ -569,6 +569,10 @@ type taskRun struct {
 	env      []string
 	sup      chan *taskSupervisor
 	cur      *taskSupervisor
+	// manualAck switches each accepted connection to manual
+	// acknowledgement before hello_ok. The plane's autoAck flag is
+	// snapshotted at upgrade, which can precede any later change to it.
+	manualAck bool
 }
 
 // taskOpts adjust a task run before it starts.
@@ -882,6 +886,11 @@ func (tr *taskRun) reconnectStops(t *testing.T, gen, rev int, actions map[string
 	cfgs ...contract.RoleConfig) (*taskSession, []contract.TaskInventoryEntry) {
 	t.Helper()
 	c := tr.fp.accept(t)
+	if tr.manualAck {
+		// Before hello_ok the sidecar has sent only hello, so no heartbeat
+		// is in flight for the dispatcher to consume.
+		c.setManual()
+	}
 	c.helloOK(testID)
 	c.heartbeatAt(1, 0)
 	entries := c.inventory()
