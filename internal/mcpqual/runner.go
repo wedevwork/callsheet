@@ -226,19 +226,17 @@ func (r *Runner) evidenceLimit() int {
 	return MaxEvidenceFileBytes
 }
 
-// writeEvidence is putEvidence without the cut and error reports (the
-// error is logged by putEvidence).
+// writeEvidence is putEvidence without the cut report.
 func (r *Runner) writeEvidence(rel string, data []byte, kind evidenceKind) string {
-	rel, _, _ = r.putEvidence(rel, data, kind)
+	rel, _ = r.putEvidence(rel, data, kind)
 	return rel
 }
 
 // putEvidence sanitizes data before any outer encoding, bounds the
 // sanitized bytes to the evidence limit (cutting at a line boundary and
 // marking the cut), writes them and lists them with the hash of exactly the
-// written bytes. It reports whether the file was cut and any write failure
-// (also logged; an unwritten file is never listed).
-func (r *Runner) putEvidence(rel string, data []byte, kind evidenceKind) (string, bool, error) {
+// written bytes. It reports whether the file was cut.
+func (r *Runner) putEvidence(rel string, data []byte, kind evidenceKind) (string, bool) {
 	var clean []byte
 	switch kind {
 	case evidenceText:
@@ -260,12 +258,12 @@ func (r *Runner) putEvidence(rel string, data []byte, kind evidenceKind) (string
 	os.MkdirAll(filepath.Dir(p), 0o755)
 	if err := os.WriteFile(p, clean, 0o644); err != nil {
 		fmt.Fprintf(r.Log, "mcpqual: write %s: %v\n", rel, err)
-		return rel, cut, err
+		return rel, cut
 	}
 	r.mu.Lock()
 	r.evidence = append(r.evidence, EvidenceRef{Path: rel, SHA256: sha256Hex(clean), Bytes: int64(len(clean))})
 	r.mu.Unlock()
-	return rel, cut, nil
+	return rel, cut
 }
 
 // boundEvidence cuts b to at most limit bytes at a line boundary, ending
@@ -776,11 +774,6 @@ func (r *Runner) runClient(ctx context.Context, pc *PlanClient) ClientReport {
 	if err != nil {
 		return notRun(cr, pc, ReasonDecoderVersion+": "+err.Error())
 	}
-	// The plan's fixture must be the selected exact version's canonical
-	// fixture, never merely another fixture of the same decoder family.
-	if dv.Fixture != pc.DecoderFixture {
-		return notRun(cr, pc, fmt.Sprintf("%s: the plan names %q, version %q is backed by %q", ReasonDecoderFixture, pc.DecoderFixture, observed, dv.Fixture))
-	}
 	cr.DecoderVersion = &dv
 	labels := map[string]string{"{server}": "<server>", "{case_file}": "<case-file>", "{events}": "<events>", "{workspace}": "<workspace>"}
 	cr.Settings.Default = sptr(r.writeEvidence(path.Join("config", pc.ID+"-default-"+path.Base(pc.Config.Default.Path)), []byte(substitute(pc.Config.Default.Content, labels, false)), evidenceText))
@@ -790,7 +783,7 @@ func (r *Runner) runClient(ctx context.Context, pc *PlanClient) ClientReport {
 	if pc.Driver == DriverModel && !r.AllowModelCalls {
 		return notRun(cr, pc, ReasonModelCallsDenied)
 	}
-	m := &measure{r: r, pc: pc, cr: &cr, decode: decode, dv: dv, start: start, deadline: deadline}
+	m := &measure{r: r, pc: pc, cr: &cr, decode: decode, start: start, deadline: deadline}
 	m.run(ctx)
 	return cr
 }

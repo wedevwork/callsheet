@@ -163,15 +163,14 @@ func i64(v int64) *int64 { return &v }
 func decisionOf(ph *PhaseReport, mutate func(*Report, *ClientReport)) string {
 	ok := StatusConclusive
 	healthy := ResultHealthy
-	c := ClientReport{ID: "claude", DecoderVersion: &DecoderVersion{Version: "v", Fixture: "claude-json/actual-test", Qualified: true,
-		Evidence: []DecoderEvidence{testEvidence("linux/amd64")}},
+	c := ClientReport{ID: "claude", DecoderVersion: &DecoderVersion{Version: "v", Fixture: "claude-json/actual-test", Qualified: true},
 		Phases: []PhaseReport{{Name: PhaseSetup, Status: ok, Result: &healthy, Observations: 1}}}
 	if ph != nil {
 		p := *ph
 		p.Name = PhaseDefault
 		c.Phases = append(c.Phases, p)
 	}
-	rep := &Report{OS: "linux", Arch: "amd64", Cleanup: CleanupReport{OK: true}}
+	rep := &Report{Cleanup: CleanupReport{OK: true}}
 	if mutate != nil {
 		mutate(rep, &c)
 	}
@@ -244,13 +243,7 @@ func TestShortPollDecision(t *testing.T) {
 			c.DecoderVersion.Qualified, c.DecoderVersion.Fixture = false, "claude-json/synthetic"
 		},
 			"decoder claude-json/synthetic is a synthetic fixture"},
-		"no-decoder": {compatible, func(_ *Report, c *ClientReport) { c.DecoderVersion = nil }, "no decoder version was selected"},
-		// Design decoder-enrollment: a historical qualified record without
-		// evidence and evidence for another platform both stay unverified.
-		"historical": {compatible, func(_ *Report, c *ClientReport) { c.DecoderVersion.Evidence = nil },
-			"decoder claude-json/actual-test is marked qualified without enrolled real-transcript evidence"},
-		"platform": {compatible, func(r *Report, _ *ClientReport) { r.OS, r.Arch = "darwin", "arm64" },
-			"decoder claude-json/actual-test has no enrolled success-path evidence for darwin/arm64"},
+		"no-decoder":  {compatible, func(_ *Report, c *ClientReport) { c.DecoderVersion = nil }, "no decoder version was selected"},
 		"setup":       {compatible, func(_ *Report, c *ClientReport) { c.Phases[0].Status = StatusInconclusive }, "the setup phase is not conclusive"},
 		"no-setup":    {compatible, func(_ *Report, c *ClientReport) { c.Phases = c.Phases[1:] }, "the setup phase is not conclusive"},
 		"no-repeat":   {&PhaseReport{Status: ok, Result: &lb, LowerBoundMS: i64(15000), Observations: 1}, nil, "the successful bound was not repeated"},

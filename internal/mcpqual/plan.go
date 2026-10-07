@@ -164,37 +164,8 @@ func MetadataAllowed(argv []string, allowed [][]string) bool {
 // <model>) are not yet completed.
 var ErrTemplate = errors.New("plan: unfilled owner placeholder")
 
-// planCheck selects the plan validation: qualification checks the
-// decoder fixture against a registry; capture (design decoder-enrollment)
-// keeps the decoder name and a nonempty fixture as inert metadata and
-// adds its own setup-only rules; a template accepts unfilled owner
-// placeholders.
-type planCheck struct {
-	reg      Registry
-	template bool
-	capture  bool
-}
-
 // ParsePlan strictly decodes and validates a plan.
 func ParsePlan(b []byte, reg Registry) (*Plan, error) {
-	return parsePlan(b, planCheck{reg: reg})
-}
-
-// ParseCapturePlan strictly decodes and validates a version-1 plan for
-// "mcpqual capture" (design decoder-enrollment, Capture interface): every
-// structural check of ParsePlan (paths, argv, environment, placeholders,
-// client IDs, sizes and budgets), the correct decoder family name and a
-// nonempty decoder_fixture kept as inert metadata (no registry is
-// consulted), and a model-driven setup only: driver model with its
-// explicit model, a nonempty allowed help_argv, no raised configuration,
-// override or override/progress/absolute phase, and either no phases or
-// exactly the short plans' default delays_ms [15000], which capture never
-// executes.
-func ParseCapturePlan(b []byte) (*Plan, error) {
-	return parsePlan(b, planCheck{capture: true})
-}
-
-func parsePlan(b []byte, chk planCheck) (*Plan, error) {
 	if len(b) > MaxPlanBytes {
 		return nil, fmt.Errorf("plan: %d bytes exceeds %d", len(b), MaxPlanBytes)
 	}
@@ -202,7 +173,7 @@ func parsePlan(b []byte, chk planCheck) (*Plan, error) {
 	if err := decodeStrict(b, &p); err != nil {
 		return nil, fmt.Errorf("plan: %w", err)
 	}
-	if err := p.validate(chk); err != nil {
+	if err := p.validate(reg, false); err != nil {
 		return nil, err
 	}
 	return &p, nil
@@ -215,40 +186,7 @@ func ValidateTemplate(b []byte, reg Registry) (*Plan, error) {
 	if err := decodeStrict(b, &p); err != nil {
 		return nil, fmt.Errorf("plan: %w", err)
 	}
-	return &p, p.validate(planCheck{reg: reg, template: true})
-}
-
-// CaptureDefaultDelaysMS is the only default phase a capture plan may
-// carry (the short plans'); capture ignores it.
-var CaptureDefaultDelaysMS = []int64{15000}
-
-// HasIgnoredDefault reports whether capture plan p names the short plans'
-// default phase, which capture never executes.
-func (p *Plan) HasIgnoredDefault() bool {
-	for _, c := range p.Clients {
-		if c.Phases.Default != nil {
-			return true
-		}
-	}
-	return false
-}
-
-// validateCapture is the capture-only client rule set.
-func (c *PlanClient) validateCapture() error {
-	ph := c.Phases
-	switch {
-	case c.Driver != DriverModel:
-		return fmt.Errorf("capture needs driver %q (one model setup session), not %q", DriverModel, c.Driver)
-	case len(c.HelpArgv) == 0:
-		return errors.New("capture needs a help_argv (its help output is part of the capture)")
-	case c.Config.Raised != nil || c.Override != nil:
-		return errors.New("capture takes no raised configuration or override (setup only)")
-	case ph.Override != nil || ph.Progress != nil || ph.Absolute != nil:
-		return errors.New("capture takes no override, progress or absolute phase (setup only)")
-	case ph.Default != nil && !slices.Equal(ph.Default.DelaysMS, CaptureDefaultDelaysMS):
-		return fmt.Errorf("capture accepts no phases or exactly phases.default.delays_ms %v (never executed), not %v", CaptureDefaultDelaysMS, ph.Default.DelaysMS)
-	}
-	return nil
+	return &p, p.validate(reg, true)
 }
 
 // EffectiveLimits returns the limits with defaults applied.
@@ -260,7 +198,7 @@ func (p *Plan) EffectiveLimits() Limits {
 	return l
 }
 
-func (p *Plan) validate(chk planCheck) error {
+func (p *Plan) validate(reg Registry, template bool) error {
 	fail := func(format string, a ...any) error { return fmt.Errorf("plan: "+format, a...) }
 	if p.Version != 1 {
 		return fail("version %d, want 1", p.Version)
@@ -288,15 +226,14 @@ func (p *Plan) validate(chk planCheck) error {
 			return fail("duplicate client id %q", c.ID)
 		}
 		seen[c.ID] = true
-		if err := c.validate(chk, p.EffectiveLimits()); err != nil {
+		if err := c.validate(reg, template, p.EffectiveLimits()); err != nil {
 			return fmt.Errorf("plan: client %q: %w", c.ID, err)
 		}
 	}
 	return nil
 }
 
-func (c *PlanClient) validate(chk planCheck, lim Limits) error {
-	template := chk.template
+func (c *PlanClient) validate(reg Registry, template bool, lim Limits) error {
 	want, ok := clientDecoders[c.ID]
 	if !ok {
 		return errors.New("unknown id (want claude, codex, grok or cursor)")
@@ -343,10 +280,7 @@ func (c *PlanClient) validate(chk planCheck, lim Limits) error {
 	if c.Decoder != want {
 		return fmt.Errorf("decoder %q, want %s for this client", c.Decoder, want)
 	}
-	switch {
-	case chk.capture && strings.TrimSpace(c.DecoderFixture) == "":
-		return errors.New("decoder_fixture is required (inert metadata for capture)")
-	case !chk.capture && !chk.reg.hasFixture(c.Decoder, c.DecoderFixture):
+	if !reg.hasFixture(c.Decoder, c.DecoderFixture) {
 		return fmt.Errorf("decoder_fixture %q is not a tested %s fixture", c.DecoderFixture, c.Decoder)
 	}
 	for _, list := range []struct {
@@ -431,9 +365,6 @@ func (c *PlanClient) validate(chk planCheck, lim Limits) error {
 		if err := checkDelay("phases.absolute", ph.Absolute, lim); err != nil {
 			return err
 		}
-	}
-	if chk.capture {
-		return c.validateCapture()
 	}
 	return nil
 }

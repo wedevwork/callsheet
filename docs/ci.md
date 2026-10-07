@@ -530,29 +530,6 @@ and one end record, once per `devcheck test`, never with `--count=20` in
 CI. `devcheck bench` gains `bench client wait` (13 steps; Linux `all`
 makes 32 ordinary calls) and `devcheck native` runs it after the task
 workspace benchmarks (8 ordinary calls). CI stays 18 jobs.
-Decoder enrollment, slice A (`mcpqual capture`, the capture manifest and
-bundle validator, the enrollment index, oracle and registry agreement with
-an empty production index, the capability-scoped qualification guards and
-the capture runbook) appends one function parent per FP (FP-1 to FP-9) as a
-separate group, 9 more names, 412 in all, with the 403 earlier names
-unchanged and first: `TestMCPCaptureInvocation`, `TestMCPCaptureRecipes`,
-`TestMCPCaptureEvidence`, `TestMCPCaptureLifecycle`,
-`TestMCPEnrollmentContract`, `TestMCPEnrollmentReplay`,
-`TestMCPEnrolledShortConfirmation`, `TestMCPCaptureRunbook` and
-`TestMCPEnrollmentCIPolicy`. Each parent asserts its literal case inventory
-(count and labels) before running its cases and that every case completed;
-the cases are not inventory entries. They run the built `mcpqual` with the
-fake vendor and the real probe (never an installed vendor CLI or a model:
-capture and qualify refuse any `CI` presence, even empty), and the
-enrollment and CI-policy parents run the production validators over
-temporary copies. They run in the normal, race and native suites only,
-never in a stress shard; the new `internal/mcpqual` unit tests are injected
-and fake-clock only (no subprocess or grace sleep) and run in that
-package's unchanged per-CPU stress invocations. `devcheck bench` keeps its
-13 steps (Linux `all` still makes 32 ordinary calls): `bench mcpqual` picks
-up `BenchmarkMCPCaptureEvidence`, the only user of the production 8 MiB
-capture limits. `devcheck native` now also runs that same `bench mcpqual`
-step after the client wait benchmark (9 ordinary calls). CI stays 18 jobs.
 Its per-package timeout is 300 s (iteration 09b, raised from 180 s by the
 owner's decision of 2026-10-01; Linux `devcheck test`, coverage and every
 stress stage keep their own limits, and the `ci-macos` job keeps its
@@ -1599,12 +1576,6 @@ Budgets:
   observations of green main run 37415353383 attempt 2 on a09b711, per
   job, command and binary), verbatim:
   Nonblocking waits: preserve 18 jobs, four required checks and every timeout. Against green main run 37415353383 attempt 2 (a09b711), main-job growth allowance is 20s Linux / 20s macOS (764→784s / 464→484s); packages-job growth is 10s each (711→721s / 731→741s), combined packages command 433.9→443.9s / 455.3→465.3s. Client binary growth is 8s each (127.5→135.5s / 106.9→114.9s); each mcpqual CPU binary and the MCP binary gets 2s. Workspacetransfer gets zero new stress work (308.9s Linux / 280.1s macOS against 360s limit). Normal/race function binary growth is 5s each (Linux 110.9→115.9s / 126.6→131.6s); new benchmark execution allocation is 2s per platform. The container-e2e iteration inside ci-linux test gets 2s growth (9.8→11.8s); its static binary build allocation is unchanged at 24.2s. Separately, the internal/testkit/containeracceptance test binary in ci-linux gets 3s growth (94.7→97.7s). Stress-function execution is unchanged (Linux function/plane/node 24.8/19.6/7.9s, macOS 30.6/46.7/17.2s). Other shards get no execution growth and at most 5s shared compilation growth. Reserve a separate ±30s runner-variance envelope; do not spend it as test workload. Compare binary, command and job times separately, retaining all first-run evidence. An allocation miss requires investigation or design revision, never weakened assertions, skips, changed repetition counts or timeout increases.
-
-- Decoder enrollment allocation (design decoder-enrollment r0.2 Budgets;
-  planning allowances, not measured deltas or pass/fail timing gates;
-  baseline: main run 37523901881 on ff8058f, as named by the coordinator),
-  verbatim:
-  Decoder enrollment: baseline is main run 37523901881 (ff8058f), as named by the coordinator. Supplied mcpqual per-CPU stress duration is approximately 60–85s per invocation; allocate at most 5s additional test execution per invocation (planning envelope 65–90s, not a measured result), with unchanged 360s binary timeout. Allocate 10s additional packages-job wall time per host, 15s main-job growth Linux and 20s macOS, 5s function-binary growth per native/race invocation and 5s new benchmark execution per host (macOS adds the mcpqual benchmark command). Other shard execution and container workloads get zero growth; shared compilation allowance is 5s/job. Reserve a separate ±30s runner-variance envelope, not spendable test workload. Keep all eighteen jobs, four required checks and existing watchdogs. Compare binary, command and job times separately against run 37523901881, retain failed first-run evidence, and investigate an allocation miss without reducing counts, skipping cases, weakening assertions or increasing timeouts.
 
 Measurements, newest first. Hosted and local figures come from different
 machines and are never combined into one number.

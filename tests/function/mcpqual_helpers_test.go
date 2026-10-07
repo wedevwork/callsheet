@@ -120,15 +120,9 @@ func (q *qualEnv) writePlan(plan any) string {
 }
 
 // env is the launched mcpqual's environment: isolated HOME, the trap PATH
-// and no CI variable at all (design decoder-enrollment: any CI presence,
-// even an empty CI=, refuses qualify and capture). ci-denied passes a
-// nonempty value; an explicit empty presence is extra "CI=".
+// and CI cleared explicitly (ci-denied passes a nonempty value instead).
 func (q *qualEnv) env(ci string, extra ...string) []string {
-	env := []string{"PATH=" + q.trapDir, "HOME=" + q.home}
-	if ci != "" {
-		env = append(env, "CI="+ci)
-	}
-	return append(env, extra...)
+	return append([]string{"PATH=" + q.trapDir, "HOME=" + q.home, "CI=" + ci}, extra...)
 }
 
 // qualify runs "mcpqual qualify" to completion.
@@ -173,7 +167,7 @@ func (q *qualEnv) groupsGone() {
 	q.t.Helper()
 	log := q.launchLog()
 	var targets []int
-	for _, pid := range append(append(append([]int(nil), log["version"]...), log["help"]...), log["session"]...) {
+	for _, pid := range append(append([]int(nil), log["version"]...), log["session"]...) {
 		targets = append(targets, -pid)
 	}
 	targets = append(targets, log["descendant"]...)

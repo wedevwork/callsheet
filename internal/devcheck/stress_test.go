@@ -2299,8 +2299,7 @@ func TestPlatformSeamContract(t *testing.T) {
 			// benchmark step.
 			nativeCalls := len(native)
 			if goos == "darwin" {
-				// Coverage (3) and the five native benchmark steps.
-				nativeCalls += 3 + len(NativeBenchSteps())
+				nativeCalls += 7
 			}
 			// "test" is a plan-only check (TestSteps above): its combined
 			// execution with the Linux container operation belongs to

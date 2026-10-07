@@ -365,36 +365,6 @@ func TestCoverageManifestFiles(t *testing.T) {
 	}
 }
 
-// decoderEnrollmentFiles are the production files decoder enrollment's
-// slice A adds or changes (design decoder-enrollment, CI plan), each
-// required whole in the changed group.
-var decoderEnrollmentFiles = []string{"internal/mcpqual/cli.go", "internal/mcpqual/plan.go", "internal/mcpqual/session.go", "internal/mcpqual/runner.go",
-	"internal/mcpqual/proc.go", "internal/mcpqual/report.go", "internal/mcpqual/facts.go", "internal/mcpqual/decode.go", "internal/mcpqual/capture.go",
-	"internal/mcpqual/capture_manifest.go", "internal/mcpqual/enrollment.go", "internal/mcpqual/measure.go", "internal/mcpqual/redact.go",
-	"internal/mcpqual/procexec/exec_unix.go", "cmd/mcpqual/main.go", "internal/devcheck/native.go", "internal/devcheck/devcheck.go"}
-
-// TestDecoderEnrollmentCoverageManifest (design decoder-enrollment, UT-9):
-// every new or changed production file is a whole-file changed-group entry
-// with its build OS, and none keeps a partial-range entry.
-func TestDecoderEnrollmentCoverageManifest(t *testing.T) {
-	root := testkit.MustRepoRoot(t)
-	listed := map[string]CoverageEntry{}
-	for _, e := range WorkspaceCoverageManifest {
-		listed[strings.TrimPrefix(e.File, modulePath+"/")] = e
-	}
-	for _, rel := range decoderEnrollmentFiles {
-		e, ok := listed[rel]
-		if !ok || e.Group != GroupChanged || e.OS != buildOS(t, filepath.Join(root, filepath.FromSlash(rel))) {
-			t.Fatalf("decoder-enrollment file %s missing from the changed group with its build OS", rel)
-		}
-		for _, x := range WorkspaceCoverageManifest {
-			if x.File == modulePath+"/"+rel && len(x.Ranges) != 0 {
-				t.Fatalf("decoder-enrollment file %s keeps a partial-range entry %v", rel, x.Ranges)
-			}
-		}
-	}
-}
-
 // taskWorkspaceBudget is design 10b r0.2's Budgets entry, verbatim.
 const taskWorkspaceBudget = "10b: place all new lifecycle matrices outside plane; add no plane stress cases or repeated selectors and no child-heavy sidecar matrix. " +
 	"Use post-10a CPU1 CI ranges from runs 37095473701, 37090552825 and 37101472176: sidecar 155.0–173.2 s Linux / 189.0–252.5 s macOS and plane 144.2–213.9 s Linux / 229.9–257.0 s macOS. " +
@@ -485,7 +455,7 @@ func TestWave2NativeDocs(t *testing.T) {
 			t.Fatalf("docs/ci.md does not name %s", n)
 		}
 	}
-	if len(NativeRequiredTests()) != 412 || len(NativeTaskProcessTests()) != 12 {
+	if len(NativeRequiredTests()) != 403 || len(NativeTaskProcessTests()) != 12 {
 		t.Fatalf("%d native names, %d sidecar names", len(NativeRequiredTests()), len(NativeTaskProcessTests()))
 	}
 }
@@ -531,48 +501,6 @@ func TestNonblockingWaitDocs(t *testing.T) {
 		}
 	}
 	for _, n := range nbwNames() {
-		if !strings.Contains(s, "`"+n+"`") {
-			t.Fatalf("docs/ci.md does not name %s", n)
-		}
-	}
-}
-
-// decoderEnrollmentBudget is design decoder-enrollment r0.2's Budgets
-// entry, verbatim.
-const decoderEnrollmentBudget = "Decoder enrollment: baseline is main run 37523901881 (ff8058f), as named by the coordinator. Supplied mcpqual per-CPU stress duration is approximately 60–85s per invocation; " +
-	"allocate at most 5s additional test execution per invocation (planning envelope 65–90s, not a measured result), with unchanged 360s binary timeout. " +
-	"Allocate 10s additional packages-job wall time per host, 15s main-job growth Linux and 20s macOS, 5s function-binary growth per native/race invocation and 5s new benchmark execution per host (macOS adds the mcpqual benchmark command). " +
-	"Other shard execution and container workloads get zero growth; shared compilation allowance is 5s/job. Reserve a separate ±30s runner-variance envelope, not spendable test workload. " +
-	"Keep all eighteen jobs, four required checks and existing watchdogs. Compare binary, command and job times separately against run 37523901881, retain failed first-run evidence, " +
-	"and investigate an allocation miss without reducing counts, skipping cases, weakening assertions or increasing timeouts."
-
-// TestDecoderEnrollmentDocs (design decoder-enrollment, UT-9): docs/ci.md
-// carries the exact Budgets entry once, as a labelled planning allocation
-// before the measurements, and Checks names the nine function parents with
-// the 412-name inventory and the native mcpqual benchmark step.
-func TestDecoderEnrollmentDocs(t *testing.T) {
-	doc, err := os.ReadFile(filepath.Join(testkit.MustRepoRoot(t), "docs", "ci.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	s := string(doc)
-	at := strings.Index(s, decoderEnrollmentBudget)
-	budgets, measured := strings.Index(s, "\nBudgets:\n"), strings.Index(s, "\nMeasurements, newest first.")
-	switch {
-	case at < 0 || strings.Count(s, decoderEnrollmentBudget) != 1:
-		t.Fatal("docs/ci.md does not carry the decoder enrollment budgets entry exactly once")
-	case budgets < 0 || measured < 0 || at < budgets || at > measured:
-		t.Fatal("the budgets entry is not a Budgets allocation before the measurements")
-	case !strings.Contains(s[:at], "Decoder enrollment allocation (design decoder-enrollment r0.2 Budgets;\n  planning allowances, not measured deltas or pass/fail timing gates"):
-		t.Fatal("the budgets entry is not labelled as planning allowances")
-	}
-	for _, w := range []string{"9 more names, 412 in all", "with the 403 earlier names\nunchanged and first", "(9 ordinary calls)", "13 steps (Linux `all` still makes 32 ordinary calls)",
-		"`BenchmarkMCPCaptureEvidence`", "CI stays 18 jobs"} {
-		if !strings.Contains(s, w) {
-			t.Fatalf("docs/ci.md lacks %q", w)
-		}
-	}
-	for _, n := range dceNames() {
 		if !strings.Contains(s, "`"+n+"`") {
 			t.Fatalf("docs/ci.md does not name %s", n)
 		}
