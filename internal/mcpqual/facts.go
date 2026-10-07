@@ -63,14 +63,29 @@ func ms(p *int64) int64 {
 }
 
 // ineligible says why a conclusive measurement still cannot be VERIFIED.
+// Since design decoder-enrollment a qualified version also needs enrolled
+// evidence of the success path for the report's own OS/arch: a historical
+// Qualified record without evidence stays unverified, never upgraded.
 func ineligible(rep *Report, c ClientReport, e catalog.Entry) string {
 	switch {
 	case c.DecoderVersion == nil:
 		return "no decoder version was selected"
 	case !c.DecoderVersion.Qualified:
 		return fmt.Sprintf("decoder %s is a synthetic fixture, so this is harness evidence (%s), not qualified vendor evidence", c.DecoderVersion.Fixture, HarnessVerified)
+	case len(c.DecoderVersion.Evidence) == 0:
+		return fmt.Sprintf("decoder %s is marked qualified without enrolled real-transcript evidence (a historical record), so it is unverified", c.DecoderVersion.Fixture)
 	case rep.OS+"/"+rep.Arch != e.Platform:
 		return fmt.Sprintf("observed on %s/%s, which does not certify %s", rep.OS, rep.Arch, e.Platform)
+	}
+	return evidenceGap(rep, c, RequiredCapabilities(KindToolResult)...)
+}
+
+// evidenceGap says which capabilities of want the client's decoder
+// evidence lacks for the report's OS/arch ("" when none).
+func evidenceGap(rep *Report, c ClientReport, want ...string) string {
+	platform := rep.OS + "/" + rep.Arch
+	if missing := c.DecoderVersion.MissingCapabilities(platform, want...); len(missing) > 0 {
+		return fmt.Sprintf("decoder %s has no enrolled %s evidence for %s (%s)", c.DecoderVersion.Fixture, strings.Join(missing, ", "), platform, ReasonUnverifiedEvent)
 	}
 	return ""
 }
@@ -118,7 +133,15 @@ func proposeFacts(rep *Report, c ClientReport, e catalog.Entry, reportPath strin
 
 	def := phaseOf(c, PhaseDefault)
 	fb := withEvidence("mcp_timeout")
+	// A typed timeout needs its own demonstrated capability, never the
+	// success path's (design decoder-enrollment, Decoder behavior).
+	timeoutGap := ""
+	if b.block == "" && ok(def, ResultTimeoutObserved) {
+		timeoutGap = evidenceGap(rep, c, CapMCPTimeout)
+	}
 	switch {
+	case timeoutGap != "":
+		out["mcp_timeout"] = fb.unverified(phaseSummary(def), timeoutGap)
 	case b.block == "" && ok(def, ResultTimeoutObserved):
 		out["mcp_timeout"] = fb.verified(fmt.Sprintf("a silent tool call ended with the client's typed MCP timeout event after %d ms of probe time; the last completed silent call took %d ms (%d observations at that bound).",
 			ms(def.UpperBoundMS), ms(def.LowerBoundMS), def.Observations))

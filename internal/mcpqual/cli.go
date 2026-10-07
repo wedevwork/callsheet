@@ -27,19 +27,23 @@ type Env struct {
 	GOOS, GOARCH string
 	Args         []string
 	Getenv       func(string) string
-	Environ      []string
-	Stdin        io.Reader
-	Stdout       io.Writer
-	Stderr       io.Writer
-	Signaler     Signaler
-	Launcher     Launcher
-	Clock        Clock
-	Registry     Registry
-	Hostname     string
-	Executable   string
-	Home, User   string
-	Now          func() time.Time
-	Rand         io.Reader
+	// LookupEnv reports a variable's presence (cmd/mcpqual wires
+	// os.LookupEnv): capture and qualify refuse any CI presence, even an
+	// empty CI=, and refuse when no lookup is supplied.
+	LookupEnv  func(string) (string, bool)
+	Environ    []string
+	Stdin      io.Reader
+	Stdout     io.Writer
+	Stderr     io.Writer
+	Signaler   Signaler
+	Launcher   Launcher
+	Clock      Clock
+	Registry   Registry
+	Hostname   string
+	Executable string
+	Home, User string
+	Now        func() time.Time
+	Rand       io.Reader
 	// Notify returns a context canceled on SIGINT or SIGTERM (qualify and
 	// publish only; the probe keeps the default signal behaviour).
 	Notify func(context.Context) (context.Context, context.CancelFunc)
@@ -47,17 +51,22 @@ type Env struct {
 
 const usage = `usage:
   mcpqual qualify --plan ABSOLUTE_JSON --out ABSOLUTE_DIR [--allow-model-calls] [--publish-catalog ABSOLUTE_REPO]
+  mcpqual capture --plan ABSOLUTE_JSON --out ABSOLUTE_NEW_OR_EMPTY_DIR --allow-model-calls
   mcpqual serve --case-file PATH --events PATH
   mcpqual publish --out ABSOLUTE_DIR --repo ABSOLUTE_REPO   (retries a --publish-catalog run's patch)
   mcpqual version
 
-qualify never runs when CI is set. Without --allow-model-calls only
-version/help/config checks and model-free direct drivers run.
+qualify and capture never run when CI is present (even empty). Without
+--allow-model-calls qualify runs only version/help/config checks and
+model-free direct drivers; capture refuses to start. capture records one
+decoder-free setup session per client and never evaluates vendor behavior.
 `
 
-// Main runs the developer command and returns its exit code: 0 conclusive,
-// 2 invalid input (including CI set for qualify), 4 publication conflict,
-// 5 partial/unqualified or cleanup failure, 130 interrupted.
+// Main runs the developer command and returns its exit code: 0 conclusive
+// (capture: complete), 1 filesystem or internal failure, 2 invalid input
+// (including CI present for qualify or capture, and capture without
+// --allow-model-calls), 4 publication conflict, 5 partial/unqualified or
+// cleanup failure, 130 interrupted.
 func Main(ctx context.Context, env Env) int {
 	if len(env.Args) == 0 {
 		fmt.Fprint(env.Stderr, usage)
@@ -66,6 +75,8 @@ func Main(ctx context.Context, env Env) int {
 	switch env.Args[0] {
 	case "qualify":
 		return qualify(ctx, env, env.Args[1:])
+	case "capture":
+		return capture(ctx, env, env.Args[1:])
 	case "serve":
 		return serve(env, env.Args[1:])
 	case "publish":
@@ -122,11 +133,22 @@ func readBounded(p string, limit int) ([]byte, error) {
 	return b, err
 }
 
+// ciPresent is the CI prohibition of qualify and capture (design
+// decoder-enrollment, Capture interface): any presence of CI, including an
+// empty value, and a missing lookup (fail closed) refuse the run.
+func ciPresent(env Env) bool {
+	if env.LookupEnv == nil {
+		return true
+	}
+	_, ok := env.LookupEnv("CI")
+	return ok || env.Getenv != nil && env.Getenv("CI") != ""
+}
+
 func qualify(ctx context.Context, env Env, args []string) int {
 	// The CI refusal comes first: before the plan is read and before any
 	// vendor launch, even with --allow-model-calls.
-	if env.Getenv("CI") != "" {
-		return fail(env, invalid("qualify refused: CI is set; real-vendor qualification never runs in CI"))
+	if ciPresent(env) {
+		return fail(env, invalid("qualify refused: CI is set (present, even empty); real-vendor qualification never runs in CI"))
 	}
 	fs := newFlags(env, "qualify")
 	planPath := fs.String("plan", "", "absolute path of the version-1 qualification plan")
@@ -200,6 +222,68 @@ func qualify(ctx context.Context, env Env, args []string) int {
 	}
 	fmt.Fprintf(env.Stdout, "mcpqual: published run %s into %s\n", rep.RunID, base.Repo)
 	return code
+}
+
+// capture is "mcpqual capture" (design decoder-enrollment, FP-1): refused
+// with CI present before anything else, and without --allow-model-calls
+// before the plan is read; then a decoder-free setup capture of the
+// capture plan into a new or empty directory.
+func capture(ctx context.Context, env Env, args []string) int {
+	if ciPresent(env) {
+		return fail(env, invalid("capture refused: CI is set (present, even empty); real-vendor capture never runs in CI"))
+	}
+	fs := newFlags(env, "capture")
+	planPath := fs.String("plan", "", "absolute path of the version-1 short plan to capture")
+	out := fs.String("out", "", "absolute, new or empty capture directory")
+	allow := fs.Bool("allow-model-calls", false, "explicitly permit one model setup session per client")
+	if err := parseFlags(fs, args); err != nil {
+		return fail(env, err)
+	}
+	policy, supported := PolicyFor(env.GOOS)
+	switch {
+	case !*allow:
+		return fail(env, invalid("capture needs --allow-model-calls: it launches one model setup session per client"))
+	case !supported:
+		return fail(env, invalid("capture runs on linux or darwin only, not %s", env.GOOS))
+	case !filepath.IsAbs(*planPath) || filepath.Clean(*planPath) != *planPath:
+		return fail(env, invalid("--plan %q must be an absolute clean path", *planPath))
+	case *out == "":
+		return fail(env, invalid("--out is required"))
+	}
+	raw, err := readBounded(*planPath, MaxPlanBytes)
+	if err != nil {
+		return fail(env, invalid("--plan: %v", err))
+	}
+	plan, err := ParseCapturePlan(raw)
+	if err != nil {
+		return fail(env, invalid("%v", err))
+	}
+	rnd := make([]byte, 19)
+	if _, err := io.ReadFull(env.Rand, rnd); err != nil {
+		return fail(env, err)
+	}
+	now := env.Now().UTC()
+	ctx, stop := env.Notify(ctx)
+	defer stop()
+	c := &CaptureRunner{Plan: plan, OutDir: *out, GOOS: env.GOOS, GOARCH: env.GOARCH, ServerPath: env.Executable, BaseEnv: withoutCI(env.Environ),
+		Launcher: env.Launcher, Reaper: GroupReaper{Sig: env.Signaler, Clock: env.Clock, Policy: policy}, Clock: env.Clock, Log: env.Stderr,
+		RunID: now.Format("20060102T150405Z") + "-" + hex.EncodeToString(rnd[:3]), Nonce: hex.EncodeToString(rnd[3:19]), CapturedAt: now,
+		HarnessVersion: HarnessVersion, Home: env.Home, User: env.User}
+	man, err := c.Run(ctx)
+	if err != nil {
+		if contract.ExitCode(err) != 1 {
+			return fail(env, err)
+		}
+		fmt.Fprintf(env.Stderr, "mcpqual: %v\n", err)
+		return 1
+	}
+	status := "capture " + man.State
+	if man.State == CaptureComplete {
+		status = "capture complete"
+	}
+	fmt.Fprintf(env.Stdout, "mcpqual: run %s: %s; vendor behavior not evaluated; manifest %s (exit %d)\n", man.RunID, status,
+		filepath.Join(*out, CaptureManifestName), man.ExitCode())
+	return man.ExitCode()
 }
 
 func withoutCI(environ []string) []string {

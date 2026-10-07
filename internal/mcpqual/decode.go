@@ -83,7 +83,119 @@ type DecoderVersion struct {
 	// this exact version backs the event paths; only then may a
 	// measurement become a VERIFIED catalog fact.
 	Qualified bool `json:"qualified"`
+	// Evidence (design decoder-enrollment, Enrollment contract) lists the
+	// enrolled real fixtures behind a qualified version, per platform, and
+	// the event capabilities each demonstrated. A qualified version without
+	// evidence (a historical record) is unverified: no qualified behavior.
+	Evidence []DecoderEvidence `json:"evidence,omitempty"`
 }
+
+// DecoderEvidence is one enrolled fixture of a qualified decoder version:
+// its platform ("<os>/<arch>"), its stable fixture ID and the event
+// capabilities its reviewed transcript demonstrated.
+type DecoderEvidence struct {
+	Platform string   `json:"platform"`
+	Fixture  string   `json:"fixture"`
+	Kinds    []string `json:"kinds"`
+}
+
+// Evidence capabilities (design decoder-enrollment, Enrollment contract).
+const (
+	CapToolCall         = "tool_call"
+	CapToolResult       = "tool_result"
+	CapTerminalSuccess  = "terminal_success"
+	CapMCPTimeout       = "mcp_timeout"
+	CapToolError        = "tool_error"
+	CapAuthError        = "auth_error"
+	CapPermissionDenied = "permission_denied"
+	CapModelRefusal     = "model_refusal"
+	CapSessionError     = "session_error"
+)
+
+// Capabilities are the allowed evidence capability names, in order.
+var Capabilities = []string{CapToolCall, CapToolResult, CapTerminalSuccess, CapMCPTimeout, CapToolError, CapAuthError, CapPermissionDenied, CapModelRefusal, CapSessionError}
+
+// ReasonUnverifiedEvent is a qualified decoder's outcome whose kind its
+// evidence does not demonstrate for the run's platform: never a
+// conclusive measurement.
+const ReasonUnverifiedEvent = "unverified_decoder_event"
+
+// RequiredCapabilities lists the evidence an outcome needs from a
+// qualified decoder: a success needs the call, its result and a successful
+// terminal; each error needs its own capability. Inconclusive outcomes
+// need none.
+func RequiredCapabilities(outcome string) []string {
+	switch outcome {
+	case KindToolResult:
+		return []string{CapToolCall, CapToolResult, CapTerminalSuccess}
+	case KindMCPTimeout:
+		return []string{CapToolCall, CapMCPTimeout}
+	case KindToolError:
+		return []string{CapToolCall, CapToolError}
+	case KindAuthError:
+		return []string{CapAuthError}
+	case KindPermissionDenied:
+		return []string{CapPermissionDenied}
+	case KindModelRefusal:
+		return []string{CapModelRefusal}
+	case KindSessionError:
+		return []string{CapSessionError}
+	}
+	return nil
+}
+
+// MissingCapabilities returns the capabilities of want that v's evidence
+// for platform ("<os>/<arch>") does not demonstrate. Every capability is
+// missing for an unqualified version or one without evidence.
+func (v DecoderVersion) MissingCapabilities(platform string, want ...string) []string {
+	have := map[string]bool{}
+	if v.Qualified {
+		for _, ev := range v.Evidence {
+			if ev.Platform == platform {
+				for _, k := range ev.Kinds {
+					have[k] = true
+				}
+			}
+		}
+	}
+	var missing []string
+	for _, k := range want {
+		if !have[k] {
+			missing = append(missing, k)
+		}
+	}
+	return missing
+}
+
+// validateEvidence checks a version's evidence entries: only a qualified
+// version carries evidence, each with a platform, a fixture and known,
+// unique capabilities.
+func (v DecoderVersion) validateEvidence() error {
+	if len(v.Evidence) > 0 && !v.Qualified {
+		return fmt.Errorf("decoder version %q is not qualified but carries evidence", v.Version)
+	}
+	seen := map[string]bool{}
+	for _, ev := range v.Evidence {
+		if !platformRe.MatchString(ev.Platform) || strings.TrimSpace(ev.Fixture) == "" || len(ev.Kinds) == 0 {
+			return fmt.Errorf("decoder version %q: evidence needs a platform os/arch, a fixture and capabilities", v.Version)
+		}
+		if seen[ev.Platform+"\x00"+ev.Fixture] {
+			return fmt.Errorf("decoder version %q: duplicate evidence %s %s", v.Version, ev.Platform, ev.Fixture)
+		}
+		seen[ev.Platform+"\x00"+ev.Fixture] = true
+		kinds := map[string]bool{}
+		for _, k := range ev.Kinds {
+			if !contains(Capabilities, k) || kinds[k] {
+				return fmt.Errorf("decoder version %q: unknown or duplicate capability %q", v.Version, k)
+			}
+			kinds[k] = true
+		}
+	}
+	return nil
+}
+
+// platformRe is an evidence platform: a supported OS and an architecture.
+var platformRe = regexp.MustCompile(`^(linux|darwin)/[a-z0-9]+$`)
 
 type decoderSpec struct {
 	versions []DecoderVersion
@@ -119,6 +231,16 @@ func (r Registry) WithVersion(name string, v DecoderVersion) Registry {
 	s.versions = append(s.versions, v)
 	out[name] = s
 	return out
+}
+
+// Versions returns a copy of decoder name's registered versions.
+func (r Registry) Versions(name string) []DecoderVersion {
+	return append([]DecoderVersion(nil), r[name].versions...)
+}
+
+// Decoder returns decoder name's transcript decoder (nil when unknown).
+func (r Registry) Decoder(name string) func(Transcript) Decoded {
+	return r[name].decode
 }
 
 func (r Registry) hasFixture(name, fixture string) bool {

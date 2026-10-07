@@ -879,8 +879,21 @@ func TestShortPollCatalogPolicy(t *testing.T) {
 	// its lower bound is published VERIFIED through the production path.
 	eligible := filepath.Join(t.TempDir(), "eligible")
 	copyTree(t, out, eligible)
+	// Design decoder-enrollment: a qualified record without enrolled
+	// evidence is a historical record, never quietly upgraded; explicit
+	// fake evidence for the run's platform makes the lower bound eligible.
 	rep.Clients[0].DecoderVersion.Qualified = true
 	rep.OS, rep.Arch = "linux", "amd64"
+	legacyOut := filepath.Join(t.TempDir(), "legacy")
+	copyTree(t, out, legacyOut)
+	if _, err := mcpqual.ProposePatch(rep, mustBase(t, qualRepo(t)), legacyOut); err != nil {
+		t.Fatal(err)
+	}
+	if legacy, _ := os.ReadFile(filepath.Join(legacyOut, mcpqual.PatchFileName)); !strings.Contains(string(legacy), "without enrolled real-transcript evidence (a historical record)") {
+		t.Fatal("a qualified record without evidence was upgraded")
+	}
+	rep.Clients[0].DecoderVersion.Evidence = []mcpqual.DecoderEvidence{{Platform: "linux/amd64", Fixture: rep.Clients[0].DecoderVersion.Fixture,
+		Kinds: []string{mcpqual.CapToolCall, mcpqual.CapToolResult, mcpqual.CapTerminalSuccess}}}
 	rb, err := json.MarshalIndent(rep, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -945,8 +958,9 @@ func TestMCPShortConfirmation(t *testing.T) {
 	// The guide's example is what mcpqual renders for qualified evidence (a
 	// decoder qualified by an actual transcript, setup and the repeated
 	// bound, a clean run).
-	decision := mcpqual.ShortPollDecision(mcpqual.ShortPollBudget, &mcpqual.Report{Cleanup: mcpqual.CleanupReport{OK: true}}, mcpqual.ClientReport{
-		DecoderVersion: &mcpqual.DecoderVersion{Version: "v", Fixture: "claude-json/actual", Qualified: true},
+	decision := mcpqual.ShortPollDecision(mcpqual.ShortPollBudget, &mcpqual.Report{OS: "linux", Arch: "amd64", Cleanup: mcpqual.CleanupReport{OK: true}}, mcpqual.ClientReport{
+		DecoderVersion: &mcpqual.DecoderVersion{Version: "v", Fixture: "claude-json/actual", Qualified: true, Evidence: []mcpqual.DecoderEvidence{{Platform: "linux/amd64",
+			Fixture: "claude-json/actual", Kinds: []string{mcpqual.CapToolCall, mcpqual.CapToolResult, mcpqual.CapTerminalSuccess}}}},
 		Phases: []mcpqual.PhaseReport{{Name: mcpqual.PhaseSetup, Status: mcpqual.StatusConclusive},
 			{Name: mcpqual.PhaseDefault, Status: mcpqual.StatusConclusive, LowerBoundMS: &l, Observations: 2}}})
 	for _, s := range []string{"B + max(2s, 0.1L) < L", "For the short plan's L = 15s: 10s + max(2s, 1.5s) = 12s < 15s", "### Short confirmation",
@@ -1021,4 +1035,14 @@ func TestMCPShortConfirmation(t *testing.T) {
 	if code != 5 || def.Status != mcpqual.StatusNotRun || !strings.Contains(md, "compatibility UNVERIFIED: the default phase is not_run") {
 		t.Fatalf("auth: %d %+v\n%s", code, def, md)
 	}
+}
+
+// mustBase reads repo's catalog base.
+func mustBase(t *testing.T, repo string) *mcpqual.CatalogBase {
+	t.Helper()
+	base, err := mcpqual.ReadCatalogBase(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return base
 }

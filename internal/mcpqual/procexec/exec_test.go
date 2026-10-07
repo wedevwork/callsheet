@@ -48,6 +48,18 @@ func TestMain(m *testing.M) {
 		os.Exit(0)
 	case "hold":
 		time.Sleep(time.Minute)
+	case "stderr-held":
+		// A descendant keeps stderr (only) open after the leader exits.
+		d := exec.Command(os.Args[0])
+		d.Env = append(os.Environ(), helperEnv+"=hold")
+		d.Stderr = os.Stderr
+		d.Start()
+		fmt.Printf("descendant %d\n", d.Process.Pid)
+		fmt.Fprintln(os.Stderr, "leader stderr")
+		os.Exit(6) // nonzero: no race-runtime exit sleep
+	case "marker":
+		os.WriteFile(os.Getenv("PROCEXEC_MARKER"), nil, 0o600)
+		os.Exit(5)
 	case "barrier":
 		// Blocks until the test opens the FIFO for writing and closes it,
 		// then exits barrierReleased; a barrier that cannot be opened exits
@@ -223,4 +235,111 @@ func statusText(code *int, sig *string) string {
 		return "signal " + *sig
 	}
 	return "pending"
+}
+
+// Design decoder-enrollment: the opt-in captured stderr is a second
+// harness-owned OS pipe, read concurrently with stdout.
+func TestLauncherCaptureStderr(t *testing.T) {
+	s := spec(t, "echo")
+	s.StderrPath, s.CaptureStderr = "", true
+	p, err := Launcher{}.Start(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sp, ok := p.(mcpqual.StderrProc)
+	if !ok {
+		t.Fatal("a CaptureStderr launch is not a StderrProc")
+	}
+	errOut := make(chan []byte, 1)
+	go func() { b, _ := io.ReadAll(sp.Stderr()); errOut <- b }()
+	out, err := io.ReadAll(p.Stdout())
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitExited(t, p)
+	var stderr []byte
+	select {
+	case stderr = <-errOut:
+	case <-time.After(30 * time.Second):
+		t.Fatal("stderr did not end")
+	}
+	p.CloseStdout()
+	sp.CloseStderr()
+	if !strings.HasPrefix(string(out), "pgrp ") || !strings.HasPrefix(string(stderr), "to stderr\n") {
+		t.Fatalf("stdout %q stderr %q", out, stderr)
+	}
+	// A launch without CaptureStderr keeps its file interface.
+	if _, ok := mustStart(t, spec(t, "echo")).(mcpqual.StderrProc); ok {
+		t.Fatal("a file-stderr launch exposes a stderr pipe")
+	}
+}
+
+func mustStart(t *testing.T, s mcpqual.ProcSpec) mcpqual.Proc {
+	t.Helper()
+	p, err := Launcher{}.Start(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, p.Stdout())
+	waitExited(t, p)
+	p.CloseStdout()
+	return p
+}
+
+// Both a stderr file and a captured stderr are refused before any process
+// starts.
+func TestLauncherStderrConflict(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "started")
+	s := spec(t, "marker")
+	s.Env = append(s.Env, "PROCEXEC_MARKER="+marker)
+	s.CaptureStderr = true
+	if _, err := (Launcher{}).Start(s); !errors.Is(err, mcpqual.ErrStderrConflict) {
+		t.Fatalf("conflict: %v", err)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatal("a process started despite the conflict")
+	}
+	s.CaptureStderr = false
+	mustStart(t, s)
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatal("the marker helper did not run")
+	}
+	// A failed launch closes both pipes' ends and reports the error.
+	s = spec(t, "echo")
+	s.Path, s.StderrPath, s.CaptureStderr = filepath.Join(t.TempDir(), "missing"), "", true
+	if _, err := (Launcher{}).Start(s); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("missing executable: %v", err)
+	}
+}
+
+// A descendant holding the captured stderr never holds the leader's Wait;
+// stopping the group ends the stream.
+func TestLauncherStderrHeld(t *testing.T) {
+	s := spec(t, "stderr-held")
+	s.StderrPath, s.CaptureStderr = "", true
+	p, err := Launcher{}.Start(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sp := p.(mcpqual.StderrProc)
+	line, err := bufio.NewReader(p.Stdout()).ReadString('\n')
+	if err != nil || !strings.HasPrefix(line, "descendant ") {
+		t.Fatalf("%q %v", line, err)
+	}
+	desc, _ := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(line, "descendant ")))
+	waitExited(t, p)
+	br := bufio.NewReader(sp.Stderr())
+	if l, err := br.ReadString('\n'); err != nil || l != "leader stderr\n" {
+		t.Fatalf("stderr %q %v", l, err)
+	}
+	syscall.Kill(-p.PGID(), syscall.SIGKILL)
+	if err := processgroup.WaitGone(processgroup.SysSignaler{}, processgroup.RealClock{}, 10*time.Second, 10*time.Millisecond, -p.PGID(), desc); err != nil {
+		t.Fatal(err)
+	}
+	// With the group gone the stream ends: reading to EOF returns.
+	if _, err := io.ReadAll(br); err != nil {
+		t.Fatal(err)
+	}
+	p.CloseStdout()
+	sp.CloseStderr()
 }
