@@ -1377,7 +1377,8 @@ func TestStressShardPolicy(t *testing.T) {
 // target and planning envelopes, estimates versus observations, the
 // superseded plane fallback, the history of the sidecar follow-up, the
 // owner's fixed first-remote-run rule and the rebalance's first-remote-run
-// evidence checklist (instructions only, not hosted measurements).
+// evidence checklist (instructions, not hosted measurements) with the
+// measured run that met it (run 37659127131, recorded in Stress checks).
 func TestStressShardHandoff(t *testing.T) {
 	checks := docSection(t, "Checks")
 	requireTerms(t, "Checks", checks,
@@ -1462,7 +1463,16 @@ func TestStressShardHandoff(t *testing.T) {
 		"The existing under-10-minute diagnostic target remains aspirational", "730 + 45 = 775 s", "about 791 s (88%)",
 		"accepted as a marginal target exception pending the first remote run", "no saving credited to it",
 		"The pull request must replace these proxies with actual values",
-		"Hosted stress worker rebalance times: pending (the implementation pull request's first remote run), not passed",
+		// The rebalance's first remote run, recorded as measurements apart
+		// from the projections (pull request #31's run).
+		"Hosted run 37659127131 (pull request #31, the stress worker rebalance at 9c749ac", "all twenty jobs green",
+		"Linux `devcheck: stress packages: ok in 304.0s`", "macOS `devcheck: stress packages: ok in 441.7s`",
+		"`internal/workspacetransfer` 175.590 s", "`internal/workspacetransfer` 256.266 s",
+		"Linux contract 140.7/138.1/141.2 s", "mcpqual 114.7/115.0/114.6 s", "workspace 104.9/106.5/108.8 s",
+		"macOS contract 101.2/97.4/96.9 s", "mcpqual 121.7/116.5/114.7 s", "workspace 132.6/130.1/125.5 s",
+		"every affected stage is below the 675-second review target", "Every binary is below its 360-second limit",
+		"One green run validates execution but does not establish a slow-runner upper bound",
+		"Hosted stress worker rebalance times: measured by run 37659127131 (above)",
 		"`stressWaves` never applies to them", "`stress-contract-cpu1.log`", "`stress-workspace-cpu4.log`",
 		"Why contract, mcpqual and workspace run per CPU setting", "run 36992345488", "run 37009626145",
 		// Iteration 10b's r0.6 schedule: workspacetransfer tried a fourth
@@ -1571,7 +1581,9 @@ func TestStressShardHandoff(t *testing.T) {
 		"The packages shard runs `stress packages` first and then, only if it succeeded, its per-CPU groups",
 		"owned by `devcheck stress-packages`, replayed", "The packages shard's per-CPU groups are not a wave schedule",
 		"runs all seven shards in one process, one after another, under one shared 15-minute watchdog rather than seven",
-		"the seven `ci-macos-stress-*` workers run the same stages"} {
+		"the seven `ci-macos-stress-*` workers run the same stages",
+		// The rebalance's hosted run exists (run 37659127131).
+		"Hosted stress worker rebalance times: pending", "pending (the implementation pull request's first remote run), not passed"} {
 		if strings.Contains(strings.Join(strings.Fields(stress), " "), stale) {
 			t.Fatalf("Stress checks keeps the obsolete %q", stale)
 		}
@@ -1659,7 +1671,9 @@ func TestStressShardHandoff(t *testing.T) {
 		"The ≤250-second macOS CPU1 goal is a first-run hypothesis, not an additional acceptance gate", "There is no two-run requirement",
 		// The stress worker rebalance's delivery gate: its evidence
 		// checklist (instructions, not measurements; hosted evidence
-		// pending at local review stays pending, not passed).
+		// pending at local review stays pending, not passed), then the
+		// record of the run that met it, whose figures live in Stress
+		// checks.
 		"for the stress worker rebalance (design stress-rebalance, delivery gate; hosted evidence pending at local code review remains pending, not passed, and is outside the implementation acceptance bar)",
 		"collect the entire successful run of the implementation pull request on both platforms", "every stage's elapsed time",
 		"the combined command's time and each of its nine binaries' times", "all nine per-CPU invocation times", "each group's maximum",
@@ -1668,7 +1682,8 @@ func TestStressShardHandoff(t *testing.T) {
 		"comparing each affected stage (`stress-packages` and `stress-packages-cpu`, Linux and macOS) to the 675-second review target and each binary to its 360-second limit",
 		"any timeout or assertion failure blocks qualification",
 		"A green fast-runner pull request validates execution but does not establish a slow-runner upper bound; record that uncertainty explicitly",
-		"never a raised timeout, a reduced count or a weakened test")
+		"never a raised timeout, a reduced count or a weakened test",
+		"Recorded: hosted run 37659127131", "(Stress checks, Hosted run 37659127131)")
 	for _, stale := range []string{"conclusions of all eighteen jobs: all four checks", "stress evidence from the fourteen worker logs", "the actual job and step times of all eighteen jobs"} {
 		if strings.Contains(strings.Join(strings.Fields(first), " "), stale) {
 			t.Fatalf("First remote run keeps the obsolete %q", stale)
