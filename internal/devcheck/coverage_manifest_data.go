@@ -195,6 +195,26 @@ var WorkspaceCoverageManifest = []CoverageEntry{
 	{Group: GroupChanged, File: modulePath + "/internal/mcpqual/plan.go"},
 	{Group: GroupChanged, File: modulePath + "/internal/mcpqual/publish.go"},
 	{Group: GroupChanged, File: modulePath + "/internal/mcpqual/report.go"},
+
+	// Decoder enrollment, slice A (base ff8058f): the new capture, manifest
+	// and enrollment files and every production file it changes that no
+	// earlier entry lists whole, as whole files (procexec/exec_unix.go builds
+	// on linux || darwin, so it is evaluated on both systems like every
+	// other entry here). Its other changed files are already listed whole:
+	// mcpqual/facts.go, mcpqual/plan.go, mcpqual/report.go,
+	// devcheck/devcheck.go and devcheck/native.go.
+	{Group: GroupChanged, File: modulePath + "/internal/mcpqual/capture.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/mcpqual/capture_manifest.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/mcpqual/enrollment.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/mcpqual/cli.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/mcpqual/session.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/mcpqual/runner.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/mcpqual/proc.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/mcpqual/decode.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/mcpqual/measure.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/mcpqual/redact.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/mcpqual/procexec/exec_unix.go"},
+	{Group: GroupChanged, File: modulePath + "/cmd/mcpqual/main.go"},
 }
 
 // modulePath is the profile's import-path prefix.

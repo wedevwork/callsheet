@@ -43,16 +43,41 @@ var patternTriggers = [][]string{
 // only.
 type Redactor struct {
 	literals []literal
+	// capture selects the mcpqual-capture-v1 policy (NewCaptureRedactor):
+	// values are redacted in place and only unsafe non-JSON lines are
+	// omitted.
+	capture bool
 }
 
 type literal struct{ value, repl string }
 
 // NewRedactor builds a redactor; secrets are replaced with Redacted and
-// each path in paths with its label.
+// each path in paths with its label. Secrets shorter than four characters
+// are kept (qualification policy).
 func NewRedactor(secrets []string, paths map[string]string) *Redactor {
+	return newRedactor(secrets, paths, 4)
+}
+
+// NewCaptureRedactor is the capture redaction policy mcpqual-capture-v1
+// (design decoder-enrollment r0.3, Capture evidence). Credential words in
+// ordinary prose are not secrets: values are redacted in place with
+// Redacted, every nonempty known secret literal whatever its length
+// (longest first), Bearer credentials, sk-/pk-/xai-/key-/rk- prefixed keys,
+// plain credential assignments (captureAssignments), HTTP(S) URL userinfo
+// and credential-named JSON members (by decoded content); paths keep their
+// labels. A non-JSON line is omitted whole only when it is unsafe
+// (unsafeLine). A short literal may corrupt evidence incidentally; that
+// makes enrollment fail rather than permitting leakage.
+func NewCaptureRedactor(secrets []string, paths map[string]string) *Redactor {
+	r := newRedactor(secrets, paths, 1)
+	r.capture = true
+	return r
+}
+
+func newRedactor(secrets []string, paths map[string]string, minSecret int) *Redactor {
 	r := &Redactor{}
 	for _, s := range secrets {
-		if len(strings.TrimSpace(s)) >= 4 {
+		if len(strings.TrimSpace(s)) >= minSecret {
 			r.literals = append(r.literals, literal{s, Redacted})
 		}
 	}
@@ -65,13 +90,165 @@ func NewRedactor(secrets []string, paths map[string]string) *Redactor {
 	return r
 }
 
+// CredentialValues returns the values of credential-named variables
+// (case-insensitive key, token, secret, password, passwd, auth,
+// credential, cookie or session in the name) of the inherited environment
+// environ's KEY=VALUE entries, for removal as literals; the environment
+// itself is never serialized. The one exception (design decoder-enrollment
+// r0.3) is the OS session number: exactly XDG_SESSION_ID with a decimal
+// value is metadata, not a credential, so it never becomes a literal (a
+// session "2" would otherwise replace every 2 in versions, numbers and
+// nonces). A value another credential variable also holds stays a secret.
+func CredentialValues(environ []string) []string {
+	var out []string
+	for _, kv := range environ {
+		if k, v, ok := strings.Cut(kv, "="); ok && v != "" && secretName.MatchString(k) && !(k == "XDG_SESSION_ID" && decimalRe.MatchString(v)) {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+var decimalRe = regexp.MustCompile(`^[0-9]+$`)
+
+// jsonPass is the shape pass over re-encoded JSON text. Under the capture
+// policy it skips the plain-assignment rule: every decoded string already
+// had it, and in encoded text a quoted value is escaped (\"), which the
+// rule would misread.
+func (r *Redactor) jsonPass(s string) string {
+	if r.capture {
+		return r.captureShapes(s, false)
+	}
+	return string(r.Bytes([]byte(s)))
+}
+
+// captureBytes is the capture policy's in-place value redaction of text.
+func (r *Redactor) captureBytes(s string) string { return r.captureShapes(s, true) }
+
+func (r *Redactor) captureShapes(s string, assignments bool) string {
+	for _, l := range r.literals {
+		s = strings.ReplaceAll(s, l.value, l.repl)
+	}
+	lower := foldLower(s)
+	has := func(i int) bool {
+		for _, tr := range patternTriggers[i] {
+			if strings.Contains(lower, tr) {
+				return true
+			}
+		}
+		return false
+	}
+	if has(0) {
+		s = secretPatterns[0].ReplaceAllString(s, "${1}"+Redacted)
+	}
+	if has(1) {
+		s = secretPatterns[1].ReplaceAllString(s, Redacted)
+	}
+	if has(2) && strings.Contains(s, ":") {
+		s = secretPatterns[2].ReplaceAllString(s, "${1}"+Redacted+"${3}")
+	}
+	if assignments && strings.Contains(s, "=") {
+		s, _ = captureAssignments(s)
+	}
+	if strings.Contains(s, "@") {
+		s = secretPatterns[4].ReplaceAllString(s, "${1}"+Redacted)
+	}
+	return s
+}
+
+// assignmentRe finds an identifier and its assignment separator: an ASCII
+// identifier, optional horizontal whitespace, =, optional horizontal
+// whitespace.
+var assignmentRe = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_-]*)[ \t]*=[ \t]*`)
+
+// captureAssignments redacts the value of every plain credential
+// assignment (an identifier matching secretName): an unquoted value
+// through the next whitespace, or the contents of a single- or
+// double-quoted value closed on the same line. Identifier, separator and
+// quotes are kept; an already-redacted value stays byte-identical. An
+// unterminated quoted value is redacted to the end of its line here and
+// reported, so a line-level caller omits the line instead.
+func captureAssignments(s string) (string, bool) {
+	var out strings.Builder
+	cursor, unterminated := 0, false
+	for _, m := range assignmentRe.FindAllStringSubmatchIndex(s, -1) {
+		if m[0] < cursor || !secretName.MatchString(s[m[2]:m[3]]) {
+			continue
+		}
+		v := m[1]
+		end := v
+		switch {
+		case v < len(s) && (s[v] == '"' || s[v] == '\''):
+			eol := strings.IndexByte(s[v+1:], '\n')
+			if eol < 0 {
+				eol = len(s) - v - 1
+			}
+			if c := strings.IndexByte(s[v+1:v+1+eol], s[v]); c >= 0 {
+				v, end = v+1, v+1+c
+			} else {
+				v, end, unterminated = v+1, v+1+eol, true
+			}
+		default:
+			for end < len(s) && !strings.ContainsRune(" \t\n\r\v\f", rune(s[end])) {
+				end++
+			}
+			if end == v {
+				continue
+			}
+		}
+		out.WriteString(s[cursor:v])
+		out.WriteString(Redacted)
+		cursor = end
+	}
+	if cursor == 0 && out.Len() == 0 {
+		return s, unterminated
+	}
+	out.WriteString(s[cursor:])
+	return out.String(), unterminated
+}
+
+// quotedMemberRe is an apparent quoted JSON credential member (the
+// credential-member name shape of secretPatterns[2], then a colon).
+var quotedMemberRe = regexp.MustCompile(`(?i)"[A-Za-z0-9_-]*(api[_-]?key|token|secret|passw(?:or)?d|authorization|credential|cookie)[A-Za-z0-9_-]*"\s*:`)
+
+// unsafeLine reports a non-JSON line the capture policy omits whole:
+// invalid UTF-8, any backslash (an ambiguous encoded or cut value), an
+// apparent quoted JSON credential member, or an unterminated quoted
+// credential assignment.
+func unsafeLine(b []byte) bool {
+	if !utf8.Valid(b) || bytes.IndexByte(b, '\\') >= 0 || quotedMemberRe.Match(b) {
+		return true
+	}
+	if bytes.IndexByte(b, '=') >= 0 {
+		_, unterminated := captureAssignments(string(b))
+		return unterminated
+	}
+	return false
+}
+
+// foldLower is s lower-cased for the trigger prefilters, with the two
+// non-ASCII letters Unicode case folding equates with ASCII letters mapped
+// to them (ſ, long s, to s; the Kelvin sign is lower-cased to k by
+// ToLower), so a prefilter is never narrower than the case-insensitive
+// expressions it guards (code review C1).
+func foldLower(s string) string {
+	lower := strings.ToLower(s)
+	if strings.Contains(lower, "ſ") {
+		lower = strings.ReplaceAll(lower, "ſ", "s")
+	}
+	return lower
+}
+
 // Bytes returns b with every literal and credential shape removed.
 func (r *Redactor) Bytes(b []byte) []byte {
+	if r.capture {
+		return []byte(r.captureBytes(string(b)))
+	}
 	s := string(b)
 	for _, l := range r.literals {
 		s = strings.ReplaceAll(s, l.value, l.repl)
 	}
-	lower := strings.ToLower(s)
+	lower := foldLower(s)
 	for i, re := range secretPatterns {
 		hit := false
 		for _, tr := range patternTriggers[i] {
@@ -109,13 +286,14 @@ func (r *Redactor) mayRedact(s string) bool {
 			return true
 		}
 	}
-	lower := strings.ToLower(s)
+	lower := foldLower(s)
 	for _, tr := range jsonTriggers {
 		if strings.Contains(lower, tr) {
 			return true
 		}
 	}
-	return false
+	// The capture assignment rule also names session variables.
+	return r.capture && strings.Contains(lower, "session")
 }
 
 // Struct redacts, in place, every string, *string and string slice element
@@ -149,6 +327,29 @@ func (r *Redactor) Struct(v reflect.Value) {
 // secretMember names JSON members whose string values are credentials.
 var secretMember = regexp.MustCompile(`(?i)(api[_-]?key|apikey|token|secret|password|passwd|authorization|credential|cookie|private[_-]?key)`)
 
+// memberTriggers are lower-case substrings without which secretMember
+// cannot match (a cheap necessary condition checked first).
+var memberTriggers = []string{"key", "token", "secret", "passw", "authorization", "credential", "cookie"}
+
+// isSecretMember reports whether a member name is credential-named. The
+// trigger prefilter applies to ASCII names only: a non-ASCII name (which
+// case folding could match, such as a Kelvin sign for k) always takes the
+// regular expression.
+func isSecretMember(key string) bool {
+	for i := 0; i < len(key); i++ {
+		if key[i] >= utf8.RuneSelf {
+			return secretMember.MatchString(key)
+		}
+	}
+	lower := strings.ToLower(key)
+	for _, tr := range memberTriggers {
+		if strings.Contains(lower, tr) {
+			return secretMember.MatchString(key)
+		}
+	}
+	return false
+}
+
 // jsonTriggers are lower-case substrings without which a JSON line holds
 // neither a credential-named member nor a credential shape.
 var jsonTriggers = []string{"key", "token", "secret", "passw", "auth", "credential", "cookie", "bearer", "sk-", "pk-", "xai-", "rk-", "@"}
@@ -180,7 +381,21 @@ func (r *Redactor) Line(b []byte) []byte {
 // known literal or a credential trigger) is never unescaped or partly
 // redacted: no part of it is published. Other invalid lines are redacted
 // as text.
+//
+// Under the capture policy a complete JSON value takes the decoded-content
+// path (valid escaped JSON included), any other line is omitted only when
+// unsafeLine, and otherwise its values are redacted in place: a credential
+// word in prose is kept.
 func (r *Redactor) TranscriptLine(b []byte) ([]byte, bool) {
+	if r.capture {
+		switch {
+		case utf8.Valid(b) && json.Valid(b):
+			return r.Line(b), true
+		case unsafeLine(b):
+			return nil, false
+		}
+		return []byte(r.text(string(b), 0)), true
+	}
 	if (!utf8.Valid(b) || !json.Valid(b)) && (bytes.IndexByte(b, '\\') >= 0 || r.mayRedact(string(b))) {
 		return nil, false
 	}
@@ -193,13 +408,31 @@ func (r *Redactor) text(s string, depth int) string {
 	if !esc && !r.mayRedact(s) {
 		return s
 	}
+	if esc && backslashRun(s) >= maxEncodedRun {
+		// k JSON-string layers leave a run of 2^k-1 backslashes: this many
+		// can never be resolved within the two budgets (maxRedactDepth JSON
+		// walks, then maxRedactDepth unescapes), so it is withheld whole at
+		// once rather than walked (code review C2).
+		return Redacted
+	}
 	t := strings.TrimLeft(s, " \t\r\n")
-	if depth < maxRedactDepth && t != "" && strings.IndexByte(`{["`, t[0]) >= 0 && json.Valid([]byte(t)) {
+	jsonLike := t != "" && strings.IndexByte(`{["`, t[0]) >= 0 && json.Valid([]byte(t))
+	if depth >= maxRedactDepth && (esc || jsonLike) {
+		// The decode budget is exhausted with a value still encoded: it is
+		// never inspected further, so it is withheld whole (code review C2).
+		return Redacted
+	}
+	if jsonLike {
 		if out, changed := r.jsonText([]byte(t), depth); changed {
-			return string(r.Bytes([]byte(s[:len(s)-len(t)] + string(out))))
+			return r.jsonPass(s[:len(s)-len(t)] + string(out))
 		}
+		return r.jsonPass(s)
 	} else if esc {
-		if v := unescapeView(s); v != s {
+		v, resolved := unescapeResolved(s)
+		if !resolved {
+			return Redacted
+		}
+		if v != s {
 			if red := string(r.Bytes([]byte(v))); red != v {
 				return red
 			}
@@ -247,7 +480,11 @@ func (r *Redactor) jsonText(b []byte, depth int) ([]byte, bool) {
 			secret = secret || top.all
 			if top.obj && top.n%2 == 0 {
 				key, _ := tok.(string)
-				top.secret = secretMember.MatchString(key) || secretMember.MatchString(unescapeView(key))
+				// A name still encoded when its decode budget runs out was
+				// never classified: its whole value subtree is withheld
+				// (code review round 2, C1).
+				view, resolved := unescapeResolved(key)
+				top.secret = isSecretMember(key) || !resolved || isSecretMember(view)
 				top.n++
 				rk := r.text(key, depth+1)
 				changed = changed || rk != key
@@ -280,16 +517,47 @@ func (r *Redactor) jsonText(b []byte, depth int) ([]byte, bool) {
 
 // unescapeView decodes JSON string escapes wherever they occur in s,
 // repeatedly (up to maxRedactDepth layers), leaving malformed escapes as
-// they are. It is only a view for redaction decisions.
+// they are. It drops whether the decoding resolved, so no redaction
+// decision uses it: every decision site calls unescapeResolved and treats
+// an unresolved view as a credential (code review round 2, C1).
 func unescapeView(s string) string {
-	for i := 0; i < maxRedactDepth && strings.IndexByte(s, '\\') >= 0; i++ {
+	v, _ := unescapeResolved(s)
+	return v
+}
+
+// maxEncodedRun is the shortest backslash run that needs more decoding
+// layers than both budgets together allow.
+const maxEncodedRun = 1 << (2 * maxRedactDepth)
+
+// backslashRun is the length of the longest run of backslashes in s.
+func backslashRun(s string) int {
+	longest, run := 0, 0
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' {
+			run++
+			longest = max(longest, run)
+		} else {
+			run = 0
+		}
+	}
+	return longest
+}
+
+// unescapeResolved is unescapeView also reporting whether the decoding
+// reached its fixed point within the budget; an unresolved view still
+// holds an encoded layer that no redaction decision saw.
+func unescapeResolved(s string) (string, bool) {
+	for i := 0; i < maxRedactDepth; i++ {
+		if strings.IndexByte(s, '\\') < 0 {
+			return s, true
+		}
 		u := unescapeOnce(s)
 		if u == s {
-			break
+			return s, true
 		}
 		s = u
 	}
-	return s
+	return s, strings.IndexByte(s, '\\') < 0 || unescapeOnce(s) == s
 }
 
 func unescapeOnce(s string) string {

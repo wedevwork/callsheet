@@ -303,6 +303,11 @@ func (r *Report) Validate() error {
 		if c.Outcome != StatusConclusive && (c.Reason == nil || *c.Reason == "") {
 			return fail("%s: outcome %s without a reason", c.ID, c.Outcome)
 		}
+		if dv := c.DecoderVersion; dv != nil {
+			if err := dv.validateEvidence(); err != nil {
+				return fail("%s: %v", c.ID, err)
+			}
+		}
 		ci := c.ClientInfo
 		if (ci.Name == nil || ci.Version == nil || ci.RequesterCompatible == nil) && (ci.UnqualifiedReason == nil || *ci.UnqualifiedReason == "") {
 			return fail("%s: client_info missing without an unqualified_reason", c.ID)
@@ -494,6 +499,12 @@ func shortPollBlock(rep *Report, c ClientReport, ph *PhaseReport, verdict string
 		return "no decoder version was selected"
 	case !c.DecoderVersion.Qualified:
 		return "decoder " + c.DecoderVersion.Fixture + " is a synthetic fixture, not an actual-transcript qualification"
+	case len(c.DecoderVersion.Evidence) == 0:
+		return "decoder " + c.DecoderVersion.Fixture + " is marked qualified without enrolled real-transcript evidence"
+	case rep != nil && len(c.DecoderVersion.MissingCapabilities(rep.OS+"/"+rep.Arch, RequiredCapabilities(KindToolResult)...)) > 0:
+		return "decoder " + c.DecoderVersion.Fixture + " has no enrolled success-path evidence for " + rep.OS + "/" + rep.Arch
+	case rep != nil && ph.UpperBoundMS != nil && len(c.DecoderVersion.MissingCapabilities(rep.OS+"/"+rep.Arch, CapMCPTimeout)) > 0:
+		return "decoder " + c.DecoderVersion.Fixture + " has no enrolled mcp_timeout evidence for " + rep.OS + "/" + rep.Arch
 	case setup == nil || setup.Status != StatusConclusive:
 		return "the setup phase is not conclusive"
 	case verdict == verdictCompatible && ph.Observations < 2:
