@@ -5,7 +5,9 @@ import (
 	"context"
 	"io"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/wedevwork/callsheet/internal/devcheck"
@@ -23,9 +25,13 @@ func TestRunWrapper(t *testing.T) {
 		t.Fatalf("no args = %d %q", code, errOut.String())
 	}
 	// The wrapper passes the injected runner and options through; it never
-	// recursively invokes devcheck itself.
+	// recursively invokes devcheck itself. The stress per-CPU groups call
+	// it from up to three goroutines at once.
+	var mu sync.Mutex
 	var calls [][]string
 	fake := func(_ context.Context, argv, _ []string, _ string, _, _ io.Writer) error {
+		mu.Lock()
+		defer mu.Unlock()
 		calls = append(calls, argv)
 		return nil
 	}
@@ -52,12 +58,13 @@ func TestRunWrapper(t *testing.T) {
 	}
 	// The stress shard stages (iteration 02c, stress-plane since 05b,
 	// stress-sidecar since its sidecar follow-up, stress-plane-cpu1 and
-	// stress-sidecar-cpu1 since design 06a-perf) take no operands or flags,
-	// and --count belongs to container-e2e alone: rejected with exit 2
-	// before any child runs, and the usage names every stage.
-	const usage = "usage: devcheck test | coverage [-o profile] | bench | cross | all | native | stress | stress-packages | stress-plane-cpu1 | stress-plane | stress-sidecar-cpu1 | stress-sidecar | stress-processgroup | stress-functions | container-e2e [--count=N]\n"
+	// stress-sidecar-cpu1 since design 06a-perf, stress-packages-cpu since
+	// the stress worker rebalance) take no operands or flags, and --count
+	// belongs to container-e2e alone: rejected with exit 2 before any child
+	// runs, and the usage names every stage.
+	const usage = "usage: devcheck test | coverage [-o profile] | bench | cross | all | native | stress | stress-packages | stress-packages-cpu | stress-plane-cpu1 | stress-plane | stress-sidecar-cpu1 | stress-sidecar | stress-processgroup | stress-functions | container-e2e [--count=N]\n"
 	calls = nil
-	for _, args := range [][]string{{"stress-packages", "x"}, {"stress-plane-cpu1", "-cpu=1"}, {"stress-plane-cpu1", "extra"}, {"stress-plane-cpu1", "-count=1"},
+	for _, args := range [][]string{{"stress-packages", "x"}, {"stress-packages-cpu", "x"}, {"stress-packages-cpu", "-cpu=1"}, {"stress-plane-cpu1", "-cpu=1"}, {"stress-plane-cpu1", "extra"}, {"stress-plane-cpu1", "-count=1"},
 		{"stress-plane", "-cpu=1"}, {"stress-plane", "extra"}, {"stress-sidecar-cpu1", "-cpu=2"}, {"stress-sidecar-cpu1", "extra"}, {"stress-sidecar-cpu1", "-o", "p"},
 		{"stress-sidecar", "-cpu=1"}, {"stress-sidecar", "extra"}, {"stress-processgroup", "-cpu=1"}, {"stress-functions", "-count=1"}, {"stress", "-o", "p"},
 		{"test", "--count=1"}, {"container-e2e", "--count=21"}, {"container-e2e", "--count=x"}} {
@@ -77,6 +84,33 @@ func TestRunWrapper(t *testing.T) {
 		if code := run([]string{stage}, &out, &errOut, fake, opts); code != 0 || len(calls) != 1 || strings.Join(calls[0], " ") != want ||
 			!strings.Contains(out.String(), "devcheck: stage "+stage+" ok") {
 			t.Fatalf("%s = %d, calls %q, %s", stage, code, calls, errOut.String())
+		}
+	}
+	// stress-packages runs the combined invocation alone, and
+	// stress-packages-cpu its nine per-CPU invocations (three groups of
+	// three, in group order; the calls within a group are concurrent).
+	calls = nil
+	out.Reset()
+	errOut.Reset()
+	if code := run([]string{"stress-packages"}, &out, &errOut, fake, opts); code != 0 || len(calls) != 1 ||
+		strings.Join(calls[0], " ") != "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/workspacetransfer ./internal/taskworkspace ./internal/taskpublication" {
+		t.Fatalf("stress-packages = %d, calls %q, %s", code, calls, errOut.String())
+	}
+	calls = nil
+	out.Reset()
+	errOut.Reset()
+	if code := run([]string{"stress-packages-cpu"}, &out, &errOut, fake, opts); code != 0 || len(calls) != 9 || !strings.Contains(out.String(), "devcheck: stage stress-packages-cpu ok") {
+		t.Fatalf("stress-packages-cpu = %d, calls %q, %s", code, calls, errOut.String())
+	}
+	for i, pkg := range []string{"./internal/contract", "./internal/mcpqual", "./internal/workspace"} {
+		var got []string
+		for _, c := range calls[3*i : 3*i+3] {
+			got = append(got, strings.Join(c, " "))
+		}
+		slices.Sort(got)
+		want := []string{"go test -race -count=20 -cpu=1 -timeout=6m " + pkg, "go test -race -count=20 -cpu=2 -timeout=6m " + pkg, "go test -race -count=20 -cpu=4 -timeout=6m " + pkg}
+		if !slices.Equal(got, want) {
+			t.Fatalf("stress-packages-cpu group %d = %q, want %q", i+1, got, want)
 		}
 	}
 }

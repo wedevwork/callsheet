@@ -107,13 +107,15 @@ func TestRolePolicy(t *testing.T) {
 	t.Run("policy", func(t *testing.T) {
 		for _, goos := range []string{"linux", "darwin"} {
 			shards, err := StressShards(goos)
-			if err != nil || len(shards) != 7 || strings.Join(shards[0].Steps[0].Argv, " ") != wantRoleStressPackages || strings.Join(argvOf(slices.Concat(shards[0].CPUGroups...)), "|") != strings.Join(slices.Concat(groupContract, groupMcpqual, groupWorkspace), "|") ||
-				joinedArgv(shards, 1, 2) != wantStressPlane1+"|"+wantStressPlane2+"|"+wantStressPlane4 || !shards[1].Parallel || !shards[2].Parallel ||
-				joinedArgv(shards, 1) != wantStressPlane1 || joinedArgv(shards, 2) != wantStressPlane2+"|"+wantStressPlane4 ||
-				joinedArgv(shards, 3, 4) != wantStressSidecar1+"|"+wantStressSidecar2+"|"+wantStressSidecar4 || !shards[3].Parallel || !shards[4].Parallel ||
-				joinedArgv(shards, 3) != wantStressSidecar1 || joinedArgv(shards, 4) != wantStressSidecar2+"|"+wantStressSidecar4 ||
-				joinedArgv(shards, 5) != wantStressPG1+"|"+wantStressPG2+"|"+wantStressPG4 || !shards[5].Parallel ||
-				joinedArgv(shards, 6) != wantStressFunction+"|"+wantStressPlaneFunction+"|"+wantNodeStressFunction {
+			if err != nil || len(shards) != 8 || strings.Join(shards[0].Steps[0].Argv, " ") != wantRoleStressPackages || shards[0].CPUGroups != nil ||
+				shards[1].Name != "packages-cpu" || shards[1].Parallel || shards[1].Steps != nil ||
+				strings.Join(argvOf(slices.Concat(shards[1].CPUGroups...)), "|") != strings.Join(slices.Concat(groupContract, groupMcpqual, groupWorkspace), "|") ||
+				joinedArgv(shards, 2, 3) != wantStressPlane1+"|"+wantStressPlane2+"|"+wantStressPlane4 || !shards[2].Parallel || !shards[3].Parallel ||
+				joinedArgv(shards, 2) != wantStressPlane1 || joinedArgv(shards, 3) != wantStressPlane2+"|"+wantStressPlane4 ||
+				joinedArgv(shards, 4, 5) != wantStressSidecar1+"|"+wantStressSidecar2+"|"+wantStressSidecar4 || !shards[4].Parallel || !shards[5].Parallel ||
+				joinedArgv(shards, 4) != wantStressSidecar1 || joinedArgv(shards, 5) != wantStressSidecar2+"|"+wantStressSidecar4 ||
+				joinedArgv(shards, 6) != wantStressPG1+"|"+wantStressPG2+"|"+wantStressPG4 || !shards[6].Parallel ||
+				joinedArgv(shards, 7) != wantStressFunction+"|"+wantStressPlaneFunction+"|"+wantNodeStressFunction {
 				t.Fatalf("%s stress plan = %+v %v", goos, shards, err)
 			}
 		}

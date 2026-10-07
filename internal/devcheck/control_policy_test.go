@@ -256,7 +256,8 @@ func TestControlPolicy(t *testing.T) {
 		// Routing: the new contracts run in their packages' existing
 		// shards (plane and sidecar with their three CPU settings
 		// concurrent, contract in the packages shard, since the contract
-		// headroom fix as its per-CPU group); the function wrappers and
+		// headroom fix as its per-CPU group, in the packages-cpu shard
+		// since the stress worker rebalance); the function wrappers and
 		// native groups stay out of stress-functions.
 		if stressPlanePackage != "./internal/plane" || stressSidecarPackage != "./internal/sidecar" || !slices.Contains(stressSplitPackages, "./internal/contract") {
 			t.Fatal("a control contract's package left its shard")
@@ -268,11 +269,11 @@ func TestControlPolicy(t *testing.T) {
 		}
 		for _, goos := range []string{"linux", "darwin"} {
 			shards, err := StressShards(goos)
-			if err != nil || len(shards) != 7 {
+			if err != nil || len(shards) != 8 {
 				t.Fatalf("%s shards %v %v", goos, shards, err)
 			}
 			for _, sh := range shards {
-				for _, st := range sh.Steps {
+				for _, st := range slices.Concat(append([][]Step{sh.Steps}, sh.CPUGroups...)...) {
 					a := strings.Join(st.Argv, " ")
 					if !strings.Contains(a, "-race") || !strings.Contains(a, "-count=20") || !strings.Contains(a, "-timeout=6m") {
 						t.Fatalf("%s %s: %s", goos, sh.Name, a)

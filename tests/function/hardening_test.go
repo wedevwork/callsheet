@@ -35,7 +35,9 @@ import (
 // follow-up ./internal/sidecar; the contract headroom fix moved
 // ./internal/contract into the packages shard's per-CPU group, and the
 // workspace and mcpqual headroom fix ./internal/mcpqual and
-// ./internal/workspace into per-CPU groups of their own after it.
+// ./internal/workspace into per-CPU groups of their own after it; the
+// stress worker rebalance moved the three groups into the packages-cpu
+// shard, leaving this flattened order unchanged.
 const (
 	hardeningStressCount     = 20
 	hardeningStressPackages  = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/workspacetransfer ./internal/taskworkspace ./internal/taskpublication"
@@ -140,7 +142,7 @@ func TestHardeningStress(t *testing.T) {
 	if _, err := devcheck.StressSteps("windows"); err == nil {
 		t.Fatal("windows stress plan accepted")
 	}
-	for _, st := range []string{"stress", "stress-packages", "stress-plane-cpu1", "stress-plane", "stress-sidecar-cpu1", "stress-sidecar", "stress-processgroup", "stress-functions"} {
+	for _, st := range []string{"stress", "stress-packages", "stress-packages-cpu", "stress-plane-cpu1", "stress-plane", "stress-sidecar-cpu1", "stress-sidecar", "stress-processgroup", "stress-functions"} {
 		if !strings.Contains(" "+strings.Join(devcheck.Stages(), " ")+" ", " "+st+" ") {
 			t.Fatalf("%s not advertised: %v", st, devcheck.Stages())
 		}
@@ -182,8 +184,24 @@ func TestHardeningStress(t *testing.T) {
 			t.Fatalf("fail %s = %d calls=%d %s", c.failOn, code, len(r.calls), errOut)
 		}
 	}
+	// The standalone shard stages of the stress worker rebalance:
+	// stress-packages runs only the combined command, and the group-only
+	// stress-packages-cpu stops after the failed group joined (3, 6 or 9
+	// calls).
+	for _, c := range []struct {
+		stage, failOn, step string
+		calls               int
+	}{{"stress-packages", "./internal/spikes/gittransport", "stress packages", 1}, {"stress-packages-cpu", "-cpu=2 -timeout=6m ./internal/contract", "stress contract cpu2", 3},
+		{"stress-packages-cpu", "-cpu=4 -timeout=6m ./internal/mcpqual", "stress mcpqual cpu4", 6}, {"stress-packages-cpu", "-cpu=1 -timeout=6m ./internal/workspace", "stress workspace cpu1", 9}} {
+		r := &ciRunner{failOn: c.failOn}
+		code, out, errOut := devcheckRun(t, r, c.stage)
+		if code != 1 || len(r.calls) != c.calls || !strings.Contains(errOut, "stage "+c.stage+" FAILED: "+c.step+" failed") ||
+			!strings.Contains(errOut, "injected child failure") || strings.Contains(out, "stage "+c.stage+" ok") {
+			t.Fatalf("%s fail %s = %d calls=%d %s", c.stage, c.failOn, code, len(r.calls), errOut)
+		}
+	}
 	// Usage errors and all's unchanged sequence.
-	for _, args := range [][]string{{"stress", "extra"}, {"stress", "-o", "x"}, {"stress-plane-cpu1", "-cpu=1"}, {"stress-plane-cpu1", "extra"}, {"stress-plane", "-count=1"},
+	for _, args := range [][]string{{"stress", "extra"}, {"stress", "-o", "x"}, {"stress-packages-cpu", "-cpu=1"}, {"stress-packages-cpu", "extra"}, {"stress-plane-cpu1", "-cpu=1"}, {"stress-plane-cpu1", "extra"}, {"stress-plane", "-count=1"},
 		{"stress-sidecar-cpu1", "-count=1"}, {"stress-sidecar-cpu1", "-o", "x"}, {"stress-sidecar", "-cpu=4"}, {"stress-processgroup", "-cpu=1"}, {"stress-functions", "-count=1"}} {
 		r := &ciRunner{}
 		if code, _, _ := devcheckRun(t, r, args...); code != 2 || len(r.calls) != 0 {
@@ -326,7 +344,8 @@ func TestHardeningSignalEvidence(t *testing.T) {
 }
 
 // FP-6: since iteration 02c the stress workers (ten since iteration 05b's
-// sidecar follow-up, fourteen since design 06a-perf's CPU1 workers)
+// sidecar follow-up, fourteen since design 06a-perf's CPU1 workers, sixteen
+// since the stress worker rebalance's packages-cpu workers)
 // run their exact shard step as their step 3 (the summaries
 // ci-linux-stress and ci-macos-stress keep the contexts), the main jobs
 // keep their stages without stress,
@@ -347,10 +366,10 @@ func TestHardeningCIStress(t *testing.T) {
 	}
 	for _, j := range []struct{ id, want string }{
 		{"linux", "test coverage bench cross"}, {"macos", "native"},
-		{"linux-stress-packages", "stress-packages"}, {"linux-stress-plane-cpu1", "stress-plane-cpu1"}, {"linux-stress-plane", "stress-plane"},
+		{"linux-stress-packages", "stress-packages"}, {"linux-stress-packages-cpu", "stress-packages-cpu"}, {"linux-stress-plane-cpu1", "stress-plane-cpu1"}, {"linux-stress-plane", "stress-plane"},
 		{"linux-stress-sidecar-cpu1", "stress-sidecar-cpu1"}, {"linux-stress-sidecar", "stress-sidecar"},
 		{"linux-stress-processgroup", "stress-processgroup"}, {"linux-stress-functions", "stress-functions"},
-		{"macos-stress-packages", "stress-packages"}, {"macos-stress-plane-cpu1", "stress-plane-cpu1"}, {"macos-stress-plane", "stress-plane"},
+		{"macos-stress-packages", "stress-packages"}, {"macos-stress-packages-cpu", "stress-packages-cpu"}, {"macos-stress-plane-cpu1", "stress-plane-cpu1"}, {"macos-stress-plane", "stress-plane"},
 		{"macos-stress-sidecar-cpu1", "stress-sidecar-cpu1"}, {"macos-stress-sidecar", "stress-sidecar"},
 		{"macos-stress-processgroup", "stress-processgroup"}, {"macos-stress-functions", "stress-functions"},
 	} {
@@ -414,19 +433,20 @@ func TestHardeningCIStress(t *testing.T) {
 		switch {
 		case worker && (!prefixed || len(j.Stages) != 1 || j.Stages[0] != stage):
 			t.Fatalf("worker %s stages = %v", j.ID, j.Stages)
-		case summary && (len(j.Stages) != 0 || len(j.Needs) != 7 || len(node(t, &doc, "jobs", j.ID, "steps").Content) != 1):
+		case summary && (len(j.Stages) != 0 || len(j.Needs) != 8 || len(node(t, &doc, "jobs", j.ID, "steps").Content) != 1):
 			t.Fatalf("summary %s = %+v", j.ID, j)
 		case !worker && !summary && strings.Contains(" "+strings.Join(j.Stages, " ")+" ", " stress"):
 			t.Fatalf("main job %s stages = %v", j.ID, j.Stages)
 		}
 	}
-	if workers != 14 {
-		t.Fatalf("%d worker jobs, want 14", workers)
+	if workers != 16 {
+		t.Fatalf("%d worker jobs, want 16", workers)
 	}
-	// Invocations per stage: full stress 16, the packages shard 4 (its
-	// combined command and the contract group, the contract headroom fix),
-	// the plane and sidecar pairs 2 each, the new CPU1 stages 1 each.
-	for stage, calls := range map[string]int{"stress": 22, "stress-packages": 10, "stress-plane-cpu1": 1, "stress-plane": 2, "stress-sidecar-cpu1": 1,
+	// Invocations per stage: full stress 22, the packages shard 1 (its
+	// combined command alone since the stress worker rebalance), the
+	// packages-cpu shard 9 (the contract, mcpqual and workspace groups),
+	// the plane and sidecar pairs 2 each, the CPU1 stages 1 each.
+	for stage, calls := range map[string]int{"stress": 22, "stress-packages": 1, "stress-packages-cpu": 9, "stress-plane-cpu1": 1, "stress-plane": 2, "stress-sidecar-cpu1": 1,
 		"stress-sidecar": 2, "stress-processgroup": 3, "stress-functions": 3} {
 		r := &ciRunner{}
 		if code, _, errOut := devcheckRun(t, r, stage); code != 0 || len(r.calls) != calls {

@@ -88,6 +88,7 @@ func TestPlaneVerificationPolicyContract(t *testing.T) {
 			"bench":               {{wantBenchGit}, {wantBenchPlane}, {wantBenchContract}, {wantBenchSidecar}, {wantBenchAdapter}, {wantBenchMCP}, {wantBenchMCPQual}, {wantBenchWorkspace}, {wantBenchTransfer}, {wantBenchTaskWorkspace}, {wantBenchRealAdapter}, {wantBenchContainer}, {wantBenchClientWait}},
 			"stress":              wantStageGroups["stress"],
 			"stress-packages":     wantStageGroups["stress-packages"],
+			"stress-packages-cpu": wantStageGroups["stress-packages-cpu"],
 			"stress-plane-cpu1":   wantStageGroups["stress-plane-cpu1"],
 			"stress-plane":        wantStageGroups["stress-plane"],
 			"stress-sidecar-cpu1": wantStageGroups["stress-sidecar-cpu1"],

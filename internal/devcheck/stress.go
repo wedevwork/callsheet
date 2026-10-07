@@ -78,14 +78,18 @@ var (
 		"./internal/taskworkspace",
 		"./internal/taskpublication",
 	}
-	// stressSplitPackages are the packages shard's per-CPU packages, in
+	// stressSplitPackages are the packages-cpu shard's per-CPU packages, in
 	// execution order. Each left the combined -cpu=1,2,4 invocation for
 	// three single-setting invocations, each StressCount times at one
 	// setting: the same 60 repetitions per test, each binary with its own
-	// 6-minute limit. They stay in the packages shard (no new job or
-	// stage) and run after the combined invocation, one package's three
-	// invocations at a time as one concurrent group (runConcurrentCPU, as
-	// the processgroup shard), so at most three run at once.
+	// 6-minute limit. Since the headroom fixes they ran in the packages
+	// shard after the combined invocation; the stress worker rebalance
+	// (2026-10-07) moved them unchanged to the packages-cpu shard, its own
+	// stage and CI worker per platform, so the macOS packages worker no
+	// longer runs them after the combined invocation. They run one
+	// package's three invocations at a time as one concurrent group
+	// (runConcurrentCPU, as the processgroup shard), so at most three run
+	// at once.
 	//   - ./internal/contract (the contract headroom fix, 2026-10-02): its
 	//     race time is CPU-bound on maximum-size JSON, and inside the
 	//     combined invocation it came within 11 s of its limit on a slow
@@ -194,10 +198,10 @@ const (
 // through runConcurrentCPU, for its lifecycle and log format. A sequential
 // shard may also hold CPUGroups: for each split package, one step per CPU
 // setting. The groups run after its Steps, one after another, each as one
-// concurrent group through runConcurrentCPU (the packages shard's
-// contract, mcpqual and workspace invocations since the headroom fixes);
-// stressWaves never applies to them. Its devcheck stage is "stress-" +
-// Name.
+// concurrent group through runConcurrentCPU (the contract, mcpqual and
+// workspace invocations since the headroom fixes, in the group-only
+// packages-cpu shard since the stress worker rebalance); stressWaves never
+// applies to them. Its devcheck stage is "stress-" + Name.
 type StressShard struct {
 	Name      string
 	Parallel  bool
@@ -246,10 +250,11 @@ func stressSupported(goos string) error {
 	return nil
 }
 
-// StressShards returns the stress plan for goos as its seven fixed shards,
-// in order: packages (sequential: the combined invocation, then the
-// three CPU settings of each of stressSplitPackages as one concurrent
-// group per package, since the headroom fixes), plane-cpu1 (Parallel: plane's CPU 1
+// StressShards returns the stress plan for goos as its eight fixed shards,
+// in order: packages (sequential: the combined invocation alone),
+// packages-cpu (sequential and group-only, the stress worker rebalance:
+// no Steps, and the three CPU settings of each of stressSplitPackages as
+// one concurrent group per package), plane-cpu1 (Parallel: plane's CPU 1
 // invocation alone, design 06a-perf), plane (Parallel: CPU 2 and 4,
 // iteration 05b), sidecar-cpu1 (Parallel: sidecar's CPU 1 alone, design
 // 06a-perf), sidecar (Parallel: CPU 2 and 4, design 05b's sidecar
@@ -259,7 +264,10 @@ func stressSupported(goos string) error {
 // and iteration 04's adapter package: every selected test runs StressCount
 // times at each CPU setting under the race detector. Only linux and darwin
 // are supported; every other goos is rejected before any child runs. Each
-// call returns fresh slices, nested ones included.
+// call returns fresh slices, nested ones included. packages-cpu contains
+// all three per-CPU groups at CPU 1, 2 and 4; unlike plane-cpu1 and
+// sidecar-cpu1, it is not a CPU1-only shard, and there is no packages-cpu1
+// stage.
 func StressShards(goos string) ([]StressShard, error) {
 	if err := stressSupported(goos); err != nil {
 		return nil, err
@@ -282,7 +290,8 @@ func StressShards(goos string) ([]StressShard, error) {
 	return []StressShard{
 		{Name: "packages", Steps: []Step{
 			{Name: "stress packages", Env: env(), Argv: append(stressFlags(stressCPUList()), stressPackages...)},
-		}, CPUGroups: groups},
+		}},
+		{Name: "packages-cpu", CPUGroups: groups},
 		{Name: "plane-cpu1", Parallel: true, Steps: perCPU("plane", stressPlanePackage, []int{1})},
 		{Name: "plane", Parallel: true, Steps: perCPU("plane", stressPlanePackage, []int{2, 4})},
 		{Name: "sidecar-cpu1", Parallel: true, Steps: perCPU("sidecar", stressSidecarPackage, []int{1})},
@@ -321,7 +330,7 @@ func StressSteps(goos string) ([]Step, error) {
 	return steps, nil
 }
 
-// stressPlan returns the shards a stress stage runs: all seven for
+// stressPlan returns the shards a stress stage runs: all eight for
 // "stress", else the single shard named by the stage. An invalid wave
 // schedule (stressWaves) for any returned shard is rejected here, before a
 // scratch directory or child exists.
@@ -353,11 +362,12 @@ func stressPlan(goos, stage string) ([]StressShard, error) {
 	return shards, nil
 }
 
-// isStressStage reports whether stage is "stress" or one of the seven
-// shard stages (the plane and sidecar CPU1 stages since design 06a-perf).
+// isStressStage reports whether stage is "stress" or one of the eight
+// shard stages (the plane and sidecar CPU1 stages since design 06a-perf,
+// packages-cpu since the stress worker rebalance).
 func isStressStage(stage string) bool {
 	switch stage {
-	case "stress", stressStagePrefix + "packages", stressStagePrefix + "plane-cpu1", stressStagePrefix + "plane", stressStagePrefix + "sidecar-cpu1",
+	case "stress", stressStagePrefix + "packages", stressStagePrefix + "packages-cpu", stressStagePrefix + "plane-cpu1", stressStagePrefix + "plane", stressStagePrefix + "sidecar-cpu1",
 		stressStagePrefix + "sidecar", stressStagePrefix + "processgroup", stressStagePrefix + "functions":
 		return true
 	}
@@ -367,11 +377,12 @@ func isStressStage(stage string) bool {
 // stress runs shards in order under one watchdog: a context that ends at
 // the earlier of stressWatchdog from now and the caller's deadline, and
 // that is always canceled on return. A shard stage passes one shard and so
-// gets its own watchdog; "stress" passes all seven, which share one. A
+// gets its own watchdog; "stress" passes all eight, which share one. A
 // failure or an expired watchdog fails the stage and never starts the next
 // step, wave, group or shard. A sequential shard's CPUGroups run after
-// its Steps, only if they succeeded, one group after another, each as one
-// concurrent group (runConcurrentCPU). Every Parallel shard's waves (stressGroups) are resolved
+// its Steps (none in the group-only packages-cpu shard), only if they
+// succeeded, one group after another, each as one concurrent group
+// (runConcurrentCPU). Every Parallel shard's waves (stressGroups) are resolved
 // before anything starts, so an invalid schedule starts nothing
 // (stressPlan has already rejected it for a dispatched stage).
 func (d *driver) stress(shards []StressShard) error {
@@ -396,7 +407,9 @@ func (d *driver) stress(shards []StressShard) error {
 				return err
 			}
 			// stressSequential has checked the watchdog after the last
-			// step, and runConcurrentCPU starts nothing once it is done.
+			// step (if any), and runConcurrentCPU starts nothing once it
+			// is done, so an expired watchdog fails a group-only shard
+			// before its first group.
 			for g, group := range sh.CPUGroups {
 				if err := runConcurrentCPU(ctx, d.run, group, dirLogs(d.scratch), d.out); err != nil {
 					if ctx.Err() != nil {

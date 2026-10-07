@@ -1,7 +1,8 @@
 // Command devcheck is the development-only check driver (test, coverage,
-// bench, cross, all, native, stress, stress-packages, stress-plane-cpu1,
-// stress-plane, stress-sidecar-cpu1, stress-sidecar, stress-processgroup,
-// stress-functions). It is not distributed. Run it from the repository
+// bench, cross, all, native, stress, stress-packages, stress-packages-cpu,
+// stress-plane-cpu1, stress-plane, stress-sidecar-cpu1, stress-sidecar,
+// stress-processgroup, stress-functions). It is not distributed. Run it
+// from the repository
 // root:
 //
 //	go run ./cmd/devcheck all
@@ -11,8 +12,10 @@
 // evidence for the process-group qualification tests; other hosts reject it.
 // stress repeats the timing- and concurrency-sensitive tests under the race
 // detector (StressCount times at each of -cpu=1,2,4) on Linux and macOS; it is
-// deliberately not part of all. It runs seven shards in order, each also a
-// stage of its own (one CI worker job per platform each): stress-packages,
+// deliberately not part of all. It runs eight shards in order, each also a
+// stage of its own (one CI worker job per platform each): stress-packages
+// (the combined invocation), stress-packages-cpu (the contract, mcpqual and
+// workspace groups at CPU 1, 2 and 4, one concurrent group per package),
 // stress-plane-cpu1 (plane at CPU 1 alone), stress-plane (plane at CPU 2
 // and 4 as concurrent invocations), stress-sidecar-cpu1 and
 // stress-sidecar (likewise for sidecar), stress-processgroup (its three

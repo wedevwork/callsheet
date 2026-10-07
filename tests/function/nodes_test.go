@@ -1049,26 +1049,28 @@ func TestNodePlatform(t *testing.T) {
 	t.Run("policy", func(t *testing.T) {
 		const nodeFn = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestNodeEnrollment|TestNodeReconnect)$/^(locking|shutdown)$ ./tests/function"
 		for _, goos := range []string{"linux", "darwin"} {
-			// The client and contract node packages stay in the packages
-			// shard (contract in its per-CPU group, the first of the
-			// packages shard's groups, one invocation per CPU setting, since
-			// the contract headroom fix); the plane's node contracts repeat in the plane shards
+			// The client node package stays in the packages shard's
+			// combined command and the contract package runs per CPU
+			// setting (the contract headroom fix), as the first per-CPU
+			// group of the packages-cpu shard since the stress worker
+			// rebalance; the plane's node contracts repeat in the plane shards
 			// (iteration 05b) and the sidecar's reconnect contracts in the
 			// sidecar shards (its sidecar follow-up): CPU 1 in plane-cpu1
 			// and sidecar-cpu1, CPU 2 and 4 in plane and sidecar (design
-			// 06a-perf). The functions shard, index 6, keeps its three
+			// 06a-perf). The functions shard, index 7, keeps its three
 			// steps and the node selector.
 			shards, err := devcheck.StressShards(goos)
-			if err != nil || len(shards) != 7 || shards[6].Name != "functions" || len(shards[6].Steps) != 3 || strings.Join(shards[6].Steps[2].Argv, " ") != nodeFn ||
+			if err != nil || len(shards) != 8 || shards[7].Name != "functions" || len(shards[7].Steps) != 3 || strings.Join(shards[7].Steps[2].Argv, " ") != nodeFn ||
 				slices.Contains(shards[0].Steps[0].Argv, "./internal/sidecar") || !slices.Contains(shards[0].Steps[0].Argv, "./internal/client") ||
-				slices.Contains(shards[0].Steps[0].Argv, "./internal/contract") || len(shards[0].CPUGroups) != 3 || len(shards[0].CPUGroups[0]) != 3 ||
-				!slices.ContainsFunc(shards[0].CPUGroups[0], func(s devcheck.Step) bool {
+				slices.Contains(shards[0].Steps[0].Argv, "./internal/contract") || shards[0].CPUGroups != nil ||
+				shards[1].Name != "packages-cpu" || len(shards[1].CPUGroups) != 3 || len(shards[1].CPUGroups[0]) != 3 ||
+				!slices.ContainsFunc(shards[1].CPUGroups[0], func(s devcheck.Step) bool {
 					return slices.Equal(s.Argv[4:], []string{"-cpu=1", "-timeout=6m", "./internal/contract"})
 				}) ||
-				!slices.ContainsFunc(shards[0].CPUGroups[0], func(s devcheck.Step) bool {
+				!slices.ContainsFunc(shards[1].CPUGroups[0], func(s devcheck.Step) bool {
 					return slices.Equal(s.Argv[4:], []string{"-cpu=2", "-timeout=6m", "./internal/contract"})
 				}) ||
-				!slices.ContainsFunc(shards[0].CPUGroups[0], func(s devcheck.Step) bool {
+				!slices.ContainsFunc(shards[1].CPUGroups[0], func(s devcheck.Step) bool {
 					return slices.Equal(s.Argv[4:], []string{"-cpu=4", "-timeout=6m", "./internal/contract"})
 				}) {
 				t.Fatalf("%s stress plan = %+v %v", goos, shards, err)
@@ -1077,8 +1079,8 @@ func TestNodePlatform(t *testing.T) {
 				i         int
 				name, pkg string
 				cpus      []string
-			}{{1, "plane-cpu1", "./internal/plane", []string{"-cpu=1"}}, {2, "plane", "./internal/plane", []string{"-cpu=2", "-cpu=4"}},
-				{3, "sidecar-cpu1", "./internal/sidecar", []string{"-cpu=1"}}, {4, "sidecar", "./internal/sidecar", []string{"-cpu=2", "-cpu=4"}}} {
+			}{{2, "plane-cpu1", "./internal/plane", []string{"-cpu=1"}}, {3, "plane", "./internal/plane", []string{"-cpu=2", "-cpu=4"}},
+				{4, "sidecar-cpu1", "./internal/sidecar", []string{"-cpu=1"}}, {5, "sidecar", "./internal/sidecar", []string{"-cpu=2", "-cpu=4"}}} {
 				sh := shards[c.i]
 				if sh.Name != c.name || !sh.Parallel || len(sh.Steps) != len(c.cpus) {
 					t.Fatalf("%s shard %d = %+v, want %s with %d steps", goos, c.i, sh, c.name, len(c.cpus))
