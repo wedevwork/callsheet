@@ -1375,7 +1375,7 @@ func TestMCPCaptureRunbook(t *testing.T) {
 				"Mid-implementation handback", "`awaiting independent fixture verification and explicit owner approval`",
 				"Independent verification and explicit owner acceptance", "Final offline acceptance", "#### Fixture export and owner review (B2)",
 				"a raw bundle is never committed", "#### Cursor scoped permission (capture only, B2)", "`" + mcpqual.CursorToolPermissionAdapter + "`",
-				"`{\"permissions\":{\"allow\":[\"Mcp(probe:slow)\"]}}`", "never approval evidence", "Owner Cursor scoped-permission recapture",
+				"`{\"permissions\":{\"allow\":[\"Mcp(probe:slow)\"],\"deny\":[]}}`", "never approval evidence", "Owner Cursor scoped-permission recapture",
 				"Cursor follow-up", "A Linux fixture replays in macOS CI only as a parser check"} {
 				if !strings.Contains(sec, w) {
 					t.Fatalf("the capture section lacks %q", w)

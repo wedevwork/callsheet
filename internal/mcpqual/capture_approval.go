@@ -97,7 +97,9 @@ const (
 const (
 	CursorToolPermissionAdapter = "cursor-tool-permission-linux-amd64-2026.10.01-e373342"
 	// CursorToolPermissionContent is the file's exact bytes (no newline).
-	CursorToolPermissionContent = `{"permissions":{"allow":["Mcp(probe:slow)"]}}`
+	// The empty deny is required by the pinned version's schema and grants
+	// nothing (amendment A2); a legacy allow-only record does not validate.
+	CursorToolPermissionContent = `{"permissions":{"allow":["Mcp(probe:slow)"],"deny":[]}}`
 	cursorPermissionFile        = "cli.json"
 	labelToolPermission         = labelWorkspace + "/.cursor/" + cursorPermissionFile
 	// Permission record states.
