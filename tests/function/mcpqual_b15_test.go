@@ -15,7 +15,6 @@ import (
 
 	"github.com/wedevwork/callsheet/internal/mcpqual"
 	"github.com/wedevwork/callsheet/internal/mcpqual/procexec"
-	"github.com/wedevwork/callsheet/internal/testkit"
 	"github.com/wedevwork/callsheet/internal/testkit/catalog"
 )
 
@@ -462,24 +461,33 @@ func TestMCPProbeTerminalObservation(t *testing.T) {
 			if _, err := mcpqual.ValidateEnrollment(mcpqual.EnrollmentOptions{FS: os.DirFS(repo), Registry: reg}); err == nil {
 				t.Fatal("enrollment accepted a forged observation")
 			}
-			// The retained 2026-10-08 bundles stay partial: their legacy
-			// records hold no observation, so nothing promotes them, and a
-			// legacy record forged complete is refused.
-			for _, id := range []string{"codex", "grok", "claude-2"} {
-				dir := filepath.Join(testkit.MustRepoRoot(t), "design", "iterations", "decoder-enrollment", "captures-2026-10-08", id)
-				b, err := mcpqual.ValidateCaptureBundle(os.DirFS(dir), ".")
-				if err != nil {
-					t.Fatalf("%s: %v", id, err)
-				}
-				c := b.Manifest.Clients[0]
-				if b.Manifest.State != mcpqual.CapturePartial || deref(c.Reason) != mcpqual.ReasonProbeIncomplete || c.Probe.Observation != nil {
-					t.Fatalf("%s: %s %s %+v", id, b.Manifest.State, deref(c.Reason), c.Probe)
-				}
-				tampered(t, dir, map[string]func(m map[string]any){"forged-complete": func(m map[string]any) {
-					m["state"], m["reason"] = mcpqual.CaptureComplete, nil
-					client0(m)["state"], client0(m)["reason"] = mcpqual.CaptureComplete, nil
-				}})
+			// Legacy partial captures stay partial. The record a pre-B1.5
+			// harness wrote for exactly these exit-less bytes (as for the
+			// retained 2026-10-08 Codex, Grok and Claude-2 bundles, whose real
+			// server events are the UT-14 vectors) is synthesized from this
+			// capture with only checked-in inputs: no observation, the client
+			// partial with probe_incomplete. It stays readable and partial,
+			// nothing promotes it, and the same record forged complete is
+			// refused (a legacy record cannot claim the allowance).
+			legacy := filepath.Join(realTemp(t), "legacy")
+			copyTree(t, withoutExit, legacy)
+			editManifest(t, legacy, func(m map[string]any) {
+				delete(client0(m)["probe"].(map[string]any), "observation")
+				client0(m)["state"], client0(m)["reason"] = mcpqual.CapturePartial, mcpqual.ReasonProbeIncomplete
+				m["state"], m["reason"] = mcpqual.CapturePartial, "client claude is partial"
+			})
+			lb, err := mcpqual.ValidateCaptureBundle(os.DirFS(legacy), ".")
+			if err != nil {
+				t.Fatalf("legacy partial capture: %v", err)
 			}
+			if lc := lb.Manifest.Clients[0]; lb.Manifest.State != mcpqual.CapturePartial || deref(lc.Reason) != mcpqual.ReasonProbeIncomplete || lc.Probe.Observation != nil ||
+				lc.Probe.Intact || !lc.Probe.Completed {
+				t.Fatalf("legacy: %s %s %+v", lb.Manifest.State, deref(lc.Reason), lc.Probe)
+			}
+			tampered(t, legacy, map[string]func(m map[string]any){"forged-complete": func(m map[string]any) {
+				m["state"], m["reason"] = mcpqual.CaptureComplete, nil
+				client0(m)["state"], client0(m)["reason"] = mcpqual.CaptureComplete, nil
+			}})
 			// Qualify evidence: a report observation contradicting its own
 			// record fails the schema; one consistent with it but not with the
 			// retained server events fails the evidence replay, so neither
