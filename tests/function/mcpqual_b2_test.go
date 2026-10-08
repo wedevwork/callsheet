@@ -761,6 +761,33 @@ func TestMCPRealEnrollment(t *testing.T) {
 	})
 }
 
+// legacyCursorPermission is the allow-only file content of B2 before
+// amendment A2, which Cursor Agent 2026.10.01-e373342 rejects.
+const legacyCursorPermission = `{"permissions":{"allow":["Mcp(probe:slow)"]}}`
+
+// legacyPermissionLauncher rewrites the harness-written
+// <workspace>/.cursor/cli.json in place with the pre-A2 allow-only bytes
+// just before the launch of kind ("enable" or "session"), then launches
+// as its Launcher would.
+type legacyPermissionLauncher struct {
+	mcpqual.Launcher
+	kind string
+}
+
+func (l legacyPermissionLauncher) Start(spec mcpqual.ProcSpec) (mcpqual.Proc, error) {
+	kind := "session"
+	switch {
+	case slices.Equal(spec.Args, mcpqual.CursorApprovalArgv()):
+		kind = "enable"
+	case slices.Contains(spec.Args, "--version") || len(spec.Args) > 0 && spec.Args[len(spec.Args)-1] == "--help":
+		kind = "other"
+	}
+	if kind == l.kind {
+		os.WriteFile(filepath.Join(spec.Dir, ".cursor", "cli.json"), []byte(legacyCursorPermission), 0o600)
+	}
+	return l.Launcher.Start(spec)
+}
+
 // cursorPermissionPlan is the trusted Cursor capture plan of the pinned
 // adapter with fake settings.
 func cursorPermissionPlan(q *qualEnv, settings map[string]string) map[string]any {
@@ -796,8 +823,8 @@ func TestMCPCaptureCursorToolPermission(t *testing.T) {
 			r, b, c := pinned(t, q, nil)
 			tp := c.ToolPermission
 			if r.code != 0 || c.State != mcpqual.CaptureComplete || tp == nil || tp.State != mcpqual.PermissionVerified || tp.Adapter != mcpqual.CursorToolPermissionAdapter ||
-				tp.Content != `{"permissions":{"allow":["Mcp(probe:slow)"]}}` || tp.Path != "<workspace>/.cursor/cli.json" || tp.SHA256 != sha([]byte(tp.Content)) {
-				t.Fatalf("capture = %+v %+v %+v", r, tp, c.Reason)
+				tp.Content != `{"permissions":{"allow":["Mcp(probe:slow)"],"deny":[]}}` || tp.Path != "<workspace>/.cursor/cli.json" || tp.SHA256 != sha([]byte(tp.Content)) {
+				t.Fatalf("capture = %+v %+v %q", r, tp, deref(c.Reason))
 			}
 			recs := q.argvLog()
 			if len(recs) != 1 || recs[0].Permission != "600 "+mcpqual.CursorToolPermissionContent || filepath.Base(recs[0].Cwd) != "cursor-capture-setup" ||
@@ -819,6 +846,36 @@ func TestMCPCaptureCursorToolPermission(t *testing.T) {
 				return nil
 			})
 			q.groupsGone()
+			// Amendment A2: the fake vendor checks its project cli.json like
+			// Cursor 2026.10.01-e373342 (permissions.deny must be an array),
+			// so the capture above proved the written bytes pass. The pre-A2
+			// allow-only bytes, put in place of the harness file just before
+			// the enable command, fail it as recapture c64420 did: exit 1
+			// naming permissions.deny, cursor_approval_failed and no session.
+			// Just before the session, the session exits 1 before any probe
+			// starts (probe_not_observed).
+			for kind, want := range map[string]string{"enable": mcpqual.ReasonCursorApprovalFailed + ": the enable command did not exit 0", "session": mcpqual.ReasonProbeNotObserved} {
+				q := newQualEnv(t)
+				ownerCursor(t, q)
+				out := filepath.Join(realTemp(t), "out")
+				m := inProcessRun(t, q, cursorPermissionPlan(q, nil), out, func(c *mcpqual.CaptureRunner) {
+					c.Launcher = legacyPermissionLauncher{Launcher: c.Launcher, kind: kind}
+				})
+				c := captureClient(t, m, "cursor")
+				file := mcpqual.FileApprovalStderr
+				if kind == "session" {
+					file = mcpqual.FileVendorStderr
+				}
+				stderr, _ := os.ReadFile(filepath.Join(out, filepath.FromSlash(mcpqual.ClientFile("cursor", file))))
+				launched := q.launchLog()
+				if m.ExitCode() != 5 || !strings.HasPrefix(deref(c.Reason), want) || len(launched["enable"]) != 1 || len(launched["session"]) != map[string]int{"enable": 0, "session": 1}[kind] ||
+					!bytes.Contains(stderr, []byte(`"path":["permissions","deny"]`)) || c.ToolPermission == nil || c.ToolPermission.State != mcpqual.PermissionWritten {
+					t.Fatalf("legacy content at %s = %d %q %v %q %+v", kind, m.ExitCode(), deref(c.Reason), launched, stderr, c.ToolPermission)
+				}
+				if recs := q.argvLog(); kind == "session" && (len(recs) != 1 || recs[0].Permission != "600 "+legacyCursorPermission) {
+					t.Fatalf("the session saw %+v", recs)
+				}
+			}
 		}},
 		{"rejected-tool", func(t *testing.T) {
 			q := newQualEnv(t)

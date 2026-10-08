@@ -61,6 +61,11 @@
 // tool call reaches the probe); and a hostile help command that plants
 // state in the next case workspace (FAKE_VENDOR_PLANT cli-json or
 // cursor-link).
+//
+// B2 amendment A2 adds Cursor's own project schema check: mcp enable and
+// the session exit 1 before doing anything when the working directory's
+// .cursor/cli.json lacks a permissions.deny array, with the message
+// Cursor Agent 2026.10.01-e373342 printed for the allow-only file.
 package main
 
 import (
@@ -136,6 +141,10 @@ func run(args []string) int {
 	}
 	if len(args) == 3 && args[0] == "mcp" && args[1] == "enable" && args[2] == "probe" {
 		fakeLog("enable %d", os.Getpid())
+		if err := checkProjectSchema(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
 		return fakeEnable()
 	}
 	if len(args) > 0 && args[0] == "--version" {
@@ -169,6 +178,10 @@ func run(args []string) int {
 	}
 	recordArgv(args, cfgPath)
 	fakeLog("session %d %s", os.Getpid(), caseID)
+	if err := checkProjectSchema(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
 	if err := checkRecipe(args, caseID); err != nil {
 		fmt.Fprintln(os.Stderr, "fake vendor: recipe:", err)
 		return 3
@@ -910,8 +923,8 @@ func checkRecipe(args []string, caseID string) error {
 }
 
 // cursorPermission is the exact project permission file of the pinned
-// Cursor adapter (design decoder-enrollment B2, FP-20).
-const cursorPermission = `{"permissions":{"allow":["Mcp(probe:slow)"]}}`
+// Cursor adapter (design decoder-enrollment B2, FP-20, amendment A2).
+const cursorPermission = `{"permissions":{"allow":["Mcp(probe:slow)"],"deny":[]}}`
 
 // permissionSeen is what the working directory's .cursor/cli.json holds:
 // "<absent>", or "<mode> <content>" for a regular file ("<not regular>"
@@ -927,6 +940,46 @@ func permissionSeen() string {
 	}
 	b, _ := os.ReadFile(p)
 	return fmt.Sprintf("%o %s", info.Mode().Perm(), b)
+}
+
+// checkProjectSchema mirrors Cursor Agent 2026.10.01-e373342's own
+// validation of the working directory's project .cursor/cli.json (design
+// decoder-enrollment B2, amendment A2): every command that loads the
+// project configuration (mcp enable and the agent session) fails before
+// doing anything when the file exists and is not JSON or lacks a
+// permissions.deny array, with the vendor's observed message. An absent
+// file is no project configuration and passes.
+func checkProjectSchema() error {
+	p := filepath.Join(".cursor", "cli.json")
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return nil
+	}
+	abs, _ := filepath.Abs(p)
+	var cfg struct {
+		Permissions *struct {
+			Deny json.RawMessage `json:"deny"`
+		} `json:"permissions"`
+	}
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		return fmt.Errorf("Invalid project config at %s: %v", abs, err)
+	}
+	received := "undefined"
+	if cfg.Permissions != nil && cfg.Permissions.Deny != nil {
+		var deny any
+		json.Unmarshal(cfg.Permissions.Deny, &deny)
+		if _, ok := deny.([]any); ok {
+			return nil
+		}
+		received = "null"
+		if deny != nil {
+			received = fmt.Sprintf("%T", deny)
+		}
+	}
+	if cfg.Permissions == nil {
+		return fmt.Errorf(`Invalid project config at %s: schema validation failed. [{"code":"invalid_type","expected":"object","received":"undefined","path":["permissions"],"message":"Required"}]`, abs)
+	}
+	return fmt.Errorf(`Invalid project config at %s: schema validation failed. [{"code":"invalid_type","expected":"array","received":%q,"path":["permissions","deny"],"message":"Required"}]`, abs, received)
 }
 
 // checkPermission is the Cursor session's own check of its project

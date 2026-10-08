@@ -45,8 +45,37 @@ func (p *permissionSeen) look(spec ProcSpec) {
 	p.bytes[launchKind(spec)], p.ident[launchKind(spec)] = string(b), info
 }
 
+// legacyCursorPermission is the allow-only file content of B2 before
+// amendment A2, which Cursor Agent 2026.10.01-e373342 rejects.
+const legacyCursorPermission = `{"permissions":{"allow":["Mcp(probe:slow)"]}}`
+
+// cursorProjectSchema mirrors Cursor Agent 2026.10.01-e373342's own
+// validation of the project <dir>/.cursor/cli.json (design
+// decoder-enrollment B2, amendment A2): "" when the file is absent or has
+// a permissions.deny array, else the vendor's observed message.
+func cursorProjectSchema(dir string) string {
+	p := filepath.Join(dir, ".cursor", cursorPermissionFile)
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return ""
+	}
+	var cfg struct {
+		Permissions struct {
+			Deny any `json:"deny"`
+		} `json:"permissions"`
+	}
+	if err := json.Unmarshal(b, &cfg); err == nil {
+		if _, ok := cfg.Permissions.Deny.([]any); ok {
+			return ""
+		}
+	}
+	return "Invalid project config at " + p + `: schema validation failed. [{"code":"invalid_type","expected":"array","received":"undefined","path":["permissions","deny"],"message":"Required"}]`
+}
+
 // permissionRun is cursorRun recording the file at enable and session,
-// with optional extra behaviour for either.
+// with optional extra behaviour for either. Like the pinned vendor, the
+// enable command and the session fail before doing anything when the
+// project cli.json they see lacks a permissions.deny array.
 func permissionRun(t *testing.T, enable, session func(spec ProcSpec, b *capBehavior), mutate func(c *CaptureRunner)) (*permissionSeen, *capWorld, *CaptureManifest, CaptureClient) {
 	t.Helper()
 	seen := &permissionSeen{}
@@ -67,6 +96,11 @@ func permissionRun(t *testing.T, enable, session func(spec ProcSpec, b *capBehav
 				session(spec, &b)
 			}
 		}
+		if k := launchKind(spec); k == "enable" || k == "session" {
+			if why := cursorProjectSchema(spec.Dir); why != "" {
+				return capBehavior{exit: 1, stderr: why + "\n"}
+			}
+		}
 		return b
 	}
 	man, _, _ := b1Capture(t, w, capPlan(t, "cursor"), func(c *CaptureRunner) {
@@ -82,7 +116,7 @@ func TestCursorToolPermissionFile(t *testing.T) {
 	seen, w, man, cc := permissionRun(t, nil, nil, nil)
 	tp := cc.ToolPermission
 	if cc.State != CaptureComplete || tp == nil || tp.State != PermissionVerified || tp.Reason != nil || tp.Adapter != CursorToolPermissionAdapter ||
-		tp.Path != "<workspace>/.cursor/cli.json" || tp.Content != `{"permissions":{"allow":["Mcp(probe:slow)"]}}` || tp.SHA256 != sha256Hex([]byte(tp.Content)) {
+		tp.Path != "<workspace>/.cursor/cli.json" || tp.Content != `{"permissions":{"allow":["Mcp(probe:slow)"],"deny":[]}}` || tp.SHA256 != sha256Hex([]byte(tp.Content)) {
 		t.Fatalf("permission record %+v (%q)", tp, reasonOf(cc))
 	}
 	// The exact bytes, no trailing newline, present before the enable
@@ -117,6 +151,28 @@ func TestCursorToolPermissionFile(t *testing.T) {
 	if !strings.HasPrefix(reasonOf(cc2), ReasonCursorScopeUnverified+": no change") || slices.Contains(w2.kinds(), "cursor:session") ||
 		cc2.ToolPermission == nil || cc2.ToolPermission.State != PermissionWritten {
 		t.Fatalf("no approval: %q %+v", reasonOf(cc2), cc2.ToolPermission)
+	}
+	// Amendment A2: the pinned vendor's schema requires permissions.deny.
+	// The written bytes pass it; the pre-A2 allow-only bytes in the file
+	// at the enable command fail it (exit 1), so the capture stops with
+	// cursor_approval_failed and no session, as in recapture c64420.
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, ".cursor"), 0o700)
+	for _, tc := range []struct {
+		content string
+		want    bool
+	}{{CursorToolPermissionContent, true}, {legacyCursorPermission, false}, {`{"permissions":{"allow":[],"deny":{}}}`, false}, {`{`, false}} {
+		os.WriteFile(filepath.Join(dir, ".cursor", cursorPermissionFile), []byte(tc.content), 0o600)
+		if why := cursorProjectSchema(dir); (why == "") != tc.want || !tc.want && !strings.Contains(why, `"path":["permissions","deny"]`) {
+			t.Fatalf("schema of %s: %q", tc.content, why)
+		}
+	}
+	_, w3, _, cc3 := permissionRun(t, func(spec ProcSpec, _ *capBehavior) {
+		os.WriteFile(filepath.Join(spec.Dir, ".cursor", cursorPermissionFile), []byte(legacyCursorPermission), 0o600)
+	}, nil, nil)
+	if !strings.HasPrefix(reasonOf(cc3), ReasonCursorApprovalFailed+": the enable command did not exit 0") || slices.Contains(w3.kinds(), "cursor:session") ||
+		cc3.State != CapturePartial || cc3.ToolPermission == nil || cc3.ToolPermission.State != PermissionWritten {
+		t.Fatalf("legacy content: %q %+v %v", reasonOf(cc3), cc3.ToolPermission, w3.kinds())
 	}
 }
 
@@ -348,6 +404,13 @@ func TestCursorToolPermissionManifest(t *testing.T) {
 		"path":             {edit(func(c map[string]any) { tpOf(c)["path"] = "<home>/.cursor/cli.json" }), "exact file path"},
 		"content-wildcard": {edit(func(c map[string]any) { tpOf(c)["content"] = `{"permissions":{"allow":["Mcp(probe:*)"]}}` }), "exact file path"},
 		"hash":             {edit(func(c map[string]any) { tpOf(c)["sha256"] = strings.Repeat("a", 64) }), "exact file path"},
+		// Amendment A2: a legacy record of the pre-A2 allow-only content,
+		// or of its hash, is no evidence for the adapter.
+		"legacy-content": {edit(func(c map[string]any) {
+			tpOf(c)["content"] = legacyCursorPermission
+			tpOf(c)["sha256"] = sha256Hex([]byte(legacyCursorPermission))
+		}), "exact file path"},
+		"legacy-hash":      {edit(func(c map[string]any) { tpOf(c)["sha256"] = sha256Hex([]byte(legacyCursorPermission)) }), "exact file path"},
 		"state":            {edit(func(c map[string]any) { tpOf(c)["state"] = "granted" }), "state"},
 		"verified-reason":  {edit(func(c map[string]any) { tpOf(c)["reason"] = "x" }), "verified with a reason"},
 		"written-complete": {edit(func(c map[string]any) { tpOf(c)["state"] = PermissionWritten; tpOf(c)["reason"] = "x" }), "unverified permission file"},
