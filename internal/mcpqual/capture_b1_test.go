@@ -1070,7 +1070,10 @@ func TestCursorApprovalCapture(t *testing.T) {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	if !slices.Equal(keys, []string{"argv", "changes", "cwd", "inventory_complete", "reason", "scope", "stage"}) {
+	// Design decoder-enrollment B1.5 (FP-16): every new record names its
+	// inventory policy and excluded paths; a workspace-only record has no
+	// project object.
+	if !slices.Equal(keys, []string{"argv", "changes", "cwd", "excluded_paths", "inventory_complete", "inventory_policy", "reason", "scope", "stage"}) {
 		t.Fatalf("approval fields %v", keys)
 	}
 	// config.txt is the configuration re-read after the enable (here
@@ -1396,8 +1399,16 @@ func TestCaptureApprovalManifest(t *testing.T) {
 		c["session"] = map[string]any{"argv": []any{"-p", "{prompt}", "--output-format", "stream-json", "--model", "fake-model-1"}}
 	}, "cursor"))
 	_, lb, _ := b1Capture(t, w, legacy, nil)
-	if _, err := ParseCaptureManifest(lb.ManifestBytes); err != nil || bytes.Contains(lb.ManifestBytes, []byte(`"approval"`)) {
+	// The record's absence is checked structurally, on the decoded client
+	// (code review B1.5 round 3: never a byte search of JSON).
+	var legacyRaw struct {
+		Clients []map[string]json.RawMessage `json:"clients"`
+	}
+	if _, err := ParseCaptureManifest(lb.ManifestBytes); err != nil || json.Unmarshal(lb.ManifestBytes, &legacyRaw) != nil || len(legacyRaw.Clients) != 1 {
 		t.Fatalf("legacy manifest: %v", err)
+	}
+	if _, ok := legacyRaw.Clients[0]["approval"]; ok {
+		t.Fatal("a legacy manifest carries an approval record")
 	}
 	// The redaction fixed point covers the approval record and files.
 	red := NewCaptureRedactor(nil, nil)

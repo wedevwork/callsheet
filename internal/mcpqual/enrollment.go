@@ -727,7 +727,54 @@ func validateBundle(t tree, dir string, mb []byte, extra ...string) (*CaptureBun
 		}
 		b.Files[f.Path] = data
 	}
+	for i := range man.Clients {
+		if err := replayCaptureObservation(&man.Clients[i], b.Files); err != nil {
+			return nil, fail("client %q: %v", man.Clients[i].ID, err)
+		}
+	}
 	return b, nil
+}
+
+// replayCaptureObservation recomputes a recorded probe observation (design
+// decoder-enrollment B1.5, FP-14) from the retained server events, the
+// stream records and the session stage, and requires every recorded member
+// to match: a supplied label is never trusted. Retained bytes cut on
+// output are not the analyzed bytes; such a record can claim neither the
+// terminal observation nor a clean session (the recomputed attestation
+// already says so). A legacy record (no observation) has nothing to
+// replay and keeps its old rules.
+func replayCaptureObservation(c *CaptureClient, files map[string][]byte) error {
+	if c.Probe == nil || c.Probe.Observation == nil {
+		return nil
+	}
+	o := c.Probe.Observation
+	clean := captureSessionClean(c.ID, c.Session, c.Streams)
+	var server CaptureStream
+	for _, s := range c.Streams {
+		if s.Path == ClientFile(c.ID, FileServerEvents) {
+			server = s
+		}
+	}
+	if server.OutputTruncated {
+		if o.EndState == EndTerminalWithoutExit || o.CleanSession != clean {
+			return errors.New("probe replay: a cut server-events file cannot carry this observation")
+		}
+		return nil
+	}
+	got := analyzeProbe(files[ClientFile(c.ID, FileServerEvents)], c.CaseID, server.InputTruncated, clean).obs
+	if !o.equal(&got) {
+		return fmt.Errorf("probe replay: the recorded observation %s differs from the replayed server events (%s)", observationText(o), observationText(&got))
+	}
+	return nil
+}
+
+// observationText renders an observation's members for an error.
+func observationText(o *ProbeObservation) string {
+	kind := "null"
+	if o.TerminalKind != nil {
+		kind = *o.TerminalKind
+	}
+	return fmt.Sprintf("end_state=%s intact=%v terminal_kind=%s clean_session=%v", o.EndState, o.Intact, kind, o.CleanSession)
 }
 
 // RedactionFixedPoint is the automated redaction guard of an enrolled
@@ -845,12 +892,48 @@ func Replay(reg Registry, e EnrollmentEntry, b *CaptureBundle, o *ExpectedOracle
 			return fmt.Errorf("replay: an error event %s in a setup transcript", ev.Kind)
 		}
 	}
-	p := observeProbe(b.Files[ClientFile(e.Client, FileServerEvents)], false, o.CaseID)
+	return replayProbe(b, e.Client, o)
+}
+
+// replayProbe applies capture's complete-observation gate (design
+// decoder-enrollment B1.5, FP-14) to the bundle's retained probe events of
+// client, with the clean-session attestation recomputed from the recorded
+// session: an intact log or the clean terminal observation without exit
+// whose unique terminal is the completion, and a recorded observation
+// equal to the replayed one. A legacy record (no observation) still needs
+// an intact log: it cannot claim the new allowance.
+func replayProbe(b *CaptureBundle, client string, o *ExpectedOracle) error {
+	c := replayClient(b, client)
+	if c == nil {
+		return errors.New("probe replay: the bundle has no manifest record of " + client)
+	}
+	an := analyzeProbe(b.Files[ClientFile(client, FileServerEvents)], o.CaseID, false, captureSessionClean(c.ID, c.Session, c.Streams))
+	p := an.capture
+	p.Observation = &an.obs
+	if c.Probe == nil || c.Probe.Observation == nil {
+		p.Observation = nil
+	}
 	switch {
-	case len(p.Anomalies) > 0 || !p.Intact || !p.Initialized || p.Receipts != 1 || !p.Completed:
-		return fmt.Errorf("probe replay: anomalies %v, intact %v, %d receipts, completed %v", p.Anomalies, p.Intact, p.Receipts, p.Completed)
+	case len(p.Anomalies) > 0 || !probeEndpointObserved(p) || !p.Initialized || p.Receipts != 1 || !p.Completed:
+		return fmt.Errorf("probe replay: anomalies %v, intact %v, end %s, %d receipts, completed %v", p.Anomalies, p.Intact, p.Observation.Label(), p.Receipts, p.Completed)
+	case p.Observation != nil && (!c.Probe.Observation.equal(p.Observation) || !p.Observation.CleanSession):
+		return errors.New("probe replay: the recorded observation differs from the replayed server events or is not a clean session")
 	case p.ClientName == nil || p.ClientVersion == nil || *p.ClientName != o.ClientInfo.Name || *p.ClientVersion != o.ClientInfo.Version:
 		return errors.New("probe replay: initialize clientInfo differs from the oracle's")
+	}
+	return nil
+}
+
+// replayClient is the manifest record of client id in bundle b (nil when
+// the bundle carries no manifest or no such record).
+func replayClient(b *CaptureBundle, id string) *CaptureClient {
+	if b.Manifest == nil {
+		return nil
+	}
+	for i := range b.Manifest.Clients {
+		if b.Manifest.Clients[i].ID == id {
+			return &b.Manifest.Clients[i]
+		}
 	}
 	return nil
 }

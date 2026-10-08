@@ -501,8 +501,15 @@ func (c *CaptureRunner) metadata(ctx context.Context, pc *PlanClient, cc *Captur
 // text writes a conservatively sanitized text payload and its stream
 // record.
 func (c *CaptureRunner) text(cc *CaptureClient, rel string, raw []byte, inCut bool) {
+	c.textWithheld(cc, rel, raw, inCut, 0)
+}
+
+// textWithheld is text for raw from which a caller already withheld lines
+// whole (Cursor's slug normalization, design decoder-enrollment B1.5): they
+// count as omitted lines, so the stream is never clean.
+func (c *CaptureRunner) textWithheld(cc *CaptureClient, rel string, raw []byte, inCut bool, withheld int) {
 	clean, omitted := captureText(c.r.redactor, raw)
-	c.put(cc, rel, clean, false, omitted, inCut)
+	c.put(cc, rel, clean, false, omitted+withheld, inCut)
 }
 
 // put writes one client payload within its bounds and records its stream;
@@ -576,7 +583,15 @@ func (c *CaptureRunner) session(ctx context.Context, pc *PlanClient, cc CaptureC
 	if run.launchErr != nil {
 		return stop(cc, *cc.Session.Reason)
 	}
-	cc.Probe, cc.ProbeReason = observeProbe(run.probeRaw, run.probeCut, cc.CaseID), nil
+	// The observation is final only now: the session's evidence has been
+	// written, so any omission or cut in it is already in its stream
+	// records and withdraws the clean-session attestation (design
+	// decoder-enrollment B1.5, FP-14).
+	a := analyzeProbe(run.probeRaw, cc.CaseID, run.probeCut, captureSessionClean(cc.ID, cc.Session, cc.Streams))
+	obs := a.obs
+	cc.Probe, cc.ProbeReason = a.capture, nil
+	cc.Probe.Observation = &obs
+	fmt.Fprintf(c.Log, "mcpqual: %s: probe observation: %s\n", cc.ID, obs.Label())
 	if reason := sessionReason(run, cc); reason != "" {
 		return stop(cc, reason)
 	}
@@ -613,7 +628,7 @@ func sessionReason(run caseRun, cc CaptureClient) string {
 		return ReasonProbeAnomaly + ": " + strings.Join(p.Anomalies, ", ")
 	case p.Receipts == 0:
 		return ReasonProbeNotObserved
-	case !p.Initialized || !p.Completed || !p.Intact:
+	case !p.Initialized || !p.Completed || !probeEndpointObserved(p):
 		return ReasonProbeIncomplete
 	case run.exit == nil || *run.exit != 0:
 		return ReasonSessionExit
@@ -627,103 +642,25 @@ func sessionReason(run caseRun, cc CaptureClient) string {
 	return ""
 }
 
-// observeProbe extracts the requested case's parsed probe evidence: the
-// first initialize clientInfo, its receipts and completion, and anomalies
-// (a marker or other receipt, a second receipt, a rejection, a fatal or
-// write error, an invalid or cut log).
+// probeEndpointObserved is capture's endpoint rule: with an observation,
+// an intact or clean terminal-without-exit end whose unique correlated
+// terminal is the completion; a legacy record (no observation) keeps the
+// original rule, an intact log (design decoder-enrollment B1.5, FP-14).
+func probeEndpointObserved(p *CaptureProbe) bool {
+	o := p.Observation
+	if o == nil {
+		return p.Intact
+	}
+	return o.observedEndpoint() && o.TerminalKind != nil && *o.TerminalKind == EvCompleted
+}
+
+// observeProbe extracts the requested case's parsed probe evidence through
+// the shared analyzer (analyzeProbe): the first initialize clientInfo, its
+// receipts and completion, and anomalies (a marker or other receipt, a
+// second receipt, a rejection, a fatal or write error, an invalid or cut
+// log). It carries no observation: that needs the execution attestation.
 func observeProbe(raw []byte, cut bool, caseID string) *CaptureProbe {
-	p := &CaptureProbe{Anomalies: []string{}}
-	if cut {
-		p.Anomalies = append(p.Anomalies, "events_truncated")
-		return p
-	}
-	if len(raw) == 0 {
-		return p
-	}
-	evs, intact, err := ParseProbeEvents(raw)
-	if err != nil {
-		p.Anomalies = append(p.Anomalies, "events_invalid")
-		return p
-	}
-	p.Intact = intact
-	add := func(a string) {
-		if !strings.Contains(strings.Join(p.Anomalies, ","), a) {
-			p.Anomalies = append(p.Anomalies, a)
-		}
-	}
-	// The receipt's identity: its probe instance (a start event begins a
-	// new one) and request ID. A completion counts only for exactly that
-	// receipt, once, after it (code review C7).
-	//
-	// Initialization and lifecycle are per instance too (code review round
-	// 2, C3): the receipt-bearing instance must itself have initialized
-	// before the receipt, and an instance ends at its exit event. The
-	// recorded clientInfo stays the first one in the stream.
-	//
-	// Every instance closes (code review round 3, C2): an instance must
-	// reach its exit before the next starts (instance_unclosed), and the
-	// last one must too (otherwise the log is not intact), so the
-	// receipt-bearing instance always has an intact ending of its own and a
-	// later instance's exit never stands in for it.
-	instance, recvInstance, recvID, done := 0, -1, "", false
-	initialized, exited := false, false
-	for _, ev := range evs {
-		if exited && ev.Kind != EvStart {
-			add("event_after_exit")
-		}
-		switch ev.Kind {
-		case EvStart:
-			if instance > 0 && !exited {
-				add("instance_unclosed")
-			}
-			instance++
-			initialized, exited = false, false
-		case EvExit:
-			exited = true
-		case EvInitialize:
-			initialized = true
-			if !p.Initialized {
-				p.Initialized = true
-				p.ClientName, p.ClientVersion = ev.ClientName, ev.ClientVersion
-			}
-		case EvReceipt:
-			switch ev.CaseID {
-			case caseID:
-				p.Receipts++
-				if p.Receipts > 1 {
-					add("extra_receipt")
-				}
-				if !initialized {
-					add("receipt_without_initialize")
-				}
-				recvInstance, recvID = instance, string(bytes.TrimSpace(ev.RequestID))
-			case caseID + "-marker":
-				add("marker_receipt")
-			default:
-				add("unexpected_receipt")
-			}
-		case EvCompleted:
-			switch {
-			case ev.CaseID != caseID:
-				add("unexpected_completion")
-			case recvInstance < 0:
-				add("completion_without_receipt")
-			case recvInstance != instance || recvID != string(bytes.TrimSpace(ev.RequestID)):
-				add("completion_mismatch")
-			case done:
-				add("duplicate_completion")
-			default:
-				done, p.Completed = true, true
-			}
-		case EvRejected:
-			add("rejected")
-		case EvError:
-			add("fatal_error")
-		case EvWriteFail:
-			add("write_failed")
-		}
-	}
-	return p
+	return analyzeProbe(raw, caseID, cut, false).capture
 }
 
 // captureSessionEvidence writes the session's transcript, stderr and probe
@@ -739,14 +676,11 @@ func (e *captureSessionEvidence) write(r *Runner, _ caseInputs, run *caseRun) {
 	vendor, omitted := transcriptLines(r.redactor, run.transcript)
 	c.put(cc, ClientFile(cc.ID, FileVendorEvents), vendor, true, omitted, run.transcript.Truncated)
 	c.text(cc, ClientFile(cc.ID, FileVendorStderr), run.stderr, run.stderrCut)
-	var server bytes.Buffer
-	for _, line := range bytes.Split(run.probeRaw, []byte{'\n'}) {
-		if len(line) > 0 {
-			server.Write(r.redactor.Line(line))
-			server.WriteByte('\n')
-		}
-	}
-	c.put(cc, ClientFile(cc.ID, FileServerEvents), server.Bytes(), true, 0, run.probeCut)
+	// Each probe record redacted, the framing kept exactly (a missing final
+	// LF or a blank record stays), so bundle validation replays the same
+	// observation from the retained bytes (design decoder-enrollment B1.5,
+	// FP-14).
+	c.put(cc, ClientFile(cc.ID, FileServerEvents), redactJSONLFramed(r.redactor, run.probeRaw), true, 0, run.probeCut)
 	if c.ioError != nil {
 		run.writeErr = c.ioError
 	}

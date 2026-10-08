@@ -244,14 +244,10 @@ func (r *Runner) putEvidence(rel string, data []byte, kind evidenceKind) (string
 	case evidenceText:
 		clean = r.redactor.Bytes(data)
 	case evidenceJSONL:
-		var buf bytes.Buffer
-		for _, line := range bytes.Split(data, []byte{'\n'}) {
-			if len(line) > 0 {
-				buf.Write(r.redactor.Line(line))
-				buf.WriteByte('\n')
-			}
-		}
-		clean = buf.Bytes()
+		// Each record redacted, the framing kept exactly, so a replay of the
+		// retained probe events sees what the analyzer saw (design
+		// decoder-enrollment B1.5, FP-14).
+		clean = redactJSONLFramed(r.redactor, data)
 	default:
 		clean = data
 	}

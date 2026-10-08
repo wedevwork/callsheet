@@ -80,8 +80,13 @@ type caseRun struct {
 	probeCut bool
 	// budgetCapped: the watchdog was the client's remaining wall time.
 	budgetCapped bool
-	// evidenceCut: a sanitized evidence file reached its limit.
+	// evidenceCut: a sanitized evidence file reached its limit; serverCut:
+	// the probe events (read or evidence file) were cut; omitted: transcript
+	// lines the redaction omitted whole (design decoder-enrollment B1.5,
+	// FP-14: each withdraws the clean-session attestation).
 	evidenceCut bool
+	serverCut   bool
+	omitted     int
 	// serverRel and vendorRel are the written evidence files (measurement
 	// layout); writeErr is the first evidence write failure, observable to
 	// every caller (design decoder-enrollment, Capture evidence).
@@ -424,11 +429,19 @@ type measureEvidence struct{}
 func (measureEvidence) write(r *Runner, in caseInputs, run *caseRun) {
 	dir := path.Join("cases", in.spec.id)
 	if len(run.probeRaw) > 0 {
-		rel, cut, err := r.putEvidence(path.Join(dir, "server-events.jsonl"), run.probeRaw, evidenceJSONL)
-		run.serverRel, run.evidenceCut, run.writeErr = sptr(rel), cut || run.probeCut, err
+		raw := run.probeRaw
+		if run.probeCut {
+			// A probe log over its read bound keeps its complete lines and
+			// always ends in the truncation marker, so no replay of the
+			// retained bytes can see an unbroken log (FP-14).
+			raw = append(append([]byte(nil), raw[:bytes.LastIndexByte(raw, '\n')+1]...), `{"truncated":true}`+"\n"...)
+		}
+		rel, cut, err := r.putEvidence(path.Join(dir, "server-events.jsonl"), raw, evidenceJSONL)
+		run.serverRel, run.evidenceCut, run.serverCut, run.writeErr = sptr(rel), cut || run.probeCut, cut || run.probeCut, err
 	}
-	rel, cut, err := r.putEvidence(path.Join(dir, "vendor-events.jsonl"), r.transcriptJSONL(run.transcript), evidenceSanitized)
-	run.vendorRel, run.evidenceCut = sptr(rel), run.evidenceCut || cut
+	vendor, omitted := transcriptLines(r.redactor, run.transcript)
+	rel, cut, err := r.putEvidence(path.Join(dir, "vendor-events.jsonl"), vendor, evidenceSanitized)
+	run.vendorRel, run.evidenceCut, run.omitted = sptr(rel), run.evidenceCut || cut, omitted
 	if run.writeErr == nil {
 		run.writeErr = err
 	}
@@ -541,8 +554,17 @@ func classify(cs *CaseReport, nonce string, dec Decoded, run caseRun) []ProbeEve
 			cs.Events = append(cs.Events, ev)
 		}
 	}
-	evs, _, perr := parseEventsIfAny(run.probeRaw)
-	probe := probeView(evs, cs.CaseID)
+	// The shared analyzer (design decoder-enrollment B1.5, FP-14): the same
+	// endpoints and observation as capture, with the runner's own
+	// clean-session facts.
+	an := analyzeProbe(run.probeRaw, cs.CaseID, run.probeCut || run.serverCut, run.cleanRun())
+	evs, perr, probe := an.events, an.err, an.view
+	obs := an.obs
+	cs.ProbeObservation = &obs
+	// A conclusive probe-derived outcome needs the shared observation's
+	// accepted end state: an intact log without any anomaly, or the clean
+	// terminal observation without exit (code review B1.5 round 1, C1).
+	endpoint := obs.observedEndpoint()
 	if probe.receipt != nil {
 		cs.ProgressTokenPresent = probe.receipt.TokenPresent
 		cs.StartOffsetNS = iptr(probe.receipt.OffsetNS)
@@ -610,11 +632,21 @@ func classify(cs *CaseReport, nonce string, dec Decoded, run caseRun) []ProbeEve
 			set(OutcomeInconclusive, ReasonNonce)
 			return evs
 		}
+		if !endpoint {
+			set(OutcomeInconclusive, ReasonProbeIncomplete)
+			return evs
+		}
 		if !probe.completed {
 			set(OutcomeInconclusive, ReasonProbeEndpoint)
 			return evs
 		}
 		set(KindToolResult, "")
+	case outcome.Kind == KindMCPTimeout && (!obs.CleanSession || !endpoint):
+		// A typed timeout is conclusive only from a clean session (exit 0
+		// and every other clean-session condition), intact log or not; a
+		// nonzero teardown keeps its evidence and stays inconclusive, never
+		// incompatible or a pass (design decoder-enrollment B1.5, DW1).
+		set(OutcomeInconclusive, ReasonProbeIncomplete)
 	case outcome.Kind == KindMCPTimeout:
 		reason := ""
 		if cs.ElapsedMS == nil {

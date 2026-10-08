@@ -9,6 +9,7 @@ package mcpqual
 // byte integrity only, not that a human ran the CLI.
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -163,14 +164,40 @@ type CaptureClient struct {
 // observed change as a labeled path and kind. Fingerprints, digests and
 // file contents never leave memory.
 type CaptureApproval struct {
-	Argv              []string                `json:"argv"`
-	Cwd               string                  `json:"cwd"`
-	Stage             CaptureStage            `json:"stage"`
-	Scope             string                  `json:"scope"`
-	Reason            *string                 `json:"reason"`
+	Argv   []string     `json:"argv"`
+	Cwd    string       `json:"cwd"`
+	Stage  CaptureStage `json:"stage"`
+	Scope  string       `json:"scope"`
+	Reason *string      `json:"reason"`
+	// InventoryComplete is completeness under the named inventory policy
+	// (InventoryPolicy), never over all Cursor data.
 	InventoryComplete bool                    `json:"inventory_complete"`
 	Changes           []CaptureApprovalChange `json:"changes"`
+	// Project is the observed per-project approval's provenance, present
+	// exactly for scope project_scoped (design decoder-enrollment B1.5,
+	// FP-15): trusted harness provenance, not a vendor attestation.
+	Project *CaptureApprovalProject `json:"project,omitempty"`
+	// InventoryPolicy and ExcludedPaths name the inventory policy and the
+	// two excluded data directories (design decoder-enrollment B1.5,
+	// FP-16): present together on every new record, whether or not the
+	// directories exist or the scan succeeded; a legacy record omits both
+	// and means the original full inventory.
+	InventoryPolicy *string  `json:"inventory_policy,omitempty"`
+	ExcludedPaths   []string `json:"excluded_paths,omitempty"`
 }
+
+// CaptureApprovalProject is the per-project approval provenance: the
+// version/platform adapter, the labeled computed project directory and
+// its approval file, and the validated probe entry.
+type CaptureApprovalProject struct {
+	Adapter           string `json:"adapter"`
+	Directory         string `json:"directory"`
+	File              string `json:"file"`
+	ProbeEntryPresent bool   `json:"probe_entry_present"`
+}
+
+// projectMembers are CaptureApprovalProject's members.
+var projectMembers = []string{"adapter", "directory", "file", "probe_entry_present"}
 
 // CaptureApprovalChange is one observed change: a labeled path
 // (<workspace>/..., <home>/.cursor/... or <ancestor-N>/.cursor/...) and
@@ -218,6 +245,10 @@ type CaptureProbe struct {
 	Receipts      int      `json:"receipts"`
 	Completed     bool     `json:"completed"`
 	Anomalies     []string `json:"anomalies"`
+	// Observation is the shared analyzer's observation (design
+	// decoder-enrollment B1.5, FP-14): written whenever a new capture
+	// analyzes the probe, absent only in legacy records (never null).
+	Observation *ProbeObservation `json:"observation,omitempty"`
 }
 
 // CaptureStream records how one payload file was collected and written:
@@ -251,7 +282,52 @@ func ParseCaptureManifest(b []byte) (*CaptureManifest, error) {
 	if err := requireFields(b, reflect.TypeOf(m), "capture manifest"); err != nil {
 		return nil, err
 	}
+	if err := checkOptionalCaptureMembers(b); err != nil {
+		return nil, err
+	}
 	return &m, m.Validate()
+}
+
+// checkOptionalCaptureMembers checks the raw optional extensions of design
+// decoder-enrollment B1.5 (FP-14..16): a present probe observation, approval
+// project object, inventory policy or excluded path list is never an
+// explicit null (only absence denotes a legacy record), and a present
+// object has exactly its members, null only where the schema allows it.
+func checkOptionalCaptureMembers(b []byte) error {
+	var shape struct {
+		Clients []struct {
+			Probe *struct {
+				Observation json.RawMessage `json:"observation"`
+			} `json:"probe"`
+			Approval *struct {
+				Project         json.RawMessage `json:"project"`
+				InventoryPolicy json.RawMessage `json:"inventory_policy"`
+				ExcludedPaths   json.RawMessage `json:"excluded_paths"`
+			} `json:"approval"`
+		} `json:"clients"`
+	}
+	if err := json.Unmarshal(b, &shape); err != nil {
+		return fmt.Errorf("capture manifest: %w", err)
+	}
+	for i, c := range shape.Clients {
+		where := fmt.Sprintf("capture manifest: clients[%d]", i)
+		if c.Probe != nil {
+			if err := checkObservationRaw(c.Probe.Observation, where+".probe.observation"); err != nil {
+				return err
+			}
+		}
+		if a := c.Approval; a != nil {
+			if err := checkObjectRaw(a.Project, where+".approval.project", projectMembers, nil); err != nil {
+				return err
+			}
+			for name, raw := range map[string]json.RawMessage{"inventory_policy": a.InventoryPolicy, "excluded_paths": a.ExcludedPaths} {
+				if raw != nil && string(bytes.TrimSpace(raw)) == "null" {
+					return fmt.Errorf("%s.approval.%s: an explicit null (only absence denotes a legacy record)", where, name)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // requireFields requires every json member of t (and of its nested structs
@@ -402,6 +478,9 @@ func (m *CaptureManifest) Validate() error {
 		if err := c.validate(files, m.Limits); err != nil {
 			return fail("client %q: %v", c.ID, err)
 		}
+		if err := c.validateProjectIdentity(m.OS, m.Arch); err != nil {
+			return fail("client %q: %v", c.ID, err)
+		}
 		if perClient[c.ID] > int64(m.Limits.ClientBytes) {
 			return fail("client %q: payloads total %d bytes, over the client bound %d", c.ID, perClient[c.ID], m.Limits.ClientBytes)
 		}
@@ -479,6 +558,9 @@ func (c *CaptureClient) validate(files map[string]EvidenceRef, lim CaptureLimits
 	if c.Probe != nil && c.Probe.Anomalies == nil {
 		return fmt.Errorf("probe.anomalies must be a list")
 	}
+	if err := c.validateObservation(); err != nil {
+		return err
+	}
 	stages := []struct {
 		name  string
 		stage CaptureStage
@@ -551,8 +633,10 @@ func (c *CaptureClient) validate(files map[string]EvidenceRef, lim CaptureLimits
 			return fmt.Errorf("complete without the exact observed version and executable hash")
 		case !cleanStage(c.Version) || !cleanStage(c.Help) || !cleanStage(c.Session):
 			return fmt.Errorf("complete without a clean exit 0 of version, help and session (no signal, watchdog, interruption or held stream)")
-		case p == nil || !p.Initialized || !p.Intact || p.Receipts != 1 || !p.Completed || len(p.Anomalies) > 0:
+		case p == nil || !p.Initialized || !probeEndpointObserved(p) || p.Receipts != 1 || !p.Completed || len(p.Anomalies) > 0:
 			return fmt.Errorf("complete without one matching receipt and completion")
+		case p.Observation != nil && !p.Observation.CleanSession:
+			return fmt.Errorf("complete without a clean-session observation")
 		}
 		for _, s := range []CaptureStage{c.Version, c.Help, c.Session} {
 			if s.Cleanup == nil || s.Cleanup.Error != nil || !s.Cleanup.GroupGone {
@@ -560,10 +644,37 @@ func (c *CaptureClient) validate(files map[string]EvidenceRef, lim CaptureLimits
 			}
 		}
 		// A new canonical Cursor capture is complete only after a clean,
-		// scoped approval with positive workspace evidence.
-		if a := c.Approval; a != nil && (a.Scope != ScopeWorkspaceOnly || !provenClean(a.Stage) || !a.InventoryComplete || len(a.Changes) == 0) {
-			return fmt.Errorf("complete without a clean workspace-only approval")
+		// scoped approval with positive workspace or project evidence.
+		if a := c.Approval; a != nil && (!sessionScope(a.Scope) || !provenClean(a.Stage) || !a.InventoryComplete || len(a.Changes) == 0) {
+			return fmt.Errorf("complete without a clean workspace-only or project-scoped approval")
 		}
+	}
+	return nil
+}
+
+// validateObservation checks a recorded probe observation (design
+// decoder-enrollment B1.5, FP-14): its own consistency, intact equal to the
+// probe's, an intact end only without anomalies, the terminal observation
+// without exit only for one initialized receipt without anomalies, and
+// clean_session exactly the attestation the session's recorded stage and
+// stream facts give. Absence is a legacy record.
+func (c *CaptureClient) validateObservation() error {
+	if c.Probe == nil || c.Probe.Observation == nil {
+		return nil
+	}
+	p, o := c.Probe, c.Probe.Observation
+	if err := o.validate(); err != nil {
+		return fmt.Errorf("probe.%v", err)
+	}
+	switch {
+	case o.Intact != p.Intact:
+		return errors.New("probe.observation: intact differs from the probe's intact")
+	case o.EndState != EndIncomplete && len(p.Anomalies) > 0:
+		return fmt.Errorf("probe.observation: %s with anomalies", o.EndState)
+	case o.EndState == EndTerminalWithoutExit && (!p.Initialized || p.Receipts != 1):
+		return errors.New("probe.observation: " + EndTerminalWithoutExit + " without one initialized receipt")
+	case o.CleanSession != captureSessionClean(c.ID, c.Session, c.Streams):
+		return errors.New("probe.observation: clean_session differs from the recorded session stage and streams")
 	}
 	return nil
 }
@@ -590,10 +701,15 @@ func (c *CaptureClient) validateApproval() error {
 		return errors.New("approval: changes must be a list")
 	case a.Reason != nil && *a.Reason == "":
 		return errors.New("approval: an empty reason")
-	case (a.Scope == ScopeWorkspaceOnly) == (a.Reason != nil):
-		return fmt.Errorf("approval: scope %s needs a reason exactly when it is not workspace_only", a.Scope)
+	case sessionScope(a.Scope) == (a.Reason != nil):
+		return fmt.Errorf("approval: scope %s needs a reason exactly when it is neither workspace_only nor project_scoped", a.Scope)
+	case (a.Project != nil) != (a.Scope == ScopeProjectScoped):
+		return errors.New("approval: a project record belongs exactly to scope project_scoped")
 	}
-	outside := false
+	if err := a.validatePolicy(); err != nil {
+		return err
+	}
+	outside, unattributed := false, false
 	for i, ch := range a.Changes {
 		switch {
 		case !validChangePath(ch.Path):
@@ -604,6 +720,7 @@ func (c *CaptureClient) validateApproval() error {
 			return fmt.Errorf("approval: changes are not sorted or %s repeats", ch.Path)
 		}
 		outside = outside || !inWorkspace(ch.Path)
+		unattributed = unattributed || !inWorkspace(ch.Path) && !inHomeProjects(ch.Path)
 	}
 	ran := a.Stage.State == StageRan
 	switch a.Scope {
@@ -612,7 +729,10 @@ func (c *CaptureClient) validateApproval() error {
 			return errors.New("approval: not_checked after a launched command, with changes or a complete inventory")
 		}
 	case ScopeUnverifiable:
-		if !ran && (len(a.Changes) > 0 || a.InventoryComplete) || outside {
+		// A home-project change may stay unverified (an unsupported
+		// derivation, a lone directory or an unproven approval file); any
+		// other outside change is outside_workspace.
+		if !ran && (len(a.Changes) > 0 || a.InventoryComplete) || unattributed {
 			return errors.New("approval: unverifiable with changes but no command, or with an outside change")
 		}
 	case ScopeOutside:
@@ -628,11 +748,85 @@ func (c *CaptureClient) validateApproval() error {
 				return fmt.Errorf("approval: workspace_only with a change outside <workspace>/.cursor/: %s", ch.Path)
 			}
 		}
+	case ScopeProjectScoped:
+		if err := a.validateProject(); err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf("approval: scope %q", a.Scope)
 	}
-	if a.Scope != ScopeWorkspaceOnly && c.Session.State == StageRan {
+	if !sessionScope(a.Scope) && c.Session.State == StageRan {
 		return fmt.Errorf("approval: a model session ran after scope %s", a.Scope)
+	}
+	return nil
+}
+
+// sessionScope is a scope after which the model session may start:
+// workspace_only, or project_scoped (design decoder-enrollment B1.5,
+// FP-15).
+func sessionScope(scope string) bool {
+	return scope == ScopeWorkspaceOnly || scope == ScopeProjectScoped
+}
+
+// validatePolicy checks the inventory policy fields (design
+// decoder-enrollment B1.5, FP-16): both present with the named policy and
+// exactly the two excluded paths in order, or both absent (a legacy full
+// inventory); a project-scoped record always names the policy.
+func (a *CaptureApproval) validatePolicy() error {
+	switch {
+	case (a.InventoryPolicy == nil) != (a.ExcludedPaths == nil):
+		return errors.New("approval: inventory_policy and excluded_paths are present together or not at all")
+	case a.InventoryPolicy == nil && a.Scope == ScopeProjectScoped:
+		return errors.New("approval: project_scoped without the inventory policy")
+	case a.InventoryPolicy == nil:
+		return nil
+	case *a.InventoryPolicy != InventoryPolicyV2 || !slices.Equal(a.ExcludedPaths, InventoryExcludedPaths()):
+		return fmt.Errorf("approval: inventory policy %q with excluded paths %q, want %q with %q", *a.InventoryPolicy, a.ExcludedPaths, InventoryPolicyV2, InventoryExcludedPaths())
+	}
+	return nil
+}
+
+// validateProjectIdentity binds a project_scoped record to the one
+// adapter's identity in its enclosing records (code review B1.5 round 1,
+// C4): the manifest's platform is linux/amd64 and the client's expected
+// and observed versions are exactly 2026.10.01-e373342. Every reader of a
+// manifest (bundle validation and enrollment included) applies it.
+func (c *CaptureClient) validateProjectIdentity(goos, goarch string) error {
+	if c.Approval == nil || c.Approval.Scope != ScopeProjectScoped {
+		return nil
+	}
+	if goos != cursorProjectGOOS || goarch != cursorProjectGOARCH || c.ExpectedVersion != cursorProjectVersion || c.ObservedVersion == nil || *c.ObservedVersion != cursorProjectVersion {
+		return fmt.Errorf("approval: project_scoped provenance of %s on %s/%s with version %q, not the %s adapter's identity", c.ID, goos, goarch, c.ExpectedVersion, CursorProjectAdapter)
+	}
+	return nil
+}
+
+// validateProject checks a project_scoped record: a clean command with
+// proven cleanup, complete inventories, the exact adapter provenance with
+// the validated probe entry, both the project directory and its approval
+// file recorded as added, and every other change a workspace .cursor
+// change.
+func (a *CaptureApproval) validateProject() error {
+	p := a.Project
+	if !provenClean(a.Stage) || !a.InventoryComplete {
+		return errors.New("approval: project_scoped without a clean command, proven cleanup and complete inventories")
+	}
+	if p.Adapter != CursorProjectAdapter || p.Directory != labelProjectDir || p.File != labelProjectFile || !p.ProbeEntryPresent {
+		return fmt.Errorf("approval: project provenance %+v is not the %s adapter's validated %s", *p, CursorProjectAdapter, labelProjectFile)
+	}
+	dir, file := false, false
+	for _, ch := range a.Changes {
+		switch {
+		case ch.Path == labelProjectDir && ch.Kind == ChangeAdded:
+			dir = true
+		case ch.Path == labelProjectFile && ch.Kind == ChangeAdded:
+			file = true
+		case !inWorkspaceCursor(ch.Path):
+			return fmt.Errorf("approval: project_scoped with a forbidden change %s (%s)", ch.Path, ch.Kind)
+		}
+	}
+	if !dir || !file {
+		return errors.New("approval: project_scoped without both the project directory and its approval file added")
 	}
 	return nil
 }
