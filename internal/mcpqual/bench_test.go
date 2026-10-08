@@ -148,6 +148,19 @@ func BenchmarkMCPQualificationProbe(b *testing.B) {
 	if init := evs[1]; init.Kind != EvInitialize || init.RequestedProtocolVersion == nil || *init.RequestedProtocolVersion != ProtocolVersion || *init.SelectedProtocolVersion != ProtocolVersion {
 		b.Fatalf("initialize event %+v", init)
 	}
+	// The shared analyzer's terminal state on the same events (design
+	// decoder-enrollment B1.5, FP-14), untimed: the whole log is intact (an
+	// extra receipt per further operation keeps it incomplete beyond one),
+	// and its prefix through the first completion, LF-terminated, is the
+	// clean terminal observation without exit.
+	raw := events.Bytes()
+	whole := analyzeProbe(raw, "tick", false, true).obs
+	firstDone := bytes.Index(raw, []byte(`"kind":"completed"`))
+	prefix := raw[:firstDone+bytes.IndexByte(raw[firstDone:], '\n')+1]
+	cut := analyzeProbe(prefix, "tick", false, true).obs
+	if !whole.Intact || (b.N == 1) != (whole.EndState == EndIntact) || cut.EndState != EndTerminalWithoutExit || cut.Intact || *cut.TerminalKind != EvCompleted {
+		b.Fatalf("analyzer: whole %+v, prefix %+v", whole, cut)
+	}
 }
 
 // benchTranscript is a transcript of JSON lines, one in sixteen with a
@@ -225,6 +238,11 @@ func BenchmarkMCPCaptureEvidence(b *testing.B) {
 			if err != nil {
 				b.Fatal(err)
 			}
+			// The validated bundle's replayed observation (design
+			// decoder-enrollment B1.5, FP-14): intact, completed, clean.
+			if o := bundle.Manifest.Clients[0].Probe.Observation; len(tr.Lines) > 1 && (o == nil || o.EndState != EndIntact || *o.TerminalKind != EvCompleted || !o.CleanSession) {
+				b.Fatalf("bundle observation %+v", o)
+			}
 			n := 0
 			for _, f := range bundle.Files {
 				n += len(f)
@@ -276,6 +294,25 @@ func BenchmarkMCPCaptureEvidence(b *testing.B) {
 			b.Fatalf("changes %+v", changes)
 		case bytes.Contains(raw, []byte("bench-fingerprint-secret")) || bytes.Contains(raw, []byte("digest")) || bytes.Contains(raw, []byte(before)):
 			b.Fatalf("the change inventory exports data: %s", raw)
+		}
+		// The two-directory inventory policy (design decoder-enrollment B1.5,
+		// FP-16), untimed, on a tiny fixed home fixture inside the
+		// benchmark's own directory (never a real home): the excluded
+		// directories' contents change without a recorded change while their
+		// boundaries and a same-name directory elsewhere are inventoried.
+		home := filepath.Join(b.TempDir(), "home")
+		for _, d := range []string{"chats", "ai-tracking", "projects/p/chats"} {
+			os.MkdirAll(filepath.Join(home, ".cursor", filepath.FromSlash(d)), 0o700)
+			os.WriteFile(filepath.Join(home, ".cursor", filepath.FromSlash(d), "old.json"), []byte("{}"), 0o600)
+		}
+		root := []scanRoot{{label: labelHomeCursor, path: filepath.Join(home, ".cursor")}}
+		sc.exclude(home)
+		pre = sc.snapshot(root)
+		for _, d := range []string{"chats", "ai-tracking"} {
+			os.WriteFile(filepath.Join(home, ".cursor", d, "new.json"), []byte("{}"), 0o600)
+		}
+		if got := diffSnapshots(pre, sc.snapshot(root)); !pre.complete || pre.count != 7 || len(got) != 0 {
+			b.Fatalf("the inventory policy: %d entries, changes %+v", pre.count, got)
 		}
 	})
 	b.Run("over-limit", func(b *testing.B) {

@@ -227,6 +227,14 @@ var WorkspaceCoverageManifest = []CoverageEntry{
 	{Group: GroupChanged, File: modulePath + "/internal/mcpqual/events.go"},
 	{Group: GroupChanged, File: modulePath + "/internal/mcpqual/capture_approval.go"},
 	{Group: GroupChanged, File: modulePath + "/internal/mcpqual/capture_approval_unix.go"},
+
+	// Decoder enrollment, slice B1.5 (base 91fe8bb): the new shared probe
+	// observation analyzer. Its other changed production files are already
+	// listed whole: mcpqual/capture.go, mcpqual/session.go,
+	// mcpqual/capture_manifest.go, mcpqual/capture_approval.go,
+	// mcpqual/enrollment.go, mcpqual/report.go, mcpqual/runner.go and
+	// devcheck/native.go.
+	{Group: GroupChanged, File: modulePath + "/internal/mcpqual/probe_observation.go"},
 }
 
 // modulePath is the profile's import-path prefix.

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -148,6 +149,47 @@ type argvRecord struct {
 	Cwd        string   `json:"cwd"`
 	Config     string   `json:"config"`
 	ConfigPath string   `json:"config_path"`
+	CaseFile   string   `json:"case_file"`
+}
+
+// setupOnly is the structured setup-only check (code review B1.5 round 3,
+// C1; never a byte search, since a timestamp such as offset_ns 15000 is a
+// valid record): the case file the session's probe served holds exactly
+// the zero-delay setup case of caseID and its marker, with no progress,
+// and the parsed server events hold exactly one receipt and one
+// completion, both of caseID, and no record of any other case.
+func setupOnly(caseFile string, server []byte, caseID string) error {
+	cf, err := mcpqual.ParseCaseFile([]byte(caseFile))
+	if err != nil {
+		return fmt.Errorf("case file: %v", err)
+	}
+	if len(cf.Cases) != 2 || cf.Cases[0].CaseID != caseID || cf.Cases[1].CaseID != caseID+"-marker" {
+		return fmt.Errorf("case file cases %+v, want only %s and its marker", cf.Cases, caseID)
+	}
+	for _, c := range cf.Cases {
+		if c.DelayMS != 0 || c.ProgressIntervalMS != 0 {
+			return fmt.Errorf("case %s has delay %d ms and progress %d ms, want a zero-delay setup", c.CaseID, c.DelayMS, c.ProgressIntervalMS)
+		}
+	}
+	evs, _, err := mcpqual.ParseProbeEvents(server)
+	if err != nil {
+		return fmt.Errorf("server events: %v", err)
+	}
+	receipts, completions := 0, 0
+	for _, ev := range evs {
+		switch {
+		case ev.CaseID != "" && ev.CaseID != caseID:
+			return fmt.Errorf("a %s record of case %s", ev.Kind, ev.CaseID)
+		case ev.Kind == mcpqual.EvReceipt:
+			receipts++
+		case ev.Kind == mcpqual.EvCompleted:
+			completions++
+		}
+	}
+	if receipts != 1 || completions != 1 {
+		return fmt.Errorf("%d receipts and %d completions, want one setup call", receipts, completions)
+	}
+	return nil
 }
 
 func (q *qualEnv) argvLog() []argvRecord {
@@ -298,8 +340,23 @@ func TestMCPCaptureRecipes(t *testing.T) {
 		return func(t *testing.T) {
 			rc := recipes[id]
 			q := newQualEnv(t)
-			out := filepath.Join(realTemp(t), "out")
-			r := q.capture(q.capturePlan(nil, id), out, nil, "--allow-model-calls")
+			root := realTemp(t)
+			out := filepath.Join(root, "out")
+			var r result
+			if id == "grok" {
+				// The trusted Grok recipe's placement gate observes the
+				// filesystem through the existing GrokPlacementFS seam with the
+				// fixture root as its boundary (DW10, as in FP-12): a marker on
+				// the host above the test's temporary root (a developer's .git)
+				// is not part of this recipe case, while the gate still walks
+				// every ancestor and applies every rule. The production runner
+				// runs in process with the real fake-vendor and probe processes.
+				log := &safeBuffer{}
+				man := inProcessRun(t, q, q.capturePlan(nil, id), out, func(c *mcpqual.CaptureRunner) { c.GrokPlacementFS, c.Log = fixtureView{root}, log })
+				r = result{code: man.ExitCode(), stderr: log.String()}
+			} else {
+				r = q.capture(q.capturePlan(nil, id), out, nil, "--allow-model-calls")
+			}
 			if r.code != 0 {
 				t.Fatalf("%s capture = %+v", id, r)
 			}
@@ -339,12 +396,50 @@ func TestMCPCaptureRecipes(t *testing.T) {
 			if !strings.Contains(string(b.Files[mcpqual.ClientFile(id, mcpqual.FileHelpStdout)]), "usage: fake") || !slices.Equal(c.Argv[:1], rc.argv("<workspace>", "<server>")[:1]) {
 				t.Fatalf("%s: help or argv %q", id, c.Argv)
 			}
-			// Setup only: the case file named a zero-delay case, and no 15 s
-			// session ran (one receipt, one completion).
-			if !strings.Contains(r.stderr, "setup only; default phase not executed") || strings.Contains(string(b.Files[mcpqual.ClientFile(id, mcpqual.FileServerEvents)]), "15000") {
-				t.Fatalf("%s: scheduling %s", id, r.stderr)
+			// Setup only: the one session's case file named a zero-delay case
+			// and its marker, the probe saw one setup call and nothing else,
+			// and the default phase was not executed (structured, never a byte
+			// search of the events).
+			if err := setupOnly(rec.CaseFile, b.Files[mcpqual.ClientFile(id, mcpqual.FileServerEvents)], id+"-capture-setup"); err != nil ||
+				!strings.Contains(r.stderr, "setup only; default phase not executed") || len(recs) != 1 {
+				t.Fatalf("%s: scheduling %v: %s", id, err, r.stderr)
 			}
 			q.groupsGone()
+		}
+	}
+	// The setup-only check's own regression (code review B1.5 round 3, C1):
+	// a valid zero-delay setup whose start record's offset_ns is 15000
+	// passes, while a default-phase delay or call is caught by structure.
+	const caseID = "claude-capture-setup"
+	cfJSON := func(delay int64, extra ...mcpqual.ProbeCase) string {
+		cf := mcpqual.CaseFile{Version: 1, RunID: "run-1", Nonce: "nonce1", Cases: append([]mcpqual.ProbeCase{{CaseID: caseID, DelayMS: delay}, {CaseID: caseID + "-marker"}}, extra...)}
+		b, _ := json.Marshal(cf)
+		return string(b)
+	}
+	collide := `{"seq":1,"kind":"start","offset_ns":15000,"run_id":"run-1"}` + "\n" +
+		`{"seq":2,"kind":"initialize","offset_ns":150000,"run_id":"run-1","client_name":"claude-cli","client_version":"1.0.0"}` + "\n" +
+		`{"seq":3,"kind":"receipt","offset_ns":215000,"run_id":"run-1","case_id":"claude-capture-setup","request_id":3}` + "\n" +
+		`{"seq":4,"kind":"scheduled","offset_ns":315000,"run_id":"run-1","case_id":"claude-capture-setup","request_id":3}` + "\n" +
+		`{"seq":5,"kind":"completed","offset_ns":415000,"run_id":"run-1","case_id":"claude-capture-setup","request_id":3}` + "\n" +
+		`{"seq":6,"kind":"eof","offset_ns":515000,"run_id":"run-1"}` + "\n" + `{"seq":7,"kind":"exit","offset_ns":615000,"run_id":"run-1","reason":"eof"}` + "\n"
+	if _, intact, err := mcpqual.ParseProbeEvents([]byte(collide)); err != nil || !intact || !strings.Contains(collide, "15000") {
+		t.Fatalf("collision vector %v %v", intact, err)
+	}
+	if err := setupOnly(cfJSON(0), []byte(collide), caseID); err != nil {
+		t.Fatalf("a valid timestamp collision was refused: %v", err)
+	}
+	other := strings.Replace(collide, `{"seq":6,"kind":"eof"`, `{"seq":6,"kind":"receipt","offset_ns":515000,"run_id":"run-1","case_id":"claude-default-1","request_id":4}`+"\n"+`{"seq":7,"kind":"eof"`, 1)
+	other = strings.Replace(other, `{"seq":7,"kind":"exit"`, `{"seq":8,"kind":"exit"`, 1)
+	for name, tc := range map[string][2]string{
+		"delay":      {cfJSON(15000), collide},
+		"extra-case": {cfJSON(0, mcpqual.ProbeCase{CaseID: "claude-default-1", DelayMS: 15000}), collide},
+		"other-call": {cfJSON(0), other},
+		"no-call":    {cfJSON(0), strings.Join(strings.Split(collide, "\n")[:2], "\n") + "\n"},
+		"bad-events": {cfJSON(0), "x\n"},
+		"bad-case":   {"{", collide},
+	} {
+		if err := setupOnly(tc[0], []byte(tc[1]), caseID); err == nil {
+			t.Fatalf("%s: a non-setup session passed", name)
 		}
 	}
 	runInventory(t, 4, []string{"claude", "codex", "grok", "cursor"}, []captureCase{{"claude", one("claude")}, {"codex", one("codex")}, {"grok", one("grok")}, {"cursor", one("cursor")}})
@@ -513,6 +608,12 @@ func TestMCPCaptureEvidence(t *testing.T) {
 				if !st.Clean() {
 					t.Fatalf("stream %+v", st)
 				}
+			}
+			// Design decoder-enrollment B1.5: the new probe observation is part
+			// of the same redacted manifest (its members are fixed enums).
+			if o := kit.bundle.Manifest.Clients[0].Probe.Observation; o == nil || o.EndState != mcpqual.EndIntact || !o.CleanSession ||
+				!strings.Contains(string(kit.bundle.ManifestBytes), `"observation": {`) {
+				t.Fatalf("kit observation %+v", o)
 			}
 			e := sharedEnrollment(t)
 			if _, err := mcpqual.ValidateEnrollment(mcpqual.EnrollmentOptions{FS: os.DirFS(e.repo), Registry: e.reg}); err != nil {
@@ -890,6 +991,21 @@ func TestMCPEnrollmentContract(t *testing.T) {
 			if err := validate(repo, e.reg); err == nil {
 				t.Fatal("an altered payload passed")
 			}
+			// Design decoder-enrollment B1.5: a probe observation that the
+			// retained bytes do not replay to is refused even with the index
+			// made consistent with the edited manifest.
+			repo, e = enrolledCopy(t)
+			dir := filepath.Join(repo, filepath.FromSlash(e.entry.Bundle))
+			editManifest(t, dir, func(m map[string]any) {
+				client0(m)["probe"].(map[string]any)["observation"].(map[string]any)["terminal_kind"] = mcpqual.EvCancelled
+			})
+			mb, _ := os.ReadFile(filepath.Join(dir, mcpqual.CaptureManifestName))
+			en := e.entry
+			en.ManifestSHA256 = sha(mb)
+			writeEnrollment(t, repo, &en, e.oracle)
+			if err := validate(repo, e.reg); err == nil || strings.Contains(err.Error(), "forged or altered provenance") {
+				t.Fatalf("a forged observation: %v", err)
+			}
 		}},
 		{"identity-mismatch", func(t *testing.T) {
 			for name, mutate := range map[string]func(en *mcpqual.EnrollmentEntry){
@@ -1187,7 +1303,17 @@ func TestMCPCaptureRunbook(t *testing.T) {
 				"Record the placement check outcome in the delivery notes", "their checked-in location is not their launch location",
 				"`expected-blocked: cursor_approval_scope_unverified`", "exceeds 10,000 entries, 64 MiB in all or 8 MiB in one file",
 				"A passing precheck never substitutes for the two runtime inventories", "Code gate B1", "Do not reuse completed plans from the failed captures",
-				"Code gate B (B2): only after usable reviewed re-captures", "is not a discovery check"} {
+				"Code gate B (B2): only after usable reviewed re-captures", "is not a discovery check",
+				// Design decoder-enrollment B1.5: version pinning, no concurrent
+				// Claude sessions, the inventory exclusions, the project
+				// approval, the terminal observation and the macOS limit.
+				"Code gate B1.5", "pin the executable and its version from capture through confirmation", "Disable or postpone auto-update",
+				"executable SHA-256", "never an edited expected string", "with no other Claude Code session active",
+				"neither kills them nor modifies or locks `~/.claude/.config.json`", "`JSON Parse error: Unexpected EOF`", "no stderr classifier and no retry",
+				"`cursor-approval-v2`", "the contents only of exactly `~/.cursor/chats` and `~/.cursor/ai-tracking`", "is not detected",
+				"computed `~/.cursor/projects/<workspace-project>` directory of the intended case path is absent", "`project_scoped`",
+				"take fresh B1.5 captures into fresh output paths", "\"terminal observed; probe exit not observed\"", "which asserts no cause",
+				"passing offline macOS tests is not vendor qualification"} {
 				if !strings.Contains(sec, w) {
 					t.Fatalf("the capture section lacks %q", w)
 				}
@@ -1248,10 +1374,12 @@ func TestMCPEnrollmentCIPolicy(t *testing.T) {
 		"TestMCPEnrollmentReplay", "TestMCPEnrolledShortConfirmation", "TestMCPCaptureRunbook", "TestMCPEnrollmentCIPolicy"}
 	// Slice B1's four parents (FP-10..FP-13) follow the nine.
 	four := []string{"TestMCPCaptureProtocolNegotiation", "TestMCPCaptureCodexApproval", "TestMCPCaptureGrokRecipe", "TestMCPCaptureCursorTrust"}
+	// Slice B1.5's three parents (FP-14..FP-16) follow the four.
+	three := []string{"TestMCPProbeTerminalObservation", "TestMCPCaptureCursorProjectApproval", "TestMCPCaptureCursorInventoryPolicy"}
 	runInventory(t, 4, []string{"native-and-test", "bench", "stress", "coverage-and-docs"}, []captureCase{
 		{"native-and-test", func(t *testing.T) {
 			req := devcheck.NativeRequiredTests()
-			if len(req) != 416 || !slices.Equal(req[403:412], nine) || !slices.Equal(req[412:], four) || req[402] != "TestMCPShortConfirmation" {
+			if len(req) != 419 || !slices.Equal(req[403:412], nine) || !slices.Equal(req[412:416], four) || !slices.Equal(req[416:419], three) || req[402] != "TestMCPShortConfirmation" {
 				t.Fatalf("native inventory %d %v", len(req), req[400:])
 			}
 			for _, goos := range []string{"linux", "darwin"} {
@@ -1320,9 +1448,12 @@ func TestMCPEnrollmentCIPolicy(t *testing.T) {
 					t.Fatalf("B1 file internal/mcpqual/%s.go is not a whole-file changed entry", f)
 				}
 			}
+			if !listed["internal/mcpqual/probe_observation.go"] {
+				t.Fatal("B1.5 file internal/mcpqual/probe_observation.go is not a whole-file changed entry")
+			}
 			doc := string(repoFile(t, "docs/ci.md"))
-			for _, w := range append(append([]string{"Decoder enrollment: baseline is main run 37523901881 (ff8058f)", "9 more names, 412 in all", "(9 ordinary calls)", "CI stays 18 jobs",
-				"4 more names, 416 in all"}, nine...), four...) {
+			for _, w := range append(append(append([]string{"Decoder enrollment: baseline is main run 37523901881 (ff8058f)", "9 more names, 412 in all", "(9 ordinary calls)", "CI stays 18 jobs",
+				"4 more names, 416 in all", "3 more names, 419 in all"}, nine...), four...), three...) {
 				if !strings.Contains(strings.Join(strings.Fields(doc), " "), w) {
 					t.Fatalf("docs/ci.md lacks %q", w)
 				}
@@ -1369,7 +1500,7 @@ func TestMCPCaptureProtocolNegotiation(t *testing.T) {
 		log := q.launchLog()
 		switch {
 		case decline && (r.code != 5 || c.State != mcpqual.CapturePartial || deref(c.Reason) != mcpqual.ReasonProbeNotObserved || c.Probe.Receipts != 0 ||
-			bytes.Contains(server, []byte(`"receipt"`)) || len(log["session"]) != 1):
+			slices.ContainsFunc(evs, func(ev mcpqual.ProbeEvent) bool { return ev.Kind == mcpqual.EvReceipt }) || len(log["session"]) != 1):
 			t.Fatalf("declined: %+v %s", r, deref(c.Reason))
 		case !decline && (r.code != 0 || c.State != mcpqual.CaptureComplete || c.Probe.Receipts != 1 || !c.Probe.Completed || len(log["session"]) != 1):
 			t.Fatalf("negotiated %s: %+v %s", requested, r, deref(c.Reason))

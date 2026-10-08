@@ -209,7 +209,13 @@ func TestCaptureRunbookDoc(t *testing.T) {
 		// the thirteen-group cleanup allowance.
 		"up to thirteen process groups", "protocol version `2025-06-18`", "`-c mcp_servers.probe.tools.slow.approval_mode=\"approve\"` for this invocation only",
 		"an inference from its name", "global `--trust`", "`streaming-json`", "never kills the leader", "exactly one `mcp enable probe` in that workspace",
-		"`grok_workspace_placement_unverified`", "`cursor_approval_outside_workspace`", "never restored, deleted or retried", "only the generated workspace is ever trusted"} {
+		"`grok_workspace_placement_unverified`", "`cursor_approval_outside_workspace`", "never restored, deleted or retried", "only the generated workspace is ever trusted",
+		// Design decoder-enrollment B1.5: every owner rule of the runbook
+		// amendments.
+		"Code gate B1.5", "pin the executable and its version from capture through confirmation", "with no other Claude Code session active",
+		"`JSON Parse error: Unexpected EOF`", "`" + InventoryPolicyV2 + "`", "`~/.cursor/chats` and `~/.cursor/ai-tracking`", "`" + ScopeProjectScoped + "`",
+		"`" + cursorProjectVersion + "` on linux/amd64 only", "\"" + TerminalObservedLabel + "\"", "is absent", "never deleted or overwritten by mcpqual",
+		"passing offline macOS tests is not vendor qualification"} {
 		if !strings.Contains(sec, want) {
 			t.Fatalf("the capture section lacks %q", want)
 		}

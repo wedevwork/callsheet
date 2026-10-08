@@ -592,6 +592,32 @@ whole-file coverage manifest adds `internal/mcpqual/probe.go`, `events.go`,
 its twenty jobs, four required checks, commands, stress selectors, counts,
 CPU lists and timeouts; B1 makes no new budget allocation.
 
+Decoder enrollment, slice B1.5 (the shared probe terminal observation in
+capture and qualify, Cursor's observed per-project approval and the
+`cursor-approval-v2` inventory policy) appends one function parent per new
+FP (FP-14 to FP-16) as a separate group, 3 more names, 419 in all, with the
+416 earlier names unchanged and first (the slice A names keep positions 403
+to 412 and the B1 names keep positions 412 to 416; the new group holds
+positions 416 to 419): `TestMCPProbeTerminalObservation`,
+`TestMCPCaptureCursorProjectApproval` and
+`TestMCPCaptureCursorInventoryPolicy`. Each asserts its literal local case
+inventory and that every case completed, with no subtest names; they run
+the production capture and qualification runners in process with the fake
+vendor and the real probe (never an installed vendor CLI or a model), and
+only in the normal, race and native suites, never in a stress shard. The
+new `internal/mcpqual` unit vectors are small, injected and deterministic
+and run in that package's unchanged per-CPU invocations of
+`stress-packages-cpu`: B1.5 adds no new stress selector or workload.
+`devcheck native` still makes 9 ordinary calls, `devcheck bench` keeps 13
+steps (`BenchmarkMCPQualificationProbe` and `BenchmarkMCPCaptureEvidence`
+only assert the shared analyzer's terminal state and the two-directory
+inventory policy on their existing tiny fixtures), Linux `all` still makes
+32 ordinary calls, cross keeps 12 artifacts, and the whole-file coverage
+manifest adds `internal/mcpqual/probe_observation.go` (its other changed
+files were already whole-file entries). The workflow keeps its twenty jobs,
+four required checks, commands, stress selectors, counts, CPU lists and
+timeouts; B1.5 makes no new budget allocation.
+
 Cross-build matrix (FP-8; moved out of `tests/function` on 2026-10-02).
 `devcheck cross` is FP-8's proof. It builds callsheet, fake-adapter and the
 process-group test binary (`go test -c`) with `CGO_ENABLED=0` for

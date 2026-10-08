@@ -1,0 +1,5 @@
+{"seq":1,"kind":"start","offset_ns":251,"run_id":"20261008T063209Z-af5ca5"}
+{"seq":2,"kind":"initialize","offset_ns":3897532,"run_id":"20261008T063209Z-af5ca5","client_name":"grok-shell-probe","client_version":"1.0.46","requested_protocol_version":"2025-11-25","selected_protocol_version":"2025-06-18"}
+{"seq":3,"kind":"receipt","offset_ns":10406323737,"run_id":"20261008T063209Z-af5ca5","case_id":"grok-capture-setup","request_id":2,"token_present":true,"token":1}
+{"seq":4,"kind":"scheduled","offset_ns":10406362504,"run_id":"20261008T063209Z-af5ca5","case_id":"grok-capture-setup","request_id":2}
+{"seq":5,"kind":"completed","offset_ns":10406386807,"run_id":"20261008T063209Z-af5ca5","case_id":"grok-capture-setup","request_id":2}

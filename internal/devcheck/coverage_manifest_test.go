@@ -419,6 +419,30 @@ func TestDecoderEnrollmentB1CoverageManifest(t *testing.T) {
 	}
 }
 
+// decoderEnrollmentB15Files are the production files decoder enrollment's
+// slice B1.5 adds or changes (design decoder-enrollment B1.5, CI plan,
+// against the actual diff), each required whole in the changed group.
+var decoderEnrollmentB15Files = []string{"internal/mcpqual/probe_observation.go", "internal/mcpqual/capture.go", "internal/mcpqual/session.go",
+	"internal/mcpqual/capture_manifest.go", "internal/mcpqual/capture_approval.go", "internal/mcpqual/enrollment.go", "internal/mcpqual/report.go",
+	"internal/mcpqual/runner.go", "internal/devcheck/native.go"}
+
+// TestDecoderEnrollmentB15CoverageManifest (design decoder-enrollment
+// B1.5, CI plan): every B1.5 production file is a whole-file changed-group
+// entry with its build OS, and none keeps a partial-range entry.
+func TestDecoderEnrollmentB15CoverageManifest(t *testing.T) {
+	root := testkit.MustRepoRoot(t)
+	listed := map[string]CoverageEntry{}
+	for _, e := range WorkspaceCoverageManifest {
+		listed[strings.TrimPrefix(e.File, modulePath+"/")] = e
+	}
+	for _, rel := range decoderEnrollmentB15Files {
+		e, ok := listed[rel]
+		if !ok || e.Group != GroupChanged || len(e.Ranges) != 0 || e.OS != buildOS(t, filepath.Join(root, filepath.FromSlash(rel))) {
+			t.Fatalf("decoder-enrollment B1.5 file %s missing from the changed group with its build OS", rel)
+		}
+	}
+}
+
 // taskWorkspaceBudget is design 10b r0.2's Budgets entry, verbatim.
 const taskWorkspaceBudget = "10b: place all new lifecycle matrices outside plane; add no plane stress cases or repeated selectors and no child-heavy sidecar matrix. " +
 	"Use post-10a CPU1 CI ranges from runs 37095473701, 37090552825 and 37101472176: sidecar 155.0–173.2 s Linux / 189.0–252.5 s macOS and plane 144.2–213.9 s Linux / 229.9–257.0 s macOS. " +
@@ -509,7 +533,7 @@ func TestWave2NativeDocs(t *testing.T) {
 			t.Fatalf("docs/ci.md does not name %s", n)
 		}
 	}
-	if len(NativeRequiredTests()) != 416 || len(NativeTaskProcessTests()) != 12 {
+	if len(NativeRequiredTests()) != 419 || len(NativeTaskProcessTests()) != 12 {
 		t.Fatalf("%d native names, %d sidecar names", len(NativeRequiredTests()), len(NativeTaskProcessTests()))
 	}
 }
@@ -621,6 +645,32 @@ func TestDecoderEnrollmentB1Docs(t *testing.T) {
 		}
 	}
 	for _, n := range b1Names() {
+		if !strings.Contains(s, "`"+n+"`") {
+			t.Fatalf("docs/ci.md does not name %s", n)
+		}
+	}
+}
+
+// TestDecoderEnrollmentB15Docs (design decoder-enrollment B1.5, CI plan):
+// docs/ci.md's Checks names the three B1.5 function parents with the
+// 419-name inventory and its ranges, the unchanged native call, benchmark,
+// cross and twenty-job counts, the new whole-file entry and no new budget
+// allocation or stress workload.
+func TestDecoderEnrollmentB15Docs(t *testing.T) {
+	doc, err := os.ReadFile(filepath.Join(testkit.MustRepoRoot(t), "docs", "ci.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := strings.Join(strings.Fields(string(doc)), " ")
+	for _, w := range []string{"3 more names, 419 in all", "with the 416 earlier names unchanged and first", "the B1 names keep positions 412 to 416",
+		"positions 416 to 419", "`devcheck native` still makes 9 ordinary calls", "`devcheck bench` keeps 13 steps", "cross keeps 12 artifacts",
+		"Linux `all` still makes 32 ordinary calls", "`internal/mcpqual/probe_observation.go`", "The workflow keeps its twenty jobs", "B1.5 makes no new budget allocation",
+		"no new stress selector or workload"} {
+		if !strings.Contains(s, w) {
+			t.Fatalf("docs/ci.md lacks %q", w)
+		}
+	}
+	for _, n := range b15Names() {
 		if !strings.Contains(s, "`"+n+"`") {
 			t.Fatalf("docs/ci.md does not name %s", n)
 		}

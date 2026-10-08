@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -144,6 +145,11 @@ type CaseReport struct {
 	ServerEvents         *string     `json:"server_events"`
 	VendorEvents         *string     `json:"vendor_events"`
 	Cleanup              CaseCleanup `json:"cleanup"`
+	// ProbeObservation is the shared analyzer's observation of the case's
+	// probe log (design decoder-enrollment B1.5, FP-14): written whenever
+	// the probe was analyzed, absent for a case that did not run and in
+	// legacy reports (never null).
+	ProbeObservation *ProbeObservation `json:"probe_observation,omitempty"`
 }
 
 // CaseCleanup records how the case's process group was reaped.
@@ -252,6 +258,13 @@ func ParseReport(b []byte) (*Report, error) {
 				if err := requireKeys(shape.Clients[i].Phases[j].Cases[k].Cleanup, "cleanup", cw+".cleanup"); err != nil {
 					return nil, err
 				}
+				var opt struct {
+					Observation json.RawMessage `json:"probe_observation"`
+				}
+				json.Unmarshal(cs, &opt)
+				if err := checkObservationRaw(opt.Observation, "report: "+cw+".probe_observation"); err != nil {
+					return nil, err
+				}
 			}
 		}
 	}
@@ -332,15 +345,53 @@ func (r *Report) Validate() error {
 						return fail("%s: evidence %s is not listed", cs.CaseID, *p)
 					}
 				}
+				if err := cs.validateObservation(); err != nil {
+					return fail("%s: %v", cs.CaseID, err)
+				}
 			}
 		}
 	}
 	return nil
 }
 
+// validateObservation checks a case's recorded probe observation (design
+// decoder-enrollment B1.5, FP-14) against the facts the case records: its
+// own consistency; a clean-session attestation only with exit 0, no signal
+// and cleanup proven without error; a tool result or typed timeout only
+// from an accepted end state (intact without anomaly, or the terminal
+// observation without exit), a tool result only with the correlated
+// completion; and a typed timeout only from a clean session. Absence is a
+// legacy or unanalyzed case.
+func (cs *CaseReport) validateObservation() error {
+	o := cs.ProbeObservation
+	if o == nil {
+		return nil
+	}
+	if err := o.validate(); err != nil {
+		return err
+	}
+	conclusive := cs.Outcome == KindToolResult || cs.Outcome == KindMCPTimeout
+	switch {
+	case o.CleanSession && (cs.Exit == nil || *cs.Exit != 0 || cs.Signal != nil || cs.Cleanup.Error != nil || !cs.Cleanup.GroupGone):
+		return errors.New("probe_observation: clean_session with a nonzero or missing exit, a signal or unproven cleanup")
+	case conclusive && !o.observedEndpoint():
+		return fmt.Errorf("probe_observation: outcome %s from an %s probe observation", cs.Outcome, o.EndState)
+	case cs.Outcome == KindToolResult && (o.TerminalKind == nil || *o.TerminalKind != EvCompleted):
+		return errors.New("probe_observation: a tool result without the correlated completion")
+	case cs.Outcome == KindMCPTimeout && !o.CleanSession:
+		return errors.New("probe_observation: a typed timeout without a clean session")
+	}
+	return nil
+}
+
 // CheckEvidence verifies every listed evidence file under dir exists with
-// exactly the recorded bytes and hash.
+// exactly the recorded bytes and hash, then replays each analyzed case's
+// retained probe events through the shared analyzer: the recorded
+// observation's structure and the case's endpoint fields must be what the
+// bytes give (clean_session is the harness's recorded attestation, not a
+// fact the bytes hold, so it is the replay's input).
 func (r *Report) CheckEvidence(dir string) error {
+	files := map[string][]byte{}
 	for _, ev := range r.Evidence {
 		b, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(ev.Path)))
 		if err != nil {
@@ -349,6 +400,53 @@ func (r *Report) CheckEvidence(dir string) error {
 		if int64(len(b)) != ev.Bytes || sha256Hex(b) != ev.SHA256 {
 			return fmt.Errorf("evidence %s: bytes or hash differ from the report", ev.Path)
 		}
+		files[ev.Path] = b
+	}
+	for _, c := range r.Clients {
+		for _, ph := range c.Phases {
+			for _, cs := range ph.Cases {
+				if err := cs.replayObservation(files); err != nil {
+					return fmt.Errorf("evidence %s: %w", cs.CaseID, err)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// replayObservation recomputes an analyzed case's observation and probe
+// endpoints from its retained server events (none when the case kept no
+// file) and compares them with the record; a legacy case has nothing to
+// replay.
+func (cs *CaseReport) replayObservation(files map[string][]byte) error {
+	o := cs.ProbeObservation
+	if o == nil {
+		return nil
+	}
+	var raw []byte
+	if cs.ServerEvents != nil {
+		raw = files[*cs.ServerEvents]
+	}
+	an := analyzeProbe(raw, cs.CaseID, false, o.CleanSession)
+	v := an.view
+	var token *bool
+	var start, end, elapsed *int64
+	if v.receipt != nil {
+		token, start = v.receipt.TokenPresent, iptr(v.receipt.OffsetNS)
+	}
+	if v.end != nil {
+		end = iptr(v.end.OffsetNS)
+		if v.receipt != nil {
+			elapsed = iptr((v.end.OffsetNS - v.receipt.OffsetNS) / int64(time.Millisecond))
+		}
+	}
+	eq := func(a, b *int64) bool { return a == nil && b == nil || a != nil && b != nil && *a == *b }
+	switch {
+	case !o.equal(&an.obs):
+		return fmt.Errorf("the recorded probe observation %+v differs from the replayed server events", *o)
+	case !eq(cs.StartOffsetNS, start) || !eq(cs.EndOffsetNS, end) || !eq(cs.ElapsedMS, elapsed) || cs.ProgressSent != v.progress ||
+		(cs.ProgressTokenPresent == nil) != (token == nil) || token != nil && *token != *cs.ProgressTokenPresent:
+		return errors.New("the recorded probe endpoints differ from the replayed server events")
 	}
 	return nil
 }
@@ -396,6 +494,14 @@ func (r *Report) Markdown() string {
 				res = " " + *ph.Result
 			}
 			fmt.Fprintf(&sb, "- Phase %s: %s%s%s%s (%d cases).\n", ph.Name, ph.Status, res, bracketText(ph.LowerBoundMS, ph.UpperBoundMS), reasonSuffix(ph.Reason), len(ph.Cases))
+			for _, cs := range ph.Cases {
+				// The terminal observation without exit is labeled as such:
+				// never intact, and never a cause (design decoder-enrollment
+				// B1.5, FP-14).
+				if o := cs.ProbeObservation; o != nil && o.EndState == EndTerminalWithoutExit {
+					fmt.Fprintf(&sb, "  - Case %s probe: %s.\n", cs.CaseID, o.Label())
+				}
+			}
 		}
 		fmt.Fprintf(&sb, "- %s\n", ShortPollDecision(ShortPollBudget, r, c))
 	}

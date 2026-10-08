@@ -102,7 +102,7 @@ func TestNodeVerificationPolicyContract(t *testing.T) {
 			}
 			os.RemoveAll(scratchFrom(out))
 			req := NativeRequiredTests()
-			if len(req) != 145+len(mcpNames())+len(qualNames())+len(realNames())+len(wsNames())+len(trNames())+len(latNames())+len(wsTaskNames())+len(wsDoorNames())+len(wave2Names())+len(nbwNames())+len(dceNames())+len(b1Names()) || strings.Join(req[28:58], ",") != strings.Join(nodeNames(), ",") {
+			if len(req) != 145+len(mcpNames())+len(qualNames())+len(realNames())+len(wsNames())+len(trNames())+len(latNames())+len(wsTaskNames())+len(wsDoorNames())+len(wave2Names())+len(nbwNames())+len(dceNames())+len(b1Names())+len(b15Names()) || strings.Join(req[28:58], ",") != strings.Join(nodeNames(), ",") {
 				t.Fatalf("native required = %v", req)
 			}
 			if goos == "darwin" {

@@ -34,6 +34,19 @@
 // secret canaries and usage, a connection to a separately owned leader
 // (FAKE_VENDOR_LEADER, and MODE=leader for that service), and Cursor's
 // "mcp enable probe" (FAKE_VENDOR_ENABLE: where it writes).
+//
+// Design decoder-enrollment B1.5 adds: the terminal observation fixtures
+// (FAKE_VENDOR_CUT, limited to timeout or success sessions by
+// FAKE_VENDOR_CUT_ON): after the real probe has been reaped, the session
+// rewrites its own server-events file to the bounded prefix ending at the
+// selected terminal record (or a no-LF, torn, blank-record, before-terminal,
+// wrong-ID, duplicate or relabeled variant of it) before it exits, so the
+// harness reads exactly those bytes after every writer has stopped; and
+// Cursor's per-project approval (FAKE_VENDOR_ENABLE actions project,
+// project-dir, project-other and project-extra, written under the fixture
+// HOME's .cursor/projects/<slug> derived from the working directory, with
+// FAKE_VENDOR_APPROVALS as the file content) and its data directories
+// (data, ancestor-chats, chats-link and workspace-flood).
 package main
 
 import (
@@ -198,6 +211,12 @@ func run(args []string) int {
 		fmt.Fprintln(os.Stderr, "fake vendor:", err)
 		return 1
 	}
+	// The probe has been reaped (fakeSession waits for it): the fixture's
+	// server events are rewritten only now, after every writer stopped.
+	if err := cutEvents(caseID); err != nil {
+		fmt.Fprintln(os.Stderr, "fake vendor: cut:", err)
+		return 1
+	}
 	flood(os.Stdout, "FLOOD_STDOUT")
 	os.Stdout.WriteString(transcript)
 	flood(os.Stderr, "FLOOD_STDERR")
@@ -240,6 +259,18 @@ func recordArgv(args []string, cfgPath string) {
 			rec["config"] = string(b)
 			rec["config_path"] = c
 			break
+		}
+	}
+	// The case file the probe serves (design decoder-enrollment B1.5 round
+	// 3): its cases and delays are the structured evidence of what the
+	// session was asked to run.
+	if _, srvArgs, err := probeServer(args, cfgPath); err == nil {
+		for i, a := range srvArgs {
+			if a == "--case-file" && i+1 < len(srvArgs) {
+				if b, err := os.ReadFile(srvArgs[i+1]); err == nil {
+					rec["case_file"] = string(b)
+				}
+			}
 		}
 	}
 	b, _ := json.Marshal(rec)
@@ -332,6 +363,9 @@ func fakeSession(args []string, cfgPath, caseID string) (string, error) {
 	for i, a := range srvArgs {
 		if a == "--case-file" && i+1 < len(srvArgs) {
 			caseFile = srvArgs[i+1]
+		}
+		if a == "--events" && i+1 < len(srvArgs) {
+			sessionEvents = srvArgs[i+1]
 		}
 	}
 	cfRaw, err := os.ReadFile(caseFile)
@@ -459,6 +493,7 @@ func fakeSession(args []string, cfgPath, caseID string) (string, error) {
 		}
 		time.Sleep(time.Duration(limit)*time.Millisecond - time.Since(sent))
 		send(map[string]any{"jsonrpc": "2.0", "method": "notifications/cancelled", "params": map[string]any{"requestId": 3, "reason": "timeout"}})
+		sessionOutcome = "timeout"
 		return fakeTranscript(format, "timeout", caseID, ""), nil
 	}
 	res, err := await("3")
@@ -482,7 +517,105 @@ func fakeSession(args []string, cfgPath, caseID string) (string, error) {
 	if len(r.Content) == 1 {
 		text = r.Content[0].Text
 	}
+	sessionOutcome = "success"
 	return fakeTranscript(format, "success", caseID, text), nil
+}
+
+// sessionEvents and sessionOutcome are the session's probe events file and
+// its outcome (success or timeout), for cutEvents.
+var sessionEvents, sessionOutcome string
+
+// cutEvents rewrites the reaped probe's events file (design
+// decoder-enrollment B1.5) when FAKE_VENDOR_CUT names a variant and
+// FAKE_VENDOR_CUT_ON (when set) names this session's outcome. The
+// selected terminal is the case's last completed, cancelled or eof record:
+//
+//	terminal   the prefix ending at it, LF-terminated (no exit record)
+//	nolf       the same without its final LF
+//	torn       the same followed by half of the next record, without LF
+//	blank      the same followed by a blank record
+//	before     the prefix before it
+//	wrongid    the prefix with the terminal's request_id replaced by 99
+//	dup        the prefix with the terminal record repeated (next seq)
+//	cancelled  the prefix with the terminal relabeled cancelled
+//	eof        the prefix with the terminal relabeled eof
+//	otherrun   the prefix with the call's records under another run ID
+//	wrongid-intact  the whole log, the terminal's request ID a string
+func cutEvents(caseID string) error {
+	mode := fakeEnv("CUT")
+	if mode == "" || sessionEvents == "" || fakeEnv("CUT_ON") != "" && fakeEnv("CUT_ON") != sessionOutcome {
+		return nil
+	}
+	raw, err := os.ReadFile(sessionEvents)
+	if err != nil {
+		return err
+	}
+	lines := strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n")
+	term := -1
+	var ev map[string]any
+	for i, l := range lines {
+		var m map[string]any
+		if json.Unmarshal([]byte(l), &m) != nil {
+			return fmt.Errorf("record %d is not JSON", i+1)
+		}
+		switch m["kind"] {
+		case "completed", "cancelled", "eof":
+			if m["case_id"] == caseID {
+				term, ev = i, m
+			}
+		}
+	}
+	if term < 0 {
+		return errors.New("no terminal record of " + caseID)
+	}
+	encode := func(m map[string]any) string { b, _ := json.Marshal(m); return string(b) }
+	prefix := strings.Join(lines[:term+1], "\n") + "\n"
+	switch mode {
+	case "terminal":
+	case "nolf":
+		prefix = strings.TrimSuffix(prefix, "\n")
+	case "torn":
+		next := `{"seq":99,"kind":"exit","offset_ns":1}`
+		if term+1 < len(lines) {
+			next = lines[term+1]
+		}
+		prefix += next[:len(next)/2]
+	case "blank":
+		prefix += "\n"
+	case "before":
+		prefix = strings.Join(lines[:term], "\n") + "\n"
+	case "wrongid", "cancelled", "eof":
+		switch mode {
+		case "wrongid":
+			ev["request_id"] = 99
+		default:
+			ev["kind"] = mode
+		}
+		prefix = strings.Join(append(append([]string(nil), lines[:term]...), encode(ev)), "\n") + "\n"
+	case "dup":
+		ev["seq"] = ev["seq"].(float64) + 1
+		prefix += encode(ev) + "\n"
+	case "otherrun":
+		// The call's records claim another run than their start's.
+		var out []string
+		for _, l := range lines[:term+1] {
+			var m map[string]any
+			json.Unmarshal([]byte(l), &m)
+			if k := m["kind"]; k != "start" && k != "initialize" {
+				m["run_id"] = "different-instance"
+				l = encode(m)
+			}
+			out = append(out, l)
+		}
+		prefix = strings.Join(out, "\n") + "\n"
+	case "wrongid-intact":
+		// The whole intact log, the terminal's request ID changed.
+		ev["request_id"] = "3"
+		prefix = strings.Join(append(append(append([]string(nil), lines[:term]...), encode(ev)), lines[term+1:]...), "\n") + "\n"
+	default:
+		return errors.New("unknown cut " + mode)
+	}
+	return os.WriteFile(sessionEvents, []byte(prefix), 0o600)
 }
 
 // fakeSleepForever blocks until a signal ends the process (a bare select
@@ -659,6 +792,11 @@ func checkRecipe(args []string, caseID string) error {
 	case "cursor":
 		ws, ok := flagValue(args, "--workspace")
 		_, approved := os.Stat(filepath.Join(".cursor", "approved-servers.json"))
+		if wd, _ := os.Getwd(); approved != nil {
+			// Design decoder-enrollment B1.5: the per-project approval.
+			slug := strings.ReplaceAll(strings.ReplaceAll(strings.TrimPrefix(wd, "/"), "/.work/", "/work/"), "/", "-")
+			_, approved = os.Stat(filepath.Join(os.Getenv("HOME"), ".cursor", "projects", slug, "mcp-approvals.json"))
+		}
 		switch {
 		case len(args) == 0 || args[len(args)-1] != "--trust" || !ok || !sameDir(ws):
 			return fmt.Errorf("--workspace %q --trust is not the generated workspace", ws)
@@ -674,30 +812,83 @@ func checkRecipe(args []string, caseID string) error {
 // fakeEnable is "mcp enable probe": it writes the approved list where
 // FAKE_VENDOR_ENABLE says (the workspace by default, the owner's home or
 // the workspace's parent), does nothing, fails, or leaves a symbolic link.
+//
+// FAKE_VENDOR_ENABLE is a comma-separated list of actions (design
+// decoder-enrollment B1.5 adds the project and data ones): project writes
+// the fixture HOME's .cursor/projects/<slug>/mcp-approvals.json, <slug>
+// being the working directory's path without its leading '/', '/' as '-'
+// and the .work component as work (the 2026-10-08 observation), with
+// FAKE_VENDOR_APPROVALS or the observed entry as content; project-dir
+// creates only that directory; project-other writes the file under
+// another slug; project-extra adds a second file to the project
+// directory; data adds files under HOME's .cursor/chats and
+// .cursor/ai-tracking; ancestor-chats writes the parent's
+// .cursor/chats/note.json; chats-link replaces HOME's .cursor/chats with a
+// symbolic link; workspace-flood writes FAKE_VENDOR_FLOOD_FILES files
+// under the workspace's .cursor.
 func fakeEnable() int {
 	wd, _ := os.Getwd()
+	home := os.Getenv("HOME")
 	write := func(dir string) {
 		os.MkdirAll(filepath.Join(dir, ".cursor"), 0o700)
 		os.WriteFile(filepath.Join(dir, ".cursor", "approved-servers.json"), []byte(`{"approved":["probe"]}`+"\n"), 0o600)
 	}
-	switch fakeEnv("ENABLE") {
-	case "", "workspace":
-		write(wd)
-	case "owner":
-		write(os.Getenv("HOME"))
-	case "ancestor":
-		write(filepath.Dir(wd))
-	case "noop":
-		fmt.Println("probe is already enabled")
-		return 0
-	case "fail":
-		fmt.Fprintln(os.Stderr, "error: cannot enable probe")
-		return 1
-	case "symlink":
-		write(wd)
-		os.Symlink("/", filepath.Join(wd, ".cursor", "link"))
+	slug := strings.ReplaceAll(strings.ReplaceAll(strings.TrimPrefix(wd, "/"), "/.work/", "/work/"), "/", "-")
+	project := func(slug string) string { return filepath.Join(home, ".cursor", "projects", slug) }
+	approvals := fakeEnv("APPROVALS")
+	if approvals == "" {
+		approvals = `["probe-6e58c4b6c129cbd0"]`
 	}
-	fmt.Println("probe enabled")
+	put := func(p, data string) {
+		os.MkdirAll(filepath.Dir(p), 0o700)
+		os.WriteFile(p, []byte(data), 0o600)
+	}
+	actions := strings.Split(fakeEnv("ENABLE"), ",")
+	message := "probe enabled"
+	for _, action := range actions {
+		switch action {
+		case "", "workspace":
+			write(wd)
+		case "owner":
+			write(home)
+		case "ancestor":
+			write(filepath.Dir(wd))
+		case "noop":
+			fmt.Println("probe is already enabled")
+			return 0
+		case "fail":
+			fmt.Fprintln(os.Stderr, "error: cannot enable probe")
+			return 1
+		case "symlink":
+			write(wd)
+			os.Symlink("/", filepath.Join(wd, ".cursor", "link"))
+		case "project":
+			put(filepath.Join(project(slug), "mcp-approvals.json"), approvals)
+			// Like the real CLI's path-bearing output: the slug encodes the
+			// absolute workspace, so evidence must normalize it.
+			message = "probe enabled in project " + slug
+		case "project-dir":
+			os.MkdirAll(project(slug), 0o700)
+		case "project-other":
+			put(filepath.Join(project(slug+"-other"), "mcp-approvals.json"), approvals)
+		case "project-extra":
+			put(filepath.Join(project(slug), "mcp-approvals.json"), approvals)
+			put(filepath.Join(project(slug), "extra.json"), "{}")
+		case "data":
+			put(filepath.Join(home, ".cursor", "chats", "enable-chat.jsonl"), `{"chat":"new"}`+"\n")
+			put(filepath.Join(home, ".cursor", "ai-tracking", "enable.db"), "tracking")
+		case "ancestor-chats":
+			put(filepath.Join(filepath.Dir(wd), ".cursor", "chats", "note.json"), "{}")
+		case "chats-link":
+			os.RemoveAll(filepath.Join(home, ".cursor", "chats"))
+			os.Symlink("/", filepath.Join(home, ".cursor", "chats"))
+		case "workspace-flood":
+			for i := int64(0); i < fakeInt("FLOOD_FILES"); i++ {
+				put(filepath.Join(wd, ".cursor", "flood", fmt.Sprintf("f-%d.json", i)), "{}")
+			}
+		}
+	}
+	fmt.Println(message)
 	return 0
 }
 
