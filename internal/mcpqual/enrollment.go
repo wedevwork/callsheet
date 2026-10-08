@@ -57,6 +57,11 @@ type EnrollmentEntry struct {
 	Bundle         string `json:"bundle"`
 	ManifestSHA256 string `json:"manifest_sha256"`
 	ExpectedSHA256 string `json:"expected_sha256"`
+	// SanitizationSHA256 hashes the bundle's sanitization.json receipt
+	// (design decoder-enrollment B2, FP-18). Absent keeps the unmodified
+	// export contract of a legacy or test entry; an explicit null, an empty
+	// or malformed hash is refused; every enrolled B2 identity requires it.
+	SanitizationSHA256 *string `json:"sanitization_sha256,omitempty"`
 }
 
 // ExpectedOracle is expected.json: manually reviewed normalized events and
@@ -74,7 +79,12 @@ type ExpectedOracle struct {
 	Capabilities        []string           `json:"capabilities"`
 	CaptureState        string             `json:"capture_state"`
 	SourceCaptureSHA256 string             `json:"source_capture_sha256"`
-	Attestation         Attestation        `json:"attestation"`
+	// SanitizationPolicy is the export policy of a sanitized B2 fixture
+	// (design decoder-enrollment B2, FP-18): required and equal to the
+	// receipt's policy exactly when the entry has a sanitization receipt,
+	// absent for a legacy entry, never an explicit null.
+	SanitizationPolicy *string     `json:"sanitization_policy,omitempty"`
+	Attestation        Attestation `json:"attestation"`
 }
 
 // ExpectedClientInfo is the probe-observed initialize clientInfo.
@@ -90,6 +100,33 @@ type Attestation struct {
 	Reviewer  string `json:"reviewer"`
 	Policy    string `json:"policy"`
 	Omissions int    `json:"omissions"`
+}
+
+// The B2 attestation role handles (design decoder-enrollment B2, FP-18):
+// public handles, not personal data. Reviewer means the coordinating
+// agent's independent re-derivation of the package from the raw evidence;
+// Owner means the repository owner's explicit acceptance of that
+// independently verified package, not personal CLI execution or manual
+// validation of every byte. Knowing the strings is no permission to fill
+// them: the oracle's author leaves both empty, and only the verification
+// report and the recorded explicit authorization (outside CI) insert them.
+const (
+	B2OwnerHandle    = "callsheet-owner"
+	B2ReviewerHandle = "decoder-enrollment-coordinator"
+)
+
+// CheckB2Attestation is the structural rule of a sanitized B2 entry's
+// attestation: exactly the two role handles, the capture policy and zero
+// omissions. Empty, whitespace-only, placeholder or synthetic strings
+// (TODO, TBD, pending, <owner>, <reviewer>, example, test substitutes)
+// never satisfy it. Strings are not signatures: their legitimacy is the
+// independent report and the explicit authorization.
+func CheckB2Attestation(a Attestation) error {
+	if a.Owner != B2OwnerHandle || a.Reviewer != B2ReviewerHandle || a.Policy != CaptureRedactionPolicy || a.Omissions != 0 {
+		return fmt.Errorf("a sanitized B2 fixture needs the authorized attestation owner %q and reviewer %q under %s with zero omissions "+
+			"(an empty, pending or placeholder attestation is never valid)", B2OwnerHandle, B2ReviewerHandle, CaptureRedactionPolicy)
+	}
+	return nil
 }
 
 // VersionKey is the lowercase hex SHA-256 of an exact observed version
@@ -126,6 +163,21 @@ func ParseEnrollmentIndex(b []byte) (*EnrollmentIndex, error) {
 	if idx.Schema != EnrollmentSchema || idx.Entries == nil {
 		return nil, fmt.Errorf("enrollment index: schema %q and an entries list are required (want %q)", idx.Schema, EnrollmentSchema)
 	}
+	// The optional receipt hash (design decoder-enrollment B2): absence
+	// only denotes a legacy entry, never an explicit null.
+	var raw struct {
+		Entries []struct {
+			Sanitization json.RawMessage `json:"sanitization_sha256"`
+		} `json:"entries"`
+	}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return nil, fmt.Errorf("enrollment index: %w", err)
+	}
+	for i, e := range raw.Entries {
+		if e.Sanitization != nil && string(bytes.TrimSpace(e.Sanitization)) == "null" {
+			return nil, fmt.Errorf("enrollment index: entries[%d].sanitization_sha256 is an explicit null (only absence denotes a legacy entry)", i)
+		}
+	}
 	bundles := map[string]bool{}
 	for i, e := range idx.Entries {
 		if i > 0 && idx.Entries[i-1].Fixture >= e.Fixture {
@@ -158,6 +210,8 @@ func (e EnrollmentEntry) validate() error {
 		return fmt.Errorf("bundle %q is not under %s", e.Bundle, path.Dir(EnrolledBundlePath(e.Client, e.Version, e.Platform, "x")))
 	case !hex64.MatchString(e.ManifestSHA256) || !hex64.MatchString(e.ExpectedSHA256):
 		return errors.New("manifest_sha256 and expected_sha256 must be SHA-256 hex")
+	case e.SanitizationSHA256 != nil && !hex64.MatchString(*e.SanitizationSHA256):
+		return errors.New("a present sanitization_sha256 must be SHA-256 hex")
 	}
 	return nil
 }
@@ -173,6 +227,15 @@ func ParseExpected(b []byte) (*ExpectedOracle, error) {
 	}
 	if err := requireFields(b, reflect.TypeOf(o), "expected oracle"); err != nil {
 		return nil, err
+	}
+	var raw struct {
+		Policy json.RawMessage `json:"sanitization_policy"`
+	}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return nil, fmt.Errorf("expected oracle: %w", err)
+	}
+	if raw.Policy != nil && (string(bytes.TrimSpace(raw.Policy)) == "null" || o.SanitizationPolicy == nil || *o.SanitizationPolicy == "") {
+		return nil, errors.New("expected oracle: a present sanitization_policy must be a nonempty string (only absence denotes a legacy oracle)")
 	}
 	return &o, nil
 }
@@ -211,7 +274,7 @@ func (o *ExpectedOracle) validate(c *CaptureClient) error {
 		return errors.New("the expected clientInfo is missing or differs from the probe's")
 	case !hex64.MatchString(o.SourceCaptureSHA256):
 		return errors.New("source_capture_sha256 must be SHA-256 hex")
-	case o.Attestation.Owner == "" || o.Attestation.Reviewer == "" || o.Attestation.Policy != CaptureRedactionPolicy || o.Attestation.Omissions != 0:
+	case strings.TrimSpace(o.Attestation.Owner) == "" || strings.TrimSpace(o.Attestation.Reviewer) == "" || o.Attestation.Policy != CaptureRedactionPolicy || o.Attestation.Omissions != 0:
 		return errors.New("the owner and reviewer redaction attestation under " + CaptureRedactionPolicy + " with zero omissions is required")
 	}
 	if ok, _ := RequesterCompatible(o.ClientInfo.Name, o.ClientInfo.Version, replayHostname); ok != o.RequesterCompatible {
@@ -955,6 +1018,11 @@ type EnrollmentOptions struct {
 	// checked-in evidence. CI supplies none.
 	Literals []string
 	Paths    map[string]string
+
+	// policy is the sanitization policy checking receipts (nil: the
+	// production ProductionFixturePolicy); only this package's unit tests
+	// set it, to validate tiny fabricated sanitized bundles.
+	policy *FixturePolicy
 }
 
 // base is the repository tree of opts.
@@ -1027,7 +1095,11 @@ func validateEntry(opts EnrollmentOptions, base tree, red *Redactor, e Enrollmen
 	if sha256Hex(mb) != e.ManifestSHA256 {
 		return nil, errors.New("the manifest's hash differs from the index (forged or altered provenance)")
 	}
-	b, err := validateBundle(bt, e.Bundle, mb, ExpectedName)
+	extra := []string{ExpectedName}
+	if e.SanitizationSHA256 != nil {
+		extra = append(extra, SanitizationName)
+	}
+	b, err := validateBundle(bt, e.Bundle, mb, extra...)
 	if err != nil {
 		return nil, err
 	}
@@ -1059,6 +1131,9 @@ func validateEntry(opts EnrollmentOptions, base tree, red *Redactor, e Enrollmen
 		return nil, fmt.Errorf("expected.json: %w", err)
 	}
 	all := map[string][]byte{CaptureManifestName: b.ManifestBytes, ExpectedName: ob}
+	if err := validateSanitized(opts, bt, e, b, o, all); err != nil {
+		return nil, err
+	}
 	for p, data := range b.Files {
 		all[p] = data
 	}
@@ -1073,6 +1148,53 @@ func validateEntry(opts EnrollmentOptions, base tree, red *Redactor, e Enrollmen
 		}
 	}
 	return o, Replay(opts.Registry, e, b, o)
+}
+
+// validateSanitized applies the B2 provenance rules (design
+// decoder-enrollment B2, FP-18) to entry e: an entry with a receipt has its
+// sanitization.json read through the held bundle root within the index
+// bound, hashing to the index's value, verified against the bundle under
+// the compiled policy (CheckFixtureSanitization), its policy and source
+// hash equal to the oracle's, the authorized B2 attestation, and the
+// receipt added to the fixed-point files (all). An entry without one may
+// not be an enrolled B2 identity and its oracle names no policy. There is
+// no fallback between the two.
+func validateSanitized(opts EnrollmentOptions, bt tree, e EnrollmentEntry, b *CaptureBundle, o *ExpectedOracle, all map[string][]byte) error {
+	if e.SanitizationSHA256 == nil {
+		switch {
+		case isRealVersion(e.Client, e.Version):
+			return fmt.Errorf("the enrolled B2 identity %q requires its %s receipt", e.Version, SanitizationName)
+		case o.SanitizationPolicy != nil:
+			return errors.New("expected.json names a sanitization policy but the entry has no " + SanitizationName)
+		}
+		return nil
+	}
+	pol := opts.policy
+	if pol == nil {
+		pol = ProductionFixturePolicy()
+	}
+	sb, err := bt.read(SanitizationName, maxIndexBytes)
+	if err != nil {
+		return err
+	}
+	if sha256Hex(sb) != *e.SanitizationSHA256 {
+		return errors.New(SanitizationName + "'s hash differs from the index")
+	}
+	san, err := CheckFixtureSanitization(pol, b, sb)
+	if err != nil {
+		return err
+	}
+	switch {
+	case o.SanitizationPolicy == nil || *o.SanitizationPolicy != san.Policy:
+		return fmt.Errorf("expected.json's sanitization_policy is not the receipt's %q", san.Policy)
+	case o.SourceCaptureSHA256 != san.SourceManifestSHA256:
+		return errors.New("expected.json's source_capture_sha256 is not the receipt's source manifest hash")
+	}
+	if err := CheckB2Attestation(o.Attestation); err != nil {
+		return fmt.Errorf("expected.json: %w", err)
+	}
+	all[SanitizationName] = sb
+	return nil
 }
 
 // CheckRegistryEvidence is the registry/index agreement: every qualified

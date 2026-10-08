@@ -1,0 +1,530 @@
+{
+  "schema": "mcpqual-fixture-sanitization-v1",
+  "policy": "decoder-enrollment-b2-metadata-v2",
+  "source_manifest_sha256": "822ab1b93d39d4e6fd16c40c586c876e3d261976093c314e16ac2e1f7cb31f74",
+  "exported_manifest_sha256": "6136a43e48f03b539de75fd5c8e7da97e482352cef19bf31f2a7339b49ac20b0",
+  "files": [
+    {
+      "path": "clients/grok/config.txt",
+      "source_sha256": "941db703aeef85656c5b9bc80a3ee3ec55dd2290337671b6cd813ca72f0c15cb",
+      "exported_sha256": "941db703aeef85656c5b9bc80a3ee3ec55dd2290337671b6cd813ca72f0c15cb"
+    },
+    {
+      "path": "clients/grok/help-stderr.txt",
+      "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "exported_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "clients/grok/help-stdout.txt",
+      "source_sha256": "358103d32a5f7fe2768ecef304adac9ccc2bf785d1748f7cff48e7fef3e5bcb1",
+      "exported_sha256": "358103d32a5f7fe2768ecef304adac9ccc2bf785d1748f7cff48e7fef3e5bcb1"
+    },
+    {
+      "path": "clients/grok/server-events.jsonl",
+      "source_sha256": "3924e6da3f0619b6370f90bfb67be2068063478eeb68f0af6bd114fe898adcc1",
+      "exported_sha256": "3924e6da3f0619b6370f90bfb67be2068063478eeb68f0af6bd114fe898adcc1"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "source_sha256": "afdf17681a91ed3a6bbf92270f2c63f882e63bf82f7d20e39914f98adf9ddfe0",
+      "exported_sha256": "47360d59ced634fcb69694949cb05b577d2e1f0b423260be835b8d68e76b3512"
+    },
+    {
+      "path": "clients/grok/vendor-stderr.txt",
+      "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "exported_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "clients/grok/version-stderr.txt",
+      "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "exported_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "clients/grok/version-stdout.txt",
+      "source_sha256": "3c3f1b3575e3504b73dc29949ae5d436e3751389a2c964eee7aa154a299687fc",
+      "exported_sha256": "3c3f1b3575e3504b73dc29949ae5d436e3751389a2c964eee7aa154a299687fc"
+    },
+    {
+      "path": "plan.json",
+      "source_sha256": "5489525bb92b2b48560a65bc0de62275a646f71d9150b72be178e411d9d8865d",
+      "exported_sha256": "5489525bb92b2b48560a65bc0de62275a646f71d9150b72be178e411d9d8865d"
+    }
+  ],
+  "replacements": [
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 0,
+      "pointer": "/commands",
+      "replacement": []
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 0,
+      "pointer": "/tools",
+      "replacement": []
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 1,
+      "pointer": "/commands",
+      "replacement": []
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 1,
+      "pointer": "/tools",
+      "replacement": []
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 2,
+      "pointer": "/commands",
+      "replacement": []
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 2,
+      "pointer": "/tools",
+      "replacement": []
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 3,
+      "pointer": "/commands",
+      "replacement": []
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 3,
+      "pointer": "/tools",
+      "replacement": []
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 4,
+      "pointer": "/commands",
+      "replacement": []
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 4,
+      "pointer": "/tools",
+      "replacement": []
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 5,
+      "pointer": "/commands",
+      "replacement": []
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 5,
+      "pointer": "/tools",
+      "replacement": []
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 6,
+      "pointer": "/commands",
+      "replacement": []
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 6,
+      "pointer": "/tools",
+      "replacement": []
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 7,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 8,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 9,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 10,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 11,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 12,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 13,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 14,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 15,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 16,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 17,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 18,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 19,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 20,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 21,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 22,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 23,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 24,
+      "pointer": "/commands",
+      "replacement": []
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 24,
+      "pointer": "/tools",
+      "replacement": []
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 25,
+      "pointer": "/signature",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 29,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 30,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 31,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 32,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 33,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 34,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 35,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 36,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 37,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 38,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 39,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 40,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 41,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 42,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 43,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 44,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 45,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 46,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 47,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 48,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 49,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 50,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 51,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 52,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 53,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 54,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 55,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 56,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 57,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 58,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 59,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 60,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 61,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 62,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 63,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 64,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 65,
+      "pointer": "/data",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 66,
+      "pointer": "/commands",
+      "replacement": []
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 66,
+      "pointer": "/tools",
+      "replacement": []
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 67,
+      "pointer": "/signature",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 68,
+      "pointer": "/modelUsage/grok-4.7-build/costUSD",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 68,
+      "pointer": "/requestId",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 68,
+      "pointer": "/sessionId",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 68,
+      "pointer": "/total_cost_usd",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/grok/vendor-events.jsonl",
+      "record": 68,
+      "pointer": "/total_cost_usd_ticks",
+      "replacement": "[fixture metadata]"
+    }
+  ],
+  "protected_sha256": "6e0a73f94cdd9aef5d1ecada7ce19df486c1933c4d48594132c8a5f00eeded13"
+}

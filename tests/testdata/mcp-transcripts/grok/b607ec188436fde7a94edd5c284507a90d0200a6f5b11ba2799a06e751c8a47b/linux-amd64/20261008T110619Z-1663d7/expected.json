@@ -1,0 +1,41 @@
+{
+  "case_id": "grok-capture-setup",
+  "nonce": "246477f501e17c8f2315a6963bf8d8c2",
+  "events": [
+    {
+      "case_id": "grok-capture-setup",
+      "event_kind": "tool_call",
+      "monotonic_offset": 4015440126,
+      "request_id": "call-6837ec13-4a59-44a6-8da7-6d819652d1e9-0"
+    },
+    {
+      "case_id": "grok-capture-setup",
+      "event_kind": "tool_result",
+      "monotonic_offset": 12731687633,
+      "request_id": "call-6837ec13-4a59-44a6-8da7-6d819652d1e9-0",
+      "nonce": "246477f501e17c8f2315a6963bf8d8c2"
+    }
+  ],
+  "terminal": true,
+  "inconclusive": "",
+  "client_info": {
+    "name": "grok-shell-probe",
+    "version": "1.0.46"
+  },
+  "requester_compatible": true,
+  "error_kinds": [],
+  "capabilities": [
+    "tool_call",
+    "tool_result",
+    "terminal_success"
+  ],
+  "capture_state": "complete",
+  "source_capture_sha256": "822ab1b93d39d4e6fd16c40c586c876e3d261976093c314e16ac2e1f7cb31f74",
+  "sanitization_policy": "decoder-enrollment-b2-metadata-v2",
+  "attestation": {
+    "owner": "callsheet-owner",
+    "reviewer": "decoder-enrollment-coordinator",
+    "policy": "mcpqual-capture-v1",
+    "omissions": 0
+  }
+}

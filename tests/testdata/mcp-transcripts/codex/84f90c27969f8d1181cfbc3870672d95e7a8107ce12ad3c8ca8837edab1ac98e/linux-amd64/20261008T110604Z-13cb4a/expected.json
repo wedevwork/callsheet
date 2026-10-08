@@ -1,0 +1,41 @@
+{
+  "case_id": "codex-capture-setup",
+  "nonce": "ba01c3dad606eec0062d873d448a31f2",
+  "events": [
+    {
+      "case_id": "codex-capture-setup",
+      "event_kind": "tool_call",
+      "monotonic_offset": 7461462982,
+      "request_id": "item_3"
+    },
+    {
+      "case_id": "codex-capture-setup",
+      "event_kind": "tool_result",
+      "monotonic_offset": 7462495175,
+      "request_id": "item_3",
+      "nonce": "ba01c3dad606eec0062d873d448a31f2"
+    }
+  ],
+  "terminal": true,
+  "inconclusive": "",
+  "client_info": {
+    "name": "codex-mcp-client",
+    "version": "0.160.0"
+  },
+  "requester_compatible": true,
+  "error_kinds": [],
+  "capabilities": [
+    "tool_call",
+    "tool_result",
+    "terminal_success"
+  ],
+  "capture_state": "complete",
+  "source_capture_sha256": "002287b308e4dcee0b09cc776326386a4210e77d2d9cdecaf9a3bc0c01afc18f",
+  "sanitization_policy": "decoder-enrollment-b2-metadata-v2",
+  "attestation": {
+    "owner": "callsheet-owner",
+    "reviewer": "decoder-enrollment-coordinator",
+    "policy": "mcpqual-capture-v1",
+    "omissions": 0
+  }
+}

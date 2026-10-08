@@ -514,6 +514,16 @@ var nativeRequired = []string{
 	"TestMCPProbeTerminalObservation",
 	"TestMCPCaptureCursorProjectApproval",
 	"TestMCPCaptureCursorInventoryPolicy",
+	// Decoder enrollment slice B2: the five function parents of
+	// FP-17..FP-21 in FP order, a separate group after the B1.5 names; each
+	// asserts its literal local case inventory within the parent (no
+	// inventory entries, no subtest names). Absence or a skip never
+	// satisfies native qualification.
+	"TestMCPRealDecoderMappings",
+	"TestMCPFixtureSanitization",
+	"TestMCPRealEnrollment",
+	"TestMCPCaptureCursorToolPermission",
+	"TestMCPRealEnrollmentConfirmation",
 }
 
 // NativeTaskProcessPackage and nativeTaskProcess are the separate native

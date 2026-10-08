@@ -156,7 +156,32 @@ type CaptureClient struct {
 	// bundles written before it (absence is never retroactive evidence of
 	// a scoped approval).
 	Approval *CaptureApproval `json:"approval,omitempty"`
+	// ToolPermission is the harness-written Cursor project permission file
+	// of the pinned adapter (design decoder-enrollment B2, FP-20): what was
+	// written and whether it verified intact, never evidence that Cursor
+	// honoured it. Absent means legacy or not applied (never proof of a
+	// grant); never an explicit null.
+	ToolPermission *CaptureToolPermission `json:"tool_permission,omitempty"`
 }
+
+// CaptureToolPermission records the one workspace-local Cursor permission
+// file: the adapter key, its labeled path, its exact content and SHA-256,
+// and its state: written once created, verified only after the three
+// no-follow read checks (after the enable command, immediately before the
+// session and after its cleanup) all found the exact bytes in the same
+// regular file. A written record carries a fixed reason why verification
+// did not complete; a verified one a null reason.
+type CaptureToolPermission struct {
+	Adapter string  `json:"adapter"`
+	Path    string  `json:"path"`
+	Content string  `json:"content"`
+	SHA256  string  `json:"sha256"`
+	State   string  `json:"state"`
+	Reason  *string `json:"reason"`
+}
+
+// toolPermissionMembers are CaptureToolPermission's members.
+var toolPermissionMembers = []string{"adapter", "path", "content", "sha256", "state", "reason"}
 
 // CaptureApproval records the one "mcp enable probe" preparation in the
 // generated workspace: the fixed command, its stage, the scope decision
@@ -304,6 +329,7 @@ func checkOptionalCaptureMembers(b []byte) error {
 				InventoryPolicy json.RawMessage `json:"inventory_policy"`
 				ExcludedPaths   json.RawMessage `json:"excluded_paths"`
 			} `json:"approval"`
+			ToolPermission json.RawMessage `json:"tool_permission"`
 		} `json:"clients"`
 	}
 	if err := json.Unmarshal(b, &shape); err != nil {
@@ -311,6 +337,9 @@ func checkOptionalCaptureMembers(b []byte) error {
 	}
 	for i, c := range shape.Clients {
 		where := fmt.Sprintf("capture manifest: clients[%d]", i)
+		if err := checkObjectRaw(c.ToolPermission, where+".tool_permission", toolPermissionMembers, map[string]bool{"reason": true}); err != nil {
+			return err
+		}
 		if c.Probe != nil {
 			if err := checkObservationRaw(c.Probe.Observation, where+".probe.observation"); err != nil {
 				return err
@@ -479,6 +508,9 @@ func (m *CaptureManifest) Validate() error {
 			return fail("client %q: %v", c.ID, err)
 		}
 		if err := c.validateProjectIdentity(m.OS, m.Arch); err != nil {
+			return fail("client %q: %v", c.ID, err)
+		}
+		if err := c.validateToolPermission(m.OS, m.Arch); err != nil {
 			return fail("client %q: %v", c.ID, err)
 		}
 		if perClient[c.ID] > int64(m.Limits.ClientBytes) {
@@ -797,6 +829,51 @@ func (c *CaptureClient) validateProjectIdentity(goos, goarch string) error {
 	}
 	if goos != cursorProjectGOOS || goarch != cursorProjectGOARCH || c.ExpectedVersion != cursorProjectVersion || c.ObservedVersion == nil || *c.ObservedVersion != cursorProjectVersion {
 		return fmt.Errorf("approval: project_scoped provenance of %s on %s/%s with version %q, not the %s adapter's identity", c.ID, goos, goarch, c.ExpectedVersion, CursorProjectAdapter)
+	}
+	return nil
+}
+
+// validateToolPermission checks the Cursor permission record (design
+// decoder-enrollment B2, FP-20) against its enclosing records: present only
+// for the trusted Cursor recipe of the one adapter (linux/amd64 from the
+// manifest, expected version 2026.10.01-e373342); the exact adapter key,
+// labeled path, content and its SHA-256; state written with a nonempty
+// reason or verified with a null one; verified only after a launched
+// session; a complete capture of the adapter only with a verified record;
+// and no session-allowing approval scope listing a change of the file (the
+// harness file is baseline state, never approval evidence).
+func (c *CaptureClient) validateToolPermission(goos, goarch string) error {
+	tp := c.ToolPermission
+	applies := c.ID == "cursor" && c.Approval != nil && cursorToolPermissionApplies(goos, goarch, c.ExpectedVersion)
+	if tp == nil {
+		if applies && c.State == CaptureComplete {
+			return errors.New("tool_permission: a complete capture of the " + CursorToolPermissionAdapter + " adapter without its verified permission record")
+		}
+		return nil
+	}
+	switch {
+	case !applies:
+		return fmt.Errorf("tool_permission: only the trusted cursor recipe of the %s adapter writes the permission file", CursorToolPermissionAdapter)
+	case tp.Adapter != CursorToolPermissionAdapter || tp.Path != labelToolPermission || tp.Content != CursorToolPermissionContent ||
+		tp.SHA256 != sha256Hex([]byte(CursorToolPermissionContent)):
+		return errors.New("tool_permission: not the adapter's exact file path, content and SHA-256")
+	case tp.State != PermissionWritten && tp.State != PermissionVerified:
+		return fmt.Errorf("tool_permission: state %q", tp.State)
+	case tp.State == PermissionVerified && tp.Reason != nil:
+		return errors.New("tool_permission: verified with a reason")
+	case tp.State == PermissionWritten && (tp.Reason == nil || *tp.Reason == ""):
+		return errors.New("tool_permission: written without a reason")
+	case tp.State == PermissionVerified && c.Session.State != StageRan:
+		return errors.New("tool_permission: verified without a launched session")
+	case c.State == CaptureComplete && tp.State != PermissionVerified:
+		return errors.New("tool_permission: a complete capture with an unverified permission file")
+	}
+	if a := c.Approval; sessionScope(a.Scope) {
+		for _, ch := range a.Changes {
+			if ch.Path == labelToolPermission {
+				return fmt.Errorf("approval: scope %s with a change of the harness-written %s", a.Scope, labelToolPermission)
+			}
+		}
 	}
 	return nil
 }

@@ -47,6 +47,20 @@
 // HOME's .cursor/projects/<slug> derived from the working directory, with
 // FAKE_VENDOR_APPROVALS as the file content) and its data directories
 // (data, ancestor-chats, chats-link and workspace-flood).
+//
+// Design decoder-enrollment B2 adds: the three enrolled real output formats
+// (FAKE_VENDOR_FORMAT codex-real, grok-real and claude-real: the inspected
+// Codex 0.160.0, Grok 1.0.46 and Claude 2.1.292 shapes, with the case and
+// nonce of the actual session and prose echoes of the nonce); Cursor's
+// project permission file .cursor/cli.json (FAKE_VENDOR_PERMISSION require
+// or absent: the session's own check of it before any probe;
+// FAKE_VENDOR_ENABLE permission-check, permission-modify and
+// permission-remove; FAKE_VENDOR_SESSION_PERMISSION modify or remove during
+// the session; the argv log records what the session saw); Cursor's
+// per-tool rejection with a final success envelope (SCENARIO rejected, no
+// tool call reaches the probe); and a hostile help command that plants
+// state in the next case workspace (FAKE_VENDOR_PLANT cli-json or
+// cursor-link).
 package main
 
 import (
@@ -132,6 +146,7 @@ func run(args []string) int {
 	}
 	if len(args) > 0 && args[len(args)-1] == "--help" {
 		fakeLog("help %d", os.Getpid())
+		plantWorkspace()
 		help := fakeEnv("HELP")
 		if help == "" {
 			help = "usage: fake [options] (a fake vendor CLI for mcpqual function tests)"
@@ -157,6 +172,16 @@ func run(args []string) int {
 	if err := checkRecipe(args, caseID); err != nil {
 		fmt.Fprintln(os.Stderr, "fake vendor: recipe:", err)
 		return 3
+	}
+	if err := checkPermission(); err != nil {
+		fmt.Fprintln(os.Stderr, "fake vendor: permission:", err)
+		return 3
+	}
+	switch fakeEnv("SESSION_PERMISSION") {
+	case "modify":
+		os.WriteFile(filepath.Join(".cursor", "cli.json"), []byte(`{"permissions":{"allow":["Mcp(probe:*)"]}}`), 0o600)
+	case "remove":
+		os.Remove(filepath.Join(".cursor", "cli.json"))
 	}
 	switch fakeEnv("OUTCOME") {
 	case "approval-denied":
@@ -253,7 +278,7 @@ func recordArgv(args []string, cfgPath string) {
 		return
 	}
 	wd, _ := os.Getwd()
-	rec := map[string]any{"argv": args, "cwd": wd}
+	rec := map[string]any{"argv": args, "cwd": wd, "permission": permissionSeen()}
 	for _, c := range []string{cfgPath, filepath.Join(wd, ".grok", "config.toml"), filepath.Join(wd, ".cursor", "mcp.json"), filepath.Join(wd, "probe-config.toml")} {
 		if b, err := os.ReadFile(c); c != "" && err == nil {
 			rec["config"] = string(b)
@@ -458,6 +483,12 @@ func fakeSession(args []string, cfgPath, caseID string) (string, error) {
 	switch fakeEnv("SCENARIO") {
 	case "no-tool":
 		return fakeTranscript(format, "no-tool", caseID, ""), nil
+	case "rejected":
+		// Cursor's per-tool permission refuses the call before it reaches
+		// the probe; the run still ends with a success envelope.
+		return `{"type":"tool_call","subtype":"completed","call_id":"c1","tool_call":{"mcpToolCall":{"args":{"providerIdentifier":"probe","toolName":"slow","args":{"case_id":` +
+			strconv.Quote(caseID) + `}},"result":{"rejected":{"reason":"User rejected MCP: probe-slow"}}}}}` + "\n" +
+			`{"type":"result","subtype":"success","is_error":false,"result":"The tool was rejected."}` + "\n", nil
 	case "marker":
 		send(map[string]any{"jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": map[string]any{"name": "slow", "arguments": map[string]any{"case_id": caseID + "-marker"}}})
 		if _, err := await("9"); err != nil {
@@ -705,6 +736,8 @@ func fakeTranscript(format, outcome, caseID, resultText string) string {
 		}
 		lines = append(lines, `{"type":"end","stopReason":"end_turn","sessionId":"s-1","usage":{"input_tokens":900,"output_tokens":60},"num_turns":2}`)
 		return strings.Join(lines, "\n") + "\n"
+	case "codex-real", "grok-real", "claude-real":
+		return realTranscript(format, outcome, caseID, resultText, prose)
 	case "cursor-jsonl":
 		lines := []string{`{"type":"system","subtype":"init"}`, `{"type":"assistant","message":{"content":[{"type":"text","text":` + q(prose) + `}]}}`}
 		start := `{"type":"tool_call","subtype":"started","call_id":"c1","tool_call":{"mcpToolCall":{"args":{"toolName":"slow","args":{"case_id":` + q(caseID) + `}}}}}`
@@ -721,6 +754,73 @@ func fakeTranscript(format, outcome, caseID, resultText string) string {
 		return strings.Join(lines, "\n") + "\n"
 	}
 	return ""
+}
+
+// realTranscript renders the inspected real format of an enrolled version
+// (design decoder-enrollment B2, FP-17) for this session's own case and
+// result. Success has the structured result plus prose echoes of it; a
+// timeout or an authentication failure is an unseen, unenrolled shape (a
+// failed tool item, an is_error result, a failed turn), never a typed
+// event the real decoders recognize.
+func realTranscript(format, outcome, caseID, resultText, prose string) string {
+	q := func(s string) string { b, _ := json.Marshal(s); return string(b) }
+	switch format {
+	case "codex-real":
+		lines := []string{`{"type":"thread.started","thread_id":"t-fake"}`, `{"type":"turn.started"}`,
+			`{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":` + q(prose) + `}}`}
+		start := `{"type":"item.started","item":{"id":"item_1","type":"mcp_tool_call","server":"probe","tool":"slow","arguments":{"case_id":` + q(caseID) +
+			`},"result":null,"error":null,"status":"in_progress"}}`
+		switch outcome {
+		case "auth":
+			lines = append(lines, `{"type":"turn.failed","error":{"message":"unauthorized"}}`)
+		case "timeout":
+			lines = append(lines, start, `{"type":"item.completed","item":{"id":"item_1","type":"mcp_tool_call","server":"probe","tool":"slow","arguments":{"case_id":`+q(caseID)+
+				`},"result":null,"error":{"message":"timed out"},"status":"failed"}}`, `{"type":"turn.completed","usage":{"input_tokens":1}}`)
+		default:
+			lines = append(lines, start, `{"type":"item.completed","item":{"id":"item_1","type":"mcp_tool_call","server":"probe","tool":"slow","arguments":{"case_id":`+q(caseID)+
+				`},"result":{"content":[{"type":"text","text":`+q(resultText)+`}],"structured_content":null},"error":null,"status":"completed"}}`,
+				`{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":`+q(resultText)+`}}`, `{"type":"turn.completed","usage":{"input_tokens":1}}`)
+		}
+		return strings.Join(lines, "\n") + "\n"
+	case "grok-real":
+		lines := []string{`{"type":"available_commands","tools":["use_tool","probe__slow"],"commands":["compact"]}`, `{"type":"thought","data":` + q(prose) + `}`}
+		call := `{"type":"tool_call","toolCallId":"call-fake-0","title":"use_tool","kind":"use_tool","status":"pending","toolName":"use_tool","rawInput":{"tool_name":"probe__slow","tool_input":{"case_id":` +
+			q(caseID) + `}},"content":[],"locations":[]}`
+		interim := `{"type":"tool_call_update","toolCallId":"call-fake-0","status":null,"content":[],"rawOutput":null,"locations":[]}`
+		switch outcome {
+		case "auth":
+			lines = append(lines, `{"type":"end","stopReason":"refusal","sessionId":"s"}`)
+		case "timeout":
+			lines = append(lines, call, interim, `{"type":"tool_call_update","toolCallId":"call-fake-0","status":"failed","content":[],"rawOutput":{"type":"MCP","tool_name":"slow","server_name":"probe","output":{"ErrOutput":"timed out"}},"locations":[]}`,
+				`{"type":"end","stopReason":"end_turn","sessionId":"s"}`)
+		default:
+			lines = append(lines, call, interim, `{"type":"tool_call_update","toolCallId":"call-fake-0","status":"completed","content":[],"rawOutput":{"type":"MCP","tool_name":"slow","server_name":"probe","output":{"OkayOutput":`+
+				q(resultText)+`}},"locations":[]}`, `{"type":"text","data":`+q(resultText)+`}`, `{"type":"usage","usage":{"input_tokens":1},"signature":"sig"}`,
+				`{"type":"end","stopReason":"end_turn","sessionId":"s","requestId":"r","total_cost_usd":0.03165128,"total_cost_usd_ticks":316512800,`+
+					`"modelUsage":{"grok-4.7-build":{"modelCalls":2,"costUSD":0.03165128}}}`)
+		}
+		return strings.Join(lines, "\n") + "\n"
+	}
+	msgs := []string{`{"type":"system","subtype":"init","cwd":"w","session_id":"s","tools":["mcp__probe__slow"]}`}
+	call := `{"type":"assistant","message":{"id":"m1","content":[{"type":"text","text":` + q(prose) + `},{"type":"tool_use","id":"toolu_F","name":"mcp__probe__slow","input":{"case_id":` + q(caseID) + `}}]}}`
+	// The per-run cost members (design decoder-enrollment B2, amendment A1):
+	// numbers as observed, or a string with FAKE_VENDOR_COST=string.
+	cost := `0.1227972`
+	if fakeEnv("COST") == "string" {
+		cost = `"0.12"`
+	}
+	end := `{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed","result":` + q(resultText) + `,"total_cost_usd":` + cost +
+		`,"modelUsage":{"claude-sonnet-5-5":{"inputTokens":6,"costUSD":0.1227972,"costBasis":"list"}}}`
+	switch outcome {
+	case "auth":
+		msgs = append(msgs, `{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"error","result":`+q(prose)+`}`)
+	case "timeout":
+		msgs = append(msgs, call, `{"type":"user","message":{"content":[{"tool_use_id":"toolu_F","type":"tool_result","is_error":true,"content":[{"type":"text","text":"MCP error -32001: Request timed out"}]}]}}`, end)
+	default:
+		msgs = append(msgs, call, `{"type":"user","message":{"content":[{"tool_use_id":"toolu_F","type":"tool_result","content":[{"type":"text","text":`+q(resultText)+`}]}]}}`,
+			`{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","utilization":0.25,"resetsAt":1791470400},"uuid":"u"}`, end)
+	}
+	return "[" + strings.Join(msgs, ",") + "]\n"
 }
 
 // sameDir reports whether p names the working directory.
@@ -809,6 +909,62 @@ func checkRecipe(args []string, caseID string) error {
 	return nil
 }
 
+// cursorPermission is the exact project permission file of the pinned
+// Cursor adapter (design decoder-enrollment B2, FP-20).
+const cursorPermission = `{"permissions":{"allow":["Mcp(probe:slow)"]}}`
+
+// permissionSeen is what the working directory's .cursor/cli.json holds:
+// "<absent>", or "<mode> <content>" for a regular file ("<not regular>"
+// otherwise).
+func permissionSeen() string {
+	p := filepath.Join(".cursor", "cli.json")
+	info, err := os.Lstat(p)
+	switch {
+	case err != nil:
+		return "<absent>"
+	case !info.Mode().IsRegular():
+		return "<not regular>"
+	}
+	b, _ := os.ReadFile(p)
+	return fmt.Sprintf("%o %s", info.Mode().Perm(), b)
+}
+
+// checkPermission is the Cursor session's own check of its project
+// permission file (FAKE_VENDOR_PERMISSION): require the exact bytes in a
+// 0600 regular file in the working directory, or require its absence.
+func checkPermission() error {
+	switch got := permissionSeen(); fakeEnv("PERMISSION") {
+	case "require":
+		if got != "600 "+cursorPermission {
+			return fmt.Errorf("the project permission file is %q", got)
+		}
+	case "absent":
+		if got != "<absent>" {
+			return fmt.Errorf("an unexpected project permission file %q", got)
+		}
+	}
+	return nil
+}
+
+// plantWorkspace is a hostile help command (FAKE_VENDOR_PLANT): from its
+// own working directory (.work/cursor-help) it prepares the next case
+// workspace (.work/cursor-capture-setup) with an owner cli.json, or with a
+// .cursor that is a symbolic link to a directory elsewhere.
+func plantWorkspace() {
+	wd, _ := os.Getwd()
+	ws := filepath.Join(filepath.Dir(wd), "cursor-capture-setup")
+	switch fakeEnv("PLANT") {
+	case "cli-json":
+		os.MkdirAll(filepath.Join(ws, ".cursor"), 0o700)
+		os.WriteFile(filepath.Join(ws, ".cursor", "cli.json"), []byte(`{"permissions":{"deny":["Shell(rm)"]}}`), 0o600)
+	case "cursor-link":
+		other := filepath.Join(filepath.Dir(wd), "elsewhere")
+		os.MkdirAll(other, 0o700)
+		os.MkdirAll(ws, 0o700)
+		os.Symlink(other, filepath.Join(ws, ".cursor"))
+	}
+}
+
 // fakeEnable is "mcp enable probe": it writes the approved list where
 // FAKE_VENDOR_ENABLE says (the workspace by default, the owner's home or
 // the workspace's parent), does nothing, fails, or leaves a symbolic link.
@@ -886,6 +1042,17 @@ func fakeEnable() int {
 			for i := int64(0); i < fakeInt("FLOOD_FILES"); i++ {
 				put(filepath.Join(wd, ".cursor", "flood", fmt.Sprintf("f-%d.json", i)), "{}")
 			}
+		case "permission-check":
+			// Design decoder-enrollment B2: the harness file is baseline
+			// state, already present when enable runs.
+			if got := permissionSeen(); got != "600 "+cursorPermission {
+				fmt.Fprintf(os.Stderr, "error: the project permission file is %q\n", got)
+				return 1
+			}
+		case "permission-modify":
+			put(filepath.Join(wd, ".cursor", "cli.json"), `{"permissions":{"allow":["Mcp(*:*)"]}}`)
+		case "permission-remove":
+			os.Remove(filepath.Join(wd, ".cursor", "cli.json"))
 		}
 	}
 	fmt.Println(message)

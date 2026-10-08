@@ -290,6 +290,11 @@ var speedB1Native = []string{"TestMCPCaptureProtocolNegotiation", "TestMCPCaptur
 // parents in FP order (FP-14..FP-16), after the B1 names.
 var speedB15Native = []string{"TestMCPProbeTerminalObservation", "TestMCPCaptureCursorProjectApproval", "TestMCPCaptureCursorInventoryPolicy"}
 
+// speedB2Native are decoder-enrollment slice B2's five function parents in
+// FP order (FP-17..FP-21), after the B1.5 names.
+var speedB2Native = []string{"TestMCPRealDecoderMappings", "TestMCPFixtureSanitization", "TestMCPRealEnrollment", "TestMCPCaptureCursorToolPermission",
+	"TestMCPRealEnrollmentConfirmation"}
+
 // taskProcessEvents is a passing sidecar-package stream for the tuple
 // except drop.
 func taskProcessEvents(drop string) []map[string]any {
@@ -780,7 +785,7 @@ func TestCISpeedJobs(t *testing.T) {
 func qualifyingStream(drop string) string {
 	pkg := devcheck.NativePackage
 	evs := []map[string]any{synth("start", pkg, "")}
-	for _, name := range append(append(append(append(append(append(append(append(append(append(append(append(append(append(append(append(append(slices.Clone(speedNative), speedNodeNative...), speedRoleNative...), speedTaskNative...), speedControlNative...), speedMCPNative...), speedQualNative...), speedRealNative...), speedWorkspaceNative...), speedTransferNative...), speedLatencyNative...), speedWorkspaceTaskNative...), speedWorkspaceDoorNative...), speedWave2Native...), speedNBWNative...), speedDCENative...), speedB1Native...), speedB15Native...) {
+	for _, name := range append(append(append(append(append(append(append(append(append(append(append(append(append(append(append(append(append(append(slices.Clone(speedNative), speedNodeNative...), speedRoleNative...), speedTaskNative...), speedControlNative...), speedMCPNative...), speedQualNative...), speedRealNative...), speedWorkspaceNative...), speedTransferNative...), speedLatencyNative...), speedWorkspaceTaskNative...), speedWorkspaceDoorNative...), speedWave2Native...), speedNBWNative...), speedDCENative...), speedB1Native...), speedB15Native...), speedB2Native...) {
 		if name != drop {
 			evs = append(evs, synth("run", pkg, name), synth("pass", pkg, name))
 		}
@@ -792,7 +797,7 @@ func qualifyingStream(drop string) string {
 // FP-3: validator, plans, native evidence and documentation agree.
 func TestCISpeedPolicy(t *testing.T) {
 	t.Run("native", func(t *testing.T) {
-		if got := devcheck.NativeRequiredTests(); len(got) != 419 || len(speedQualNative) != 51 || len(speedRealNative) != 39 || len(speedWave2Native) != 42 ||
+		if got := devcheck.NativeRequiredTests(); len(got) != 424 || len(speedQualNative) != 51 || len(speedRealNative) != 39 || len(speedWave2Native) != 42 || !slices.Equal(got[419:424], speedB2Native) ||
 			!slices.Equal(got[353:395], speedWave2Native) || !slices.Equal(got[395:403], speedNBWNative) || !slices.Equal(got[403:412], speedDCENative) || !slices.Equal(got[412:416], speedB1Native) ||
 			!slices.Equal(got[416:419], speedB15Native) || !slices.Equal(got[:28], speedNative) || !slices.Equal(got[28:58], speedNodeNative) || !slices.Equal(got[58:87], speedRoleNative) || !slices.Equal(got[87:128], speedTaskNative) ||
 			!slices.Equal(got[128:145], speedControlNative) || !slices.Equal(got[145:222], speedMCPNative) || !slices.Equal(got[222:273], speedQualNative) || !slices.Equal(got[273:312], speedRealNative) ||

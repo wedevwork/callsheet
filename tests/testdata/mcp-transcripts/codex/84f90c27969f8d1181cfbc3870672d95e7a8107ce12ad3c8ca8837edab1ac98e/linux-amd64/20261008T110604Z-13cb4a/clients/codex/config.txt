@@ -1,0 +1,6 @@
+[mcp_servers.probe]
+command = "<server>"
+args = ["serve", "--case-file", "<workspace>/case.json", "--events", "<workspace>/server-events.jsonl"]
+enabled_tools = ["slow"]
+[mcp_servers.probe.tools.slow]
+approval_mode = "approve"

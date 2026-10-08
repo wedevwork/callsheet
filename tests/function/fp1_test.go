@@ -129,10 +129,13 @@ func TestFP1Foundation(t *testing.T) {
 		// is the one production exception. The iteration 07b qualification
 		// harness (internal/mcpqual and its developer command cmd/mcpqual)
 		// is developer tooling that reuses the spike's escalation and the
-		// catalog validator; no production package may import it.
+		// catalog validator; no production package may import it. Design
+		// decoder-enrollment B2 (FP-18) adds the harness's thin maintainer
+		// command cmd/mcpfixture-export, equally developer tooling (never
+		// shipped, never run in CI).
 		allowed := func(p string) bool {
 			for _, pre := range []string{module + "/internal/testkit", module + "/internal/spikes", module + "/internal/devcheck", module + "/cmd/fake-adapter", module + "/cmd/devcheck",
-				module + "/internal/mcpqual", module + "/cmd/mcpqual", module + "/tests/"} {
+				module + "/internal/mcpqual", module + "/cmd/mcpqual", module + "/cmd/mcpfixture-export", module + "/tests/"} {
 				if strings.HasPrefix(p, pre) {
 					return true
 				}

@@ -1,0 +1,246 @@
+{
+  "schema": "mcpqual-capture-v1",
+  "run_id": "20261008T110604Z-13cb4a",
+  "captured_at": "2026-10-08T11:06:04Z",
+  "harness_version": "07b.1",
+  "os": "linux",
+  "arch": "amd64",
+  "plan_sha256": "b3d2ccbf9276178e40d0adb83552d532df13a023767b1829cf64f41f9ec00e9f",
+  "limits": {
+    "clients": 1,
+    "sessions_per_client": 1,
+    "session_ms": 120000,
+    "client_ms": 180000,
+    "metadata_ms": 30000,
+    "stream_bytes": 8388608,
+    "server_events_bytes": 8388608,
+    "file_bytes": 8388608,
+    "client_bytes": 67108864,
+    "bundle_bytes": 268435456,
+    "manifest_bytes": 8388608
+  },
+  "redaction_policy": "mcpqual-capture-v1",
+  "state": "complete",
+  "reason": null,
+  "vendor_behavior": "not_evaluated",
+  "plan": {
+    "path": "plan.json",
+    "omitted_lines": 0,
+    "input_truncated": false,
+    "output_truncated": false
+  },
+  "cleanup": {
+    "ok": true,
+    "failures": []
+  },
+  "clients": [
+    {
+      "id": "codex",
+      "expected_version": "codex-cli 0.160.0",
+      "observed_version": "codex-cli 0.160.0",
+      "observed_version_reason": null,
+      "executable_sha256": "12eb3e81114588aca3b7998f4f19e8997b056aca08e57a7ca7c8a3ec8c652aad",
+      "executable_sha256_reason": null,
+      "decoder": "codex-jsonl",
+      "decoder_fixture": "codex-jsonl/synthetic",
+      "decoder_validated": false,
+      "model": "gpt-6.1-sol",
+      "effort": null,
+      "effort_reason": "the plan names no effort",
+      "argv": [
+        "exec",
+        "--json",
+        "--skip-git-repo-check",
+        "-C",
+        "<workspace>",
+        "-m",
+        "gpt-6.1-sol",
+        "-c",
+        "mcp_servers.probe.command=\"<server>\"",
+        "-c",
+        "mcp_servers.probe.args=[\"serve\",\"--case-file\",\"<workspace>/case.json\",\"--events\",\"<workspace>/server-events.jsonl\"]",
+        "-c",
+        "mcp_servers.probe.enabled_tools=[\"slow\"]",
+        "-c",
+        "mcp_servers.probe.tools.slow.approval_mode=\"approve\"",
+        "Call the MCP tool slow exactly once with arguments {\"case_id\": \"codex-capture-setup\"}. Do not call any other tool. Report the tool's result or error verbatim, then stop."
+      ],
+      "config": {
+        "path": "probe-config.toml",
+        "prerequisite": "Invocation-only approval for probe.slow; no server-wide approval or timeout override.",
+        "timeout_override": "none"
+      },
+      "case_id": "codex-capture-setup",
+      "nonce": "ba01c3dad606eec0062d873d448a31f2",
+      "version": {
+        "state": "ran",
+        "reason": null,
+        "watchdog_ms": 30000,
+        "exit": 0,
+        "signal": null,
+        "watchdog": false,
+        "interrupted": false,
+        "stdout_held": false,
+        "stderr_held": false,
+        "cleanup": {
+          "term_sent": false,
+          "kill_sent": false,
+          "leader_exited_first": false,
+          "group_gone": true,
+          "error": null
+        }
+      },
+      "help": {
+        "state": "ran",
+        "reason": null,
+        "watchdog_ms": 30000,
+        "exit": 0,
+        "signal": null,
+        "watchdog": false,
+        "interrupted": false,
+        "stdout_held": false,
+        "stderr_held": false,
+        "cleanup": {
+          "term_sent": false,
+          "kill_sent": false,
+          "leader_exited_first": false,
+          "group_gone": true,
+          "error": null
+        }
+      },
+      "session": {
+        "state": "ran",
+        "reason": null,
+        "watchdog_ms": 120000,
+        "exit": 0,
+        "signal": null,
+        "watchdog": false,
+        "interrupted": false,
+        "stdout_held": false,
+        "stderr_held": false,
+        "cleanup": {
+          "term_sent": false,
+          "kill_sent": false,
+          "leader_exited_first": false,
+          "group_gone": true,
+          "error": null
+        }
+      },
+      "probe": {
+        "intact": false,
+        "initialized": true,
+        "client_name": "codex-mcp-client",
+        "client_version": "0.160.0",
+        "receipts": 1,
+        "completed": true,
+        "anomalies": [],
+        "observation": {
+          "end_state": "terminal_observed_without_exit",
+          "intact": false,
+          "terminal_kind": "completed",
+          "clean_session": true
+        }
+      },
+      "probe_reason": null,
+      "streams": [
+        {
+          "path": "clients/codex/version-stdout.txt",
+          "omitted_lines": 0,
+          "input_truncated": false,
+          "output_truncated": false
+        },
+        {
+          "path": "clients/codex/version-stderr.txt",
+          "omitted_lines": 0,
+          "input_truncated": false,
+          "output_truncated": false
+        },
+        {
+          "path": "clients/codex/help-stdout.txt",
+          "omitted_lines": 0,
+          "input_truncated": false,
+          "output_truncated": false
+        },
+        {
+          "path": "clients/codex/help-stderr.txt",
+          "omitted_lines": 0,
+          "input_truncated": false,
+          "output_truncated": false
+        },
+        {
+          "path": "clients/codex/config.txt",
+          "omitted_lines": 0,
+          "input_truncated": false,
+          "output_truncated": false
+        },
+        {
+          "path": "clients/codex/vendor-events.jsonl",
+          "omitted_lines": 0,
+          "input_truncated": false,
+          "output_truncated": false
+        },
+        {
+          "path": "clients/codex/vendor-stderr.txt",
+          "omitted_lines": 0,
+          "input_truncated": false,
+          "output_truncated": false
+        },
+        {
+          "path": "clients/codex/server-events.jsonl",
+          "omitted_lines": 0,
+          "input_truncated": false,
+          "output_truncated": false
+        }
+      ],
+      "state": "complete",
+      "reason": null
+    }
+  ],
+  "files": [
+    {
+      "path": "clients/codex/config.txt",
+      "sha256": "0c7275df8148c4a40f7d60807e4f444f76c29262a326e62e7085f268da9a3c14",
+      "bytes": 227
+    },
+    {
+      "path": "clients/codex/help-stderr.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "clients/codex/help-stdout.txt",
+      "sha256": "bbc4efc9df0efcb411eb08efdf8cf47688ff5b61ede463cd45d88384e206972b",
+      "bytes": 4035
+    },
+    {
+      "path": "clients/codex/server-events.jsonl",
+      "sha256": "cd2dd8da39d92c20327dfa9c5ccc28e973209fc7ae94a2fc4dde03bd382c3033",
+      "bytes": 734
+    },
+    {
+      "path": "clients/codex/vendor-events.jsonl",
+      "sha256": "b84888126ee7c64927630a1e3f0dbaa1ccaea31b2e96a23a8ed93cc698ee861f",
+      "bytes": 1682
+    },
+    {
+      "path": "clients/codex/vendor-stderr.txt",
+      "sha256": "1aa26269eb1cc57f86b235a03cda53c004edb5b1e9fc99d4da4f00843293d721",
+      "bytes": 39
+    },
+    {
+      "path": "clients/codex/version-stderr.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "clients/codex/version-stdout.txt",
+      "sha256": "f6464b8cc67af75deb2589fe1dbcde152fc15ffb76a91de1cf0686b4623afb1e",
+      "bytes": 18
+    },
+    {
+      "path": "plan.json",
+      "sha256": "b3d2ccbf9276178e40d0adb83552d532df13a023767b1829cf64f41f9ec00e9f",
+      "bytes": 1255
+    }
+  ]
+}
