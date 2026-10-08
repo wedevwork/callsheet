@@ -276,15 +276,21 @@ func TestMCPCaptureRecipes(t *testing.T) {
 			return []string{"-p", mcpqual.Prompt("claude-capture-setup"), "--output-format", "json", "--verbose", "--model", m, "--mcp-config", ws + "/probe-mcp.json",
 				"--strict-mcp-config", "--allowed-tools", "mcp__probe__slow"}
 		}, "probe-mcp.json", jsonCfg},
+		// Design decoder-enrollment B1: Codex's invocation-only probe.slow
+		// approval, Grok's trusted project recipe and Cursor's trusted
+		// workspace.
 		"codex": {[]string{"exec", "--help"}, func(ws, srv string) []string {
 			return []string{"exec", "--json", "--skip-git-repo-check", "-C", ws, "-m", m, "-c", `mcp_servers.probe.command="` + srv + `"`, "-c",
-				`mcp_servers.probe.args=["serve","--case-file","` + ws + `/case.json","--events","` + ws + `/server-events.jsonl"]`, mcpqual.Prompt("codex-capture-setup")}
-		}, "probe-config.toml", tomlCfg},
+				`mcp_servers.probe.args=["serve","--case-file","` + ws + `/case.json","--events","` + ws + `/server-events.jsonl"]`,
+				"-c", `mcp_servers.probe.enabled_tools=["slow"]`, "-c", `mcp_servers.probe.tools.slow.approval_mode="approve"`, mcpqual.Prompt("codex-capture-setup")}
+		}, "probe-config.toml", func(ws, srv string) string {
+			return tomlCfg(ws, srv) + "enabled_tools = [\"slow\"]\n[mcp_servers.probe.tools.slow]\napproval_mode = \"approve\"\n"
+		}},
 		"grok": {[]string{"--help"}, func(ws, srv string) []string {
-			return []string{"-p", mcpqual.Prompt("grok-capture-setup"), "--output-format", "json", "-m", m}
+			return []string{"--trust", "-p", mcpqual.PromptForClient("grok", "grok-capture-setup"), "--output-format", "streaming-json", "--cwd", ws, "-m", m}
 		}, ".grok/config.toml", tomlCfg},
 		"cursor": {[]string{"--help"}, func(ws, srv string) []string {
-			return []string{"-p", mcpqual.Prompt("cursor-capture-setup"), "--output-format", "stream-json", "--model", m}
+			return []string{"-p", mcpqual.Prompt("cursor-capture-setup"), "--output-format", "stream-json", "--model", m, "--workspace", ws, "--trust"}
 		}, ".cursor/mcp.json", jsonCfg},
 	}
 	serverRe := regexp.MustCompile(`"command":"([^"]+)"|command = "([^"]+)"`)
@@ -319,6 +325,12 @@ func TestMCPCaptureRecipes(t *testing.T) {
 			c := captureClient(t, b.Manifest, id)
 			log := q.launchLog()
 			cfg := string(b.Files[mcpqual.ClientFile(id, mcpqual.FileConfig)])
+			// Cursor alone runs its one approval preparation, before the
+			// session; Cursor's config.txt is then the configuration re-read
+			// (unchanged by this enable).
+			if enables := len(log["enable"]); (id == "cursor") != (enables == 1) || id == "cursor" && (c.Approval == nil || c.Approval.Scope != mcpqual.ScopeWorkspaceOnly) {
+				t.Fatalf("%s: %d enables, approval %+v", id, enables, c.Approval)
+			}
 			if c.State != mcpqual.CaptureComplete || len(log["version"]) != 1 || len(log["help"]) != 1 || len(log["session"]) != 1 || c.Config.Path != rc.cfgRel ||
 				!strings.Contains(cfg, "<workspace>/case.json") || strings.Contains(cfg, ws) || c.Probe.Receipts != 1 || !c.Probe.Completed || b.Manifest.Limits.SessionsPerClient != 1 {
 				t.Fatalf("%s: %+v launches %v config %q", id, c, log, cfg)
@@ -399,23 +411,34 @@ func sharedCaptureKit(t *testing.T) *captureKit {
 // data, never read from the runtime.
 func inProcessCapture(t *testing.T, q *qualEnv, plan map[string]any, lim mcpqual.CaptureLimits) (*mcpqual.CaptureManifest, string) {
 	t.Helper()
+	out := filepath.Join(realTemp(t), "out")
+	return inProcessRun(t, q, plan, out, func(c *mcpqual.CaptureRunner) { c.Limits = lim }), out
+}
+
+// inProcessRun is inProcessCapture into out with the runner adjusted by
+// mutate (test inputs only: injected limits, a reaper wrapper, the
+// placement view of the FP-12 parent).
+func inProcessRun(t *testing.T, q *qualEnv, plan map[string]any, out string, mutate func(c *mcpqual.CaptureRunner)) *mcpqual.CaptureManifest {
+	t.Helper()
 	b, _ := json.Marshal(plan)
 	p, err := mcpqual.ParseCapturePlan(b)
 	if err != nil {
 		t.Fatal(err)
 	}
-	out := filepath.Join(realTemp(t), "out")
 	c := &mcpqual.CaptureRunner{Plan: p, OutDir: out, GOOS: "linux", GOARCH: "amd64", ServerPath: qualBinary(t), BaseEnv: q.env(""), Launcher: procexec.Launcher{},
 		Reaper: mcpqual.GroupReaper{Sig: mcpqual.SysSignaler{}, Clock: mcpqual.RealClock,
 			Policy: mcpqual.CleanupPolicy{Grace: mcpqual.CleanupGrace, Limit: mcpqual.CleanupLimit, Poll: mcpqual.CleanupPoll}},
 		Clock: mcpqual.RealClock, Log: io.Discard, RunID: "run-flood", Nonce: "nonceflood", CapturedAt: time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC),
-		HarnessVersion: mcpqual.HarnessVersion, Home: q.home, Limits: lim}
+		HarnessVersion: mcpqual.HarnessVersion, Home: q.home}
+	if mutate != nil {
+		mutate(c)
+	}
 	m, err := c.Run(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	q.groupsGone()
-	return m, out
+	return m
 }
 
 func streamOf(t *testing.T, c mcpqual.CaptureClient, name string) mcpqual.CaptureStream {
@@ -740,13 +763,16 @@ func TestMCPCaptureLifecycle(t *testing.T) {
 			q.groupsGone()
 		}},
 		{"cleanup-failure", func(t *testing.T) {
+			// Four clients (B1: thirteen process groups at most, with Cursor's
+			// one approval preparation); the first cleanup failure stops them.
 			q := newQualEnv(t)
 			out := filepath.Join(realTemp(t), "out")
-			r := q.capture(q.capturePlan(nil, "claude", "codex"), out, []string{mcpqual.FaultEnv + "=" + mcpqual.FaultValue}, "--allow-model-calls")
+			r := q.capture(q.capturePlan(nil, "claude", "codex", "grok", "cursor"), out, []string{mcpqual.FaultEnv + "=" + mcpqual.FaultValue}, "--allow-model-calls")
 			m := bundle(t, out).Manifest
 			c := captureClient(t, m, "claude")
 			if r.code != 5 || m.Cleanup.OK || m.State == mcpqual.CaptureComplete || deref(c.Reason) != mcpqual.ReasonCleanupFailed ||
-				deref(captureClient(t, m, "codex").Reason) != mcpqual.ReasonCleanupFailed || len(q.launchLog()["session"]) != 0 {
+				deref(captureClient(t, m, "codex").Reason) != mcpqual.ReasonCleanupFailed || len(q.launchLog()["session"]) != 0 ||
+				!strings.Contains(r.stderr, "bounded cleanup of up to 13 process groups") || captureClient(t, m, "cursor").Approval.Stage.State != mcpqual.StageNotRun {
 				t.Fatalf("cleanup failure = %+v %+v", r, m.Cleanup)
 			}
 			q.groupsGone()
@@ -1153,7 +1179,15 @@ func TestMCPCaptureRunbook(t *testing.T) {
 			for _, w := range []string{"Code gate A", "Owner capture gate", "Code gate B", "Owner short-confirmation gate", "Optional publication gate",
 				"Real execution is never part of CI", "Claude must run in the owner's unsandboxed shell", "`!` is the UI escape, not a shell negation",
 				"only when the owner has explicitly delegated it", "One capture plus at most three confirmation sessions per client", "Never add `--approve-mcps`",
-				"never retried until green", "macOS timeout compatibility remains UNVERIFIED"} {
+				"never retried until green", "macOS timeout compatibility remains UNVERIFIED",
+				// Design decoder-enrollment B1: the placement outside HOME and
+				// work trees, the Cursor owner precheck and the B1/B2 gates.
+				"a fresh absolute output directory outside `$HOME` and outside every git work tree", "never a destination under this repository's `design/` tree",
+				"an out directory under HOME is rejected because `~/.grok/config.toml` lies on its ancestor chain", "`TMPDIR` itself is not proof of suitable placement",
+				"Record the placement check outcome in the delivery notes", "their checked-in location is not their launch location",
+				"`expected-blocked: cursor_approval_scope_unverified`", "exceeds 10,000 entries, 64 MiB in all or 8 MiB in one file",
+				"A passing precheck never substitutes for the two runtime inventories", "Code gate B1", "Do not reuse completed plans from the failed captures",
+				"Code gate B (B2): only after usable reviewed re-captures", "is not a discovery check"} {
 				if !strings.Contains(sec, w) {
 					t.Fatalf("the capture section lacks %q", w)
 				}
@@ -1212,10 +1246,12 @@ func TestMCPEnrollmentCIPolicy(t *testing.T) {
 	}
 	nine := []string{"TestMCPCaptureInvocation", "TestMCPCaptureRecipes", "TestMCPCaptureEvidence", "TestMCPCaptureLifecycle", "TestMCPEnrollmentContract",
 		"TestMCPEnrollmentReplay", "TestMCPEnrolledShortConfirmation", "TestMCPCaptureRunbook", "TestMCPEnrollmentCIPolicy"}
+	// Slice B1's four parents (FP-10..FP-13) follow the nine.
+	four := []string{"TestMCPCaptureProtocolNegotiation", "TestMCPCaptureCodexApproval", "TestMCPCaptureGrokRecipe", "TestMCPCaptureCursorTrust"}
 	runInventory(t, 4, []string{"native-and-test", "bench", "stress", "coverage-and-docs"}, []captureCase{
 		{"native-and-test", func(t *testing.T) {
 			req := devcheck.NativeRequiredTests()
-			if len(req) != 412 || !slices.Equal(req[403:], nine) || req[402] != "TestMCPShortConfirmation" {
+			if len(req) != 416 || !slices.Equal(req[403:412], nine) || !slices.Equal(req[412:], four) || req[402] != "TestMCPShortConfirmation" {
 				t.Fatalf("native inventory %d %v", len(req), req[400:])
 			}
 			for _, goos := range []string{"linux", "darwin"} {
@@ -1279,11 +1315,714 @@ func TestMCPEnrollmentCIPolicy(t *testing.T) {
 					t.Fatalf("%s is not a whole-file changed entry", f)
 				}
 			}
+			for _, f := range []string{"probe", "events", "capture_approval", "capture_approval_unix"} {
+				if !listed["internal/mcpqual/"+f+".go"] {
+					t.Fatalf("B1 file internal/mcpqual/%s.go is not a whole-file changed entry", f)
+				}
+			}
 			doc := string(repoFile(t, "docs/ci.md"))
-			for _, w := range append([]string{"Decoder enrollment: baseline is main run 37523901881 (ff8058f)", "9 more names, 412 in all", "(9 ordinary calls)", "CI stays 18 jobs"}, nine...) {
-				if !strings.Contains(doc, w) {
+			for _, w := range append(append([]string{"Decoder enrollment: baseline is main run 37523901881 (ff8058f)", "9 more names, 412 in all", "(9 ordinary calls)", "CI stays 18 jobs",
+				"4 more names, 416 in all"}, nine...), four...) {
+				if !strings.Contains(strings.Join(strings.Fields(doc), " "), w) {
 					t.Fatalf("docs/ci.md lacks %q", w)
 				}
+			}
+		}},
+	})
+}
+
+// Decoder enrollment, slice B1 (design decoder-enrollment B1): one
+// function parent per new FP (FP-10..FP-13), each with its literal case
+// inventory. FP-10, FP-11 and FP-13 run the built mcpqual (or, for the
+// injected inventory bounds and cleanup faults, the production runner in
+// process) with the fake vendor and the real probe; FP-12 uses the
+// in-process runner with its placement-filesystem view (DW8/DW10) and the
+// same real fake-vendor and probe processes.
+
+// FP-10: the probe answers 2025-06-18 to the same, a newer and an older
+// requested version and records both in its raw events; a client that
+// cannot use the answer disconnects without a receipt and stays partial.
+func TestMCPCaptureProtocolNegotiation(t *testing.T) {
+	t.Parallel()
+	negotiate := func(t *testing.T, requested string, decline bool) {
+		q := newQualEnv(t)
+		settings := map[string]string{"PROTOCOL": requested}
+		if decline {
+			settings["DECLINE"] = "1"
+		}
+		out := filepath.Join(realTemp(t), "out")
+		r := q.capture(q.capturePlan(map[string]map[string]string{"claude": settings}, "claude"), out, nil, "--allow-model-calls")
+		b := bundle(t, out)
+		c := captureClient(t, b.Manifest, "claude")
+		server := b.Files[mcpqual.ClientFile("claude", mcpqual.FileServerEvents)]
+		evs, intact, err := mcpqual.ParseProbeEvents(server)
+		if err != nil || !intact || len(evs) < 2 || evs[1].Kind != mcpqual.EvInitialize || *evs[1].RequestedProtocolVersion != requested ||
+			*evs[1].SelectedProtocolVersion != mcpqual.ProtocolVersion {
+			t.Fatalf("server events %v %s", err, server)
+		}
+		q2, _ := json.Marshal(requested)
+		stderr := string(b.Files[mcpqual.ClientFile("claude", mcpqual.FileVendorStderr)])
+		if !bytes.Contains(server, []byte(`"requested_protocol_version":`+string(q2)+`,"selected_protocol_version":"2025-06-18"`)) ||
+			!strings.Contains(stderr, "negotiated protocol 2025-06-18 for requested "+requested) || *c.Probe.ClientName != "claude-cli" {
+			t.Fatalf("raw evidence %s / %q", server, stderr)
+		}
+		log := q.launchLog()
+		switch {
+		case decline && (r.code != 5 || c.State != mcpqual.CapturePartial || deref(c.Reason) != mcpqual.ReasonProbeNotObserved || c.Probe.Receipts != 0 ||
+			bytes.Contains(server, []byte(`"receipt"`)) || len(log["session"]) != 1):
+			t.Fatalf("declined: %+v %s", r, deref(c.Reason))
+		case !decline && (r.code != 0 || c.State != mcpqual.CaptureComplete || c.Probe.Receipts != 1 || !c.Probe.Completed || len(log["session"]) != 1):
+			t.Fatalf("negotiated %s: %+v %s", requested, r, deref(c.Reason))
+		}
+		q.groupsGone()
+	}
+	runInventory(t, 4, []string{"same-version", "newer-version", "older-version", "client-declines"}, []captureCase{
+		{"same-version", func(t *testing.T) { negotiate(t, mcpqual.ProtocolVersion, false) }},
+		{"newer-version", func(t *testing.T) { negotiate(t, "2099-01-01", false) }},
+		{"older-version", func(t *testing.T) { negotiate(t, "2024-11-05", false) }},
+		{"client-declines", func(t *testing.T) { negotiate(t, "2099-01-01", true) }},
+	})
+}
+
+// blanketFlags are approval or trust widenings no B1 recipe may carry.
+var blanketFlags = []string{"--full-auto", "--dangerously", "--yolo", "--approve-mcps", "--ask-for-approval", "approval_policy", "--sandbox", "--force"}
+
+func noBlanket(t *testing.T, argv []string) {
+	t.Helper()
+	for _, a := range argv {
+		for _, bad := range blanketFlags {
+			if strings.Contains(a, bad) {
+				t.Fatalf("a blanket option %q in %q", a, argv)
+			}
+		}
+	}
+}
+
+// FP-11: Codex gets exactly the invocation-only probe.slow approval; the
+// fake Codex checks its exact invocation and configuration and calls the
+// real probe only then; a managed denial and an unsupported setting stay
+// partial with exactly one session.
+func TestMCPCaptureCodexApproval(t *testing.T) {
+	t.Parallel()
+	run := func(t *testing.T, outcome string) (*qualEnv, mcpqual.CaptureClient, *mcpqual.CaptureBundle, result, string) {
+		q := newQualEnv(t)
+		out := filepath.Join(realTemp(t), "out")
+		r := q.capture(q.capturePlan(map[string]map[string]string{"codex": {"RECIPE": "codex", "OUTCOME": outcome}}, "codex"), out, nil, "--allow-model-calls")
+		b := bundle(t, out)
+		if log := q.launchLog(); len(log["session"]) != 1 {
+			t.Fatalf("%d sessions (no fallback or retry)", len(log["session"]))
+		}
+		return q, captureClient(t, b.Manifest, "codex"), b, r, out
+	}
+	runInventory(t, 3, []string{"scoped-success", "approval-denied", "unsupported-config"}, []captureCase{
+		{"scoped-success", func(t *testing.T) {
+			q, c, b, r, out := run(t, "")
+			recs := q.argvLog()
+			ws := filepath.Join(out, ".work", "codex-capture-setup")
+			var overrides []string
+			for i, a := range recs[0].Argv {
+				if a == "-c" {
+					overrides = append(overrides, recs[0].Argv[i+1])
+				}
+			}
+			srv := strings.TrimSuffix(strings.TrimPrefix(overrides[0], `mcp_servers.probe.command="`), `"`)
+			want := []string{`mcp_servers.probe.command="` + srv + `"`, `mcp_servers.probe.args=["serve","--case-file","` + ws + `/case.json","--events","` + ws + `/server-events.jsonl"]`,
+				`mcp_servers.probe.enabled_tools=["slow"]`, `mcp_servers.probe.tools.slow.approval_mode="approve"`}
+			if r.code != 0 || c.State != mcpqual.CaptureComplete || !slices.Equal(overrides, want) || c.Probe.Receipts != 1 || mustReal(t, srv) != mustReal(t, qualBinary(t)) {
+				t.Fatalf("scoped: %+v %q %q", r, overrides, deref(c.Reason))
+			}
+			noBlanket(t, recs[0].Argv)
+			if n := strings.Count(strings.Join(recs[0].Argv, "\x00"), "approval_mode"); n != 1 {
+				t.Fatalf("%d approval settings", n)
+			}
+			// Provenance: the labeled argv and the configuration snapshot.
+			cfg := string(b.Files[mcpqual.ClientFile("codex", mcpqual.FileConfig)])
+			if !slices.Contains(c.Argv, `mcp_servers.probe.enabled_tools=["slow"]`) || !slices.Contains(c.Argv, `mcp_servers.probe.tools.slow.approval_mode="approve"`) ||
+				!strings.HasSuffix(cfg, "enabled_tools = [\"slow\"]\n[mcp_servers.probe.tools.slow]\napproval_mode = \"approve\"\n") ||
+				deref(c.Config.Prerequisite) != "Invocation-only approval for probe.slow; no server-wide approval or timeout override." {
+				t.Fatalf("provenance %q %q", c.Argv, cfg)
+			}
+			q.groupsGone()
+		}},
+		{"approval-denied", func(t *testing.T) {
+			q, c, b, r, _ := run(t, "approval-denied")
+			if r.code != 5 || deref(c.Reason) != mcpqual.ReasonProbeNotObserved || len(b.Files[mcpqual.ClientFile("codex", mcpqual.FileServerEvents)]) != 0 ||
+				!strings.Contains(string(b.Files[mcpqual.ClientFile("codex", mcpqual.FileVendorEvents)]), "rejected by approval policy") {
+				t.Fatalf("denied: %+v %s", r, deref(c.Reason))
+			}
+			noBlanket(t, q.argvLog()[0].Argv)
+			q.groupsGone()
+		}},
+		{"unsupported-config", func(t *testing.T) {
+			q, c, b, r, _ := run(t, "unsupported-config")
+			if r.code != 5 || deref(c.Reason) != mcpqual.ReasonProbeNotObserved || *c.Session.Exit != 1 || len(b.Files[mcpqual.ClientFile("codex", mcpqual.FileServerEvents)]) != 0 ||
+				!strings.Contains(string(b.Files[mcpqual.ClientFile("codex", mcpqual.FileVendorStderr)]), "mcp_servers.probe.tools.slow.approval_mode") {
+				t.Fatalf("unsupported: %+v %s", r, deref(c.Reason))
+			}
+			q.groupsGone()
+		}},
+	})
+}
+
+// fixtureView is the FP-12 placement-filesystem view (design
+// decoder-enrollment B1, DW8 and DW10): at or below the function fixture
+// root everything is the real filesystem, including every marker a case
+// plants; strictly above it every directory is an ordinary clean one with
+// no entry, up to /. It changes observations only: the production gate
+// still walks to the root and applies every rule.
+type fixtureView struct{ root string }
+
+func (v fixtureView) inside(p string) bool { return p == v.root || strings.HasPrefix(p, v.root+"/") }
+
+func (v fixtureView) above(p string) bool {
+	return p != v.root && (p == "/" || strings.HasPrefix(v.root, p+"/"))
+}
+
+type viewDir string
+
+func (d viewDir) Name() string       { return string(d) }
+func (d viewDir) Size() int64        { return 0 }
+func (d viewDir) Mode() os.FileMode  { return os.ModeDir | 0o755 }
+func (d viewDir) ModTime() time.Time { return time.Time{} }
+func (d viewDir) IsDir() bool        { return true }
+func (d viewDir) Sys() any           { return nil }
+
+func (v fixtureView) Lstat(p string) (os.FileInfo, error) {
+	switch p = filepath.Clean(p); {
+	case v.inside(p):
+		return os.Lstat(p)
+	case v.above(p):
+		return viewDir(filepath.Base(p)), nil
+	}
+	return nil, &os.PathError{Op: "lstat", Path: p, Err: os.ErrNotExist}
+}
+
+func (v fixtureView) EvalSymlinks(p string) (string, error) {
+	switch p = filepath.Clean(p); {
+	case v.inside(p):
+		return filepath.EvalSymlinks(p)
+	case v.above(p):
+		return p, nil
+	}
+	return "", &os.PathError{Op: "evalsymlinks", Path: p, Err: os.ErrNotExist}
+}
+
+// grokFixture is one FP-12 fixture: its root (the view boundary) holding
+// the output directory and a fixture-owned HOME separate from it.
+type grokFixture struct {
+	q               *qualEnv
+	root, out, home string
+}
+
+func newGrokFixture(t *testing.T, root string) *grokFixture {
+	q := newQualEnv(t)
+	f := &grokFixture{q: q, root: root, out: filepath.Join(root, "out"), home: mkdir(t, filepath.Join(root, "home"))}
+	return f
+}
+
+// grokSecret is the planted credential of the Grok stream.
+const grokSecret = "sk-grok-planted-0123456789abcdef"
+
+// plan is the shipped trusted Grok template with the fake's B1 checks and
+// its streaming-json output.
+func (f *grokFixture) plan(settings map[string]string) map[string]any {
+	s := map[string]string{"RECIPE": "grok", "FORMAT": "grok-stream", "EXPECT_HOME": f.home, "SECRET": grokSecret}
+	for k, v := range settings {
+		s[k] = v
+	}
+	return f.q.capturePlan(map[string]map[string]string{"grok": s}, "grok")
+}
+
+// capture runs the production runner in process with the fixture's view,
+// a controlled environment and its HOME.
+func (f *grokFixture) capture(t *testing.T, plan map[string]any, mutate func(c *mcpqual.CaptureRunner)) *mcpqual.CaptureManifest {
+	return inProcessRun(t, f.q, plan, f.out, func(c *mcpqual.CaptureRunner) {
+		c.BaseEnv = []string{"PATH=" + f.q.trapDir, "HOME=" + f.home}
+		c.Home, c.GrokPlacementFS = f.home, fixtureView{f.root}
+		if mutate != nil {
+			mutate(c)
+		}
+	})
+}
+
+// leader is a separately owned, pre-existing fake Grok leader (its own
+// session and process group, started before and stopped after capture by
+// its test owner).
+type leader struct {
+	cmd  *exec.Cmd
+	dir  string
+	done chan struct{}
+}
+
+func startLeader(t *testing.T, f *grokFixture) *leader {
+	dir := mkdir(t, filepath.Join(f.home, ".grok", "leader"))
+	for _, n := range []string{"req.fifo", "ack.fifo"} {
+		if err := syscall.Mkfifo(filepath.Join(dir, n), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ready, wait := f.q.readyFIFO()
+	cmd := exec.Command(fakeVendorBinary(t))
+	cmd.Env = []string{"FAKE_VENDOR_MODE=leader", "FAKE_VENDOR_LEADER=" + dir, "FAKE_VENDOR_READY=" + ready}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	l := &leader{cmd: cmd, dir: dir, done: make(chan struct{})}
+	go func() { cmd.Wait(); close(l.done) }()
+	t.Cleanup(func() { cmd.Process.Kill(); <-l.done })
+	if !strings.HasPrefix(wait(), "ready ") {
+		t.Fatal("the leader is not ready")
+	}
+	return l
+}
+
+// serving proves the leader still answers (a bounded request/answer
+// handshake), then its owner stops it and proves it gone.
+func (l *leader) servingThenStop(t *testing.T) {
+	t.Helper()
+	answered := make(chan error, 1)
+	go func() {
+		err := os.WriteFile(filepath.Join(l.dir, "req.fifo"), []byte("owner check\n"), 0o600)
+		if err == nil {
+			var ack []byte
+			ack, err = os.ReadFile(filepath.Join(l.dir, "ack.fifo"))
+			if err == nil && string(ack) != "ok owner check\n" {
+				err = io.ErrUnexpectedEOF
+			}
+		}
+		answered <- err
+	}()
+	select {
+	case err := <-answered:
+		if err != nil {
+			t.Fatalf("the leader no longer serves: %v", err)
+		}
+	case <-l.done:
+		t.Fatal("the owner's leader was ended by the capture")
+	case <-time.After(mcpWait):
+		t.Fatal("the leader did not answer")
+	}
+	l.cmd.Process.Kill()
+	<-l.done
+	if err := processgroup.WaitGone(processgroup.SysSignaler{}, processgroup.RealClock{}, 5*time.Second, 10*time.Millisecond, l.cmd.Process.Pid); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// FP-12: the trusted Grok recipe (global --trust, the generated
+// .grok/config.toml, unchanged HOME/GROK_HOME, probe__slow, streaming-json)
+// against the real probe, its placement gate, its redaction and its
+// cleanup, with a separately owned leader left to its owner.
+func TestMCPCaptureGrokRecipe(t *testing.T) {
+	t.Parallel()
+	const m = "fake-model-1"
+	success := func(t *testing.T, root string) {
+		f := newGrokFixture(t, root)
+		l := startLeader(t, f)
+		man := f.capture(t, f.plan(map[string]string{"LEADER": l.dir, "MODE": "parent-exits-first"}), nil)
+		c := captureClient(t, man, "grok")
+		b := bundle(t, f.out)
+		recs := f.q.argvLog()
+		ws := filepath.Join(f.out, ".work", "grok-capture-setup")
+		prompt := mcpqual.PromptForClient("grok", "grok-capture-setup")
+		if c.State != mcpqual.CaptureComplete || len(recs) != 1 || !slices.Equal(recs[0].Argv, []string{"--trust", "-p", prompt, "--output-format", "streaming-json", "--cwd", ws, "-m", m}) ||
+			filepath.Clean(recs[0].Cwd) != ws || !strings.HasSuffix(recs[0].ConfigPath, "/.grok/config.toml") || !strings.Contains(prompt, "MCP tool probe__slow exactly once") {
+			t.Fatalf("trusted session %s %+v", deref(c.Reason), recs)
+		}
+		// Argv, configuration and provenance together.
+		cfg := string(b.Files[mcpqual.ClientFile("grok", mcpqual.FileConfig)])
+		if !slices.Equal(c.Argv, []string{"--trust", "-p", prompt, "--output-format", "streaming-json", "--cwd", "<workspace>", "-m", m}) || c.Config.Path != ".grok/config.toml" ||
+			cfg != "[mcp_servers.probe]\ncommand = \"<server>\"\nargs = [\"serve\", \"--case-file\", \"<workspace>/case.json\", \"--events\", \"<workspace>/server-events.jsonl\"]\n" ||
+			deref(c.Config.Prerequisite) != "Trust only the generated workspace; use normal Grok login; project probe config, probe__slow and streaming-json; no timeout override." ||
+			c.Probe.Receipts != 1 || !c.Probe.Completed {
+			t.Fatalf("provenance %q %q", c.Argv, cfg)
+		}
+		// The stream: secrets redacted structured and embedded, usage kept,
+		// a fixed point; no credential or home in any file.
+		vendor := b.Files[mcpqual.ClientFile("grok", mcpqual.FileVendorEvents)]
+		tr, err := mcpqual.ReplayTranscript(vendor)
+		if err != nil || len(tr.Lines) != 5 {
+			t.Fatalf("stream %v %d", err, len(tr.Lines))
+		}
+		var decoded strings.Builder
+		for _, line := range tr.Lines {
+			decoded.Write(line.Data)
+		}
+		for _, w := range []string{`"api_key":"[REDACTED]"`, `\"token\":\"[REDACTED]\"`, `"input_tokens":812`, `"output_tokens":45`, `"toolName":"probe__slow"`, `\"nonce\":\"nonceflood\"`} {
+			if !strings.Contains(decoded.String(), w) {
+				t.Fatalf("decoded stream lacks %s", w)
+			}
+		}
+		for p, data := range b.Files {
+			if bytes.Contains(data, []byte(grokSecret)) || bytes.Contains(data, []byte(f.home)) {
+				t.Fatalf("%s leaks", p)
+			}
+			if err := mcpqual.RedactionFixedPoint(p, data, mcpqual.NewCaptureRedactor(nil, nil)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// The launcher exited first; its resistant descendant was reaped and
+		// is proven gone, while the owner's leader, which served the session,
+		// still serves until its owner stops it.
+		if !c.Session.Cleanup.LeaderExitedFirst || !c.Session.Cleanup.GroupGone || len(f.q.launchLog()["descendant"]) != 1 {
+			t.Fatalf("cleanup %+v", c.Session.Cleanup)
+		}
+		f.q.groupsGone()
+		l.servingThenStop(t)
+	}
+	denied := func(t *testing.T, f *grokFixture, want string) {
+		t.Helper()
+		man := f.capture(t, f.plan(nil), nil)
+		c := captureClient(t, man, "grok")
+		if !strings.HasPrefix(deref(c.Reason), mcpqual.ReasonGrokPlacement+": "+want) || man.ExitCode() != 5 || c.Version.State != mcpqual.StageNotRun {
+			t.Fatalf("placement: %s", deref(c.Reason))
+		}
+		if _, err := os.Stat(f.q.launches); err == nil {
+			t.Fatal("grok launched despite the placement")
+		}
+	}
+	runInventory(t, 4, []string{"trusted-project-stream", "trust-rejected", "malformed-stream", "cleanup-failure"}, []captureCase{
+		{"trusted-project-stream", func(t *testing.T) {
+			success(t, filepath.Join(realTemp(t), "fixture"))
+			// The hostile developer layout: the fixture root under a directory
+			// holding .grok/config.toml and .git (a TMPDIR under a HOME with
+			// normal Grok login). Above the boundary: the same success runs.
+			hostile := realTemp(t)
+			mkdir(t, filepath.Join(hostile, ".git"))
+			mkdir(t, filepath.Join(hostile, ".grok"))
+			os.WriteFile(filepath.Join(hostile, ".grok", "config.toml"), []byte("[mcp_servers.other]\n"), 0o600)
+			success(t, filepath.Join(hostile, "fixture"))
+			// The same markers at or below the boundary refuse the capture
+			// before any Grok launch.
+			for name, plant := range map[string]func(root string){
+				"config-at-root": func(root string) {
+					mkdir(t, filepath.Join(root, ".grok"))
+					os.WriteFile(filepath.Join(root, ".grok", "config.toml"), nil, 0o600)
+				},
+				"git-at-root": func(root string) { mkdir(t, filepath.Join(root, ".git")) },
+			} {
+				root := mkdir(t, filepath.Join(hostile, "fixture-"+name))
+				plant(root)
+				denied(t, newGrokFixture(t, root), "lexical chain")
+			}
+		}},
+		{"trust-rejected", func(t *testing.T) {
+			// The canonical validator: every other --trust form is refused,
+			// exit 2, before any launch.
+			for name, mutate := range map[string]func(c map[string]any){
+				"trust-true":  func(c map[string]any) { c["session"].(map[string]any)["argv"].([]any)[0] = "--trust=true" },
+				"trust-false": func(c map[string]any) { c["session"].(map[string]any)["argv"].([]any)[0] = "--trust=false" },
+				"trust-empty": func(c map[string]any) { c["session"].(map[string]any)["argv"].([]any)[0] = "--trust=" },
+				"appended": func(c map[string]any) {
+					c["config"].(map[string]any)["default"].(map[string]any)["argv"] = []string{"--trust"}
+				},
+				"grok-home": func(c map[string]any) { c["env"].(map[string]string)["GROK_HOME"] = "/elsewhere" },
+			} {
+				q := newQualEnv(t)
+				plan := q.capturePlan(nil, "grok")
+				mutate(plan["clients"].([]any)[0].(map[string]any))
+				out := filepath.Join(realTemp(t), "out")
+				r := q.capture(plan, out, nil, "--allow-model-calls")
+				if r.code != 2 || !strings.Contains(r.stderr, "grok trusted recipe must target only the generated workspace") {
+					t.Fatalf("%s: %+v", name, r)
+				}
+				if _, err := os.Stat(q.launches); err == nil {
+					t.Fatalf("%s launched", name)
+				}
+				if _, err := os.Stat(out); err == nil {
+					t.Fatalf("%s created its output", name)
+				}
+			}
+			// Placement-denied variants inside the fixture: a linked worktree
+			// marker, an ancestor configuration and a symlinked out whose
+			// target is in a work tree.
+			root := realTemp(t)
+			f := newGrokFixture(t, root)
+			os.WriteFile(filepath.Join(root, ".git"), []byte("gitdir: /elsewhere/.git/worktrees/x\n"), 0o600)
+			denied(t, f, "lexical chain: a .git entry 1 levels up")
+			root = realTemp(t)
+			nest := mkdir(t, filepath.Join(root, "nest"))
+			mkdir(t, filepath.Join(root, ".grok"))
+			os.WriteFile(filepath.Join(root, ".grok", "config.toml"), nil, 0o600)
+			f = newGrokFixture(t, root)
+			f.out = filepath.Join(nest, "out")
+			denied(t, f, "lexical chain: a .grok/config.toml entry 2 levels up")
+			root = realTemp(t)
+			mkdir(t, filepath.Join(root, "repo", ".git"))
+			mkdir(t, filepath.Join(root, "repo", "sub"))
+			os.Symlink(filepath.Join(root, "repo", "sub"), filepath.Join(root, "alias"))
+			f = newGrokFixture(t, root)
+			f.out = filepath.Join(root, "alias", "out")
+			denied(t, f, "resolved chain: a .git entry 2 levels up")
+			// A vendor that rejects the trust request: partial, one session,
+			// no retry or bypass.
+			f = newGrokFixture(t, filepath.Join(realTemp(t), "fixture"))
+			man := f.capture(t, f.plan(map[string]string{"OUTCOME": "trust-rejected"}), nil)
+			c := captureClient(t, man, "grok")
+			if deref(c.Reason) != mcpqual.ReasonProbeNotObserved || *c.Session.Exit != 2 || len(f.q.launchLog()["session"]) != 1 || man.ExitCode() != 5 {
+				t.Fatalf("vendor trust rejection: %s", deref(c.Reason))
+			}
+		}},
+		{"malformed-stream", func(t *testing.T) {
+			f := newGrokFixture(t, filepath.Join(realTemp(t), "fixture"))
+			man := f.capture(t, f.plan(map[string]string{"MALFORMED": "1"}), nil)
+			c := captureClient(t, man, "grok")
+			b := bundle(t, f.out)
+			vendor := b.Files[mcpqual.ClientFile("grok", mcpqual.FileVendorEvents)]
+			if deref(c.Reason) != mcpqual.ReasonEvidenceOmitted || streamOf(t, c, mcpqual.FileVendorEvents).OmittedLines != 1 || bytes.Contains(vendor, []byte(grokSecret)) {
+				t.Fatalf("malformed: %s %+v", deref(c.Reason), c.Streams)
+			}
+			// The omission refuses enrollment: the file is no fixed point.
+			if err := mcpqual.RedactionFixedPoint(mcpqual.ClientFile("grok", mcpqual.FileVendorEvents), vendor, mcpqual.NewCaptureRedactor(nil, nil)); err == nil {
+				t.Fatal("an omitted stream is a fixed point")
+			}
+		}},
+		{"cleanup-failure", func(t *testing.T) {
+			// A resistant session (watchdog, TERM ignored, KILL) whose cleanup
+			// is reported failed: partial, never complete; the run's group is
+			// still gone; the owner's leader is untouched.
+			f := newGrokFixture(t, filepath.Join(realTemp(t), "fixture"))
+			l := startLeader(t, f)
+			plan := f.plan(map[string]string{"MODE": "resistant", "LEADER": l.dir})
+			plan["limits"] = map[string]any{"max_sessions_per_client": 1, "max_case_ms": 800, "max_client_ms": 60000}
+			man := f.capture(t, plan, func(c *mcpqual.CaptureRunner) {
+				c.Reaper = &faultyReaper{inner: c.Reaper, fail: 3}
+			})
+			c := captureClient(t, man, "grok")
+			if deref(c.Reason) != mcpqual.ReasonCleanupFailed || man.Cleanup.OK || man.State == mcpqual.CaptureComplete || !c.Session.Watchdog || !c.Session.Cleanup.KillSent {
+				t.Fatalf("cleanup failure: %s %+v", deref(c.Reason), man.Cleanup)
+			}
+			f.q.groupsGone()
+			l.servingThenStop(t)
+		}},
+	})
+}
+
+// faultyReaper reaps with the real reaper, then reports its fail-th reap
+// failed (an injected cleanup fault after real cleanup).
+type faultyReaper struct {
+	inner mcpqual.Reaper
+	fail  int
+	n     int
+}
+
+func (r *faultyReaper) Reap(p mcpqual.Proc) mcpqual.CaseCleanup {
+	cc := r.inner.Reap(p)
+	if r.n++; r.n == r.fail {
+		cc.Error = sptrF("cleanup: injected")
+	}
+	return cc
+}
+
+func sptrF(s string) *string { return &s }
+
+// cursorPlan is the shipped trusted Cursor template with the fake's B1
+// session checks (the workspace, --trust and an approval in place before
+// the session) and the enable behavior.
+func cursorPlan(q *qualEnv, settings map[string]string, ids ...string) map[string]any {
+	s := map[string]string{"RECIPE": "cursor"}
+	for k, v := range settings {
+		s[k] = v
+	}
+	all := map[string]map[string]string{"cursor": s}
+	return q.capturePlan(all, append([]string{"cursor"}, ids...)...)
+}
+
+// ownerCursor plants the owner's existing .cursor state (with a credential
+// that must never leave it).
+func ownerCursor(t *testing.T, q *qualEnv) {
+	mkdir(t, filepath.Join(q.home, ".cursor"))
+	os.WriteFile(filepath.Join(q.home, ".cursor", "cli-config.json"), []byte(`{"accessToken":"cursor-owner-secret-1"}`), 0o600)
+}
+
+// FP-13: Cursor trusts exactly the generated workspace; its one approval
+// preparation must show workspace-only changes before the model session;
+// every other observation stops before it, with no rollback or retry.
+func TestMCPCaptureCursorTrust(t *testing.T) {
+	t.Parallel()
+	var lastOut string
+	run := func(t *testing.T, settings map[string]string) (*qualEnv, mcpqual.CaptureClient, *mcpqual.CaptureBundle, result) {
+		q := newQualEnv(t)
+		ownerCursor(t, q)
+		out := filepath.Join(realTemp(t), "out")
+		r := q.capture(cursorPlan(q, settings), out, nil, "--allow-model-calls")
+		b := bundle(t, out)
+		lastOut = out
+		return q, captureClient(t, b.Manifest, "cursor"), b, r
+	}
+	stopped := func(t *testing.T, q *qualEnv, c mcpqual.CaptureClient, r result, reason, scope string, enables int) {
+		t.Helper()
+		log := q.launchLog()
+		if r.code != 5 || !strings.HasPrefix(deref(c.Reason), reason) || c.Approval == nil || c.Approval.Scope != scope || len(log["enable"]) != enables ||
+			len(log["session"]) != 0 || c.Session.State == mcpqual.StageRan {
+			t.Fatalf("stopped: %+v %s %+v %v", r, deref(c.Reason), c.Approval, log)
+		}
+		q.groupsGone()
+	}
+	runInventory(t, 7, []string{"scoped-approval", "scope-rejected", "enable-failed", "outside-change", "scope-unverifiable", "mcp-denied", "cleanup-failure"}, []captureCase{
+		{"scoped-approval", func(t *testing.T) {
+			q, c, b, r := run(t, nil)
+			out := lastOut
+			a := c.Approval
+			log := q.launchLog()
+			recs := q.argvLog()
+			ws := filepath.Join(out, ".work", "cursor-capture-setup")
+			if r.code != 0 || c.State != mcpqual.CaptureComplete || len(log["enable"]) != 1 || len(log["session"]) != 1 || a == nil ||
+				!slices.Equal(a.Argv, []string{"mcp", "enable", "probe"}) || a.Cwd != "<workspace>" || a.Stage.State != mcpqual.StageRan || *a.Stage.Exit != 0 ||
+				!a.Stage.Cleanup.GroupGone || a.Scope != mcpqual.ScopeWorkspaceOnly || a.Reason != nil || !a.InventoryComplete ||
+				!slices.Equal(a.Changes, []mcpqual.CaptureApprovalChange{{Path: "<workspace>/.cursor/approved-servers.json", Kind: "added"}}) {
+				t.Fatalf("scoped: %+v %s %+v %v", r, deref(c.Reason), a, log)
+			}
+			// The session: the generated workspace, explicitly trusted, after
+			// the approval (the fake refuses otherwise).
+			if !slices.Equal(recs[0].Argv[len(recs[0].Argv)-3:], []string{"--workspace", ws, "--trust"}) || filepath.Clean(recs[0].Cwd) != ws {
+				t.Fatalf("session argv %q", recs[0].Argv)
+			}
+			// Stage streams and hashes; no owner data, digest or content.
+			if string(b.Files[mcpqual.ClientFile("cursor", mcpqual.FileApprovalStdout)]) != "probe enabled\n" ||
+				len(b.Files[mcpqual.ClientFile("cursor", mcpqual.FileApprovalStderr)]) != 0 || len(b.Manifest.Files) != 11 {
+				t.Fatalf("approval evidence %v", b.Manifest.Files)
+			}
+			for p, data := range map[string][]byte{"manifest": b.ManifestBytes, "config": b.Files[mcpqual.ClientFile("cursor", mcpqual.FileConfig)]} {
+				if bytes.Contains(data, []byte("cursor-owner-secret-1")) || bytes.Contains(data, []byte("cli-config")) || bytes.Contains(data, []byte(q.home)) {
+					t.Fatalf("%s exports owner data", p)
+				}
+			}
+			if deref(c.Config.Prerequisite) != "Trust only the generated workspace; capture runs mcp enable probe there and verifies workspace-only file changes before the model session; never --approve-mcps." {
+				t.Fatalf("prerequisite %q", deref(c.Config.Prerequisite))
+			}
+			noBlanket(t, recs[0].Argv)
+			// Older bundles without the record stay valid; an inconsistent
+			// new record is rejected.
+			if _, err := mcpqual.ValidateCaptureBundle(os.DirFS(sharedCaptureKit(t).out), "."); err != nil {
+				t.Fatal(err)
+			}
+			d := filepath.Join(realTemp(t), "copy")
+			for name, edit := range map[string][2]string{
+				"scope":   {`"scope": "workspace_only"`, `"scope": "outside_workspace"`},
+				"change":  {`"path": "<workspace>/.cursor/approved-servers.json"`, `"path": "<home>/.cursor/approved-servers.json"`},
+				"unknown": {`"scope": "workspace_only"`, `"scope": "workspace_only", "digest": "x"`},
+			} {
+				os.RemoveAll(d)
+				copyTree(t, out, d)
+				rewrite(t, filepath.Join(d, "manifest.json"), edit[0], edit[1])
+				if _, err := mcpqual.ValidateCaptureBundle(os.DirFS(d), "."); err == nil {
+					t.Fatalf("%s: an inconsistent approval record passed", name)
+				}
+			}
+			q.groupsGone()
+		}},
+		{"scope-rejected", func(t *testing.T) {
+			for name, mutate := range map[string]func(argv []any) []any{
+				"trust-true":      func(argv []any) []any { argv[len(argv)-1] = "--trust=true"; return argv },
+				"trust-false":     func(argv []any) []any { argv[len(argv)-1] = "--trust=false"; return argv },
+				"saved-name":      func(argv []any) []any { argv[len(argv)-2] = "my-workspace"; return argv },
+				"extra-workspace": func(argv []any) []any { return append(argv, "--workspace", "/") },
+				"approve-mcps":    func(argv []any) []any { return append(argv, "--approve-mcps") },
+			} {
+				q := newQualEnv(t)
+				plan := cursorPlan(q, nil)
+				session := plan["clients"].([]any)[0].(map[string]any)["session"].(map[string]any)
+				session["argv"] = mutate(session["argv"].([]any))
+				out := filepath.Join(realTemp(t), "out")
+				r := q.capture(plan, out, nil, "--allow-model-calls")
+				if r.code != 2 || !strings.Contains(r.stderr, "cursor trusted recipe must target only the generated workspace") {
+					t.Fatalf("%s: %+v", name, r)
+				}
+				if _, err := os.Stat(q.launches); err == nil {
+					t.Fatalf("%s launched", name)
+				}
+			}
+		}},
+		{"enable-failed", func(t *testing.T) {
+			q, c, b, r := run(t, map[string]string{"ENABLE": "fail"})
+			stopped(t, q, c, r, mcpqual.ReasonCursorApprovalFailed, mcpqual.ScopeUnverifiable, 1)
+			if *c.Approval.Stage.Exit != 1 || !strings.Contains(string(b.Files[mcpqual.ClientFile("cursor", mcpqual.FileApprovalStderr)]), "cannot enable probe") {
+				t.Fatalf("enable stage %+v", c.Approval.Stage)
+			}
+		}},
+		{"outside-change", func(t *testing.T) {
+			q, c, _, r := run(t, map[string]string{"ENABLE": "owner"})
+			stopped(t, q, c, r, mcpqual.ReasonCursorOutside, mcpqual.ScopeOutside, 1)
+			if !slices.Equal(c.Approval.Changes, []mcpqual.CaptureApprovalChange{{Path: "<home>/.cursor/approved-servers.json", Kind: "added"}}) {
+				t.Fatalf("changes %+v", c.Approval.Changes)
+			}
+			// Detected after the fact and never undone.
+			if _, err := os.Stat(filepath.Join(q.home, ".cursor", "approved-servers.json")); err != nil {
+				t.Fatal("the outside write was restored")
+			}
+			q, c, _, r = run(t, map[string]string{"ENABLE": "ancestor"})
+			stopped(t, q, c, r, mcpqual.ReasonCursorOutside, mcpqual.ScopeOutside, 1)
+			if !slices.Equal(c.Approval.Changes, []mcpqual.CaptureApprovalChange{{Path: "<ancestor-1>/.cursor", Kind: "added"}, {Path: "<ancestor-1>/.cursor/approved-servers.json", Kind: "added"}}) {
+				t.Fatalf("ancestor changes %+v", c.Approval.Changes)
+			}
+		}},
+		{"scope-unverifiable", func(t *testing.T) {
+			// No change: no positive workspace evidence.
+			q, c, _, r := run(t, map[string]string{"ENABLE": "noop"})
+			stopped(t, q, c, r, mcpqual.ReasonCursorScopeUnverified+": no change", mcpqual.ScopeUnverifiable, 1)
+			// A symbolic link after the command.
+			q, c, _, r = run(t, map[string]string{"ENABLE": "symlink"})
+			stopped(t, q, c, r, mcpqual.ReasonCursorScopeUnverified+": the inventory after the command is incomplete (a symbolic link", mcpqual.ScopeUnverifiable, 1)
+			// An inaccessible or symlinked owner tree before the command:
+			// zero enable launches.
+			for name, plant := range map[string]func(q *qualEnv){
+				"inaccessible": func(q *qualEnv) {
+					locked := mkdir(t, filepath.Join(q.home, ".cursor", "locked"))
+					os.Chmod(locked, 0o000)
+					t.Cleanup(func() { os.Chmod(locked, 0o700) })
+				},
+				"symlink": func(q *qualEnv) { os.Symlink("/", filepath.Join(q.home, ".cursor", "root")) },
+			} {
+				q := newQualEnv(t)
+				ownerCursor(t, q)
+				plant(q)
+				out := filepath.Join(realTemp(t), "out")
+				r := q.capture(cursorPlan(q, nil), out, nil, "--allow-model-calls")
+				c := captureClient(t, bundle(t, out).Manifest, "cursor")
+				stopped(t, q, c, r, mcpqual.ReasonCursorScopeUnverified+": the inventory before the command is incomplete", mcpqual.ScopeUnverifiable, 0)
+				if c.Approval.Stage.State != mcpqual.StageNotRun {
+					t.Fatalf("%s: stage %+v", name, c.Approval.Stage)
+				}
+			}
+			// Over-bound inventories (injected small caps): before the command
+			// no enable runs; after it the session never starts.
+			for name, tc := range map[string]struct {
+				entries, enables int
+				want             string
+			}{
+				"over-bound-pre":  {4, 0, "the inventory before the command is incomplete (the entry bound"},
+				"over-bound-post": {6, 1, "the inventory after the command is incomplete (the entry bound"},
+			} {
+				q := newQualEnv(t)
+				ownerCursor(t, q)
+				out := filepath.Join(realTemp(t), "out")
+				man := inProcessRun(t, q, cursorPlan(q, nil), out, func(c *mcpqual.CaptureRunner) { c.ApprovalLimits = mcpqual.ApprovalScanLimits{Entries: tc.entries} })
+				c := captureClient(t, man, "cursor")
+				stopped(t, q, c, result{code: man.ExitCode()}, mcpqual.ReasonCursorScopeUnverified+": "+tc.want, mcpqual.ScopeUnverifiable, tc.enables)
+				_ = name
+			}
+		}},
+		{"mcp-denied", func(t *testing.T) {
+			q, c, _, r := run(t, map[string]string{"SCENARIO": "noprobe", "EXIT": "1", "STDERR": "Error: MCP server probe needs approval\n"})
+			log := q.launchLog()
+			if r.code != 5 || deref(c.Reason) != mcpqual.ReasonProbeNotObserved || c.Approval.Scope != mcpqual.ScopeWorkspaceOnly || len(log["enable"]) != 1 || len(log["session"]) != 1 {
+				t.Fatalf("mcp denied after a scoped approval: %+v %s %v", r, deref(c.Reason), log)
+			}
+			q.groupsGone()
+		}},
+		{"cleanup-failure", func(t *testing.T) {
+			// The enable's cleanup (the third reap) fails: no session, and no
+			// further client starts.
+			q := newQualEnv(t)
+			ownerCursor(t, q)
+			out := filepath.Join(realTemp(t), "out")
+			man := inProcessRun(t, q, cursorPlan(q, nil, "claude"), out, func(c *mcpqual.CaptureRunner) { c.Reaper = &faultyReaper{inner: c.Reaper, fail: 3} })
+			c := captureClient(t, man, "cursor")
+			stopped(t, q, c, result{code: man.ExitCode()}, mcpqual.ReasonCleanupFailed, mcpqual.ScopeUnverifiable, 1)
+			if man.Cleanup.OK || captureClient(t, man, "claude").State != mcpqual.CaptureNotRun {
+				t.Fatalf("cleanup failure %+v", man.Cleanup)
 			}
 		}},
 	})

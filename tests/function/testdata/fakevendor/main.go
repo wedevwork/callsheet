@@ -23,11 +23,23 @@
 // lifecycle scenarios (no probe, no tool, an extra or marker call, a
 // flood of either stream, a descendant holding both pipes outside the
 // group).
+//
+// Design decoder-enrollment B1 adds: a requested protocol version
+// (FAKE_VENDOR_PROTOCOL) and a client that declines the probe's answer
+// and disconnects (FAKE_VENDOR_DECLINE); the B1 recipes' own checks
+// (FAKE_VENDOR_RECIPE codex, grok or cursor: the exact scoped invocation
+// and configuration, else exit 3 before any probe), Codex's approval
+// outcomes and Grok's trust rejection (FAKE_VENDOR_OUTCOME), Grok's
+// streaming-json output (format grok-stream) with structured and embedded
+// secret canaries and usage, a connection to a separately owned leader
+// (FAKE_VENDOR_LEADER, and MODE=leader for that service), and Cursor's
+// "mcp enable probe" (FAKE_VENDOR_ENABLE: where it writes).
 package main
 
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -90,6 +102,14 @@ func run(args []string) int {
 	case "holder":
 		// Holds the inherited stdout and stderr until killed.
 		fakeSleepForever()
+	case "leader":
+		// A separately owned, pre-existing service (the owner's Grok
+		// leader): it accepts connections on its socket and records each.
+		return fakeLeader()
+	}
+	if len(args) == 3 && args[0] == "mcp" && args[1] == "enable" && args[2] == "probe" {
+		fakeLog("enable %d", os.Getpid())
+		return fakeEnable()
 	}
 	if len(args) > 0 && args[0] == "--version" {
 		fakeLog("version %d", os.Getpid())
@@ -121,6 +141,29 @@ func run(args []string) int {
 	}
 	recordArgv(args, cfgPath)
 	fakeLog("session %d %s", os.Getpid(), caseID)
+	if err := checkRecipe(args, caseID); err != nil {
+		fmt.Fprintln(os.Stderr, "fake vendor: recipe:", err)
+		return 3
+	}
+	switch fakeEnv("OUTCOME") {
+	case "approval-denied":
+		// A managed policy still refuses the tool: no call reaches the probe.
+		fmt.Println(`{"type":"item.completed","item":{"id":"i1","type":"mcp_tool_call","tool":"slow","status":"failed","error":{"message":"tool call rejected by approval policy"}}}`)
+		fmt.Println(`{"type":"turn.completed"}`)
+		return 0
+	case "unsupported-config":
+		fmt.Fprintln(os.Stderr, "Error: unknown variant `approve`, expected one of `auto`, `prompt`, `writes`\nin `mcp_servers.probe.tools.slow.approval_mode`")
+		return 1
+	case "trust-rejected":
+		fmt.Fprintln(os.Stderr, "error: unexpected argument '--trust' found")
+		return 2
+	}
+	if p := fakeEnv("LEADER"); p != "" {
+		if err := connectLeader(p); err != nil {
+			fmt.Fprintln(os.Stderr, "fake vendor: leader:", err)
+			return 1
+		}
+	}
 	switch mode {
 	case "hang", "resistant":
 		fakeReady("")
@@ -352,10 +395,26 @@ func fakeSession(args []string, cfgPath, caseID string) (string, error) {
 		return nil, io.ErrUnexpectedEOF
 	}
 	name, version := fakeEnv("CLIENT_NAME"), fakeEnv("CLIENT_VERSION")
-	send(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": map[string]any{"protocolVersion": mcpqual.ProtocolVersion,
+	requested := fakeEnv("PROTOCOL")
+	if requested == "" {
+		requested = mcpqual.ProtocolVersion
+	}
+	send(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": map[string]any{"protocolVersion": requested,
 		"capabilities": map[string]any{}, "clientInfo": map[string]any{"name": name, "version": version}}})
-	if _, err := await("1"); err != nil {
+	initRes, err := await("1")
+	if err != nil {
 		return "", err
+	}
+	var negotiated struct {
+		ProtocolVersion string `json:"protocolVersion"`
+	}
+	json.Unmarshal(initRes["result"], &negotiated)
+	if fakeEnv("PROTOCOL") != "" {
+		fmt.Fprintf(os.Stderr, "negotiated protocol %s for requested %s\n", negotiated.ProtocolVersion, requested)
+	}
+	if fakeEnv("DECLINE") == "1" && negotiated.ProtocolVersion != requested {
+		// A client that cannot use the selected version disconnects.
+		return "", fmt.Errorf("the server selected protocol %s; this client supports only %s", negotiated.ProtocolVersion, requested)
 	}
 	send(map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"})
 	send(map[string]any{"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
@@ -498,6 +557,21 @@ func fakeTranscript(format, outcome, caseID, resultText string) string {
 			return `{"status":"success","response":` + q(prose) + `,"events":[` + call + `,{"type":"tool_result","id":"g1","content":"","error":{"kind":"mcp_timeout"}}]}` + "\n"
 		}
 		return `{"status":"success","response":` + q(prose) + `,"events":[` + call + `,{"type":"tool_result","id":"g1","content":` + q(resultText) + `,"error":null}]}` + "\n"
+	case "grok-stream":
+		// Grok's streaming-json (ACP-derived, one type-tagged object per
+		// line): secret canaries in a structured rawInput member and inside
+		// an embedded JSON string of rawOutput, and numeric usage.
+		secret := fakeEnv("SECRET")
+		lines := []string{`{"type":"text","data":` + q(prose) + `}`,
+			`{"type":"tool_call","toolCallId":"call_1","title":"probe__slow","kind":"other","status":"in_progress","toolName":"probe__slow","rawInput":{"case_id":` + q(caseID) + `,"api_key":` + q(secret) + `},"content":[],"locations":[]}`,
+			`{"type":"tool_call_update","toolCallId":"call_1","status":"completed","rawOutput":{"content":[{"type":"text","text":` + q(resultText) + `}],"meta":` + q(`{"token":"`+secret+`"}`) + `},"content":[],"locations":[]}`,
+			`{"type":"usage","messageId":"resp_1","stopReason":"tool_use","usage":{"input_tokens":812,"output_tokens":45,"cache_read_input_tokens":0},"signature":"sig-1"}`}
+		if fakeEnv("MALFORMED") == "1" {
+			// A cut line with an escaped credential member: unsafe input.
+			lines = append(lines, `{"type":"tool_call_update","rawOutput":"{\"password\":\"`+secret)
+		}
+		lines = append(lines, `{"type":"end","stopReason":"end_turn","sessionId":"s-1","usage":{"input_tokens":900,"output_tokens":60},"num_turns":2}`)
+		return strings.Join(lines, "\n") + "\n"
 	case "cursor-jsonl":
 		lines := []string{`{"type":"system","subtype":"init"}`, `{"type":"assistant","message":{"content":[{"type":"text","text":` + q(prose) + `}]}}`}
 		start := `{"type":"tool_call","subtype":"started","call_id":"c1","tool_call":{"mcpToolCall":{"args":{"toolName":"slow","args":{"case_id":` + q(caseID) + `}}}}}`
@@ -514,4 +588,145 @@ func fakeTranscript(format, outcome, caseID, resultText string) string {
 		return strings.Join(lines, "\n") + "\n"
 	}
 	return ""
+}
+
+// sameDir reports whether p names the working directory.
+func sameDir(p string) bool {
+	wd, err1 := os.Stat(".")
+	other, err2 := os.Stat(p)
+	return err1 == nil && err2 == nil && os.SameFile(wd, other)
+}
+
+// flagValue is the argument after the only occurrence of flag (ok false
+// when absent or repeated).
+func flagValue(args []string, flag string) (string, bool) {
+	value, n := "", 0
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == flag {
+			value, n = args[i+1], n+1
+		}
+	}
+	return value, n == 1
+}
+
+// checkRecipe is the B1 recipes' own check of their invocation (design
+// decoder-enrollment B1): the exact scoped grant, workspace and
+// configuration, and nothing broader, or the session refuses before any
+// probe.
+func checkRecipe(args []string, caseID string) error {
+	for _, a := range args {
+		for _, bad := range []string{"--full-auto", "--dangerously", "--yolo", "--approve-mcps", "--ask-for-approval", "approval_policy", "--sandbox", "--force"} {
+			if strings.HasPrefix(a, bad) {
+				return fmt.Errorf("a broader grant %q", a)
+			}
+		}
+	}
+	prompt, _ := flagValue(args, "-p")
+	switch fakeEnv("RECIPE") {
+	case "codex":
+		var overrides []string
+		for i := 0; i+1 < len(args); i++ {
+			if args[i] == "-c" {
+				overrides = append(overrides, args[i+1])
+			}
+		}
+		ws, ok := flagValue(args, "-C")
+		cfg, err := os.ReadFile("probe-config.toml")
+		switch {
+		case !ok || !sameDir(ws) || err != nil:
+			return fmt.Errorf("workspace %q or its probe-config.toml snapshot (%v)", ws, err)
+		case len(overrides) != 4 || !strings.HasPrefix(overrides[0], "mcp_servers.probe.command=") || !strings.HasPrefix(overrides[1], "mcp_servers.probe.args=") ||
+			overrides[2] != `mcp_servers.probe.enabled_tools=["slow"]` || overrides[3] != `mcp_servers.probe.tools.slow.approval_mode="approve"`:
+			return fmt.Errorf("the overrides %q are not exactly the probe.slow grant", overrides)
+		case !strings.Contains(string(cfg), "enabled_tools = [\"slow\"]\n[mcp_servers.probe.tools.slow]\napproval_mode = \"approve\"\n"):
+			return fmt.Errorf("the configuration snapshot %q", cfg)
+		}
+	case "grok":
+		cwd, ok := flagValue(args, "--cwd")
+		format, _ := flagValue(args, "--output-format")
+		_, grokHome := os.LookupEnv("GROK_HOME")
+		_, cfgErr := os.Stat(filepath.Join(".grok", "config.toml"))
+		switch {
+		case len(args) == 0 || args[0] != "--trust" || strings.Count(strings.Join(args, "\x00"), "--trust") != 1:
+			return fmt.Errorf("no single global --trust in %q", args)
+		case !ok || !sameDir(cwd) || cfgErr != nil:
+			return fmt.Errorf("--cwd %q is not the workspace with its .grok/config.toml (%v)", cwd, cfgErr)
+		case format != "streaming-json" || !strings.Contains(prompt, "Call the MCP tool probe__slow exactly once") || !strings.Contains(prompt, caseID):
+			return fmt.Errorf("output %q or prompt %q", format, prompt)
+		case os.Getenv("HOME") != fakeEnv("EXPECT_HOME") || grokHome:
+			return fmt.Errorf("HOME %q or GROK_HOME changed", os.Getenv("HOME"))
+		}
+	case "cursor":
+		ws, ok := flagValue(args, "--workspace")
+		_, approved := os.Stat(filepath.Join(".cursor", "approved-servers.json"))
+		switch {
+		case len(args) == 0 || args[len(args)-1] != "--trust" || !ok || !sameDir(ws):
+			return fmt.Errorf("--workspace %q --trust is not the generated workspace", ws)
+		case approved != nil:
+			return fmt.Errorf("the session started before the workspace approval (%v)", approved)
+		case !strings.Contains(prompt, "Call the MCP tool slow exactly once"):
+			return fmt.Errorf("prompt %q", prompt)
+		}
+	}
+	return nil
+}
+
+// fakeEnable is "mcp enable probe": it writes the approved list where
+// FAKE_VENDOR_ENABLE says (the workspace by default, the owner's home or
+// the workspace's parent), does nothing, fails, or leaves a symbolic link.
+func fakeEnable() int {
+	wd, _ := os.Getwd()
+	write := func(dir string) {
+		os.MkdirAll(filepath.Join(dir, ".cursor"), 0o700)
+		os.WriteFile(filepath.Join(dir, ".cursor", "approved-servers.json"), []byte(`{"approved":["probe"]}`+"\n"), 0o600)
+	}
+	switch fakeEnv("ENABLE") {
+	case "", "workspace":
+		write(wd)
+	case "owner":
+		write(os.Getenv("HOME"))
+	case "ancestor":
+		write(filepath.Dir(wd))
+	case "noop":
+		fmt.Println("probe is already enabled")
+		return 0
+	case "fail":
+		fmt.Fprintln(os.Stderr, "error: cannot enable probe")
+		return 1
+	case "symlink":
+		write(wd)
+		os.Symlink("/", filepath.Join(wd, ".cursor", "link"))
+	}
+	fmt.Println("probe enabled")
+	return 0
+}
+
+// fakeLeader is a pre-existing owner service in the directory
+// FAKE_VENDOR_LEADER: forever, it reads one request from req.fifo and
+// answers "ok <request>" on ack.fifo, until its owner kills it.
+func fakeLeader() int {
+	dir := fakeEnv("LEADER")
+	fakeReady("leader")
+	for {
+		req, err := os.ReadFile(filepath.Join(dir, "req.fifo"))
+		if err != nil {
+			return 1
+		}
+		if err := os.WriteFile(filepath.Join(dir, "ack.fifo"), append([]byte("ok "), req...), 0o600); err != nil {
+			return 1
+		}
+	}
+}
+
+// connectLeader uses the owner's leader: one request and its answer.
+func connectLeader(dir string) error {
+	req := fmt.Sprintf("session %d\n", os.Getpid())
+	if err := os.WriteFile(filepath.Join(dir, "req.fifo"), []byte(req), 0o600); err != nil {
+		return err
+	}
+	ack, err := os.ReadFile(filepath.Join(dir, "ack.fifo"))
+	if err == nil && string(ack) != "ok "+req {
+		err = errors.New("unexpected leader answer " + string(ack))
+	}
+	return err
 }

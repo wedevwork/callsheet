@@ -324,6 +324,19 @@ var dceRequired = []struct {
 // dceNames lists every required decoder-enrollment name.
 func dceNames() []string { return requiredNames(dceRequired) }
 
+// b1Required are decoder-enrollment slice B1's four function parents in FP
+// order (FP-10..FP-13), a separate group after the slice A names; their
+// literal case inventories assert within each parent.
+var b1Required = []struct {
+	test string
+	subs []string
+}{
+	{"TestMCPCaptureProtocolNegotiation", nil}, {"TestMCPCaptureCodexApproval", nil}, {"TestMCPCaptureGrokRecipe", nil}, {"TestMCPCaptureCursorTrust", nil},
+}
+
+// b1Names lists every required slice B1 name.
+func b1Names() []string { return requiredNames(b1Required) }
+
 // realLocal is iteration 08's tagged sidecar contract with its five
 // subtests and iteration 11's four wave-2 subtests, required in the
 // sidecar package (NativeTaskProcessPackage).
@@ -366,7 +379,7 @@ func qualification() []evt {
 		evs = append(evs, ev("pass", NativePackage, fp6+"/"+s))
 	}
 	evs = append(evs, ev("pass", NativePackage, fp6))
-	for _, p := range append(append(append(append(append(append(append(append(append(append(append(append(append(append(append(append(planeRequired[:0:0], planeRequired...), nodeRequired...), roleRequired...), taskRequired...), controlRequired...), mcpRequired...), qualRequired...), realRequired...), wsRequired...), trRequired...), latRequired...), wsTaskRequired...), wsDoorRequired...), wave2Required...), nbwRequired...), dceRequired...) {
+	for _, p := range append(append(append(append(append(append(append(append(append(append(append(append(append(append(append(append(append(planeRequired[:0:0], planeRequired...), nodeRequired...), roleRequired...), taskRequired...), controlRequired...), mcpRequired...), qualRequired...), realRequired...), wsRequired...), trRequired...), latRequired...), wsTaskRequired...), wsDoorRequired...), wave2Required...), nbwRequired...), dceRequired...), b1Required...) {
 		evs = append(evs, ev("run", NativePackage, p.test))
 		for _, s := range p.subs {
 			evs = append(evs, ev("run", NativePackage, p.test+"/"+s), ev("pass", NativePackage, p.test+"/"+s))
@@ -536,7 +549,7 @@ func TestNativeStepsAndUnsupportedOS(t *testing.T) {
 		"TestControlNativeGroups/orphan-restart,TestControlNativeGroups/plane-restart,"+
 		"TestControlCancellation,TestControlExecutionTimeout,TestControlBoundedWait,TestControlForceRemove,"+strings.Join(mcpNames(), ",")+","+strings.Join(qualNames(), ",")+
 		","+strings.Join(realNames(), ",")+","+strings.Join(wsNames(), ",")+","+strings.Join(trNames(), ",")+","+strings.Join(latNames(), ",")+","+strings.Join(wsTaskNames(), ",")+","+strings.Join(wsDoorNames(), ",")+
-		","+strings.Join(wave2Names(), ",")+","+strings.Join(nbwNames(), ",")+","+strings.Join(dceNames(), ",") || len(req) != 312+11+10+2+12+6+42+8+9 {
+		","+strings.Join(wave2Names(), ",")+","+strings.Join(nbwNames(), ",")+","+strings.Join(dceNames(), ",")+","+strings.Join(b1Names(), ",") || len(req) != 312+11+10+2+12+6+42+8+9+4 {
 		t.Fatalf("required = %v", req)
 	}
 	req[0] = "mutated"
@@ -1074,7 +1087,7 @@ func TestNativeQualificationEvidence(t *testing.T) {
 		t.Fatalf("complete evidence: %v", err)
 	}
 	req := NativeRequiredTests()
-	if n := len(qualNames()); n != 8+43 || len(req) != 222+n+len(realNames())+len(wsNames())+len(trNames())+len(latNames())+len(wsTaskNames())+len(wsDoorNames())+len(wave2Names())+len(nbwNames())+len(dceNames()) || strings.Join(req[222:273], ",") != strings.Join(qualNames(), ",") ||
+	if n := len(qualNames()); n != 8+43 || len(req) != 222+n+len(realNames())+len(wsNames())+len(trNames())+len(latNames())+len(wsTaskNames())+len(wsDoorNames())+len(wave2Names())+len(nbwNames())+len(dceNames())+len(b1Names()) || strings.Join(req[222:273], ",") != strings.Join(qualNames(), ",") ||
 		strings.Join(req[145:222], ",") != strings.Join(mcpNames(), ",") {
 		t.Fatalf("%d 07b names; native suffix %v", n, req[222:])
 	}
@@ -1120,7 +1133,7 @@ func TestNativeNonblockingWaitEvidence(t *testing.T) {
 	req := NativeRequiredTests()
 	// The eight names stay a bounded segment (395..403) before the
 	// decoder-enrollment group.
-	if n := len(nbwNames()); n != 8 || len(req) != 412 || strings.Join(req[395:403], ",") != strings.Join(nbwNames(), ",") ||
+	if n := len(nbwNames()); n != 8 || len(req) != 416 || strings.Join(req[395:403], ",") != strings.Join(nbwNames(), ",") ||
 		strings.Join(req[353:395], ",") != strings.Join(wave2Names(), ",") {
 		t.Fatalf("%d names; segment %v", len(req), req[395:403])
 	}
@@ -1144,18 +1157,19 @@ func TestNativeNonblockingWaitEvidence(t *testing.T) {
 
 // TestNativeDecoderEnrollmentEvidence (design decoder-enrollment): the
 // nine function parents are required by exact name after the 403 earlier
-// names, unchanged and first (412 in all); a missing, failed or skipped
-// parent fails naming it, and a parent passing in another package never
-// satisfies it.
+// names, unchanged and first (412 then; the slice B1 group follows them,
+// 416 in all); a missing, failed or skipped parent fails naming it, and a
+// parent passing in another package never satisfies it.
 func TestNativeDecoderEnrollmentEvidence(t *testing.T) {
 	q := qualification()
 	if err := check(stream(q...)); err != nil {
 		t.Fatalf("complete evidence: %v", err)
 	}
 	req := NativeRequiredTests()
-	if n := len(dceNames()); n != 9 || len(req) != 412 || strings.Join(req[403:], ",") != strings.Join(dceNames(), ",") ||
+	// The nine names stay a bounded segment (403..412) before the B1 group.
+	if n := len(dceNames()); n != 9 || len(req) != 416 || strings.Join(req[403:412], ",") != strings.Join(dceNames(), ",") ||
 		strings.Join(req[395:403], ",") != strings.Join(nbwNames(), ",") {
-		t.Fatalf("%d names; suffix %v", len(req), req[403:])
+		t.Fatalf("%d names; segment %v", len(req), req[403:412])
 	}
 	for _, name := range dceNames() {
 		mustFail(t, "missing "+name, stream(without(without(q, "run", name), "pass", name)...), name+" has no run event", unobserved)
@@ -1176,5 +1190,39 @@ func TestNativeDecoderEnrollmentEvidence(t *testing.T) {
 	tail := NativeBenchSteps()
 	if len(tail) != 5 || strings.Join(tail[4].Argv, " ") != strings.Join(MCPQualBenchStep().Argv, " ") || tail[4].Name != "bench mcpqual" {
 		t.Fatalf("native tail %+v", tail)
+	}
+}
+
+// TestNativeDecoderEnrollmentB1Evidence (design decoder-enrollment B1):
+// the four function parents of FP-10..FP-13 are required by exact name, in
+// FP order, after the 412 earlier names, unchanged and first (416 in all);
+// a missing, failed or skipped parent fails naming it, and a parent
+// passing in another package never satisfies it. Native ordinary calls,
+// benchmark steps and the native benchmark tail are unchanged.
+func TestNativeDecoderEnrollmentB1Evidence(t *testing.T) {
+	q := qualification()
+	if err := check(stream(q...)); err != nil {
+		t.Fatalf("complete evidence: %v", err)
+	}
+	req := NativeRequiredTests()
+	want := []string{"TestMCPCaptureProtocolNegotiation", "TestMCPCaptureCodexApproval", "TestMCPCaptureGrokRecipe", "TestMCPCaptureCursorTrust"}
+	if len(req) != 416 || !slices.Equal(req[412:], want) || !slices.Equal(b1Names(), want) || strings.Join(req[403:412], ",") != strings.Join(dceNames(), ",") {
+		t.Fatalf("%d names; suffix %v", len(req), req[412:])
+	}
+	for _, name := range want {
+		mustFail(t, "missing "+name, stream(without(without(q, "run", name), "pass", name)...), name+" has no run event", unobserved)
+		mustFail(t, "no pass "+name, stream(without(q, "pass", name)...), name+" has no pass event", unobserved)
+		mustFail(t, "skipped "+name, stream(replacing(q, "pass", name, ev("skip", NativePackage, name))...), "test "+name+" in "+NativePackage+" skipped: "+unobserved)
+		mustFail(t, "failed "+name, stream(replacing(q, "pass", name, ev("fail", NativePackage, name))...), "test "+name+" in "+NativePackage+" failed")
+		if err := check(stream(without(without(q, "run", name), "pass", name)...)); strings.Count(err.Error(), " has no ") != 1 {
+			t.Fatalf("missing %s: %v", name, err)
+		}
+	}
+	other := "github.com/wedevwork/callsheet/internal/mcpqual"
+	moved := append(without(without(q, "run", "TestMCPCaptureGrokRecipe"), "pass", "TestMCPCaptureGrokRecipe"),
+		ev("start", other, ""), ev("run", other, "TestMCPCaptureGrokRecipe"), ev("pass", other, "TestMCPCaptureGrokRecipe"), ev("pass", other, ""))
+	mustFail(t, "moved", stream(moved...), "TestMCPCaptureGrokRecipe has no run event")
+	if _, err := NativeSteps("darwin"); err != nil || len(BenchSteps()) != 13 || len(NativeBenchSteps()) != 5 {
+		t.Fatalf("native steps %v, %d bench steps", err, len(BenchSteps()))
 	}
 }

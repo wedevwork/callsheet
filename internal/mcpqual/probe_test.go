@@ -15,23 +15,26 @@ import (
 // and EOF, all on a fake clock advanced only after the expected timer or
 // ticker is armed. No real process and no real wait.
 
+// The handshake sequence: requests before initialize, an invalid
+// initialize, the valid one, a duplicate and discovery. (Design
+// decoder-enrollment B1 split the old unsupported-version vector out: an
+// older version now initializes; TestProbeNegotiation covers it in its own
+// session.)
 func TestProbeHandshake(t *testing.T) {
 	h := startProbe(t, testCases())
 	h.send(`{"jsonrpc":"2.0","id":1,"method":"ping"}`,
 		`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`,
-		`{"jsonrpc":"2.0","id":3,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"x","version":"1"}}}`,
 		`{"jsonrpc":"2.0","id":4,"method":"initialize","params":{"protocolVersion":"2025-06-18","clientInfo":{"name":"x","version":"1"}}}`,
 		`{"jsonrpc":"2.0","id":5,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"Claude Code (probe)","version":"2.1.282 beta"}}}`,
 		`{"jsonrpc":"2.0","id":6,"method":"tools/list"}`,
 		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
 		`{"jsonrpc":"2.0","id":7,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"x","version":"1"}}}`,
 		`{"jsonrpc":"2.0","id":8,"method":"tools/list"}`)
-	lines := h.out.await(t, "eight answers", countLines(`"jsonrpc":"2.0","id":`, 8))
+	lines := h.out.await(t, "seven answers", countLines(`"jsonrpc":"2.0","id":`, 7))
 	want := []string{
 		`{"jsonrpc":"2.0","id":1,"result":{}}`,
 		`{"jsonrpc":"2.0","id":2,"error":{"code":-32602,"message":"invalid params: the session is not initialized"}}`,
-		`{"jsonrpc":"2.0","id":3,"error":{"code":-32602,"message":"invalid params: unsupported protocol version; this probe accepts 2025-06-18 only"}}`,
-		`{"jsonrpc":"2.0","id":4,"error":{"code":-32602,"message":"invalid params: initialize needs protocolVersion, capabilities and clientInfo name and version strings"}}`,
+		`{"jsonrpc":"2.0","id":4,"error":{"code":-32602,"message":"invalid params: initialize needs a nonempty protocolVersion string, capabilities and clientInfo name and version strings"}}`,
 		`{"jsonrpc":"2.0","id":5,"result":{"capabilities":{"tools":{"listChanged":false}},"protocolVersion":"2025-06-18","serverInfo":{"name":"mcpqual","version":"test"}}}`,
 		`{"jsonrpc":"2.0","id":6,"error":{"code":-32602,"message":"invalid params: the session is not initialized"}}`,
 		`{"jsonrpc":"2.0","id":7,"error":{"code":-32600,"message":"invalid request: already initialized"}}`,
@@ -46,8 +49,200 @@ func TestProbeHandshake(t *testing.T) {
 		t.Fatal(err)
 	}
 	evs := parseEvents(t, h.events.snapshot())
-	if kinds(evs) != "start,initialize,eof,exit" || *evs[1].ClientName != "Claude Code (probe)" || *evs[1].ClientVersion != "2.1.282 beta" {
+	if kinds(evs) != "start,initialize,eof,exit" || *evs[1].ClientName != "Claude Code (probe)" || *evs[1].ClientVersion != "2.1.282 beta" ||
+		*evs[1].RequestedProtocolVersion != ProtocolVersion || *evs[1].SelectedProtocolVersion != ProtocolVersion {
 		t.Fatalf("events %+v", evs)
+	}
+}
+
+// UT-10 (design decoder-enrollment B1, FP-10): each requested version,
+// the same, an older and an unknown newer one, in its own session, is
+// answered with exactly ProtocolVersion; the initialize event records the
+// exact requested string and the selected constant; the session then
+// initializes and completes a slow call. A client that disconnects after
+// the answer leaves no receipt and no simulated one.
+func TestProbeNegotiation(t *testing.T) {
+	for _, tc := range []struct{ name, requested string }{
+		{"same", ProtocolVersion},
+		{"older", "2024-11-05"},
+		{"newer", "2099-01-01"},
+		{"opaque", "draft \"x\" / not a date"},
+	} {
+		h := startProbe(t, testCases())
+		q, _ := encodeJSON(tc.requested)
+		h.send(`{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":` + string(q) + `,"capabilities":{},"clientInfo":{"name":"c","version":"1"}}}`)
+		lines := h.out.await(t, tc.name+" answer", hasLine(`"id":0,`))
+		if lines[0] != `{"jsonrpc":"2.0","id":0,"result":{"capabilities":{"tools":{"listChanged":false}},"protocolVersion":"2025-06-18","serverInfo":{"name":"mcpqual","version":"test"}}}` {
+			t.Fatalf("%s: %s", tc.name, lines[0])
+		}
+		h.send(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)
+		h.call("1", "zero", "")
+		h.out.await(t, tc.name+" result", hasLine(`"id":1,"result"`))
+		if err := h.end(); err != nil {
+			t.Fatal(err)
+		}
+		evs := parseEvents(t, h.events.snapshot())
+		ev := evs[1]
+		if kinds(evs) != "start,initialize,receipt,scheduled,completed,eof,exit" || *ev.RequestedProtocolVersion != tc.requested || *ev.SelectedProtocolVersion != ProtocolVersion {
+			t.Fatalf("%s: events %s %+v", tc.name, kinds(evs), ev)
+		}
+		raw := strings.Join(h.events.snapshot(), "\n")
+		if !strings.Contains(raw, `"selected_protocol_version":"2025-06-18"`) || !strings.Contains(raw, `"requested_protocol_version":`+string(q)) {
+			t.Fatalf("%s: raw events %s", tc.name, raw)
+		}
+	}
+	// The client declines the answer and disconnects: no receipt.
+	h := startProbe(t, testCases())
+	h.send(`{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2099-01-01","capabilities":{},"clientInfo":{"name":"c","version":"1"}}}`)
+	h.out.await(t, "answer", hasLine(`"id":0,`))
+	if err := h.end(); err != nil {
+		t.Fatal(err)
+	}
+	if evs := parseEvents(t, h.events.snapshot()); kinds(evs) != "start,initialize,eof,exit" {
+		t.Fatalf("declined: %s", kinds(evs))
+	}
+}
+
+// UT-10: a missing, null, empty or non-string protocolVersion, a
+// non-object capabilities and incomplete clientInfo are invalid params
+// (no initialize event, never initialized); a duplicate initialize after a
+// negotiated one is an invalid request.
+func TestProbeInitializeInvalid(t *testing.T) {
+	const msg = `{"code":-32602,"message":"invalid params: initialize needs a nonempty protocolVersion string, capabilities and clientInfo name and version strings"}`
+	h := startProbe(t, testCases())
+	bad := []string{
+		`{"capabilities":{},"clientInfo":{"name":"c","version":"1"}}`,
+		`{"protocolVersion":null,"capabilities":{},"clientInfo":{"name":"c","version":"1"}}`,
+		`{"protocolVersion":"","capabilities":{},"clientInfo":{"name":"c","version":"1"}}`,
+		`{"protocolVersion":20250618,"capabilities":{},"clientInfo":{"name":"c","version":"1"}}`,
+		`{"protocolVersion":["2025-06-18"],"capabilities":{},"clientInfo":{"name":"c","version":"1"}}`,
+		`{"protocolVersion":"2024-11-05","capabilities":[],"clientInfo":{"name":"c","version":"1"}}`,
+		`{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"c"}}`,
+		`{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":1,"version":"1"}}`,
+		`{"protocolVersion":"2024-11-05","capabilities":{}}`,
+	}
+	for i, params := range bad {
+		id := strconv.Itoa(i + 10)
+		h.send(`{"jsonrpc":"2.0","id":` + id + `,"method":"initialize","params":` + params + `}`)
+		lines := h.out.await(t, params, hasLine(`"id":`+id+`,`))
+		if last := lines[len(lines)-1]; last != `{"jsonrpc":"2.0","id":`+id+`,"error":`+msg+`}` {
+			t.Fatalf("%s -> %s", params, last)
+		}
+	}
+	h.send(`{"jsonrpc":"2.0","id":30,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"c","version":"1"}}}`,
+		`{"jsonrpc":"2.0","id":31,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"c","version":"1"}}}`)
+	lines := h.out.await(t, "duplicate", hasLine(`"id":31,`))
+	if last := lines[len(lines)-1]; last != `{"jsonrpc":"2.0","id":31,"error":{"code":-32600,"message":"invalid request: already initialized"}}` {
+		t.Fatalf("duplicate -> %s", last)
+	}
+	if err := h.end(); err != nil {
+		t.Fatal(err)
+	}
+	evs := parseEvents(t, h.events.snapshot())
+	if kinds(evs) != "start,initialize,eof,exit" || *evs[1].RequestedProtocolVersion != "2024-11-05" {
+		t.Fatalf("events %s", kinds(evs))
+	}
+}
+
+// UT-10: ParseProbeEvents' negotiation rules: both fields absent on an
+// initialize event (a legacy log) is accepted, exactly one is rejected,
+// both must be nonempty with the selected one ProtocolVersion, and either
+// field on another event is rejected; unknown fields stay rejected.
+func TestProbeEventsNegotiation(t *testing.T) {
+	name, ver := "c", "1"
+	s := func(v string) *string { return &v }
+	log := func(init ProbeEvent) []byte {
+		init.Kind, init.ClientName, init.ClientVersion = EvInitialize, &name, &ver
+		return []byte(probeLog("r", ProbeEvent{Kind: EvStart}, init, ProbeEvent{Kind: EvExit}))
+	}
+	if evs, intact, err := ParseProbeEvents(log(ProbeEvent{})); err != nil || !intact || evs[1].RequestedProtocolVersion != nil {
+		t.Fatalf("legacy log: %v", err)
+	}
+	if evs, _, err := ParseProbeEvents(log(ProbeEvent{RequestedProtocolVersion: s("2099-01-01"), SelectedProtocolVersion: s(ProtocolVersion)})); err != nil || *evs[1].RequestedProtocolVersion != "2099-01-01" {
+		t.Fatalf("negotiated log: %v", err)
+	}
+	for label, ev := range map[string]ProbeEvent{
+		"requested only": {RequestedProtocolVersion: s(ProtocolVersion)},
+		"selected only":  {SelectedProtocolVersion: s(ProtocolVersion)},
+		"empty request":  {RequestedProtocolVersion: s(""), SelectedProtocolVersion: s(ProtocolVersion)},
+		"other selected": {RequestedProtocolVersion: s(ProtocolVersion), SelectedProtocolVersion: s("2024-11-05")},
+		"empty selected": {RequestedProtocolVersion: s(ProtocolVersion), SelectedProtocolVersion: s("")},
+	} {
+		if _, _, err := ParseProbeEvents(log(ev)); err == nil {
+			t.Fatalf("%s accepted", label)
+		}
+	}
+	other := []byte(probeLog("r", ProbeEvent{Kind: EvStart}, ProbeEvent{Kind: EvEOF, SelectedProtocolVersion: s(ProtocolVersion)}, ProbeEvent{Kind: EvExit}))
+	if _, _, err := ParseProbeEvents(other); err == nil || !strings.Contains(err.Error(), "eof event carries protocol version members") {
+		t.Fatalf("a field on another event: %v", err)
+	}
+	// Raw JSON (code review B1 round 1, C2): an explicit null is a present
+	// member, not an absent one, and must be a nonempty string; a decoded
+	// ProbeEvent cannot show the difference, so these are raw lines.
+	start := `{"seq":1,"kind":"start","offset_ns":0,"run_id":"r"}`
+	exit := `{"seq":3,"kind":"exit","offset_ns":2,"run_id":"r"}`
+	init := `{"seq":2,"kind":"initialize","offset_ns":1,"run_id":"r","client_name":"c","client_version":"1"`
+	// u is a JSON \u escape introducer, built at run time so that no tool
+	// or editor can turn the vectors' escapes into plain letters (code
+	// review B1 round 2, W1: the earlier "escaped" vectors were not).
+	u := string(rune(92)) + "u"
+	reqEsc := `"requested_protocol_versio` + u + `006e"` // ...version, the n escaped
+	selEsc := `"selected_protocol` + u + `005fversion"`  // no literal "_version" bytes
+	for _, s := range []string{reqEsc, selEsc} {
+		if !strings.Contains(s, string(rune(92))) || strings.Contains(s, "_version") && s == selEsc {
+			t.Fatalf("vector %s is not escaped", s)
+		}
+	}
+	for name, tc := range map[string]struct {
+		line string
+		ok   bool
+	}{
+		"legacy":           {init + `}`, true},
+		"negotiated":       {init + `,"requested_protocol_version":"2099-01-01","selected_protocol_version":"2025-06-18"}`, true},
+		"escaped-key":      {init + `,` + reqEsc + `:"2099-01-01",` + selEsc + `:"2025-06-18"}`, true},
+		"escaped-null":     {init + `,` + reqEsc + `:null,` + selEsc + `:null}`, false},
+		"escaped-req-only": {init + `,` + reqEsc + `:"2099-01-01"}`, false},
+		"eof-escaped":      {`{"seq":2,"kind":"eof","offset_ns":1,"run_id":"r",` + selEsc + `:"2025-06-18"}`, false},
+		"eof-escaped-null": {`{"seq":2,"kind":"eof","offset_ns":1,"run_id":"r",` + selEsc + `:null}`, false},
+		// Code review B1 round 2, C2: encoding/json matches member names
+		// case-insensitively, so case variants are judged as the value the
+		// decoder took, and a later alias overriding a canonical member
+		// (here with null) is refused, never dereferenced.
+		"eof-upper":            {`{"seq":2,"kind":"eof","offset_ns":1,"run_id":"r","SELECTED_PROTOCOL_VERSION":"2025-06-18"}`, false},
+		"eof-mixed":            {`{"seq":2,"kind":"eof","offset_ns":1,"run_id":"r","Requested_Protocol_Version":"x"}`, false},
+		"init-upper-req-only":  {init + `,"REQUESTED_PROTOCOL_VERSION":"2099-01-01"}`, false},
+		"init-mixed-pair":      {init + `,"Requested_Protocol_Version":"2099-01-01","SELECTED_protocol_version":"2025-06-18"}`, true},
+		"alias-null-selected":  {init + `,"requested_protocol_version":"2099-01-01","selected_protocol_version":"2025-06-18","SELECTED_PROTOCOL_VERSION":null}`, false},
+		"alias-null-requested": {init + `,"requested_protocol_version":"2099-01-01","selected_protocol_version":"2025-06-18","Requested_Protocol_Version":null}`, false},
+		"alias-other-selected": {init + `,"requested_protocol_version":"2099-01-01","selected_protocol_version":"2025-06-18","SELECTED_PROTOCOL_VERSION":"2024-11-05"}`, false},
+		"alias-empty-request":  {init + `,"requested_protocol_version":"2099-01-01","selected_protocol_version":"2025-06-18","REQUESTED_PROTOCOL_VERSION":""}`, false},
+		"requested-null":       {init + `,"requested_protocol_version":null}`, false},
+		"selected-null":        {init + `,"selected_protocol_version":null}`, false},
+		"both-null":            {init + `,"requested_protocol_version":null,"selected_protocol_version":null}`, false},
+		"requested-null-pair":  {init + `,"requested_protocol_version":null,"selected_protocol_version":"2025-06-18"}`, false},
+		"selected-null-pair":   {init + `,"requested_protocol_version":"2099-01-01","selected_protocol_version":null}`, false},
+		"empty-pair":           {init + `,"requested_protocol_version":"","selected_protocol_version":"2025-06-18"}`, false},
+		"eof-null":             {`{"seq":2,"kind":"eof","offset_ns":1,"run_id":"r","requested_protocol_version":null}`, false},
+		"eof-both-null":        {`{"seq":2,"kind":"eof","offset_ns":1,"run_id":"r","requested_protocol_version":null,"selected_protocol_version":null}`, false},
+		"eof-empty":            {`{"seq":2,"kind":"eof","offset_ns":1,"run_id":"r","selected_protocol_version":""}`, false},
+		"receipt-string":       {`{"seq":2,"kind":"receipt","offset_ns":1,"run_id":"r","case_id":"x","selected_protocol_version":"2025-06-18"}`, false},
+	} {
+		err := func() (err error) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("%s: ParseProbeEvents panicked: %v", name, r)
+				}
+			}()
+			_, _, err = ParseProbeEvents([]byte(start + "\n" + tc.line + "\n" + exit + "\n"))
+			return err
+		}()
+		if (err == nil) != tc.ok {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	unknown := []byte(strings.Replace(string(log(ProbeEvent{})), `"kind":"initialize"`, `"kind":"initialize","protocol":"x"`, 1))
+	if _, _, err := ParseProbeEvents(unknown); err == nil {
+		t.Fatal("an unknown field was accepted")
 	}
 }
 

@@ -41,7 +41,62 @@ type ProbeEvent struct {
 	Progress      int             `json:"progress,omitempty"`
 	ClientName    *string         `json:"client_name,omitempty"`
 	ClientVersion *string         `json:"client_version,omitempty"`
-	Reason        string          `json:"reason,omitempty"`
+	// RequestedProtocolVersion and SelectedProtocolVersion are an
+	// initialize event's negotiation (design decoder-enrollment B1, FP-10):
+	// the client's exact requested string and the probe's answer. Both are
+	// absent in a legacy log.
+	RequestedProtocolVersion *string `json:"requested_protocol_version,omitempty"`
+	SelectedProtocolVersion  *string `json:"selected_protocol_version,omitempty"`
+	Reason                   string  `json:"reason,omitempty"`
+}
+
+// negotiationMembers are the protocol version members exactly as the
+// event decoder sees them: encoding/json matches member names to these
+// tags with its own rules (escapes, case folding, the last of several
+// matches wins), and a json.RawMessage keeps a present value verbatim,
+// an explicit null included, and stays nil only when no member matched.
+type negotiationMembers struct {
+	Requested json.RawMessage `json:"requested_protocol_version"`
+	Selected  json.RawMessage `json:"selected_protocol_version"`
+}
+
+// checkNegotiation applies the protocol fields' rules to one event line:
+// on an initialize event both members absent (a legacy log) or both
+// present as nonempty strings with the selected one ProtocolVersion; on
+// any other event neither member. Presence and value come from decoding
+// the line again with the decoder's own member matching (code review B1
+// rounds 1 and 2, C2): an explicit null, an escaped, upper- or mixed-case
+// spelling, or a later alias overriding a canonical member is judged as
+// the value the event decoder actually took, never as an absent member,
+// and the decoded pointers are never dereferenced here.
+func checkNegotiation(ev ProbeEvent, line []byte) error {
+	var m negotiationMembers
+	if err := json.Unmarshal(line, &m); err != nil {
+		return err
+	}
+	reqPresent, selPresent := m.Requested != nil, m.Selected != nil
+	_, reqOK := nonemptyJSONString(m.Requested)
+	sel, selOK := nonemptyJSONString(m.Selected)
+	switch {
+	case ev.Kind != EvInitialize && (reqPresent || selPresent):
+		return fmt.Errorf("a %s event carries protocol version members", ev.Kind)
+	case reqPresent != selPresent:
+		return errors.New("an initialize event carries only one of the requested and selected protocol versions")
+	case reqPresent && (!reqOK || !selOK || sel != ProtocolVersion):
+		return fmt.Errorf("an initialize event's protocol versions are not a nonempty requested string and the selected %s", ProtocolVersion)
+	}
+	return nil
+}
+
+// nonemptyJSONString decodes raw as a nonempty JSON string (null, another
+// type or "" is not one).
+func nonemptyJSONString(raw json.RawMessage) (string, bool) {
+	raw = bytes.TrimSpace(raw)
+	var s string
+	if len(raw) == 0 || raw[0] != '"' || json.Unmarshal(raw, &s) != nil || s == "" {
+		return "", false
+	}
+	return s, true
 }
 
 // errLogExhausted ends the probe: its event file reached its bound.
@@ -117,6 +172,9 @@ func ParseProbeEvents(b []byte) (evs []ProbeEvent, intact bool, err error) {
 		}
 		var ev ProbeEvent
 		if err := decodeStrict(line, &ev); err != nil {
+			return nil, false, fmt.Errorf("probe events line %d: %w", i+1, err)
+		}
+		if err := checkNegotiation(ev, line); err != nil {
 			return nil, false, fmt.Errorf("probe events line %d: %w", i+1, err)
 		}
 		if ev.Kind == EvStart && ev.Seq == 1 {

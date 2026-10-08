@@ -262,13 +262,9 @@ func capture(ctx context.Context, env Env, args []string) int {
 	if _, err := io.ReadFull(env.Rand, rnd); err != nil {
 		return fail(env, err)
 	}
-	now := env.Now().UTC()
 	ctx, stop := env.Notify(ctx)
 	defer stop()
-	c := &CaptureRunner{Plan: plan, OutDir: *out, GOOS: env.GOOS, GOARCH: env.GOARCH, ServerPath: env.Executable, BaseEnv: withoutCI(env.Environ),
-		Launcher: env.Launcher, Reaper: GroupReaper{Sig: env.Signaler, Clock: env.Clock, Policy: policy}, Clock: env.Clock, Log: env.Stderr,
-		RunID: now.Format("20060102T150405Z") + "-" + hex.EncodeToString(rnd[:3]), Nonce: hex.EncodeToString(rnd[3:19]), CapturedAt: now,
-		HarnessVersion: HarnessVersion, Home: env.Home, User: env.User}
+	c := newCaptureRunner(env, plan, *out, policy, rnd)
 	man, err := c.Run(ctx)
 	if err != nil {
 		if contract.ExitCode(err) != 1 {
@@ -284,6 +280,18 @@ func capture(ctx context.Context, env Env, args []string) int {
 	fmt.Fprintf(env.Stdout, "mcpqual: run %s: %s; vendor behavior not evaluated; manifest %s (exit %d)\n", man.RunID, status,
 		filepath.Join(*out, CaptureManifestName), man.ExitCode())
 	return man.ExitCode()
+}
+
+// newCaptureRunner is the production capture runner, built only from Env
+// and the parsed invocation. It never sets GrokPlacementFS (the placement
+// gate always observes the real filesystem) nor any other test seam
+// (design decoder-enrollment B1, production wiring pin).
+func newCaptureRunner(env Env, plan *Plan, out string, policy CleanupPolicy, rnd []byte) *CaptureRunner {
+	now := env.Now().UTC()
+	return &CaptureRunner{Plan: plan, OutDir: out, GOOS: env.GOOS, GOARCH: env.GOARCH, ServerPath: env.Executable, BaseEnv: withoutCI(env.Environ),
+		Launcher: env.Launcher, Reaper: GroupReaper{Sig: env.Signaler, Clock: env.Clock, Policy: policy}, Clock: env.Clock, Log: env.Stderr,
+		RunID: now.Format("20060102T150405Z") + "-" + hex.EncodeToString(rnd[:3]), Nonce: hex.EncodeToString(rnd[3:19]), CapturedAt: now,
+		HarnessVersion: HarnessVersion, Home: env.Home, User: env.User}
 }
 
 func withoutCI(environ []string) []string {

@@ -570,6 +570,28 @@ normal hosted runner, and runners up to 1.6–2× slower were observed, so a
 warm, cross targets cold: 94.0 and 104.5 s before, 86.0 and 88.1 s after,
 2026-10-02); the limit stays 300 s.
 
+Decoder enrollment, slice B1 (the probe's protocol negotiation, Codex's
+invocation-only `probe.slow` approval, Grok's trusted project recipe and
+its placement gate, Cursor's trusted workspace and its one `mcp enable
+probe` preparation) appends one function parent per new FP (FP-10 to
+FP-13) as a separate group, 4 more names, 416 in all, with the 412 earlier
+names unchanged and first (the slice A names keep positions 403 to 412):
+`TestMCPCaptureProtocolNegotiation`, `TestMCPCaptureCodexApproval`,
+`TestMCPCaptureGrokRecipe` and `TestMCPCaptureCursorTrust`. Each asserts
+its literal case inventory and that every case completed; they run the
+fake vendor and the real probe (never an installed vendor CLI or a model),
+FP-12 through the production capture runner in process with an injected
+placement-filesystem view, and only in the normal, race and native suites,
+never in a stress shard. The new `internal/mcpqual` unit vectors are
+injected and fake-clock only and run in that package's unchanged per-CPU
+invocations of `stress-packages-cpu`. `devcheck native` still makes 9
+ordinary calls, `devcheck bench` keeps 13 steps (`BenchmarkMCPCaptureEvidence`
+gains only a 1 KiB fingerprint subcase), cross keeps 12 artifacts, and the
+whole-file coverage manifest adds `internal/mcpqual/probe.go`, `events.go`,
+`capture_approval.go` and `capture_approval_unix.go`. The workflow keeps
+its twenty jobs, four required checks, commands, stress selectors, counts,
+CPU lists and timeouts; B1 makes no new budget allocation.
+
 Cross-build matrix (FP-8; moved out of `tests/function` on 2026-10-02).
 `devcheck cross` is FP-8's proof. It builds callsheet, fake-adapter and the
 process-group test binary (`go test -c`) with `CGO_ENABLED=0` for

@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -141,6 +143,11 @@ func BenchmarkMCPQualificationProbe(b *testing.B) {
 	if err != nil || !intact || strings.Count(kinds(evs), "receipt") != b.N || strings.Count(kinds(evs), "completed") != b.N || strings.Contains(kinds(evs), "eof,") && evs[len(evs)-2].CaseID != "" {
 		b.Fatalf("events %v intact=%v: %s", err, intact, kinds(evs)[:min(200, len(kinds(evs)))])
 	}
+	// The initialization evidence records the negotiation (design
+	// decoder-enrollment B1, FP-10).
+	if init := evs[1]; init.Kind != EvInitialize || init.RequestedProtocolVersion == nil || *init.RequestedProtocolVersion != ProtocolVersion || *init.SelectedProtocolVersion != ProtocolVersion {
+		b.Fatalf("initialize event %+v", init)
+	}
 }
 
 // benchTranscript is a transcript of JSON lines, one in sixteen with a
@@ -226,6 +233,51 @@ func BenchmarkMCPCaptureEvidence(b *testing.B) {
 			b.ReportMetric(float64(n), "bytes/op")
 		})
 	}
+	// Design decoder-enrollment B1: the Cursor approval's bounded
+	// before/after fingerprint over a fixed small tree (1 KiB of regular
+	// files in eight files), from disk, with the comparison; the change
+	// inventory is exact and deterministic and exports no fingerprint or
+	// file content.
+	b.Run("fingerprint/1024B", func(b *testing.B) {
+		before, after := filepath.Join(b.TempDir(), "before"), filepath.Join(b.TempDir(), "after")
+		for _, root := range []string{before, after} {
+			for i := 0; i < 8; i++ {
+				p := filepath.Join(root, ".cursor", fmt.Sprintf("state-%d.json", i))
+				os.MkdirAll(filepath.Dir(p), 0o700)
+				body := fmt.Sprintf(`{"n":%d,"token":"bench-fingerprint-secret"}`, i)
+				os.WriteFile(p, []byte(body+strings.Repeat(" ", 128-len(body)-1)+"\n"), 0o600)
+			}
+		}
+		os.WriteFile(filepath.Join(after, ".cursor", "state-3.json"), bytes.Repeat([]byte("x"), 127), 0o600)
+		os.WriteFile(filepath.Join(after, ".cursor", "approved.json"), []byte(`["probe"]`), 0o600)
+		sc, err := newApprovalScanner(nil, ApprovalScanLimits{})
+		if err != nil {
+			b.Fatal(err)
+		}
+		want := []CaptureApprovalChange{{"<workspace>/.cursor/approved.json", ChangeAdded}, {"<workspace>/.cursor/state-3.json", ChangeModified}}
+		b.ReportAllocs()
+		b.SetBytes(1024)
+		var got []approvalChange
+		var pre *snapshot
+		for i := 0; i < b.N; i++ {
+			pre = sc.snapshot([]scanRoot{{label: labelWorkspace, path: before}})
+			got = diffSnapshots(pre, sc.snapshot([]scanRoot{{label: labelWorkspace, path: after}}))
+		}
+		b.StopTimer()
+		var changes []CaptureApprovalChange
+		for _, c := range got {
+			changes = append(changes, c.CaptureApprovalChange)
+		}
+		raw, _ := json.Marshal(changes)
+		switch {
+		case !pre.complete || pre.bytes != 1024 || pre.count != 10:
+			b.Fatalf("the snapshot %+v", pre)
+		case !slices.Equal(changes, want):
+			b.Fatalf("changes %+v", changes)
+		case bytes.Contains(raw, []byte("bench-fingerprint-secret")) || bytes.Contains(raw, []byte("digest")) || bytes.Contains(raw, []byte(before)):
+			b.Fatalf("the change inventory exports data: %s", raw)
+		}
+	})
 	b.Run("over-limit", func(b *testing.B) {
 		tr := benchTranscript(red, MaxEvidenceFileBytes, true)
 		b.ReportAllocs()

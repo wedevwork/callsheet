@@ -432,10 +432,87 @@ func (c *PlanClient) validate(chk planCheck, lim Limits) error {
 			return err
 		}
 	}
+	if _, err := c.trustedRecipe(); err != nil {
+		return err
+	}
 	if chk.capture {
 		return c.validateCapture()
 	}
 	return nil
+}
+
+// Trusted recipes (design decoder-enrollment B1, FP-12 and FP-13): a Grok
+// or Cursor plan that asks for --trust in any form must be exactly the
+// canonical recipe, which trusts only the generated case workspace.
+const (
+	trustFlag = "--trust"
+	// GrokTrustedPath and CursorTrustedPath are the canonical recipes'
+	// workspace configuration paths.
+	GrokTrustedPath   = ".grok/config.toml"
+	CursorTrustedPath = ".cursor/mcp.json"
+)
+
+// ErrGrokTrustedRecipe and ErrCursorTrustedRecipe are the trusted-recipe
+// validators' refusals (exit 2 before any launch).
+var (
+	ErrGrokTrustedRecipe   = errors.New("grok trusted recipe must target only the generated workspace")
+	ErrCursorTrustedRecipe = errors.New("cursor trusted recipe must target only the generated workspace")
+)
+
+// GrokTrustedArgv and CursorTrustedArgv are the canonical session argv
+// (after the executable) for model m.
+func GrokTrustedArgv(m string) []string {
+	return []string{trustFlag, "-p", "{prompt}", "--output-format", "streaming-json", "--cwd", "{workspace}", "-m", m}
+}
+
+func CursorTrustedArgv(m string) []string {
+	return []string{"-p", "{prompt}", "--output-format", "stream-json", "--model", m, "--workspace", "{workspace}", trustFlag}
+}
+
+// trustTriggered reports whether any element of argv is --trust or starts
+// with --trust= (case-sensitive bytes; a true, false or empty value is
+// never a legacy-plan escape).
+func trustTriggered(argvs ...[]string) bool {
+	for _, argv := range argvs {
+		for _, a := range argv {
+			if a == trustFlag || strings.HasPrefix(a, trustFlag+"=") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// trustedRecipe is the shared trusted-recipe validator. It reports whether
+// the plan entered it (a grok or cursor client whose session argv or either
+// configuration's appended argv asks for --trust) and, if so, refuses
+// anything but the canonical recipe: the exact session argv with the
+// plan's model, the canonical configuration path, empty appended argv and
+// environment, no raised configuration and no plan-level home override.
+// Legacy plans without --trust keep their validation.
+func (c *PlanClient) trustedRecipe() (bool, error) {
+	argvs := [][]string{c.Session.Argv, c.Config.Default.Argv}
+	if c.Config.Raised != nil {
+		argvs = append(argvs, c.Config.Raised.Argv)
+	}
+	if (c.ID != "grok" && c.ID != "cursor") || !trustTriggered(argvs...) {
+		return false, nil
+	}
+	want, path, refusal, homes := GrokTrustedArgv(c.Model), GrokTrustedPath, ErrGrokTrustedRecipe, []string{"HOME", "GROK_HOME"}
+	if c.ID == "cursor" {
+		want, path, refusal, homes = CursorTrustedArgv(c.Model), CursorTrustedPath, ErrCursorTrustedRecipe, []string{"HOME"}
+	}
+	d := c.Config.Default
+	ok := c.Model != "" && slices.Equal(c.Session.Argv, want) && d.Path == path && len(d.Argv) == 0 && len(d.Env) == 0 && c.Config.Raised == nil
+	for _, k := range homes {
+		if _, set := c.Env[k]; set {
+			ok = false
+		}
+	}
+	if !ok {
+		return true, refusal
+	}
+	return true, nil
 }
 
 func checkDelay(name string, d *DelayPhase, lim Limits) error {

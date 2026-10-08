@@ -10,6 +10,7 @@ package mcpqual
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path"
 	"reflect"
@@ -149,6 +150,34 @@ type CaptureClient struct {
 	Streams          []CaptureStream `json:"streams"`
 	State            string          `json:"state"`
 	Reason           *string         `json:"reason"`
+	// Approval is the Cursor trusted recipe's approval preparation (design
+	// decoder-enrollment B1, FP-13); absent for every other client and in
+	// bundles written before it (absence is never retroactive evidence of
+	// a scoped approval).
+	Approval *CaptureApproval `json:"approval,omitempty"`
+}
+
+// CaptureApproval records the one "mcp enable probe" preparation in the
+// generated workspace: the fixed command, its stage, the scope decision
+// from the before/after fingerprints of the monitored trees, and every
+// observed change as a labeled path and kind. Fingerprints, digests and
+// file contents never leave memory.
+type CaptureApproval struct {
+	Argv              []string                `json:"argv"`
+	Cwd               string                  `json:"cwd"`
+	Stage             CaptureStage            `json:"stage"`
+	Scope             string                  `json:"scope"`
+	Reason            *string                 `json:"reason"`
+	InventoryComplete bool                    `json:"inventory_complete"`
+	Changes           []CaptureApprovalChange `json:"changes"`
+}
+
+// CaptureApprovalChange is one observed change: a labeled path
+// (<workspace>/..., <home>/.cursor/... or <ancestor-N>/.cursor/...) and
+// its kind (added, removed or modified).
+type CaptureApprovalChange struct {
+	Path string `json:"path"`
+	Kind string `json:"kind"`
 }
 
 // CaptureConfig is the session's sanitized configuration provenance: the
@@ -280,11 +309,19 @@ func requireIn(v any, t reflect.Type, where string) error {
 	return nil
 }
 
+// CaptureApprovalFiles are the two extra payloads of a launched Cursor
+// approval stage (design decoder-enrollment B1, FP-13); no other client
+// may carry them.
+var CaptureApprovalFiles = []string{FileApprovalStdout, FileApprovalStderr}
+
 // payloadOwner returns the client of a client payload path and its file
 // name, or ok false for any path outside the allowlist.
 func payloadOwner(p string) (client, name string, ok bool) {
 	parts := strings.Split(p, "/")
-	if len(parts) != 3 || parts[0] != "clients" || !slices.Contains(CaptureClientFiles, parts[2]) {
+	if len(parts) != 3 || parts[0] != "clients" {
+		return "", "", false
+	}
+	if !slices.Contains(CaptureClientFiles, parts[2]) && !(parts[1] == "cursor" && slices.Contains(CaptureApprovalFiles, parts[2])) {
 		return "", "", false
 	}
 	if _, known := clientDecoders[parts[1]]; !known {
@@ -442,12 +479,29 @@ func (c *CaptureClient) validate(files map[string]EvidenceRef, lim CaptureLimits
 	if c.Probe != nil && c.Probe.Anomalies == nil {
 		return fmt.Errorf("probe.anomalies must be a list")
 	}
-	for _, st := range []struct {
+	stages := []struct {
 		name  string
 		stage CaptureStage
 		files []string
 	}{{"version", c.Version, []string{FileVersionStdout, FileVersionStderr}}, {"help", c.Help, []string{FileHelpStdout, FileHelpStderr}},
-		{"session", c.Session, []string{FileVendorEvents, FileVendorStderr, FileServerEvents}}} {
+		{"session", c.Session, []string{FileVendorEvents, FileVendorStderr, FileServerEvents}}}
+	if err := c.validateApproval(); err != nil {
+		return err
+	}
+	if c.Approval != nil {
+		stages = append(stages, struct {
+			name  string
+			stage CaptureStage
+			files []string
+		}{"approval", c.Approval.Stage, CaptureApprovalFiles})
+	} else if c.ID == "cursor" {
+		for _, f := range CaptureApprovalFiles {
+			if _, ok := files[ClientFile(c.ID, f)]; ok {
+				return fmt.Errorf("file %s without an approval record", f)
+			}
+		}
+	}
+	for _, st := range stages {
 		s := st.stage
 		switch s.State {
 		case StageNotRun, StageLaunchFailed, StagePrepared, StageRan:
@@ -505,8 +559,89 @@ func (c *CaptureClient) validate(files map[string]EvidenceRef, lim CaptureLimits
 				return fmt.Errorf("complete without proven cleanup")
 			}
 		}
+		// A new canonical Cursor capture is complete only after a clean,
+		// scoped approval with positive workspace evidence.
+		if a := c.Approval; a != nil && (a.Scope != ScopeWorkspaceOnly || !provenClean(a.Stage) || !a.InventoryComplete || len(a.Changes) == 0) {
+			return fmt.Errorf("complete without a clean workspace-only approval")
+		}
 	}
 	return nil
+}
+
+// validateApproval checks the Cursor approval record: present exactly for
+// a Cursor client whose recorded argv asks for --trust (the canonical
+// recipe; older bundles have neither), the fixed command and working
+// directory, a valid scope consistent with the stage and the changes, and
+// sorted, labeled, unique changes. No model session may follow a scope
+// other than workspace_only.
+func (c *CaptureClient) validateApproval() error {
+	a := c.Approval
+	trusted := c.ID == "cursor" && slices.Contains(c.Argv, trustFlag)
+	switch {
+	case a == nil && trusted:
+		return errors.New("a trusted cursor recipe without its approval record")
+	case a == nil:
+		return nil
+	case !trusted:
+		return errors.New("an approval record belongs only to the trusted cursor recipe")
+	case !slices.Equal(a.Argv, CursorApprovalArgv()) || a.Cwd != labelWorkspace:
+		return fmt.Errorf("approval: argv %q in %q is not the fixed enable command in the workspace", a.Argv, a.Cwd)
+	case a.Changes == nil:
+		return errors.New("approval: changes must be a list")
+	case a.Reason != nil && *a.Reason == "":
+		return errors.New("approval: an empty reason")
+	case (a.Scope == ScopeWorkspaceOnly) == (a.Reason != nil):
+		return fmt.Errorf("approval: scope %s needs a reason exactly when it is not workspace_only", a.Scope)
+	}
+	outside := false
+	for i, ch := range a.Changes {
+		switch {
+		case !validChangePath(ch.Path):
+			return fmt.Errorf("approval: change path %q is not a labeled monitored path", ch.Path)
+		case ch.Kind != ChangeAdded && ch.Kind != ChangeRemoved && ch.Kind != ChangeModified:
+			return fmt.Errorf("approval: change kind %q", ch.Kind)
+		case i > 0 && a.Changes[i-1].Path >= ch.Path:
+			return fmt.Errorf("approval: changes are not sorted or %s repeats", ch.Path)
+		}
+		outside = outside || !inWorkspace(ch.Path)
+	}
+	ran := a.Stage.State == StageRan
+	switch a.Scope {
+	case ScopeNotChecked:
+		if ran || len(a.Changes) > 0 || a.InventoryComplete {
+			return errors.New("approval: not_checked after a launched command, with changes or a complete inventory")
+		}
+	case ScopeUnverifiable:
+		if !ran && (len(a.Changes) > 0 || a.InventoryComplete) || outside {
+			return errors.New("approval: unverifiable with changes but no command, or with an outside change")
+		}
+	case ScopeOutside:
+		if !ran || !outside {
+			return errors.New("approval: outside_workspace without a launched command and an outside change")
+		}
+	case ScopeWorkspaceOnly:
+		if !provenClean(a.Stage) || !a.InventoryComplete || len(a.Changes) == 0 {
+			return errors.New("approval: workspace_only without a clean command, proven cleanup, complete inventories and a change")
+		}
+		for _, ch := range a.Changes {
+			if !inWorkspaceCursor(ch.Path) {
+				return fmt.Errorf("approval: workspace_only with a change outside <workspace>/.cursor/: %s", ch.Path)
+			}
+		}
+	default:
+		return fmt.Errorf("approval: scope %q", a.Scope)
+	}
+	if a.Scope != ScopeWorkspaceOnly && c.Session.State == StageRan {
+		return fmt.Errorf("approval: a model session ran after scope %s", a.Scope)
+	}
+	return nil
+}
+
+// provenClean is a clean stage whose recorded cleanup proved the group gone
+// without error; a missing (null) cleanup record is never proof (code
+// review B1 round 1, C1: it is checked, never dereferenced).
+func provenClean(s CaptureStage) bool {
+	return cleanStage(s) && s.Cleanup != nil && s.Cleanup.Error == nil && s.Cleanup.GroupGone
 }
 
 // cleanStage is a launched stage that exited 0 by itself: no signal,

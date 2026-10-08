@@ -60,6 +60,16 @@ func TestShortPlanTemplates(t *testing.T) {
 			t.Fatal(err)
 		}
 		c, f := p.Clients[0], full.Clients[0]
+		// Design decoder-enrollment B1 amends the Codex, Grok and Cursor
+		// short recipes only (their full templates stay unchanged): the
+		// canonical argv, Codex's approval snapshot and every prerequisite.
+		switch b1 := b1ShortRecipes()[id]; {
+		case b1 == nil:
+		case !slices.Equal(c.Session.Argv, b1.Session.Argv) || !reflect.DeepEqual(c.Config.Default, b1.Config.Default) || c.Config.Default.Path != f.Config.Default.Path:
+			t.Fatalf("%s: the B1 recipe %q %+v", id, c.Session.Argv, c.Config.Default)
+		default:
+			f.Session, f.Config.Default = b1.Session, b1.Config.Default
+		}
 		switch {
 		case len(p.Clients) != 1 || c.ID != id || p.Limits == nil || *p.Limits != (Limits{MaxSessionsPerClient: 3, MaxCaseMS: 120000, MaxClientMS: 360000}):
 			t.Fatalf("%s: limits %+v", id, p.Limits)
@@ -91,6 +101,32 @@ func TestShortPlanTemplates(t *testing.T) {
 	}
 	if ShortPollBudget != mcp.DefaultBudget {
 		t.Fatal("the short confirmation checks another budget than the shipping B")
+	}
+}
+
+// b1ShortRecipes are the B1 short recipes, literally (design
+// decoder-enrollment B1, slice-b1.md Codex, Grok and Cursor recipes), with
+// the template's model placeholder.
+func b1ShortRecipes() map[string]*PlanClient {
+	const m = "<model>"
+	toml := "[mcp_servers.probe]\ncommand = \"{server}\"\nargs = [\"serve\", \"--case-file\", \"{case_file}\", \"--events\", \"{events}\"]\n"
+	return map[string]*PlanClient{
+		"codex": {Session: Recipe{Argv: []string{"exec", "--json", "--skip-git-repo-check", "-C", "{workspace}", "-m", m,
+			"-c", `mcp_servers.probe.command="{server}"`,
+			"-c", `mcp_servers.probe.args=["serve","--case-file","{workspace}/case.json","--events","{workspace}/server-events.jsonl"]`,
+			"-c", `mcp_servers.probe.enabled_tools=["slow"]`,
+			"-c", `mcp_servers.probe.tools.slow.approval_mode="approve"`,
+			"{prompt}"}},
+			Config: ConfigRecipes{Default: ConfigRecipe{Path: "probe-config.toml",
+				Content:      toml + "enabled_tools = [\"slow\"]\n[mcp_servers.probe.tools.slow]\napproval_mode = \"approve\"\n",
+				Prerequisite: "Invocation-only approval for probe.slow; no server-wide approval or timeout override."}}},
+		"grok": {Session: Recipe{Argv: []string{"--trust", "-p", "{prompt}", "--output-format", "streaming-json", "--cwd", "{workspace}", "-m", m}},
+			Config: ConfigRecipes{Default: ConfigRecipe{Path: ".grok/config.toml", Content: toml,
+				Prerequisite: "Trust only the generated workspace; use normal Grok login; project probe config, probe__slow and streaming-json; no timeout override."}}},
+		"cursor": {Session: Recipe{Argv: []string{"-p", "{prompt}", "--output-format", "stream-json", "--model", m, "--workspace", "{workspace}", "--trust"}},
+			Config: ConfigRecipes{Default: ConfigRecipe{Path: ".cursor/mcp.json",
+				Content:      `{"mcpServers":{"probe":{"command":"{server}","args":["serve","--case-file","{case_file}","--events","{events}"]}}}`,
+				Prerequisite: "Trust only the generated workspace; capture runs mcp enable probe there and verifies workspace-only file changes before the model session; never --approve-mcps."}}},
 	}
 }
 

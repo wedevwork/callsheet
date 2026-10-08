@@ -215,6 +215,18 @@ var WorkspaceCoverageManifest = []CoverageEntry{
 	{Group: GroupChanged, File: modulePath + "/internal/mcpqual/redact.go"},
 	{Group: GroupChanged, File: modulePath + "/internal/mcpqual/procexec/exec_unix.go"},
 	{Group: GroupChanged, File: modulePath + "/cmd/mcpqual/main.go"},
+
+	// Decoder enrollment, slice B1 (base 4dc1b3e): the new Cursor approval
+	// files and every production file it changes that no earlier entry
+	// lists whole (capture_approval_unix.go builds on linux || darwin, so it
+	// is evaluated on both systems; its non-unix twin builds on neither).
+	// Its other changed files are already listed whole: mcpqual/plan.go,
+	// mcpqual/session.go, mcpqual/capture.go, mcpqual/capture_manifest.go,
+	// mcpqual/cli.go and devcheck/native.go.
+	{Group: GroupChanged, File: modulePath + "/internal/mcpqual/probe.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/mcpqual/events.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/mcpqual/capture_approval.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/mcpqual/capture_approval_unix.go"},
 }
 
 // modulePath is the profile's import-path prefix.

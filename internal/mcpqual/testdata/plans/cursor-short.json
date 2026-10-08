@@ -27,14 +27,17 @@
           "--output-format",
           "stream-json",
           "--model",
-          "<model>"
+          "<model>",
+          "--workspace",
+          "{workspace}",
+          "--trust"
         ]
       },
       "config": {
         "default": {
           "path": ".cursor/mcp.json",
           "content": "{\"mcpServers\":{\"probe\":{\"command\":\"{server}\",\"args\":[\"serve\",\"--case-file\",\"{case_file}\",\"--events\",\"{events}\"]}}}",
-          "prerequisite": "the .cursor/mcp.json entry shape is a candidate and the probe server may need the owner's one-time approval through cursor-agent mcp enable probe; never --approve-mcps"
+          "prerequisite": "Trust only the generated workspace; capture runs mcp enable probe there and verifies workspace-only file changes before the model session; never --approve-mcps."
         }
       },
       "phases": {

@@ -350,17 +350,24 @@ func TestCaptureRecipes(t *testing.T) {
 					"--strict-mcp-config", "--allowed-tools", "mcp__probe__slow"}, "probe-mcp.json",
 				`{"mcpServers":{"probe":{"command":"/opt/mcpqual","args":["serve","--case-file","` + ws + `/case.json","--events","` + ws + `/server-events.jsonl"]}}}`
 		},
+		// B1 (design decoder-enrollment, FP-11): only probe.slow gets the
+		// recognized per-tool approval value, for this invocation.
 		"codex": func(ws string) ([]string, []string, string, string) {
 			return []string{"exec", "--help"}, []string{"exec", "--json", "--skip-git-repo-check", "-C", ws, "-m", m, "-c", `mcp_servers.probe.command="/opt/mcpqual"`, "-c",
-					`mcp_servers.probe.args=["serve","--case-file","` + ws + `/case.json","--events","` + ws + `/server-events.jsonl"]`, Prompt("codex-capture-setup")}, "probe-config.toml",
-				"[mcp_servers.probe]\ncommand = \"/opt/mcpqual\"\nargs = [\"serve\", \"--case-file\", \"" + ws + "/case.json\", \"--events\", \"" + ws + "/server-events.jsonl\"]\n"
+					`mcp_servers.probe.args=["serve","--case-file","` + ws + `/case.json","--events","` + ws + `/server-events.jsonl"]`,
+					"-c", `mcp_servers.probe.enabled_tools=["slow"]`, "-c", `mcp_servers.probe.tools.slow.approval_mode="approve"`, Prompt("codex-capture-setup")}, "probe-config.toml",
+				"[mcp_servers.probe]\ncommand = \"/opt/mcpqual\"\nargs = [\"serve\", \"--case-file\", \"" + ws + "/case.json\", \"--events\", \"" + ws + "/server-events.jsonl\"]\n" +
+					"enabled_tools = [\"slow\"]\n[mcp_servers.probe.tools.slow]\napproval_mode = \"approve\"\n"
 		},
+		// B1 (FP-12): global --trust, the qualified tool name, NDJSON and
+		// the generated workspace as --cwd.
 		"grok": func(ws string) ([]string, []string, string, string) {
-			return []string{"--help"}, []string{"-p", Prompt("grok-capture-setup"), "--output-format", "json", "-m", m}, ".grok/config.toml",
+			return []string{"--help"}, []string{"--trust", "-p", PromptForClient("grok", "grok-capture-setup"), "--output-format", "streaming-json", "--cwd", ws, "-m", m}, ".grok/config.toml",
 				"[mcp_servers.probe]\ncommand = \"/opt/mcpqual\"\nargs = [\"serve\", \"--case-file\", \"" + ws + "/case.json\", \"--events\", \"" + ws + "/server-events.jsonl\"]\n"
 		},
+		// B1 (FP-13): the generated workspace, explicitly trusted.
 		"cursor": func(ws string) ([]string, []string, string, string) {
-			return []string{"--help"}, []string{"-p", Prompt("cursor-capture-setup"), "--output-format", "stream-json", "--model", m}, ".cursor/mcp.json",
+			return []string{"--help"}, []string{"-p", Prompt("cursor-capture-setup"), "--output-format", "stream-json", "--model", m, "--workspace", ws, "--trust"}, ".cursor/mcp.json",
 				`{"mcpServers":{"probe":{"command":"/opt/mcpqual","args":["serve","--case-file","` + ws + `/case.json","--events","` + ws + `/server-events.jsonl"]}}}`
 		},
 	}
@@ -395,6 +402,7 @@ func TestCaptureRecipes(t *testing.T) {
 		var log bytes.Buffer
 		rr.c = newCapRunner(t, w, capPlan(t, cases...))
 		rr.c.OutDir = filepath.Join(sharedTempDir(t), "recipes")
+		withFixtureRoot(rr.c, sharedTempDir(t))
 		rr.c.Log = &log
 		rr.man, rr.b = validatedCapture(t, rr.c, context.Background())
 		rr.log = log.String()
@@ -407,12 +415,14 @@ func TestCaptureRecipes(t *testing.T) {
 	w.mu.Lock()
 	specs = append(specs, w.launches...)
 	w.mu.Unlock()
-	// Version, help and one setup session per client, sequentially; the
-	// short plans' three-session limit is lowered to one and their
-	// default phase never runs.
-	if man.State != CaptureComplete || man.ExitCode() != 0 || len(specs) != 12 || man.Limits.SessionsPerClient != 1 || man.Limits.Clients != 4 ||
+	// Version, help and one setup session per client, sequentially, and
+	// Cursor's one approval preparation before its session (thirteen
+	// process groups for four clients); the short plans' three-session
+	// limit is lowered to one and their default phase never runs.
+	if man.State != CaptureComplete || man.ExitCode() != 0 || len(specs) != 13 || man.Limits.SessionsPerClient != 1 || man.Limits.Clients != 4 ||
 		!strings.Contains(log.String(), "setup only; default phase not executed") || !strings.Contains(log.String(), "at most 4 clients sequentially") ||
-		!strings.Contains(log.String(), "planned operational deadline 720000 ms plus bounded cleanup of up to 12 process groups") {
+		!strings.Contains(log.String(), "planned operational deadline 720000 ms plus bounded cleanup of up to 13 process groups") ||
+		!slices.Equal(w.kinds()[9:], []string{"cursor:version", "cursor:help", "cursor:enable", "cursor:session"}) {
 		t.Fatalf("four recipes: %s %v %q", man.State, w.kinds(), log.String())
 	}
 	done := 0
@@ -421,6 +431,16 @@ func TestCaptureRecipes(t *testing.T) {
 		help, argv, rel, cfg := want[id](ws)
 		cc := capClient(t, man, id)
 		v, h, s := specs[3*i], specs[3*i+1], specs[3*i+2]
+		if id == "cursor" {
+			e := specs[3*i+2]
+			s = specs[3*i+3]
+			if !slices.Equal(e.Args, CursorApprovalArgv()) || e.Dir != ws || !e.CaptureStderr || !slices.Equal(e.Env, s.Env) || cc.Approval == nil ||
+				cc.Approval.Scope != ScopeWorkspaceOnly || !slices.Equal(cc.Approval.Changes, []CaptureApprovalChange{{"<workspace>/" + approvedFile, ChangeAdded}}) {
+				t.Fatalf("cursor approval: %+v %+v", e, cc.Approval)
+			}
+		} else if cc.Approval != nil {
+			t.Fatalf("%s: an approval record", id)
+		}
 		if cc.State != CaptureComplete || !slices.Equal(v.Args, []string{"--version"}) || !slices.Equal(h.Args, help) || !slices.Equal(s.Args, argv) {
 			t.Fatalf("%s: argv %q / %q / %q (%q)", id, v.Args, h.Args, s.Args, reasonOf(cc))
 		}

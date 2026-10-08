@@ -347,17 +347,21 @@ func (p *probe) initializeLocked(id requestID, raw json.RawMessage) {
 			Version *string `json:"version"`
 		} `json:"clientInfo"`
 	}
-	if json.Unmarshal(raw, &params) != nil || params.ProtocolVersion == nil || !isObject(params.Capabilities) || params.ClientInfo == nil ||
+	if json.Unmarshal(raw, &params) != nil || params.ProtocolVersion == nil || *params.ProtocolVersion == "" || !isObject(params.Capabilities) || params.ClientInfo == nil ||
 		params.ClientInfo.Name == nil || params.ClientInfo.Version == nil {
-		p.writeLocked(errorFrame(&id, codeInvalidParams, "invalid params: initialize needs protocolVersion, capabilities and clientInfo name and version strings"))
+		p.writeLocked(errorFrame(&id, codeInvalidParams, "invalid params: initialize needs a nonempty protocolVersion string, capabilities and clientInfo name and version strings"))
 		return
 	}
-	if *params.ProtocolVersion != ProtocolVersion {
-		p.writeLocked(errorFrame(&id, codeInvalidParams, "invalid params: unsupported protocol version; this probe accepts "+ProtocolVersion+" only"))
-		return
-	}
+	// Version negotiation (design decoder-enrollment B1, FP-10; MCP
+	// 2025-06-18 lifecycle): the probe supports exactly ProtocolVersion and
+	// answers it for any otherwise valid requested version, older, equal or
+	// newer, without comparing dates. The client decides whether it can use
+	// the answer (it may disconnect); the event records the decision before
+	// the response is written, not the client's acceptance.
+	requested, selected := *params.ProtocolVersion, ProtocolVersion
 	p.initialized = true
-	p.event(ProbeEvent{Kind: EvInitialize, ClientName: params.ClientInfo.Name, ClientVersion: params.ClientInfo.Version})
+	p.event(ProbeEvent{Kind: EvInitialize, ClientName: params.ClientInfo.Name, ClientVersion: params.ClientInfo.Version,
+		RequestedProtocolVersion: &requested, SelectedProtocolVersion: &selected})
 	res, _ := encodeJSON(map[string]any{
 		"protocolVersion": ProtocolVersion,
 		"capabilities":    map[string]any{"tools": map[string]any{"listChanged": false}},
