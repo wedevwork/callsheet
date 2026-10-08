@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -73,6 +74,85 @@ func BenchmarkMCPQualificationTranscript(b *testing.B) {
 			b.Fatalf("%s: an oversized transcript classified: %+v", name, d)
 		}
 	}
+	benchRealFixtures(b)
+}
+
+// benchRealFixtures (design decoder-enrollment B2) measures the three
+// enrolled real fixtures: decode CPU over the in-memory transcript through
+// the exact-version decoder, separately from the replay and validation
+// I/O (the bundle read from disk with its oracle and receipt, then Replay),
+// and the production ValidateEnrollment of the checked-in index. Each
+// asserts the exact oracle and no typed error.
+func benchRealFixtures(b *testing.B) {
+	root := testkit.MustRepoRoot(b)
+	ib, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(EnrollmentIndexPath)))
+	if err != nil {
+		b.Fatal(err)
+	}
+	idx, err := ParseEnrollmentIndex(ib)
+	if err != nil || len(idx.Entries) != 3 {
+		b.Fatalf("production index: %v (%d entries)", err, len(idx.Entries))
+	}
+	reg := DefaultRegistry()
+	for _, e := range idx.Entries {
+		dir := filepath.Join(root, filepath.FromSlash(e.Bundle))
+		raw, err1 := os.ReadFile(filepath.Join(dir, filepath.FromSlash(ClientFile(e.Client, FileVendorEvents))))
+		ob, err2 := os.ReadFile(filepath.Join(dir, ExpectedName))
+		o, err3 := ParseExpected(ob)
+		tr, err4 := ReplayTranscript(raw)
+		dec, _, err5 := reg.Select(e.Decoder, e.Version)
+		if err := errors.Join(err1, err2, err3, err4, err5); err != nil {
+			b.Fatal(err)
+		}
+		want, _ := encodeJSON(o.Events)
+		b.Run("real/"+e.Client+"/decode", func(b *testing.B) {
+			b.ReportAllocs()
+			b.SetBytes(int64(tr.Size()))
+			var d Decoded
+			for i := 0; i < b.N; i++ {
+				d = dec(tr)
+			}
+			b.StopTimer()
+			b.ReportMetric(float64(tr.Size()), "bytes/op")
+			got, _ := encodeJSON(d.Events)
+			if !d.Terminal || d.Inconclusive != "" || !bytes.Equal(got, want) {
+				b.Fatalf("%s: decoded %s, the oracle says %s", e.Client, got, want)
+			}
+		})
+		b.Run("real/"+e.Client+"/replay-io", func(b *testing.B) {
+			b.ReportAllocs()
+			var bundle *CaptureBundle
+			var err error
+			for i := 0; i < b.N; i++ {
+				if bundle, err = ValidateCaptureBundle(os.DirFS(dir), ".", ExpectedName, SanitizationName); err == nil {
+					err = Replay(reg, e, bundle, o)
+				}
+			}
+			b.StopTimer()
+			if err != nil {
+				b.Fatal(err)
+			}
+			n := len(bundle.ManifestBytes)
+			for _, f := range bundle.Files {
+				n += len(f)
+			}
+			b.SetBytes(int64(n))
+			b.ReportMetric(float64(n), "bytes/op")
+		})
+	}
+	b.Run("real/validate-enrollment-io", func(b *testing.B) {
+		b.ReportAllocs()
+		var got *EnrollmentIndex
+		var err error
+		for i := 0; i < b.N; i++ {
+			got, err = ValidateEnrollment(EnrollmentOptions{Root: root, Registry: reg})
+		}
+		b.StopTimer()
+		if err != nil || len(got.Entries) != 3 {
+			b.Fatalf("production enrollment: %v", err)
+		}
+		b.ReportMetric(float64(len(ib)), "bytes/op")
+	})
 }
 
 // BenchmarkMCPQualificationProbe measures small-frame throughput of one
@@ -313,6 +393,66 @@ func BenchmarkMCPCaptureEvidence(b *testing.B) {
 		}
 		if got := diffSnapshots(pre, sc.snapshot(root)); !pre.complete || pre.count != 7 || len(got) != 0 {
 			b.Fatalf("the inventory policy: %d entries, changes %+v", pre.count, got)
+		}
+	})
+	// Design decoder-enrollment B2 (FP-18): the metadata export's pure
+	// transcript step over a small deterministic real-format transcript
+	// (about 1 KiB, every allowed Codex metadata shape), and the protected
+	// span check alone; both assert determinism, the replacement count, the
+	// unchanged evidence spans and the masked fingerprint equality.
+	export := []byte(strings.Join([]string{
+		string(wrapLine(1, []byte(`{"type":"thread.started","thread_id":"bench-thread"}`))),
+		string(wrapLine(2, []byte(`{"type":"item.completed","item":{"id":"item_0","type":"error","message":"hook diagnostic `+strings.Repeat("d", 200)+`"}}`))),
+		string(wrapLine(3, []byte(`{"type":"item.started","item":{"id":"item_3","type":"mcp_tool_call","server":"probe","tool":"slow","arguments":{"case_id":"c"},"result":null,"error":null,"status":"in_progress"}}`))),
+		string(wrapLine(4, []byte(`{"type":"item.completed","item":{"id":"item_3","type":"mcp_tool_call","server":"probe","tool":"slow","arguments":{"case_id":"c"},"result":{"content":[{"type":"text","text":"{\"case_id\":\"c\",\"nonce\":\"n\"}"}],"structured_content":null},"error":null,"status":"completed"}}`))),
+		string(wrapLine(5, []byte(`{"type":"item.completed","item":{"id":"item_4","type":"agent_message","text":"`+strings.Repeat("prose ", 40)+`"}}`))),
+		string(wrapLine(6, []byte(`{"type":"turn.completed","usage":{"input_tokens":1}}`))),
+	}, "\n") + "\n")
+	b.Run(fmt.Sprintf("export/%dB", len(export)), func(b *testing.B) {
+		b.ReportAllocs()
+		b.SetBytes(int64(len(export)))
+		var te *transcriptExport
+		var err error
+		for i := 0; i < b.N; i++ {
+			te, err = exportTranscript("codex", ClientFile("codex", FileVendorEvents), export)
+		}
+		b.StopTimer()
+		b.ReportMetric(float64(len(export)), "bytes/op")
+		again, err2 := exportTranscript("codex", ClientFile("codex", FileVendorEvents), export)
+		check, err3 := exportedReplacements("codex", ClientFile("codex", FileVendorEvents), te.data)
+		switch {
+		case errors.Join(err, err2, err3) != nil:
+			b.Fatal(errors.Join(err, err2, err3))
+		case !bytes.Equal(te.data, again.data) || len(te.reps) != 3 || !bytes.Equal(te.masked, check.masked) || len(check.reps) != 3:
+			b.Fatalf("export: %d replacements, deterministic %v", len(te.reps), bytes.Equal(te.data, again.data))
+		case bytes.Contains(te.data, []byte("bench-thread")) || !bytes.Contains(te.data, []byte(`\\\"nonce\\\":\\\"n\\\"`)):
+			b.Fatal("the export kept metadata or lost evidence")
+		}
+	})
+	b.Run("protected-span", func(b *testing.B) {
+		data := []byte(`[{"type":"system","subtype":"init","cwd":"/x","session_id":"s","tools":["a","b"],"memory_paths":{"auto":"m"}},` +
+			`{"type":"assistant","message":{"id":"m1","content":[{"type":"text","text":"t"},{"type":"tool_use","id":"toolu_1","name":"mcp__probe__slow","input":{"case_id":"c"}}]},"session_id":"s"},` +
+			`{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed","result":"r","session_id":"s","total_cost_usd":0.12,` +
+			`"modelUsage":{"claude-sonnet-5-5":{"inputTokens":6,"costUSD":0.12}}}]`)
+		b.ReportAllocs()
+		b.SetBytes(int64(len(data)))
+		var masked []byte
+		var edits []fixtureEdit
+		var prot []*jspan
+		for i := 0; i < b.N; i++ {
+			_, edits, prot, _ = recordEdits("claude", data)
+			masked = spliceEdits(data, edits, func(fixtureEdit) string { return protectedMaskToken })
+		}
+		b.StopTimer()
+		b.ReportMetric(float64(len(data)), "bytes/op")
+		exp := spliceEdits(data, edits, func(e fixtureEdit) string { return replacementLiteral[e.want] })
+		_, e2, p2, err := recordEdits("claude", exp)
+		// cwd, session_id, tools, memory_paths; session_id, message.id, the
+		// text block; result, session_id and (amendment A1) total_cost_usd
+		// and modelUsage.<model>.costUSD.
+		if err != nil || len(edits) != 11 || !bytes.Equal(masked, spliceEdits(exp, e2, func(fixtureEdit) string { return protectedMaskToken })) ||
+			!slices.EqualFunc(protectedBytes(data, prot), protectedBytes(exp, p2), bytes.Equal) {
+			b.Fatalf("protected spans: %d edits, %v", len(edits), err)
 		}
 	})
 	b.Run("over-limit", func(b *testing.B) {

@@ -540,8 +540,24 @@ func (c *CaptureRunner) session(ctx context.Context, pc *PlanClient, cc CaptureC
 	// The canonical Cursor trust recipe's approval preparation runs once
 	// before the session; after a scoped approval config.txt is the
 	// configuration as re-read then (design decoder-enrollment B1, FP-13).
+	// For the pinned permission adapter the harness first writes the one
+	// workspace-local permission file, so the approval inventories see it as
+	// baseline state, and checks it intact after the enable command (design
+	// decoder-enrollment B2, FP-20).
+	var permission fs.FileInfo
 	if cc.Approval != nil {
-		reason := c.prepareCursorApproval(ctx, pc, &cc, in, deadline)
+		reason := ""
+		if cursorToolPermissionApplies(c.GOOS, c.GOARCH, pc.ExpectedVersion) {
+			if permission, reason = c.writeCursorPermission(&cc, in); reason != "" {
+				cc.Approval = newApproval(reason)
+			}
+		}
+		if reason == "" {
+			reason = c.prepareCursorApproval(ctx, pc, &cc, in, deadline)
+		}
+		if reason == "" && cc.ToolPermission != nil {
+			reason = c.verifyCursorPermission(&cc, in, permission)
+		}
 		if reason == "" {
 			reread, err := c.rereadCursorConfig(in)
 			if err != nil {
@@ -574,6 +590,13 @@ func (c *CaptureRunner) session(ctx context.Context, pc *PlanClient, cc CaptureC
 			return stop(cc, *cc.Session.Reason)
 		}
 	}
+	// The permission file's check immediately before the model launch.
+	if cc.ToolPermission != nil {
+		if reason := c.verifyCursorPermission(&cc, in, permission); reason != "" {
+			cc.Session.Reason = sptr(reason)
+			return stop(cc, reason)
+		}
+	}
 	ev := &captureSessionEvidence{c: c, cc: &cc}
 	in.evidence = ev
 	run := c.r.executeCase(ctx, in, wd)
@@ -592,7 +615,17 @@ func (c *CaptureRunner) session(ctx context.Context, pc *PlanClient, cc CaptureC
 	cc.Probe, cc.ProbeReason = a.capture, nil
 	cc.Probe.Observation = &obs
 	fmt.Fprintf(c.Log, "mcpqual: %s: probe observation: %s\n", cc.ID, obs.Label())
-	if reason := sessionReason(run, cc); reason != "" {
+	reason := sessionReason(run, cc)
+	// The permission file's check after the session's cleanup: verified
+	// only now; a changed file makes even a complete capture partial.
+	if cc.ToolPermission != nil {
+		if why := c.verifyCursorPermission(&cc, in, permission); why == "" {
+			cc.ToolPermission.State, cc.ToolPermission.Reason = PermissionVerified, nil
+		} else if reason == "" {
+			reason = why
+		}
+	}
+	if reason != "" {
 		return stop(cc, reason)
 	}
 	cc.State, cc.Reason = CaptureComplete, nil

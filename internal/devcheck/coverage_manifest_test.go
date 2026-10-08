@@ -533,7 +533,7 @@ func TestWave2NativeDocs(t *testing.T) {
 			t.Fatalf("docs/ci.md does not name %s", n)
 		}
 	}
-	if len(NativeRequiredTests()) != 419 || len(NativeTaskProcessTests()) != 12 {
+	if len(NativeRequiredTests()) != 424 || len(NativeTaskProcessTests()) != 12 {
 		t.Fatalf("%d native names, %d sidecar names", len(NativeRequiredTests()), len(NativeTaskProcessTests()))
 	}
 }
@@ -671,6 +671,57 @@ func TestDecoderEnrollmentB15Docs(t *testing.T) {
 		}
 	}
 	for _, n := range b15Names() {
+		if !strings.Contains(s, "`"+n+"`") {
+			t.Fatalf("docs/ci.md does not name %s", n)
+		}
+	}
+}
+
+// decoderEnrollmentB2Files are the production files decoder enrollment's
+// slice B2 adds or changes (design decoder-enrollment B2, CI plan, against
+// the actual diff), each required whole in the changed group.
+var decoderEnrollmentB2Files = []string{"internal/mcpqual/decode.go", "internal/mcpqual/decode_real.go", "internal/mcpqual/enrollment.go",
+	"internal/mcpqual/fixture_export.go", "internal/mcpqual/capture.go", "internal/mcpqual/capture_approval.go", "internal/mcpqual/capture_approval_unix.go",
+	"internal/mcpqual/capture_manifest.go", "cmd/mcpfixture-export/main.go", "internal/devcheck/native.go"}
+
+// TestDecoderEnrollmentB2CoverageManifest (design decoder-enrollment B2,
+// CI plan): every B2 production file is a whole-file changed-group entry
+// with its build OS, and none keeps a partial-range entry.
+func TestDecoderEnrollmentB2CoverageManifest(t *testing.T) {
+	root := testkit.MustRepoRoot(t)
+	listed := map[string]CoverageEntry{}
+	for _, e := range WorkspaceCoverageManifest {
+		listed[strings.TrimPrefix(e.File, modulePath+"/")] = e
+	}
+	for _, rel := range decoderEnrollmentB2Files {
+		e, ok := listed[rel]
+		if !ok || e.Group != GroupChanged || len(e.Ranges) != 0 || e.OS != buildOS(t, filepath.Join(root, filepath.FromSlash(rel))) {
+			t.Fatalf("decoder-enrollment B2 file %s missing from the changed group with its build OS", rel)
+		}
+	}
+}
+
+// TestDecoderEnrollmentB2Docs (design decoder-enrollment B2, CI plan):
+// docs/ci.md's Checks names the five B2 function parents with the 424-name
+// inventory and its ranges, the new offline cases and benchmark subcases,
+// the unchanged native call, benchmark, cross and twenty-job counts, the
+// new whole-file entries and no new budget allocation or stress workload.
+func TestDecoderEnrollmentB2Docs(t *testing.T) {
+	doc, err := os.ReadFile(filepath.Join(testkit.MustRepoRoot(t), "docs", "ci.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := strings.Join(strings.Fields(string(doc)), " ")
+	for _, w := range []string{"5 more names, 424 in all", "with the 419 earlier names unchanged and first", "the B1.5 names 416 to 419",
+		"positions 419 to 424", "`devcheck native` still makes 9 ordinary calls", "`devcheck bench` keeps 13 steps", "cross keeps 12 artifacts",
+		"Linux `all` still makes 32 ordinary calls", "`internal/mcpqual/decode_real.go`", "`internal/mcpqual/fixture_export.go`", "`cmd/mcpfixture-export/main.go`",
+		"separating decode CPU from replay and `ValidateEnrollment` I/O", "The workflow keeps its twenty jobs", "B2 makes no new budget allocation",
+		"B2 adds no new stress selector or workload", "not a hosted step or cross artifact"} {
+		if !strings.Contains(s, w) {
+			t.Fatalf("docs/ci.md lacks %q", w)
+		}
+	}
+	for _, n := range b2Names() {
 		if !strings.Contains(s, "`"+n+"`") {
 			t.Fatalf("docs/ci.md does not name %s", n)
 		}

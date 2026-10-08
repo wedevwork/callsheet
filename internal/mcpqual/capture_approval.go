@@ -85,6 +85,120 @@ const (
 	labelProjectFile      = labelProjectDir + "/" + cursorApprovalsFile
 )
 
+// The Cursor scoped permission (design decoder-enrollment B2, FP-20): for
+// the canonical trusted recipe of exactly linux/amd64 (the runner's GOOS
+// and GOARCH, from Env) and expected version 2026.10.01-e373342, capture
+// writes one fixed workspace-local project permission file before the
+// approval inventories and verifies it unchanged after the enable command,
+// immediately before the session and after its cleanup. It is a narrow
+// configuration request, not confinement, not a bypass of any deny, and
+// never evidence that Cursor approved anything; no home or global
+// permission is ever written. Qualify writes nothing (capture only).
+const (
+	CursorToolPermissionAdapter = "cursor-tool-permission-linux-amd64-2026.10.01-e373342"
+	// CursorToolPermissionContent is the file's exact bytes (no newline).
+	CursorToolPermissionContent = `{"permissions":{"allow":["Mcp(probe:slow)"]}}`
+	cursorPermissionFile        = "cli.json"
+	labelToolPermission         = labelWorkspace + "/.cursor/" + cursorPermissionFile
+	// Permission record states.
+	PermissionWritten  = "written"
+	PermissionVerified = "verified"
+	// permissionPending is a written record's reason until every check has
+	// passed; permissionFailed replaces it when a check failed.
+	permissionPending = "the permission file was written; its checks after the enable command, before the session and after its cleanup did not all run"
+	permissionFailed  = "the permission file did not verify: it was removed, replaced or changed"
+)
+
+// cursorToolPermissionApplies reports the permission adapter's identity.
+func cursorToolPermissionApplies(goos, goarch, version string) bool {
+	return goos == cursorProjectGOOS && goarch == cursorProjectGOARCH && version == cursorProjectVersion
+}
+
+// permissionFS is the permission checks' filesystem: the approval scan's.
+func (c *CaptureRunner) permissionFS() approvalFS {
+	if c.approvalFS != nil {
+		return c.approvalFS
+	}
+	return osApprovalFS{}
+}
+
+// writeCursorPermission creates the permission file of prepared case in:
+// the workspace and its .cursor directory (created by prepareCase for the
+// MCP configuration) must be ordinary, non-symlink directories, cli.json
+// must not exist (an owner file is never merged or overwritten), and the
+// file is created new, no-follow, mode 0600 with the exact bytes. It
+// returns the file's identity, or a stop reason before any enable or model
+// launch (then no record claims a written file).
+func (c *CaptureRunner) writeCursorPermission(cc *CaptureClient, in caseInputs) (fs.FileInfo, string) {
+	fsys := c.permissionFS()
+	fail := func(why string) (fs.FileInfo, string) {
+		return nil, ReasonCursorScopeUnverified + ": the scoped permission file was not created (" + why + "); nothing was launched"
+	}
+	dir := filepath.Join(in.ws, ".cursor")
+	if filepath.Dir(in.configPath) != dir {
+		return fail("the configuration is not the workspace's .cursor/mcp.json")
+	}
+	for _, d := range []string{in.ws, dir} {
+		if info, err := fsys.Lstat(d); err != nil || !info.IsDir() {
+			return fail("the workspace or its .cursor is not an ordinary directory")
+		}
+	}
+	p := filepath.Join(dir, cursorPermissionFile)
+	if _, err := fsys.Lstat(p); !errors.Is(err, fs.ErrNotExist) {
+		return fail("a cli.json already exists or cannot be looked up")
+	}
+	f, err := createNoFollow(p)
+	if err != nil {
+		return fail("it cannot be created")
+	}
+	_, werr := io.WriteString(f, CursorToolPermissionContent)
+	if err := errors.Join(werr, f.Close()); err != nil {
+		return fail("it cannot be written")
+	}
+	info, err := fsys.Lstat(p)
+	if err != nil || !info.Mode().IsRegular() {
+		return fail("it is not a regular file after creation")
+	}
+	cc.ToolPermission = &CaptureToolPermission{Adapter: CursorToolPermissionAdapter, Path: labelToolPermission, Content: CursorToolPermissionContent,
+		SHA256: sha256Hex([]byte(CursorToolPermissionContent)), State: PermissionWritten, Reason: sptr(permissionPending)}
+	return info, ""
+}
+
+// verifyCursorPermission reads the permission file of in bounded and
+// without following a link: the same regular file as created (ident), its
+// exact bytes, unchanged while read. It returns "" when it holds; a
+// failure marks the record's reason.
+func (c *CaptureRunner) verifyCursorPermission(cc *CaptureClient, in caseInputs, ident fs.FileInfo) string {
+	fsys := c.permissionFS()
+	p := filepath.Join(in.ws, ".cursor", cursorPermissionFile)
+	ok := func() bool {
+		// The same file as created: its identity and its modification time
+		// (an unlinked file's inode can be reused at once). A write that
+		// restores both between two checks stays undetectable.
+		pre, err := fsys.Lstat(p)
+		if err != nil || !pre.Mode().IsRegular() || !sameFile(ident, pre) || !pre.ModTime().Equal(ident.ModTime()) {
+			return false
+		}
+		f, err := fsys.Open(p)
+		if err != nil {
+			return false
+		}
+		defer f.Close()
+		opened, err := f.Stat()
+		if err != nil || !sameFile(pre, opened) {
+			return false
+		}
+		b, err := io.ReadAll(io.LimitReader(f, int64(len(CursorToolPermissionContent))+1))
+		post, err2 := fsys.Lstat(p)
+		return err == nil && err2 == nil && string(b) == CursorToolPermissionContent && sameFile(pre, post)
+	}()
+	if ok {
+		return ""
+	}
+	cc.ToolPermission.State, cc.ToolPermission.Reason = PermissionWritten, sptr(permissionFailed)
+	return ReasonCursorScopeUnverified + ": the harness-written " + labelToolPermission + " was removed, replaced or changed (no retry or restore)"
+}
+
 // The inventory policy (design decoder-enrollment B1.5, FP-16): the
 // contents of exactly these two directories of the verified effective
 // HOME's .cursor are not inventoried; everything else stays monitored.
@@ -633,7 +747,7 @@ func (c *CaptureRunner) prepareCursorApproval(ctx context.Context, pc *PlanClien
 	ap.InventoryComplete = post.complete
 	ap.Changes = make([]CaptureApprovalChange, 0, len(changes))
 	outside, faithful, workspaceFiles := false, true, true
-	projDir, projFile, unattributed := false, false, false
+	projDir, projFile, unattributed, permission := false, false, false, false
 	red := c.r.redactor
 	recorded := map[string]bool{}
 	for _, ch := range changes {
@@ -651,6 +765,9 @@ func (c *CaptureRunner) prepareCursorApproval(ctx context.Context, pc *PlanClien
 			if !inWorkspaceCursor(p) || !ch.regular {
 				workspaceFiles = false
 			}
+			// The harness-written permission file is baseline state: any
+			// change of it is never approval evidence (FP-20).
+			permission = permission || cc.ToolPermission != nil && p == labelToolPermission
 		case projKey != "" && p == projKey:
 			// The computed project directory: allowed only as a newly added
 			// ordinary directory.
@@ -711,6 +828,8 @@ func (c *CaptureRunner) prepareCursorApproval(ctx context.Context, pc *PlanClien
 		reason = ReasonCursorScopeUnverified + ": the inventory after the command is incomplete (" + post.why + ")"
 	case !faithful:
 		reason = ReasonCursorScopeUnverified + ": a changed path cannot be recorded faithfully"
+	case permission:
+		reason = ReasonCursorScopeUnverified + ": the harness-written " + labelToolPermission + " changed during the enable command (it is never approval evidence)"
 	case unattributed:
 		reason = ReasonCursorScopeUnverified + ": a change under " + labelHomeProjects + "/ cannot be attributed: " + derr.Error()
 	case len(changes) == 0:

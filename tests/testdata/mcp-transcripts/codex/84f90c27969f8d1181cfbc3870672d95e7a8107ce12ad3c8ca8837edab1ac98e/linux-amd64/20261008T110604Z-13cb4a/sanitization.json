@@ -1,0 +1,86 @@
+{
+  "schema": "mcpqual-fixture-sanitization-v1",
+  "policy": "decoder-enrollment-b2-metadata-v2",
+  "source_manifest_sha256": "002287b308e4dcee0b09cc776326386a4210e77d2d9cdecaf9a3bc0c01afc18f",
+  "exported_manifest_sha256": "1dc53f26f8e4b1a87260feec8e9e147c5cc111a511e757be7f98544e6458f8ae",
+  "files": [
+    {
+      "path": "clients/codex/config.txt",
+      "source_sha256": "0c7275df8148c4a40f7d60807e4f444f76c29262a326e62e7085f268da9a3c14",
+      "exported_sha256": "0c7275df8148c4a40f7d60807e4f444f76c29262a326e62e7085f268da9a3c14"
+    },
+    {
+      "path": "clients/codex/help-stderr.txt",
+      "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "exported_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "clients/codex/help-stdout.txt",
+      "source_sha256": "bbc4efc9df0efcb411eb08efdf8cf47688ff5b61ede463cd45d88384e206972b",
+      "exported_sha256": "bbc4efc9df0efcb411eb08efdf8cf47688ff5b61ede463cd45d88384e206972b"
+    },
+    {
+      "path": "clients/codex/server-events.jsonl",
+      "source_sha256": "cd2dd8da39d92c20327dfa9c5ccc28e973209fc7ae94a2fc4dde03bd382c3033",
+      "exported_sha256": "cd2dd8da39d92c20327dfa9c5ccc28e973209fc7ae94a2fc4dde03bd382c3033"
+    },
+    {
+      "path": "clients/codex/vendor-events.jsonl",
+      "source_sha256": "739d04a98862ae043dae8e5d48bb0ee7584f45bbd76eb11b05e72d85858639bd",
+      "exported_sha256": "b84888126ee7c64927630a1e3f0dbaa1ccaea31b2e96a23a8ed93cc698ee861f"
+    },
+    {
+      "path": "clients/codex/vendor-stderr.txt",
+      "source_sha256": "1aa26269eb1cc57f86b235a03cda53c004edb5b1e9fc99d4da4f00843293d721",
+      "exported_sha256": "1aa26269eb1cc57f86b235a03cda53c004edb5b1e9fc99d4da4f00843293d721"
+    },
+    {
+      "path": "clients/codex/version-stderr.txt",
+      "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "exported_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "clients/codex/version-stdout.txt",
+      "source_sha256": "f6464b8cc67af75deb2589fe1dbcde152fc15ffb76a91de1cf0686b4623afb1e",
+      "exported_sha256": "f6464b8cc67af75deb2589fe1dbcde152fc15ffb76a91de1cf0686b4623afb1e"
+    },
+    {
+      "path": "plan.json",
+      "source_sha256": "b3d2ccbf9276178e40d0adb83552d532df13a023767b1829cf64f41f9ec00e9f",
+      "exported_sha256": "b3d2ccbf9276178e40d0adb83552d532df13a023767b1829cf64f41f9ec00e9f"
+    }
+  ],
+  "replacements": [
+    {
+      "path": "clients/codex/vendor-events.jsonl",
+      "record": 0,
+      "pointer": "/thread_id",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/codex/vendor-events.jsonl",
+      "record": 1,
+      "pointer": "/item/message",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/codex/vendor-events.jsonl",
+      "record": 2,
+      "pointer": "/item/message",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/codex/vendor-events.jsonl",
+      "record": 4,
+      "pointer": "/item/text",
+      "replacement": "[fixture metadata]"
+    },
+    {
+      "path": "clients/codex/vendor-events.jsonl",
+      "record": 7,
+      "pointer": "/item/text",
+      "replacement": "[fixture metadata]"
+    }
+  ],
+  "protected_sha256": "555f5a50cca27daa8a7110dc37853119990f21cdb7f6e7fbef79d1a4b382f3fd"
+}

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -76,7 +77,10 @@ func enrolledFixture(t *testing.T) *enrolled {
 		for p, data := range sc.bundle.Files {
 			files[path.Join(dir, p)] = data
 		}
-		reg := DefaultRegistry().WithVersion("claude-json", DecoderVersion{Version: version, Fixture: fixture, Qualified: true,
+		// An injected legacy registry: the synthetic versions and this one
+		// fake qualified version (the production registry's real versions
+		// are backed only by the production index).
+		reg := SyntheticRegistry().WithVersion("claude-json", DecoderVersion{Version: version, Fixture: fixture, Qualified: true,
 			Evidence: []DecoderEvidence{{Platform: "linux/amd64", Fixture: fixture, Kinds: []string{CapToolCall, CapToolResult, CapTerminalSuccess}}}})
 		enrolledFix = &enrolled{files: files, entry: e, oracle: o, bundle: sc.bundle, reg: reg}
 	})
@@ -309,7 +313,7 @@ func TestEnrollmentRegistry(t *testing.T) {
 		"no-kinds":       {DecoderVersion{Version: version, Fixture: e.entry.Fixture, Qualified: true, Evidence: []DecoderEvidence{ev("linux/amd64", e.entry.Fixture)}}, "needs a platform"},
 		"orphan-version": {DecoderVersion{Version: version, Fixture: e.entry.Fixture}, "is an orphan"},
 	} {
-		reg := DefaultRegistry().WithVersion("claude-json", tc.v)
+		reg := SyntheticRegistry().WithVersion("claude-json", tc.v)
 		if err := CheckRegistryEvidence(reg, idx, oracles); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: %v", name, err)
 		}
@@ -415,10 +419,14 @@ func TestEnrollmentReplay(t *testing.T) {
 	}
 }
 
-// The production state of slice A (UT-6, FP-5): the checked-in index
-// parses with zero entries, no production registry version is qualified,
-// every synthetic fixture stays labeled and unqualified, and the offline
-// self-check passes on the real repository.
+// The production state of slice B2 (UT-19, FP-5/FP-19): the checked-in
+// index holds exactly the three enrolled linux/amd64 identities, sorted,
+// each sanitized; the production registry qualifies exactly those three
+// with the success capabilities and keeps the four synthetic versions
+// labeled and unqualified, with no real Cursor version; and the offline
+// self-check passes on the real repository. The legacy empty index stays
+// valid against an injected synthetic-only registry, never against the
+// production one.
 func TestProductionEnrollment(t *testing.T) {
 	root := testkit.MustRepoRoot(t)
 	b, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(EnrollmentIndexPath)))
@@ -426,16 +434,33 @@ func TestProductionEnrollment(t *testing.T) {
 		t.Fatal(err)
 	}
 	idx, err := ParseEnrollmentIndex(b)
-	if err != nil || idx.Schema != EnrollmentSchema || len(idx.Entries) != 0 {
+	if err != nil || idx.Schema != EnrollmentSchema || len(idx.Entries) != 3 {
 		t.Fatalf("production index: %v %+v", err, idx)
 	}
+	want := []struct{ client, decoder, version, run string }{
+		{"claude", "claude-json", ClaudeRealVersion, "20261008T122513Z-66db37"},
+		{"codex", "codex-jsonl", CodexRealVersion, "20261008T110604Z-13cb4a"},
+		{"grok", "grok-json", GrokRealVersion, "20261008T110619Z-1663d7"},
+	}
+	for i, w := range want {
+		e := idx.Entries[i]
+		if e.Client != w.client || e.Decoder != w.decoder || e.Version != w.version || e.Platform != "linux/amd64" ||
+			e.Fixture != EnrolledFixtureID(w.decoder, w.version, "linux/amd64") || e.Bundle != EnrolledBundlePath(w.client, w.version, "linux/amd64", w.run) ||
+			e.SanitizationSHA256 == nil {
+			t.Fatalf("entry %d %+v", i, e)
+		}
+	}
 	reg := DefaultRegistry()
-	if q := reg.QualifiedVersions(); len(q) != 0 {
+	if q := reg.QualifiedVersions(); !slices.Equal(q, []string{"claude-json " + ClaudeRealVersion, "codex-jsonl " + CodexRealVersion, "grok-json " + GrokRealVersion}) {
 		t.Fatalf("qualified production versions %v", q)
 	}
 	for _, name := range decoderNames {
 		for _, v := range reg.Versions(name) {
-			if v.Qualified || len(v.Evidence) != 0 || v.Fixture != name+"/synthetic" {
+			if !v.Qualified && (len(v.Evidence) != 0 || v.Fixture != name+"/synthetic") {
+				t.Fatalf("%s %+v", name, v)
+			}
+			if v.Qualified && (len(v.Evidence) != 1 || v.Evidence[0].Platform != "linux/amd64" || v.Evidence[0].Fixture != v.Fixture ||
+				!slices.Equal(v.Evidence[0].Kinds, []string{CapToolCall, CapToolResult, CapTerminalSuccess})) {
 				t.Fatalf("%s %+v", name, v)
 			}
 		}
@@ -443,10 +468,22 @@ func TestProductionEnrollment(t *testing.T) {
 			t.Fatalf("no %s decoder", name)
 		}
 	}
+	if vs := reg.Versions("cursor-jsonl"); len(vs) != 1 || vs[0].Qualified {
+		t.Fatalf("cursor versions %+v", vs)
+	}
 	// Confined opening of the repository (code review C5, round 2 C2): a
 	// held os.Root, every component opened relative to its parent.
 	got, err := ValidateEnrollment(EnrollmentOptions{Root: root, Registry: reg})
-	if err != nil || len(got.Entries) != 0 {
+	if err != nil || len(got.Entries) != 3 {
 		t.Fatalf("production self-check: %v", err)
+	}
+	// The legacy empty index: valid against an injected synthetic-only
+	// registry, refused against the production registry.
+	empty := fstest.MapFS{EnrollmentIndexPath: &fstest.MapFile{Data: []byte(`{"schema":"mcpqual-enrollment-v1","entries":[]}`), Mode: 0o600}}
+	if got, err := ValidateEnrollment(EnrollmentOptions{FS: empty, Registry: SyntheticRegistry()}); err != nil || len(got.Entries) != 0 {
+		t.Fatalf("legacy empty index: %v", err)
+	}
+	if _, err := ValidateEnrollment(EnrollmentOptions{FS: empty, Registry: reg}); err == nil || !strings.Contains(err.Error(), "is not in the enrollment index") {
+		t.Fatalf("an empty index backed the production registry: %v", err)
 	}
 }

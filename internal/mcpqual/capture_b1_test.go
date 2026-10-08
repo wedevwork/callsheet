@@ -1124,7 +1124,9 @@ func TestCursorApprovalCapture(t *testing.T) {
 			return capBehavior{}
 		}, nil, ReasonCursorScopeUnverified + ": the inventory after the command is incomplete (a symbolic link", ScopeUnverifiable, stopped,
 			[]CaptureApprovalChange{{"<workspace>/.cursor/link", ChangeAdded}}},
-		"post-bound": {nil, func(c *CaptureRunner) { c.ApprovalLimits = ApprovalScanLimits{Entries: 6} },
+		// Design decoder-enrollment B2 (FP-20): the harness-written
+		// .cursor/cli.json is one more baseline entry before the command.
+		"post-bound": {nil, func(c *CaptureRunner) { c.ApprovalLimits = ApprovalScanLimits{Entries: 7} },
 			// The cut post-inventory keeps the difference it saw.
 			ReasonCursorScopeUnverified + ": the inventory after the command is incomplete (the entry bound", ScopeUnverifiable, stopped,
 			[]CaptureApprovalChange{{"<workspace>/" + approvedFile, ChangeAdded}}},
@@ -1351,6 +1353,11 @@ func TestCaptureApprovalManifest(t *testing.T) {
 		c := &m.Clients[0]
 		c.Approval, c.State, c.Reason = a, CapturePartial, sptr("stopped")
 		c.Session = CaptureStage{State: StagePrepared, Reason: sptr("stopped")}
+		// Design decoder-enrollment B2 (FP-20): without a session the
+		// permission file stays written, never verified.
+		if c.ToolPermission != nil {
+			c.ToolPermission.State, c.ToolPermission.Reason = PermissionWritten, sptr(permissionPending)
+		}
 		c.Probe, c.ProbeReason = nil, sptr("the session did not run")
 		var kept []EvidenceRef
 		for _, f := range m.Files {

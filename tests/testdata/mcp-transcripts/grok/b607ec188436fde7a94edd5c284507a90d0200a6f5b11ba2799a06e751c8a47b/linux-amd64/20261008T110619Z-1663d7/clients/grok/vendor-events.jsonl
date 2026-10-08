@@ -1,0 +1,69 @@
+{"offset_ns":521793219,"data":"{\"type\":\"available_commands\",\"tools\":[],\"commands\":[]}"}
+{"offset_ns":521844291,"data":"{\"type\":\"available_commands\",\"tools\":[],\"commands\":[]}"}
+{"offset_ns":3345184997,"data":"{\"type\":\"available_commands\",\"tools\":[],\"commands\":[]}"}
+{"offset_ns":3345220343,"data":"{\"type\":\"available_commands\",\"tools\":[],\"commands\":[]}"}
+{"offset_ns":3345264244,"data":"{\"type\":\"available_commands\",\"tools\":[],\"commands\":[]}"}
+{"offset_ns":3345306785,"data":"{\"type\":\"available_commands\",\"tools\":[],\"commands\":[]}"}
+{"offset_ns":3345349763,"data":"{\"type\":\"available_commands\",\"tools\":[],\"commands\":[]}"}
+{"offset_ns":3416643933,"data":"{\"type\":\"thought\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":3416645285,"data":"{\"type\":\"thought\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":3580167574,"data":"{\"type\":\"thought\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":3580169307,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":3580169870,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":3580170486,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":3622688984,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":3622689886,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":3622690386,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":3622690886,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":3622695392,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":3622695751,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":3622707623,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":3668604293,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":3712756234,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":3712757029,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":3758705794,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":4015016410,"data":"{\"type\":\"available_commands\",\"tools\":[],\"commands\":[]}"}
+{"offset_ns":4015307154,"data":"{\"type\":\"usage\",\"usage\":{\"input_tokens\":19336,\"output_tokens\":222,\"cache_read_input_tokens\":6784,\"cache_creation_input_tokens\":0,\"reasoning_tokens\":175},\"signature\":\"[fixture metadata]\"}"}
+{"offset_ns":4015440126,"data":"{\"type\":\"tool_call\",\"toolCallId\":\"call-6837ec13-4a59-44a6-8da7-6d819652d1e9-0\",\"title\":\"use_tool\",\"kind\":\"use_tool\",\"status\":\"pending\",\"toolName\":\"use_tool\",\"rawInput\":{\"tool_name\":\"probe__slow\",\"tool_input\":{\"case_id\":\"grok-capture-setup\"}},\"content\":[],\"locations\":[]}"}
+{"offset_ns":4015449561,"data":"{\"type\":\"tool_call_update\",\"toolCallId\":\"call-6837ec13-4a59-44a6-8da7-6d819652d1e9-0\",\"status\":null,\"content\":[],\"rawOutput\":null,\"locations\":[]}"}
+{"offset_ns":12731687633,"data":"{\"type\":\"tool_call_update\",\"toolCallId\":\"call-6837ec13-4a59-44a6-8da7-6d819652d1e9-0\",\"status\":\"completed\",\"content\":[],\"rawOutput\":{\"type\":\"MCP\",\"tool_name\":\"slow\",\"server_name\":\"probe\",\"output\":{\"OkayOutput\":\"{\\\"case_id\\\":\\\"grok-capture-setup\\\",\\\"nonce\\\":\\\"246477f501e17c8f2315a6963bf8d8c2\\\"}\"}},\"locations\":[]}"}
+{"offset_ns":16022094065,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":16022095235,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":16022095580,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":16022095810,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":16022096125,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":16022096383,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":16022096636,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":16022110640,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":16022114183,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":16022114583,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":16022152285,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":16022203037,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":16022203373,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":16022242346,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":16022247466,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":16022263793,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":16022407358,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":16022407976,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":16022408310,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":16022408566,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":16022408896,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":16022420167,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":16022447415,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":16022486506,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":16022486830,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":16022626602,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":16022655777,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":16022656212,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":16022656475,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":16022656781,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":16022659635,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":16022671224,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":16022715776,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":16022732642,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":16022776780,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":16022777108,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":16022932956,"data":"{\"type\":\"text\",\"data\":\"[fixture metadata]\"}"}
+{"offset_ns":16082671384,"data":"{\"type\":\"available_commands\",\"tools\":[],\"commands\":[]}"}
+{"offset_ns":16082672882,"data":"{\"type\":\"usage\",\"usage\":{\"input_tokens\":24086,\"output_tokens\":62,\"cache_read_input_tokens\":2304,\"cache_creation_input_tokens\":0,\"reasoning_tokens\":25},\"signature\":\"[fixture metadata]\"}"}
+{"offset_ns":16152678050,"data":"{\"type\":\"end\",\"stopReason\":\"end_turn\",\"sessionId\":\"[fixture metadata]\",\"requestId\":\"[fixture metadata]\",\"usage\":{\"input_tokens\":43422,\"cache_read_input_tokens\":9088,\"cache_creation_input_tokens\":0,\"output_tokens\":284,\"reasoning_tokens\":200,\"total_tokens\":52794},\"num_turns\":2,\"total_cost_usd\":\"[fixture metadata]\",\"total_cost_usd_ticks\":\"[fixture metadata]\",\"modelUsage\":{\"grok-4.7-build\":{\"inputTokens\":43422,\"outputTokens\":284,\"cacheReadInputTokens\":9088,\"cacheCreationInputTokens\":0,\"modelCalls\":2,\"costUSD\":\"[fixture metadata]\"}}}"}

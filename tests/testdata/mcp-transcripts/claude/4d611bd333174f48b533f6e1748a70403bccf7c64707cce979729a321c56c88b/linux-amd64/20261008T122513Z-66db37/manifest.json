@@ -1,0 +1,242 @@
+{
+  "schema": "mcpqual-capture-v1",
+  "run_id": "20261008T122513Z-66db37",
+  "captured_at": "2026-10-08T12:25:13Z",
+  "harness_version": "07b.1",
+  "os": "linux",
+  "arch": "amd64",
+  "plan_sha256": "6ce42d930240f10787b60cb1f228f7df89bfa32a66143506c1d1a3bf7a9409f0",
+  "limits": {
+    "clients": 1,
+    "sessions_per_client": 1,
+    "session_ms": 120000,
+    "client_ms": 180000,
+    "metadata_ms": 30000,
+    "stream_bytes": 8388608,
+    "server_events_bytes": 8388608,
+    "file_bytes": 8388608,
+    "client_bytes": 67108864,
+    "bundle_bytes": 268435456,
+    "manifest_bytes": 8388608
+  },
+  "redaction_policy": "mcpqual-capture-v1",
+  "state": "complete",
+  "reason": null,
+  "vendor_behavior": "not_evaluated",
+  "plan": {
+    "path": "plan.json",
+    "omitted_lines": 0,
+    "input_truncated": false,
+    "output_truncated": false
+  },
+  "cleanup": {
+    "ok": true,
+    "failures": []
+  },
+  "clients": [
+    {
+      "id": "claude",
+      "expected_version": "2.1.292 (Claude Code)",
+      "observed_version": "2.1.292 (Claude Code)",
+      "observed_version_reason": null,
+      "executable_sha256": "a967e7b1d8b4e47ee421d5433027880347952b0c0857abf880e2c942a4ec93b3",
+      "executable_sha256_reason": null,
+      "decoder": "claude-json",
+      "decoder_fixture": "claude-json/synthetic",
+      "decoder_validated": false,
+      "model": "claude-sonnet-5-5",
+      "effort": null,
+      "effort_reason": "the plan names no effort",
+      "argv": [
+        "-p",
+        "Call the MCP tool slow exactly once with arguments {\"case_id\": \"claude-capture-setup\"}. Do not call any other tool. Report the tool's result or error verbatim, then stop.",
+        "--output-format",
+        "json",
+        "--verbose",
+        "--model",
+        "claude-sonnet-5-5",
+        "--mcp-config",
+        "<workspace>/probe-mcp.json",
+        "--strict-mcp-config",
+        "--allowed-tools",
+        "mcp__probe__slow"
+      ],
+      "config": {
+        "path": "probe-mcp.json",
+        "prerequisite": null,
+        "timeout_override": "none"
+      },
+      "case_id": "claude-capture-setup",
+      "nonce": "387ab817f352f4247d157e6bd4242a17",
+      "version": {
+        "state": "ran",
+        "reason": null,
+        "watchdog_ms": 30000,
+        "exit": 0,
+        "signal": null,
+        "watchdog": false,
+        "interrupted": false,
+        "stdout_held": false,
+        "stderr_held": false,
+        "cleanup": {
+          "term_sent": false,
+          "kill_sent": false,
+          "leader_exited_first": false,
+          "group_gone": true,
+          "error": null
+        }
+      },
+      "help": {
+        "state": "ran",
+        "reason": null,
+        "watchdog_ms": 30000,
+        "exit": 0,
+        "signal": null,
+        "watchdog": false,
+        "interrupted": false,
+        "stdout_held": false,
+        "stderr_held": false,
+        "cleanup": {
+          "term_sent": false,
+          "kill_sent": false,
+          "leader_exited_first": false,
+          "group_gone": true,
+          "error": null
+        }
+      },
+      "session": {
+        "state": "ran",
+        "reason": null,
+        "watchdog_ms": 120000,
+        "exit": 0,
+        "signal": null,
+        "watchdog": false,
+        "interrupted": false,
+        "stdout_held": false,
+        "stderr_held": false,
+        "cleanup": {
+          "term_sent": true,
+          "kill_sent": false,
+          "leader_exited_first": true,
+          "group_gone": true,
+          "error": null
+        }
+      },
+      "probe": {
+        "intact": false,
+        "initialized": true,
+        "client_name": "claude-code",
+        "client_version": "2.1.292",
+        "receipts": 1,
+        "completed": true,
+        "anomalies": [],
+        "observation": {
+          "end_state": "terminal_observed_without_exit",
+          "intact": false,
+          "terminal_kind": "completed",
+          "clean_session": true
+        }
+      },
+      "probe_reason": null,
+      "streams": [
+        {
+          "path": "clients/claude/version-stdout.txt",
+          "omitted_lines": 0,
+          "input_truncated": false,
+          "output_truncated": false
+        },
+        {
+          "path": "clients/claude/version-stderr.txt",
+          "omitted_lines": 0,
+          "input_truncated": false,
+          "output_truncated": false
+        },
+        {
+          "path": "clients/claude/help-stdout.txt",
+          "omitted_lines": 0,
+          "input_truncated": false,
+          "output_truncated": false
+        },
+        {
+          "path": "clients/claude/help-stderr.txt",
+          "omitted_lines": 0,
+          "input_truncated": false,
+          "output_truncated": false
+        },
+        {
+          "path": "clients/claude/config.txt",
+          "omitted_lines": 0,
+          "input_truncated": false,
+          "output_truncated": false
+        },
+        {
+          "path": "clients/claude/vendor-events.jsonl",
+          "omitted_lines": 0,
+          "input_truncated": false,
+          "output_truncated": false
+        },
+        {
+          "path": "clients/claude/vendor-stderr.txt",
+          "omitted_lines": 0,
+          "input_truncated": false,
+          "output_truncated": false
+        },
+        {
+          "path": "clients/claude/server-events.jsonl",
+          "omitted_lines": 0,
+          "input_truncated": false,
+          "output_truncated": false
+        }
+      ],
+      "state": "complete",
+      "reason": null
+    }
+  ],
+  "files": [
+    {
+      "path": "clients/claude/config.txt",
+      "sha256": "9f311ef458c1447b00b4a0cdb56458e6c7f02681898a70ed5adf2f6ca48be7e0",
+      "bytes": 147
+    },
+    {
+      "path": "clients/claude/help-stderr.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "clients/claude/help-stdout.txt",
+      "sha256": "882951bd0292186934240bb20583e97b8a3362baf7e2b7b3dbeb4e0cfc8b1305",
+      "bytes": 22130
+    },
+    {
+      "path": "clients/claude/server-events.jsonl",
+      "sha256": "6f6e2fba47e78fa5c3bf2b9ab616b375926544b0bfc421bf6c62a9ed552878a5",
+      "bytes": 734
+    },
+    {
+      "path": "clients/claude/vendor-events.jsonl",
+      "sha256": "f489e7eb82c58842c37cda0f4df2c66cc4e0bff6ae88e1ab0c3f164da09eb098",
+      "bytes": 7269
+    },
+    {
+      "path": "clients/claude/vendor-stderr.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "clients/claude/version-stderr.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "clients/claude/version-stdout.txt",
+      "sha256": "46ef67828dfb9d34aef4d5df24d529825edb3cfa334f333e445fe5d0f1b14cc2",
+      "bytes": 22
+    },
+    {
+      "path": "plan.json",
+      "sha256": "6ce42d930240f10787b60cb1f228f7df89bfa32a66143506c1d1a3bf7a9409f0",
+      "bytes": 816
+    }
+  ]
+}

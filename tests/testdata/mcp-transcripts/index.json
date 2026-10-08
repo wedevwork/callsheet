@@ -1,4 +1,38 @@
 {
   "schema": "mcpqual-enrollment-v1",
-  "entries": []
+  "entries": [
+    {
+      "client": "claude",
+      "decoder": "claude-json",
+      "version": "2.1.292 (Claude Code)",
+      "platform": "linux/amd64",
+      "fixture": "claude-json/real/4d611bd333174f48b533f6e1748a70403bccf7c64707cce979729a321c56c88b/linux-amd64",
+      "bundle": "tests/testdata/mcp-transcripts/claude/4d611bd333174f48b533f6e1748a70403bccf7c64707cce979729a321c56c88b/linux-amd64/20261008T122513Z-66db37",
+      "manifest_sha256": "1b315aabf249095bff003191701581f00b29b43b6cc54c09262b1ada41574263",
+      "expected_sha256": "c025d2e266ecbf877f73c58be232ed79d67a646f84dfa6b242ec43530722d803",
+      "sanitization_sha256": "e21ba896b5ed35e86528b7962626bfbb92e922ace7d5aa7a3a18397e5042888a"
+    },
+    {
+      "client": "codex",
+      "decoder": "codex-jsonl",
+      "version": "codex-cli 0.160.0",
+      "platform": "linux/amd64",
+      "fixture": "codex-jsonl/real/84f90c27969f8d1181cfbc3870672d95e7a8107ce12ad3c8ca8837edab1ac98e/linux-amd64",
+      "bundle": "tests/testdata/mcp-transcripts/codex/84f90c27969f8d1181cfbc3870672d95e7a8107ce12ad3c8ca8837edab1ac98e/linux-amd64/20261008T110604Z-13cb4a",
+      "manifest_sha256": "1dc53f26f8e4b1a87260feec8e9e147c5cc111a511e757be7f98544e6458f8ae",
+      "expected_sha256": "2c32bd42aa287ea6ad23656f386593d82b3bd61467ab31cfd7ded88207c2cf65",
+      "sanitization_sha256": "4d973d0a1f0c2898a691fddb97f339d885be3459b31f72ace65e98905344d52c"
+    },
+    {
+      "client": "grok",
+      "decoder": "grok-json",
+      "version": "grok 1.0.46 (2765805b9442) [stable]",
+      "platform": "linux/amd64",
+      "fixture": "grok-json/real/b607ec188436fde7a94edd5c284507a90d0200a6f5b11ba2799a06e751c8a47b/linux-amd64",
+      "bundle": "tests/testdata/mcp-transcripts/grok/b607ec188436fde7a94edd5c284507a90d0200a6f5b11ba2799a06e751c8a47b/linux-amd64/20261008T110619Z-1663d7",
+      "manifest_sha256": "6136a43e48f03b539de75fd5c8e7da97e482352cef19bf31f2a7339b49ac20b0",
+      "expected_sha256": "15c0311ac812835ca5b1e1c3587c10f7b1fbe6ba8f94c1ed9b93fe662ff2b732",
+      "sanitization_sha256": "6f7cb670d687aa359bb218d170119abb853b0b91437154f30c74aea20f19c58a"
+    }
+  ]
 }

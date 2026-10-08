@@ -235,6 +235,17 @@ var WorkspaceCoverageManifest = []CoverageEntry{
 	// mcpqual/enrollment.go, mcpqual/report.go, mcpqual/runner.go and
 	// devcheck/native.go.
 	{Group: GroupChanged, File: modulePath + "/internal/mcpqual/probe_observation.go"},
+
+	// Decoder enrollment, slice B2 (base a605227): the new real decoders,
+	// the fixture export with its command runner, and the thin maintainer
+	// command (no build constraint: evaluated on both systems). Its other
+	// changed production files are already listed whole: mcpqual/decode.go,
+	// mcpqual/enrollment.go, mcpqual/capture.go, mcpqual/capture_approval.go,
+	// mcpqual/capture_approval_unix.go, mcpqual/capture_manifest.go and
+	// devcheck/native.go.
+	{Group: GroupChanged, File: modulePath + "/internal/mcpqual/decode_real.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/mcpqual/fixture_export.go"},
+	{Group: GroupChanged, File: modulePath + "/cmd/mcpfixture-export/main.go"},
 }
 
 // modulePath is the profile's import-path prefix.

@@ -549,7 +549,7 @@ func enrollCapture(t *testing.T, out string) (string, mcpqual.EnrollmentEntry, *
 	repo := filepath.Join(realTemp(t), "repo")
 	copyTree(t, out, filepath.Join(repo, filepath.FromSlash(e.Bundle)))
 	writeEnrollment(t, repo, &e, o)
-	reg := mcpqual.DefaultRegistry().WithVersion("claude-json", mcpqual.DecoderVersion{Version: version, Fixture: e.Fixture, Qualified: true,
+	reg := mcpqual.SyntheticRegistry().WithVersion("claude-json", mcpqual.DecoderVersion{Version: version, Fixture: e.Fixture, Qualified: true,
 		Evidence: []mcpqual.DecoderEvidence{{Platform: platform, Fixture: e.Fixture, Kinds: o.Capabilities}}})
 	return repo, e, o, reg
 }
@@ -789,6 +789,13 @@ func TestMCPCaptureCursorInventoryPolicy(t *testing.T) {
 			}
 			if bytes.Contains(b.ManifestBytes, []byte("enable-chat")) || len(q.launchLog()["session"]) != 1 {
 				t.Fatal("an excluded data change was inventoried")
+			}
+			// Design decoder-enrollment B2 (FP-20): the harness-written
+			// <workspace>/.cursor/cli.json is in both inventories (baseline,
+			// never a change) under the same caps, and verified intact.
+			if c.ToolPermission == nil || c.ToolPermission.State != mcpqual.PermissionVerified ||
+				slices.ContainsFunc(c.Approval.Changes, func(ch mcpqual.CaptureApprovalChange) bool { return strings.HasSuffix(ch.Path, "/cli.json") }) {
+				t.Fatalf("baseline permission file %+v %+v", c.ToolPermission, c.Approval.Changes)
 			}
 			// The same directories on an absent boundary appear as boundary
 			// additions: outside the workspace, contents never listed.

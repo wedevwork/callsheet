@@ -6,12 +6,13 @@ package mcpqual
 // model prose (a final answer or an assistant message) is never read, so a
 // narrative mentioning "timeout" can never become a tool timeout.
 //
-// The event paths below are this iteration's synthetic fixture contracts:
-// they test parser behaviour only. A decoder version becomes qualified for
-// VERIFIED classification only when an owner's redacted actual transcript
-// fixture for exactly that version is registered (Qualified), which no
-// version has yet. Selection is by exact vendor version string and never
-// falls back to another version.
+// The event paths below are the synthetic fixture contracts: they test
+// parser behaviour only. A decoder version becomes qualified for VERIFIED
+// classification only when an owner's redacted actual transcript fixture
+// for exactly that version is registered (Qualified): the three enrolled
+// real versions of design decoder-enrollment B2 decode with their own
+// exact-version parsers (decode_real.go). Selection is by exact vendor
+// version string and never falls back to another version.
 
 import (
 	"bytes"
@@ -197,9 +198,15 @@ func (v DecoderVersion) validateEvidence() error {
 // platformRe is an evidence platform: a supported OS and an architecture.
 var platformRe = regexp.MustCompile(`^(linux|darwin)/[a-z0-9]+$`)
 
+// decoderSpec is one decoder family: its supported versions, the family
+// (synthetic) parser, and exact-version overrides (design
+// decoder-enrollment B2, FP-17): a version listed in exact decodes with its
+// own real parser, never the family's, so conflicting synthetic and real
+// formats coexist without format guessing.
 type decoderSpec struct {
 	versions []DecoderVersion
 	decode   func(Transcript) Decoded
+	exact    map[string]func(Transcript) Decoded
 }
 
 // Registry maps decoder names to their supported versions.
@@ -207,25 +214,59 @@ type Registry map[string]decoderSpec
 
 // DefaultRegistry is the production registry: the four captured CLI
 // versions (tests/testdata/cli-help), each backed by a synthetic fixture
-// only, so none is qualified.
+// only and so unqualified, and the three enrolled real versions of design
+// decoder-enrollment B2 (FP-19): exactly these linux/amd64 identities, each
+// Qualified with its one indexed real fixture and only the success
+// capabilities, decoded by its exact-version real parser (FP-17). Cursor
+// has no real version: it stays UNVERIFIED until its own follow-up.
 func DefaultRegistry() Registry {
+	r := SyntheticRegistry()
+	add := func(name, v string, decode func(Transcript) Decoded) {
+		f := EnrolledFixtureID(name, v, EnrolledRealPlatform)
+		s := r[name]
+		s.versions = append(s.versions, DecoderVersion{Version: v, Fixture: f, Qualified: true,
+			Evidence: []DecoderEvidence{{Platform: EnrolledRealPlatform, Fixture: f, Kinds: []string{CapToolCall, CapToolResult, CapTerminalSuccess}}}})
+		s.exact = map[string]func(Transcript) Decoded{v: decode}
+		r[name] = s
+	}
+	add("claude-json", ClaudeRealVersion, decodeClaudeReal)
+	add("codex-jsonl", CodexRealVersion, decodeCodexReal)
+	add("grok-json", GrokRealVersion, decodeGrokReal)
+	return r
+}
+
+// SyntheticRegistry is the four captured CLI versions backed by synthetic
+// fixtures only, none qualified and without any enrolled real version: the
+// legacy registry that tests extend with injected fake evidence (a fake
+// fixture never enters the production index, which DefaultRegistry must
+// match exactly).
+func SyntheticRegistry() Registry {
 	synth := func(name, v string) []DecoderVersion {
 		return []DecoderVersion{{Version: v, Fixture: name + "/synthetic"}}
 	}
 	return Registry{
-		"claude-json":  {synth("claude-json", "2.1.282 (Claude Code)"), decodeClaude},
-		"codex-jsonl":  {synth("codex-jsonl", "codex-cli 0.156.1"), decodeCodex},
-		"grok-json":    {synth("grok-json", "grok 1.0.41 (4220f3b224a6) [stable]"), decodeGrok},
-		"cursor-jsonl": {synth("cursor-jsonl", "2026.09.23-86fc751"), decodeCursor},
+		"claude-json":  {versions: synth("claude-json", "2.1.282 (Claude Code)"), decode: decodeClaude},
+		"codex-jsonl":  {versions: synth("codex-jsonl", "codex-cli 0.156.1"), decode: decodeCodex},
+		"grok-json":    {versions: synth("grok-json", "grok 1.0.41 (4220f3b224a6) [stable]"), decode: decodeGrok},
+		"cursor-jsonl": {versions: synth("cursor-jsonl", "2026.09.23-86fc751"), decode: decodeCursor},
 	}
 }
 
 // WithVersion returns a copy of r where decoder name also supports v
 // (tests register qualified versions this way; production never does).
+// The exact-version overrides are copied too, so a test registry keeps the
+// real parsers (design decoder-enrollment B2, FP-17).
 func (r Registry) WithVersion(name string, v DecoderVersion) Registry {
 	out := Registry{}
 	for k, s := range r {
-		out[k] = decoderSpec{versions: append([]DecoderVersion(nil), s.versions...), decode: s.decode}
+		cp := decoderSpec{versions: append([]DecoderVersion(nil), s.versions...), decode: s.decode}
+		if s.exact != nil {
+			cp.exact = make(map[string]func(Transcript) Decoded, len(s.exact))
+			for ver, f := range s.exact {
+				cp.exact[ver] = f
+			}
+		}
+		out[k] = cp
 	}
 	s := out[name]
 	s.versions = append(s.versions, v)
@@ -238,7 +279,9 @@ func (r Registry) Versions(name string) []DecoderVersion {
 	return append([]DecoderVersion(nil), r[name].versions...)
 }
 
-// Decoder returns decoder name's transcript decoder (nil when unknown).
+// Decoder returns decoder name's family (synthetic) transcript decoder
+// (nil when unknown): the legacy accessor. Production execution and
+// Replay use Select, which honours the exact-version overrides.
 func (r Registry) Decoder(name string) func(Transcript) Decoded {
 	return r[name].decode
 }
@@ -253,7 +296,11 @@ func (r Registry) hasFixture(name, fixture string) bool {
 }
 
 // Select returns the decoder for an exact vendor version; there is no
-// fallback to another version.
+// fallback to another version. A version with an exact-version override
+// decodes with that override (design decoder-enrollment B2, FP-17); every
+// other supported version uses the family parser. Selection is by the
+// exact string only, never by transcript shape, a shortened version, the
+// host platform or the model.
 func (r Registry) Select(name, version string) (func(Transcript) Decoded, DecoderVersion, error) {
 	s, ok := r[name]
 	if !ok {
@@ -261,6 +308,9 @@ func (r Registry) Select(name, version string) (func(Transcript) Decoded, Decode
 	}
 	for _, v := range s.versions {
 		if v.Version == version {
+			if f := s.exact[version]; f != nil {
+				return f, v, nil
+			}
 			return s.decode, v, nil
 		}
 	}

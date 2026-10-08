@@ -1,0 +1,41 @@
+{
+  "case_id": "claude-capture-setup",
+  "nonce": "387ab817f352f4247d157e6bd4242a17",
+  "events": [
+    {
+      "case_id": "claude-capture-setup",
+      "event_kind": "tool_call",
+      "monotonic_offset": 6287490841,
+      "request_id": "toolu_01KK6p41QYGfUCGd1PL3s29b"
+    },
+    {
+      "case_id": "claude-capture-setup",
+      "event_kind": "tool_result",
+      "monotonic_offset": 6287490841,
+      "request_id": "toolu_01KK6p41QYGfUCGd1PL3s29b",
+      "nonce": "387ab817f352f4247d157e6bd4242a17"
+    }
+  ],
+  "terminal": true,
+  "inconclusive": "",
+  "client_info": {
+    "name": "claude-code",
+    "version": "2.1.292"
+  },
+  "requester_compatible": true,
+  "error_kinds": [],
+  "capabilities": [
+    "tool_call",
+    "tool_result",
+    "terminal_success"
+  ],
+  "capture_state": "complete",
+  "source_capture_sha256": "b6e59475d6118b4690cb9f056b09a4964d8f1f5b87b3034744718db270d42295",
+  "sanitization_policy": "decoder-enrollment-b2-metadata-v2",
+  "attestation": {
+    "owner": "callsheet-owner",
+    "reviewer": "decoder-enrollment-coordinator",
+    "policy": "mcpqual-capture-v1",
+    "omissions": 0
+  }
+}

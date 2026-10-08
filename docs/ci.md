@@ -618,6 +618,47 @@ files were already whole-file entries). The workflow keeps its twenty jobs,
 four required checks, commands, stress selectors, counts, CPU lists and
 timeouts; B1.5 makes no new budget allocation.
 
+Decoder enrollment, slice B2 (the exact-version real decoders of Codex
+0.160.0, Grok 1.0.46 and Claude 2.1.292, the metadata-sanitised fixture
+export and its `sanitization.json` provenance, the three linux/amd64
+enrollments, Cursor's capture-only scoped project permission and the
+confirmation and delivery gates) appends one function parent per new FP
+(FP-17 to FP-21) as a separate group, 5 more names, 424 in all, with the
+419 earlier names unchanged and first (the slice A names keep positions 403
+to 412, the B1 names 412 to 416 and the B1.5 names 416 to 419; the new
+group holds positions 419 to 424): `TestMCPRealDecoderMappings`,
+`TestMCPFixtureSanitization`, `TestMCPRealEnrollment`,
+`TestMCPCaptureCursorToolPermission` and
+`TestMCPRealEnrollmentConfirmation`. Each asserts its literal local case
+inventory and that every case completed, with no subtest names; they replay
+the checked-in sanitised fixtures offline and run the production capture,
+qualification and export code with the fake vendor (now also in the three
+enrolled real output formats), the real probe and a test-only export helper
+(never an installed vendor CLI, a model, a raw capture bundle or a
+`design/` path), and only in the normal, race and native suites, never in a
+stress shard. The new offline cases are the real decoders' golden replays
+and negative mutations, the export's determinism, protected spans and
+refusals, the production enrollment self-check of the three entries and its
+corruptions, the Cursor permission file's creation, mutation and refusal
+cases, and the 15 s confirmation path of the enrolled formats (its
+specified schedule on an injected fake clock, an in-process fake vendor
+speaking to the real probe command in process, with no sleeps). The new
+`internal/mcpqual` unit vectors are small, injected and deterministic and
+run in that package's unchanged per-CPU invocations of
+`stress-packages-cpu`: B2 adds no new stress selector or workload. `devcheck
+native` still makes 9 ordinary calls, `devcheck bench` keeps 13 steps
+(`BenchmarkMCPQualificationTranscript` adds the three enrolled fixtures,
+separating decode CPU from replay and `ValidateEnrollment` I/O, and
+`BenchmarkMCPCaptureEvidence` adds small export and protected-span cases),
+Linux `all` still makes 32 ordinary calls, cross keeps 12 artifacts, and
+the whole-file coverage manifest adds `internal/mcpqual/decode_real.go`,
+`internal/mcpqual/fixture_export.go` and `cmd/mcpfixture-export/main.go`
+(its other changed files were already whole-file entries); the maintainer
+command is exercised by ordinary tests, not a hosted step or cross artifact.
+The workflow keeps its twenty jobs, four required checks, commands, stress
+selectors, counts, CPU lists and timeouts; B2 makes no new budget
+allocation.
+
 Cross-build matrix (FP-8; moved out of `tests/function` on 2026-10-02).
 `devcheck cross` is FP-8's proof. It builds callsheet, fake-adapter and the
 process-group test binary (`go test -c`) with `CGO_ENABLED=0` for
