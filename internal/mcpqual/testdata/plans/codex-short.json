@@ -34,13 +34,18 @@
           "mcp_servers.probe.command=\"{server}\"",
           "-c",
           "mcp_servers.probe.args=[\"serve\",\"--case-file\",\"{workspace}/case.json\",\"--events\",\"{workspace}/server-events.jsonl\"]",
+          "-c",
+          "mcp_servers.probe.enabled_tools=[\"slow\"]",
+          "-c",
+          "mcp_servers.probe.tools.slow.approval_mode=\"approve\"",
           "{prompt}"
         ]
       },
       "config": {
         "default": {
           "path": "probe-config.toml",
-          "content": "[mcp_servers.probe]\ncommand = \"{server}\"\nargs = [\"serve\", \"--case-file\", \"{case_file}\", \"--events\", \"{events}\"]\n"
+          "content": "[mcp_servers.probe]\ncommand = \"{server}\"\nargs = [\"serve\", \"--case-file\", \"{case_file}\", \"--events\", \"{events}\"]\nenabled_tools = [\"slow\"]\n[mcp_servers.probe.tools.slow]\napproval_mode = \"approve\"\n",
+          "prerequisite": "Invocation-only approval for probe.slow; no server-wide approval or timeout override."
         }
       },
       "phases": {

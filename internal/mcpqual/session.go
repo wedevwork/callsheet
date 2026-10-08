@@ -320,9 +320,29 @@ func minProgress(spec caseSpec) int {
 
 // Prompt is the scripted instruction for one case: call slow once with
 // the exact case ID, report its result or error, and stop.
-func Prompt(caseID string) string {
-	return fmt.Sprintf("Call the MCP tool slow exactly once with arguments {\"case_id\": %q}. Do not call any other tool. "+
-		"Report the tool's result or error verbatim, then stop.", caseID)
+func Prompt(caseID string) string { return promptFor("slow", caseID) }
+
+// GrokProbeTool is the qualified name Grok gives the probe's slow tool
+// (server__tool; design decoder-enrollment B1, FP-12).
+const GrokProbeTool = "probe__slow"
+
+// promptForClient is the scripted instruction a client's session gets:
+// Prompt, except that Grok names its qualified tool. The tool name is a
+// parameter of the text, never a replacement over the case ID.
+func promptForClient(clientID, caseID string) string {
+	if clientID == "grok" {
+		return promptFor(GrokProbeTool, caseID)
+	}
+	return Prompt(caseID)
+}
+
+// PromptForClient is promptForClient for the function tests' fake vendor
+// expectations.
+func PromptForClient(clientID, caseID string) string { return promptForClient(clientID, caseID) }
+
+func promptFor(tool, caseID string) string {
+	return fmt.Sprintf("Call the MCP tool %s exactly once with arguments {\"case_id\": %q}. Do not call any other tool. "+
+		"Report the tool's result or error verbatim, then stop.", tool, caseID)
 }
 
 // prepareCase writes the case workspace of spec for client pc (its case
@@ -352,7 +372,7 @@ func (r *Runner) prepareCase(pc *PlanClient, spec caseSpec) (caseInputs, error) 
 	if err := os.WriteFile(in.configPath, []byte(substitute(recipe.Content, cfgVals, true)), 0o600); err != nil {
 		return in, err
 	}
-	argVals := map[string]string{"{prompt}": Prompt(spec.id), "{workspace}": ws, "{config}": in.configPath, "{server}": r.ServerPath, "{case}": spec.id}
+	argVals := map[string]string{"{prompt}": promptForClient(pc.ID, spec.id), "{workspace}": ws, "{config}": in.configPath, "{server}": r.ServerPath, "{case}": spec.id}
 	var args []string
 	for _, a := range append(append([]string(nil), pc.Session.Argv...), recipe.Argv...) {
 		args = append(args, substitute(a, argVals, false))

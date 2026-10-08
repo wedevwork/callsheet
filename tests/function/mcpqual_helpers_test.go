@@ -173,7 +173,7 @@ func (q *qualEnv) groupsGone() {
 	q.t.Helper()
 	log := q.launchLog()
 	var targets []int
-	for _, pid := range append(append(append([]int(nil), log["version"]...), log["help"]...), log["session"]...) {
+	for _, pid := range append(append(append(append([]int(nil), log["version"]...), log["help"]...), log["session"]...), log["enable"]...) {
 		targets = append(targets, -pid)
 	}
 	targets = append(targets, log["descendant"]...)

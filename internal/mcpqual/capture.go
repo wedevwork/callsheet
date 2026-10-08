@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -101,6 +102,19 @@ type CaptureRunner struct {
 	// StreamWait bounds the wait for both streams after cleanup (default
 	// 2 s).
 	StreamWait time.Duration
+	// GrokPlacementFS supplies the Grok placement gate's filesystem
+	// observations (design decoder-enrollment B1, DW8); nil uses the
+	// operating system. Production (cmd/mcpqual through Env) always leaves
+	// it nil: no plan field, flag or variable reaches it, and it never
+	// replaces the gate's verdict, environment, walk bound or trigger.
+	GrokPlacementFS GrokPlacementFS
+	// ApprovalLimits bound each Cursor approval snapshot (zero fields:
+	// DefaultApprovalScanLimits; larger values are lowered to them).
+	ApprovalLimits ApprovalScanLimits
+
+	// approvalFS is the approval scan's filesystem (nil: the operating
+	// system); only this package's unit tests set it.
+	approvalFS approvalFS
 
 	r       *Runner
 	lim     CaptureLimits
@@ -142,6 +156,19 @@ func (m *CaptureManifest) ExitCode() int {
 // filesystem failure, in which case no complete manifest exists. The
 // disposable workspace is removed on every path after cleanup.
 func (c *CaptureRunner) Run(ctx context.Context) (*CaptureManifest, error) {
+	// A plan that asks for trust is only ever the canonical recipe
+	// (ParseCapturePlan already refused anything else; this keeps a runner
+	// built around another plan from skipping the trusted-recipe gates).
+	enables := 0
+	for i := range c.Plan.Clients {
+		pc := &c.Plan.Clients[i]
+		if _, err := pc.trustedRecipe(); err != nil {
+			return nil, contract.New(contract.CodeInvalidArgument, fmt.Sprintf("plan: client %q: %v", pc.ID, err))
+		}
+		if cursorTrusted(pc) {
+			enables++
+		}
+	}
 	if err := prepareOutDir(c.OutDir); err != nil {
 		return nil, err
 	}
@@ -157,7 +184,7 @@ func (c *CaptureRunner) Run(ctx context.Context) (*CaptureManifest, error) {
 	c.w = &captureWriter{root: c.OutDir, lim: c.lim, perClient: map[string]int{}}
 	fmt.Fprintf(c.Log, "mcpqual: capture run %s: setup only; at most %d clients sequentially, %d session per client, %d ms per session, %d ms per client including version and help "+
 		"(each metadata command at most %d ms); planned operational deadline %d ms plus bounded cleanup of up to %d process groups\n",
-		c.RunID, eff.Clients, eff.SessionsPerClient, eff.SessionMS, eff.ClientMS, eff.MetadataMS, int64(eff.Clients)*eff.ClientMS, 3*eff.Clients)
+		c.RunID, eff.Clients, eff.SessionsPerClient, eff.SessionMS, eff.ClientMS, eff.MetadataMS, int64(eff.Clients)*eff.ClientMS, 3*eff.Clients+enables)
 	if c.Plan.HasIgnoredDefault() {
 		fmt.Fprintln(c.Log, "mcpqual: setup only; default phase not executed")
 	}
@@ -319,11 +346,14 @@ func (c *CaptureRunner) newClient(pc *PlanClient) CaptureClient {
 	if pre := pc.Config.Default.Prerequisite; pre != "" {
 		cc.Config.Prerequisite = sptr(red.String(pre))
 	}
-	labels := map[string]string{"{prompt}": Prompt(caseID), "{workspace}": "<workspace>", "{config}": "<workspace>/" + pc.Config.Default.Path,
+	labels := map[string]string{"{prompt}": promptForClient(pc.ID, caseID), "{workspace}": "<workspace>", "{config}": "<workspace>/" + pc.Config.Default.Path,
 		"{server}": "<server>", "{case}": caseID}
 	cc.Argv = []string{}
 	for _, a := range append(append([]string(nil), pc.Session.Argv...), pc.Config.Default.Argv...) {
 		cc.Argv = append(cc.Argv, red.String(substitute(a, labels, false)))
+	}
+	if cursorTrusted(pc) {
+		cc.Approval = newApproval("not reached")
 	}
 	return cc
 }
@@ -337,6 +367,9 @@ func (c *CaptureRunner) skipped(pc *PlanClient, reason string) CaptureClient {
 	cc := c.newClient(pc)
 	cc.State, cc.Reason = CaptureNotRun, sptr(reason)
 	cc.Version, cc.Help, cc.Session = notRunStage(reason), notRunStage(reason), notRunStage(reason)
+	if cc.Approval != nil {
+		cc.Approval = newApproval(reason)
+	}
 	return cc
 }
 
@@ -351,6 +384,15 @@ func stop(cc CaptureClient, reason string) CaptureClient {
 // prevents the session.
 func (c *CaptureRunner) captureClient(ctx context.Context, pc *PlanClient) CaptureClient {
 	cc := c.newClient(pc)
+	// The trusted Grok recipe's placement gate, first: before any Grok
+	// launch (design decoder-enrollment B1, DW6).
+	if grokTrusted(pc) {
+		if err := checkGrokPlacement(c.GrokPlacementFS, c.OutDir, false, metadataEnv(c.BaseEnv, pc)); err != nil {
+			reason := ReasonGrokPlacement + ": " + err.Error()
+			cc.Version.Reason, cc.Help.Reason, cc.Session.Reason = sptr(reason), sptr(reason), sptr(reason)
+			return stop(cc, reason)
+		}
+	}
 	deadline := c.Clock.Now().Add(time.Duration(c.client) * time.Millisecond)
 	h, err := c.r.hashExecutable(pc.Executable)
 	if err != nil {
@@ -439,11 +481,7 @@ func (c *CaptureRunner) metadata(ctx context.Context, pc *PlanClient, cc *Captur
 	if wd <= 0 {
 		return notRunStage(ReasonBudget + ": max_client_ms"), nil, caseRun{}
 	}
-	env := append([]string(nil), c.BaseEnv...)
-	for _, k := range sortedKeys(pc.Env) {
-		env = append(env, k+"="+pc.Env[k])
-	}
-	run := c.r.launch(ctx, ProcSpec{Path: pc.Executable, Args: argv, Env: env, Dir: ws, CaptureStderr: true}, wd, c.lim.Stream)
+	run := c.r.launch(ctx, ProcSpec{Path: pc.Executable, Args: argv, Env: metadataEnv(c.BaseEnv, pc), Dir: ws, CaptureStderr: true}, wd, c.lim.Stream)
 	run.budgetCapped = capped
 	c.r.recordCleanup(pc.ID+" "+name, run.cleanup)
 	st := stageOf(run, wd)
@@ -491,11 +529,43 @@ func (c *CaptureRunner) session(ctx context.Context, pc *PlanClient, cc CaptureC
 	in.proc.CaptureStderr, in.proc.StderrPath = true, ""
 	labels := map[string]string{"{server}": "<server>", "{case_file}": "<workspace>/case.json", "{events}": "<workspace>/server-events.jsonl", "{workspace}": "<workspace>"}
 	cc.Session = CaptureStage{State: StagePrepared, Reason: sptr("prepared, not launched")}
-	c.text(&cc, ClientFile(pc.ID, FileConfig), []byte(substitute(in.recipe.Content, labels, false)), false)
+	snapshot := []byte(substitute(in.recipe.Content, labels, false))
+	// The canonical Cursor trust recipe's approval preparation runs once
+	// before the session; after a scoped approval config.txt is the
+	// configuration as re-read then (design decoder-enrollment B1, FP-13).
+	if cc.Approval != nil {
+		reason := c.prepareCursorApproval(ctx, pc, &cc, in, deadline)
+		if reason == "" {
+			reread, err := c.rereadCursorConfig(in)
+			if err != nil {
+				reason = ReasonConfigFailure + ": the generated " + CursorTrustedPath + " cannot be re-read after the approval (" + err.Error() + ")"
+			} else {
+				snapshot = reread
+			}
+		}
+		c.text(&cc, ClientFile(pc.ID, FileConfig), snapshot, false)
+		if c.ioError != nil && reason == "" {
+			reason = "workspace: " + c.ioError.Error()
+		}
+		if reason != "" {
+			cc.Session.Reason = sptr(reason)
+			return stop(cc, reason)
+		}
+	} else {
+		c.text(&cc, ClientFile(pc.ID, FileConfig), snapshot, false)
+	}
 	wd, capped := c.r.allowance(time.Duration(c.caseMS)*time.Millisecond, deadline)
 	if wd <= 0 {
 		cc.Session.Reason = sptr(ReasonBudget + ": max_client_ms")
 		return stop(cc, *cc.Session.Reason)
+	}
+	// The trusted Grok recipe's placement recheck: the actual case path and
+	// the prepared child environment, immediately before the model launch.
+	if grokTrusted(pc) {
+		if err := checkGrokPlacement(c.GrokPlacementFS, in.ws, true, in.proc.Env); err != nil {
+			cc.Session.Reason = sptr(ReasonGrokPlacement + ": " + err.Error())
+			return stop(cc, *cc.Session.Reason)
+		}
 	}
 	ev := &captureSessionEvidence{c: c, cc: &cc}
 	in.evidence = ev
@@ -842,6 +912,152 @@ func (c *CaptureRunner) sanitizeManifest(man *CaptureManifest) {
 			opt(&p.ClientVersion)
 			p.Anomalies = redactAll(red, p.Anomalies)
 		}
+		if a := cc.Approval; a != nil {
+			a.Argv = redactAll(red, a.Argv)
+			str(&a.Cwd)
+			opt(&a.Reason)
+			red.Struct(reflect.ValueOf(&a.Stage).Elem())
+			for i := range a.Changes {
+				str(&a.Changes[i].Path)
+			}
+		}
+	}
+}
+
+// metadataEnv is a client's launch environment before its recipe: the
+// inherited BaseEnv, then the plan's variables in key order (a later
+// entry wins, as at exec). The metadata commands launch with exactly this,
+// and it is the environment the first Grok placement check inspects.
+func metadataEnv(base []string, pc *PlanClient) []string {
+	env := append([]string(nil), base...)
+	for _, k := range sortedKeys(pc.Env) {
+		env = append(env, k+"="+pc.Env[k])
+	}
+	return env
+}
+
+// GrokPlacementFS is the Grok placement gate's view of the filesystem:
+// no-follow lookups and path resolution only.
+type GrokPlacementFS interface {
+	Lstat(name string) (os.FileInfo, error)
+	EvalSymlinks(name string) (string, error)
+}
+
+// osPlacementFS is the operating system's view (a nil GrokPlacementFS).
+type osPlacementFS struct{}
+
+func (osPlacementFS) Lstat(name string) (os.FileInfo, error)   { return os.Lstat(name) }
+func (osPlacementFS) EvalSymlinks(name string) (string, error) { return filepath.EvalSymlinks(name) }
+
+// placementFS is f, or the operating system's view when f is nil.
+func placementFS(f GrokPlacementFS) GrokPlacementFS {
+	if f == nil {
+		return osPlacementFS{}
+	}
+	return f
+}
+
+// maxPlacementWalk bounds each ancestor walk of the placement gate.
+const maxPlacementWalk = 256
+
+// grokTrusted reports a Grok plan that entered and passed the trusted
+// recipe validator: only it is placement-gated (legacy Grok plans and the
+// other clients never are).
+func grokTrusted(pc *PlanClient) bool {
+	entered, err := pc.trustedRecipe()
+	return pc.ID == "grok" && entered && err == nil
+}
+
+// checkGrokPlacement is the trusted Grok recipe's read-only placement gate
+// (design decoder-enrollment B1, DW6): Grok trusts the generated workspace
+// and reads .grok/config.toml from it, so neither the capture output nor
+// the workspace may sit inside a git work tree or under another
+// .grok/config.toml. From start (the output directory, or on the recheck
+// the case workspace) to the filesystem root, on both the absolute lexical
+// chain and the resolved one, any .git entry of any type rejects (never
+// read or followed), and at each directory except the rechecked workspace
+// itself any .grok/config.toml entry, a .grok that is a symbolic link or
+// not a directory, rejects; the workspace's own .grok must be a real
+// directory. A lookup failure other than nonexistence, an unresolved path,
+// a non-directory component or a walk past maxPlacementWalk directories
+// rejects too. So does the presence of GIT_DIR or GIT_WORK_TREE in the
+// child environment env, even empty. No git or vendor runs, nothing is
+// changed, and the error names the rule, never a path or file contents.
+func checkGrokPlacement(view GrokPlacementFS, start string, workspace bool, env []string) error {
+	for _, kv := range env {
+		if k, _, _ := strings.Cut(kv, "="); k == "GIT_DIR" || k == "GIT_WORK_TREE" {
+			return fmt.Errorf("%s is present in the child environment", k)
+		}
+	}
+	fsys := placementFS(view)
+	if !filepath.IsAbs(start) {
+		return errors.New("the path is not absolute")
+	}
+	lexical := filepath.Clean(start)
+	resolved, err := fsys.EvalSymlinks(lexical)
+	if err != nil || !filepath.IsAbs(resolved) {
+		return errors.New("the path does not resolve")
+	}
+	for _, chain := range []struct {
+		name, dir string
+		resolved  bool
+	}{{"lexical", lexical, false}, {"resolved", filepath.Clean(resolved), true}} {
+		if err := walkPlacement(fsys, chain.dir, chain.resolved, workspace); err != nil {
+			return fmt.Errorf("%s chain: %w", chain.name, err)
+		}
+	}
+	return nil
+}
+
+// walkPlacement checks one chain from dir to the root.
+func walkPlacement(fsys GrokPlacementFS, dir string, resolved, workspace bool) error {
+	present := func(p string) (bool, error) {
+		_, err := fsys.Lstat(p)
+		switch {
+		case err == nil:
+			return true, nil
+		case errors.Is(err, fs.ErrNotExist):
+			return false, nil
+		}
+		return false, err
+	}
+	for up := 0; ; up++ {
+		if up >= maxPlacementWalk {
+			return fmt.Errorf("the ancestor walk passed %d directories", maxPlacementWalk)
+		}
+		info, err := fsys.Lstat(dir)
+		switch {
+		case err != nil:
+			return fmt.Errorf("a component %d levels up cannot be looked up", up)
+		case info.IsDir():
+		case info.Mode()&fs.ModeSymlink != 0 && !resolved:
+			// A lexical component may be a link; the resolved chain checks
+			// where it leads.
+		default:
+			return fmt.Errorf("a component %d levels up is not a directory", up)
+		}
+		if found, err := present(filepath.Join(dir, ".git")); err != nil || found {
+			return fmt.Errorf("a .git entry %d levels up (or its lookup failed)", up)
+		}
+		grok, err := fsys.Lstat(filepath.Join(dir, ".grok"))
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+		case err != nil:
+			return fmt.Errorf("the .grok lookup %d levels up failed", up)
+		case !grok.IsDir():
+			return fmt.Errorf("a .grok %d levels up is a symbolic link or not a directory", up)
+		case workspace && up == 0:
+			// The generated workspace's own configuration: the sole exception.
+		default:
+			if found, err := present(filepath.Join(dir, ".grok", "config.toml")); err != nil || found {
+				return fmt.Errorf("a .grok/config.toml entry %d levels up (or its lookup failed)", up)
+			}
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return nil
+		}
+		dir = parent
 	}
 }
 

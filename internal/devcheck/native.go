@@ -498,6 +498,14 @@ var nativeRequired = []string{
 	"TestMCPEnrolledShortConfirmation",
 	"TestMCPCaptureRunbook",
 	"TestMCPEnrollmentCIPolicy",
+	// Decoder enrollment slice B1: the four function parents of FP-10..FP-13
+	// in FP order, a separate group after the slice A names; each asserts
+	// its literal case inventory within the parent (no inventory entries).
+	// Absence or a skip never satisfies native qualification.
+	"TestMCPCaptureProtocolNegotiation",
+	"TestMCPCaptureCodexApproval",
+	"TestMCPCaptureGrokRecipe",
+	"TestMCPCaptureCursorTrust",
 }
 
 // NativeTaskProcessPackage and nativeTaskProcess are the separate native

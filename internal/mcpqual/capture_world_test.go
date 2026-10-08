@@ -37,6 +37,10 @@ type capBehavior struct {
 	floodStderr    int
 	// events renders the probe events file of a session (nil: none).
 	events func(cf CaseFile, caseID string) string
+	// writes are files the launch writes before it exits (a path relative
+	// to its working directory, or absolute), as a vendor's approval
+	// command would; a nil content removes the path.
+	writes map[string]*string
 }
 
 // fakeStream is an in-memory pipe: its reader gets the written bytes, then
@@ -149,16 +153,24 @@ func newCapWorld(t testing.TB) *capWorld {
 	return w
 }
 
-// kind names a launch: version, help or session.
+// kind names a launch: version, help, enable (Cursor's approval
+// preparation) or session.
 func launchKind(spec ProcSpec) string {
 	switch {
 	case slices.Equal(spec.Args, []string{"--version"}):
 		return "version"
 	case len(spec.Args) > 0 && spec.Args[len(spec.Args)-1] == "--help":
 		return "help"
+	case slices.Equal(spec.Args, CursorApprovalArgv()):
+		return "enable"
 	}
 	return "session"
 }
+
+// approvedFile is the workspace file the fake Cursor enable writes.
+const approvedFile = ".cursor/approved-servers.json"
+
+func strp(s string) *string { return &s }
 
 // clientOf is the fake executable's client (".../fake/<id>").
 func clientOf(spec ProcSpec) string { return filepath.Base(spec.Path) }
@@ -173,6 +185,8 @@ func (w *capWorld) defaults(spec ProcSpec) capBehavior {
 		return capBehavior{stdout: capVersions[clientOf(spec)] + "\n"}
 	case "help":
 		return capBehavior{stdout: "usage: fake [options]\n  -p PROMPT  run one prompt\n"}
+	case "enable":
+		return capBehavior{stdout: "probe enabled\n", writes: map[string]*string{approvedFile: strp(`{"approved":["probe"]}`)}}
 	}
 	return capBehavior{stdout: capTranscript, events: goodEvents}
 }
@@ -225,6 +239,24 @@ func (w *capWorld) Start(spec ProcSpec) (Proc, error) {
 			w.t.Fatal(err)
 		}
 		if err := os.WriteFile(filepath.Join(spec.Dir, "server-events.jsonl"), []byte(b.events(cf, cf.Cases[0].CaseID)), 0o600); err != nil {
+			w.t.Fatal(err)
+		}
+	}
+	for rel, content := range b.writes {
+		p := rel
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(spec.Dir, filepath.FromSlash(rel))
+		}
+		if content == nil {
+			if err := os.RemoveAll(p); err != nil {
+				w.t.Fatal(err)
+			}
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			w.t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(*content), 0o600); err != nil {
 			w.t.Fatal(err)
 		}
 	}
@@ -400,6 +432,7 @@ func cachedCapture(t *testing.T, key string, build func(w *capWorld) *CaptureRun
 	}
 	c := build(newCapWorld(t))
 	c.OutDir = filepath.Join(sharedDir, "capture-"+key)
+	withFixtureRoot(c, sharedDir)
 	man, b := validatedCapture(t, c, context.Background())
 	sc := &sharedCapture{dir: c.OutDir, man: man, bundle: b, runner: c}
 	sharedCaptures[key] = sc
@@ -424,6 +457,7 @@ func capturedOnce(t *testing.T, key string, build func(w *capWorld) *CaptureRunn
 	r := sharedValue("capture-once-"+key, func() onceCapture {
 		c := build(newCapWorld(t))
 		c.OutDir = filepath.Join(sharedTempDir(t), "once-"+key)
+		withFixtureRoot(c, sharedTempDir(t))
 		man, b := runCapture(t, c, context.Background())
 		return onceCapture{man, b}
 	})
@@ -523,6 +557,7 @@ func mustCapturePlan(t testing.TB, b []byte) *Plan {
 }
 
 func newCapRunner(t *testing.T, w *capWorld, p *Plan) *CaptureRunner {
+	view := newTempView(t)
 	return &CaptureRunner{Plan: p, OutDir: filepath.Join(t.TempDir(), "out"), GOOS: "linux", GOARCH: "amd64", ServerPath: "/opt/mcpqual",
 		BaseEnv: []string{"PATH=/usr/bin", "API_TOKEN=inherited-tok-value", "SHORT_SECRET=Zq9"}, Launcher: w, Reaper: w, Clock: w.clock, Log: io.Discard,
 		RunID: "run-cap-1", Nonce: "noncecap1", CapturedAt: epoch, HarnessVersion: "test", Home: "/home/owner", User: "owner",
@@ -531,7 +566,117 @@ func newCapRunner(t *testing.T, w *capWorld, p *Plan) *CaptureRunner {
 				return strings.Repeat("c", 64), nil
 			}
 			return "", fs.ErrNotExist
-		}}
+		}, GrokPlacementFS: view, approvalFS: view}
+}
+
+// tempView is the unit tests' filesystem view for the Grok placement gate
+// and the Cursor approval scan, with the design's DW10 boundary at
+// test-owned fixture roots (code review B1 round 1, W1: never the host's
+// temporary root, which may itself hold a marker): every path at or below
+// a fixture root (lexical or resolved) is the real filesystem, so every
+// marker or change a test plants is visible; every strict ancestor of a
+// fixture root is a clean ordinary directory with no entry; any other path
+// does not exist. Neither gate then depends on the host's temporary
+// directories or their ancestors being clean.
+type tempView struct{ roots []string }
+
+// newTempView is the view of t's fixture root: the directory holding all
+// of t's own temporary directories (its output directories and fixture
+// homes alike). A runner whose output moves to the shared run directory
+// gets that root too (withFixtureRoot).
+func newTempView(t testing.TB) tempView {
+	return newTempViewAt(filepath.Dir(t.TempDir()))
+}
+
+// withFixtureRoot adds root to c's views (the shared run directory its
+// output was moved to). It takes no lock: callers may hold sharedMu.
+func withFixtureRoot(c *CaptureRunner, root string) {
+	if v, ok := c.GrokPlacementFS.(tempView); ok {
+		v = newTempViewAt(append(append([]string(nil), v.roots...), root)...)
+		c.GrokPlacementFS, c.approvalFS = v, v
+	}
+}
+
+// newTempViewAt is the view whose fixture roots are roots.
+func newTempViewAt(roots ...string) tempView {
+	var v tempView
+	for _, root := range roots {
+		root = filepath.Clean(root)
+		v.roots = append(v.roots, root)
+		if real, err := filepath.EvalSymlinks(root); err == nil && real != root {
+			v.roots = append(v.roots, real)
+		}
+	}
+	return v
+}
+
+func (v tempView) inside(p string) bool {
+	for _, r := range v.roots {
+		if p == r || strings.HasPrefix(p, r+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
+}
+
+func (v tempView) above(p string) bool {
+	for _, r := range v.roots {
+		for d := filepath.Dir(r); ; d = filepath.Dir(d) {
+			if d == p {
+				return true
+			}
+			if d == filepath.Dir(d) {
+				break
+			}
+		}
+	}
+	return false
+}
+
+// cleanDir is an ordinary directory of the view.
+type cleanDir struct{ name string }
+
+func (d cleanDir) Name() string       { return d.name }
+func (d cleanDir) Size() int64        { return 0 }
+func (d cleanDir) Mode() fs.FileMode  { return fs.ModeDir | 0o755 }
+func (d cleanDir) ModTime() time.Time { return time.Time{} }
+func (d cleanDir) IsDir() bool        { return true }
+func (d cleanDir) Sys() any           { return nil }
+
+func (v tempView) Lstat(p string) (fs.FileInfo, error) {
+	p = filepath.Clean(p)
+	switch {
+	case v.inside(p):
+		return os.Lstat(p)
+	case v.above(p):
+		return cleanDir{filepath.Base(p)}, nil
+	}
+	return nil, &fs.PathError{Op: "lstat", Path: p, Err: fs.ErrNotExist}
+}
+
+func (v tempView) EvalSymlinks(p string) (string, error) {
+	p = filepath.Clean(p)
+	switch {
+	case v.inside(p):
+		return filepath.EvalSymlinks(p)
+	case v.above(p):
+		return p, nil
+	}
+	return "", &fs.PathError{Op: "evalsymlinks", Path: p, Err: fs.ErrNotExist}
+}
+
+func (v tempView) ReadDir(p string) ([]fs.DirEntry, error) {
+	if v.inside(filepath.Clean(p)) {
+		return os.ReadDir(p)
+	}
+	return nil, &fs.PathError{Op: "readdir", Path: p, Err: fs.ErrNotExist}
+}
+
+func (v tempView) Open(p string) (approvalFile, error) {
+	if v.inside(filepath.Clean(p)) {
+		return osApprovalFS{}.Open(p)
+	}
+	return nil, &fs.PathError{Op: "open", Path: p, Err: fs.ErrNotExist}
 }
 
 // runCapture runs c and requires its manifest on disk (finalize has

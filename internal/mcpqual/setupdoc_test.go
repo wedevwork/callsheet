@@ -204,7 +204,12 @@ func TestCaptureRunbookDoc(t *testing.T) {
 	for _, want := range []string{"Real execution is never part of CI", "even empty", "`! <absolute-mcpqual> capture ...`", "`!` is the UI escape, not a shell negation",
 		"Claude must run in the owner's unsandboxed shell", "One capture plus at most three confirmation sessions per client", "Never add `--approve-mcps`",
 		"Owner capture gate", "Owner short-confirmation gate", "Optional publication gate", "never retried until green", "macOS timeout compatibility remains UNVERIFIED",
-		"`vendor_behavior` `not_evaluated`", "720 s", "Credential words in prose", "`XDG_SESSION_CLASS` and `XDG_SESSION_TYPE`", "an inherited `XDG_SESSION_ID` whose value is a decimal session number"} {
+		"`vendor_behavior` `not_evaluated`", "720 s", "Credential words in prose", "`XDG_SESSION_CLASS` and `XDG_SESSION_TYPE`", "an inherited `XDG_SESSION_ID` whose value is a decimal session number",
+		// Design decoder-enrollment B1: the recipes, their prerequisites and
+		// the thirteen-group cleanup allowance.
+		"up to thirteen process groups", "protocol version `2025-06-18`", "`-c mcp_servers.probe.tools.slow.approval_mode=\"approve\"` for this invocation only",
+		"an inference from its name", "global `--trust`", "`streaming-json`", "never kills the leader", "exactly one `mcp enable probe` in that workspace",
+		"`grok_workspace_placement_unverified`", "`cursor_approval_outside_workspace`", "never restored, deleted or retried", "only the generated workspace is ever trusted"} {
 		if !strings.Contains(sec, want) {
 			t.Fatalf("the capture section lacks %q", want)
 		}

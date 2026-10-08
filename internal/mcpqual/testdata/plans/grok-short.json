@@ -22,10 +22,13 @@
       "decoder_fixture": "grok-json/synthetic",
       "session": {
         "argv": [
+          "--trust",
           "-p",
           "{prompt}",
           "--output-format",
-          "json",
+          "streaming-json",
+          "--cwd",
+          "{workspace}",
           "-m",
           "<model>"
         ]
@@ -34,7 +37,7 @@
         "default": {
           "path": ".grok/config.toml",
           "content": "[mcp_servers.probe]\ncommand = \"{server}\"\nargs = [\"serve\", \"--case-file\", \"{case_file}\", \"--events\", \"{events}\"]\n",
-          "prerequisite": "the project .grok/config.toml table schema is a candidate; if this session cannot see the probe, register it with grok mcp add in an owner-prepared isolated configuration and name that here"
+          "prerequisite": "Trust only the generated workspace; use normal Grok login; project probe config, probe__slow and streaming-json; no timeout override."
         }
       },
       "phases": {
