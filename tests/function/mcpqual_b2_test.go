@@ -11,6 +11,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -265,8 +266,11 @@ func TestMCPRealDecoderMappings(t *testing.T) {
 					}
 				}
 			}
-			if _, _, err := reg.Select("cursor-jsonl", "2026.10.01-e373342"); err == nil {
-				t.Fatal("a Cursor real version is selectable")
+			// Design decoder-enrollment B3 (FP-22) adds exactly Cursor's real
+			// version, selected by the exact string only; its own parent
+			// (TestMCPCursorRealDecoder) replays it.
+			if _, v, err := reg.Select("cursor-jsonl", mcpqual.CursorRealVersion); err != nil || !v.Qualified {
+				t.Fatalf("the enrolled Cursor version: %v", err)
 			}
 		}},
 	})
@@ -634,8 +638,9 @@ func repoFileAt(t *testing.T, dir, name string) []byte {
 	return b
 }
 
-// FP-19: the production index enrolls exactly the three linux/amd64
-// identities and validates offline (Cursor absent); bounded corruptions
+// FP-19: the production index enrolls exactly the linux/amd64 identities
+// (three under B2; B3 adds Cursor as the fourth) and validates offline;
+// bounded corruptions
 // are refused; the evidence qualifies only linux/amd64 and the success
 // capabilities; the legacy synthetic versions and injected legacy
 // registries are unchanged.
@@ -644,10 +649,12 @@ func TestMCPRealEnrollment(t *testing.T) {
 	runInventory(t, 4, []string{"production-inventory", "corruption", "platform-capabilities", "legacy-synthetic"}, []captureCase{
 		{"production-inventory", func(t *testing.T) {
 			idx, err := mcpqual.ValidateEnrollment(mcpqual.EnrollmentOptions{Root: testkit.MustRepoRoot(t), Registry: mcpqual.DefaultRegistry()})
-			if err != nil || len(idx.Entries) != 3 {
+			if err != nil || len(idx.Entries) != 4 {
 				t.Fatalf("production enrollment: %v", err)
 			}
-			for i, c := range []int{2, 0, 1} { // sorted by fixture: claude-json, codex-jsonl, grok-json
+			// Sorted by fixture: claude-json, codex-jsonl, cursor-jsonl,
+			// grok-json (design decoder-enrollment B3 inserts Cursor third).
+			for i, c := range map[int]int{0: 2, 1: 0, 3: 1} {
 				w := b2Clients[c]
 				e := idx.Entries[i]
 				if e.Client != w.id || e.Version != w.version || e.Platform != "linux/amd64" || path.Base(e.Bundle) != w.run ||
@@ -655,13 +662,12 @@ func TestMCPRealEnrollment(t *testing.T) {
 					t.Fatalf("entry %d %+v", i, e)
 				}
 			}
-			if q := mcpqual.DefaultRegistry().QualifiedVersions(); len(q) != 3 || slices.ContainsFunc(q, func(s string) bool { return strings.HasPrefix(s, "cursor") }) {
+			if q := mcpqual.DefaultRegistry().QualifiedVersions(); len(q) != 4 || !slices.Contains(q, "cursor-jsonl "+mcpqual.CursorRealVersion) {
 				t.Fatalf("qualified %v", q)
 			}
-			for _, e := range idx.Entries {
-				if e.Client == "cursor" {
-					t.Fatal("a Cursor entry is enrolled")
-				}
+			if e := idx.Entries[2]; e.Client != "cursor" || e.Version != mcpqual.CursorRealVersion || path.Base(e.Bundle) != "20261008T212659Z-a5af9a" ||
+				e.Fixture != mcpqual.EnrolledFixtureID("cursor-jsonl", mcpqual.CursorRealVersion, "linux/amd64") || e.SanitizationSHA256 == nil {
+				t.Fatalf("the Cursor entry %+v", e)
 			}
 		}},
 		{"corruption", func(t *testing.T) {
@@ -1051,9 +1057,17 @@ func (v *clockedVendor) Start(spec mcpqual.ProcSpec) (mcpqual.Proc, error) {
 	go func() {
 		var transcript string
 		var err error
-		if slices.Contains(spec.Args, "--version") {
+		switch {
+		case slices.Contains(spec.Args, "--version"):
 			transcript = settings["VERSION"] + "\n"
-		} else {
+		case slices.Equal(spec.Args, mcpqual.CursorApprovalArgv()):
+			// Design decoder-enrollment B3 (FP-26): Cursor's enable writes the
+			// workspace approval (ENABLE none: nothing, so no approval).
+			if settings["ENABLE"] != "none" {
+				err = os.WriteFile(filepath.Join(spec.Dir, ".cursor", "approved-servers.json"), []byte(`{"approved":["probe"]}`), 0o600)
+			}
+			transcript = "probe enabled\n"
+		default:
 			transcript, err = v.session(spec, settings)
 		}
 		if err != nil {
@@ -1078,7 +1092,16 @@ func (v *clockedVendor) session(spec mcpqual.ProcSpec, settings map[string]strin
 		return ""
 	}
 	caseID := arg("--case", spec.Args)
-	raw, err := os.ReadFile(arg("--config", spec.Args))
+	cfgPath := arg("--config", spec.Args)
+	if cfgPath == "" {
+		// The trusted Cursor recipe (design decoder-enrollment B3): the
+		// workspace's .cursor/mcp.json and the case named by the prompt.
+		cfgPath = filepath.Join(spec.Dir, filepath.FromSlash(mcpqual.CursorTrustedPath))
+		if m := clockedPromptCase.FindStringSubmatch(arg("-p", spec.Args)); m != nil {
+			caseID = m[1]
+		}
+	}
+	raw, err := os.ReadFile(cfgPath)
 	if err != nil {
 		return "", err
 	}
@@ -1175,6 +1198,10 @@ func (v *clockedVendor) session(spec mcpqual.ProcSpec, settings map[string]strin
 	if _, err := await("2"); err != nil {
 		return "", end(err)
 	}
+	if settings["SCENARIO"] == "rejected" {
+		// The per-tool rejection: no call reaches the probe.
+		return clockedTranscript(settings["FORMAT"], "rejected", caseID, ""), end(nil)
+	}
 	params := map[string]any{"name": "slow", "arguments": map[string]any{"case_id": caseID}}
 	if settings["TOKEN"] == "1" {
 		params["_meta"] = map[string]any{"progressToken": "tok-" + caseID}
@@ -1217,6 +1244,8 @@ func clockedTranscript(format, outcome, caseID, text string) string {
 	q := func(s string) string { b, _ := json.Marshal(s); return string(b) }
 	prose := "The tool call may have timed out; MCP error -32001 is a timeout."
 	switch format {
+	case "cursor-real":
+		return clockedCursorTranscript(outcome, caseID, text)
 	case "codex-real":
 		args := `"arguments":{"case_id":` + q(caseID) + `}`
 		lines := []string{`{"type":"thread.started","thread_id":"t-fake"}`, `{"type":"turn.started"}`,
@@ -1410,7 +1439,7 @@ func TestMCPRealEnrollmentConfirmation(t *testing.T) {
 				t.Fatal("the synthetic-only sentence remains")
 			}
 			idx, err := mcpqual.ParseEnrollmentIndex(repoFile(t, mcpqual.EnrollmentIndexPath))
-			if err != nil || len(idx.Entries) != 3 {
+			if err != nil || len(idx.Entries) != 4 {
 				t.Fatalf("index %v", err)
 			}
 			for _, e := range idx.Entries {
@@ -1430,7 +1459,7 @@ func TestMCPRealEnrollmentConfirmation(t *testing.T) {
 				at = i
 			}
 			for _, w := range []string{"Cursor blocker", "never holds the other clients' enrollment hostage", "approval does not transfer from the capture workspace",
-				"`qualify` writes no permission file and reports no `tool_permission` field", "`12eb3e81114588aca3b7998f4f19e8997b056aca08e57a7ca7c8a3ec8c652aad`",
+				"`qualify` writes the same file in every new case workspace of the pinned adapter", "`12eb3e81114588aca3b7998f4f19e8997b056aca08e57a7ca7c8a3ec8c652aad`",
 				"`41626a53292324140b92556b9d42ff5542e3dcd04aff85eafb8689dd4adb44fc`", "`a967e7b1d8b4e47ee421d5433027880347952b0c0857abf880e2c942a4ec93b3`",
 				"never an edited `expected_version`", "run no concurrent Claude Code session", "10s + max(2s, 1.5s) = 12s < 15s"} {
 				if !strings.Contains(guide, w) {
@@ -1438,11 +1467,39 @@ func TestMCPRealEnrollmentConfirmation(t *testing.T) {
 				}
 			}
 			catalogMD := string(repoFile(t, mcpqual.CatalogMDPath))
-			for _, w := range []string{"Decoder enrollment B2 enrolls exactly three linux/amd64 identities", "Cursor Agent stays UNVERIFIED", "`codex-cli 0.160.0`"} {
+			for _, w := range []string{"Decoder enrollment B2 and B3 enroll exactly four linux/amd64 identities", "closing the B2 Cursor blocker", "`codex-cli 0.160.0`"} {
 				if !strings.Contains(catalogMD, w) {
 					t.Fatalf("support-catalog.md lacks %q", w)
 				}
 			}
 		}},
 	})
+}
+
+// clockedPromptCase is the case the scripted prompt names.
+var clockedPromptCase = regexp.MustCompile(`"case_id": "([^"]+)"`)
+
+// clockedCursorTranscript is the fake vendor binary's cursor-real shape
+// (design decoder-enrollment B3, FP-22) for an in-process session: success
+// with the structured result and a prose echo, the structured rejection,
+// or an unseen timeout alternative. The call ID holds one LF.
+func clockedCursorTranscript(outcome, caseID, text string) string {
+	q := func(s string) string { b, _ := json.Marshal(s); return string(b) }
+	id := q("call-clocked-0" + string(rune(10)) + "fc_clocked_0")
+	args := `{"name":"probe-slow","args":{"case_id":` + q(caseID) + `},"toolCallId":` + id +
+		`,"providerIdentifier":"probe","toolName":"slow","smartModeApprovalOnly":false,"skipApproval":false,"serverIdentifier":"probe"}`
+	tool := func(sub, result string) string {
+		return `{"type":"tool_call","subtype":"` + sub + `","call_id":` + id + `,"tool_call":{"mcpToolCall":{"args":` + args + result +
+			`},"hookAdditionalContexts":[],"toolCallId":` + id + `,"startedAtMs":"1"},"session_id":"s","timestamp_ms":1}`
+	}
+	result := `{"success":{"content":[{"text":{"text":` + q(text) + `}}],"isError":false,"systemReminders":[]}}`
+	switch outcome {
+	case "rejected":
+		result = `{"rejected":{"reason":"User rejected MCP: probe-slow"}}`
+	case "timeout":
+		result = `{"error":{"message":"MCP error -32001: Request timed out"}}`
+	}
+	return strings.Join([]string{`{"type":"system","subtype":"init","apiKeySource":"[REDACTED]","cwd":"w","session_id":"s","model":"m","permissionMode":"default"}`,
+		tool("started", ""), tool("completed", `,"result":`+result), `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":` + q(text) + `}]},"session_id":"s"}`,
+		`{"type":"result","subtype":"success","duration_ms":1,"duration_api_ms":1,"is_error":false,"result":` + q(text) + `,"session_id":"s","request_id":"r","usage":{}}`}, "\n") + "\n"
 }

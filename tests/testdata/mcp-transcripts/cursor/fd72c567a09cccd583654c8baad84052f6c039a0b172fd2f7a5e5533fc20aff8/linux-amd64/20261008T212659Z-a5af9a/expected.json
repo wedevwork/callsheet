@@ -1,0 +1,41 @@
+{
+  "case_id": "cursor-capture-setup",
+  "nonce": "e6085f2e06acab78e174b529053161d7",
+  "events": [
+    {
+      "case_id": "cursor-capture-setup",
+      "event_kind": "tool_call",
+      "monotonic_offset": 7474606467,
+      "request_id": "call-19919b82-c87a-49fe-9fda-1f3ffd89e029-0\nfc_83db03ab-9fa9-92c5-b433-8875d2d21ea7_0"
+    },
+    {
+      "case_id": "cursor-capture-setup",
+      "event_kind": "tool_result",
+      "monotonic_offset": 7560444405,
+      "request_id": "call-19919b82-c87a-49fe-9fda-1f3ffd89e029-0\nfc_83db03ab-9fa9-92c5-b433-8875d2d21ea7_0",
+      "nonce": "e6085f2e06acab78e174b529053161d7"
+    }
+  ],
+  "terminal": true,
+  "inconclusive": "",
+  "client_info": {
+    "name": "Cursor",
+    "version": "1.0.0"
+  },
+  "requester_compatible": true,
+  "error_kinds": [],
+  "capabilities": [
+    "tool_call",
+    "tool_result",
+    "terminal_success"
+  ],
+  "capture_state": "complete",
+  "source_capture_sha256": "b3e57897b6242029f873a738569f6ad124e3ffe6f0c3406feeb8c716bd6a7a2f",
+  "sanitization_policy": "decoder-enrollment-b3-cursor-metadata-v2",
+  "attestation": {
+    "owner": "callsheet-owner",
+    "reviewer": "decoder-enrollment-coordinator",
+    "policy": "mcpqual-capture-v1",
+    "omissions": 0
+  }
+}

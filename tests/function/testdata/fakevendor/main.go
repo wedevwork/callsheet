@@ -66,14 +66,31 @@
 // the session exit 1 before doing anything when the working directory's
 // .cursor/cli.json lacks a permissions.deny array, with the message
 // Cursor Agent 2026.10.01-e373342 printed for the allow-only file.
+//
+// Design decoder-enrollment B3 adds: the reviewed real Cursor stream
+// (FAKE_VENDOR_FORMAT cursor-real: the exact nested success structure with
+// an opaque call ID holding one LF, the structured rejection with
+// SCENARIO rejected, and an unseen timeout shape) and the worker socket
+// residue Cursor leaves after a session (FAKE_VENDOR_RESIDUE): a Unix
+// socket worker.sock, alone, in a second directory of the fixture HOME's
+// .cursor/projects named from the working directory's project slug, its
+// parent part P, the case basename B cut to FAKE_VENDOR_RESIDUE_K (default
+// 2) characters and a seven-hex suffix, as observed; the variants full
+// (the untruncated slug), regular (a regular file), extra (a sibling file)
+// and two (a second candidate). The fake closes its listener without
+// unlinking, so no process holds the socket; the harness must never open,
+// connect to or remove it, and the test's temporary directory removes it.
 package main
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -253,6 +270,10 @@ func run(args []string) int {
 	// server events are rewritten only now, after every writer stopped.
 	if err := cutEvents(caseID); err != nil {
 		fmt.Fprintln(os.Stderr, "fake vendor: cut:", err)
+		return 1
+	}
+	if err := leaveResidue(); err != nil {
+		fmt.Fprintln(os.Stderr, "fake vendor: residue:", err)
 		return 1
 	}
 	flood(os.Stdout, "FLOOD_STDOUT")
@@ -499,6 +520,12 @@ func fakeSession(args []string, cfgPath, caseID string) (string, error) {
 	case "rejected":
 		// Cursor's per-tool permission refuses the call before it reaches
 		// the probe; the run still ends with a success envelope.
+		if format == "cursor-real" {
+			// The reviewed real rejection shape (design decoder-enrollment B3,
+			// FP-22): started, completed with result.rejected, success.
+			sessionOutcome = "rejected"
+			return cursorRealTranscript("rejected", caseID, ""), nil
+		}
 		return `{"type":"tool_call","subtype":"completed","call_id":"c1","tool_call":{"mcpToolCall":{"args":{"providerIdentifier":"probe","toolName":"slow","args":{"case_id":` +
 			strconv.Quote(caseID) + `}},"result":{"rejected":{"reason":"User rejected MCP: probe-slow"}}}}}` + "\n" +
 			`{"type":"result","subtype":"success","is_error":false,"result":"The tool was rejected."}` + "\n", nil
@@ -751,6 +778,8 @@ func fakeTranscript(format, outcome, caseID, resultText string) string {
 		return strings.Join(lines, "\n") + "\n"
 	case "codex-real", "grok-real", "claude-real":
 		return realTranscript(format, outcome, caseID, resultText, prose)
+	case "cursor-real":
+		return cursorRealTranscript(outcome, caseID, resultText)
 	case "cursor-jsonl":
 		lines := []string{`{"type":"system","subtype":"init"}`, `{"type":"assistant","message":{"content":[{"type":"text","text":` + q(prose) + `}]}}`}
 		start := `{"type":"tool_call","subtype":"started","call_id":"c1","tool_call":{"mcpToolCall":{"args":{"toolName":"slow","args":{"case_id":` + q(caseID) + `}}}}}`
@@ -1140,4 +1169,105 @@ func connectLeader(dir string) error {
 		err = errors.New("unexpected leader answer " + string(ack))
 	}
 	return err
+}
+
+// cursorRealCallID is the fake's opaque Cursor call ID: two parts joined by
+// one LF, as the reviewed capture's.
+const cursorRealCallID = "call-fake-0" + "\n" + "fc_fake_0"
+
+// cursorRealTranscript renders the reviewed Cursor 2026.10.01-e373342
+// stream-json shapes (design decoder-enrollment B3, FP-22) for this
+// session's case: success carries the structured result and a prose echo;
+// rejected the structured rejection followed by a success envelope; a
+// timeout is an unseen shape (another result alternative), never enrolled.
+func cursorRealTranscript(outcome, caseID, resultText string) string {
+	q := func(s string) string { b, _ := json.Marshal(s); return string(b) }
+	id := q(cursorRealCallID)
+	args := `{"name":"probe-slow","args":{"case_id":` + q(caseID) + `},"toolCallId":` + id +
+		`,"providerIdentifier":"probe","toolName":"slow","smartModeApprovalOnly":false,"skipApproval":false,"serverIdentifier":"probe"}`
+	tool := func(sub, result string) string {
+		return `{"type":"tool_call","subtype":"` + sub + `","call_id":` + id + `,"tool_call":{"mcpToolCall":{"args":` + args + result +
+			`,"description":"Run the slow probe"},"hookAdditionalContexts":[],"toolCallId":` + id + `,"startedAtMs":"1791494828487"},"model_call_id":"m-fake","session_id":"s-fake","timestamp_ms":1791494828514}`
+	}
+	lines := []string{`{"type":"system","subtype":"init","apiKeySource":"[REDACTED]","cwd":"w","session_id":"s-fake","model":"Fake","permissionMode":"default"}`,
+		`{"type":"thinking","subtype":"delta","text":"The tool may time out.","session_id":"s-fake","timestamp_ms":1}`, tool("started", "")}
+	var result string
+	switch outcome {
+	case "rejected":
+		result = `{"rejected":{"reason":"User rejected MCP: probe-slow"}}`
+	case "timeout":
+		result = `{"error":{"message":"MCP error -32001: Request timed out"}}`
+	default:
+		result = `{"success":{"content":[{"text":{"text":` + q(resultText) + `}}],"isError":false,"systemReminders":[]}}`
+	}
+	lines = append(lines, tool("completed", `,"result":`+result),
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":`+q(resultText)+`}]},"session_id":"s-fake"}`,
+		`{"type":"result","subtype":"success","duration_ms":7,"duration_api_ms":7,"is_error":false,"result":`+q(resultText)+`,"session_id":"s-fake","request_id":"r-fake","usage":{}}`)
+	return strings.Join(lines, "\n") + "\n"
+}
+
+// leaveResidue leaves the worker socket residue FAKE_VENDOR_RESIDUE names
+// under HOME's .cursor/projects, after the session's probe was reaped.
+func leaveResidue() error {
+	mode := fakeEnv("RESIDUE")
+	if mode == "" {
+		return nil
+	}
+	wd, _ := os.Getwd()
+	slug := strings.ReplaceAll(strings.ReplaceAll(strings.TrimPrefix(wd, "/"), "/.work/", "/work/"), "/", "-")
+	base := filepath.Base(wd)
+	parent := strings.TrimSuffix(slug, "-"+base)
+	k := int(fakeInt("RESIDUE_K"))
+	if k == 0 {
+		k = 2
+	}
+	sum := sha256.Sum256([]byte(slug))
+	suffix := hex.EncodeToString(sum[:])[:7]
+	name := parent + "-" + base[:min(k, len(base))] + "-" + suffix
+	if mode == "full" {
+		name = slug + "-" + suffix
+	}
+	projects := filepath.Join(os.Getenv("HOME"), ".cursor", "projects")
+	dir := filepath.Join(projects, name)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	switch mode {
+	case "regular":
+		return os.WriteFile(filepath.Join(dir, "worker.sock"), nil, 0o600)
+	case "extra":
+		if err := os.WriteFile(filepath.Join(dir, "state.json"), []byte("{}"), 0o600); err != nil {
+			return err
+		}
+	case "two":
+		other := filepath.Join(projects, parent+"-"+base[:min(k+1, len(base))]+"-"+hex.EncodeToString(sum[:])[7:14])
+		if err := os.MkdirAll(other, 0o700); err != nil {
+			return err
+		}
+		if err := makeSocket(other); err != nil {
+			return err
+		}
+	}
+	return makeSocket(dir)
+}
+
+// makeSocket creates dir/worker.sock as a Unix socket that no process
+// holds: bound by its short relative name (the absolute path may exceed
+// the platform's socket path limit), then closed without unlinking.
+func makeSocket(dir string) error {
+	wd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	if err := os.Chdir(dir); err != nil {
+		return err
+	}
+	defer os.Chdir(wd)
+	l, err := net.Listen("unix", "worker.sock")
+	if err != nil {
+		return err
+	}
+	ul := l.(*net.UnixListener)
+	ul.SetUnlinkOnClose(false)
+	return ul.Close()
 }

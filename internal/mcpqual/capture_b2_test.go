@@ -270,7 +270,17 @@ func TestCursorToolPermissionAdapter(t *testing.T) {
 // existing cli.json (never merged or overwritten) and an unwritable
 // directory.
 func TestCursorToolPermissionCreate(t *testing.T) {
+	// The shared preparer (design decoder-enrollment B3, FP-24) with
+	// capture's record writer.
 	c := &CaptureRunner{approvalFS: osApprovalFS{}}
+	prep := newCursorPreparer(osApprovalFS{}, ApprovalScanLimits{}, "linux", "amd64", CursorRealVersion, "/nonexistent-home")
+	write := func(cc *CaptureClient, in caseInputs) (fs.FileInfo, string) {
+		info, reason := prep.writePermission(in)
+		if reason == "" {
+			cc.ToolPermission = toolPermissionRecord()
+		}
+		return info, reason
+	}
 	ws := func(t *testing.T) caseInputs {
 		d := filepath.Join(realDir(t), "ws")
 		os.MkdirAll(filepath.Join(d, ".cursor"), 0o700)
@@ -278,14 +288,14 @@ func TestCursorToolPermissionCreate(t *testing.T) {
 	}
 	in := ws(t)
 	cc := &CaptureClient{}
-	info, reason := c.writeCursorPermission(cc, in)
+	info, reason := write(cc, in)
 	if reason != "" || info == nil || cc.ToolPermission == nil || cc.ToolPermission.State != PermissionWritten {
 		t.Fatalf("create: %q", reason)
 	}
 	if b, _ := os.ReadFile(filepath.Join(in.ws, ".cursor", "cli.json")); string(b) != CursorToolPermissionContent {
 		t.Fatalf("content %q", b)
 	}
-	if why := c.verifyCursorPermission(cc, in, info); why != "" {
+	if why := c.verifyCursorPermission(cc, in, info, prep); why != "" {
 		t.Fatal(why)
 	}
 	for name, setup := range map[string]func(in *caseInputs){
@@ -313,7 +323,7 @@ func TestCursorToolPermissionCreate(t *testing.T) {
 		setup(&in)
 		before, _ := os.ReadFile(filepath.Join(in.ws, ".cursor", "cli.json"))
 		cc := &CaptureClient{}
-		if _, reason := c.writeCursorPermission(cc, in); !strings.HasPrefix(reason, ReasonCursorScopeUnverified+": the scoped permission file was not created") || cc.ToolPermission != nil {
+		if _, reason := write(cc, in); !strings.HasPrefix(reason, ReasonCursorScopeUnverified+": the scoped permission file was not created") || cc.ToolPermission != nil {
 			t.Errorf("%s: %q %+v", name, reason, cc.ToolPermission)
 		}
 		os.Chmod(filepath.Join(in.ws, ".cursor"), 0o700)
@@ -334,18 +344,21 @@ func TestCursorToolPermissionCreate(t *testing.T) {
 	} {
 		in := ws(t)
 		cc := &CaptureClient{}
-		info, _ := c.writeCursorPermission(cc, in)
+		info, _ := write(cc, in)
 		change(filepath.Join(in.ws, ".cursor", "cli.json"))
-		if why := c.verifyCursorPermission(cc, in, info); !strings.HasPrefix(why, ReasonCursorScopeUnverified) || cc.ToolPermission.State != PermissionWritten ||
+		if why := c.verifyCursorPermission(cc, in, info, prep); !strings.HasPrefix(why, ReasonCursorScopeUnverified) || cc.ToolPermission.State != PermissionWritten ||
 			*cc.ToolPermission.Reason != permissionFailed {
 			t.Errorf("%s: %q", name, why)
 		}
 	}
 }
 
-// Capture only: the shared case preparation (qualify's too) writes no
-// permission file, only the capture session calls the helper, and the
-// qualification report gains no tool_permission field.
+// The per-case preparation (design decoder-enrollment B3, FP-24, amending
+// B2's capture-only rule): the shared case preparation itself still writes
+// no permission file; capture and qualify each call the shared preparer's
+// writer exactly once (capture's session, qualify's prepareQualifyCase
+// after prepareCase), and the qualification report's only permission
+// record is the case's optional cursor_preparation.tool_permission.
 func TestCursorToolPermissionCaptureOnly(t *testing.T) {
 	p := capPlan(t, "cursor")
 	r := &Runner{Plan: p, OutDir: filepath.Join(realDir(t), "out"), GOOS: "linux", GOARCH: "amd64", ServerPath: "/opt/mcpqual", RunID: "r", Nonce: "n"}
@@ -360,12 +373,12 @@ func TestCursorToolPermissionCaptureOnly(t *testing.T) {
 		t.Fatal("prepareCase did not create the workspace .cursor directory")
 	}
 	src := map[string]int{}
-	for _, f := range []string{"session.go", "measure.go", "runner.go", "capture.go", "capture_approval.go"} {
+	for _, f := range []string{"session.go", "measure.go", "runner.go", "capture.go", "capture_approval.go", "cursor_preparation.go"} {
 		b, _ := os.ReadFile(f)
-		src[f] = strings.Count(string(b), ".writeCursorPermission(")
+		src[f] = strings.Count(string(b), ".writePermission(")
 	}
-	if src["capture.go"] != 1 || src["session.go"]+src["measure.go"]+src["runner.go"] != 0 {
-		t.Fatalf("permission helper callers %v", src)
+	if src["capture.go"] != 1 || src["cursor_preparation.go"] != 1 || src["session.go"]+src["measure.go"]+src["runner.go"]+src["capture_approval.go"] != 0 {
+		t.Fatalf("permission writer callers %v", src)
 	}
 	for _, typ := range []reflect.Type{reflect.TypeOf(Report{}), reflect.TypeOf(ClientReport{}), reflect.TypeOf(CaseReport{})} {
 		for i := 0; i < typ.NumField(); i++ {
@@ -373,6 +386,9 @@ func TestCursorToolPermissionCaptureOnly(t *testing.T) {
 				t.Fatalf("%s has a permission field", typ.Name())
 			}
 		}
+	}
+	if f, ok := reflect.TypeOf(CursorPreparation{}).FieldByName("ToolPermission"); !ok || f.Tag.Get("json") != "tool_permission" {
+		t.Fatal("the preparation record has no tool_permission")
 	}
 }
 

@@ -100,7 +100,7 @@ func TestRealConfirmationRunbook(t *testing.T) {
 	}
 	for _, w := range []string{"stop on any mismatch (fresh reviewed evidence, never an edited `expected_version`)", "approval does not transfer from the capture workspace",
 		"Silence, a pending answer or the earlier design approval is never authorization", "A review fix that changes approved evidence re-enters gate 2 first",
-		"three under B2; Cursor joins only after its follow-up", "initial invocation", "exits 4", "Cursor blocker"} {
+		"four under B3: the three B2 clients and Cursor", "initial invocation", "exits 4", "Cursor blocker"} {
 		if !strings.Contains(doc, w) {
 			t.Fatalf("the guide lacks %q", w)
 		}

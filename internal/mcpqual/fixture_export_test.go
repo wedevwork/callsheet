@@ -61,6 +61,11 @@ func fakeExportTranscript(client string) string {
 			`{"type":"end","stopReason":"end_turn","sessionId":"` + cv + `","requestId":"` + cv + `","usage":{"input_tokens":4},"total_cost_usd":0.0316512,` +
 				`"total_cost_usd_ticks":316512,"modelUsage":{"grok-4.7-build":{"modelCalls":2,"costUSD":0.0316512}}}`,
 		}, "\n") + "\n"
+	case "cursor":
+		// Design decoder-enrollment B3 (FP-23): every recognized record with
+		// a canary in each replaced value (integer timestamps included) and
+		// the opaque call ID's JSON newline escape in all three copies.
+		return strings.Join(cursorExportRecords(cv, res), "\n") + "\n"
 	}
 	meta := `"session_id":"` + cv + `","uuid":"` + cv + `","timestamp":"` + cv + `","request_id":"` + cv + `"`
 	return "[" + strings.Join([]string{
@@ -362,10 +367,13 @@ func TestFixtureExportRefusals(t *testing.T) {
 	mustFail("production-policy", err, "not an accepted source identity")
 	src := pol.sources[0]
 	for name, s := range map[string]FixtureSource{
-		"pin":      {src.Client, src.Version, src.Platform, src.RunID, strings.Repeat("0", 64)},
-		"version":  {src.Client, src.Version + "x", src.Platform, src.RunID, src.ManifestSHA256},
-		"platform": {src.Client, src.Version, "darwin/arm64", src.RunID, src.ManifestSHA256},
-		"run":      {src.Client, src.Version, src.Platform, "other", src.ManifestSHA256},
+		"pin":      {src.Client, src.Version, src.Platform, src.RunID, strings.Repeat("0", 64), src.Policy},
+		"version":  {src.Client, src.Version + "x", src.Platform, src.RunID, src.ManifestSHA256, src.Policy},
+		"platform": {src.Client, src.Version, "darwin/arm64", src.RunID, src.ManifestSHA256, src.Policy},
+		"run":      {src.Client, src.Version, src.Platform, "other", src.ManifestSHA256, src.Policy},
+		// Design decoder-enrollment B3: a source bound to another client's
+		// policy is cross-policy substitution, never accepted.
+		"policy": {src.Client, src.Version, src.Platform, src.RunID, src.ManifestSHA256, SanitizationPolicyB3Cursor},
 	} {
 		_, err = ExportFixture(sc.dir, fresh("id-"+name), FixturePolicyForTests(s))
 		if err == nil || strings.Contains(err.Error(), src.ManifestSHA256) {
@@ -438,7 +446,7 @@ func TestFixtureRulesUnsafe(t *testing.T) {
 		{"grok", `{"type":"tool_call","sessionId":"s","total_cost_usd":1}`},
 		{"claude", `[{"type":"user","message":{"content":[{"type":"text","text":"x"}]}},{"type":"system","subtype":"other","cwd":"x"}]`},
 		{"claude", `{"type":"result","result":"x"}`},
-		{"cursor", `{"type":"result","result":"x"}`},
+		{"cursor", `{"type":"user","message":{"role":"user","content":[]}}`},
 	} {
 		_, edits, _, err := recordEdits(tc.client, []byte(tc.data))
 		if err != nil || len(edits) != 0 {

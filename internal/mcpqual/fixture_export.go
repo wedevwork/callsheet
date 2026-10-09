@@ -21,8 +21,9 @@ package mcpqual
 // the replacement list, the neutral values and the fingerprint from the
 // exported bytes alone; source fidelity is the owner/reviewer gate, never
 // CI. The accepted sources are compiled in: exactly the three inspected
-// B2 bundles, by client, exact version, platform, run ID and manifest
-// SHA-256. A mismatch blocks the export; nothing updates a pin.
+// B2 bundles and the one B3 Cursor bundle, by client, exact version,
+// platform, run ID, manifest SHA-256 and bound policy. A mismatch blocks
+// the export; nothing updates a pin.
 //
 // Amendment A1 (policy decoder-enrollment-b2-metadata-v2, after the owner
 // declined publishing them) adds Claude's rate_limit_info (replaced by {})
@@ -31,6 +32,21 @@ package mcpqual
 // the only numbers ever changed, each to "[fixture metadata]". Those rows
 // require their member (never created), its observed type and, for
 // modelUsage, exactly the one observed model member.
+//
+// Design decoder-enrollment B3 (FP-23) adds a second policy, selected by
+// source identity and bound to it: decoder-enrollment-b3-cursor-metadata-v2
+// for the one inspected Cursor 2026.10.01-e373342 linux/amd64 bundle, under
+// the same receipt schema and span algorithm. Its enumerated rows replace
+// present session, model-call and request identifiers, timestamps
+// (integer timestamp_ms values become the metadata string, the scoped type
+// change), thinking, assistant and result narrative and the init record's
+// cwd (its apiKeySource stays the capture policy's [REDACTED], r0.13
+// clarification Q1); every record must be one of the recognized Cursor
+// records with only its observed members, so unknown metadata stops the
+// export instead of being scrubbed. Tool IDs (the newline-bearing call ID
+// included), the structured result and its nonce, record types, flags,
+// offsets, order and count stay protected. The B2 policy and its three
+// sources are unchanged; neither policy accepts the other's sources.
 
 import (
 	"bytes"
@@ -59,6 +75,10 @@ const (
 	// SanitizationPolicyB2 is amendment A1's policy v2; v1 was superseded
 	// before any commit and is never accepted.
 	SanitizationPolicyB2 = "decoder-enrollment-b2-metadata-v2"
+	// SanitizationPolicyB3Cursor is the Cursor policy of design
+	// decoder-enrollment B3 (FP-23); it applies only to Cursor sources, and
+	// v1 is never a Cursor policy.
+	SanitizationPolicyB3Cursor = "decoder-enrollment-b3-cursor-metadata-v2"
 	// FixtureMetadataValue replaces an allowed metadata string.
 	FixtureMetadataValue = "[fixture metadata]"
 	// protectedMaskToken replaces each allowed value span in the protected
@@ -98,9 +118,21 @@ type FixtureReplacement struct {
 }
 
 // FixtureSource is one accepted export source: the client, its exact
-// version and platform, the run ID and the source manifest's SHA-256.
+// version and platform, the run ID, the source manifest's SHA-256 and its
+// export policy (design decoder-enrollment B3: a policy is bound to its
+// source; a source whose policy is not its client's is never accepted).
 type FixtureSource struct {
 	Client, Version, Platform, RunID, ManifestSHA256 string
+	Policy                                           string
+}
+
+// fixturePolicyFor is the one export policy of client's sources: the B3
+// Cursor policy for cursor, the B2 policy for codex, grok and claude.
+func fixturePolicyFor(client string) string {
+	if client == "cursor" {
+		return SanitizationPolicyB3Cursor
+	}
+	return SanitizationPolicyB2
 }
 
 // FixturePolicy is the export policy: the B2 metadata rules and the
@@ -133,31 +165,44 @@ func (p *FixturePolicy) WithPlacementView(view GrokPlacementFS) *FixturePolicy {
 // manifest SHA-256.
 var productionFixtureSources = []FixtureSource{
 	{Client: "codex", Version: CodexRealVersion, Platform: EnrolledRealPlatform, RunID: "20261008T110604Z-13cb4a",
-		ManifestSHA256: "002287b308e4dcee0b09cc776326386a4210e77d2d9cdecaf9a3bc0c01afc18f"},
+		ManifestSHA256: "002287b308e4dcee0b09cc776326386a4210e77d2d9cdecaf9a3bc0c01afc18f", Policy: SanitizationPolicyB2},
 	{Client: "grok", Version: GrokRealVersion, Platform: EnrolledRealPlatform, RunID: "20261008T110619Z-1663d7",
-		ManifestSHA256: "822ab1b93d39d4e6fd16c40c586c876e3d261976093c314e16ac2e1f7cb31f74"},
+		ManifestSHA256: "822ab1b93d39d4e6fd16c40c586c876e3d261976093c314e16ac2e1f7cb31f74", Policy: SanitizationPolicyB2},
 	{Client: "claude", Version: ClaudeRealVersion, Platform: EnrolledRealPlatform, RunID: "20261008T122513Z-66db37",
-		ManifestSHA256: "b6e59475d6118b4690cb9f056b09a4964d8f1f5b87b3034744718db270d42295"},
+		ManifestSHA256: "b6e59475d6118b4690cb9f056b09a4964d8f1f5b87b3034744718db270d42295", Policy: SanitizationPolicyB2},
+	// Design decoder-enrollment B3 (FP-23): the one complete Cursor capture.
+	{Client: "cursor", Version: CursorRealVersion, Platform: EnrolledRealPlatform, RunID: "20261008T212659Z-a5af9a",
+		ManifestSHA256: "b3e57897b6242029f873a738569f6ad124e3ffe6f0c3406feeb8c716bd6a7a2f", Policy: SanitizationPolicyB3Cursor},
 }
 
-// ProductionFixturePolicy is the compiled B2 policy with exactly the three
-// pinned sources; the maintainer command always uses it.
+// ProductionFixturePolicy is the compiled export policy set with exactly
+// the four pinned sources (three under the B2 policy, Cursor under the B3
+// policy); the maintainer command always uses it and has no policy flag.
 func ProductionFixturePolicy() *FixturePolicy {
 	return &FixturePolicy{sources: append([]FixtureSource(nil), productionFixtureSources...)}
 }
 
-// FixturePolicyForTests is the same B2 rules accepting other, fabricated
+// FixturePolicyForTests is the same rules accepting other, fabricated
 // sources: only tests use it (in process or through a test helper's
-// main), to export tiny fake bundles. No flag, plan or variable of the
-// maintainer command reaches it.
+// main), to export tiny fake bundles. A source without a policy gets its
+// client's (fixturePolicyFor); one naming another policy stays refused. No
+// flag, plan or variable of the maintainer command reaches it.
 func FixturePolicyForTests(sources ...FixtureSource) *FixturePolicy {
-	return &FixturePolicy{sources: append([]FixtureSource(nil), sources...)}
+	out := append([]FixtureSource(nil), sources...)
+	for i := range out {
+		if out[i].Policy == "" {
+			out[i].Policy = fixturePolicyFor(out[i].Client)
+		}
+	}
+	return &FixturePolicy{sources: out}
 }
 
-// source is the accepted source of a client, version, platform and run.
+// source is the accepted source of a client, version, platform and run;
+// a source bound to another client's policy is never accepted (design
+// decoder-enrollment B3, cross-policy substitution).
 func (p *FixturePolicy) source(client, version, platform, runID string) (FixtureSource, bool) {
 	for _, s := range p.sources {
-		if s.Client == client && s.Version == version && s.Platform == platform && s.RunID == runID {
+		if s.Client == client && s.Version == version && s.Platform == platform && s.RunID == runID && s.Policy == fixturePolicyFor(client) {
 			return s, true
 		}
 	}
@@ -340,6 +385,8 @@ type ruleSet struct {
 	edits     []fixtureEdit
 	protected []*jspan
 	err       error
+	// raw is the record's decoded data (the spans index it).
+	raw []byte
 }
 
 // replace names value n (absent: nothing; null: stays null, nothing) at
@@ -438,8 +485,8 @@ func (r *ruleSet) protect(ns ...*jspan) {
 // fixtureRules applies the B2 metadata policy (design decoder-enrollment
 // B2, Allowed value replacements) to one decoded record of client: rules
 // are scoped to the named event and member, never a recursive key match.
-func fixtureRules(client string, root *jspan) ruleSet {
-	var r ruleSet
+func fixtureRules(client string, data []byte, root *jspan) ruleSet {
+	r := ruleSet{raw: data}
 	switch client {
 	case "codex":
 		if root.kind != '{' {
@@ -559,8 +606,158 @@ func fixtureRules(client string, root *jspan) ruleSet {
 				r.required(m.member("rate_limit_info"), pre+"/rate_limit_info", '{', '{')
 			}
 		}
+	case "cursor":
+		r.cursorRules(root)
 	}
 	return r
+}
+
+// cursorRecordMembers are the observed top-level members of each recognized
+// Cursor 2026.10.01-e373342 record (design decoder-enrollment B3, FP-23):
+// a record of another type or subtype, or with any other member, is a
+// different source shape and stops the export (unknown metadata is never
+// quietly scrubbed).
+var cursorRecordMembers = map[string][]string{
+	"system/init":        {"type", "subtype", "apiKeySource", "cwd", "session_id", "model", "permissionMode"},
+	"user":               {"type", "message", "session_id"},
+	"thinking/delta":     {"type", "subtype", "text", "session_id", "timestamp_ms"},
+	"thinking/completed": {"type", "subtype", "session_id", "timestamp_ms"},
+	"assistant":          {"type", "message", "session_id", "model_call_id", "timestamp_ms"},
+	"tool_call/started":  {"type", "subtype", "call_id", "tool_call", "model_call_id", "session_id", "timestamp_ms"},
+	"tool_call/completed": {"type", "subtype", "call_id", "tool_call", "model_call_id", "session_id",
+		"timestamp_ms"},
+	"result/success": {"type", "subtype", "duration_ms", "duration_api_ms", "is_error", "result", "session_id", "request_id", "usage"},
+}
+
+// cursorToolCallMembers are the observed members of a tool_call record's
+// tool_call object, by subtype (completedAtMs only on completion).
+var cursorToolCallMembers = map[string][]string{
+	"started":   {"mcpToolCall", "hookAdditionalContexts", "toolCallId", "startedAtMs"},
+	"completed": {"mcpToolCall", "hookAdditionalContexts", "toolCallId", "startedAtMs", "completedAtMs"},
+}
+
+// onlyMembers fails unless object n has no member outside allowed.
+func (r *ruleSet) onlyMembers(n *jspan, allowed []string, what string) {
+	if n == nil || n.kind != '{' {
+		r.fail(what + " is not an object")
+		return
+	}
+	for _, k := range n.keys {
+		if !slices.Contains(allowed, k) {
+			r.fail(what + " has an unreviewed member (a policy revision is required)")
+			return
+		}
+	}
+}
+
+// metadata replaces a present member of a B3 Cursor row: absent is left
+// absent (never created); present it must have its observed kind from (an
+// integer for '0') or already hold the neutral string, else the export
+// stops. Every B3 replacement is the metadata string.
+func (r *ruleSet) metadata(n *jspan, pointer string, from byte, raw []byte) {
+	neutral := n != nil && n.kind == '"' && n.str == FixtureMetadataValue
+	switch {
+	case n == nil:
+	case neutral:
+		r.edits = append(r.edits, fixtureEdit{pointer: pointer, span: n, want: '"'})
+	case n.kind != from || from == '0' && !isJSONInteger(raw[n.start:n.end]):
+		r.fail(pointer + " has an unexpected type for the policy")
+	default:
+		r.edits = append(r.edits, fixtureEdit{pointer: pointer, span: n, want: '"'})
+	}
+}
+
+// isJSONInteger reports a JSON number without fraction or exponent.
+func isJSONInteger(b []byte) bool {
+	if len(b) > 0 && b[0] == '-' {
+		b = b[1:]
+	}
+	if len(b) == 0 {
+		return false
+	}
+	for _, c := range b {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// cursorRules applies the B3 Cursor policy (design decoder-enrollment B3,
+// Enumerated value replacements) to one decoded record: the recognized
+// record and its observed members, then exactly the table's rows; the
+// record's type, subtype, is_error, call ID, tool-call IDs, structured
+// MCP call and result and hook contexts are protected, and the structured
+// result text is checked as strict embedded JSON.
+func (r *ruleSet) cursorRules(root *jspan) {
+	if root.kind != '{' {
+		r.fail("a Cursor record is not a JSON object")
+		return
+	}
+	typ, sub := root.strMember("type"), root.strMember("subtype")
+	kind := typ
+	if root.member("subtype") != nil {
+		kind = typ + "/" + sub
+	}
+	members, ok := cursorRecordMembers[kind]
+	if !ok || root.member("type").kind != '"' || root.member("subtype") != nil && root.member("subtype").kind != '"' {
+		r.fail("a record is not one of the recognized Cursor records (a policy revision is required)")
+		return
+	}
+	r.onlyMembers(root, members, "a "+kind+" record")
+	r.protect(root.member("type"), root.member("subtype"), root.member("is_error"), root.member("call_id"))
+	raw := r.raw
+	r.metadata(root.member("session_id"), "/session_id", '"', raw)
+	switch typ {
+	case "system":
+		// The init record's apiKeySource is not a row (r0.13 post-final
+		// clarification Q1): the capture policy already holds it at
+		// [REDACTED], and any other value would break the redaction fixed
+		// point; it stays protected by the masked fingerprint.
+		r.metadata(root.member("cwd"), "/cwd", '"', raw)
+	case "user":
+		r.protect(root.member("message"))
+	case "thinking":
+		if sub == "delta" {
+			r.metadata(root.member("text"), "/text", '"', raw)
+		}
+		r.metadata(root.member("timestamp_ms"), "/timestamp_ms", '0', raw)
+	case "assistant":
+		msg := root.member("message")
+		r.onlyMembers(msg, []string{"role", "content"}, "the assistant message")
+		content := msg.member("content")
+		if msg.strMember("role") != "assistant" || content == nil || content.kind != '[' || len(content.vals) != 1 {
+			r.fail("the assistant message is not the observed one text block of the assistant role")
+			return
+		}
+		b := content.vals[0]
+		r.onlyMembers(b, []string{"type", "text"}, "the assistant content block")
+		if b.strMember("type") != "text" {
+			r.fail("the assistant message is not the observed one text block of the assistant role")
+			return
+		}
+		r.protect(msg.member("role"), b.member("type"))
+		r.metadata(b.member("text"), "/message/content/0/text", '"', raw)
+		r.metadata(root.member("model_call_id"), "/model_call_id", '"', raw)
+		r.metadata(root.member("timestamp_ms"), "/timestamp_ms", '0', raw)
+	case "tool_call":
+		tc := root.member("tool_call")
+		r.onlyMembers(tc, cursorToolCallMembers[sub], "the tool_call object")
+		mcp := tc.member("mcpToolCall")
+		r.protect(mcp, tc.member("toolCallId"), tc.member("hookAdditionalContexts"))
+		for j, b := range mcp.member("result").member("success").member("content").valsOf() {
+			r.embedded(b.member("text").member("text"), "/tool_call/mcpToolCall/result/success/content/"+strconv.Itoa(j)+"/text/text")
+		}
+		r.metadata(tc.member("startedAtMs"), "/tool_call/startedAtMs", '"', raw)
+		if sub == "completed" {
+			r.metadata(tc.member("completedAtMs"), "/tool_call/completedAtMs", '"', raw)
+		}
+		r.metadata(root.member("model_call_id"), "/model_call_id", '"', raw)
+		r.metadata(root.member("timestamp_ms"), "/timestamp_ms", '0', raw)
+	case "result":
+		r.metadata(root.member("request_id"), "/request_id", '"', raw)
+		r.metadata(root.member("result"), "/result", '"', raw)
+	}
 }
 
 // recordEdits parses one record and returns its policy edits sorted by
@@ -571,7 +768,7 @@ func recordEdits(client string, data []byte) (*jspan, []fixtureEdit, []*jspan, e
 	if err != nil {
 		return nil, nil, nil, errors.New("the record is not strict JSON")
 	}
-	r := fixtureRules(client, root)
+	r := fixtureRules(client, data, root)
 	if r.err != nil {
 		return nil, nil, nil, r.err
 	}
@@ -833,7 +1030,7 @@ func ExportFixture(source, out string, pol *FixturePolicy) (*FixtureSanitization
 	masked = append(masked, b.Files[ClientFile(c.ID, FileServerEvents)]...)
 	nm := *m
 	nm.Files = append([]EvidenceRef(nil), m.Files...)
-	san := &FixtureSanitization{Schema: SanitizationSchema, Policy: SanitizationPolicyB2, SourceManifestSHA256: src.ManifestSHA256,
+	san := &FixtureSanitization{Schema: SanitizationSchema, Policy: src.Policy, SourceManifestSHA256: src.ManifestSHA256,
 		Files: []SanitizedFile{}, Replacements: reps, ProtectedSHA256: sha256Hex(masked)}
 	if san.Replacements == nil {
 		san.Replacements = []FixtureReplacement{}
@@ -1022,6 +1219,10 @@ func CheckFixtureSanitization(pol *FixturePolicy, b *CaptureBundle, sb []byte) (
 	switch {
 	case !ok:
 		return nil, fail("the bundle is not an accepted source identity")
+	case san.Policy != src.Policy:
+		// A receipt naming another source's policy is cross-policy
+		// substitution (design decoder-enrollment B3, FP-23).
+		return nil, fail("policy %q is not the %q bound to this source", san.Policy, src.Policy)
 	case san.SourceManifestSHA256 != src.ManifestSHA256:
 		return nil, fail("source_manifest_sha256 is not the compiled source pin")
 	case san.ExportedManifestSHA256 != sha256Hex(b.ManifestBytes):
@@ -1127,8 +1328,8 @@ func ParseFixtureSanitization(b []byte) (*FixtureSanitization, error) {
 		return nil, err
 	}
 	switch {
-	case s.Schema != SanitizationSchema || s.Policy != SanitizationPolicyB2:
-		return nil, fail("schema %q policy %q, want %q %q", s.Schema, s.Policy, SanitizationSchema, SanitizationPolicyB2)
+	case s.Schema != SanitizationSchema || s.Policy != SanitizationPolicyB2 && s.Policy != SanitizationPolicyB3Cursor:
+		return nil, fail("schema %q policy %q, want %q with %q or %q", s.Schema, s.Policy, SanitizationSchema, SanitizationPolicyB2, SanitizationPolicyB3Cursor)
 	case !hex64.MatchString(s.SourceManifestSHA256) || !hex64.MatchString(s.ExportedManifestSHA256) || !hex64.MatchString(s.ProtectedSHA256):
 		return nil, fail("the manifest and protected hashes must be SHA-256 hex")
 	case s.Files == nil || s.Replacements == nil:

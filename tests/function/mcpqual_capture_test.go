@@ -1072,14 +1072,14 @@ func TestMCPEnrollmentContract(t *testing.T) {
 			root := testkit.MustRepoRoot(t)
 			// Confined opening of the repository (code review C5, round 2
 			// C2): a held os.Root, every component opened relative to its
-			// parent. Design decoder-enrollment B2: exactly the three
+			// parent. Design decoder-enrollment B2 and B3: exactly the four
 			// sanitised linux/amd64 enrollments and their qualified versions.
 			idx, err := mcpqual.ValidateEnrollment(mcpqual.EnrollmentOptions{Root: root, Registry: mcpqual.DefaultRegistry()})
-			if err != nil || len(idx.Entries) != 3 || len(mcpqual.DefaultRegistry().QualifiedVersions()) != 3 {
-				t.Fatalf("production enrollment (slice B2: three entries): %v", err)
+			if err != nil || len(idx.Entries) != 4 || len(mcpqual.DefaultRegistry().QualifiedVersions()) != 4 {
+				t.Fatalf("production enrollment (slices B2 and B3: four entries): %v", err)
 			}
 			for _, e := range idx.Entries {
-				if e.Platform != "linux/amd64" || e.SanitizationSHA256 == nil || e.Client == "cursor" {
+				if e.Platform != "linux/amd64" || e.SanitizationSHA256 == nil {
 					t.Fatalf("production entry %+v", e)
 				}
 			}
@@ -1097,8 +1097,9 @@ func TestMCPEnrollmentContract(t *testing.T) {
 // FP-6 (design decoder-enrollment B2): the three enrolled real fixtures
 // replay offline through their exact-version decoders and the independent
 // probe replay to their reviewed oracles; Cursor's exact version is
-// neither selectable nor qualified and has no real entry; synthetic prose
-// never qualifies.
+// neither selectable nor qualified and has no real entry (B2); since B3
+// the enrolled Cursor fixture replays and only its exact version is
+// selectable; synthetic prose never qualifies.
 func TestMCPEnrollmentReplay(t *testing.T) {
 	t.Parallel()
 	replay := func(t *testing.T, client string) {
@@ -1111,27 +1112,22 @@ func TestMCPEnrollmentReplay(t *testing.T) {
 			t.Fatalf("%s oracle %+v", client, o)
 		}
 	}
-	runInventory(t, 5, []string{"claude", "codex", "grok", "cursor-blocked", "synthetic-prose"}, []captureCase{
+	runInventory(t, 5, []string{"claude", "codex", "grok", "cursor", "synthetic-prose"}, []captureCase{
 		{"claude", func(t *testing.T) { replay(t, "claude") }},
 		{"codex", func(t *testing.T) { replay(t, "codex") }},
 		{"grok", func(t *testing.T) { replay(t, "grok") }},
-		{"cursor-blocked", func(t *testing.T) {
+		// Design decoder-enrollment B3 (FP-23, amending B2's cursor-blocked):
+		// the enrolled Cursor fixture replays like the others, and only its
+		// exact version is selectable and qualified.
+		{"cursor", func(t *testing.T) {
+			replay(t, "cursor")
 			reg := mcpqual.DefaultRegistry()
-			if _, _, err := reg.Select("cursor-jsonl", captureVersions["cursor"]); err == nil {
-				t.Fatal("the Cursor capture version is selectable")
+			if _, v, err := reg.Select("cursor-jsonl", mcpqual.CursorRealVersion); err != nil || !v.Qualified || len(v.Evidence) != 1 {
+				t.Fatalf("the enrolled Cursor version: %v %+v", err, v)
 			}
-			for _, v := range reg.Versions("cursor-jsonl") {
-				if v.Qualified || len(v.Evidence) != 0 {
-					t.Fatalf("a qualified Cursor version %+v", v)
-				}
-			}
-			idx, err := mcpqual.ParseEnrollmentIndex(repoFile(t, mcpqual.EnrollmentIndexPath))
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, e := range idx.Entries {
-				if e.Client == "cursor" || e.Decoder == "cursor-jsonl" {
-					t.Fatalf("a Cursor real entry %+v", e)
+			for _, near := range []string{"2026.10.01", "2026.10.01-e373343", mcpqual.CursorRealVersion + " "} {
+				if _, _, err := reg.Select("cursor-jsonl", near); err == nil {
+					t.Fatalf("near version %q is selectable", near)
 				}
 			}
 		}},
@@ -1374,7 +1370,7 @@ func TestMCPCaptureRunbook(t *testing.T) {
 				// gate, the scoped Cursor permission and the follow-up.
 				"Mid-implementation handback", "`awaiting independent fixture verification and explicit owner approval`",
 				"Independent verification and explicit owner acceptance", "Final offline acceptance", "#### Fixture export and owner review (B2)",
-				"a raw bundle is never committed", "#### Cursor scoped permission (capture only, B2)", "`" + mcpqual.CursorToolPermissionAdapter + "`",
+				"a raw bundle is never committed", "#### Cursor scoped permission (B2; per qualify case since B3)", "`" + mcpqual.CursorToolPermissionAdapter + "`",
 				"`{\"permissions\":{\"allow\":[\"Mcp(probe:slow)\"],\"deny\":[]}}`", "never approval evidence", "Owner Cursor scoped-permission recapture",
 				"Cursor follow-up", "A Linux fixture replays in macOS CI only as a parser check"} {
 				if !strings.Contains(sec, w) {
@@ -1441,10 +1437,13 @@ func TestMCPEnrollmentCIPolicy(t *testing.T) {
 	three := []string{"TestMCPProbeTerminalObservation", "TestMCPCaptureCursorProjectApproval", "TestMCPCaptureCursorInventoryPolicy"}
 	// Slice B2's five parents (FP-17..FP-21) follow the three.
 	five := []string{"TestMCPRealDecoderMappings", "TestMCPFixtureSanitization", "TestMCPRealEnrollment", "TestMCPCaptureCursorToolPermission", "TestMCPRealEnrollmentConfirmation"}
+	// Slice B3's five parents (FP-22..FP-26) follow the B2 five.
+	b3 := []string{"TestMCPCursorRealDecoder", "TestMCPCursorEnrollment", "TestMCPCursorQualifyPreparation", "TestMCPCursorWorkerResidue", "TestMCPCursorConfirmation"}
 	runInventory(t, 4, []string{"native-and-test", "bench", "stress", "coverage-and-docs"}, []captureCase{
 		{"native-and-test", func(t *testing.T) {
 			req := devcheck.NativeRequiredTests()
-			if len(req) != 424 || !slices.Equal(req[403:412], nine) || !slices.Equal(req[412:416], four) || !slices.Equal(req[416:419], three) || !slices.Equal(req[419:424], five) ||
+			if len(req) != 429 || !slices.Equal(req[403:412], nine) || !slices.Equal(req[412:416], four) || !slices.Equal(req[416:419], three) || !slices.Equal(req[419:424], five) ||
+				!slices.Equal(req[424:429], b3) ||
 				req[402] != "TestMCPShortConfirmation" {
 				t.Fatalf("native inventory %d %v", len(req), req[400:])
 			}
@@ -1517,14 +1516,15 @@ func TestMCPEnrollmentCIPolicy(t *testing.T) {
 			if !listed["internal/mcpqual/probe_observation.go"] {
 				t.Fatal("B1.5 file internal/mcpqual/probe_observation.go is not a whole-file changed entry")
 			}
-			for _, f := range []string{"internal/mcpqual/decode_real.go", "internal/mcpqual/fixture_export.go", "cmd/mcpfixture-export/main.go"} {
+			for _, f := range []string{"internal/mcpqual/decode_real.go", "internal/mcpqual/fixture_export.go", "cmd/mcpfixture-export/main.go",
+				"internal/mcpqual/cursor_preparation.go", "internal/mcpqual/cursor_residue.go"} {
 				if !listed[f] {
-					t.Fatalf("B2 file %s is not a whole-file changed entry", f)
+					t.Fatalf("B2 or B3 file %s is not a whole-file changed entry", f)
 				}
 			}
 			doc := string(repoFile(t, "docs/ci.md"))
-			for _, w := range append(append(append(append([]string{"Decoder enrollment: baseline is main run 37523901881 (ff8058f)", "9 more names, 412 in all", "(9 ordinary calls)", "CI stays 18 jobs",
-				"4 more names, 416 in all", "3 more names, 419 in all", "5 more names, 424 in all"}, nine...), four...), three...), five...) {
+			for _, w := range append(append(append(append(append([]string{"Decoder enrollment: baseline is main run 37523901881 (ff8058f)", "9 more names, 412 in all", "(9 ordinary calls)", "CI stays 18 jobs",
+				"4 more names, 416 in all", "3 more names, 419 in all", "5 more names, 424 in all", "5 more names, 429 in all"}, nine...), four...), three...), five...), b3...) {
 				if !strings.Contains(strings.Join(strings.Fields(doc), " "), w) {
 					t.Fatalf("docs/ci.md lacks %q", w)
 				}

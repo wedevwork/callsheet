@@ -162,6 +162,11 @@ type CaptureClient struct {
 	// honoured it. Absent means legacy or not applied (never proof of a
 	// grant); never an explicit null.
 	ToolPermission *CaptureToolPermission `json:"tool_permission,omitempty"`
+	// WorkerResidue is the run-attributed Cursor worker socket residue of
+	// this capture's own session (design decoder-enrollment B3, FP-25),
+	// written by a new capture of the pinned adapter; absent in legacy
+	// captures (the enrollment source included), never an explicit null.
+	WorkerResidue *WorkerResidue `json:"worker_residue,omitempty"`
 }
 
 // CaptureToolPermission records the one workspace-local Cursor permission
@@ -330,6 +335,7 @@ func checkOptionalCaptureMembers(b []byte) error {
 				ExcludedPaths   json.RawMessage `json:"excluded_paths"`
 			} `json:"approval"`
 			ToolPermission json.RawMessage `json:"tool_permission"`
+			WorkerResidue  json.RawMessage `json:"worker_residue"`
 		} `json:"clients"`
 	}
 	if err := json.Unmarshal(b, &shape); err != nil {
@@ -338,6 +344,9 @@ func checkOptionalCaptureMembers(b []byte) error {
 	for i, c := range shape.Clients {
 		where := fmt.Sprintf("capture manifest: clients[%d]", i)
 		if err := checkObjectRaw(c.ToolPermission, where+".tool_permission", toolPermissionMembers, map[string]bool{"reason": true}); err != nil {
+			return err
+		}
+		if err := checkResidueRaw(c.WorkerResidue, where+".worker_residue"); err != nil {
 			return err
 		}
 		if c.Probe != nil {
@@ -511,6 +520,9 @@ func (m *CaptureManifest) Validate() error {
 			return fail("client %q: %v", c.ID, err)
 		}
 		if err := c.validateToolPermission(m.OS, m.Arch); err != nil {
+			return fail("client %q: %v", c.ID, err)
+		}
+		if err := c.validateWorkerResidue(m.OS, m.Arch); err != nil {
 			return fail("client %q: %v", c.ID, err)
 		}
 		if perClient[c.ID] > int64(m.Limits.ClientBytes) {
@@ -727,6 +739,18 @@ func (c *CaptureClient) validateApproval() error {
 		return nil
 	case !trusted:
 		return errors.New("an approval record belongs only to the trusted cursor recipe")
+	}
+	return a.validateRecord(c.Session.State == StageRan)
+}
+
+// validateRecord checks one approval record (a capture's, or since design
+// decoder-enrollment B3 a qualify case's preparation): the fixed command
+// and working directory, a valid scope consistent with the stage and the
+// changes, sorted, labeled, unique changes, the inventory policy, and no
+// model session (sessionRan) after a scope other than workspace_only or
+// project_scoped.
+func (a *CaptureApproval) validateRecord(sessionRan bool) error {
+	switch {
 	case !slices.Equal(a.Argv, CursorApprovalArgv()) || a.Cwd != labelWorkspace:
 		return fmt.Errorf("approval: argv %q in %q is not the fixed enable command in the workspace", a.Argv, a.Cwd)
 	case a.Changes == nil:
@@ -787,7 +811,7 @@ func (c *CaptureClient) validateApproval() error {
 	default:
 		return fmt.Errorf("approval: scope %q", a.Scope)
 	}
-	if !sessionScope(a.Scope) && c.Session.State == StageRan {
+	if !sessionScope(a.Scope) && sessionRan {
 		return fmt.Errorf("approval: a model session ran after scope %s", a.Scope)
 	}
 	return nil
@@ -919,4 +943,51 @@ func provenClean(s CaptureStage) bool {
 // watchdog, interruption or stream held after cleanup (code review C6).
 func cleanStage(s CaptureStage) bool {
 	return s.State == StageRan && s.Exit != nil && *s.Exit == 0 && s.Signal == nil && !s.Watchdog && !s.Interrupted && !s.StdoutHeld && !s.StderrHeld
+}
+
+// validateWorkerResidue checks a capture's residue record (design
+// decoder-enrollment B3, FP-25): present only for the trusted Cursor recipe
+// of the pinned adapter, a valid record owning only this capture's one
+// case, a checked state only after a launched session, and a complete
+// capture only with a verified record. Absence is a legacy capture (the
+// enrolled source predates it).
+func (c *CaptureClient) validateWorkerResidue(goos, goarch string) error {
+	w := c.WorkerResidue
+	if w == nil {
+		return nil
+	}
+	if c.ID != "cursor" || c.Approval == nil || !cursorToolPermissionApplies(goos, goarch, c.ExpectedVersion) {
+		return fmt.Errorf("worker_residue: only the trusted cursor recipe of the %s adapter records it", CursorToolPermissionAdapter)
+	}
+	if err := w.validate(func(id string) bool { return id == c.CaseID }, 1); err != nil {
+		return fmt.Errorf("worker_%v", err)
+	}
+	switch {
+	case w.State != ResidueNotChecked && c.Session.State != StageRan:
+		return errors.New("worker_residue: checked without a launched session")
+	case c.State == CaptureComplete && w.State != ResidueVerified:
+		return errors.New("worker_residue: a complete capture with unverified residue")
+	}
+	return nil
+}
+
+// checkResidueRaw checks a present residue record's raw members: an
+// object (never null) with exactly its members, only reason nullable, and
+// every entry an object with exactly its members, none null.
+func checkResidueRaw(raw json.RawMessage, where string) error {
+	if err := checkObjectRaw(raw, where, residueMembers, map[string]bool{"reason": true}); err != nil || raw == nil {
+		return err
+	}
+	var shape struct {
+		Entries []json.RawMessage `json:"entries"`
+	}
+	if err := json.Unmarshal(raw, &shape); err != nil {
+		return fmt.Errorf("%s: %w", where, err)
+	}
+	for i, e := range shape.Entries {
+		if err := checkObjectRaw(e, fmt.Sprintf("%s.entries[%d]", where, i), residueEntryMembers, nil); err != nil {
+			return err
+		}
+	}
+	return nil
 }

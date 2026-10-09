@@ -1,0 +1,5 @@
+{"seq":1,"kind":"start","offset_ns":213,"run_id":"20261008T212659Z-a5af9a"}
+{"seq":2,"kind":"initialize","offset_ns":155684,"run_id":"20261008T212659Z-a5af9a","client_name":"Cursor","client_version":"1.0.0","requested_protocol_version":"2025-11-25","selected_protocol_version":"2025-06-18"}
+{"seq":3,"kind":"receipt","offset_ns":6068374677,"run_id":"20261008T212659Z-a5af9a","case_id":"cursor-capture-setup","request_id":2,"token_present":false}
+{"seq":4,"kind":"scheduled","offset_ns":6068513775,"run_id":"20261008T212659Z-a5af9a","case_id":"cursor-capture-setup","request_id":2}
+{"seq":5,"kind":"completed","offset_ns":6068566263,"run_id":"20261008T212659Z-a5af9a","case_id":"cursor-capture-setup","request_id":2}

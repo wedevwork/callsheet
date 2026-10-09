@@ -64,11 +64,16 @@ func TestRealDecoderDispatch(t *testing.T) {
 	if _, ok := DefaultRegistry()["codex-jsonl"].exact["x"]; ok {
 		t.Fatal("the override map is shared")
 	}
-	if f, _, err := SyntheticRegistry().Select("cursor-jsonl", "2026.10.01-e373342"); err == nil || f != nil {
-		t.Fatal("a real Cursor version is selectable")
+	// Design decoder-enrollment B3 (FP-22, amending B2's "no real Cursor
+	// version"): the legacy synthetic registry still has none, the
+	// production registry selects exactly CursorRealVersion's real parser.
+	if f, _, err := SyntheticRegistry().Select("cursor-jsonl", CursorRealVersion); err == nil || f != nil {
+		t.Fatal("the synthetic registry selects a real Cursor version")
 	}
-	if _, _, err := DefaultRegistry().Select("cursor-jsonl", "2026.10.01-e373342"); err == nil {
-		t.Fatal("a real Cursor version is selectable")
+	f, v, err := DefaultRegistry().Select("cursor-jsonl", CursorRealVersion)
+	if err != nil || reflect.ValueOf(f).Pointer() != reflect.ValueOf(decodeCursorReal).Pointer() || !v.Qualified ||
+		v.Fixture != EnrolledFixtureID("cursor-jsonl", CursorRealVersion, EnrolledRealPlatform) {
+		t.Fatalf("the real Cursor version: %v %+v", err, v)
 	}
 }
 
@@ -113,6 +118,10 @@ var realPins = map[string]struct {
 	"grok": {GrokRealVersion, "call-6837ec13-4a59-44a6-8da7-6d819652d1e9-0", 4015440126, 12731687633, "grok-capture-setup",
 		"246477f501e17c8f2315a6963bf8d8c2"},
 	"claude": {ClaudeRealVersion, "toolu_01KK6p41QYGfUCGd1PL3s29b", 6287490841, 6287490841, "claude-capture-setup", "387ab817f352f4247d157e6bd4242a17"},
+	// Design decoder-enrollment B3 (FP-22/FP-23): the opaque call ID holds one
+	// decoded LF between its two parts.
+	"cursor": {CursorRealVersion, "call-19919b82-c87a-49fe-9fda-1f3ffd89e029-0" + string(rune(10)) + "fc_83db03ab-9fa9-92c5-b433-8875d2d21ea7_0",
+		7474606467, 7560444405, "cursor-capture-setup", "e6085f2e06acab78e174b529053161d7"},
 }
 
 func TestRealDecoderGolden(t *testing.T) {

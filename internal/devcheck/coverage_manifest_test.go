@@ -533,7 +533,7 @@ func TestWave2NativeDocs(t *testing.T) {
 			t.Fatalf("docs/ci.md does not name %s", n)
 		}
 	}
-	if len(NativeRequiredTests()) != 424 || len(NativeTaskProcessTests()) != 12 {
+	if len(NativeRequiredTests()) != 429 || len(NativeTaskProcessTests()) != 12 {
 		t.Fatalf("%d native names, %d sidecar names", len(NativeRequiredTests()), len(NativeTaskProcessTests()))
 	}
 }
@@ -722,6 +722,61 @@ func TestDecoderEnrollmentB2Docs(t *testing.T) {
 		}
 	}
 	for _, n := range b2Names() {
+		if !strings.Contains(s, "`"+n+"`") {
+			t.Fatalf("docs/ci.md does not name %s", n)
+		}
+	}
+}
+
+// decoderEnrollmentB3Files are the production files decoder enrollment's
+// slice B3 adds or changes (design decoder-enrollment B3, Benchmarks and CI,
+// against the actual diff), each required whole in the changed group.
+// capture_approval_other.go builds on neither CI host and stays unlisted,
+// as in B2.
+var decoderEnrollmentB3Files = []string{"internal/mcpqual/decode.go", "internal/mcpqual/decode_real.go", "internal/mcpqual/fixture_export.go",
+	"internal/mcpqual/session.go", "internal/mcpqual/measure.go", "internal/mcpqual/runner.go", "internal/mcpqual/cli.go", "internal/mcpqual/capture.go",
+	"internal/mcpqual/capture_approval.go", "internal/mcpqual/capture_approval_unix.go", "internal/mcpqual/capture_manifest.go", "internal/mcpqual/report.go",
+	"internal/mcpqual/cursor_preparation.go", "internal/mcpqual/cursor_residue.go", "internal/devcheck/native.go"}
+
+// TestDecoderEnrollmentB3CoverageManifest (design decoder-enrollment B3,
+// CI impact): every B3 production file is a whole-file changed-group entry
+// with its build OS, and none keeps a partial-range entry.
+func TestDecoderEnrollmentB3CoverageManifest(t *testing.T) {
+	root := testkit.MustRepoRoot(t)
+	listed := map[string]CoverageEntry{}
+	for _, e := range WorkspaceCoverageManifest {
+		listed[strings.TrimPrefix(e.File, modulePath+"/")] = e
+	}
+	for _, rel := range decoderEnrollmentB3Files {
+		e, ok := listed[rel]
+		if !ok || e.Group != GroupChanged || len(e.Ranges) != 0 || e.OS != buildOS(t, filepath.Join(root, filepath.FromSlash(rel))) {
+			t.Fatalf("decoder-enrollment B3 file %s missing from the changed group with its build OS", rel)
+		}
+	}
+}
+
+// TestDecoderEnrollmentB3Docs (design decoder-enrollment B3, CI impact):
+// docs/ci.md's Checks names the five B3 function parents with the 429-name
+// inventory and its ranges, the four real fixture replays, the per-case
+// preparation and residue offline cases and benchmark subcases, the
+// unchanged native call, benchmark, cross and twenty-job counts, the new
+// whole-file entries and no new budget allocation or stress workload.
+func TestDecoderEnrollmentB3Docs(t *testing.T) {
+	doc, err := os.ReadFile(filepath.Join(testkit.MustRepoRoot(t), "docs", "ci.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := strings.Join(strings.Fields(string(doc)), " ")
+	for _, w := range []string{"5 more names, 429 in all", "with the 424 earlier names unchanged and first", "the B2 names 419 to 424",
+		"positions 424 to 429", "four real fixtures", "`export-cursor`", "`residue-check`", "`internal/mcpqual/cursor_preparation.go`",
+		"`internal/mcpqual/cursor_residue.go`", "B3 makes no new budget allocation", "B3 adds no new stress selector or workload",
+		"`devcheck native` still makes 9 ordinary calls", "`devcheck bench` keeps 13 steps", "cross keeps 12 artifacts", "Linux `all` still makes 32 ordinary calls",
+		"The workflow keeps its twenty jobs"} {
+		if !strings.Contains(s, w) {
+			t.Fatalf("docs/ci.md lacks %q", w)
+		}
+	}
+	for _, n := range b3Names() {
 		if !strings.Contains(s, "`"+n+"`") {
 			t.Fatalf("docs/ci.md does not name %s", n)
 		}

@@ -24,6 +24,17 @@
       "sanitization_sha256": "4d973d0a1f0c2898a691fddb97f339d885be3459b31f72ace65e98905344d52c"
     },
     {
+      "client": "cursor",
+      "decoder": "cursor-jsonl",
+      "version": "2026.10.01-e373342",
+      "platform": "linux/amd64",
+      "fixture": "cursor-jsonl/real/fd72c567a09cccd583654c8baad84052f6c039a0b172fd2f7a5e5533fc20aff8/linux-amd64",
+      "bundle": "tests/testdata/mcp-transcripts/cursor/fd72c567a09cccd583654c8baad84052f6c039a0b172fd2f7a5e5533fc20aff8/linux-amd64/20261008T212659Z-a5af9a",
+      "manifest_sha256": "55f0b346b155f9bb4e1a5e3b1a52e89609e46b985f01c894a8aaacae05c810cc",
+      "expected_sha256": "fdffed89a242db1f83c099b5cb1cba2e7e100522a74c7caf84fa659dcdcd7c37",
+      "sanitization_sha256": "423468a05de29e34155aa4bf1400c3d8710646b1ded3c0b5cdd8b49420e3473c"
+    },
+    {
       "client": "grok",
       "decoder": "grok-json",
       "version": "grok 1.0.46 (2765805b9442) [stable]",

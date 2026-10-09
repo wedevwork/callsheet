@@ -1,0 +1,319 @@
+{
+  "schema": "mcpqual-capture-v1",
+  "run_id": "20261008T212659Z-a5af9a",
+  "captured_at": "2026-10-08T21:26:59Z",
+  "harness_version": "07b.1",
+  "os": "linux",
+  "arch": "amd64",
+  "plan_sha256": "12cedc053ad7592cb1b953a62cd08e42b5e2069f3c6d09cb527bbb8b58a7c69a",
+  "limits": {
+    "clients": 1,
+    "sessions_per_client": 1,
+    "session_ms": 120000,
+    "client_ms": 180000,
+    "metadata_ms": 30000,
+    "stream_bytes": 8388608,
+    "server_events_bytes": 8388608,
+    "file_bytes": 8388608,
+    "client_bytes": 67108864,
+    "bundle_bytes": 268435456,
+    "manifest_bytes": 8388608
+  },
+  "redaction_policy": "mcpqual-capture-v1",
+  "state": "complete",
+  "reason": null,
+  "vendor_behavior": "not_evaluated",
+  "plan": {
+    "path": "plan.json",
+    "omitted_lines": 0,
+    "input_truncated": false,
+    "output_truncated": false
+  },
+  "cleanup": {
+    "ok": true,
+    "failures": []
+  },
+  "clients": [
+    {
+      "id": "cursor",
+      "expected_version": "2026.10.01-e373342",
+      "observed_version": "2026.10.01-e373342",
+      "observed_version_reason": null,
+      "executable_sha256": "2ccc9a8e167797641448b5e5c936f006ba137a2555f117f38c5eb76a5238a233",
+      "executable_sha256_reason": null,
+      "decoder": "cursor-jsonl",
+      "decoder_fixture": "cursor-jsonl/synthetic",
+      "decoder_validated": false,
+      "model": "grok-4.7-low",
+      "effort": null,
+      "effort_reason": "the plan names no effort",
+      "argv": [
+        "-p",
+        "Call the MCP tool slow exactly once with arguments {\"case_id\": \"cursor-capture-setup\"}. Do not call any other tool. Report the tool's result or error verbatim, then stop.",
+        "--output-format",
+        "stream-json",
+        "--model",
+        "grok-4.7-low",
+        "--workspace",
+        "<workspace>",
+        "--trust"
+      ],
+      "config": {
+        "path": ".cursor/mcp.json",
+        "prerequisite": "Trust only the generated workspace; capture runs mcp enable probe there and verifies workspace-only file changes before the model session; never --approve-mcps.",
+        "timeout_override": "none"
+      },
+      "case_id": "cursor-capture-setup",
+      "nonce": "e6085f2e06acab78e174b529053161d7",
+      "version": {
+        "state": "ran",
+        "reason": null,
+        "watchdog_ms": 30000,
+        "exit": 0,
+        "signal": null,
+        "watchdog": false,
+        "interrupted": false,
+        "stdout_held": false,
+        "stderr_held": false,
+        "cleanup": {
+          "term_sent": false,
+          "kill_sent": false,
+          "leader_exited_first": false,
+          "group_gone": true,
+          "error": null
+        }
+      },
+      "help": {
+        "state": "ran",
+        "reason": null,
+        "watchdog_ms": 30000,
+        "exit": 0,
+        "signal": null,
+        "watchdog": false,
+        "interrupted": false,
+        "stdout_held": false,
+        "stderr_held": false,
+        "cleanup": {
+          "term_sent": false,
+          "kill_sent": false,
+          "leader_exited_first": false,
+          "group_gone": true,
+          "error": null
+        }
+      },
+      "session": {
+        "state": "ran",
+        "reason": null,
+        "watchdog_ms": 120000,
+        "exit": 0,
+        "signal": null,
+        "watchdog": false,
+        "interrupted": false,
+        "stdout_held": false,
+        "stderr_held": false,
+        "cleanup": {
+          "term_sent": true,
+          "kill_sent": false,
+          "leader_exited_first": true,
+          "group_gone": true,
+          "error": null
+        }
+      },
+      "probe": {
+        "intact": false,
+        "initialized": true,
+        "client_name": "Cursor",
+        "client_version": "1.0.0",
+        "receipts": 1,
+        "completed": true,
+        "anomalies": [],
+        "observation": {
+          "end_state": "terminal_observed_without_exit",
+          "intact": false,
+          "terminal_kind": "completed",
+          "clean_session": true
+        }
+      },
+      "probe_reason": null,
+      "streams": [
+        {
+          "path": "clients/cursor/version-stdout.txt",
+          "omitted_lines": 0,
+          "input_truncated": false,
+          "output_truncated": false
+        },
+        {
+          "path": "clients/cursor/version-stderr.txt",
+          "omitted_lines": 0,
+          "input_truncated": false,
+          "output_truncated": false
+        },
+        {
+          "path": "clients/cursor/help-stdout.txt",
+          "omitted_lines": 0,
+          "input_truncated": false,
+          "output_truncated": false
+        },
+        {
+          "path": "clients/cursor/help-stderr.txt",
+          "omitted_lines": 0,
+          "input_truncated": false,
+          "output_truncated": false
+        },
+        {
+          "path": "clients/cursor/approval-stdout.txt",
+          "omitted_lines": 0,
+          "input_truncated": false,
+          "output_truncated": false
+        },
+        {
+          "path": "clients/cursor/approval-stderr.txt",
+          "omitted_lines": 0,
+          "input_truncated": false,
+          "output_truncated": false
+        },
+        {
+          "path": "clients/cursor/config.txt",
+          "omitted_lines": 0,
+          "input_truncated": false,
+          "output_truncated": false
+        },
+        {
+          "path": "clients/cursor/vendor-events.jsonl",
+          "omitted_lines": 0,
+          "input_truncated": false,
+          "output_truncated": false
+        },
+        {
+          "path": "clients/cursor/vendor-stderr.txt",
+          "omitted_lines": 0,
+          "input_truncated": false,
+          "output_truncated": false
+        },
+        {
+          "path": "clients/cursor/server-events.jsonl",
+          "omitted_lines": 0,
+          "input_truncated": false,
+          "output_truncated": false
+        }
+      ],
+      "state": "complete",
+      "reason": null,
+      "approval": {
+        "argv": [
+          "mcp",
+          "enable",
+          "probe"
+        ],
+        "cwd": "<workspace>",
+        "stage": {
+          "state": "ran",
+          "reason": null,
+          "watchdog_ms": 30000,
+          "exit": 0,
+          "signal": null,
+          "watchdog": false,
+          "interrupted": false,
+          "stdout_held": false,
+          "stderr_held": false,
+          "cleanup": {
+            "term_sent": false,
+            "kill_sent": false,
+            "leader_exited_first": false,
+            "group_gone": true,
+            "error": null
+          }
+        },
+        "scope": "project_scoped",
+        "reason": null,
+        "inventory_complete": true,
+        "changes": [
+          {
+            "path": "<home>/.cursor/projects/<workspace-project>",
+            "kind": "added"
+          },
+          {
+            "path": "<home>/.cursor/projects/<workspace-project>/mcp-approvals.json",
+            "kind": "added"
+          }
+        ],
+        "project": {
+          "adapter": "cursor-linux-amd64-2026.10.01-e373342",
+          "directory": "<home>/.cursor/projects/<workspace-project>",
+          "file": "<home>/.cursor/projects/<workspace-project>/mcp-approvals.json",
+          "probe_entry_present": true
+        },
+        "inventory_policy": "cursor-approval-v2",
+        "excluded_paths": [
+          "<home>/.cursor/chats",
+          "<home>/.cursor/ai-tracking"
+        ]
+      },
+      "tool_permission": {
+        "adapter": "cursor-tool-permission-linux-amd64-2026.10.01-e373342",
+        "path": "<workspace>/.cursor/cli.json",
+        "content": "{\"permissions\":{\"allow\":[\"Mcp(probe:slow)\"],\"deny\":[]}}",
+        "sha256": "54f3274943bf40e57de0733389c94d5fe389cb4eb1f5af8fc11f599b49f535f6",
+        "state": "verified",
+        "reason": null
+      }
+    }
+  ],
+  "files": [
+    {
+      "path": "clients/cursor/approval-stderr.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "clients/cursor/approval-stdout.txt",
+      "sha256": "e713cb9a6af1946d9b619153c54e67f959ce18021b6cc30ba7c835c44ce95185",
+      "bytes": 43
+    },
+    {
+      "path": "clients/cursor/config.txt",
+      "sha256": "9f311ef458c1447b00b4a0cdb56458e6c7f02681898a70ed5adf2f6ca48be7e0",
+      "bytes": 147
+    },
+    {
+      "path": "clients/cursor/help-stderr.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "clients/cursor/help-stdout.txt",
+      "sha256": "c24026e17118188478fcb47ed8113fa842f93df2043da5116660a368d3dc64b0",
+      "bytes": 5991
+    },
+    {
+      "path": "clients/cursor/server-events.jsonl",
+      "sha256": "321d52553eb82458e3ab1afb72a3fb19a5a7d38d57df806aea0a1185b9d88bba",
+      "bytes": 716
+    },
+    {
+      "path": "clients/cursor/vendor-events.jsonl",
+      "sha256": "d0c5ea4db59ac19562f4bb6800fd34f28bef6f190b56955ee4a760186e5c0ef8",
+      "bytes": 5365
+    },
+    {
+      "path": "clients/cursor/vendor-stderr.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "clients/cursor/version-stderr.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "clients/cursor/version-stdout.txt",
+      "sha256": "59af10e3e2483f58e970517d139e48c0484a78405767fb44578594ff0a03115a",
+      "bytes": 19
+    },
+    {
+      "path": "plan.json",
+      "sha256": "12cedc053ad7592cb1b953a62cd08e42b5e2069f3c6d09cb527bbb8b58a7c69a",
+      "bytes": 963
+    }
+  ]
+}

@@ -3,6 +3,7 @@
 package mcpqual
 
 import (
+	"io/fs"
 	"os"
 	"syscall"
 )
@@ -19,4 +20,12 @@ func (osApprovalFS) Open(name string) (approvalFile, error) {
 // (design decoder-enrollment B2, FP-20).
 func createNoFollow(name string) (*os.File, error) {
 	return os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600)
+}
+
+// residueSocket reports whether a no-follow lookup is a Unix socket (not
+// a link, FIFO, device, directory or regular file): the type check of a
+// Cursor worker socket residue (design decoder-enrollment B3, FP-25). The
+// socket is never opened, connected to or removed.
+func residueSocket(info fs.FileInfo) (bool, error) {
+	return info.Mode().Type() == fs.ModeSocket, nil
 }

@@ -419,11 +419,12 @@ func TestEnrollmentReplay(t *testing.T) {
 	}
 }
 
-// The production state of slice B2 (UT-19, FP-5/FP-19): the checked-in
-// index holds exactly the three enrolled linux/amd64 identities, sorted,
-// each sanitized; the production registry qualifies exactly those three
-// with the success capabilities and keeps the four synthetic versions
-// labeled and unqualified, with no real Cursor version; and the offline
+// The production state of slices B2 and B3 (UT-19/UT-23, FP-5/FP-19/FP-23):
+// the checked-in index holds exactly the four enrolled linux/amd64
+// identities, sorted, each sanitized; the production registry qualifies
+// exactly those four (Cursor's added by B3, amending B2's "no real Cursor
+// version") with the success capabilities and keeps the four synthetic
+// versions labeled and unqualified; and the offline
 // self-check passes on the real repository. The legacy empty index stays
 // valid against an injected synthetic-only registry, never against the
 // production one.
@@ -434,12 +435,13 @@ func TestProductionEnrollment(t *testing.T) {
 		t.Fatal(err)
 	}
 	idx, err := ParseEnrollmentIndex(b)
-	if err != nil || idx.Schema != EnrollmentSchema || len(idx.Entries) != 3 {
+	if err != nil || idx.Schema != EnrollmentSchema || len(idx.Entries) != 4 {
 		t.Fatalf("production index: %v %+v", err, idx)
 	}
 	want := []struct{ client, decoder, version, run string }{
 		{"claude", "claude-json", ClaudeRealVersion, "20261008T122513Z-66db37"},
 		{"codex", "codex-jsonl", CodexRealVersion, "20261008T110604Z-13cb4a"},
+		{"cursor", "cursor-jsonl", CursorRealVersion, "20261008T212659Z-a5af9a"},
 		{"grok", "grok-json", GrokRealVersion, "20261008T110619Z-1663d7"},
 	}
 	for i, w := range want {
@@ -451,7 +453,7 @@ func TestProductionEnrollment(t *testing.T) {
 		}
 	}
 	reg := DefaultRegistry()
-	if q := reg.QualifiedVersions(); !slices.Equal(q, []string{"claude-json " + ClaudeRealVersion, "codex-jsonl " + CodexRealVersion, "grok-json " + GrokRealVersion}) {
+	if q := reg.QualifiedVersions(); !slices.Equal(q, []string{"claude-json " + ClaudeRealVersion, "codex-jsonl " + CodexRealVersion, "cursor-jsonl " + CursorRealVersion, "grok-json " + GrokRealVersion}) {
 		t.Fatalf("qualified production versions %v", q)
 	}
 	for _, name := range decoderNames {
@@ -468,13 +470,13 @@ func TestProductionEnrollment(t *testing.T) {
 			t.Fatalf("no %s decoder", name)
 		}
 	}
-	if vs := reg.Versions("cursor-jsonl"); len(vs) != 1 || vs[0].Qualified {
+	if vs := reg.Versions("cursor-jsonl"); len(vs) != 2 || vs[0].Qualified || !vs[1].Qualified || vs[1].Version != CursorRealVersion {
 		t.Fatalf("cursor versions %+v", vs)
 	}
 	// Confined opening of the repository (code review C5, round 2 C2): a
 	// held os.Root, every component opened relative to its parent.
 	got, err := ValidateEnrollment(EnrollmentOptions{Root: root, Registry: reg})
-	if err != nil || len(got.Entries) != 3 {
+	if err != nil || len(got.Entries) != 4 {
 		t.Fatalf("production self-check: %v", err)
 	}
 	// The legacy empty index: valid against an injected synthetic-only

@@ -185,14 +185,9 @@ func qualify(ctx context.Context, env Env, args []string) int {
 	if _, err := io.ReadFull(env.Rand, rnd); err != nil {
 		return fail(env, err)
 	}
-	now := env.Now().UTC()
-	runID := now.Format("20060102T150405Z") + "-" + hex.EncodeToString(rnd[:3])
 	ctx, stop := env.Notify(ctx)
 	defer stop()
-	r := &Runner{Plan: plan, PlanSHA256: sha256Hex(raw), OutDir: *out, AllowModelCalls: *allow, GOOS: env.GOOS, GOARCH: env.GOARCH,
-		Hostname: env.Hostname, ServerPath: env.Executable, BaseEnv: withoutCI(env.Environ), Launcher: env.Launcher,
-		Reaper: GroupReaper{Sig: env.Signaler, Clock: env.Clock, Policy: policy}, Clock: env.Clock, Registry: env.Registry, Log: env.Stderr,
-		RunID: runID, Nonce: hex.EncodeToString(rnd[3:19]), CaptureDate: now.Format("2006-01-02"), HarnessVersion: HarnessVersion, Home: env.Home, User: env.User}
+	r := newQualifyRunner(env, plan, raw, *out, *allow, policy, rnd)
 	rep, err := r.Run(ctx)
 	if err != nil {
 		if rep == nil {
@@ -280,6 +275,20 @@ func capture(ctx context.Context, env Env, args []string) int {
 	fmt.Fprintf(env.Stdout, "mcpqual: run %s: %s; vendor behavior not evaluated; manifest %s (exit %d)\n", man.RunID, status,
 		filepath.Join(*out, CaptureManifestName), man.ExitCode())
 	return man.ExitCode()
+}
+
+// newQualifyRunner is the production qualification runner, built only from
+// Env and the parsed invocation. Its Cursor preparation filesystem stays
+// nil (the operating system) and its approval limits zero (the defaults):
+// no plan member, flag or variable reaches either test seam (design
+// decoder-enrollment B3, FP-24, following the B1 DW10 precedent).
+func newQualifyRunner(env Env, plan *Plan, raw []byte, out string, allow bool, policy CleanupPolicy, rnd []byte) *Runner {
+	now := env.Now().UTC()
+	return &Runner{Plan: plan, PlanSHA256: sha256Hex(raw), OutDir: out, AllowModelCalls: allow, GOOS: env.GOOS, GOARCH: env.GOARCH,
+		Hostname: env.Hostname, ServerPath: env.Executable, BaseEnv: withoutCI(env.Environ), Launcher: env.Launcher,
+		Reaper: GroupReaper{Sig: env.Signaler, Clock: env.Clock, Policy: policy}, Clock: env.Clock, Registry: env.Registry, Log: env.Stderr,
+		RunID: now.Format("20060102T150405Z") + "-" + hex.EncodeToString(rnd[:3]), Nonce: hex.EncodeToString(rnd[3:19]), CaptureDate: now.Format("2006-01-02"),
+		HarnessVersion: HarnessVersion, Home: env.Home, User: env.User}
 }
 
 // newCaptureRunner is the production capture runner, built only from Env

@@ -1,0 +1,1 @@
+{"mcpServers":{"probe":{"command":"<server>","args":["serve","--case-file","<workspace>/case.json","--events","<workspace>/server-events.jsonl"]}}}

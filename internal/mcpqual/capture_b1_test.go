@@ -1358,6 +1358,11 @@ func TestCaptureApprovalManifest(t *testing.T) {
 		if c.ToolPermission != nil {
 			c.ToolPermission.State, c.ToolPermission.Reason = PermissionWritten, sptr(permissionPending)
 		}
+		// Design decoder-enrollment B3 (FP-25): nor is the worker residue
+		// checked.
+		if c.WorkerResidue != nil {
+			c.WorkerResidue = sptrResidue(notCheckedResidue("the session did not run"))
+		}
 		c.Probe, c.ProbeReason = nil, sptr("the session did not run")
 		var kept []EvidenceRef
 		for _, f := range m.Files {

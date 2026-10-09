@@ -1,13 +1,15 @@
 package mcpqual
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
+	"path"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -150,6 +152,193 @@ type CaseReport struct {
 	// the probe was analyzed, absent for a case that did not run and in
 	// legacy reports (never null).
 	ProbeObservation *ProbeObservation `json:"probe_observation,omitempty"`
+	// CursorPreparation is the case's own Cursor preparation of the pinned
+	// adapter (design decoder-enrollment B3, FP-24): omitted for other
+	// clients, versions and platforms and in legacy reports, never null.
+	CursorPreparation *CursorPreparation `json:"cursor_preparation,omitempty"`
+}
+
+// CursorPreparation records one qualify case's Cursor preparation (design
+// decoder-enrollment B3, FP-24): unverified from its start, verified only
+// after a scoped clean enable, the three permission reads, a clean session
+// and cleanup and verified worker socket residue. It is a trusted harness
+// attestation, not reconstructable proof of past home state.
+type CursorPreparation struct {
+	State            string                 `json:"state"`
+	Reason           *string                `json:"reason"`
+	Approval         CaptureApproval        `json:"approval"`
+	ToolPermission   *CaptureToolPermission `json:"tool_permission"`
+	PermissionChecks PermissionChecks       `json:"permission_checks"`
+	ApprovalStdout   *string                `json:"approval_stdout"`
+	ApprovalStderr   *string                `json:"approval_stderr"`
+	Residue          WorkerResidue          `json:"residue"`
+}
+
+// PermissionChecks are the three no-follow identity and content reads of
+// the permission file, each true only after it succeeded.
+type PermissionChecks struct {
+	AfterEnable   bool `json:"after_enable"`
+	BeforeSession bool `json:"before_session"`
+	AfterCleanup  bool `json:"after_cleanup"`
+}
+
+// Preparation states.
+const (
+	PreparationVerified   = "verified"
+	PreparationUnverified = "unverified"
+)
+
+// preparationMembers and permissionCheckMembers are the strict member sets.
+var (
+	preparationMembers     = []string{"state", "reason", "approval", "tool_permission", "permission_checks", "approval_stdout", "approval_stderr", "residue"}
+	permissionCheckMembers = []string{"after_enable", "before_session", "after_cleanup"}
+)
+
+// checkPreparationRaw checks a present cursor_preparation's raw members:
+// never null, exactly its members (reason, tool_permission and the two
+// output paths nullable), every nested object complete and strict.
+func checkPreparationRaw(raw json.RawMessage, where string) error {
+	if err := checkObjectRaw(raw, where, preparationMembers, map[string]bool{"reason": true, "tool_permission": true, "approval_stdout": true, "approval_stderr": true}); err != nil || raw == nil {
+		return err
+	}
+	var m map[string]json.RawMessage
+	json.Unmarshal(raw, &m)
+	if err := requireFields(m["approval"], reflect.TypeOf(CaptureApproval{}), where+".approval"); err != nil {
+		return err
+	}
+	var ap struct {
+		Project         json.RawMessage `json:"project"`
+		InventoryPolicy json.RawMessage `json:"inventory_policy"`
+		ExcludedPaths   json.RawMessage `json:"excluded_paths"`
+	}
+	if err := json.Unmarshal(m["approval"], &ap); err != nil {
+		return fmt.Errorf("%s.approval: %w", where, err)
+	}
+	if err := checkObjectRaw(ap.Project, where+".approval.project", projectMembers, nil); err != nil {
+		return err
+	}
+	for name, v := range map[string]json.RawMessage{"inventory_policy": ap.InventoryPolicy, "excluded_paths": ap.ExcludedPaths} {
+		if v == nil || string(bytes.TrimSpace(v)) == "null" {
+			return fmt.Errorf("%s.approval.%s: required (a preparation always names its inventory policy)", where, name)
+		}
+	}
+	if string(bytes.TrimSpace(m["tool_permission"])) != "null" {
+		if err := checkObjectRaw(m["tool_permission"], where+".tool_permission", toolPermissionMembers, map[string]bool{"reason": true}); err != nil {
+			return err
+		}
+	}
+	if err := checkObjectRaw(m["permission_checks"], where+".permission_checks", permissionCheckMembers, nil); err != nil {
+		return err
+	}
+	return checkResidueRaw(m["residue"], where+".residue")
+}
+
+// cursorPinned reports a report client of the pinned Cursor version (by its
+// expected, observed or selected decoder version): its conclusive cases
+// require verified preparation.
+func cursorPinned(c ClientReport) bool {
+	return c.ID == "cursor" && (c.ExpectedVersion == CursorRealVersion || c.ObservedVersion != nil && *c.ObservedVersion == CursorRealVersion ||
+		c.DecoderVersion != nil && c.DecoderVersion.Version == CursorRealVersion)
+}
+
+// conclusiveCase is a case outcome that could become a fact: anything but
+// inconclusive, interrupted or not run.
+func conclusiveCase(outcome string) bool {
+	return outcome != OutcomeInconclusive && outcome != OutcomeInterrupted && outcome != OutcomeNotRun
+}
+
+// validatePreparation checks case cs of client c (design decoder-enrollment
+// B3, FP-24): a preparation only for the pinned Cursor version on
+// linux/amd64; a conclusive case of the pinned version only with verified
+// preparation (absence is never promoted, whatever the fixture, version
+// label or platform); and a present preparation's own consistency. ran
+// holds the client's earlier cases; residue maps each residue path seen for
+// the client to its owning case.
+func (r *Report) validatePreparation(c ClientReport, cs CaseReport, listed map[string]bool, ran map[string]bool, residue map[string]string) error {
+	p := cs.CursorPreparation
+	pinned := cursorPinned(c)
+	if p != nil {
+		if !pinned || r.OS != cursorProjectGOOS || r.Arch != cursorProjectGOARCH {
+			return fmt.Errorf("cursor_preparation: only a case of the %s adapter records it", CursorToolPermissionAdapter)
+		}
+		if err := p.validate(cs, listed, ran, residue); err != nil {
+			return err
+		}
+	}
+	if pinned && conclusiveCase(cs.Outcome) && (p == nil || p.State != PreparationVerified) {
+		return fmt.Errorf("outcome %s of the pinned Cursor version without verified cursor_preparation", cs.Outcome)
+	}
+	return nil
+}
+
+// validate checks a preparation record against its case.
+func (p *CursorPreparation) validate(cs CaseReport, listed map[string]bool, ran map[string]bool, residue map[string]string) error {
+	fail := func(format string, a ...any) error { return fmt.Errorf("cursor_preparation: "+format, a...) }
+	sessionRan := cs.Exit != nil || cs.Signal != nil
+	a := &p.Approval
+	switch {
+	case p.State != PreparationVerified && p.State != PreparationUnverified:
+		return fail("state %q", p.State)
+	case (p.State == PreparationVerified) != (p.Reason == nil) || p.Reason != nil && *p.Reason == "":
+		return fail("a reason exactly when unverified")
+	case a.InventoryPolicy == nil:
+		return fail("the approval names no inventory policy")
+	}
+	if err := a.validateRecord(sessionRan); err != nil {
+		return fail("%v", err)
+	}
+	tp, ck := p.ToolPermission, p.PermissionChecks
+	all := ck.AfterEnable && ck.BeforeSession && ck.AfterCleanup
+	switch {
+	case tp == nil && (ck.AfterEnable || ck.BeforeSession || ck.AfterCleanup):
+		return fail("permission checks without a written permission file")
+	case ck.BeforeSession && !ck.AfterEnable, ck.AfterCleanup && (!ck.BeforeSession || !sessionRan), ck.AfterEnable && !sessionScope(a.Scope):
+		return fail("permission checks out of order or without their stage")
+	case tp != nil && (tp.Adapter != CursorToolPermissionAdapter || tp.Path != labelToolPermission || tp.Content != CursorToolPermissionContent ||
+		tp.SHA256 != sha256Hex([]byte(CursorToolPermissionContent))):
+		return fail("tool_permission is not the adapter's exact file path, content and SHA-256")
+	case tp != nil && tp.State != PermissionWritten && tp.State != PermissionVerified:
+		return fail("tool_permission state %q", tp.State)
+	case tp != nil && ((tp.State == PermissionVerified) != (tp.Reason == nil) || tp.Reason != nil && *tp.Reason == ""):
+		return fail("tool_permission: a reason exactly when written")
+	case tp != nil && (tp.State == PermissionVerified) != all:
+		return fail("tool_permission verified exactly when all three checks succeeded")
+	}
+	dir := path.Join("cases", cs.CaseID)
+	for _, o := range []struct {
+		name string
+		v    *string
+	}{{FileApprovalStdout, p.ApprovalStdout}, {FileApprovalStderr, p.ApprovalStderr}} {
+		switch {
+		case (o.v != nil) != (a.Stage.State == StageRan):
+			return fail("approval output %s recorded exactly when the enable command launched", o.name)
+		case o.v != nil && (*o.v != path.Join(dir, o.name) || !listed[*o.v]):
+			return fail("approval output %q is not the case's listed %s", *o.v, o.name)
+		}
+	}
+	if err := p.Residue.validate(func(id string) bool { return id == cs.CaseID || ran[id] }, MaxResidueEntries); err != nil {
+		return fail("%v", err)
+	}
+	if p.Residue.State != ResidueNotChecked && !sessionRan {
+		return fail("residue checked without a launched session")
+	}
+	for _, e := range p.Residue.Entries {
+		if owner, seen := residue[e.Path]; seen && owner != e.CaseID {
+			return fail("residue %s changes its owning case", e.Path)
+		}
+		residue[e.Path] = e.CaseID
+	}
+	if len(residue) > MaxResidueEntries {
+		return fail("more than %d residue entries in one confirmation", MaxResidueEntries)
+	}
+	if p.State == PreparationVerified {
+		clean := cs.Exit != nil && *cs.Exit == 0 && cs.Signal == nil && cs.Cleanup.Error == nil && cs.Cleanup.GroupGone
+		if !sessionScope(a.Scope) || !provenClean(a.Stage) || !a.InventoryComplete || len(a.Changes) == 0 || tp == nil || tp.State != PermissionVerified ||
+			p.Residue.State != ResidueVerified || !clean {
+			return fail("verified without a scoped clean enable, the verified permission file, verified residue and a clean session and cleanup")
+		}
+	}
+	return nil
 }
 
 // CaseCleanup records how the case's process group was reaped.
@@ -265,6 +454,13 @@ func ParseReport(b []byte) (*Report, error) {
 				if err := checkObservationRaw(opt.Observation, "report: "+cw+".probe_observation"); err != nil {
 					return nil, err
 				}
+				var prep struct {
+					Preparation json.RawMessage `json:"cursor_preparation"`
+				}
+				json.Unmarshal(cs, &prep)
+				if err := checkPreparationRaw(prep.Preparation, "report: "+cw+".cursor_preparation"); err != nil {
+					return nil, err
+				}
 			}
 		}
 	}
@@ -325,6 +521,7 @@ func (r *Report) Validate() error {
 		if (ci.Name == nil || ci.Version == nil || ci.RequesterCompatible == nil) && (ci.UnqualifiedReason == nil || *ci.UnqualifiedReason == "") {
 			return fail("%s: client_info missing without an unqualified_reason", c.ID)
 		}
+		ran, residue := map[string]bool{}, map[string]string{}
 		for _, ph := range c.Phases {
 			if ph.Status != StatusConclusive && (ph.Reason == nil || *ph.Reason == "") {
 				return fail("%s.%s: status %s without a reason", c.ID, ph.Name, ph.Status)
@@ -348,6 +545,10 @@ func (r *Report) Validate() error {
 				if err := cs.validateObservation(); err != nil {
 					return fail("%s: %v", cs.CaseID, err)
 				}
+				if err := r.validatePreparation(c, cs, seenPath, ran, residue); err != nil {
+					return fail("%s: %v", cs.CaseID, err)
+				}
+				ran[cs.CaseID] = true
 			}
 		}
 	}
@@ -391,9 +592,23 @@ func (cs *CaseReport) validateObservation() error {
 // bytes give (clean_session is the harness's recorded attestation, not a
 // fact the bytes hold, so it is the replay's input).
 func (r *Report) CheckEvidence(dir string) error {
+	// Every evidence file is read through the confined reader (code review
+	// B3 round 1, C2): relative to a held os.Root of dir, each component a
+	// verified non-symlink directory, the file a regular file (never a
+	// link, FIFO or device) whose size is checked against its recorded
+	// bytes before it is read, and exactly those bounded bytes hashed.
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return fmt.Errorf("evidence directory: %w", err)
+	}
+	base := &rootTree{root}
+	defer base.close()
 	files := map[string][]byte{}
 	for _, ev := range r.Evidence {
-		b, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(ev.Path)))
+		if ev.Bytes < 0 || ev.Bytes > MaxEvidenceFileBytes || checkRelPath("evidence path", ev.Path) != nil {
+			return fmt.Errorf("evidence %s: an invalid path or size", ev.Path)
+		}
+		b, err := readPath(base, ev.Path, int(ev.Bytes))
 		if err != nil {
 			return fmt.Errorf("evidence %s: %w", ev.Path, err)
 		}
