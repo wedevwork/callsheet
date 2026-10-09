@@ -491,24 +491,59 @@ func BenchmarkMCPCaptureEvidence(b *testing.B) {
 			b.Fatal("the Cursor export kept metadata or lost a call ID")
 		}
 	})
-	b.Run("residue-check", func(b *testing.B) {
-		b.ReportAllocs()
-		var w WorkerResidue
-		for i := 0; i < b.N; i++ {
-			m := rsWorld()
-			p := rsPreparer(m, ApprovalScanLimits{})
-			pre, err := p.residueSnapshot()
-			if err != nil {
-				b.Fatal(err)
+	// Design decoder-enrollment A3: tiny in-memory exact-tree and ledger
+	// vectors (hashed, in_place, and a three-case ledger revalidated by the
+	// later cases), reporting the bytes inspected per operation: approval
+	// bytes only, never a session file's content. A3.1 adds the foreign
+	// baseline's creation and its revalidation across three cases over
+	// pre-existing foreign session trees.
+	for _, layout := range []string{"hashed", "in-place", "ledger", "foreign-baseline", "foreign-ledger"} {
+		b.Run("residue-check-"+layout, func(b *testing.B) {
+			b.ReportAllocs()
+			var w WorkerResidue
+			var s *rsSpyFS
+			for i := 0; i < b.N; i++ {
+				m := rsWorld()
+				s = rsSpy(m)
+				p := rsPreparer(s, ApprovalScanLimits{})
+				switch layout {
+				case "hashed":
+					w = session(b, p, "cursor-setup", rsWS1, nil, func() { socketAt(m, "c-out-work-cu-1b81996", nil) })
+				case "in-place":
+					w = session(b, p, "cursor-setup", rsWS1, rsEnable(b, m, p, rsWS1), func() { rsInPlace(m, rsWS1) })
+				case "foreign-baseline":
+					rsForeign(m)
+					if err := p.preflight(nil, rsSlug(rsWS1)); err != nil {
+						b.Fatal(err)
+					}
+					w = session(b, p, "cursor-setup", rsWS1, nil, func() { socketAt(m, "c-out-work-cu-1b81996", nil) })
+				case "foreign-ledger":
+					rsForeign(m)
+					rsCase(b, m, p, "cursor-setup", rsWS1, "in_place")
+					rsCase(b, m, p, "cursor-default-1", rsWS2, "hashed")
+					w = rsCase(b, m, p, "cursor-default-2", rsWS3, "in_place")
+				default:
+					session(b, p, "cursor-setup", rsWS1, rsEnable(b, m, p, rsWS1), func() { rsInPlace(m, rsWS1) })
+					session(b, p, "cursor-default-1", rsWS2, rsEnable(b, m, p, rsWS2), func() { socketAt(m, "c-out-work-cursor-defa-0a1b2c3", nil) })
+					w = session(b, p, "cursor-default-2", rsWS3, rsEnable(b, m, p, rsWS3), func() { rsInPlace(m, rsWS3) })
+				}
 			}
-			socketAt(m, "c-out-work-cu-1b81996", nil)
-			w = p.checkResidue("cursor-setup", rsWS1, pre)
-		}
-		b.StopTimer()
-		if w.State != ResidueVerified || len(w.Entries) != 1 || w.Entries[0].Path != residuePath(1) {
-			b.Fatalf("residue %+v", w)
-		}
-	})
+			b.StopTimer()
+			var approval int
+			for path, n := range s.opens {
+				if filepath.Base(path) == cursorApprovalsFile {
+					approval += n * len(rsApproval)
+				}
+			}
+			b.ReportMetric(float64(approval), "approval-bytes/op")
+			b.ReportMetric(float64(s.sessionOpens()), "session-opens/op")
+			want := map[string]int{"hashed": 1, "in-place": 1, "ledger": 3, "foreign-baseline": 1, "foreign-ledger": 3}[layout]
+			if w.State != ResidueVerified || len(w.Entries) != want || w.Entries[0].Path != residuePath(1) || s.sessionOpens() != 0 ||
+				layout != "hashed" && layout != "foreign-baseline" && approval == 0 {
+				b.Fatalf("residue %+v, %d session opens", w, s.sessionOpens())
+			}
+		})
+	}
 	b.Run("over-limit", func(b *testing.B) {
 		tr := benchTranscript(red, MaxEvidenceFileBytes, true)
 		b.ReportAllocs()

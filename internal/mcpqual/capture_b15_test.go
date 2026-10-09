@@ -908,7 +908,8 @@ func TestCursorProjectApprovalCapture(t *testing.T) {
 	for name, tc := range map[string]outcome{
 		"preexists": {func(_, proj string, _ ProcSpec) capBehavior { return capBehavior{writes: approvalAt(proj, good)} },
 			func(_, proj string) { os.MkdirAll(proj, 0o700) }, nil,
-			ReasonCursorScopeUnverified + ": the computed Cursor project directory exists before the command", ScopeUnverifiable, 2},
+			// A3.1: the case-ownership check precedes the inventory.
+			ReasonCaseProjectExists, ScopeUnverifiable, 2},
 		"dir-only": {func(_, proj string, _ ProcSpec) capBehavior {
 			os.MkdirAll(proj, 0o700)
 			return capBehavior{}

@@ -701,6 +701,59 @@ The workflow keeps its twenty jobs, four required checks, commands, stress
 selectors, counts, CPU lists and timeouts; B3 makes no new budget
 allocation.
 
+Amendment A3 (design decoder-enrollment, r0.14) extends FP-25's offline
+cases to Cursor's in-place session residue without a new function parent:
+the names stay 429 and the 424-then-five order is unchanged.
+`TestMCPCursorWorkerResidue` keeps its six local cases and
+`TestMCPCursorConfirmation` its four, with extended vectors: the fake vendor
+now also leaves the exact in-place tree (worker.sock, worker.log, repo.json,
+.workspace-trusted and one agent-transcripts UUID transcript, each session
+file carrying a canary) in the case's own project directory, its defects,
+both layouts at once and per-case layouts, besides the hashed second
+directory; the clocked confirmation vendor approves project_scoped and
+leaves in-place or hashed residue. The new offline assertions are the exact
+bounded tree (each missing, extra, mistyped, linked or oversized entry, the
+UUID rules, both layouts, partial trees and unknown new entries), the
+approval baseline and its pre-launch and later rechecks, the full-tree
+ledger revalidation across three cases and both layouts, the metadata-only
+preflight and scanner hook (an open-counting view sees no session file
+opened, also on rejected, pre-existing and mixed trees), privacy (no canary,
+UUID or slug in any report or manifest), strict v1/v2 evidence and the
+cross-case report rules, the conditional parent-slug cap (only an observed
+hashed candidate, after cleanup), owner whole-directory cleanup, and capture
+parity. The new unit vectors are small, injected and in memory (no socket
+is created in a unit vector except the in-process qualify and capture
+worlds' own test-owned ones) and run in the unchanged
+`stress-packages-cpu` invocations. `BenchmarkMCPCaptureEvidence`'s
+in-memory `residue-check` cases become `residue-check-hashed`,
+`residue-check-in-place` and `residue-check-ledger`, each reporting the
+approval bytes inspected and zero session-file opens. A3 adds no file, so
+the whole-file coverage manifest is unchanged (every changed file is
+already listed). Stages, commands, selectors, counts, CPU lists, timeouts
+and the workflow's twenty jobs and four required checks are unchanged.
+
+Amendment A3.1 (r0.15) adds the metadata-only foreign baseline of
+pre-existing Cursor session artifacts, again without a new function parent
+(429 names, the same order). Its offline cases extend the same parents and
+labels: unchanged foreign trees (complete, partial, nested arbitrary names,
+empty reserved directories, stale sockets) surviving every case and
+capture with no session-content open; every change kind (size, mtime,
+mode, type, same-name inode replacement on the real filesystem, new
+artifact, new socket, new descendant, removal of a file, socket, subtree
+or whole project) at the next pre-scan, during an inventory and during the
+session, with the exact fixed reasons carried verbatim through approve,
+the pre-launch baseline and the residue check in capture and qualify; the
+per-case ownership refusals (full-slug path and possible 57-character
+hashed-candidate directory, including an adaptive later case); the entry,
+per-file and aggregate caps at the boundary and one over, the deadline and
+unstable views; scanner binding; and the owner runbook. The unit vectors
+are injected or use test-owned trees and sockets under a temporary home
+and run in the unchanged per-CPU `stress-packages-cpu` invocations;
+`BenchmarkMCPCaptureEvidence` adds `residue-check-foreign-baseline` and
+`residue-check-foreign-ledger`. A3.1 adds no file, so the whole-file
+coverage manifest is unchanged; no stage, command, selector, count, CPU
+list, timeout or workflow job changes.
+
 Cross-build matrix (FP-8; moved out of `tests/function` on 2026-10-02).
 `devcheck cross` is FP-8's proof. It builds callsheet, fake-adapter and the
 process-group test binary (`go test -c`) with `CGO_ENABLED=0` for

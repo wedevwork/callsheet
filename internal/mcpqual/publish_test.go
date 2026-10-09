@@ -108,6 +108,10 @@ var (
 )
 
 func TestMain(m *testing.M) {
+	// A socket-binding helper process (see bindSocketHelper): never a test run.
+	if name := os.Getenv(bindSocketEnv); name != "" {
+		os.Exit(bindSocketHere(name))
+	}
 	code := m.Run()
 	if sharedDir != "" {
 		os.RemoveAll(sharedDir)

@@ -968,25 +968,55 @@ func (c *CaptureClient) validateWorkerResidue(goos, goarch string) error {
 	case c.State == CaptureComplete && w.State != ResidueVerified:
 		return errors.New("worker_residue: a complete capture with unverified residue")
 	}
+	// A verified in-place entry's provenance (A3): this capture's
+	// project_scoped approval and its launched, cleanly reaped session.
+	reaped := c.Session.State == StageRan && c.Session.Cleanup != nil && c.Session.Cleanup.Error == nil && c.Session.Cleanup.GroupGone
+	for _, e := range w.Entries {
+		if w.State == ResidueVerified && e.Layout == ResidueLayoutInPlace && (c.Approval.Scope != ScopeProjectScoped || !reaped) {
+			return errors.New("worker_residue: an in_place entry without project_scoped approval and a cleanly reaped session")
+		}
+	}
 	return nil
 }
 
 // checkResidueRaw checks a present residue record's raw members: an
 // object (never null) with exactly its members, only reason nullable, and
-// every entry an object with exactly its members, none null.
+// every entry an object with exactly its policy version's members (v1, or
+// A3's v2 with approval_unchanged the only nullable member and every item
+// an object with exactly its members), none other null.
 func checkResidueRaw(raw json.RawMessage, where string) error {
 	if err := checkObjectRaw(raw, where, residueMembers, map[string]bool{"reason": true}); err != nil || raw == nil {
 		return err
 	}
 	var shape struct {
+		Policy  string            `json:"policy"`
 		Entries []json.RawMessage `json:"entries"`
 	}
 	if err := json.Unmarshal(raw, &shape); err != nil {
 		return fmt.Errorf("%s: %w", where, err)
 	}
+	members, nullable := residueEntryMembers, map[string]bool(nil)
+	if shape.Policy == WorkerResiduePolicyV2 {
+		members, nullable = residueEntryMembersV2, map[string]bool{"approval_unchanged": true}
+	}
 	for i, e := range shape.Entries {
-		if err := checkObjectRaw(e, fmt.Sprintf("%s.entries[%d]", where, i), residueEntryMembers, nil); err != nil {
+		at := fmt.Sprintf("%s.entries[%d]", where, i)
+		if err := checkObjectRaw(e, at, members, nullable); err != nil {
 			return err
+		}
+		if shape.Policy != WorkerResiduePolicyV2 {
+			continue
+		}
+		var items struct {
+			Items []json.RawMessage `json:"items"`
+		}
+		if err := json.Unmarshal(e, &items); err != nil {
+			return fmt.Errorf("%s: %w", at, err)
+		}
+		for j, it := range items.Items {
+			if err := checkObjectRaw(it, fmt.Sprintf("%s.items[%d]", at, j), residueItemMembers, nil); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

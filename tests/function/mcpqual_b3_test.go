@@ -4,13 +4,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -734,7 +738,9 @@ func TestMCPCursorQualifyPreparation(t *testing.T) {
 				r.Clock = c
 				r.Launcher = &enableLauncher{Launcher: r.Launcher, before: func(int) { c.mu.Lock(); c.skip = 121 * time.Second; c.mu.Unlock() }}
 			})
-			unverified(t, allCases(rep)[0], mcpqual.ReasonBudget)
+			// (A3.1: the projects walk after the enable is the first to observe
+			// the expiry and records its fixed reason.)
+			unverified(t, allCases(rep)[0], mcpqual.ReasonForeignDeadline)
 			if len(q.launchLog()["session"]) != 0 {
 				t.Fatal("a model launch after the case budget")
 			}
@@ -808,104 +814,472 @@ func residueSockets(t *testing.T, home string) []string {
 	return out
 }
 
-// FP-25: the fake vendor leaves a real test-owned worker socket in each
-// session; the run admits it into its ledger, the next case passes over it,
-// a new invocation refuses the leftovers until the owner removes them, and
-// every unsafe shape, replacement or bound fails closed; capture records its
-// own residue and the runbook describes owner cleanup only.
+// residueLayouts are a residue record's entries' layouts, in order.
+func residueLayouts(w mcpqual.WorkerResidue) []string {
+	var out []string
+	for _, e := range w.Entries {
+		out = append(out, e.Layout)
+	}
+	return out
+}
+
+// noSessionContent fails when anything under dir (a report or capture
+// output) carries a fake vendor's session canary or the clocked
+// transcript UUID (the normalized item names are expected).
+func noSessionContent(t *testing.T, dir string) {
+	t.Helper()
+	filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		b, _ := os.ReadFile(p)
+		for _, raw := range []string{"fakevendor-session-canary-5d1e", clockedResidueCanary, clockedUUID, foreignCanary, "home-owner-dev-flow", "old-sock", "old-empty"} {
+			if bytes.Contains(b, []byte(raw)) {
+				t.Fatalf("%s carries %q", p, raw)
+			}
+		}
+		return nil
+	})
+}
+
+// foreignCanary is in every foreign session file the tests plant; it must
+// never reach evidence or logs.
+const foreignCanary = "foreign-session-canary-3c9a"
+
+// ownerForeign plants an owner's unrelated Cursor project with a complete
+// session tree (nested transcript files of arbitrary names) and a stale
+// socket, a socket at a nonreserved name and an empty reserved directory,
+// as a real home has them (design decoder-enrollment A3.1); it returns the
+// project directory.
+func ownerForeign(t *testing.T, q *qualEnv) string {
+	t.Helper()
+	projects := filepath.Join(q.home, ".cursor", "projects")
+	dev := filepath.Join(projects, "home-owner-dev-flow")
+	for rel, data := range map[string]string{"worker.log": "dev " + foreignCanary + "\n", "repo.json": `{"id":"dev"}`, ".workspace-trusted": `{"note":"` + foreignCanary + `"}`,
+		"agent-transcripts/u1/u1.jsonl": foreignCanary, "agent-transcripts/u1/subagents/notes.txt": foreignCanary, "mcp-approvals.json": `["probe-bbbbbbbbbbbbbbbb"]`} {
+		p := filepath.Join(dev, filepath.FromSlash(rel))
+		mkdir(t, filepath.Dir(p))
+		if err := os.WriteFile(p, []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mkdir(t, filepath.Join(projects, "old-empty", "agent-transcripts"))
+	for _, p := range []string{filepath.Join(dev, "worker.sock"), filepath.Join(projects, "old-sock", "agent.sock")} {
+		if err := unixSocketAt(t, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dev
+}
+
+// foreignState is the planted foreign tree's metadata and file contents,
+// to prove it unchanged (no open by the harness is involved: the test reads
+// its own files).
+func foreignState(t *testing.T, home string) string {
+	t.Helper()
+	var b strings.Builder
+	projects := filepath.Join(home, ".cursor", "projects")
+	for _, top := range []string{"home-owner-dev-flow", "old-empty", "old-sock"} {
+		filepath.WalkDir(filepath.Join(projects, top), func(p string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			info, _ := os.Lstat(p)
+			fmt.Fprintf(&b, "%s %v %d %d", p, info.Mode(), info.Size(), info.ModTime().UnixNano())
+			if info.Mode().IsRegular() {
+				c, _ := os.ReadFile(p)
+				b.Write(c)
+			}
+			b.WriteByte('\n')
+			return nil
+		})
+	}
+	return b.String()
+}
+
+// runSlug is the slug prefix of every case project directory of a run
+// with output out (<out>/.work's slug and "-").
+func runSlug(out string) string {
+	return strings.ReplaceAll(strings.TrimPrefix(out, "/"), "/", "-") + "-work-"
+}
+
+// ownerCleanup is the owner's cleanup of a run's exact known leftover
+// directories under ~/.cursor/projects/<run-slug>… (its case project
+// directories and hashed residue), never a foreign one.
+func ownerCleanup(t *testing.T, home, out string) {
+	projects := filepath.Join(home, ".cursor", "projects")
+	es, _ := os.ReadDir(projects)
+	for _, e := range es {
+		if strings.HasPrefix(e.Name(), runSlug(out)) {
+			os.RemoveAll(filepath.Join(projects, e.Name()))
+		}
+	}
+}
+
+// FP-25 (as amended by A3 and A3.1): the fake vendor leaves real test-owned
+// session residue in either observed layout (the hashed second directory or
+// the in-place tree in the case's own project directory); the run admits it
+// into its ledger, the next cases pass over both forms and over unchanged
+// foreign session artifacts (an owner's unrelated project, stale sockets,
+// an earlier run's leftovers), a run's own case paths are refused before
+// the case's enable until the owner removes the exact known directories,
+// every unsafe shape, limit, replacement, changed approval or foreign change
+// fails closed with its reason, capture records its own residue, and no
+// session file's content or foreign name reaches evidence.
 func TestMCPCursorWorkerResidue(t *testing.T) {
 	t.Parallel()
 	runInventory(t, 6, []string{"attributed", "next-case", "pre-existing", "unsafe-shapes", "replacement-and-bounds", "capture-and-runbook"}, []captureCase{
 		{"attributed", func(t *testing.T) {
+			// hashed (k=2) and in_place, each in all three cases; observed
+			// selects in_place for this short workspace.
+			for _, mode := range []string{"attributed", "in_place", "observed"} {
+				q := newQualEnv(t)
+				ownerCursorProjects(t, q)
+				out := filepath.Join(b3Root(t), "out")
+				rep := qualifyCursor(t, q, cursorQualifyPlan(q, map[string]string{"RESIDUE": mode}, []int{1}), out, nil)
+				cases := allCases(rep)
+				if rep.Outcome != mcpqual.StatusConclusive || len(cases) != 3 {
+					t.Fatalf("%s: %s %d: %s", mode, rep.Outcome, len(cases), caseReasons(cases))
+				}
+				layout := map[string]string{"attributed": mcpqual.ResidueLayoutHashed, "in_place": mcpqual.ResidueLayoutInPlace, "observed": mcpqual.ResidueLayoutInPlace}[mode]
+				for i, cs := range cases {
+					verified(t, cs, mcpqual.ScopeProjectScoped)
+					es := cs.CursorPreparation.Residue.Entries
+					if len(es) != i+1 || es[i].CaseID != cs.CaseID || es[i].Path != "<home>/.cursor/projects/<case-residue-"+string(rune('1'+i))+">/worker.sock" ||
+						es[i].Layout != layout || cs.CursorPreparation.Residue.Policy != mcpqual.WorkerResiduePolicyV2 {
+						t.Fatalf("%s case %d residue %+v", mode, i, es)
+					}
+					if layout == mcpqual.ResidueLayoutInPlace && (len(es[i].Items) != 8 || es[i].ApprovalUnchanged == nil || !*es[i].ApprovalUnchanged) {
+						t.Fatalf("%s case %d items %+v", mode, i, es[i])
+					}
+				}
+				// The harness neither removed nor replaced anything; nothing of
+				// the session files is in the report.
+				if got := residueSockets(t, q.home); len(got) != 3 {
+					t.Fatalf("%s: sockets %v", mode, got)
+				}
+				noSessionContent(t, out)
+			}
+			// observed selects hashed for a long workspace whose P is still
+			// within the hashed cap (fixture control, not a production switch).
+			// The first case's hashed residue is admitted; at P=54 its name is
+			// also the second case's possible hashed-candidate directory
+			// (A3.1), so the second case is refused before its enable.
 			q := newQualEnv(t)
 			ownerCursorProjects(t, q)
-			rep := qualifyCursor(t, q, cursorQualifyPlan(q, map[string]string{"RESIDUE": "attributed"}, []int{1}), filepath.Join(b3Root(t), "out"), nil)
-			cases := allCases(rep)
-			if rep.Outcome != mcpqual.StatusConclusive || len(cases) != 3 {
-				t.Fatalf("%s %d: %s", rep.Outcome, len(cases), caseReasons(cases))
-			}
-			for i, cs := range cases {
-				verified(t, cs, mcpqual.ScopeProjectScoped)
-				es := cs.CursorPreparation.Residue.Entries
-				if len(es) != i+1 || es[i].CaseID != cs.CaseID || es[i].Path != "<home>/.cursor/projects/<case-residue-"+string(rune('1'+i))+">/worker.sock" {
-					t.Fatalf("case %d residue %+v", i, es)
-				}
-			}
-			// The harness neither removed nor replaced the sockets.
-			if got := residueSockets(t, q.home); len(got) != 3 {
-				t.Fatalf("sockets %v", got)
+			root := b3Root(t)
+			out := filepath.Join(root, strings.Repeat("o", 54-len(strings.ReplaceAll(strings.TrimPrefix(root, "/"), "/", "-"))-len("--work")))
+			rep := qualifyCursor(t, q, cursorQualifyPlan(q, map[string]string{"RESIDUE": "observed"}, []int{1}), out, nil)
+			if cases := allCases(rep); len(cases) != 2 || !slices.Equal(residueLayouts(cases[0].CursorPreparation.Residue), []string{mcpqual.ResidueLayoutHashed}) ||
+				deref(cases[1].Reason) != mcpqual.ReasonHashedCandidateExists || len(q.launchLog()["enable"]) != 1 {
+				t.Fatalf("long workspace: %s %s", rep.Outcome, caseReasons(cases))
 			}
 		}},
 		{"next-case", func(t *testing.T) {
-			// The other observed truncation (the case basename cut after its
-			// hyphen): the second and third cases' inventories pass over the
-			// earlier sockets.
-			q := newQualEnv(t)
-			ownerCursorProjects(t, q)
-			rep := qualifyCursor(t, q, cursorQualifyPlan(q, map[string]string{"RESIDUE": "attributed", "RESIDUE_K": "7"}, []int{1}), filepath.Join(b3Root(t), "out"), nil)
-			for _, cs := range allCases(rep)[1:] {
-				verified(t, cs, mcpqual.ScopeProjectScoped)
-				if !cs.CursorPreparation.Approval.InventoryComplete {
-					t.Fatalf("case %s inventory", cs.CaseID)
+			// All three case workspaces and both ledger forms: each later
+			// case's inventories pass over the earlier entries of either
+			// layout; the other observed truncation (k=7) too.
+			for _, tc := range []struct {
+				settings map[string]string
+				want     []string
+			}{
+				{map[string]string{"RESIDUE": "cursor-setup=in_place,cursor-default-1=hashed,cursor-default-repeat=in_place"},
+					[]string{mcpqual.ResidueLayoutInPlace, mcpqual.ResidueLayoutHashed, mcpqual.ResidueLayoutInPlace}},
+				{map[string]string{"RESIDUE": "cursor-setup=hashed,cursor-default-1=in_place,cursor-default-repeat=hashed", "RESIDUE_K": "7"},
+					[]string{mcpqual.ResidueLayoutHashed, mcpqual.ResidueLayoutInPlace, mcpqual.ResidueLayoutHashed}},
+				{map[string]string{"RESIDUE": "cursor-default-1=in_place"}, []string{mcpqual.ResidueLayoutInPlace}},
+			} {
+				q := newQualEnv(t)
+				ownerCursorProjects(t, q)
+				// A3.1: stable foreign trees across all three cases.
+				ownerForeign(t, q)
+				before := foreignState(t, q.home)
+				out := filepath.Join(b3Root(t), "out")
+				rep := qualifyCursor(t, q, cursorQualifyPlan(q, tc.settings, []int{1}), out, nil)
+				cases := allCases(rep)
+				if rep.Outcome != mcpqual.StatusConclusive || len(cases) != 3 {
+					t.Fatalf("%v: %s", tc.settings, caseReasons(cases))
+				}
+				if foreignState(t, q.home) != before {
+					t.Fatalf("%v: the foreign trees changed", tc.settings)
+				}
+				noSessionContent(t, out)
+				for _, cs := range cases[1:] {
+					verified(t, cs, mcpqual.ScopeProjectScoped)
+					if !cs.CursorPreparation.Approval.InventoryComplete {
+						t.Fatalf("case %s inventory", cs.CaseID)
+					}
+				}
+				if got := residueLayouts(cases[2].CursorPreparation.Residue); !slices.Equal(got, tc.want) {
+					t.Fatalf("%v: layouts %v", tc.settings, got)
 				}
 			}
 		}},
 		{"pre-existing", func(t *testing.T) {
+			// A3.1: unchanged foreign session artifacts (an owner's unrelated
+			// project, stale sockets, an earlier run's leftovers at other
+			// paths) are tolerated; this run's own case paths are refused
+			// before the case's enable until the owner removes the exact known
+			// run directories.
+			for _, mode := range []string{"attributed", "in_place"} {
+				q := newQualEnv(t)
+				ownerCursorProjects(t, q)
+				ownerForeign(t, q)
+				before := foreignState(t, q.home)
+				out := filepath.Join(b3Root(t), "out")
+				// again is the same output path for a fresh invocation (its old
+				// evidence moved aside: qualify never mixes runs), so the case
+				// workspaces keep their paths and project slugs.
+				again := func() string {
+					if err := os.Rename(out, out+fmt.Sprintf(".%d", time.Now().UnixNano())); err != nil {
+						t.Fatal(err)
+					}
+					return out
+				}
+				plan := cursorQualifyPlan(q, map[string]string{"RESIDUE": mode}, []int{1})
+				if rep := qualifyCursor(t, q, plan, out, nil); rep.Outcome != mcpqual.StatusConclusive {
+					t.Fatalf("%s with foreign artifacts: %s", mode, caseReasons(allCases(rep)))
+				}
+				// A fresh output path: the earlier run's unchanged leftovers are
+				// foreign now and tolerated.
+				if rep := qualifyCursor(t, q, cursorQualifyPlan(q, nil, []int{1}), filepath.Join(b3Root(t), "out"), nil); rep.Outcome != mcpqual.StatusConclusive {
+					t.Fatalf("%s leftovers elsewhere: %s", mode, caseReasons(allCases(rep)))
+				}
+				// The same output path: the first case's own project directory
+				// exists, refused before its enable.
+				enables := len(q.launchLog()["enable"])
+				rep := qualifyCursor(t, q, plan, again(), nil)
+				if cs := allCases(rep); len(cs) != 1 || deref(cs[0].Reason) != mcpqual.ReasonCaseProjectExists || len(q.launchLog()["enable"]) != enables {
+					t.Fatalf("%s own path: %s", mode, caseReasons(cs))
+				}
+				// The owner removes the exact known run directories (never a
+				// foreign one); the same path passes again.
+				ownerCleanup(t, q.home, out)
+				if rep := qualifyCursor(t, q, cursorQualifyPlan(q, nil, []int{1}), again(), nil); rep.Outcome != mcpqual.StatusConclusive {
+					t.Fatalf("%s after owner cleanup: %s", mode, caseReasons(allCases(rep)))
+				}
+				if foreignState(t, q.home) != before {
+					t.Fatalf("%s: the foreign artifacts changed", mode)
+				}
+			}
+			// A possible hashed-candidate directory of the first case (its slug
+			// has at least 57 characters): refused before any enable.
 			q := newQualEnv(t)
 			ownerCursorProjects(t, q)
-			plan := cursorQualifyPlan(q, map[string]string{"RESIDUE": "attributed"}, []int{1})
-			qualifyCursor(t, q, plan, filepath.Join(b3Root(t), "out"), nil)
-			left := residueSockets(t, q.home)
-			// A fresh invocation fails closed before any enable.
-			enables := len(q.launchLog()["enable"])
-			rep := qualifyCursor(t, q, plan, filepath.Join(b3Root(t), "out"), nil)
-			unverified(t, allCases(rep)[0], "special file")
-			if len(q.launchLog()["enable"]) != enables {
-				t.Fatal("an enable after the refused pre-scan")
+			root := b3Root(t)
+			out := filepath.Join(root, strings.Repeat("o", 54-len(strings.ReplaceAll(strings.TrimPrefix(root, "/"), "/", "-"))-len("--work")))
+			slug := runSlug(out) + "cursor-setup"
+			mkdir(t, filepath.Join(q.home, ".cursor", "projects", slug[:57]+"-0123abc"))
+			rep := qualifyCursor(t, q, cursorQualifyPlan(q, nil, []int{1}), out, nil)
+			if cs := allCases(rep); len(cs) != 1 || deref(cs[0].Reason) != mcpqual.ReasonHashedCandidateExists || len(q.launchLog()["enable"]) != 0 {
+				t.Fatalf("hashed candidate: %s", caseReasons(cs))
 			}
-			// The owner removes exactly the known residue (Cursor stopped);
-			// the next invocation passes.
-			for _, s := range left {
-				os.RemoveAll(filepath.Dir(s))
+			// An adaptive later case: its full-slug directory, with session
+			// files, existed before the run and was recorded in the first case's
+			// baseline; it is refused at its own preflight, before its enable.
+			q = newQualEnv(t)
+			ownerCursorProjects(t, q)
+			out = filepath.Join(b3Root(t), "out")
+			later := filepath.Join(q.home, ".cursor", "projects", runSlug(out)+"cursor-default-1")
+			mkdir(t, later)
+			os.WriteFile(filepath.Join(later, "worker.log"), []byte(foreignCanary), 0o600)
+			rep = qualifyCursor(t, q, cursorQualifyPlan(q, nil, []int{1}), out, nil)
+			if cs := allCases(rep); len(cs) != 2 || cs[0].CursorPreparation.State != mcpqual.PreparationVerified ||
+				deref(cs[1].Reason) != mcpqual.ReasonCaseProjectExists || len(q.launchLog()["enable"]) != 1 {
+				t.Fatalf("adaptive later case: %s", caseReasons(cs))
 			}
-			rep = qualifyCursor(t, q, cursorQualifyPlan(q, nil, []int{1}), filepath.Join(b3Root(t), "out"), nil)
-			if rep.Outcome != mcpqual.StatusConclusive {
-				t.Fatalf("after owner cleanup: %s", rep.Outcome)
+			// An approval-only directory of this workspace path, before any
+			// session: refused before the enable.
+			q = newQualEnv(t)
+			ownerCursorProjects(t, q)
+			out = filepath.Join(b3Root(t), "out")
+			mkdir(t, filepath.Join(q.home, ".cursor", "projects", runSlug(out)+"cursor-setup"))
+			os.WriteFile(filepath.Join(q.home, ".cursor", "projects", runSlug(out)+"cursor-setup", "mcp-approvals.json"), []byte(`["probe-6e58c4b6c129cbd0"]`), 0o600)
+			rep = qualifyCursor(t, q, cursorQualifyPlan(q, nil, []int{1}), out, nil)
+			if cs := allCases(rep); deref(cs[0].Reason) != mcpqual.ReasonCaseProjectExists || len(q.launchLog()["enable"]) != 0 {
+				t.Fatalf("approval-only: %s", caseReasons(cs))
 			}
 		}},
 		{"unsafe-shapes", func(t *testing.T) {
-			for _, mode := range []string{"full", "regular", "extra", "two"} {
+			vectors := map[string]string{
+				// (A3.1 takes precedence: a new directory that is not the hashed
+				// shape, with a socket, is a new foreign artifact.)
+				"full": "attributed hashed name", "regular": "not a hashed", "extra": mcpqual.ReasonForeignNew, "two": "more than one",
+				"in_place-missing": "not the exact in-place layout", "in_place-extra": "not the exact in-place layout", "in_place-uuid": "not the exact in-place layout",
+				"in_place-link": "not the exact in-place layout", "in_place-fifo": "not the exact in-place layout", "in_place-partial": "not the exact in-place layout",
+				"mixed": "both residue layouts",
+			}
+			if len(vectors) != 11 {
+				t.Fatalf("the unsafe-shape inventory has %d vectors", len(vectors))
+			}
+			ran := 0
+			for mode, want := range vectors {
 				q := newQualEnv(t)
 				ownerCursorProjects(t, q)
-				rep := qualifyCursor(t, q, cursorQualifyPlan(q, map[string]string{"RESIDUE": mode}, []int{1}), filepath.Join(b3Root(t), "out"), nil)
+				out := filepath.Join(b3Root(t), "out")
+				rep := qualifyCursor(t, q, cursorQualifyPlan(q, map[string]string{"RESIDUE": mode}, []int{1}), out, nil)
 				cases := allCases(rep)
-				unverified(t, cases[0], "worker residue")
-				if len(cases) != 1 || len(q.launchLog()["session"]) != 1 || cases[0].CursorPreparation.Residue.State != mcpqual.ResidueUnverified {
-					t.Fatalf("%s: %+v", mode, cases)
+				unverified(t, cases[0], want)
+				if strings.HasPrefix(want, mcpqual.ReasonCursorScopeUnverified) && deref(cases[0].Reason) != want {
+					t.Fatalf("%s: %q, want exactly %q", mode, deref(cases[0].Reason), want)
+				}
+				if len(cases) != 1 || len(q.launchLog()["session"]) != 1 || cases[0].CursorPreparation.Residue.State != mcpqual.ResidueUnverified ||
+					!strings.Contains(deref(cases[0].Reason), want) || len(cases[0].CursorPreparation.Residue.Entries) != 0 {
+					t.Fatalf("%s: %s", mode, caseReasons(cases))
+				}
+				noSessionContent(t, out)
+				ran++
+			}
+			if ran != len(vectors) {
+				t.Fatalf("ran %d of %d", ran, len(vectors))
+			}
+			// A3.1: forbidden foreign types in the initial view (never followed
+			// or opened): no baseline, refused before any enable.
+			foreign := map[string]func(dev string){
+				"foreign-fifo-reserved": func(dev string) { syscall.Mkfifo(filepath.Join(dev, "agent-transcripts", "u1", "pipe"), 0o600) },
+				"foreign-fifo":          func(dev string) { syscall.Mkfifo(filepath.Join(dev, "pipe"), 0o600) },
+				"foreign-link": func(dev string) {
+					os.Remove(filepath.Join(dev, "repo.json"))
+					os.Symlink("worker.log", filepath.Join(dev, "repo.json"))
+				},
+			}
+			if len(foreign) != 3 {
+				t.Fatal("the foreign-type inventory")
+			}
+			for name, plant := range foreign {
+				q := newQualEnv(t)
+				ownerCursorProjects(t, q)
+				plant(ownerForeign(t, q))
+				rep := qualifyCursor(t, q, cursorQualifyPlan(q, nil, []int{1}), filepath.Join(b3Root(t), "out"), nil)
+				if cs := allCases(rep); len(cs) != 1 || deref(cs[0].Reason) != mcpqual.ReasonForeignUnverifiable || len(q.launchLog()["enable"]) != 0 {
+					t.Fatalf("%s: %s", name, caseReasons(cs))
 				}
 			}
 		}},
 		{"replacement-and-bounds", func(t *testing.T) {
-			// The first case's admitted socket replaced by a regular file
-			// before the second case's enable: the ledger revalidation fails
-			// closed.
+			// The first case's admitted residue changed before the second
+			// case's enable (the hashed socket replaced by a regular file; the
+			// in-place log grown; the in-place approval rewritten with the same
+			// size): the ledger revalidation fails closed.
+			for name, tc := range map[string]struct {
+				mode   string
+				change func(home string)
+			}{
+				"hashed-replaced": {"attributed", func(home string) {
+					for _, s := range residueSockets(t, home) {
+						os.Remove(s)
+						os.WriteFile(s, nil, 0o600)
+					}
+				}},
+				"log-grew": {"in_place", func(home string) {
+					for _, s := range residueSockets(t, home) {
+						appendFile(t, filepath.Join(filepath.Dir(s), "worker.log"), "more\n")
+					}
+				}},
+				"approval-changed": {"in_place", func(home string) {
+					for _, s := range residueSockets(t, home) {
+						os.WriteFile(filepath.Join(filepath.Dir(s), "mcp-approvals.json"), []byte(`["probe-6e58c4b6c129cbd1"]`), 0o600)
+					}
+				}},
+			} {
+				q := newQualEnv(t)
+				ownerCursorProjects(t, q)
+				rep := qualifyCursor(t, q, cursorQualifyPlan(q, map[string]string{"RESIDUE": tc.mode}, []int{1}), filepath.Join(b3Root(t), "out"), func(r *mcpqual.Runner) {
+					r.Launcher = &enableLauncher{Launcher: r.Launcher, before: func(n int) {
+						if n == 2 {
+							tc.change(q.home)
+						}
+					}}
+				})
+				cases := allCases(rep)
+				if len(cases) != 2 || cases[0].CursorPreparation.State != mcpqual.PreparationVerified || cases[1].CursorPreparation.State == mcpqual.PreparationVerified ||
+					cases[1].Outcome == mcpqual.KindToolResult {
+					t.Fatalf("%s: %s", name, caseReasons(cases))
+				}
+			}
+			// A3.1: every kind of foreign change before the second case's
+			// enable is refused at that enable's inventory, with its exact
+			// reason: no further session, nothing foreign in evidence.
+			mutations := map[string]struct {
+				change func(home, dev string)
+				want   string
+			}{
+				"size": {func(_, dev string) { appendFile(t, filepath.Join(dev, "worker.log"), "more\n") }, mcpqual.ReasonForeignChanged},
+				"mtime": {func(_, dev string) {
+					os.Chtimes(filepath.Join(dev, "worker.log"), time.Now().Add(time.Hour), time.Now().Add(time.Hour))
+				}, mcpqual.ReasonForeignChanged},
+				"mode": {func(_, dev string) { os.Chmod(filepath.Join(dev, "repo.json"), 0o644) }, mcpqual.ReasonForeignChanged},
+				"inode": {func(_, dev string) {
+					p := filepath.Join(dev, ".workspace-trusted")
+					info, _ := os.Lstat(p)
+					c, _ := os.ReadFile(p)
+					os.WriteFile(p+".new", c, 0o600)
+					os.Chtimes(p+".new", info.ModTime(), info.ModTime())
+					os.Rename(p+".new", p)
+				}, mcpqual.ReasonForeignChanged},
+				"socket-to-fifo": {func(_, dev string) {
+					os.Remove(filepath.Join(dev, "worker.sock"))
+					syscall.Mkfifo(filepath.Join(dev, "worker.sock"), 0o600)
+				}, mcpqual.ReasonForeignChanged},
+				"new-reserved": {func(home, _ string) {
+					p := filepath.Join(home, ".cursor", "projects", "new-project", "worker.log")
+					mkdir(t, filepath.Dir(p))
+					os.WriteFile(p, []byte("x"), 0o600)
+				}, mcpqual.ReasonForeignNew},
+				"new-socket": {func(home, _ string) {
+					if err := unixSocketAt(t, filepath.Join(home, ".cursor", "projects", "old-sock", "new.sock")); err != nil {
+						t.Error(err)
+					}
+				}, mcpqual.ReasonForeignNew},
+				"new-descendant": {func(_, dev string) {
+					os.WriteFile(filepath.Join(dev, "agent-transcripts", "u1", "u2.jsonl"), []byte("x"), 0o600)
+				}, mcpqual.ReasonForeignNew},
+				"removed-file":    {func(_, dev string) { os.Remove(filepath.Join(dev, "repo.json")) }, mcpqual.ReasonForeignRemoved},
+				"removed-socket":  {func(home, _ string) { os.Remove(filepath.Join(home, ".cursor", "projects", "old-sock", "agent.sock")) }, mcpqual.ReasonForeignRemoved},
+				"removed-subtree": {func(_, dev string) { os.RemoveAll(filepath.Join(dev, "agent-transcripts")) }, mcpqual.ReasonForeignRemoved},
+				"removed-project": {func(_, dev string) { os.RemoveAll(dev) }, mcpqual.ReasonForeignRemoved},
+			}
+			if len(mutations) != 12 {
+				t.Fatalf("the foreign mutation inventory has %d vectors", len(mutations))
+			}
+			for name, tc := range mutations {
+				q := newQualEnv(t)
+				ownerCursorProjects(t, q)
+				dev := ownerForeign(t, q)
+				out := filepath.Join(b3Root(t), "out")
+				rep := qualifyCursor(t, q, cursorQualifyPlan(q, map[string]string{"RESIDUE": "in_place"}, []int{1}), out, func(r *mcpqual.Runner) {
+					r.Launcher = &enableLauncher{Launcher: r.Launcher, before: func(n int) {
+						if n == 2 {
+							tc.change(q.home, dev)
+						}
+					}}
+				})
+				cases := allCases(rep)
+				if len(cases) != 2 || cases[0].CursorPreparation.State != mcpqual.PreparationVerified || deref(cases[1].Reason) != tc.want ||
+					deref(cases[1].CursorPreparation.Approval.Reason) != tc.want || len(q.launchLog()["session"]) != 1 {
+					t.Fatalf("foreign %s: %s", name, caseReasons(cases))
+				}
+				noSessionContent(t, out)
+			}
+			// The foreign walk's caps: a large foreign tree over the entry cap
+			// is refused before any enable.
 			q := newQualEnv(t)
 			ownerCursorProjects(t, q)
-			rep := qualifyCursor(t, q, cursorQualifyPlan(q, map[string]string{"RESIDUE": "attributed"}, []int{1}), filepath.Join(b3Root(t), "out"), func(r *mcpqual.Runner) {
-				r.Launcher = &enableLauncher{Launcher: r.Launcher, before: func(n int) {
-					if n == 2 {
-						for _, s := range residueSockets(t, q.home) {
-							os.Remove(s)
-							os.WriteFile(s, nil, 0o600)
-						}
-					}
-				}}
-			})
-			cases := allCases(rep)
-			if len(cases) != 2 || cases[0].CursorPreparation.State != mcpqual.PreparationVerified || cases[1].CursorPreparation.State == mcpqual.PreparationVerified ||
-				cases[1].Outcome == mcpqual.KindToolResult {
-				t.Fatalf("replacement: %+v", cases)
+			dev := ownerForeign(t, q)
+			for i := 0; i < 30; i++ {
+				os.WriteFile(filepath.Join(dev, "agent-transcripts", "u1", fmt.Sprintf("t%02d.jsonl", i)), []byte("x"), 0o600)
 			}
+			rep := qualifyCursor(t, q, cursorQualifyPlan(q, nil, []int{1}), filepath.Join(b3Root(t), "out"), func(r *mcpqual.Runner) {
+				r.ApprovalLimits = mcpqual.ApprovalScanLimits{Entries: 40}
+			})
+			if cs := allCases(rep); deref(cs[0].Reason) != mcpqual.ReasonForeignLimit || len(q.launchLog()["enable"]) != 0 {
+				t.Fatalf("foreign cap: %s", caseReasons(cs))
+			}
+			// The in-place per-file limit: a log over 1 MiB fails closed.
+			q = newQualEnv(t)
+			ownerCursorProjects(t, q)
+			rep = qualifyCursor(t, q, cursorQualifyPlan(q, map[string]string{"RESIDUE": "in_place-big"}, []int{1}), filepath.Join(b3Root(t), "out"), nil)
+			unverified(t, allCases(rep)[0], "not the exact in-place layout")
 			// The bounded inventories: a cap reached fails closed before any
 			// enable (never sampled or enlarged).
 			q = newQualEnv(t)
@@ -919,31 +1293,85 @@ func TestMCPCursorWorkerResidue(t *testing.T) {
 			}
 		}},
 		{"capture-and-runbook", func(t *testing.T) {
+			// Capture parity: both layouts recorded for capture's one case,
+			// with an owner's unchanged foreign artifacts tolerated and never
+			// named in the bundle or the log.
+			for _, mode := range []string{"attributed", "in_place"} {
+				q := newQualEnv(t)
+				ownerCursorProjects(t, q)
+				ownerForeign(t, q)
+				before := foreignState(t, q.home)
+				out := filepath.Join(b3Root(t), "out")
+				var log bytes.Buffer
+				m := inProcessRun(t, q, cursorPermissionPlan(q, map[string]string{"FORMAT": "cursor-real", "ENABLE": "permission-check,project", "RESIDUE": mode}), out,
+					func(c *mcpqual.CaptureRunner) { c.Log = &log })
+				c := captureClient(t, m, "cursor")
+				w := c.WorkerResidue
+				layout := map[string]string{"attributed": mcpqual.ResidueLayoutHashed, "in_place": mcpqual.ResidueLayoutInPlace}[mode]
+				if m.State != mcpqual.CaptureComplete || w == nil || w.State != mcpqual.ResidueVerified || len(w.Entries) != 1 || w.Entries[0].CaseID != "cursor-capture-setup" ||
+					w.Entries[0].Layout != layout {
+					t.Fatalf("%s: capture residue %s %+v", mode, m.State, w)
+				}
+				noSessionContent(t, out)
+				if strings.Contains(log.String(), "home-owner-dev-flow") || strings.Contains(log.String(), foreignCanary) {
+					t.Fatalf("%s: a foreign name in the log", mode)
+				}
+				// A later independent capture elsewhere tolerates the unchanged
+				// leftovers; at the same workspace path its own project directory
+				// is refused before the enable, until the owner removes the exact
+				// known run directories (for in_place, the case's whole project
+				// directory).
+				if m := inProcessRun(t, q, cursorPermissionPlan(q, map[string]string{"FORMAT": "cursor-real", "ENABLE": "permission-check,project"}),
+					filepath.Join(b3Root(t), "out"), nil); m.State != mcpqual.CaptureComplete {
+					t.Fatalf("%s leftovers elsewhere: %s %q", mode, m.State, deref(captureClient(t, m, "cursor").Reason))
+				}
+				os.Rename(out, out+".old")
+				m = inProcessRun(t, q, cursorPermissionPlan(q, map[string]string{"FORMAT": "cursor-real", "ENABLE": "permission-check,project"}), out, nil)
+				if c := captureClient(t, m, "cursor"); m.State == mcpqual.CaptureComplete || deref(c.Reason) != mcpqual.ReasonCaseProjectExists {
+					t.Fatalf("%s own path: %s %q", mode, m.State, deref(c.Reason))
+				}
+				os.Rename(out, out+".older")
+				ownerCleanup(t, q.home, out)
+				if m := inProcessRun(t, q, cursorPermissionPlan(q, map[string]string{"FORMAT": "cursor-real", "ENABLE": "permission-check,project"}), out, nil); m.State != mcpqual.CaptureComplete {
+					t.Fatalf("%s after owner cleanup: %s %q", mode, m.State, deref(captureClient(t, m, "cursor").Reason))
+				}
+				if foreignState(t, q.home) != before {
+					t.Fatalf("%s: the foreign artifacts changed", mode)
+				}
+			}
+			// A foreign change during capture's enable: its fixed reason.
 			q := newQualEnv(t)
 			ownerCursorProjects(t, q)
-			m := inProcessRun(t, q, cursorPermissionPlan(q, map[string]string{"FORMAT": "cursor-real", "ENABLE": "permission-check,project", "RESIDUE": "attributed"}),
-				filepath.Join(realTemp(t), "out"), nil)
-			c := captureClient(t, m, "cursor")
-			w := c.WorkerResidue
-			if m.State != mcpqual.CaptureComplete || w == nil || w.State != mcpqual.ResidueVerified || len(w.Entries) != 1 || w.Entries[0].CaseID != "cursor-capture-setup" {
-				t.Fatalf("capture residue %s %+v", m.State, w)
+			dev := ownerForeign(t, q)
+			out := filepath.Join(b3Root(t), "out")
+			m := inProcessRun(t, q, cursorPermissionPlan(q, map[string]string{"FORMAT": "cursor-real", "ENABLE": "permission-check,project", "RESIDUE": "in_place"}), out,
+				func(c *mcpqual.CaptureRunner) {
+					c.Launcher = &enableLauncher{Launcher: c.Launcher, before: func(int) { appendFile(t, filepath.Join(dev, "worker.log"), "more\n") }}
+				})
+			if c := captureClient(t, m, "cursor"); m.State == mcpqual.CaptureComplete || deref(c.Reason) != mcpqual.ReasonForeignChanged ||
+				deref(c.Approval.Reason) != mcpqual.ReasonForeignChanged || len(c.Approval.Changes) != 0 {
+				t.Fatalf("capture foreign change: %s %q %+v", m.State, deref(c.Reason), c.Approval)
 			}
-			// A later independent capture refuses the leftover before any
-			// enable.
-			m = inProcessRun(t, q, cursorPermissionPlan(q, map[string]string{"FORMAT": "cursor-real", "ENABLE": "permission-check,project"}), filepath.Join(realTemp(t), "out"), nil)
-			if c := captureClient(t, m, "cursor"); m.State == mcpqual.CaptureComplete || !strings.Contains(deref(c.Reason), "special file") {
-				t.Fatalf("leftover: %s %q", m.State, deref(c.Reason))
-			}
-			q = newQualEnv(t)
-			ownerCursorProjects(t, q)
-			m = inProcessRun(t, q, cursorPermissionPlan(q, map[string]string{"FORMAT": "cursor-real", "ENABLE": "permission-check,project", "RESIDUE": "regular"}),
-				filepath.Join(realTemp(t), "out"), nil)
-			if c := captureClient(t, m, "cursor"); m.State == mcpqual.CaptureComplete || c.WorkerResidue == nil || c.WorkerResidue.State != mcpqual.ResidueUnverified {
-				t.Fatalf("unsafe capture residue: %s %+v", m.State, c.WorkerResidue)
+			noSessionContent(t, out)
+			for _, mode := range []string{"regular", "in_place-extra", "mixed"} {
+				q := newQualEnv(t)
+				ownerCursorProjects(t, q)
+				m := inProcessRun(t, q, cursorPermissionPlan(q, map[string]string{"FORMAT": "cursor-real", "ENABLE": "permission-check,project", "RESIDUE": mode}),
+					filepath.Join(b3Root(t), "out"), nil)
+				if c := captureClient(t, m, "cursor"); m.State == mcpqual.CaptureComplete || c.WorkerResidue == nil || c.WorkerResidue.State != mcpqual.ResidueUnverified {
+					t.Fatalf("unsafe capture residue %s: %s %+v", mode, m.State, c.WorkerResidue)
+				}
 			}
 			guide := string(repoFile(t, mcpqual.SetupDocPath))
-			for _, w := range []string{"in-memory ledger", "never opened, connected to, followed or deleted", "with Cursor stopped, inspect it and remove only the known residue directories yourself",
-				"there is no automated or wildcard cleanup command", "The initial pre-scan is strict; only the same run's ledger entries are ever exempt"} {
+			for _, w := range []string{"in-memory ledger", "never opened, connected to, followed or deleted",
+				"there is no automated or wildcard cleanup command", "Only the same run's ledger entries and unchanged baseline entries are ever passed over",
+				"stop interactive Cursor, every Cursor-backed flow role and their workers", "stop a live worker rather than merely unlinking its socket",
+				"remove yourself the exact known leftover run directories under `~/.cursor/projects/<run-slug>…`",
+				"remove the entire case-specific full-slug project directory `~/.cursor/projects/<S>`", "removing only `worker.sock` leaves a pre-existing approval directory",
+				"Unrelated projects' session files and stale sockets may stay as long as they are unchanged",
+				"there is no requirement to remove your unrelated dev-flow project directory",
+				"their contents are never read, hashed or exported", "The harness never runs this deletion, even after a failure",
+				"Never delete the projects root, another project's directory or directories found by a wildcard"} {
 				if !strings.Contains(guide, w) {
 					t.Fatalf("the guide lacks %q", w)
 				}
@@ -962,6 +1390,15 @@ func TestMCPCursorWorkerResidue(t *testing.T) {
 func realQualifyCursor(t *testing.T, settings map[string]string, goos string, mutate func(c map[string]any)) (*mcpqual.Report, string, error) {
 	t.Helper()
 	q := newQualEnv(t)
+	if settings["ENABLE"] == "project" {
+		// An owner's projects directory exists (creating it is outside change).
+		ownerCursorProjects(t, q)
+	}
+	if settings["FOREIGN"] != "" {
+		// A3.1: an owner's unrelated session artifacts (FOREIGN is the test's
+		// own setting; the vendor ignores it).
+		ownerForeign(t, q)
+	}
 	const exe = "/fake/cursor"
 	env := map[string]string{"FAKE_VENDOR_FORMAT": "cursor-real", "FAKE_VENDOR_VERSION": mcpqual.CursorRealVersion, "FAKE_VENDOR_CLIENT_NAME": "Cursor", "FAKE_VENDOR_CLIENT_VERSION": "1.0.0"}
 	for k, v := range settings {
@@ -999,6 +1436,106 @@ func realQualifyCursor(t *testing.T, settings map[string]string, goos string, mu
 	return rep, out, nil
 }
 
+// clockedHome is a launch's HOME and the slug of its working directory (the
+// fake vendor's own transformation).
+func clockedHome(spec mcpqual.ProcSpec) (home, slug string) {
+	for _, kv := range spec.Env {
+		if v, ok := strings.CutPrefix(kv, "HOME="); ok {
+			home = v
+		}
+	}
+	return home, strings.ReplaceAll(strings.ReplaceAll(strings.TrimPrefix(spec.Dir, "/"), "/.work/", "/work/"), "/", "-")
+}
+
+// clockedApproval is the project approval the clocked enable writes.
+const clockedApproval = `["probe-6e58c4b6c129cbd0"]`
+
+// clockedProjectApproval is the clocked Cursor's project_scoped enable:
+// the case's project directory under the fixture HOME holding exactly
+// mcp-approvals.json (design decoder-enrollment A3).
+func clockedProjectApproval(spec mcpqual.ProcSpec) error {
+	home, slug := clockedHome(spec)
+	dir := filepath.Join(home, ".cursor", "projects", slug)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "mcp-approvals.json"), []byte(clockedApproval), 0o600)
+}
+
+// clockedResidueCanary is in every clocked session file and clockedUUID
+// names its transcript; neither ever reaches evidence.
+const (
+	clockedResidueCanary = "clocked-session-canary-81b2"
+	clockedUUID          = "19c97a6a-2baa-4f62-b4b3-60d320442115"
+)
+
+// clockedResidue is the clocked Cursor's session residue (design
+// decoder-enrollment A3): "in_place" (the exact tree in the case's own
+// project directory), "hashed" (a k=2 truncated second directory holding
+// only worker.sock), "mixed" (both), "partial" (socket and log only),
+// "approval" (in_place, then the approval rewritten with the same size),
+// "foreign" (in_place, and the owner's planted foreign worker.log grown:
+// A3.1) or "" (none). The sockets are test-owned and held by no process.
+func clockedResidue(t *testing.T, spec mcpqual.ProcSpec, mode string) error {
+	if mode == "" {
+		return nil
+	}
+	home, slug := clockedHome(spec)
+	projects := filepath.Join(home, ".cursor", "projects")
+	if mode == "foreign" {
+		f, err := os.OpenFile(filepath.Join(projects, "home-owner-dev-flow", "worker.log"), os.O_APPEND|os.O_WRONLY, 0)
+		if err != nil {
+			return err
+		}
+		f.WriteString("grown\n")
+		f.Close()
+		mode = "in_place"
+	}
+	if mode == "hashed" || mode == "mixed" {
+		base := filepath.Base(spec.Dir)
+		if err := unixSocketAt(t, filepath.Join(projects, strings.TrimSuffix(slug, base)+base[:2]+"-"+sha([]byte(slug))[:7], "worker.sock")); err != nil {
+			return err
+		}
+	}
+	if mode == "hashed" {
+		return nil
+	}
+	dir := filepath.Join(projects, slug)
+	uuid := clockedUUID
+	files := map[string]string{"worker.log": "[info] runServer " + clockedResidueCanary + "\n"}
+	if mode != "partial" {
+		files["repo.json"] = `{"id": "` + uuid + `"}`
+		files[".workspace-trusted"] = `{"workspacePath": "` + spec.Dir + `", "note": "` + clockedResidueCanary + `"}`
+		files[filepath.Join("agent-transcripts", uuid, uuid+".jsonl")] = `{"message":"` + clockedResidueCanary + `"}` + "\n"
+	}
+	if mode == "approval" {
+		files["mcp-approvals.json"] = `["probe-6e58c4b6c129cbd1"]`
+	}
+	for rel, data := range files {
+		p := filepath.Join(dir, rel)
+		if err := errors.Join(os.MkdirAll(filepath.Dir(p), 0o700), os.WriteFile(p, []byte(data), 0o600)); err != nil {
+			return err
+		}
+	}
+	return unixSocketAt(t, filepath.Join(dir, "worker.sock"))
+}
+
+// unixSocketAt creates a Unix socket held by no process at p: bound by its
+// relative name by the fake vendor's bind-socket helper, run with p's
+// directory as its working directory (never renamed across directories, so
+// a separately mounted temporary directory works).
+func unixSocketAt(t *testing.T, p string) error {
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		return err
+	}
+	cmd := exec.Command(fakeVendorBinary(t))
+	cmd.Dir, cmd.Env = filepath.Dir(p), []string{"FAKE_VENDOR_MODE=bind-socket", "FAKE_VENDOR_SOCKET_NAME=" + filepath.Base(p)}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("%v: %s", err, out)
+	}
+	return nil
+}
+
 // FP-26: the owner's 15 s Cursor confirmation path on the fake vendor's
 // reviewed shape and the real probe, driven by the injected clock without
 // sleeps: setup and the repeated 15000 ms bound with per-case preparation;
@@ -1011,7 +1548,10 @@ func TestMCPCursorConfirmation(t *testing.T) {
 	var goodOut string
 	runInventory(t, 4, []string{"repeated-bound", "unverified-outcomes", "identity-publication", "delivery-runbook"}, []captureCase{
 		{"repeated-bound", func(t *testing.T) {
-			rep, out, err := realQualifyCursor(t, nil, "linux", nil)
+			// Three freshly prepared cases, each with project_scoped approval
+			// and in-place residue (A3); a hashed variant below.
+			// A3.1: with an owner's unchanged foreign session artifacts.
+			rep, out, err := realQualifyCursor(t, map[string]string{"ENABLE": "project", "RESIDUE": "in_place", "FOREIGN": "1"}, "linux", nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1021,8 +1561,17 @@ func TestMCPCursorConfirmation(t *testing.T) {
 				def.UpperBoundMS != nil || def.Observations != 2 || len(allCases(rep)) != 3 || *cr.ExecutableSHA256 != "2ccc9a8e167797641448b5e5c936f006ba137a2555f117f38c5eb76a5238a233" {
 				t.Fatalf("%s %+v", rep.Outcome, def)
 			}
-			for _, cs := range allCases(rep) {
-				verified(t, cs, mcpqual.ScopeWorkspaceOnly)
+			for i, cs := range allCases(rep) {
+				verified(t, cs, mcpqual.ScopeProjectScoped)
+				if got := residueLayouts(cs.CursorPreparation.Residue); len(got) != i+1 || got[i] != mcpqual.ResidueLayoutInPlace {
+					t.Fatalf("case %d layouts %v", i, got)
+				}
+			}
+			noSessionContent(t, out)
+			hashed, _, err := realQualifyCursor(t, map[string]string{"ENABLE": "project", "RESIDUE": "hashed", "FOREIGN": "1"}, "linux", nil)
+			if err != nil || hashed.Outcome != mcpqual.StatusConclusive ||
+				!slices.Equal(residueLayouts(allCases(hashed)[2].CursorPreparation.Residue), []string{mcpqual.ResidueLayoutHashed, mcpqual.ResidueLayoutHashed, mcpqual.ResidueLayoutHashed}) {
+				t.Fatalf("hashed variant: %v %s", err, caseReasons(allCases(hashed)))
 			}
 			decision := mcpqual.ShortPollDecision(mcpqual.ShortPollBudget, rep, cr)
 			md := string(repoFileAt(t, out, "report.md"))
@@ -1041,7 +1590,13 @@ func TestMCPCursorConfirmation(t *testing.T) {
 				"rejection":   {map[string]string{"SCENARIO": "rejected"}, "linux", "rejection"},
 				"timeout":     {map[string]string{"TIMEOUT_MS": "10000"}, "linux", ""},
 				"preparation": {map[string]string{"ENABLE": "none"}, "linux", "no change gives positive evidence"},
-				"darwin":      {nil, "darwin", mcpqual.ReasonUnverifiedEvent},
+				// A3: incomplete, mixed and changed-approval residue.
+				"incomplete":       {map[string]string{"ENABLE": "project", "RESIDUE": "partial"}, "linux", "not the exact in-place layout"},
+				"mixed":            {map[string]string{"ENABLE": "project", "RESIDUE": "mixed"}, "linux", "both residue layouts"},
+				"changed-approval": {map[string]string{"ENABLE": "project", "RESIDUE": "approval"}, "linux", "approval file"},
+				// A3.1: a foreign artifact changed during the session.
+				"foreign-changed": {map[string]string{"ENABLE": "project", "RESIDUE": "foreign", "FOREIGN": "1"}, "linux", mcpqual.ReasonForeignChanged},
+				"darwin":          {nil, "darwin", mcpqual.ReasonUnverifiedEvent},
 			} {
 				rep, _, err := realQualifyCursor(t, tc.settings, tc.goos, nil)
 				if err != nil {
@@ -1107,7 +1662,26 @@ func TestMCPCursorConfirmation(t *testing.T) {
 				}
 			}
 			sec := guide[strings.Index(guide, "#### Cursor enrollment, per-case preparation and worker residue (B3)"):]
-			for _, w := range []string{"must be at most 54 ASCII characters", "`cursor_approval_scope_unverified: cursor residue parent slug exceeds 54 characters`",
+			// A3 replaces the old pre-launch output-path rule with the
+			// conditional hashed cap, the output advice and exact cleanup.
+			for _, gone := range []string{"must be at most 54 ASCII characters", "Choose a short output path", "fails closed before any enable or model launch with"} {
+				if strings.Contains(sec, gone) {
+					t.Fatalf("the B3 section still says %q", gone)
+				}
+			}
+			for _, w := range []string{"The parent-slug cap applies only to an observed hashed candidate, checked after the session's cleanup",
+				"`cursor_approval_scope_unverified: cursor residue parent slug exceeds 54 characters`",
+				"do not manipulate the path's length to select a presumed vendor algorithm", "A short path such as `/tmp/cq/out` is merely a valid example, not a guarantee",
+				"a hashed outcome can still fail its prefix checks", "An in_place tree or no residue needs no cap",
+				"remove the entire case-specific full-slug project directory `~/.cursor/projects/<S>`",
+				"There is no automatic retry and no retroactive promotion", "stays UNVERIFIED, and a new owner-authorized run after the reviewed implementation is required",
+				"`cursor-worker-residue-linux-amd64-2026.10.01-e373342-v2`",
+				// A3.1: the foreign baseline's reasons and the owner runbook.
+				"`" + mcpqual.ReasonForeignChanged + "`", "`" + mcpqual.ReasonForeignNew + "`", "`" + mcpqual.ReasonForeignRemoved + "`",
+				"`" + mcpqual.ReasonForeignLimit + "`", "`" + mcpqual.ReasonForeignDeadline + "`", "`" + mcpqual.ReasonForeignUnverifiable + "`",
+				"`" + mcpqual.ReasonCaseProjectExists + "`", "`" + mcpqual.ReasonHashedCandidateExists + "`",
+				"stop interactive Cursor, every Cursor-backed flow role and their workers", "keep them stopped throughout the run",
+				"Unrelated projects' session files and stale sockets may stay as long as they are unchanged",
 				"`2ccc9a8e167797641448b5e5c936f006ba137a2555f117f38c5eb76a5238a233`", "model `grok-4.7-low`", "the old capture's plan is never rewritten",
 				"Record the actual version and hash immediately before the run (a mismatch blocks)", "only the owner's own `--publish-catalog` at the start of that invocation publishes anything",
 				"macOS remains UNVERIFIED", "every `qualify` case (setup, the silent 15s call and its repeat) gets its own fresh workspace"} {
@@ -1127,7 +1701,7 @@ func TestMCPCursorConfirmation(t *testing.T) {
 			}
 			catalogMD := string(repoFile(t, mcpqual.CatalogMDPath))
 			for _, w := range []string{"Decoder enrollment B2 and B3 enroll exactly four linux/amd64 identities", "Cursor Agent `2026.10.01-e373342` (B3, closing the B2 Cursor blocker)",
-				"at most 54 characters"} {
+				"which then needs an `<out>/.work` slug of at most 54 characters", "no output path guarantees a layout"} {
 				if !strings.Contains(catalogMD, w) {
 					t.Fatalf("support-catalog.md lacks %q", w)
 				}

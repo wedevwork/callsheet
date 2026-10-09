@@ -1,10 +1,13 @@
 package mcpqual
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -20,7 +23,8 @@ import (
 // reaper), then assert no later launch and no complete or Qualified result.
 
 // hookFS wraps an approval view: onOpen runs on the nth open of a path
-// ending in suffix, onList on the nth listing of dir.
+// ending in suffix, onList on the nth listing of dir (every listing when dn
+// is negative).
 type hookFS struct {
 	approvalFS
 	suffix string
@@ -51,7 +55,7 @@ func (f *hookFS) ReadDir(p string) ([]fs.DirEntry, error) {
 	if f.onList != nil && p == f.dir {
 		f.mu.Lock()
 		f.lists++
-		hit := f.lists == f.dn
+		hit := f.lists == f.dn || f.dn < 0
 		f.mu.Unlock()
 		if hit {
 			f.onList()
@@ -78,10 +82,13 @@ func (w *capWorld) launchKinds() []string {
 func cursorCapture(t *testing.T, ctx context.Context, hook func(c *CaptureRunner, w *capWorld, home string) *hookFS, mutate func(c *CaptureRunner, w *capWorld)) (*CaptureManifest, CaptureClient, []string) {
 	t.Helper()
 	w := newCapWorld(t)
-	home := filepath.Join(t.TempDir(), "home")
+	// Resolved paths (code review B3 CI): the workspace's lexical and
+	// resolved paths must agree for the project slug (macOS temporary
+	// directories sit behind the /var -> /private/var link).
+	home := filepath.Join(realDir(t), "home")
 	os.MkdirAll(filepath.Join(home, ".cursor", "projects"), 0o700)
 	c := newCapRunner(t, w, capPlan(t, "cursor"))
-	c.Home = home
+	c.Home, c.OutDir = home, filepath.Join(realDir(t), "out")
 	if hook != nil {
 		h := hook(c, w, home)
 		h.approvalFS = c.approvalFS
@@ -124,16 +131,20 @@ func TestCaptureCursorDeadlines(t *testing.T) {
 			ReasonInterrupted, []string{"version", "help", "enable"}, ResidueNotChecked},
 		"cancel-before-model": {true, func(fire func()) *hookFS { return &hookFS{suffix: permission, n: 4, onOpen: fire} },
 			ReasonInterrupted, []string{"version", "help", "enable"}, ResidueNotChecked},
+		// (A3.1: the projects walk of the pre-launch residue baseline is the
+		// first to observe the expiry and records its fixed reason.)
 		"budget-before-model": {false, func(fire func()) *hookFS { return &hookFS{suffix: permission, n: 4, onOpen: fire} },
-			ReasonBudget + ": max_client_ms", []string{"version", "help", "enable"}, ResidueNotChecked},
+			ReasonForeignDeadline, []string{"version", "help", "enable"}, ResidueNotChecked},
 		// Reviewer round 2: the final permission read spends the client's
 		// 180 s: partial, the residue not checked, the evidence kept.
 		"budget-final-permission-read": {false, func(fire func()) *hookFS { return &hookFS{suffix: permission, n: 5, onOpen: fire} },
 			ReasonBudget + ": max_client_ms", []string{"version", "help", "enable", "session"}, ResidueNotChecked},
 		"cancel-final-permission-read": {true, func(fire func()) *hookFS { return &hookFS{suffix: permission, n: 5, onOpen: fire} },
 			ReasonInterrupted, []string{"version", "help", "enable", "session"}, ResidueNotChecked},
-		// The residue check itself spends the budget: partial.
-		"budget-residue-check": {false, func(fire func()) *hookFS { return &hookFS{dn: 4, onList: fire} },
+		// The residue check itself spends the budget: partial (fired at the
+		// projects root's first listing after the model launch, the check's
+		// own baseline listing).
+		"budget-residue-check": {false, func(fire func()) *hookFS { return &hookFS{dn: -1, onList: fire} },
 			ReasonBudget + ": max_client_ms", []string{"version", "help", "enable", "session"}, ""},
 	} {
 		ctx, cancel := context.WithCancel(context.Background())
@@ -141,6 +152,15 @@ func TestCaptureCursorDeadlines(t *testing.T) {
 			fire := func() { w.clock.Advance(clientBudget) }
 			if tc.cancel {
 				fire = cancel
+			}
+			if name == "budget-residue-check" {
+				once, advance := false, fire
+				fire = func() {
+					if !once && slices.Contains(w.launchKinds(), "session") {
+						once = true
+						advance()
+					}
+				}
 			}
 			h := tc.hook(fire)
 			h.dir = filepath.Join(home, ".cursor", "projects")
@@ -219,5 +239,67 @@ func TestQualifyCursorCancellation(t *testing.T) {
 	})
 	if c := q.rep.Clients[0]; !slices.Equal(q.kinds(), []string{"version"}) || deref(c.Reason) != ReasonInterrupted {
 		t.Fatalf("help after cancellation: %v %q", q.kinds(), deref(c.Reason))
+	}
+}
+
+// Design decoder-enrollment A3, capture parity: capture obtains the case's
+// approval baseline from its own approval step and applies the same three
+// outcomes: a complete capture with an in_place entry (nothing of the
+// session files in the bundle), and mixed, partial or workspace-only
+// in-place trees failing closed as a partial capture.
+func TestCaptureCursorResidueLayouts(t *testing.T) {
+	for name, tc := range map[string]struct {
+		layout    string
+		workspace bool // workspace-only approval: no in-place allowance
+		complete  bool
+		want      string
+	}{
+		"in_place":       {"in_place", false, true, ""},
+		"none":           {"", false, true, ""},
+		"mixed":          {"mixed", false, false, "both residue layouts"},
+		"partial":        {"partial", false, false, "not the exact in-place layout"},
+		"workspace-only": {"in_place", true, false, ReasonForeignNew},
+	} {
+		man, cc, kinds := cursorCapture(t, context.Background(), nil, func(c *CaptureRunner, w *capWorld) {
+			residueWorld(t, w, c.Home, func(string) string { return tc.layout })
+			if tc.workspace {
+				// The enable approves the workspace only; the session creates the
+				// project directory with the whole tree, approval included.
+				enable := w.script
+				w.script = func(spec ProcSpec) capBehavior {
+					if launchKind(spec) == "enable" {
+						return w.defaults(spec)
+					}
+					return enable(spec)
+				}
+				reap := w.onReap
+				w.onReap = func(spec ProcSpec) {
+					if launchKind(spec) == "session" {
+						slug, _ := cursorProjectSlug(osApprovalFS{}, "linux", "amd64", CursorRealVersion, spec.Dir)
+						os.MkdirAll(filepath.Join(c.Home, ".cursor", "projects", slug), 0o700)
+						os.WriteFile(filepath.Join(c.Home, ".cursor", "projects", slug, cursorApprovalsFile), []byte(`["probe-6e58c4b6c129cbd0"]`), 0o600)
+					}
+					reap(spec)
+				}
+			}
+		})
+		if !slices.Equal(kinds, []string{"version", "help", "enable", "session"}) || (man.State == CaptureComplete) != tc.complete || cc.WorkerResidue == nil {
+			t.Errorf("%s: %s %q %v", name, man.State, deref(cc.Reason), kinds)
+			continue
+		}
+		w := cc.WorkerResidue
+		switch {
+		case tc.complete && tc.layout == "in_place" && (w.State != ResidueVerified || len(w.Entries) != 1 || w.Entries[0].Layout != ResidueLayoutInPlace ||
+			cc.Approval.Scope != ScopeProjectScoped || !reflect.DeepEqual(w.Entries[0].Items, rsInPlaceEntry("x", 1).Items)):
+			t.Errorf("%s: %+v", name, w)
+		case tc.complete && tc.layout == "" && (w.State != ResidueVerified || len(w.Entries) != 0):
+			t.Errorf("%s: %+v", name, w)
+		case !tc.complete && (w.State != ResidueUnverified || !strings.Contains(deref(w.Reason), tc.want) || len(w.Entries) != 0):
+			t.Errorf("%s: %+v %q", name, w, deref(w.Reason))
+		}
+		b, _ := json.Marshal(man)
+		if bytes.Contains(b, []byte(rsCanary)) || bytes.Contains(b, []byte(rsUUID)) {
+			t.Errorf("%s: session content in the manifest", name)
+		}
 	}
 }

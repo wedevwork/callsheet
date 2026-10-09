@@ -259,6 +259,12 @@ var WorkspaceCoverageManifest = []CoverageEntry{
 	// builds on neither CI host, as before).
 	{Group: GroupChanged, File: modulePath + "/internal/mcpqual/cursor_preparation.go"},
 	{Group: GroupChanged, File: modulePath + "/internal/mcpqual/cursor_residue.go"},
+
+	// Decoder enrollment, amendments A3 and A3.1 (base a53f847): the
+	// in-place Cursor residue and the foreign session baseline add no file. Every production file it changes is already
+	// listed whole: mcpqual/cursor_residue.go, mcpqual/cursor_preparation.go,
+	// mcpqual/capture_approval.go, mcpqual/capture.go,
+	// mcpqual/capture_manifest.go and mcpqual/report.go.
 }
 
 // modulePath is the profile's import-path prefix.
