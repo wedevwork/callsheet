@@ -38,7 +38,6 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -93,7 +92,9 @@ const (
 // immediately before the session and after its cleanup. It is a narrow
 // configuration request, not confinement, not a bypass of any deny, and
 // never evidence that Cursor approved anything; no home or global
-// permission is ever written. Qualify writes nothing (capture only).
+// permission is ever written. Design decoder-enrollment B3 (FP-24) makes
+// the same preparation run for every qualify case of the adapter through
+// the shared cursorPreparer (cursor_preparation.go).
 const (
 	CursorToolPermissionAdapter = "cursor-tool-permission-linux-amd64-2026.10.01-e373342"
 	// CursorToolPermissionContent is the file's exact bytes (no newline).
@@ -114,91 +115,6 @@ const (
 // cursorToolPermissionApplies reports the permission adapter's identity.
 func cursorToolPermissionApplies(goos, goarch, version string) bool {
 	return goos == cursorProjectGOOS && goarch == cursorProjectGOARCH && version == cursorProjectVersion
-}
-
-// permissionFS is the permission checks' filesystem: the approval scan's.
-func (c *CaptureRunner) permissionFS() approvalFS {
-	if c.approvalFS != nil {
-		return c.approvalFS
-	}
-	return osApprovalFS{}
-}
-
-// writeCursorPermission creates the permission file of prepared case in:
-// the workspace and its .cursor directory (created by prepareCase for the
-// MCP configuration) must be ordinary, non-symlink directories, cli.json
-// must not exist (an owner file is never merged or overwritten), and the
-// file is created new, no-follow, mode 0600 with the exact bytes. It
-// returns the file's identity, or a stop reason before any enable or model
-// launch (then no record claims a written file).
-func (c *CaptureRunner) writeCursorPermission(cc *CaptureClient, in caseInputs) (fs.FileInfo, string) {
-	fsys := c.permissionFS()
-	fail := func(why string) (fs.FileInfo, string) {
-		return nil, ReasonCursorScopeUnverified + ": the scoped permission file was not created (" + why + "); nothing was launched"
-	}
-	dir := filepath.Join(in.ws, ".cursor")
-	if filepath.Dir(in.configPath) != dir {
-		return fail("the configuration is not the workspace's .cursor/mcp.json")
-	}
-	for _, d := range []string{in.ws, dir} {
-		if info, err := fsys.Lstat(d); err != nil || !info.IsDir() {
-			return fail("the workspace or its .cursor is not an ordinary directory")
-		}
-	}
-	p := filepath.Join(dir, cursorPermissionFile)
-	if _, err := fsys.Lstat(p); !errors.Is(err, fs.ErrNotExist) {
-		return fail("a cli.json already exists or cannot be looked up")
-	}
-	f, err := createNoFollow(p)
-	if err != nil {
-		return fail("it cannot be created")
-	}
-	_, werr := io.WriteString(f, CursorToolPermissionContent)
-	if err := errors.Join(werr, f.Close()); err != nil {
-		return fail("it cannot be written")
-	}
-	info, err := fsys.Lstat(p)
-	if err != nil || !info.Mode().IsRegular() {
-		return fail("it is not a regular file after creation")
-	}
-	cc.ToolPermission = &CaptureToolPermission{Adapter: CursorToolPermissionAdapter, Path: labelToolPermission, Content: CursorToolPermissionContent,
-		SHA256: sha256Hex([]byte(CursorToolPermissionContent)), State: PermissionWritten, Reason: sptr(permissionPending)}
-	return info, ""
-}
-
-// verifyCursorPermission reads the permission file of in bounded and
-// without following a link: the same regular file as created (ident), its
-// exact bytes, unchanged while read. It returns "" when it holds; a
-// failure marks the record's reason.
-func (c *CaptureRunner) verifyCursorPermission(cc *CaptureClient, in caseInputs, ident fs.FileInfo) string {
-	fsys := c.permissionFS()
-	p := filepath.Join(in.ws, ".cursor", cursorPermissionFile)
-	ok := func() bool {
-		// The same file as created: its identity and its modification time
-		// (an unlinked file's inode can be reused at once). A write that
-		// restores both between two checks stays undetectable.
-		pre, err := fsys.Lstat(p)
-		if err != nil || !pre.Mode().IsRegular() || !sameFile(ident, pre) || !pre.ModTime().Equal(ident.ModTime()) {
-			return false
-		}
-		f, err := fsys.Open(p)
-		if err != nil {
-			return false
-		}
-		defer f.Close()
-		opened, err := f.Stat()
-		if err != nil || !sameFile(pre, opened) {
-			return false
-		}
-		b, err := io.ReadAll(io.LimitReader(f, int64(len(CursorToolPermissionContent))+1))
-		post, err2 := fsys.Lstat(p)
-		return err == nil && err2 == nil && string(b) == CursorToolPermissionContent && sameFile(pre, post)
-	}()
-	if ok {
-		return ""
-	}
-	cc.ToolPermission.State, cc.ToolPermission.Reason = PermissionWritten, sptr(permissionFailed)
-	return ReasonCursorScopeUnverified + ": the harness-written " + labelToolPermission + " was removed, replaced or changed (no retry or restore)"
 }
 
 // The inventory policy (design decoder-enrollment B1.5, FP-16): the
@@ -370,6 +286,10 @@ type approvalScanner struct {
 	lim      ApprovalScanLimits
 	key      []byte
 	excluded map[string]bool
+	// exempt, when set, admits a special file at a path: only the run's
+	// valid worker socket residue ledger entries (design decoder-enrollment
+	// B3, FP-25), each revalidated by identity.
+	exempt func(p string, info fs.FileInfo) bool
 }
 
 // exclude sets the scanner's excluded directories: the two data
@@ -504,6 +424,11 @@ func (sc *approvalScanner) entry(s *snapshot, mac hash.Hash, key, p string, info
 		e.unknown = true
 		s.entries[key] = e
 		s.fail("a symbolic link is in a monitored tree")
+	case sc.exempt != nil && sc.exempt(p, info):
+		// A valid ledger socket of this run: inventoried as itself (its type
+		// and identity were just revalidated), never read or followed.
+		e.size = 0
+		s.entries[key] = e
 	default:
 		e.unknown = true
 		s.entries[key] = e
@@ -673,190 +598,6 @@ func newApproval(reason string) *CaptureApproval {
 func cursorTrusted(pc *PlanClient) bool {
 	entered, err := pc.trustedRecipe()
 	return pc.ID == "cursor" && entered && err == nil
-}
-
-// prepareCursorApproval runs the approval stage of cc's prepared case in
-// (after version, help and the configuration write, before the session).
-// It returns "" when the session may start, otherwise the client's stop
-// reason. A failed pre-scan launches nothing. The enable command runs
-// once, with min(30 s, the client's remaining time), through the shared
-// launch and cleanup; its streams become approval-stdout.txt and
-// approval-stderr.txt; the second snapshot follows its cleanup.
-func (c *CaptureRunner) prepareCursorApproval(ctx context.Context, pc *PlanClient, cc *CaptureClient, in caseInputs, deadline time.Time) string {
-	ap := newApproval("not reached")
-	cc.Approval = ap
-	unverified := func(why string) string {
-		reason := ReasonCursorScopeUnverified + ": " + why
-		ap.Stage, ap.Scope, ap.Reason = notRunStage(reason), ScopeUnverifiable, sptr(reason)
-		return reason
-	}
-	roots, err := approvalRoots(c.approvalFS, in.ws, c.Home)
-	if err != nil {
-		return unverified(err.Error())
-	}
-	sc, err := newApprovalScanner(c.approvalFS, c.ApprovalLimits)
-	if err != nil {
-		return unverified("no fingerprint key")
-	}
-	sc.exclude(c.Home)
-	// The per-project approval path (FP-15): derived only by the observed
-	// adapter; an unsupported platform, version or path derives nothing.
-	slug, derr := cursorProjectSlug(sc.fs, c.GOOS, c.GOARCH, pc.ExpectedVersion, in.ws)
-	projKey := ""
-	if derr == nil {
-		projKey = labelHomeProjects + "/" + slug
-	}
-	pre := sc.snapshot(roots)
-	if !pre.complete {
-		return unverified("the inventory before the command is incomplete (" + pre.why + ")")
-	}
-	if _, exists := pre.entries[projKey]; projKey != "" && exists {
-		return unverified("the computed Cursor project directory exists before the command (a prior run or a colliding workspace path); nothing was changed or launched")
-	}
-	wd, capped := c.r.allowance(cursorApprovalWatchdog, deadline)
-	if wd <= 0 {
-		reason := ReasonBudget + ": max_client_ms"
-		ap.Stage, ap.Reason = notRunStage(reason), sptr(reason)
-		return reason
-	}
-	run := c.r.launch(ctx, ProcSpec{Path: pc.Executable, Args: CursorApprovalArgv(), Env: in.proc.Env, Dir: in.ws, CaptureStderr: true}, wd, c.lim.Stream)
-	run.budgetCapped = capped
-	c.r.recordCleanup(pc.ID+" approval", run.cleanup)
-	ap.Stage = stageOf(run, wd)
-	if ap.Stage.State != StageRan {
-		reason := ReasonCursorApprovalFailed + ": the enable command did not launch (" + *ap.Stage.Reason + ")"
-		ap.Reason = sptr(reason)
-		return reason
-	}
-	var out strings.Builder
-	for _, l := range run.transcript.Lines {
-		out.Write(l.Data)
-		out.WriteByte('\n')
-	}
-	// The computed slug encodes the absolute workspace: it is replaced by
-	// its placeholder before the general redaction (FP-15).
-	stdout, withheldOut := normalizeSlugText([]byte(out.String()), slug)
-	stderr, withheldErr := normalizeSlugText(run.stderr, slug)
-	c.textWithheld(cc, ClientFile(pc.ID, FileApprovalStdout), stdout, run.transcript.Truncated, withheldOut)
-	c.textWithheld(cc, ClientFile(pc.ID, FileApprovalStderr), stderr, run.stderrCut, withheldErr)
-	if c.ioError != nil {
-		reason := "workspace: " + c.ioError.Error()
-		ap.Scope, ap.Reason = ScopeUnverifiable, sptr(reason)
-		return reason
-	}
-	post := sc.snapshot(roots)
-	changes := diffSnapshots(pre, post)
-	ap.InventoryComplete = post.complete
-	ap.Changes = make([]CaptureApprovalChange, 0, len(changes))
-	outside, faithful, workspaceFiles := false, true, true
-	projDir, projFile, unattributed, permission := false, false, false, false
-	red := c.r.redactor
-	recorded := map[string]bool{}
-	for _, ch := range changes {
-		// Two roots sharing a label record one path: the list could not
-		// tell them apart, so it is incomplete (the decision itself used
-		// the distinct keys).
-		ch.Path = recordedPath(ch.Path)
-		if recorded[ch.Path] {
-			faithful = false
-			continue
-		}
-		recorded[ch.Path] = true
-		switch p := ch.Path; {
-		case inWorkspace(p):
-			if !inWorkspaceCursor(p) || !ch.regular {
-				workspaceFiles = false
-			}
-			// The harness-written permission file is baseline state: any
-			// change of it is never approval evidence (FP-20).
-			permission = permission || cc.ToolPermission != nil && p == labelToolPermission
-		case projKey != "" && p == projKey:
-			// The computed project directory: allowed only as a newly added
-			// ordinary directory.
-			e := post.entries[p]
-			if ch.Kind == ChangeAdded && e.typ.IsDir() && !e.unknown {
-				projDir = true
-			} else {
-				outside = true
-			}
-			ch.Path = labelProjectDir
-		case projKey != "" && p == projKey+"/"+cursorApprovalsFile:
-			if ch.Kind == ChangeAdded && ch.regular {
-				projFile = true
-			} else {
-				outside = true
-			}
-			ch.Path = labelProjectFile
-		case projKey != "" && strings.HasPrefix(p, projKey+"/"):
-			// A descendant other than the approval file is forbidden.
-			outside = true
-			ch.Path = labelProjectDir + strings.TrimPrefix(p, projKey)
-		case projKey == "" && inHomeProjects(p):
-			// Without a derivation a home-project change cannot be
-			// attributed: never guess a mismatch.
-			unattributed = true
-		default:
-			// Any other outside change, another project and the creation of
-			// the projects directory itself included.
-			outside = true
-		}
-		// A path the redaction would change (or cannot carry) is not a
-		// faithful change list: record it redacted and fail closed.
-		if clean := red.String(ch.Path); !utf8.ValidString(ch.Path) || clean != ch.Path {
-			faithful = false
-			ch.Path = clean
-		}
-		ap.Changes = append(ap.Changes, ch.CaptureApprovalChange)
-	}
-	sort.SliceStable(ap.Changes, func(i, j int) bool { return ap.Changes[i].Path < ap.Changes[j].Path })
-	if !faithful {
-		ap.InventoryComplete = false
-	}
-	ap.Scope = ScopeUnverifiable
-	if outside {
-		ap.Scope = ScopeOutside
-	}
-	var reason string
-	switch {
-	case run.interrupted:
-		reason = ReasonInterrupted
-	case run.cleanup.Error != nil:
-		reason = ReasonCleanupFailed
-	case outside:
-		reason = ReasonCursorOutside + ": the enable command may have changed state outside the workspace; investigate before another attempt (nothing was restored)"
-	case !cleanStage(ap.Stage):
-		reason = ReasonCursorApprovalFailed + ": the enable command did not exit 0 by itself"
-	case !post.complete:
-		reason = ReasonCursorScopeUnverified + ": the inventory after the command is incomplete (" + post.why + ")"
-	case !faithful:
-		reason = ReasonCursorScopeUnverified + ": a changed path cannot be recorded faithfully"
-	case permission:
-		reason = ReasonCursorScopeUnverified + ": the harness-written " + labelToolPermission + " changed during the enable command (it is never approval evidence)"
-	case unattributed:
-		reason = ReasonCursorScopeUnverified + ": a change under " + labelHomeProjects + "/ cannot be attributed: " + derr.Error()
-	case len(changes) == 0:
-		reason = ReasonCursorScopeUnverified + ": no change gives positive evidence of a workspace approval"
-	case !workspaceFiles:
-		reason = ReasonCursorScopeUnverified + ": a change is not a regular file under <workspace>/.cursor/"
-	case projDir != projFile:
-		reason = ReasonCursorScopeUnverified + ": the project approval needs both the computed project directory and its " + cursorApprovalsFile + " added"
-	case projDir:
-		if why := sc.projectApprovals(filepath.Join(c.Home, ".cursor", "projects", slug, cursorApprovalsFile)); why != "" {
-			reason = ReasonCursorScopeUnverified + ": the project approval file " + why
-			break
-		}
-		ap.Scope, ap.Reason = ScopeProjectScoped, nil
-		ap.Project = &CaptureApprovalProject{Adapter: CursorProjectAdapter, Directory: labelProjectDir, File: labelProjectFile, ProbeEntryPresent: true}
-		fmt.Fprintf(c.Log, "mcpqual: %s: approval project-scoped (%s): %s added, inventory policy %s excluding %s\n", pc.ID, CursorProjectAdapter, labelProjectFile,
-			InventoryPolicyV2, strings.Join(InventoryExcludedPaths(), " and "))
-		return ""
-	default:
-		ap.Scope, ap.Reason = ScopeWorkspaceOnly, nil
-		fmt.Fprintf(c.Log, "mcpqual: %s: approval workspace-only, inventory policy %s excluding %s\n", pc.ID, InventoryPolicyV2, strings.Join(InventoryExcludedPaths(), " and "))
-		return ""
-	}
-	ap.Reason = sptr(reason)
-	return reason
 }
 
 // slugComponent is one permitted component of a workspace path for the
@@ -1117,39 +858,32 @@ func (sc *approvalScanner) projectApprovals(p string) string {
 	return ""
 }
 
-// rereadCursorConfig is the generated .cursor/mcp.json after a scoped
-// approval, within the case-file bound, with the substituted paths
-// labeled again (as the configuration snapshot labels them), so config.txt
-// shows the configuration the session will actually read.
-func (c *CaptureRunner) rereadCursorConfig(in caseInputs) ([]byte, error) {
-	fsys := c.approvalFS
-	if fsys == nil {
-		fsys = osApprovalFS{}
-	}
-	info, err := fsys.Lstat(in.configPath)
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() || info.Size() > MaxCaseFileBytes {
-		return nil, fmt.Errorf("it is not a regular file of at most %d bytes", MaxCaseFileBytes)
-	}
-	f, err := fsys.Open(in.configPath)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	b, err := readLimited(f, path.Base(in.configPath), MaxCaseFileBytes)
-	if err != nil {
-		return nil, err
-	}
-	esc := func(s string) string { q := quoteJSON(s); return q[1 : len(q)-1] }
-	pairs := [][2]string{{esc(in.casePath), "<workspace>/case.json"}, {esc(in.eventsPath), "<workspace>/server-events.jsonl"}, {esc(c.ServerPath), "<server>"}, {esc(in.ws), labelWorkspace}}
-	sort.SliceStable(pairs, func(i, j int) bool { return len(pairs[i][0]) > len(pairs[j][0]) })
-	s := string(b)
-	for _, p := range pairs {
-		if p[0] != "" {
-			s = strings.ReplaceAll(s, p[0], p[1])
-		}
-	}
-	return []byte(s), nil
+// prepareCursorApproval is capture's writer of the shared approval stage
+// (design decoder-enrollment B3, FP-24): the preparer's enable command with
+// the client's remaining time, its streams written as approval-stdout.txt
+// and approval-stderr.txt in the capture layout, and the record set on cc.
+// It returns "" when the session may start, otherwise the stop reason.
+func (c *CaptureRunner) prepareCursorApproval(ctx context.Context, pc *PlanClient, cc *CaptureClient, in caseInputs, deadline time.Time, prep *cursorPreparer) string {
+	cc.Approval = newApproval("not reached")
+	l := approvalLaunch{r: c.r, executable: pc.Executable, env: in.proc.Env, what: pc.ID + " approval", id: pc.ID, log: c.Log}
+	ap, reason := prep.approve(ctx, l, in, deadline, cc.ToolPermission != nil, func(o approvalOutput) error {
+		c.textWithheld(cc, ClientFile(pc.ID, FileApprovalStdout), o.stdout, o.outCut, o.withheldOut)
+		c.textWithheld(cc, ClientFile(pc.ID, FileApprovalStderr), o.stderr, o.errCut, o.withheldErr)
+		return c.ioError
+	})
+	cc.Approval = ap
+	return reason
 }
+
+// verifyCursorPermission is capture's record of one permission check: ""
+// when it holds; a failure marks the record's reason.
+func (c *CaptureRunner) verifyCursorPermission(cc *CaptureClient, in caseInputs, ident fs.FileInfo, prep *cursorPreparer) string {
+	if prep.verifyPermission(in, ident) {
+		return ""
+	}
+	cc.ToolPermission.State, cc.ToolPermission.Reason = PermissionWritten, sptr(permissionFailed)
+	return permissionChanged
+}
+
+// sptrResidue is a pointer to a residue record.
+func sptrResidue(w WorkerResidue) *WorkerResidue { return &w }

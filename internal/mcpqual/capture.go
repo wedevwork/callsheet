@@ -477,6 +477,11 @@ func (c *CaptureRunner) metadata(ctx context.Context, pc *PlanClient, cc *Captur
 		c.ioError = err
 		return notRunStage("workspace: " + err.Error()), nil, caseRun{}
 	}
+	// A cancellation before this launch launches nothing (code review B3
+	// round 2, C1: no process after a cancelled earlier operation).
+	if ctx.Err() != nil {
+		return notRunStage(ReasonInterrupted), nil, caseRun{}
+	}
 	wd, capped := c.r.allowance(time.Duration(c.meta)*time.Millisecond, deadline)
 	if wd <= 0 {
 		return notRunStage(ReasonBudget + ": max_client_ms"), nil, caseRun{}
@@ -544,22 +549,31 @@ func (c *CaptureRunner) session(ctx context.Context, pc *PlanClient, cc CaptureC
 	// workspace-local permission file, so the approval inventories see it as
 	// baseline state, and checks it intact after the enable command (design
 	// decoder-enrollment B2, FP-20).
+	// The shared preparation (design decoder-enrollment B3, FP-24) is the
+	// same one qualify runs per case; capture records its results in the
+	// capture layout, and for the pinned adapter also records its own
+	// worker socket residue after the session (FP-25).
 	var permission fs.FileInfo
+	var prep *cursorPreparer
 	if cc.Approval != nil {
+		prep = newCursorPreparer(c.approvalFS, c.ApprovalLimits, c.GOOS, c.GOARCH, pc.ExpectedVersion, c.Home)
 		reason := ""
-		if cursorToolPermissionApplies(c.GOOS, c.GOARCH, pc.ExpectedVersion) {
-			if permission, reason = c.writeCursorPermission(&cc, in); reason != "" {
+		if prep.applies() {
+			if permission, reason = prep.writePermission(in); reason != "" {
 				cc.Approval = newApproval(reason)
+			} else {
+				cc.ToolPermission = toolPermissionRecord()
 			}
+			cc.WorkerResidue = sptrResidue(notCheckedResidue("the session did not run"))
 		}
 		if reason == "" {
-			reason = c.prepareCursorApproval(ctx, pc, &cc, in, deadline)
+			reason = c.prepareCursorApproval(ctx, pc, &cc, in, deadline, prep)
 		}
 		if reason == "" && cc.ToolPermission != nil {
-			reason = c.verifyCursorPermission(&cc, in, permission)
+			reason = c.verifyCursorPermission(&cc, in, permission, prep)
 		}
 		if reason == "" {
-			reread, err := c.rereadCursorConfig(in)
+			reread, err := prep.rereadConfig(in, c.ServerPath)
 			if err != nil {
 				reason = ReasonConfigFailure + ": the generated " + CursorTrustedPath + " cannot be re-read after the approval (" + err.Error() + ")"
 			} else {
@@ -592,10 +606,34 @@ func (c *CaptureRunner) session(ctx context.Context, pc *PlanClient, cc CaptureC
 	}
 	// The permission file's check immediately before the model launch.
 	if cc.ToolPermission != nil {
-		if reason := c.verifyCursorPermission(&cc, in, permission); reason != "" {
+		if reason := c.verifyCursorPermission(&cc, in, permission, prep); reason != "" {
 			cc.Session.Reason = sptr(reason)
 			return stop(cc, reason)
 		}
+	}
+	// The projects root's children immediately before the model launch
+	// (FP-25): the baseline of the session's residue attribution.
+	var residuePre map[string]fs.FileInfo
+	if cc.WorkerResidue != nil {
+		var err error
+		if residuePre, err = prep.residueSnapshot(); err != nil {
+			reason := ReasonCursorScopeUnverified + ": worker residue check failed: " + err.Error()
+			cc.WorkerResidue = sptrResidue(notCheckedResidue(reason))
+			cc.Session.Reason = sptr(reason)
+			return stop(cc, reason)
+		}
+	}
+	// The session's allowance is what remains after the checks above (code
+	// review B3 round 1, C1): never one computed before them.
+	if wd, capped = c.r.allowance(time.Duration(c.caseMS)*time.Millisecond, deadline); wd <= 0 {
+		cc.Session.Reason = sptr(ReasonBudget + ": max_client_ms")
+		return stop(cc, *cc.Session.Reason)
+	}
+	// A cancellation during those checks launches no model (code review B3
+	// round 2, C1).
+	if ctx.Err() != nil {
+		cc.Session.Reason = sptr(ReasonInterrupted)
+		return stop(cc, ReasonInterrupted)
 	}
 	ev := &captureSessionEvidence{c: c, cc: &cc}
 	in.evidence = ev
@@ -619,17 +657,60 @@ func (c *CaptureRunner) session(ctx context.Context, pc *PlanClient, cc CaptureC
 	// The permission file's check after the session's cleanup: verified
 	// only now; a changed file makes even a complete capture partial.
 	if cc.ToolPermission != nil {
-		if why := c.verifyCursorPermission(&cc, in, permission); why == "" {
+		if why := c.verifyCursorPermission(&cc, in, permission, prep); why == "" {
 			cc.ToolPermission.State, cc.ToolPermission.Reason = PermissionVerified, nil
 		} else if reason == "" {
 			reason = why
 		}
+	}
+	// The session's worker socket residue, after its clean cleanup only
+	// (FP-25): recorded for this capture's own case; a later independent
+	// capture still needs the owner's cleanup of it.
+	//
+	// The Cursor preparation's final verification counts against the
+	// client's budget (code review B3 round 2, C1): cancellation and the
+	// client deadline are checked after the permission read and after the
+	// residue check, and either one leaves the capture partial with its
+	// evidence kept (an expired check before the residue check skips it).
+	late := ""
+	if prep != nil {
+		late = c.lateReason(ctx, deadline)
+	}
+	if cc.WorkerResidue != nil {
+		switch {
+		case late != "":
+			cc.WorkerResidue = sptrResidue(notCheckedResidue(ReasonCursorScopeUnverified + ": worker residue not checked: " + late))
+		case run.cleanup.Error != nil || !run.cleanup.GroupGone:
+			cc.WorkerResidue = sptrResidue(notCheckedResidue(ReasonCursorScopeUnverified + ": worker residue not checked: the session's cleanup is not proven"))
+		default:
+			cc.WorkerResidue = sptrResidue(prep.checkResidue(cc.CaseID, in.ws, residuePre))
+			late = c.lateReason(ctx, deadline)
+		}
+	}
+	if late != "" && reason == "" {
+		reason = late
+	}
+	if cc.WorkerResidue != nil && cc.WorkerResidue.State != ResidueVerified && reason == "" {
+		reason = *cc.WorkerResidue.Reason
 	}
 	if reason != "" {
 		return stop(cc, reason)
 	}
 	cc.State, cc.Reason = CaptureComplete, nil
 	return cc
+}
+
+// lateReason is why a capture may no longer complete after a final
+// verification operation ("" when it may): the run's cancellation, then the
+// client's spent budget.
+func (c *CaptureRunner) lateReason(ctx context.Context, deadline time.Time) string {
+	switch {
+	case ctx.Err() != nil:
+		return ReasonInterrupted
+	case !c.Clock.Now().Before(deadline):
+		return ReasonBudget + ": max_client_ms"
+	}
+	return ""
 }
 
 // sessionReason classifies collection integrity and probe observations

@@ -10,8 +10,8 @@ package mcpqual
 // parser behaviour only. A decoder version becomes qualified for VERIFIED
 // classification only when an owner's redacted actual transcript fixture
 // for exactly that version is registered (Qualified): the three enrolled
-// real versions of design decoder-enrollment B2 decode with their own
-// exact-version parsers (decode_real.go). Selection is by exact vendor
+// real versions of design decoder-enrollment B2 and Cursor's of B3 decode
+// with their own exact-version parsers (decode_real.go). Selection is by exact vendor
 // version string and never falls back to another version.
 
 import (
@@ -217,8 +217,11 @@ type Registry map[string]decoderSpec
 // only and so unqualified, and the three enrolled real versions of design
 // decoder-enrollment B2 (FP-19): exactly these linux/amd64 identities, each
 // Qualified with its one indexed real fixture and only the success
-// capabilities, decoded by its exact-version real parser (FP-17). Cursor
-// has no real version: it stays UNVERIFIED until its own follow-up.
+// capabilities, decoded by its exact-version real parser (FP-17); and the
+// one Cursor Agent 2026.10.01-e373342 linux/amd64 version of design
+// decoder-enrollment B3 (FP-22/FP-23), enrolled the same way with the same
+// success-only capabilities (its version is admitted to the index through
+// realVersionClient alongside this addition).
 func DefaultRegistry() Registry {
 	r := SyntheticRegistry()
 	add := func(name, v string, decode func(Transcript) Decoded) {
@@ -232,6 +235,7 @@ func DefaultRegistry() Registry {
 	add("claude-json", ClaudeRealVersion, decodeClaudeReal)
 	add("codex-jsonl", CodexRealVersion, decodeCodexReal)
 	add("grok-json", GrokRealVersion, decodeGrokReal)
+	add("cursor-jsonl", CursorRealVersion, decodeCursorReal)
 	return r
 }
 

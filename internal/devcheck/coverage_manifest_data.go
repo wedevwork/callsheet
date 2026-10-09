@@ -246,6 +246,19 @@ var WorkspaceCoverageManifest = []CoverageEntry{
 	{Group: GroupChanged, File: modulePath + "/internal/mcpqual/decode_real.go"},
 	{Group: GroupChanged, File: modulePath + "/internal/mcpqual/fixture_export.go"},
 	{Group: GroupChanged, File: modulePath + "/cmd/mcpfixture-export/main.go"},
+
+	// Decoder enrollment, slice B3 (base 7456fef): the shared Cursor
+	// preparation and the worker socket residue (new files, no build
+	// constraint: evaluated on both systems). Its other changed production
+	// files are already listed whole: mcpqual/decode.go,
+	// mcpqual/decode_real.go, mcpqual/fixture_export.go, mcpqual/session.go,
+	// mcpqual/measure.go, mcpqual/runner.go, mcpqual/cli.go,
+	// mcpqual/capture.go, mcpqual/capture_approval.go,
+	// mcpqual/capture_approval_unix.go, mcpqual/capture_manifest.go,
+	// mcpqual/report.go and devcheck/native.go (capture_approval_other.go
+	// builds on neither CI host, as before).
+	{Group: GroupChanged, File: modulePath + "/internal/mcpqual/cursor_preparation.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/mcpqual/cursor_residue.go"},
 }
 
 // modulePath is the profile's import-path prefix.

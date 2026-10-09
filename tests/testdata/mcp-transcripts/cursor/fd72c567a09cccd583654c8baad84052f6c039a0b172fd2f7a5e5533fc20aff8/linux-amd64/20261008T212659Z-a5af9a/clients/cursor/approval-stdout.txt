@@ -1,0 +1,1 @@
+✓ Enabled and approved MCP server: probe

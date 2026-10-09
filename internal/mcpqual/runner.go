@@ -68,6 +68,16 @@ type Runner struct {
 	// ReportLimit bounds report.json (default MaxEvidenceFileBytes, the
 	// limit ParseReport enforces).
 	ReportLimit int
+	// ApprovalLimits bound each Cursor approval and residue inventory of the
+	// per-case preparation (design decoder-enrollment B3, FP-24; zero
+	// fields: DefaultApprovalScanLimits, larger values lowered to them).
+	// Production leaves it zero: no plan member, flag or variable reaches it.
+	ApprovalLimits ApprovalScanLimits
+
+	// approvalFS is the per-case Cursor preparation's filesystem view (nil:
+	// the operating system), as CaptureRunner's; only this package's unit
+	// tests set it. It injects observations, never a gate verdict.
+	approvalFS approvalFS
 
 	redactor *Redactor
 	mu       sync.Mutex
@@ -668,6 +678,11 @@ func (r *Runner) capture(ctx context.Context, pc *PlanClient, argv []string, nam
 	for _, k := range sortedKeys(pc.Env) {
 		env = append(env, k+"="+pc.Env[k])
 	}
+	// A cancellation before this launch launches nothing (code review B3
+	// round 2, C1): the caller records the interruption.
+	if ctx.Err() != nil {
+		return "", caseRun{interrupted: true}
+	}
 	wd, capped := r.allowance(min(versionWatchdog, time.Duration(r.Plan.EffectiveLimits().MaxCaseMS)*time.Millisecond), deadline)
 	if wd <= 0 {
 		return "", caseRun{budgetCapped: true, watchdog: true}
@@ -787,6 +802,16 @@ func (r *Runner) runClient(ctx context.Context, pc *PlanClient) ClientReport {
 		return notRun(cr, pc, ReasonModelCallsDenied)
 	}
 	m := &measure{r: r, pc: pc, cr: &cr, decode: decode, dv: dv, start: start, deadline: deadline}
+	// The pinned Cursor version's conclusive cases need verified per-case
+	// preparation (design decoder-enrollment B3, FP-24), which only the
+	// canonical trusted recipe of the linux/amd64 adapter performs; any
+	// other identity gains no write and no exception.
+	if pc.ID == "cursor" && pc.ExpectedVersion == CursorRealVersion {
+		m.pinned = true
+		if cursorTrusted(pc) && cursorToolPermissionApplies(r.GOOS, r.GOARCH, pc.ExpectedVersion) {
+			m.prep = newCursorPreparer(r.approvalFS, r.ApprovalLimits, r.GOOS, r.GOARCH, pc.ExpectedVersion, r.Home)
+		}
+	}
 	m.run(ctx)
 	return cr
 }

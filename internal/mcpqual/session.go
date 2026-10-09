@@ -454,6 +454,7 @@ func (measureEvidence) write(r *Runner, in caseInputs, run *caseRun) {
 func (m *measure) runCase(ctx context.Context, spec caseSpec) CaseReport {
 	r, pc := m.r, m.pc
 	m.sessions++
+	entry := r.Clock.Now()
 	cs := CaseReport{CaseID: spec.id, Setting: spec.setting, DelayMS: spec.delay, ProgressIntervalMS: spec.interval, Events: []Event{}}
 	fail := func(outcome, reason string) CaseReport {
 		cs.Outcome, cs.Reason = outcome, sptr(reason)
@@ -464,9 +465,56 @@ func (m *measure) runCase(ctx context.Context, spec caseSpec) CaseReport {
 		return fail(OutcomeInconclusive, ReasonConfigFailure+": "+err.Error())
 	}
 	in.evidence = measureEvidence{}
-	wd, capped := r.allowance(time.Duration(r.Plan.EffectiveLimits().MaxCaseMS)*time.Millisecond, m.deadline)
+	caseLimit := time.Duration(r.Plan.EffectiveLimits().MaxCaseMS) * time.Millisecond
+	// The pinned Cursor adapter's per-case preparation (design
+	// decoder-enrollment B3, FP-24), immediately after prepareCase and
+	// within the case's budget: the case deadline starts at entry, the
+	// preparation's time included.
+	var q *qualifyPrep
+	deadline := m.deadline
+	if m.prep != nil {
+		if d := entry.Add(caseLimit); d.Before(deadline) {
+			deadline = d
+		}
+		var reason string
+		q, reason = m.prepareQualifyCase(ctx, spec, in, deadline)
+		cs.CursorPreparation = q.rec
+		if reason == "" {
+			// The permission file's read and the projects baseline
+			// immediately before the model launch.
+			reason = m.beforeSession(ctx, q, in, deadline)
+		}
+		if reason != "" {
+			if reason == ReasonInterrupted {
+				return fail(OutcomeInterrupted, reason)
+			}
+			return fail(OutcomeInconclusive, reason)
+		}
+	}
+	// The model's allowance is what remains of the deadline now, after
+	// every preparation operation (code review B3 round 1, C1): never an
+	// allowance computed before them.
+	wd, capped := r.allowance(caseLimit, deadline)
+	if q != nil {
+		capped = !m.deadline.After(deadline)
+	}
 	if wd <= 0 {
+		if q != nil && r.Clock.Now().Before(m.deadline) {
+			q.rec.Reason = sptr(ReasonBudget + ": max_case_ms")
+			return fail(OutcomeInconclusive, *q.rec.Reason)
+		}
+		if q != nil {
+			q.rec.Reason = sptr(ReasonClientBudget)
+		}
 		return fail(OutcomeInconclusive, ReasonClientBudget)
+	}
+	// A cancellation before the model launch launches nothing (code review
+	// B3 round 2, C1).
+	if ctx.Err() != nil {
+		if q != nil {
+			q.rec.Reason = sptr(ReasonInterrupted)
+		}
+		return fail(OutcomeInterrupted, ReasonInterrupted)
 	}
 	m.lastEvents = nil
 	run := r.executeCase(ctx, in, wd)
@@ -479,11 +527,21 @@ func (m *measure) runCase(ctx context.Context, spec caseSpec) CaseReport {
 		if absentErr(run.launchErr) {
 			reason = ReasonAbsentBinary
 		}
+		if q != nil {
+			q.rec.Reason = sptr(reason)
+		}
 		return fail(OutcomeInconclusive, reason)
 	}
 	cs.ServerEvents, cs.VendorEvents = run.serverRel, run.vendorRel
 	m.lastEvents = classify(&cs, r.Nonce, m.decode(run.transcript), run)
 	m.checkCapability(&cs)
+	switch {
+	case q != nil:
+		m.afterSession(ctx, &cs, q, in, run, deadline)
+	case m.pinned && conclusiveCase(cs.Outcome):
+		// No preparation (another recipe or platform): never a fact.
+		cs.Outcome, cs.Reason = OutcomeInconclusive, sptr(ReasonCursorScopeUnverified+": the pinned Cursor version without per-case preparation (only the trusted linux/amd64 recipe prepares)")
+	}
 	return cs
 }
 

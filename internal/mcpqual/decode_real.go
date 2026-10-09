@@ -2,7 +2,8 @@ package mcpqual
 
 // Real decoders (design decoder-enrollment B2, FP-17): the inspected
 // linux/amd64 success formats of Codex 0.160.0, Grok 1.0.46 and Claude
-// 2.1.292, selected only through Registry.Select's exact-version overrides.
+// 2.1.292, selected only through Registry.Select's exact-version overrides,
+// and (design decoder-enrollment B3, FP-22) Cursor Agent 2026.10.01-e373342.
 // The synthetic family parsers in decode.go are unchanged and keep their
 // negative coverage; nothing here is a union of formats.
 //
@@ -25,11 +26,15 @@ import (
 )
 
 // The enrolled real identities (design decoder-enrollment B2, Evidence and
-// precedence): exact version strings and their one platform.
+// precedence, and B3 for Cursor): exact version strings and their one
+// platform.
 const (
-	CodexRealVersion     = "codex-cli 0.160.0"
-	GrokRealVersion      = "grok 1.0.46 (2765805b9442) [stable]"
-	ClaudeRealVersion    = "2.1.292 (Claude Code)"
+	CodexRealVersion  = "codex-cli 0.160.0"
+	GrokRealVersion   = "grok 1.0.46 (2765805b9442) [stable]"
+	ClaudeRealVersion = "2.1.292 (Claude Code)"
+	// CursorRealVersion is Cursor Agent's exact enrolled version (design
+	// decoder-enrollment B3, FP-22).
+	CursorRealVersion    = "2026.10.01-e373342"
 	EnrolledRealPlatform = "linux/amd64"
 	// ClaudeProbeTool is Claude's full name of the probe's slow tool.
 	ClaudeProbeTool = "mcp__probe__slow"
@@ -781,11 +786,282 @@ func (s *realState) claudeResult(off int64, b jobj) {
 	}
 }
 
-// realVersionClient maps the three enrolled exact versions to their
-// clients.
-var realVersionClient = map[string]string{CodexRealVersion: "codex", GrokRealVersion: "grok", ClaudeRealVersion: "claude"}
+// Fixed safe reasons of the Cursor real decoder (design decoder-enrollment
+// B3, FP-22): never vendor prose.
+const (
+	// cursorRejection is a structured MCP rejection: real diagnostic
+	// evidence, never a permission capability.
+	cursorRejection = "an unsupported cursor MCP rejection (no permission capability is enrolled)"
+)
 
-// isRealVersion reports one of the three enrolled exact identities.
+// decodeCursorReal reads Cursor Agent 2026.10.01-e373342's `-p
+// --output-format stream-json` records (design decoder-enrollment B3,
+// FP-22): the probe call is a tool_call started record whose tool_call
+// holds exactly one tool variant, mcpToolCall, naming provider and server
+// probe, tool slow (alias probe-slow), skipApproval and
+// smartModeApprovalOnly false and args exactly {case_id}, with the record's
+// call_id, the tool call's toolCallId and the args' toolCallId equal
+// (opaque: an embedded newline is kept); its result is the completed
+// record of the same identity whose mcpToolCall.result is exactly the
+// success alternative with isError false, no system reminders and one
+// content block {text:{text}} holding the probe's {case_id, nonce}; the
+// terminal is the result record of subtype success with is_error false.
+// Init, user, assistant and thinking records are narrative and emit
+// nothing; hook contexts must be empty. A rejection, another tool, another
+// alternative, an unknown record and every ordering fault is inconclusive;
+// no typed error, timeout or permission event is emitted.
+func decodeCursorReal(t Transcript) Decoded {
+	s := newRealState()
+	for _, l := range t.Lines {
+		if s.stop {
+			break
+		}
+		e, ok := s.record(l.Data)
+		if !ok {
+			break
+		}
+		typ, ok := s.str(e, "type", "a cursor record")
+		if !ok {
+			continue
+		}
+		switch typ {
+		case "user", "assistant":
+			// Narrative: the message content is never parsed.
+		case "system", "thinking":
+			sub, ok := s.str(e, "subtype", "a cursor "+typ+" record")
+			if ok && !(typ == "system" && sub == "init" || typ == "thinking" && (sub == "delta" || sub == "completed")) {
+				s.unrecognized("an unknown cursor " + typ + " subtype")
+			}
+		case "tool_call":
+			s.cursorToolCall(l.OffsetNS, e)
+		case "result":
+			sub, ok1 := s.str(e, "subtype", "the cursor result")
+			isErr, present, ok2 := s.boolean(e, "is_error")
+			switch {
+			case !ok1 || !ok2:
+				if !s.stop {
+					s.otherTerminal("an unsupported cursor result")
+				}
+			case sub == "success" && present && !isErr:
+				s.terminal()
+			default:
+				s.otherTerminal("an unsupported cursor result")
+			}
+		default:
+			s.unrecognized("an unknown cursor record type")
+		}
+	}
+	return s.done(t)
+}
+
+// cursorToolCall is one tool_call record: the probe's start or its
+// completion, under the exact structure of decodeCursorReal.
+func (s *realState) cursorToolCall(off int64, e jobj) {
+	sub, ok := s.str(e, "subtype", "a cursor tool_call")
+	if !ok {
+		return
+	}
+	if sub != "started" && sub != "completed" {
+		s.unrecognized("an unknown cursor tool_call subtype")
+		return
+	}
+	id, caseID, m, ok := s.cursorProbeIdentity(e)
+	if !ok {
+		return
+	}
+	if sub == "started" {
+		if _, present := m["result"]; present {
+			s.unrecognized("a cursor probe start with a result")
+			return
+		}
+		s.call(off, id, caseID)
+		return
+	}
+	started, probe := s.probe[id]
+	switch {
+	case !probe:
+		s.unrecognized("a cursor probe completion without its start")
+		return
+	case started != caseID:
+		s.unrecognized("the cursor probe completion names another case")
+		return
+	}
+	res, ok := s.obj(m, "result", "the cursor probe completion")
+	if !ok {
+		return
+	}
+	if _, rejected := res["rejected"]; rejected {
+		s.unrecognized(cursorRejection)
+		return
+	}
+	if _, success := res["success"]; !success || len(res) != 1 {
+		s.unrecognized("an unsupported cursor result alternative")
+		return
+	}
+	succ, ok := s.obj(res, "success", "the cursor probe result")
+	if !ok {
+		return
+	}
+	if !exactMembers(succ, "content", "isError", "systemReminders") {
+		s.unrecognized("an unsupported cursor success member set")
+		return
+	}
+	isErr, _, ok := s.boolean(succ, "isError")
+	if !ok {
+		return
+	}
+	reminders, ok := s.arr(succ, "systemReminders", "the cursor probe result")
+	if !ok {
+		return
+	}
+	if isErr || len(reminders) != 0 {
+		s.unrecognized("a cursor probe result marked isError or with system reminders")
+		return
+	}
+	content, ok := s.arr(succ, "content", "the cursor probe result")
+	if !ok {
+		return
+	}
+	if len(content) != 1 {
+		s.unrecognized("the cursor probe result is not exactly one content block")
+		return
+	}
+	block, ok := asObj(content[0])
+	if !ok {
+		s.malformed()
+		return
+	}
+	if !exactMembers(block, "text") {
+		s.unrecognized("an unsupported cursor content block")
+		return
+	}
+	inner, ok := s.obj(block, "text", "the cursor content block")
+	if !ok {
+		return
+	}
+	if !exactMembers(inner, "text") {
+		s.unrecognized("an unsupported cursor content text")
+		return
+	}
+	text, ok := s.str(inner, "text", "the cursor content text")
+	if !ok {
+		return
+	}
+	if checkJSON([]byte(text)) != nil {
+		s.malformed()
+		return
+	}
+	if p, ok := asObj(json.RawMessage(text)); !ok || !exactMembers(p, "case_id", "nonce") {
+		if !ok {
+			s.malformed()
+		} else {
+			s.unrecognized("the cursor probe result payload is not exactly case_id and nonce")
+		}
+		return
+	}
+	s.result(off, id, text)
+}
+
+// cursorProbeIdentity checks a tool_call record's probe identity: exactly
+// one tool variant (mcpToolCall), the probe's provider, server, tool and
+// alias, both approval flags false, args exactly a nonempty case_id, empty
+// hook contexts and the three equal nonempty call IDs. It returns the call
+// ID, the case and the mcpToolCall object.
+func (s *realState) cursorProbeIdentity(e jobj) (id, caseID string, m jobj, ok bool) {
+	tc, ok := s.obj(e, "tool_call", "a cursor tool_call")
+	if !ok {
+		return
+	}
+	variants := 0
+	for k := range tc {
+		if len(k) > len("ToolCall") && k[len(k)-len("ToolCall"):] == "ToolCall" {
+			variants++
+		}
+	}
+	if _, mcp := tc["mcpToolCall"]; !mcp || variants != 1 {
+		s.unrecognized("an unsupported cursor tool variant")
+		return "", "", nil, false
+	}
+	if m, ok = s.obj(tc, "mcpToolCall", "the cursor tool call"); !ok {
+		return
+	}
+	a, ok := s.obj(m, "args", "the cursor MCP call")
+	if !ok {
+		return
+	}
+	var vals [4]string
+	for i, k := range []string{"providerIdentifier", "serverIdentifier", "toolName", "name"} {
+		if vals[i], ok = s.str(a, k, "the cursor MCP args"); !ok {
+			return
+		}
+	}
+	if vals != [4]string{"probe", "probe", "slow", "probe-slow"} {
+		s.unrecognized("a cursor MCP call of another server, tool or alias")
+		return "", "", nil, false
+	}
+	for _, k := range []string{"skipApproval", "smartModeApprovalOnly"} {
+		v, present, bok := s.boolean(a, k)
+		if !bok {
+			return "", "", nil, false
+		}
+		if !present || v {
+			s.unrecognized("a cursor probe call without both approval flags false")
+			return "", "", nil, false
+		}
+	}
+	args, ok := s.obj(a, "args", "the cursor MCP args")
+	if !ok {
+		return
+	}
+	if !exactMembers(args, "case_id") {
+		s.unrecognized("the cursor probe arguments are not exactly case_id")
+		return "", "", nil, false
+	}
+	if caseID, ok = s.str(args, "case_id", "the cursor probe arguments"); !ok {
+		return
+	}
+	hooks, ok := s.arr(tc, "hookAdditionalContexts", "the cursor tool call")
+	if !ok {
+		return
+	}
+	if len(hooks) != 0 {
+		s.unrecognized("a cursor tool call with hook contexts")
+		return "", "", nil, false
+	}
+	var ids [3]string
+	for i, src := range []struct {
+		o jobj
+		k string
+	}{{e, "call_id"}, {tc, "toolCallId"}, {a, "toolCallId"}} {
+		if ids[i], ok = s.str(src.o, src.k, "a cursor tool call"); !ok {
+			return
+		}
+	}
+	if ids[0] == "" || ids[0] != ids[1] || ids[0] != ids[2] {
+		s.unrecognized("the cursor call IDs are empty or differ")
+		return "", "", nil, false
+	}
+	return ids[0], caseID, m, true
+}
+
+// exactMembers reports that object o has exactly the named members.
+func exactMembers(o jobj, names ...string) bool {
+	if len(o) != len(names) {
+		return false
+	}
+	for _, n := range names {
+		if _, ok := o[n]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// realVersionClient maps the four enrolled exact versions (design
+// decoder-enrollment B2 and, for Cursor, B3) to their clients.
+var realVersionClient = map[string]string{CodexRealVersion: "codex", GrokRealVersion: "grok", ClaudeRealVersion: "claude", CursorRealVersion: "cursor"}
+
+// isRealVersion reports one of the four enrolled exact identities.
 func isRealVersion(client, version string) bool {
 	c, ok := realVersionClient[version]
 	return ok && c == client

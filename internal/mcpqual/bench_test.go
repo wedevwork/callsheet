@@ -77,8 +77,8 @@ func BenchmarkMCPQualificationTranscript(b *testing.B) {
 	benchRealFixtures(b)
 }
 
-// benchRealFixtures (design decoder-enrollment B2) measures the three
-// enrolled real fixtures: decode CPU over the in-memory transcript through
+// benchRealFixtures (design decoder-enrollment B2, and B3 for Cursor)
+// measures the four enrolled real fixtures: decode CPU over the in-memory transcript through
 // the exact-version decoder, separately from the replay and validation
 // I/O (the bundle read from disk with its oracle and receipt, then Replay),
 // and the production ValidateEnrollment of the checked-in index. Each
@@ -90,7 +90,7 @@ func benchRealFixtures(b *testing.B) {
 		b.Fatal(err)
 	}
 	idx, err := ParseEnrollmentIndex(ib)
-	if err != nil || len(idx.Entries) != 3 {
+	if err != nil || len(idx.Entries) != 4 {
 		b.Fatalf("production index: %v (%d entries)", err, len(idx.Entries))
 	}
 	reg := DefaultRegistry()
@@ -148,7 +148,7 @@ func benchRealFixtures(b *testing.B) {
 			got, err = ValidateEnrollment(EnrollmentOptions{Root: root, Registry: reg})
 		}
 		b.StopTimer()
-		if err != nil || len(got.Entries) != 3 {
+		if err != nil || len(got.Entries) != 4 {
 			b.Fatalf("production enrollment: %v", err)
 		}
 		b.ReportMetric(float64(len(ib)), "bytes/op")
@@ -453,6 +453,60 @@ func BenchmarkMCPCaptureEvidence(b *testing.B) {
 		if err != nil || len(edits) != 11 || !bytes.Equal(masked, spliceEdits(exp, e2, func(fixtureEdit) string { return protectedMaskToken })) ||
 			!slices.EqualFunc(protectedBytes(data, prot), protectedBytes(exp, p2), bytes.Equal) {
 			b.Fatalf("protected spans: %d edits, %v", len(edits), err)
+		}
+	})
+	// Design decoder-enrollment B3 (FP-23/FP-25): the Cursor policy's
+	// transcript step over the small fabricated Cursor stream (every row,
+	// the opaque newline-bearing call ID), asserting determinism, the row
+	// count, the protected IDs and the masked fingerprint; and the in-memory
+	// residue check of one attributed socket (an injected tiny tree, never a
+	// real home or socket), asserting the admitted normalized entry.
+	var cursorExport []byte
+	for i, r := range cursorExportRecords("bench-meta", `{\"case_id\":\"c\",\"nonce\":\"n\"}`) {
+		cursorExport = append(append(cursorExport, wrapLine(int64(i+1), []byte(r))...), '\n')
+	}
+	b.Run(fmt.Sprintf("export-cursor/%dB", len(cursorExport)), func(b *testing.B) {
+		vendor := ClientFile("cursor", FileVendorEvents)
+		b.ReportAllocs()
+		b.SetBytes(int64(len(cursorExport)))
+		var te *transcriptExport
+		var err error
+		for i := 0; i < b.N; i++ {
+			te, err = exportTranscript("cursor", vendor, cursorExport)
+		}
+		b.StopTimer()
+		b.ReportMetric(float64(len(cursorExport)), "bytes/op")
+		again, err2 := exportTranscript("cursor", vendor, cursorExport)
+		check, err3 := exportedReplacements("cursor", vendor, te.data)
+		rows := 0
+		for _, ps := range cursorRowPointers {
+			rows += len(ps)
+		}
+		switch {
+		case errors.Join(err, err2, err3) != nil:
+			b.Fatal(errors.Join(err, err2, err3))
+		case !bytes.Equal(te.data, again.data) || len(te.reps) != rows || !bytes.Equal(te.masked, check.masked) || len(check.reps) != rows:
+			b.Fatalf("cursor export: %d replacements of %d", len(te.reps), rows)
+		case bytes.Contains(te.data, []byte("bench-meta")) || bytes.Count(te.data, []byte(`call-x-0\\nfc_x_0`)) != 6:
+			b.Fatal("the Cursor export kept metadata or lost a call ID")
+		}
+	})
+	b.Run("residue-check", func(b *testing.B) {
+		b.ReportAllocs()
+		var w WorkerResidue
+		for i := 0; i < b.N; i++ {
+			m := rsWorld()
+			p := rsPreparer(m, ApprovalScanLimits{})
+			pre, err := p.residueSnapshot()
+			if err != nil {
+				b.Fatal(err)
+			}
+			socketAt(m, "c-out-work-cu-1b81996", nil)
+			w = p.checkResidue("cursor-setup", rsWS1, pre)
+		}
+		b.StopTimer()
+		if w.State != ResidueVerified || len(w.Entries) != 1 || w.Entries[0].Path != residuePath(1) {
+			b.Fatalf("residue %+v", w)
 		}
 	})
 	b.Run("over-limit", func(b *testing.B) {

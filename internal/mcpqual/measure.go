@@ -49,6 +49,12 @@ type measure struct {
 	interval    int64
 	progress    string
 	capUpper    *int64 // an absolute cap already observed in the progress case
+
+	// pinned marks the pinned Cursor version (design decoder-enrollment B3,
+	// FP-24); prep is its per-case preparation, set only for the trusted
+	// recipe of the linux/amd64 adapter.
+	pinned bool
+	prep   *cursorPreparer
 }
 
 func (m *measure) run(ctx context.Context) {
@@ -141,6 +147,10 @@ func (m *measure) session(ctx context.Context, spec caseSpec) (CaseReport, strin
 		m.stopped = *cs.Reason
 	case cs.Reason != nil && (*cs.Reason == ReasonAbsentBinary || *cs.Reason == ReasonLaunchFailed || len(*cs.Reason) > len(ReasonConfigFailure) && (*cs.Reason)[:len(ReasonConfigFailure)] == ReasonConfigFailure):
 		m.stopped = *cs.Reason
+	case cs.CursorPreparation != nil && cs.CursorPreparation.State != PreparationVerified:
+		// A failed Cursor preparation stops the client's progression: never
+		// a retry until green (design decoder-enrollment B3, FP-24).
+		m.stopped = *cs.CursorPreparation.Reason
 	}
 	return cs, ""
 }

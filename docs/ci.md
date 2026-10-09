@@ -659,6 +659,48 @@ The workflow keeps its twenty jobs, four required checks, commands, stress
 selectors, counts, CPU lists and timeouts; B2 makes no new budget
 allocation.
 
+Decoder enrollment, slice B3 (design decoder-enrollment B3), adds its five
+function parents (FP-22 to FP-26) as a separate group, 5 more names, 429 in
+all, with the 424 earlier names unchanged and first (the slice A names keep
+positions 403 to 412, the B1 names 412 to 416, the B1.5 names 416 to 419 and
+the B2 names 419 to 424; the new group holds positions 424 to 429):
+`TestMCPCursorRealDecoder`, `TestMCPCursorEnrollment`,
+`TestMCPCursorQualifyPreparation`, `TestMCPCursorWorkerResidue` and
+`TestMCPCursorConfirmation`. Each asserts its literal local case inventory
+and that every case completed, with no subtest names; they replay the
+checked-in sanitised fixtures (now four real fixtures, Cursor's included)
+offline and run the production qualification, capture and export code with
+the fake vendor (now also in the reviewed Cursor format, with its rejection
+shape and test-owned worker socket residue under the test's fixture HOME),
+the real probe and the test-only export helper (never an installed vendor
+CLI, a model, a raw capture bundle, a private review package or a `design/`
+path), and only in the normal, race and native suites, never in a stress
+shard. The Linux adapter runs on every host through the runner's injected
+GOOS and GOARCH. The new offline cases are the Cursor decoder's golden
+replay and negative mutations, the Cursor export's determinism, protected
+evidence and refusals, the production enrollment self-check of the four
+entries and its corruptions, each qualify case's own preparation (fresh
+workspaces, the exact permission file, the approval scope, the three reads,
+failures, budget and cleanup, and the strict report schema), the
+run-attributed worker socket residue (its ledger, a later invocation's
+refusal, unsafe shapes, replacement and bounds, capture's record), and the
+15 s Cursor confirmation path on an injected fake clock with no sleeps. The
+new `internal/mcpqual` unit vectors are small, injected and deterministic
+and run in that package's unchanged per-CPU invocations of
+`stress-packages-cpu`: B3 adds no new stress selector or workload. `devcheck
+native` still makes 9 ordinary calls, `devcheck bench` keeps 13 steps
+(`BenchmarkMCPQualificationTranscript` replays the four real fixtures,
+Cursor's decode CPU and its replay and `ValidateEnrollment` I/O measured
+separately, and `BenchmarkMCPCaptureEvidence` adds the small `export-cursor`
+and in-memory `residue-check` cases), Linux `all` still makes 32 ordinary
+calls, cross keeps 12 artifacts, and the whole-file coverage manifest adds
+`internal/mcpqual/cursor_preparation.go` and
+`internal/mcpqual/cursor_residue.go` (its other changed files were already
+whole-file entries; `capture_approval_other.go` builds on neither CI host).
+The workflow keeps its twenty jobs, four required checks, commands, stress
+selectors, counts, CPU lists and timeouts; B3 makes no new budget
+allocation.
+
 Cross-build matrix (FP-8; moved out of `tests/function` on 2026-10-02).
 `devcheck cross` is FP-8's proof. It builds callsheet, fake-adapter and the
 process-group test binary (`go test -c`) with `CGO_ENABLED=0` for
