@@ -61,14 +61,18 @@ func TestMain(m *testing.M) {
 		os.WriteFile(os.Getenv("PROCEXEC_MARKER"), nil, 0o600)
 		os.Exit(5)
 	case "barrier":
-		// Blocks until the test opens the FIFO for writing and closes it,
-		// then exits barrierReleased; a barrier that cannot be opened exits
-		// 2. (A nonzero code also skips the race runtime's exit sleep.)
+		// Blocks until the test writes the FIFO's one release byte, then
+		// exits barrierReleased; a barrier that cannot be opened, or that
+		// ends without its byte, exits 2. The release is a byte, never the
+		// writer's close: Darwin may not end a FIFO read on a zero-byte
+		// close. (A nonzero code also skips the race runtime's exit sleep.)
 		f, err := os.Open(os.Getenv("PROCEXEC_BARRIER"))
 		if err != nil {
 			os.Exit(2)
 		}
-		io.Copy(io.Discard, f)
+		if _, err := io.ReadFull(f, make([]byte, 1)); err != nil {
+			os.Exit(2)
+		}
 		f.Close()
 		os.Exit(barrierReleased)
 	}
@@ -82,11 +86,15 @@ func spec(t *testing.T, mode string) mcpqual.ProcSpec {
 	return mcpqual.ProcSpec{Path: exe, Env: []string{helperEnv + "=" + mode}, Dir: t.TempDir(), StderrPath: filepath.Join(t.TempDir(), "stderr")}
 }
 
+// reapWait bounds every wait on a helper: its reaping and, in
+// TestLauncherStatusPending, its barrier's release.
+const reapWait = 30 * time.Second
+
 func waitExited(t *testing.T, p mcpqual.Proc) {
 	t.Helper()
 	select {
 	case <-p.Exited():
-	case <-time.After(30 * time.Second):
+	case <-time.After(reapWait):
 		t.Fatal("the leader was not reaped")
 	}
 }
@@ -182,6 +190,27 @@ func TestLauncherStatusPending(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	writerDone := make(chan struct{})
+	writerStarted := false
+	// On every path, a fatal one included: a leader still alive is killed
+	// and reaped, a writer still blocked in its open is let through, and
+	// stdout is closed, each wait bounded by reapWait.
+	t.Cleanup(func() {
+		select {
+		case <-p.Exited():
+		default:
+			syscall.Kill(-p.PGID(), syscall.SIGKILL)
+			select {
+			case <-p.Exited():
+			case <-time.After(reapWait):
+				t.Error("the leader was not reaped after SIGKILL")
+			}
+		}
+		if writerStarted {
+			unblockWriter(t, fifo, writerDone)
+		}
+		p.CloseStdout()
+	})
 	select {
 	case <-p.Exited():
 		t.Fatal("the leader exited before its barrier was released")
@@ -190,17 +219,25 @@ func TestLauncherStatusPending(t *testing.T) {
 	if code, sig := p.Status(); code != nil || sig != nil {
 		t.Fatal("a status before the leader was reaped")
 	}
-	// Opening for writing blocks until the child has opened for reading,
-	// then releases it. Exited may be ready together with the release, or
-	// alone when the helper never reached its barrier: a reader of our own
-	// lets a pending open complete, and the final status (barrierReleased
-	// only after a release) tells the two apart, so a dead helper cannot
-	// hang the test.
+	// Opening for writing blocks until the child has opened for reading;
+	// the one byte written then releases it (it stays buffered if the
+	// child's read has not started). Exited may be ready together with the
+	// release, or alone when the helper never reached its barrier: a reader
+	// of our own lets a pending open complete, and the final status
+	// (barrierReleased only after the byte) tells the two apart, so a dead
+	// helper cannot hang the test. A live helper that never opens its
+	// barrier fails the test after reapWait; the cleanup then kills it and
+	// lets the writer through.
 	opened := make(chan error, 1)
+	writerStarted = true
 	go func() {
+		defer close(writerDone)
 		w, err := os.OpenFile(fifo, os.O_WRONLY, 0)
 		if err == nil {
-			err = w.Close()
+			_, err = w.Write([]byte{1})
+			if cerr := w.Close(); err == nil {
+				err = cerr
+			}
 		}
 		opened <- err
 	}()
@@ -210,21 +247,45 @@ func TestLauncherStatusPending(t *testing.T) {
 			t.Fatal(err)
 		}
 	case <-p.Exited():
-		r, err := os.OpenFile(fifo, os.O_RDONLY|syscall.O_NONBLOCK, 0)
-		if err != nil {
-			t.Fatal(err)
+		unblockWriter(t, fifo, writerDone)
+		select {
+		case err := <-opened:
+			if err != nil {
+				t.Fatal(err)
+			}
+		default:
+			t.FailNow() // unblockWriter reported why
 		}
-		err = <-opened
-		r.Close()
-		if err != nil {
-			t.Fatal(err)
-		}
+	case <-time.After(reapWait):
+		t.Fatal("the barrier was not released: the helper did not open it")
 	}
 	waitExited(t, p)
 	if code, sig := p.Status(); code == nil || *code != barrierReleased || sig != nil {
-		t.Fatalf("status %s, want exit %d after the barrier's release (2: the helper could not open it)", statusText(code, sig), barrierReleased)
+		t.Fatalf("status %s, want exit %d after the barrier's release (2: the helper could not open or read it)", statusText(code, sig), barrierReleased)
 	}
-	p.CloseStdout()
+}
+
+// unblockWriter lets a barrier writer still blocked in its FIFO open
+// complete, with a nonblocking reader of our own held until the writer is
+// done, and waits for it within reapWait.
+func unblockWriter(t *testing.T, fifo string, done <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-done:
+		return
+	default:
+	}
+	r, err := os.OpenFile(fifo, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	defer r.Close()
+	select {
+	case <-done:
+	case <-time.After(reapWait):
+		t.Error("the barrier writer did not finish")
+	}
 }
 
 func statusText(code *int, sig *string) string {
