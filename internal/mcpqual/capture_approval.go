@@ -246,13 +246,17 @@ func recordedPath(key string) string {
 // scanEntry is one observed entry. A regular file's digest is the keyed
 // HMAC-SHA256 of its bytes; unknown marks an entry whose existence and type
 // were observed but whose content could not be (a symbolic link, special
-// or unreadable file).
+// or unreadable file). meta marks a regular file recorded by metadata only
+// (design decoder-enrollment A3: an admitted Cursor session file, never
+// opened): it has no digest, and its modification time stands in for one.
 type scanEntry struct {
 	typ     fs.FileMode
 	perm    fs.FileMode
 	size    int64
 	digest  [sha256.Size]byte
 	unknown bool
+	meta    bool
+	mtime   int64
 }
 
 func (e scanEntry) regular() bool { return e.typ == 0 && !e.unknown }
@@ -265,13 +269,24 @@ type snapshot struct {
 	entries  map[string]scanEntry
 	complete bool
 	why      string
-	count    int
-	bytes    int64
+	// typed is the failure's A3.1 fixed-reason error, when it is one
+	// (design decoder-enrollment A3.1): carried with why, never recovered
+	// from its text.
+	typed error
+	count int
+	bytes int64
 }
 
 func (s *snapshot) fail(why string) {
 	if s.complete {
 		s.complete, s.why = false, why
+	}
+}
+
+// failTyped fails the snapshot with an A3.1 fixed-reason error.
+func (s *snapshot) failTyped(err error) {
+	if s.complete {
+		s.complete, s.why, s.typed = false, err.Error(), err
 	}
 }
 
@@ -290,6 +305,14 @@ type approvalScanner struct {
 	// valid worker socket residue ledger entries (design decoder-enrollment
 	// B3, FP-25), each revalidated by identity.
 	exempt func(p string, info fs.FileInfo) bool
+	// metaOnly, when set, reports a regular file at a path inside the run's
+	// validated residue (design decoder-enrollment A3) or at a reserved or
+	// foreign baseline session path (A3.1): reserved, it is never opened;
+	// bound (with its admitted or recorded identity and metadata), it is
+	// recorded by metadata only; reserved but not bound, the inventory is
+	// incomplete, with fail's fixed reason when set. It is not an exclusion:
+	// the file is counted and charged.
+	metaOnly func(p string, info fs.FileInfo) (reserved, bound bool, fail error)
 }
 
 // exclude sets the scanner's excluded directories: the two data
@@ -413,6 +436,20 @@ func (sc *approvalScanner) entry(s *snapshot, mac hash.Hash, key, p string, info
 			return errBound
 		}
 		s.bytes += info.Size()
+		if sc.metaOnly != nil {
+			if reserved, bound, fail := sc.metaOnly(p, info); reserved {
+				if e.meta, e.mtime = true, info.ModTime().UnixNano(); !bound {
+					e.unknown = true
+					if fail != nil {
+						s.failTyped(fail)
+					} else {
+						s.fail("an admitted Cursor residue entry changed (it is never read)")
+					}
+				}
+				s.entries[key] = e
+				break
+			}
+		}
 		digest, why := sc.digest(mac, p, info)
 		if why != "" {
 			e.unknown = true
@@ -474,8 +511,9 @@ type approvalChange struct {
 // diffSnapshots compares the sorted labeled inventories: an entry only in
 // post is added, only in pre removed (reported only when post is complete,
 // since an incomplete post may simply not have reached it), and in both
-// with another type, mode, size or digest modified (unless either side's
-// content is unknown).
+// with another type, mode, size, digest, metadata-only marker or (for a
+// metadata-only file) modification time modified (unless either side's
+// content is unknown): an absent digest is never compared as a fingerprint.
 func diffSnapshots(pre, post *snapshot) []approvalChange {
 	keys := map[string]bool{}
 	for k := range pre.entries {
@@ -501,7 +539,7 @@ func diffSnapshots(pre, post *snapshot) []approvalChange {
 				out = append(out, approvalChange{CaptureApprovalChange{k, ChangeRemoved}, a.regular()})
 			}
 		case a.unknown || b.unknown:
-		case a.typ != b.typ || a.perm != b.perm || a.size != b.size || a.digest != b.digest:
+		case a.typ != b.typ || a.perm != b.perm || a.size != b.size || a.digest != b.digest || a.meta != b.meta || a.mtime != b.mtime:
 			out = append(out, approvalChange{CaptureApprovalChange{k, ChangeModified}, a.regular() && b.regular()})
 		}
 	}
@@ -811,26 +849,54 @@ var probeEntry = regexp.MustCompile(`^probe-[0-9a-f]{16}$`)
 // are permitted). It returns why it fails ("" when it holds). The bytes
 // never leave memory; the hash suffix is never computed or guessed.
 func (sc *approvalScanner) projectApprovals(p string) string {
+	_, _, why := sc.projectApprovalFile(p)
+	return why
+}
+
+// projectApprovalFile is projectApprovals with the validated file's
+// identity and bytes (kept private in memory: design decoder-enrollment A3's
+// approval baseline).
+func (sc *approvalScanner) projectApprovalFile(p string) (fs.FileInfo, []byte, string) {
+	info, b, why := sc.readApprovalFile(p)
+	if why != "" {
+		return nil, nil, why
+	}
+	if why := approvalContent(b); why != "" {
+		return nil, nil, why
+	}
+	return info, b, ""
+}
+
+// readApprovalFile is the bounded, no-follow, race-checked read of the
+// approval file p under the per-file cap: its identity and bytes, or why
+// it cannot be read.
+func (sc *approvalScanner) readApprovalFile(p string) (fs.FileInfo, []byte, string) {
 	info, err := sc.fs.Lstat(p)
 	if err != nil || !info.Mode().IsRegular() || info.Size() > sc.lim.FileBytes {
-		return "is not a regular file within the per-file bound"
+		return nil, nil, "is not a regular file within the per-file bound"
 	}
 	f, err := sc.fs.Open(p)
 	if err != nil {
-		return "cannot be opened"
+		return nil, nil, "cannot be opened"
 	}
 	defer f.Close()
 	opened, err := f.Stat()
 	if err != nil || !sameFile(info, opened) || opened.Size() != info.Size() || !opened.ModTime().Equal(info.ModTime()) {
-		return "changed while it was read"
+		return nil, nil, "changed while it was read"
 	}
 	b, err := io.ReadAll(io.LimitReader(f, info.Size()+1))
 	after, err1 := f.Stat()
 	post, err2 := sc.fs.Lstat(p)
 	if err != nil || err1 != nil || err2 != nil || int64(len(b)) != info.Size() || after.Size() != info.Size() || !after.ModTime().Equal(info.ModTime()) ||
 		!sameFile(info, post) || post.Size() != info.Size() || !post.ModTime().Equal(info.ModTime()) {
-		return "changed while it was read"
+		return nil, nil, "changed while it was read"
 	}
+	return info, b, ""
+}
+
+// approvalContent checks a project approval file's bytes ("" when they
+// hold).
+func approvalContent(b []byte) string {
 	// Each element must itself be a JSON string: decoding straight into
 	// strings would take a null element as "" (code review B1.5 round 1, C5).
 	var raws []json.RawMessage
@@ -862,17 +928,20 @@ func (sc *approvalScanner) projectApprovals(p string) string {
 // (design decoder-enrollment B3, FP-24): the preparer's enable command with
 // the client's remaining time, its streams written as approval-stdout.txt
 // and approval-stderr.txt in the capture layout, and the record set on cc.
-// It returns "" when the session may start, otherwise the stop reason.
-func (c *CaptureRunner) prepareCursorApproval(ctx context.Context, pc *PlanClient, cc *CaptureClient, in caseInputs, deadline time.Time, prep *cursorPreparer) string {
+// It returns the eligible in-place approval baseline (A3, r0.14 DW2: nil
+// without project_scoped approval) and "" when the session may start,
+// otherwise the stop reason.
+func (c *CaptureRunner) prepareCursorApproval(ctx context.Context, pc *PlanClient, cc *CaptureClient, in caseInputs, deadline time.Time,
+	prep *cursorPreparer) (*cursorApprovalBaseline, string) {
 	cc.Approval = newApproval("not reached")
 	l := approvalLaunch{r: c.r, executable: pc.Executable, env: in.proc.Env, what: pc.ID + " approval", id: pc.ID, log: c.Log}
-	ap, reason := prep.approve(ctx, l, in, deadline, cc.ToolPermission != nil, func(o approvalOutput) error {
+	ap, base, reason := prep.approve(ctx, l, in, deadline, cc.ToolPermission != nil, func(o approvalOutput) error {
 		c.textWithheld(cc, ClientFile(pc.ID, FileApprovalStdout), o.stdout, o.outCut, o.withheldOut)
 		c.textWithheld(cc, ClientFile(pc.ID, FileApprovalStderr), o.stderr, o.errCut, o.withheldErr)
 		return c.ioError
 	})
 	cc.Approval = ap
-	return reason
+	return base, reason
 }
 
 // verifyCursorPermission is capture's record of one permission check: ""

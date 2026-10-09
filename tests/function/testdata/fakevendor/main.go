@@ -80,6 +80,11 @@
 // and two (a second candidate). The fake closes its listener without
 // unlinking, so no process holds the socket; the harness must never open,
 // connect to or remove it, and the test's temporary directory removes it.
+// Design decoder-enrollment A3 adds the in-place layout (the exact session
+// tree in the case's own full-slug project directory, its session files
+// carrying a canary), its defects, both layouts at once, per-case mode
+// lists and an observed mode selecting the layout by the test's workspace
+// (see leaveResidue).
 package main
 
 import (
@@ -140,6 +145,16 @@ func main() {
 func run(args []string) int {
 	mode := fakeEnv("MODE")
 	switch mode {
+	case "bind-socket":
+		// A test fixture helper: bind the relative socket name
+		// FAKE_VENDOR_SOCKET_NAME in the working directory (its absolute path
+		// may exceed the platform's socket path limit) and close it without
+		// unlinking, leaving a socket that no process holds.
+		if err := bindSocket(fakeEnv("SOCKET_NAME")); err != nil {
+			fmt.Fprintln(os.Stderr, "fake vendor: bind-socket:", err)
+			return 1
+		}
+		return 0
 	case "descendant":
 		// A group member that ignores TERM until KILLed.
 		signal.Ignore(syscall.SIGTERM)
@@ -1206,16 +1221,51 @@ func cursorRealTranscript(outcome, caseID, resultText string) string {
 	return strings.Join(lines, "\n") + "\n"
 }
 
-// leaveResidue leaves the worker socket residue FAKE_VENDOR_RESIDUE names
-// under HOME's .cursor/projects, after the session's probe was reaped.
+// leaveResidue leaves the session residue FAKE_VENDOR_RESIDUE names under
+// HOME's .cursor/projects, after the session's probe was reaped. The value
+// is one mode, or a comma list of case-basename=mode pairs (a case not
+// listed leaves none). Modes: attributed or hashed (the hashed second
+// directory holding only worker.sock), its defects full, regular, extra and
+// two; in_place (the exact in-place tree in the case's own full-slug
+// project directory, design decoder-enrollment A3), its defects
+// in_place-missing, in_place-extra, in_place-uuid, in_place-link,
+// in_place-fifo, in_place-big and in_place-partial; mixed (both layouts);
+// observed (in_place when the project slug has at most
+// FAKE_VENDOR_RESIDUE_SHORT characters, default 57, else hashed: fixture
+// control over the test-selected workspace, never a production switch).
 func leaveResidue() error {
 	mode := fakeEnv("RESIDUE")
+	wd, _ := os.Getwd()
+	base := filepath.Base(wd)
+	if strings.Contains(mode, "=") {
+		pick := ""
+		for _, pair := range strings.Split(mode, ",") {
+			if b, m, ok := strings.Cut(pair, "="); ok && b == base {
+				pick = m
+			}
+		}
+		mode = pick
+	}
 	if mode == "" {
 		return nil
 	}
-	wd, _ := os.Getwd()
 	slug := strings.ReplaceAll(strings.ReplaceAll(strings.TrimPrefix(wd, "/"), "/.work/", "/work/"), "/", "-")
-	base := filepath.Base(wd)
+	if mode == "observed" {
+		short := int(fakeInt("RESIDUE_SHORT"))
+		if short == 0 {
+			short = 57
+		}
+		mode = "hashed"
+		if len(slug) <= short {
+			mode = "in_place"
+		}
+	}
+	projects := filepath.Join(os.Getenv("HOME"), ".cursor", "projects")
+	if mode == "in_place" || mode == "mixed" || strings.HasPrefix(mode, "in_place-") {
+		if err := leaveInPlace(filepath.Join(projects, slug), slug, wd, strings.TrimPrefix(mode, "in_place-")); err != nil || mode != "mixed" {
+			return err
+		}
+	}
 	parent := strings.TrimSuffix(slug, "-"+base)
 	k := int(fakeInt("RESIDUE_K"))
 	if k == 0 {
@@ -1227,7 +1277,6 @@ func leaveResidue() error {
 	if mode == "full" {
 		name = slug + "-" + suffix
 	}
-	projects := filepath.Join(os.Getenv("HOME"), ".cursor", "projects")
 	dir := filepath.Join(projects, name)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
@@ -1249,6 +1298,84 @@ func leaveResidue() error {
 		}
 	}
 	return makeSocket(dir)
+}
+
+// residueCanary is in every in-place session file the fake writes; it must
+// never reach any evidence.
+const residueCanary = "fakevendor-session-canary-5d1e"
+
+// leaveInPlace writes the in-place session tree into the case's project
+// directory dir (the approval file is enable's), as observed: worker.sock,
+// worker.log, repo.json, .workspace-trusted and
+// agent-transcripts/<U>/<U>.jsonl, U a lowercase UUID; defect changes it.
+func leaveInPlace(dir, slug, wd, defect string) error {
+	sum := sha256.Sum256([]byte("transcript " + slug))
+	h := hex.EncodeToString(sum[:16])
+	uuid := h[:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
+	file := uuid
+	if defect == "uuid" {
+		// A different first character, always (the UUID varies per path).
+		first := "0"
+		if uuid[0] == '0' {
+			first = "1"
+		}
+		file = first + uuid[1:]
+	}
+	files := map[string]string{
+		"worker.log":         "[info] runServer socketPath=" + filepath.Join(dir, "worker.sock") + " " + residueCanary + "\n",
+		"repo.json":          `{"id": "` + uuid + `"}`,
+		".workspace-trusted": `{"trustedAt": "2026-10-09T12:39:04.000Z", "workspacePath": "` + wd + `", "trustMethod": "cli-flag", "note": "` + residueCanary + `"}`,
+		filepath.Join("agent-transcripts", uuid, file+".jsonl"): `{"role":"user","message":"` + residueCanary + `"}` + "\n",
+	}
+	switch defect {
+	case "missing":
+		// The transcript directory without its transcript.
+		delete(files, filepath.Join("agent-transcripts", uuid, file+".jsonl"))
+		if err := os.MkdirAll(filepath.Join(dir, "agent-transcripts", uuid), 0o700); err != nil {
+			return err
+		}
+	case "extra":
+		files["state.json"] = `{"note": "` + residueCanary + `"}`
+	case "big":
+		files["worker.log"] = strings.Repeat("x", 1<<20+1)
+	case "partial":
+		files = map[string]string{"worker.log": files["worker.log"]}
+	}
+	for rel, data := range files {
+		p := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			return err
+		}
+		if err := os.WriteFile(p, []byte(data), 0o600); err != nil {
+			return err
+		}
+	}
+	switch defect {
+	case "link":
+		if err := os.Remove(filepath.Join(dir, "repo.json")); err != nil {
+			return err
+		}
+		if err := os.Symlink(".workspace-trusted", filepath.Join(dir, "repo.json")); err != nil {
+			return err
+		}
+	case "fifo":
+		if err := syscall.Mkfifo(filepath.Join(dir, "worker.pipe"), 0o600); err != nil {
+			return err
+		}
+	}
+	return makeSocket(dir)
+}
+
+// bindSocket binds the relative Unix socket name in the working directory
+// and closes it without unlinking.
+func bindSocket(name string) error {
+	l, err := net.Listen("unix", name)
+	if err != nil {
+		return err
+	}
+	ul := l.(*net.UnixListener)
+	ul.SetUnlinkOnClose(false)
+	return ul.Close()
 }
 
 // makeSocket creates dir/worker.sock as a Unix socket that no process

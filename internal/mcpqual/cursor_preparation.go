@@ -14,6 +14,7 @@ package mcpqual
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -32,6 +33,12 @@ type cursorPreparer struct {
 	limits                      ApprovalScanLimits
 	goos, goarch, version, home string
 	ledger                      residueLedger
+	// foreign is the preparer's A3.1 foreign baseline (one per qualify
+	// client per run, one per capture).
+	foreign foreignState
+	// expired, when set, reports the current case's deadline passed: the
+	// projects walks check it at every entry.
+	expired func() bool
 }
 
 // newCursorPreparer builds the preparer: a nil filesystem is the operating
@@ -50,15 +57,15 @@ func (p *cursorPreparer) applies() bool {
 }
 
 // scanner is a fresh keyed approval scanner over the preparer's view with
-// its limits, the two data directories excluded and the ledger's sockets
-// exempt.
+// its limits, the two data directories excluded, the ledger's sockets
+// exempt and the ledger's in-place session files metadata-only (A3).
 func (p *cursorPreparer) scanner() (*approvalScanner, error) {
 	sc, err := newApprovalScanner(p.fsys, p.limits)
 	if err != nil {
 		return nil, errors.New("no fingerprint key")
 	}
 	sc.exclude(p.home)
-	sc.exempt = p.exempt
+	sc.exempt, sc.metaOnly = p.exempt, p.metaOnly
 	return sc, nil
 }
 
@@ -159,24 +166,40 @@ type approvalOutput struct {
 // reason. A failed pre-scan launches nothing. The enable command runs once,
 // with min(30 s, the time left to deadline), through the shared launch and
 // cleanup; its output goes to retain (the caller's writer, which reports a
-// write failure) before the second snapshot follows its cleanup.
-func (p *cursorPreparer) approve(ctx context.Context, l approvalLaunch, in caseInputs, deadline time.Time, permissionWritten bool, retain func(approvalOutput) error) (*CaptureApproval, string) {
+// write failure) before the second snapshot follows its cleanup. Each
+// snapshot is guarded by the ledger's revalidation and the metadata-only
+// projects preflight (A3). A project_scoped approval also returns the
+// case's in-place approval baseline (r0.14 DW2): the directory and file
+// identities and the validated bytes, kept in memory only; any other
+// outcome returns none.
+func (p *cursorPreparer) approve(ctx context.Context, l approvalLaunch, in caseInputs, deadline time.Time, permissionWritten bool,
+	retain func(approvalOutput) error) (*CaptureApproval, *cursorApprovalBaseline, string) {
 	ap := newApproval("not reached")
-	unverified := func(why string) (*CaptureApproval, string) {
+	unverified := func(why string) (*CaptureApproval, *cursorApprovalBaseline, string) {
 		reason := ReasonCursorScopeUnverified + ": " + why
 		ap.Stage, ap.Scope, ap.Reason = notRunStage(reason), ScopeUnverifiable, sptr(reason)
-		return ap, reason
+		return ap, nil, reason
+	}
+	// An ordinary failure before the inventory never preempts A3.1's fixed
+	// reason (code review A3 round 2, C1).
+	early := func(err error) (*CaptureApproval, *cursorApprovalBaseline, string) {
+		err = p.foreignVerdict(err, nil)
+		if r, ok := fixedReason(err); ok {
+			ap.Stage, ap.Scope, ap.Reason = notRunStage(r), ScopeUnverifiable, sptr(r)
+			return ap, nil, r
+		}
+		return unverified(err.Error())
 	}
 	roots, err := approvalRoots(p.fsys, in.ws, p.home)
 	if err != nil {
-		return unverified(err.Error())
+		return early(err)
 	}
 	if err := p.revalidate(); err != nil {
-		return unverified(err.Error())
+		return early(err)
 	}
 	sc, err := p.scanner()
 	if err != nil {
-		return unverified(err.Error())
+		return early(err)
 	}
 	// The per-project approval path (FP-15): derived only by the observed
 	// adapter; an unsupported platform, version or path derives nothing.
@@ -185,8 +208,19 @@ func (p *cursorPreparer) approve(ctx context.Context, l approvalLaunch, in caseI
 	if derr == nil {
 		projKey = labelHomeProjects + "/" + slug
 	}
-	pre := sc.snapshot(roots)
+	// A3.1: this case's ownership checks first (its workspace exists now;
+	// no later case is ever derived here), then the foreign baseline's
+	// initialization or revalidation; a fixed reason is recorded verbatim.
+	own := ""
+	if derr == nil {
+		own = slug
+	}
+	pre := p.scan(sc, roots, own)
 	if !pre.complete {
+		if r, ok := fixedReason(pre.typed); ok {
+			ap.Stage, ap.Scope, ap.Reason = notRunStage(r), ScopeUnverifiable, sptr(r)
+			return ap, nil, r
+		}
 		return unverified("the inventory before the command is incomplete (" + pre.why + ")")
 	}
 	if _, exists := pre.entries[projKey]; projKey != "" && exists {
@@ -198,13 +232,13 @@ func (p *cursorPreparer) approve(ctx context.Context, l approvalLaunch, in caseI
 	// interruption's precedence; the allowance below is the deadline check.
 	if ctx.Err() != nil {
 		ap.Stage, ap.Reason = notRunStage(ReasonInterrupted), sptr(ReasonInterrupted)
-		return ap, ReasonInterrupted
+		return ap, nil, ReasonInterrupted
 	}
 	wd, capped := r.allowance(cursorApprovalWatchdog, deadline)
 	if wd <= 0 {
 		reason := ReasonBudget + ": max_client_ms"
 		ap.Stage, ap.Reason = notRunStage(reason), sptr(reason)
-		return ap, reason
+		return ap, nil, reason
 	}
 	run := r.launch(ctx, ProcSpec{Path: l.executable, Args: CursorApprovalArgv(), Env: l.env, Dir: in.ws, CaptureStderr: true}, wd, r.stdoutLimit())
 	run.budgetCapped = capped
@@ -213,7 +247,7 @@ func (p *cursorPreparer) approve(ctx context.Context, l approvalLaunch, in caseI
 	if ap.Stage.State != StageRan {
 		reason := ReasonCursorApprovalFailed + ": the enable command did not launch (" + *ap.Stage.Reason + ")"
 		ap.Reason = sptr(reason)
-		return ap, reason
+		return ap, nil, reason
 	}
 	var out strings.Builder
 	for _, line := range run.transcript.Lines {
@@ -228,9 +262,9 @@ func (p *cursorPreparer) approve(ctx context.Context, l approvalLaunch, in caseI
 	if err := retain(o); err != nil {
 		reason := "workspace: " + err.Error()
 		ap.Scope, ap.Reason = ScopeUnverifiable, sptr(reason)
-		return ap, reason
+		return ap, nil, reason
 	}
-	post := sc.snapshot(roots)
+	post := p.scan(sc, roots, "")
 	changes := diffSnapshots(pre, post)
 	ap.InventoryComplete = post.complete
 	ap.Changes = make([]CaptureApprovalChange, 0, len(changes))
@@ -308,12 +342,22 @@ func (p *cursorPreparer) approve(ctx context.Context, l approvalLaunch, in caseI
 		reason = ReasonInterrupted
 	case run.cleanup.Error != nil:
 		reason = ReasonCleanupFailed
+	case isFixed(post.typed) && !ap.Stage.Watchdog:
+		// A3.1's fixed reason precedes the enable's own exit status (code
+		// review A3 round 3, C1). Only an enable killed by its watchdog keeps
+		// its own failure: the expiry it reached is the inventory's deadline
+		// cause, not a foreign change. A failed inventory has no change list,
+		// so no outside change competes.
+		reason = post.typed.Error()
 	case outside:
 		reason = ReasonCursorOutside + ": the enable command may have changed state outside the workspace; investigate before another attempt (nothing was restored)"
 	case !cleanStage(ap.Stage):
 		reason = ReasonCursorApprovalFailed + ": the enable command did not exit 0 by itself"
 	case !post.complete:
 		reason = ReasonCursorScopeUnverified + ": the inventory after the command is incomplete (" + post.why + ")"
+		if r, ok := fixedReason(post.typed); ok {
+			reason = r
+		}
 	case !faithful:
 		reason = ReasonCursorScopeUnverified + ": a changed path cannot be recorded faithfully"
 	case permission:
@@ -327,22 +371,45 @@ func (p *cursorPreparer) approve(ctx context.Context, l approvalLaunch, in caseI
 	case projDir != projFile:
 		reason = ReasonCursorScopeUnverified + ": the project approval needs both the computed project directory and its " + cursorApprovalsFile + " added"
 	case projDir:
-		if why := sc.projectApprovals(filepath.Join(p.home, ".cursor", "projects", slug, cursorApprovalsFile)); why != "" {
+		file, data, why := sc.projectApprovalFile(filepath.Join(p.projectsRoot(), slug, cursorApprovalsFile))
+		if why != "" {
 			reason = ReasonCursorScopeUnverified + ": the project approval file " + why
+			break
+		}
+		base, err := p.approvalBaseline(slug, file, data)
+		if err != nil {
+			reason = ReasonCursorScopeUnverified + ": " + err.Error()
 			break
 		}
 		ap.Scope, ap.Reason = ScopeProjectScoped, nil
 		ap.Project = &CaptureApprovalProject{Adapter: CursorProjectAdapter, Directory: labelProjectDir, File: labelProjectFile, ProbeEntryPresent: true}
 		fmt.Fprintf(l.log, "mcpqual: %s: approval project-scoped (%s): %s added, inventory policy %s excluding %s\n", l.id, CursorProjectAdapter, labelProjectFile,
 			InventoryPolicyV2, strings.Join(InventoryExcludedPaths(), " and "))
-		return ap, ""
+		return ap, base, ""
 	default:
 		ap.Scope, ap.Reason = ScopeWorkspaceOnly, nil
 		fmt.Fprintf(l.log, "mcpqual: %s: approval workspace-only, inventory policy %s excluding %s\n", l.id, InventoryPolicyV2, strings.Join(InventoryExcludedPaths(), " and "))
-		return ap, ""
+		return ap, nil, ""
 	}
 	ap.Reason = sptr(reason)
-	return ap, reason
+	return ap, nil, reason
+}
+
+// approvalBaseline is the eligible in-place baseline of a project_scoped
+// approval (A3): the computed project directory, an ordinary directory
+// holding exactly the validated approval file (file, with its bytes data)
+// and nothing else.
+func (p *cursorPreparer) approvalBaseline(slug string, file fs.FileInfo, data []byte) (*cursorApprovalBaseline, error) {
+	dir := filepath.Join(p.projectsRoot(), slug)
+	info, err := p.fsys.Lstat(dir)
+	if err != nil || !info.IsDir() {
+		return nil, errors.New("the project approval directory is not an ordinary directory")
+	}
+	b := &cursorApprovalBaseline{slug: slug, dir: info, file: file, data: data, sum: sha256.Sum256(data)}
+	if tree, err := p.walkTree(dir); err != nil || !approvalOnly(tree, b) {
+		return nil, errors.New("the project approval directory does not hold exactly its approval file")
+	}
+	return b, nil
 }
 
 // rereadConfig is the generated .cursor/mcp.json after a scoped approval,
@@ -379,12 +446,14 @@ func (p *cursorPreparer) rereadConfig(in caseInputs, server string) ([]byte, err
 }
 
 // qualifyPrep is one qualify case's preparation in progress: its report
-// record, the permission file's identity and the projects baseline taken
-// immediately before the model launch.
+// record, the permission file's identity, the eligible in-place approval
+// baseline (A3, none without project_scoped approval) and the residue
+// baseline taken immediately before the model launch.
 type qualifyPrep struct {
 	rec        *CursorPreparation
 	ident      fs.FileInfo
-	residuePre map[string]fs.FileInfo
+	approval   *cursorApprovalBaseline
+	residuePre caseResidueBaseline
 }
 
 // newPreparationRecord is a preparation record before preparation starts:
@@ -396,7 +465,7 @@ func newPreparationRecord() *CursorPreparation {
 
 // prepareQualifyCase prepares qualify case spec's fresh workspace in
 // (design decoder-enrollment B3, FP-24), its time within deadline: the
-// residue parent slug bound (FP-26), the permission file, the one enable
+// permission file, the one enable
 // command with the shared inventories (its output retained as the case's
 // approval-stdout.txt and approval-stderr.txt evidence), the read after
 // enable and the configuration re-read. Nothing from another workspace is
@@ -406,18 +475,15 @@ func newPreparationRecord() *CursorPreparation {
 func (m *measure) prepareQualifyCase(ctx context.Context, spec caseSpec, in caseInputs, deadline time.Time) (*qualifyPrep, string) {
 	p, r := m.prep, m.r
 	q := &qualifyPrep{rec: newPreparationRecord()}
+	// The projects walks of this case's preparation, residue and final
+	// verification check its deadline (A3.1).
+	p.expired = func() bool { return !r.Clock.Now().Before(deadline) }
 	fail := func(reason string) (*qualifyPrep, string) {
 		q.rec.Reason = sptr(reason)
 		return q, reason
 	}
-	// The observed residue names cut the slug at 57 characters: a parent
-	// slug longer than 54 leaves fewer than two case characters, so the
-	// session's residue could never be attributed. Never guess another
-	// truncation (r0.13 post-final clarification DW1).
-	if parent, _, err := p.parentSlug(in.ws); err == nil && len(parent) > MaxResidueParentSlug {
-		q.rec.Approval = *newApproval(ReasonResidueParentSlug)
-		return fail(ReasonResidueParentSlug)
-	}
+	// No parent-slug cap here (A3): the cap applies only to an observed
+	// hashed residue candidate, after the session's cleanup.
 	if reason := m.budgetReason(ctx, deadline); reason != "" {
 		q.rec.Approval = *newApproval(reason)
 		return fail(reason)
@@ -433,7 +499,7 @@ func (m *measure) prepareQualifyCase(ctx context.Context, spec caseSpec, in case
 	}
 	faithful := true
 	l := approvalLaunch{r: r, executable: m.pc.Executable, env: in.proc.Env, what: spec.id + " approval", id: m.pc.ID, log: r.Log}
-	ap, reason := p.approve(ctx, l, in, deadline, true, func(o approvalOutput) error {
+	ap, base, reason := p.approve(ctx, l, in, deadline, true, func(o approvalOutput) error {
 		for _, f := range []struct {
 			name     string
 			raw      []byte
@@ -451,7 +517,7 @@ func (m *measure) prepareQualifyCase(ctx context.Context, spec caseSpec, in case
 		}
 		return nil
 	})
-	q.rec.Approval = *ap
+	q.rec.Approval, q.approval = *ap, base
 	switch {
 	case reason != "":
 		return fail(reason)
@@ -498,8 +564,10 @@ func (m *measure) budgetReason(ctx context.Context, deadline time.Time) string {
 	return ReasonClientBudget
 }
 
-// beforeSession is the permission file's read and the projects baseline
-// immediately before the model launch; any deviation blocks the launch.
+// beforeSession is the permission file's read and the residue baseline
+// immediately before the model launch (the projects root's children and
+// the eligible approval directory's recheck); any deviation blocks the
+// launch.
 func (m *measure) beforeSession(ctx context.Context, q *qualifyPrep, in caseInputs, deadline time.Time) string {
 	if !m.prep.verifyPermission(in, q.ident) {
 		q.rec.ToolPermission.Reason = sptr(permissionFailed)
@@ -511,9 +579,12 @@ func (m *measure) beforeSession(ctx context.Context, q *qualifyPrep, in caseInpu
 		q.rec.Reason = sptr(reason)
 		return reason
 	}
-	pre, err := m.prep.residueSnapshot()
+	pre, err := m.prep.sessionBaseline(q.approval)
 	if err != nil {
 		reason := ReasonCursorScopeUnverified + ": worker residue check failed: " + err.Error()
+		if r, ok := fixedReason(err); ok {
+			reason = r
+		}
 		q.rec.Residue, q.rec.Reason = notCheckedResidue(reason), sptr(reason)
 		return reason
 	}

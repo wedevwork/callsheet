@@ -681,6 +681,11 @@ type memNode struct {
 	data                         string
 	lstatErr, openErr, listError error
 	racy                         bool
+	// mtime, when set, replaces the shared epoch modification time.
+	mtime time.Time
+	// size, when set, replaces the data length (a declared size: metadata
+	// vectors never need the bytes).
+	size int64
 }
 
 func newMemFS() *memFS { return &memFS{nodes: map[string]*memNode{}, links: map[string]string{}} }
@@ -716,7 +721,14 @@ func (m *memFS) clone() *memFS {
 }
 
 func (m *memFS) info(p string, n *memNode) memInfo {
-	return memInfo{name: filepath.Base(p), mode: n.mode, size: int64(len(n.data)), mtime: epoch}
+	i := memInfo{name: filepath.Base(p), mode: n.mode, size: int64(len(n.data)), mtime: epoch}
+	if !n.mtime.IsZero() {
+		i.mtime = n.mtime
+	}
+	if n.size != 0 {
+		i.size = n.size
+	}
+	return i
 }
 
 func (m *memFS) Lstat(p string) (fs.FileInfo, error) {

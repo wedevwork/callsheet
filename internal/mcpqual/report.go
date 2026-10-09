@@ -10,6 +10,7 @@ import (
 	"os"
 	"path"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -252,9 +253,9 @@ func conclusiveCase(outcome string) bool {
 // linux/amd64; a conclusive case of the pinned version only with verified
 // preparation (absence is never promoted, whatever the fixture, version
 // label or platform); and a present preparation's own consistency. ran
-// holds the client's earlier cases; residue maps each residue path seen for
-// the client to its owning case.
-func (r *Report) validatePreparation(c ClientReport, cs CaseReport, listed map[string]bool, ran map[string]bool, residue map[string]string) error {
+// holds the client's earlier cases; residue tracks the client's residue
+// entries across its cases.
+func (r *Report) validatePreparation(c ClientReport, cs CaseReport, listed map[string]bool, ran map[string]bool, residue *residueTrack) error {
 	p := cs.CursorPreparation
 	pinned := cursorPinned(c)
 	if p != nil {
@@ -271,8 +272,57 @@ func (r *Report) validatePreparation(c ClientReport, cs CaseReport, listed map[s
 	return nil
 }
 
+// residueTrack is the residue seen across one client's case records (A3):
+// each normalized path's owner, layout and items, the paths that
+// disappeared and each case's in-place provenance (project_scoped approval
+// and a launched, cleanly reaped session).
+type residueTrack struct {
+	seen        map[string]WorkerResidueEntry
+	gone        map[string]bool
+	provenanced map[string]bool
+}
+
+func newResidueTrack() *residueTrack {
+	return &residueTrack{seen: map[string]WorkerResidueEntry{}, gone: map[string]bool{}, provenanced: map[string]bool{}}
+}
+
+// track checks case caseID's residue record against the earlier ones: an
+// already seen path keeps its owner, layout and items; a path absent from a
+// checked record disappeared and never reappears; a verified in_place entry's
+// owner has its in-place provenance (only the harness attests its past
+// filesystem facts); at most MaxResidueEntries paths in all.
+func (t *residueTrack) track(caseID string, w WorkerResidue, provenanced bool) error {
+	t.provenanced[caseID] = provenanced
+	listed := map[string]bool{}
+	for _, e := range w.Entries {
+		was, seen := t.seen[e.Path]
+		switch {
+		case t.gone[e.Path]:
+			return fmt.Errorf("residue %s reappears after it disappeared", e.Path)
+		case seen && was.CaseID != e.CaseID:
+			return fmt.Errorf("residue %s changes its owning case", e.Path)
+		case seen && (was.Layout != e.Layout || !slices.Equal(was.Items, e.Items)):
+			return fmt.Errorf("residue %s changes its layout or items", e.Path)
+		case w.State == ResidueVerified && e.Layout == ResidueLayoutInPlace && !t.provenanced[e.CaseID]:
+			return fmt.Errorf("residue %s is in_place but its owning case has no project_scoped approval and cleanly reaped session", e.Path)
+		}
+		t.seen[e.Path], listed[e.Path] = e, true
+	}
+	if w.State != ResidueNotChecked {
+		for path := range t.seen {
+			if !listed[path] {
+				t.gone[path] = true
+			}
+		}
+	}
+	if len(t.seen) > MaxResidueEntries {
+		return fmt.Errorf("more than %d residue entries in one confirmation", MaxResidueEntries)
+	}
+	return nil
+}
+
 // validate checks a preparation record against its case.
-func (p *CursorPreparation) validate(cs CaseReport, listed map[string]bool, ran map[string]bool, residue map[string]string) error {
+func (p *CursorPreparation) validate(cs CaseReport, listed map[string]bool, ran map[string]bool, residue *residueTrack) error {
 	fail := func(format string, a ...any) error { return fmt.Errorf("cursor_preparation: "+format, a...) }
 	sessionRan := cs.Exit != nil || cs.Signal != nil
 	a := &p.Approval
@@ -322,14 +372,9 @@ func (p *CursorPreparation) validate(cs CaseReport, listed map[string]bool, ran 
 	if p.Residue.State != ResidueNotChecked && !sessionRan {
 		return fail("residue checked without a launched session")
 	}
-	for _, e := range p.Residue.Entries {
-		if owner, seen := residue[e.Path]; seen && owner != e.CaseID {
-			return fail("residue %s changes its owning case", e.Path)
-		}
-		residue[e.Path] = e.CaseID
-	}
-	if len(residue) > MaxResidueEntries {
-		return fail("more than %d residue entries in one confirmation", MaxResidueEntries)
+	reaped := sessionRan && cs.Cleanup.Error == nil && cs.Cleanup.GroupGone
+	if err := residue.track(cs.CaseID, p.Residue, a.Scope == ScopeProjectScoped && reaped); err != nil {
+		return fail("%v", err)
 	}
 	if p.State == PreparationVerified {
 		clean := cs.Exit != nil && *cs.Exit == 0 && cs.Signal == nil && cs.Cleanup.Error == nil && cs.Cleanup.GroupGone
@@ -521,7 +566,7 @@ func (r *Report) Validate() error {
 		if (ci.Name == nil || ci.Version == nil || ci.RequesterCompatible == nil) && (ci.UnqualifiedReason == nil || *ci.UnqualifiedReason == "") {
 			return fail("%s: client_info missing without an unqualified_reason", c.ID)
 		}
-		ran, residue := map[string]bool{}, map[string]string{}
+		ran, residue := map[string]bool{}, newResidueTrack()
 		for _, ph := range c.Phases {
 			if ph.Status != StatusConclusive && (ph.Reason == nil || *ph.Reason == "") {
 				return fail("%s.%s: status %s without a reason", c.ID, ph.Name, ph.Status)

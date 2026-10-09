@@ -555,8 +555,11 @@ func (c *CaptureRunner) session(ctx context.Context, pc *PlanClient, cc CaptureC
 	// worker socket residue after the session (FP-25).
 	var permission fs.FileInfo
 	var prep *cursorPreparer
+	var approval *cursorApprovalBaseline
 	if cc.Approval != nil {
 		prep = newCursorPreparer(c.approvalFS, c.ApprovalLimits, c.GOOS, c.GOARCH, pc.ExpectedVersion, c.Home)
+		// The projects walks check the client's deadline (A3.1).
+		prep.expired = func() bool { return !c.Clock.Now().Before(deadline) }
 		reason := ""
 		if prep.applies() {
 			if permission, reason = prep.writePermission(in); reason != "" {
@@ -567,7 +570,7 @@ func (c *CaptureRunner) session(ctx context.Context, pc *PlanClient, cc CaptureC
 			cc.WorkerResidue = sptrResidue(notCheckedResidue("the session did not run"))
 		}
 		if reason == "" {
-			reason = c.prepareCursorApproval(ctx, pc, &cc, in, deadline, prep)
+			approval, reason = c.prepareCursorApproval(ctx, pc, &cc, in, deadline, prep)
 		}
 		if reason == "" && cc.ToolPermission != nil {
 			reason = c.verifyCursorPermission(&cc, in, permission, prep)
@@ -611,13 +614,17 @@ func (c *CaptureRunner) session(ctx context.Context, pc *PlanClient, cc CaptureC
 			return stop(cc, reason)
 		}
 	}
-	// The projects root's children immediately before the model launch
-	// (FP-25): the baseline of the session's residue attribution.
-	var residuePre map[string]fs.FileInfo
+	// The projects root's children and the eligible approval directory's
+	// recheck immediately before the model launch (FP-25, A3): the baseline
+	// of the session's residue attribution.
+	var residuePre caseResidueBaseline
 	if cc.WorkerResidue != nil {
 		var err error
-		if residuePre, err = prep.residueSnapshot(); err != nil {
+		if residuePre, err = prep.sessionBaseline(approval); err != nil {
 			reason := ReasonCursorScopeUnverified + ": worker residue check failed: " + err.Error()
+			if r, ok := fixedReason(err); ok {
+				reason = r
+			}
 			cc.WorkerResidue = sptrResidue(notCheckedResidue(reason))
 			cc.Session.Reason = sptr(reason)
 			return stop(cc, reason)

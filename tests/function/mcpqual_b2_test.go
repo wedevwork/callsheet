@@ -1062,13 +1062,20 @@ func (v *clockedVendor) Start(spec mcpqual.ProcSpec) (mcpqual.Proc, error) {
 			transcript = settings["VERSION"] + "\n"
 		case slices.Equal(spec.Args, mcpqual.CursorApprovalArgv()):
 			// Design decoder-enrollment B3 (FP-26): Cursor's enable writes the
-			// workspace approval (ENABLE none: nothing, so no approval).
-			if settings["ENABLE"] != "none" {
+			// workspace approval (ENABLE none: nothing, so no approval; A3:
+			// ENABLE project: the project approval under the fixture HOME).
+			switch settings["ENABLE"] {
+			case "none":
+			case "project":
+				err = clockedProjectApproval(spec)
+			default:
 				err = os.WriteFile(filepath.Join(spec.Dir, ".cursor", "approved-servers.json"), []byte(`{"approved":["probe"]}`), 0o600)
 			}
 			transcript = "probe enabled\n"
 		default:
-			transcript, err = v.session(spec, settings)
+			if transcript, err = v.session(spec, settings); err == nil {
+				err = clockedResidue(v.t, spec, settings["RESIDUE"])
+			}
 		}
 		if err != nil {
 			p.exit = 1

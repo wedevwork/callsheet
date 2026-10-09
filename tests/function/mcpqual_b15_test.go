@@ -671,7 +671,8 @@ func TestMCPCaptureCursorProjectApproval(t *testing.T) {
 					mkdir(t, filepath.Dir(planted))
 					os.WriteFile(planted, existing, 0o600)
 				}, nil)
-				approvalStopped(t, q, c, mcpqual.ReasonCursorScopeUnverified+": the computed Cursor project directory exists before the command", mcpqual.ScopeUnverifiable, 0)
+				// A3.1: the case-ownership check, before any inventory.
+				approvalStopped(t, q, c, mcpqual.ReasonCaseProjectExists, mcpqual.ScopeUnverifiable, 0)
 				if c.Approval.Stage.State != mcpqual.StageNotRun {
 					t.Fatalf("%s: stage %+v", name, c.Approval.Stage)
 				}
@@ -842,13 +843,15 @@ func TestMCPCaptureCursorInventoryPolicy(t *testing.T) {
 					os.WriteFile(filepath.Join(q.home, ".cursor", "projects", "home-owner-earlier-project", "f"+string(rune('a'+i))), []byte("1"), 0o600)
 				}
 			}, caps(25))
-			approvalStopped(t, q, c, mcpqual.ReasonCursorScopeUnverified+": the inventory before the command is incomplete (the entry bound", mcpqual.ScopeUnverifiable, 0)
+			// A3.1: the projects walk charges every entry first.
+			approvalStopped(t, q, c, mcpqual.ReasonForeignLimit, mcpqual.ScopeUnverifiable, 0)
 			q, c, _, _ = projectRun(t, false, map[string]string{"ENABLE": "project"}, func(q *qualEnv, _ string) {
 				if err := syscall.Mkfifo(filepath.Join(q.home, ".cursor", "projects", "home-owner-earlier-project", "socket"), 0o600); err != nil {
 					t.Fatal(err)
 				}
 			}, nil)
-			approvalStopped(t, q, c, mcpqual.ReasonCursorScopeUnverified+": the inventory before the command is incomplete (a special file", mcpqual.ScopeUnverifiable, 0)
+			// A3.1: an unrecorded FIFO is an unsafe initial view.
+			approvalStopped(t, q, c, mcpqual.ReasonForeignUnverifiable, mcpqual.ScopeUnverifiable, 0)
 			q, c, _, _ = projectRun(t, false, map[string]string{"ENABLE": "workspace-flood", "FLOOD_FILES": "30"}, nil, caps(25))
 			approvalStopped(t, q, c, mcpqual.ReasonCursorScopeUnverified+": the inventory after the command is incomplete (the entry bound", mcpqual.ScopeUnverifiable, 1)
 		}},
