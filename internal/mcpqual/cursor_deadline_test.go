@@ -82,10 +82,13 @@ func (w *capWorld) launchKinds() []string {
 func cursorCapture(t *testing.T, ctx context.Context, hook func(c *CaptureRunner, w *capWorld, home string) *hookFS, mutate func(c *CaptureRunner, w *capWorld)) (*CaptureManifest, CaptureClient, []string) {
 	t.Helper()
 	w := newCapWorld(t)
-	home := filepath.Join(t.TempDir(), "home")
+	// Resolved paths (code review B3 CI): the workspace's lexical and
+	// resolved paths must agree for the project slug (macOS temporary
+	// directories sit behind the /var -> /private/var link).
+	home := filepath.Join(realDir(t), "home")
 	os.MkdirAll(filepath.Join(home, ".cursor", "projects"), 0o700)
 	c := newCapRunner(t, w, capPlan(t, "cursor"))
-	c.Home = home
+	c.Home, c.OutDir = home, filepath.Join(realDir(t), "out")
 	if hook != nil {
 		h := hook(c, w, home)
 		h.approvalFS = c.approvalFS

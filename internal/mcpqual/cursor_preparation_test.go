@@ -832,41 +832,89 @@ func bindSocketHere(name string) int {
 	return 0
 }
 
-// cqSocket creates a Unix socket that no process holds at p, without ever
-// renaming it across directories (so a separately mounted temporary
-// directory works) or changing this process's working directory: on Linux
-// bound in process through p's directory's descriptor
-// (/proc/self/fd/<fd>/<name>, a short path whatever p's length), elsewhere
-// by its relative name in a helper run of this test binary whose working
-// directory is p's directory.
+// cqSocketPortable selects cqSocket's non-Linux path (a variable so that
+// its cost can be measured on Linux too).
+var cqSocketPortable = runtime.GOOS != "linux"
+
+// maxSocketPath is the longest socket path bound directly (sun_path holds
+// 104 bytes with its terminator on darwin, 108 on Linux).
+const maxSocketPath = 100
+
+// cqSocket creates a Unix socket that no process holds at p, never renaming
+// it across devices (a separately mounted temporary directory works) and
+// never changing this process's working directory. On Linux it is bound in
+// process through p's directory's descriptor (/proc/self/fd/<fd>/<name>, a
+// short path whatever p's length). Elsewhere it is bound directly when p
+// fits the socket path limit; otherwise in a fresh short directory under the
+// resolved /tmp and renamed into place, only when that directory is on p's
+// device; only as a last resort by a helper run of this test binary whose
+// working directory is p's directory (code review B3 CI: a helper run per
+// socket is slow under the race detector).
 func cqSocket(t *testing.T, p string) {
 	dir, name := filepath.Dir(p), filepath.Base(p)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Error(err)
 		return
 	}
-	if runtime.GOOS == "linux" {
+	bind := func(path string) error {
+		l, err := net.Listen("unix", path)
+		if err != nil {
+			return err
+		}
+		ul := l.(*net.UnixListener)
+		ul.SetUnlinkOnClose(false)
+		return ul.Close()
+	}
+	if !cqSocketPortable {
 		d, err := os.Open(dir)
 		if err != nil {
 			t.Error(err)
 			return
 		}
 		defer d.Close()
-		l, err := net.Listen("unix", fmt.Sprintf("/proc/self/fd/%d/%s", d.Fd(), name))
-		if err != nil {
+		if err := bind(fmt.Sprintf("/proc/self/fd/%d/%s", d.Fd(), name)); err != nil {
 			t.Errorf("binding %s: %v", name, err)
+		}
+		return
+	}
+	if len(p) <= maxSocketPath {
+		if err := bind(p); err != nil {
+			t.Errorf("binding %s: %v", name, err)
+		}
+		return
+	}
+	if base, err := filepath.EvalSymlinks("/tmp"); err == nil && sameDevice(base, dir) {
+		short, err := os.MkdirTemp(base, "sk")
+		if err == nil {
+			defer os.RemoveAll(short)
+			if err := bind(filepath.Join(short, "s")); err != nil {
+				t.Errorf("binding %s: %v", name, err)
+				return
+			}
+			if err := os.Rename(filepath.Join(short, "s"), p); err != nil {
+				t.Errorf("placing %s: %v", name, err)
+			}
 			return
 		}
-		ul := l.(*net.UnixListener)
-		ul.SetUnlinkOnClose(false)
-		ul.Close()
-		return
 	}
 	cmd := exec.Command(os.Args[0], "-test.run=^$")
 	cmd.Dir, cmd.Env = dir, append(os.Environ(), bindSocketEnv+"="+name)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Errorf("binding %s: %v %s", name, err, out)
 	}
+}
+
+// sameDevice reports two existing paths on one device (a rename between
+// them never crosses filesystems).
+func sameDevice(a, b string) bool {
+	ia, err1 := os.Stat(a)
+	ib, err2 := os.Stat(b)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	sa, ok1 := ia.Sys().(*syscall.Stat_t)
+	sb, ok2 := ib.Sys().(*syscall.Stat_t)
+	return ok1 && ok2 && sa.Dev == sb.Dev
 }
 
 // cqResidue makes the fake Cursor's enable approve project_scoped (the
