@@ -498,11 +498,16 @@ func TestWorkspaceGitNoProgress(t *testing.T) {
 }
 
 // A request that never gets an answer is cancelled after the idle bound
-// and the watchdog is joined.
+// and the watchdog is joined. The clock moves only after "armed" and after
+// the whole request body was read: a body read after the advance would
+// record progress at the fire instant and rightly re-arm the watchdog.
 func TestWorkspaceGitSilent(t *testing.T) {
 	release := make(chan struct{})
+	bodyRead := make(chan struct{})
+	var readOnce sync.Once
 	g, _ := gitSession(t, func(w http.ResponseWriter, r *http.Request) {
 		io.ReadAll(r.Body)
+		readOnce.Do(func() { close(bodyRead) })
 		select {
 		case <-r.Context().Done():
 		case <-release:
@@ -517,6 +522,11 @@ func TestWorkspaceGitSilent(t *testing.T) {
 		errc <- g.Push(context.Background(), gInst, "refs/heads/main", plumbing.ZeroHash, plumbing.NewHash(gHash), bytes.NewReader(emptyPack()))
 	}()
 	hooks.await(t, "armed", 1)
+	select {
+	case <-bodyRead:
+	case <-time.After(gitWait):
+		t.Fatal("request body not read")
+	}
 	clock.Advance(GitIdle)
 	hooks.await(t, "idle", 1)
 	var err error
@@ -528,6 +538,36 @@ func TestWorkspaceGitSilent(t *testing.T) {
 	if codeOf(err) != contract.CodeUnavailable || !strings.Contains(err.Error(), "may have succeeded") {
 		t.Fatalf("silent push %v", err)
 	}
+	if n := len(clock.Waiters()); n != 0 {
+		t.Fatalf("%d timers left", n)
+	}
+}
+
+// Progress recorded at the very instant the timer fires leaves no idle
+// time: the watchdog re-arms for a full GitIdle and does not cancel.
+func TestWatchdogRearmWhenProgressIsAtTheFireInstant(t *testing.T) {
+	start := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	clock := testkit.NewFakeClock(start)
+	hooks := newHookLog()
+	g := &WorkspaceGit{clock: clock, idle: GitIdle, hook: hooks.record}
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+	w := g.watch(cancel)
+	hooks.await(t, "armed", 1)
+	w.last.Store(start.Add(GitIdle).UnixNano())
+	clock.Advance(GitIdle)
+	hooks.await(t, "armed", 2)
+	if n := hooks.count("idle"); n != 0 {
+		t.Fatalf("idle staged %d times despite progress at the fire instant", n)
+	}
+	if cause := context.Cause(ctx); cause != nil {
+		t.Fatalf("cancelled despite progress at the fire instant: %v", cause)
+	}
+	ws := clock.Waiters()
+	if len(ws) != 1 || ws[0].Duration != GitIdle || !ws[0].At.Equal(start.Add(2*GitIdle)) {
+		t.Fatalf("re-armed timers %+v, want one full GitIdle from the fire instant", ws)
+	}
+	w.close()
 	if n := len(clock.Waiters()); n != 0 {
 		t.Fatalf("%d timers left", n)
 	}
