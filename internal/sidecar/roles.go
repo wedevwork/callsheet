@@ -163,8 +163,10 @@ func (d *deps) probe(ctx context.Context, env roleEnv, adapterID string) error {
 }
 
 // checkCandidate is a registration validation's worker checks, in order:
-// instruction, runbook, the qualified model/effort selection (iteration
-// 08, pure: never a paid probe), then the adapter executable.
+// instruction, runbook, the model/effort selection (pure: the model
+// grammar and the adapter's effort union, never a paid probe of vendor
+// compatibility), then the adapter executable's minimum-version probe and
+// the worker posture.
 func (d *deps) checkCandidate(ctx context.Context, env roleEnv, c contract.RoleConfig) error {
 	if err := d.checkManual(ctx, "instruction", c.Instruction); err != nil {
 		return err
@@ -178,9 +180,11 @@ func (d *deps) checkCandidate(ctx context.Context, env roleEnv, c contract.RoleC
 	return d.probe(ctx, env, c.Adapter)
 }
 
-// checkSelection maps a refused model/effort selection to the role error:
-// invalid_argument, field model or effort, reason probe_failed, the
-// adapter's fixed safe message naming its supported pair.
+// checkSelection maps a refused model/effort selection (an invalid model
+// grammar or an effort outside the adapter's union) to the role error:
+// invalid_argument, the offending field, reason probe_failed, the
+// adapter's fixed safe message (never the submitted values). A valid
+// selection says nothing about whether the vendor can run it.
 func checkSelection(adapterID, model, effort string) error {
 	err := adapter.ValidateSelection(adapterID, model, effort)
 	if err == nil {
@@ -195,9 +199,12 @@ func checkSelection(adapterID, model, effort string) error {
 }
 
 // checkCycle is one ready-check cycle over an installed snapshot: each
-// distinct enabled adapter executable is probed once and its result
-// shared; each role's selection is revalidated and its two manuals are
-// checked. A failed selection or file check makes only that role false.
+// distinct enabled adapter executable is probed once (its minimum-version
+// policy and posture) and its result shared, so an old or malformed
+// version makes every role of that adapter false; each role's selection is
+// revalidated and its two manuals are checked. A failed selection or file
+// check makes only that role false. Readiness tests neither vendor
+// authentication, model existence nor pair compatibility.
 func (d *deps) checkCycle(ctx context.Context, env roleEnv, roles []contract.RoleRecord) []bool {
 	probes := map[string]bool{}
 	for _, r := range roles {

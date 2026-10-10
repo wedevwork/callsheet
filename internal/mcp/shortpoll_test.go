@@ -10,10 +10,12 @@ import (
 )
 
 // schemaDigest is the SHA-256 of every tool's name and inputSchema, in
-// tools/list order, as main a09b711 lists them (design
-// nonblocking-coordinator-waits: the 23 schemas are unchanged; only the
-// two waiting descriptions change).
-const schemaDigest = "7c866a1d826fc656985b7e49d61531da9b3898155523579c13503facb6861650"
+// tools/list order (design nonblocking-coordinator-waits: the 23 schemas
+// as main a09b711 lists them, only the two waiting descriptions changing;
+// design 12a-worker-selection then changed only the role_add, role_set and
+// dispatch override model and effort descriptions, every type, bound and
+// required list unchanged).
+const schemaDigest = "9b3bf9bd301fe34ea090cb73a9d229039184d122646084f32ad467ab4d9070f1"
 
 // TestShortPollGuidance is UT-6 (FP-6): for every budget the two waiting
 // tools carry B, the unchanged deferral note and then the exact short-poll

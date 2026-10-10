@@ -260,10 +260,13 @@ func (d *Deployment) Manuals(name, instruction, runbook string) (string, string,
 }
 
 // AddVendorRole registers role id for vendor on node with the vendor's
-// qualified model/effort pair (never an operator default) and waits until
-// it can accept work: the plane's observed readiness, polled within ctx
-// (no heartbeat-period sleep; since iteration 10a the sidecar reports its
-// first passed readiness cycle at once).
+// observed smoke pair (adapter.Qualifications' Model and Effort: the pair
+// the captures ran, used here intentionally as the smoke's explicit test
+// input; it is neither the only qualified selection nor a product default,
+// and never an operator default) and waits until it can accept work: the
+// plane's observed readiness, polled within ctx (no heartbeat-period
+// sleep; since iteration 10a the sidecar reports its first passed
+// readiness cycle at once). Other explicit selections use Client.AddRole.
 func (d *Deployment) AddVendorRole(ctx context.Context, id, vendor, node, ins, run string, concurrency int) error {
 	var q adapter.Qualification
 	for _, c := range adapter.Qualifications() {
@@ -291,7 +294,8 @@ func (d *Deployment) AddVendorRole(ctx context.Context, id, vendor, node, ins, r
 var ErrNotRefused = errors.New("the role registration was not the expected posture refusal")
 
 // RefuseVendorRole (iteration 11) registers role id for vendor on node with
-// the vendor's known model/effort pair and requires the worker's posture
+// the vendor's observed smoke pair (as AddVendorRole) and requires the
+// worker's posture
 // refusal for goos: invalid_argument, field adapter, reason probe_failed
 // and exactly adapter.ValidateWorkerPosture's message (as the plane relays
 // a node's rejection: "node NODE rejected role ID: MESSAGE"). It never enters
@@ -452,9 +456,13 @@ const (
 
 // Run is one vendor's complete smoke: a fresh deployment under dir from
 // bin whose sidecar enables vendor with the explicit executable exe
-// (sidecarEnv is that sidecar's complete environment), one qualified role,
-// and one dispatch of goal within OuterBound. The deployment is always
-// stopped before Run returns.
+// (sidecarEnv is that sidecar's complete environment; any version at or
+// above the vendor's minimum is eligible), one role with the observed
+// smoke pair (AddVendorRole), and one dispatch of goal within OuterBound.
+// The deployment is always stopped before Run returns. A pass proves only
+// that this pair completed the small goal through a plane and sidecar on
+// that host at that time: not the full coordinator workflow, other
+// model/effort pairs, future releases, useful tool writes or containment.
 func Run(ctx context.Context, bin, dir string, env, sidecarEnv []string, vendor, exe, goal string) (res Result, err error) {
 	d, err := Start(ctx, bin, dir, env)
 	if err != nil {

@@ -60,13 +60,15 @@ type Fact struct {
 	VerificationIteration string   `json:"verification_iteration"`
 }
 
-// Entry is one CLI's fact sheet. Version is the worker qualification (or
-// known-version) identity the worker facts describe; its presence is not
-// itself permission to execute a worker. CoordinatorVersion (design
-// catalog-version) is the exact CLI --version identity that new MCP
-// timeout publication targets: a separate claim, never a worker
-// qualification and never a fallback for Version. Both are compared
-// byte-for-byte, without normalization.
+// Entry is one CLI's fact sheet. Version is the exact historical worker
+// observation the worker facts describe, recorded byte-for-byte; it is
+// also the worker's minimum version baseline (design 12a-worker-selection:
+// a worker is eligible at or above it), not the installed version, and its
+// presence is not itself permission to execute a worker. CoordinatorVersion
+// (design catalog-version) is the exact CLI --version identity that new
+// MCP timeout publication targets, matched byte-for-byte without
+// normalization: a separate claim, never a worker qualification and never
+// a fallback for Version.
 type Entry struct {
 	ID                 string          `json:"id"`
 	Version            string          `json:"version"`

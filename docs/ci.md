@@ -1962,6 +1962,12 @@ Budgets:
   for regression context, with no new prediction. The pull request must
   replace these proxies with actual values (First remote run).
 
+- Iteration 12a worker-selection allocation (design 12a-worker-selection
+  r0.3, Coverage and budget allocation; planning allowances, not
+  measurements or pass/fail timing gates; implementation base 24d5ad6),
+  verbatim:
+  12a worker selection: against the pre-12a implementation base under matched runner and cache conditions, allocate ordinary/race/native function-binary growth of 5 s Linux / 8 s macOS per invocation, coverage-command growth of 5 s Linux / 8 s macOS, and 2 s additional Linux adapter benchmark execution. No macOS benchmark step is added. Main-job growth allowance is 15 s Linux / 20 s macOS, inclusive of those execution allowances rather than additional to them. No stress change: all stress workloads, selectors, repetition counts, CPU lists and timeouts remain unchanged; every stress binary has zero planned execution growth, including mcpqual. Allow at most 5 s shared compilation growth per job, included in the main-job allowance where applicable. Preserve the workflow, native inventory of 429 and every existing watchdog. Record the implementation base revision and compare binary, command and job times separately, retaining first-run evidence. An allocation miss requires investigation, fixture/build reuse or design revision, never weakened assertions, skipped cases, reduced counts or raised timeouts.
+
 Measurements, newest first. Hosted and local figures come from different
 machines and are never combined into one number.
 

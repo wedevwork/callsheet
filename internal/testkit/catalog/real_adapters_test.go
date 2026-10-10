@@ -132,8 +132,17 @@ const wave2Captures = "tests/testdata/real-adapters/linux-2026-10-04"
 // and runbook, the complete Claude and Codex entries). Nothing here reads
 // git or a design file at test time, and a later evidence change never
 // recomputes it.
+//
+// Design 12a-worker-selection refreshed it exactly once, for its eight
+// approved prose edits: the model and effort values of the four vendors
+// now describe the observed pairs as evidence, not as the only permitted
+// selection. TestWorkerCatalogSelectionProse proves that those eight value
+// leaves are the only difference: restoring their earlier text
+// (preWorkerSelectionProse) reproduces the 1038b09 digest
+// (preWorkerSelectionSHA256) over the full nine-fact projection.
 const (
-	frozenWorkerCatalogSHA256  = "6e78394370c59439c384671bfffa46769c5c5ad2d134b004de0f67616efc6c66"
+	frozenWorkerCatalogSHA256  = "195bb0bef881c1f5e914f5eee5a8aee7180952d4607bbbb980784ef14f17ee5e"
+	preWorkerSelectionSHA256   = "6e78394370c59439c384671bfffa46769c5c5ad2d134b004de0f67616efc6c66"
 	wave2Erratum               = "The copied NOTES shorthand `unknown model id` is not the exact message; `runs/grok-stdin-fail/stdout.bin` is authoritative for the exact message."
 	wave2SourceRoot            = "design/iterations/11-real-adapters/design-check"
 	wave2ProductionPlaceholder = "<composed-prompt>"
@@ -297,7 +306,9 @@ func wave2Evidence(t *testing.T, root string, entries []Entry) {
 	}
 	// The frozen publication-invariant worker projection (design
 	// catalog-version): worker identities and the nine non-publisher facts
-	// of all four vendors, unchanged since 1038b09.
+	// of all four vendors, unchanged since 1038b09 except design
+	// 12a-worker-selection's eight approved model/effort prose edits
+	// (TestWorkerCatalogSelectionProse).
 	projected, err := workerCatalogProjection(entries)
 	if err != nil {
 		t.Fatal(err)
@@ -505,6 +516,103 @@ func TestWorkerCatalogProjection(t *testing.T) {
 			t.Errorf("%s: projection %v, err %v", name, p, err)
 		}
 	}
+}
+
+// preWorkerSelectionProse are the eight model and effort values as
+// 1038b09 recorded them, before design 12a-worker-selection's approved
+// prose edits (historical text, kept only to prove the refresh's scope).
+var preWorkerSelectionProse = map[string]map[string]string{
+	"claude": {
+		"model":  "`--model sonnet` ran with 2.1.285 on the recorded Linux recipe (exit 0, result `pong`); Callsheet passes exactly `sonnet` for claude. The success output's modelUsage key `claude-sonnet-5-5` is evidence of that run, not a second accepted selection.",
+		"effort": "`--effort low` with `--model sonnet` ran with 2.1.285 on the recorded Linux recipe (exit 0); Callsheet passes only `low` for claude.",
+	},
+	"codex": {
+		"model":  "`--model gpt-6.1-sol` ran with codex-cli 0.159.0 on the recorded Linux recipe (exit 0, final `pong`); Callsheet passes exactly `gpt-6.1-sol` for codex.",
+		"effort": "`-c model_reasoning_effort=\"low\"` (the quotes are literal bytes of one argument) with `--model gpt-6.1-sol` ran with codex-cli 0.159.0 on the recorded Linux recipe (exit 0); Callsheet passes only `low` for codex.",
+	},
+	"grok": {
+		"model":  "`--model grok-4.7` ran with grok 1.0.46 on the recorded Linux recipe (exit 0, text `pong`); Callsheet passes exactly `grok-4.7` for grok. The success output's modelUsage key `grok-4.7-build` is evidence of that run, not an extra alias or accepted selection.",
+		"effort": "`--reasoning-effort low` with `--model grok-4.7` ran with grok 1.0.46 on the recorded Linux recipe (exit 0); Callsheet passes only `low` for grok. The other listed or accepted efforts (xhigh, high, medium) were not run and are refused.",
+	},
+	"cursor": {
+		"model":  "The measured vendor model argument is `grok-4.7-low` (listed by the CLI; it ran with exit 0 under the rejected candidate). Callsheet's role pair model `grok-4.7`, effort `low` maps to that literal argument; Cursor execution itself is refused.",
+		"effort": "Only the literal mapping of (`grok-4.7`, `low`) to `grok-4.7-low` is recorded; the CLI has no standalone effort flag and Callsheet applies no general model-plus-effort concatenation. The listed medium, high and xhigh variants and the bracket syntax were not run and are refused.",
+	},
+}
+
+// TestWorkerCatalogSelectionProse is UT-7 (FP-7, design
+// 12a-worker-selection): the eight model and effort values keep their
+// observation (command, version, result and evidence qualification), end
+// with the approved nonexclusive sentences and no longer claim an
+// exclusive selection; restoring exactly their pre-12a text reproduces
+// the 1038b09 projection digest, so no other projected byte (identity,
+// status, evidence, owner or any other fact) changed.
+func TestWorkerCatalogSelectionProse(t *testing.T) {
+	_, entries := realCatalog(t)
+	want := map[string]map[string]string{
+		"claude": {
+			"model":  "`--model sonnet` ran with 2.1.285 on the recorded Linux recipe (exit 0, result `pong`). This is an observed model, not a model allowlist.",
+			"effort": "`--effort low` with `--model sonnet` ran with 2.1.285 on the recorded Linux recipe (exit 0). This is an observed effort, not the adapter's complete allowed effort set.",
+		},
+		"codex": {
+			"model":  "`--model gpt-6.1-sol` ran with codex-cli 0.159.0 on the recorded Linux recipe (exit 0, final `pong`). This is an observed model, not a model allowlist.",
+			"effort": "`-c model_reasoning_effort=\"low\"` (the quotes are literal bytes of one argument) with `--model gpt-6.1-sol` ran with codex-cli 0.159.0 on the recorded Linux recipe (exit 0). This is an observed effort, not the adapter's complete allowed effort set.",
+		},
+		"grok": {
+			"model":  "`--model grok-4.7` ran with grok 1.0.46 on the recorded Linux recipe (exit 0, text `pong`). This is an observed model, not a model allowlist. The success output's modelUsage key grok-4.7-build identifies that run; it does not rewrite the requested model.",
+			"effort": "`--reasoning-effort low` with `--model grok-4.7` ran with grok 1.0.46 on the recorded Linux recipe (exit 0). This is an observed effort, not the adapter's complete allowed effort set.",
+		},
+		"cursor": {
+			"model":  "The measured vendor model argument is `grok-4.7-low` (listed by the CLI; it ran with exit 0 under the rejected candidate). Callsheet's role pair model `grok-4.7`, effort `low` maps to that literal argument; Cursor execution itself is refused. The observed pair is not a selection allowlist.",
+			"effort": "Only the literal mapping of (`grok-4.7`, `low`) to `grok-4.7-low` is recorded; the CLI has no standalone effort flag and Callsheet applies no general model-plus-effort concatenation. The other listed variants and bracket syntax are listing/help evidence, not additional measured executions. All Cursor task execution remains refused.",
+		},
+	}
+	byID := map[string]Entry{}
+	for _, e := range entries {
+		byID[e.ID] = e
+	}
+	for _, id := range workerCatalogVendors {
+		q := qualificationOf(id)
+		for _, key := range []string{"model", "effort"} {
+			f := byID[id].Facts[key]
+			if f.Value != want[id][key] || f.Status != Verified || f.VerificationIteration != Owner(id, key) {
+				t.Fatalf("%s.%s = %+v", id, key, f)
+			}
+			// The observed pair stays recorded; no exclusive claim remains.
+			observed := map[string]string{"model": q.Model, "effort": q.Effort}[key]
+			if !strings.Contains(f.Value, observed) || strings.Contains(f.Value, "Callsheet passes") || strings.Contains(f.Value, "are refused") ||
+				strings.Contains(f.Value, "accepted selection") {
+				t.Fatalf("%s.%s value %q", id, key, f.Value)
+			}
+		}
+	}
+	// The scope proof: the current catalog projects to the refreshed
+	// digest, and with the eight leaves restored to 1038b09's text to the
+	// earlier one.
+	if got := sumJSON(mustProject(t, entries)); got != frozenWorkerCatalogSHA256 {
+		t.Fatalf("current projection %s", got)
+	}
+	restored := clone(t, entries)
+	for i := range restored {
+		for key, v := range preWorkerSelectionProse[restored[i].ID] {
+			f := restored[i].Facts[key]
+			f.Value = v
+			restored[i].Facts[key] = f
+		}
+	}
+	if got := sumJSON(mustProject(t, restored)); got != preWorkerSelectionSHA256 {
+		t.Fatalf("the refresh changed more than the eight model/effort values: restored projection %s", got)
+	}
+}
+
+// mustProject is workerCatalogProjection, failing t on error.
+func mustProject(t *testing.T, es []Entry) []workerCatalogEntry {
+	t.Helper()
+	p, err := workerCatalogProjection(es)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
 }
 
 func qualificationOf(id string) adapter.Qualification {

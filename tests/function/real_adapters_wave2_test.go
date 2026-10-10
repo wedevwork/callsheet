@@ -272,7 +272,7 @@ func (r *wave2Rig) refuse(t *testing.T, rc contract.RoleConfig, posture string) 
 	}
 }
 
-// role is a wave-2 role config on worker G with the known pair.
+// role is a wave-2 role config on worker G with the observed pair.
 func (r *wave2Rig) role(id, vendor string) contract.RoleConfig {
 	return contract.RoleConfig{ID: id, Name: id, Node: r.a.NodeID, Adapter: vendor, Instruction: r.ins, Runbook: r.run, Model: "grok-4.7", Effort: "low", Concurrency: 1}
 }
@@ -287,24 +287,28 @@ func noCursorTask(t *testing.T, kits ...*replayKit) {
 	}
 }
 
-// FP-1: the grok and cursor flags, metadata and exact pairs, and the
-// posture refusals of Cursor everywhere and Grok on macOS.
+// FP-1: the grok and cursor flags, metadata and effort unions (design
+// 12a-worker-selection), and the posture refusals of Cursor everywhere and
+// Grok on macOS.
 func TestWave2Registration(t *testing.T) {
 	t.Parallel()
 	r := sharedWave2Rig(t)
 	ctx := context.Background()
 	t.Run("registry", func(t *testing.T) {
 		delegate(t, contractBinary(t, "./internal/adapter"), "./internal/adapter", "^TestWave2RegistrySelection$", "TestWave2RegistrySelection")
-		for _, id := range []string{"grok", "cursor"} {
+		for id, c := range map[string]struct{ bad, allowed string }{
+			"grok":   {"max", "allowed: low, medium, high, xhigh"},
+			"cursor": {"ultra", "allowed: none, minimal, low, medium, high, xhigh, max"},
+		} {
 			info, ok := adapter.Lookup()(id)
-			if !ok || info.TestOnly || !slices.Equal(info.Efforts, []string{"low"}) {
+			if !ok || info.TestOnly || !slices.Equal(info.Efforts, effortUnions[id]) {
 				t.Fatalf("%s metadata %+v %v", id, info, ok)
 			}
-			// The plane refuses efforts outside the descriptor before the node.
+			// The plane refuses efforts outside the union before the node.
 			bad := r.role("reg-"+id+"-effort", id)
-			bad.Effort = "medium"
-			if _, err := r.addRole(ctx, bad); contract.CodeOf(err) != contract.CodeInvalidArgument || !strings.Contains(err.Error(), "allowed: low") {
-				t.Fatalf("%s medium: %v", id, err)
+			bad.Effort = c.bad
+			if _, err := r.addRole(ctx, bad); contract.CodeOf(err) != contract.CodeInvalidArgument || !strings.Contains(err.Error(), c.allowed) {
+				t.Fatalf("%s %s: %v", id, c.bad, err)
 			}
 		}
 		if wave2Linux() {
@@ -358,36 +362,45 @@ func TestWave2Registration(t *testing.T) {
 		}
 	})
 	t.Run("selection", func(t *testing.T) {
-		// Exact pairs only, refused field by field without echoing the
-		// value, before any probe (the selection check comes first).
-		for _, c := range []struct{ vendor, model, field string }{{"grok", "grok-4.7-build", "model"}, {"grok", "grok-4.7-low", "model"},
-			{"cursor", "grok-4.7-low", "model"}, {"cursor", "auto", "model"}} {
-			rc := r.role("sel-"+c.vendor, c.vendor)
-			rc.Model = c.model
+		// Design 12a-worker-selection: invalid model grammar and efforts
+		// outside the union are refused by the plane field by field without
+		// echoing the value; nothing is recorded.
+		for _, c := range []struct{ vendor, model, effort, field string }{{"grok", "\tgrok-4.7", "low", "model"}, {"grok", "grok-4.7-build-fast", "max", "effort"},
+			{"cursor", " ", "low", "model"}, {"cursor", "grok-4.7", "extra-high", "effort"}} {
+			rc := r.role("sel-"+c.vendor+"-"+c.field, c.vendor)
+			rc.Model, rc.Effort = c.model, c.effort
 			_, err := r.addRole(ctx, rc)
 			var ce *contract.Error
-			if !errors.As(err, &ce) || ce.Code != contract.CodeInvalidArgument || ce.Details["field"] != c.field || ce.Details["reason"] != contract.ReasonProbeFailed ||
-				!strings.Contains(ce.Message, "the "+c.vendor+" model/effort selection is not qualified; supported: model grok-4.7, effort low") ||
-				strings.Contains(ce.Message, c.model+"\"") {
-				t.Fatalf("%s %s: %v", c.vendor, c.model, err)
+			if !errors.As(err, &ce) || ce.Code != contract.CodeInvalidArgument || ce.Details["field"] != c.field || strings.Contains(ce.Message, "\tgrok") ||
+				strings.Contains(ce.Message, "extra-high") {
+				t.Fatalf("%s %q/%q: %v", c.vendor, c.model, c.effort, err)
+			}
+			if _, err := r.dep.Client.ShowRole(ctx, rc.ID); contract.CodeOf(err) != contract.CodeNotFound {
+				t.Fatalf("refused role %s recorded: %v", rc.ID, err)
 			}
 		}
+		// Cursor's vendor model name is valid free model text: it passes the
+		// selection and the probe, then the posture refuses it.
+		vendorName := r.role("sel-cursor-name", "cursor")
+		vendorName.Model = "grok-4.7-low"
+		r.refuse(t, vendorName, wave2CursorRefusal)
 		if !wave2Linux() {
 			return
 		}
-		// An unqualified per-task override is refused start_failed before
-		// any launch.
+		// An override outside Grok's union is refused at admission: no task
+		// and no launch.
 		goal := r.goal("grok override")
-		writeScenario(t, r.kit.replayKit, grokScenario(t, goal, "grok-stdin-success"))
 		req := requestFor("wg", goal)
-		m := "grok-4.7-build"
-		req.Override = &contract.TaskOverride{Model: &m}
-		f := r.dispatch(t, req)
-		if f.view.State == contract.TaskSucceeded || f.view.Reason == nil || f.view.Reason.Code != contract.ReasonStartFailed {
-			t.Fatalf("override %s", f)
+		e := "max"
+		req.Override = &contract.TaskOverride{Effort: &e}
+		sctx, cancel := context.WithTimeout(context.Background(), rigWait)
+		defer cancel()
+		if v, err := r.send(sctx, req); contract.CodeOf(err) != contract.CodeInvalidArgument || v.TaskID != "" ||
+			!strings.Contains(err.Error(), "effort is not allowed for adapter grok; allowed: low, medium, high, xhigh") {
+			t.Fatalf("grok override %+v %v", v, err)
 		}
-		if ls := launches(t, r.kit.replayKit, func(l launch) bool { return l.TaskID == f.view.TaskID }); len(ls) != 0 {
-			t.Fatalf("an unqualified override launched %+v", ls)
+		if ls := launches(t, r.kit.replayKit, func(l launch) bool { return strings.Contains(string(l.Prompt), goal) }); len(ls) != 0 {
+			t.Fatalf("a refused override launched %+v", ls)
 		}
 	})
 	t.Run("posture", func(t *testing.T) {
@@ -493,7 +506,7 @@ func TestWave2Probe(t *testing.T) {
 		}
 		t.Cleanup(func() { c.Stop() })
 		for vendor, want := range map[string]string{
-			"grok":   "has an unqualified grok version; expected grok 1.0.46 (2765805b9442) [stable]",
+			"grok":   "has an older grok version; minimum grok 1.0.46 (2765805b9442) [stable]",
 			"cursor": "is not the cursor CLI (unexpected version output)",
 		} {
 			rc := r.role("wrong-"+vendor, vendor)

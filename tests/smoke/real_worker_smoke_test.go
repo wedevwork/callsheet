@@ -3,7 +3,8 @@
 // Package smoke is the opt-in real worker smoke (iteration 08, FP-9). Every
 // Go file here requires the realadaptersmoke build tag, which no devcheck
 // or CI command enables, so ordinary and native test discovery never see
-// this package. Run it by hand on a machine with the qualified CLIs:
+// this package. Run it by hand on a machine with CLIs at or above their
+// minimum versions (design 12a-worker-selection):
 //
 //	CALLSHEET_REAL_ADAPTER_SMOKE=1 \
 //	CALLSHEET_CLAUDE_PATH=/absolute/path/to/claude \
@@ -44,8 +45,10 @@ import (
 // and expects exit 0 and the final bytes "pong" within the two-minute
 // outer bound. Before its opt-in (and outside CI) it skips without any
 // filesystem or process activity; an unset or absent binary skips only its
-// vendor; a present but unusable or unqualified binary, and any
-// authentication, model or sandbox refusal after opting in, fails.
+// vendor; a present but unusable binary or one below its minimum version,
+// and any authentication, model or sandbox refusal after opting in, fails.
+// Each vendor runs the observed smoke pair (workersmoke.Run): a pass proves
+// only that pair's small goal on this host at this time.
 func TestRealWorkerSmoke(t *testing.T) {
 	gate := workersmoke.OSGate()
 	if d := gate.Smoke(); !d.Run {

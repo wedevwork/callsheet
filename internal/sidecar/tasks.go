@@ -869,13 +869,16 @@ type preparation struct {
 
 // prepare reads both manuals completely, composes the prompt, resolves the
 // enabled executable and validates the effective model/effort selection
-// (iteration 08: a per-task override the worker has not qualified is
-// refused start_failed, with a safe local diagnostic), then checks the
-// worker posture independently of the role checks (iteration 11: Cursor
-// everywhere and Grok outside Linux, for the role environment's OS, are
-// refused start_failed with the fixed diagnostic worker_posture_not_qualified,
-// before any journal, scratch, workspace or guardian). A nonempty reason is
-// a refusal.
+// (the model grammar and the adapter's effort union, as the adapter's
+// Invocation does again: an invalid delivered selection, which only a
+// plane of another policy could send, is refused start_failed with the
+// safe local diagnostic selection_invalid, never logging the values;
+// whether the vendor accepts a valid pair is decided by its run), then
+// checks the worker posture independently of the role checks (iteration
+// 11: Cursor everywhere and Grok outside Linux, for the role environment's
+// OS, are refused start_failed with the fixed diagnostic
+// worker_posture_not_qualified, before any journal, scratch, workspace or
+// guardian). A nonempty reason is a refusal.
 func (s *taskSupervisor) prepare(w *taskWorker) (preparation, string) {
 	if s.platErr != nil {
 		return preparation{}, contract.ReasonStartFailed
@@ -902,7 +905,7 @@ func (s *taskSupervisor) prepare(w *taskWorker) (preparation, string) {
 		return preparation{}, contract.ReasonExecutableUnavailable
 	}
 	if err := adapter.ValidateSelection(role.Adapter, w.start.Effective.Model, w.start.Effective.Effort); err != nil {
-		s.logger.Warn("task model/effort selection not qualified", "task_id", w.id(), "adapter", role.Adapter, "reason", "selection_not_qualified")
+		s.logger.Warn("task model/effort selection invalid", "task_id", w.id(), "adapter", role.Adapter, "reason", "selection_invalid")
 		return preparation{}, contract.ReasonStartFailed
 	}
 	if err := adapter.ValidateWorkerPosture(role.Adapter, s.env.goos); err != nil {

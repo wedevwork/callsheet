@@ -69,7 +69,8 @@ func startVendorRun(t *testing.T, fp *fakePlane, goos string, options func(o *Ru
 	return &vendorRun{taskRun: tr, probes: n}
 }
 
-// vendorRole is a resolved role of adapter id with its qualified pair.
+// vendorRole is a resolved role of adapter id with its observed pair (an
+// explicit test selection, never a default).
 func vendorRole(id, roleID, ins, run string) contract.RoleConfig {
 	c := roleConfig(roleID, ins, run)
 	c.Adapter = id
@@ -146,61 +147,58 @@ func TestRealAdapterLocal(t *testing.T) {
 				t.Fatal("the fake warning changed")
 			}
 		}
-		// Role validation: the selection is checked after the manuals and
-		// before any probe; a disabled vendor names its own flag.
+		// Role validation (design 12a-worker-selection): an alternate valid
+		// pair, neither observed nor a default, passes after one probe; the
+		// session's contract parse refuses an effort outside the union with
+		// the existing contract error before any probe; the manuals precede
+		// the selection; a disabled vendor names its own flag.
 		fp := startFakePlane(t)
 		vr := startVendorRun(t, fp, runtime.GOOS, func(o *RunOptions) { o.CodexAdapterPath = "" }, nil)
 		ins, run := manuals(t, vr.dir, "a", "m")
 		c := fp.accept(t)
 		c.connect()
-		bad := vendorRole("claude", "a", ins, run)
-		bad.Model = "opus[1m]"
-		c.validate("p1", bad)
-		e := c.result("p1")
-		wantResult(t, e, contract.CodeInvalidArgument, "model", contract.ReasonProbeFailed)
-		if e.Message != "the claude model/effort selection is not qualified; supported: model sonnet, effort low" || vr.probes.Load() != 0 {
-			t.Fatalf("selection refusal %q after %d probes", e.Message, vr.probes.Load())
+		alt := vendorRole("claude", "a", ins, run)
+		alt.Model, alt.Effort = "claude-opus-5-5", "high"
+		c.validate("p1", alt)
+		if e := c.result("p1"); e != nil || vr.probes.Load() != 1 {
+			t.Fatalf("alternate claude role = %v (%d probes)", e, vr.probes.Load())
+		}
+		bad := vendorRole("claude", "b", ins, run)
+		bad.Effort = "ultra"
+		c.validate("p2", bad)
+		e := c.result("p2")
+		wantResult(t, e, contract.CodeInvalidArgument, "effort", "")
+		if !strings.Contains(e.Message, "effort is not allowed for adapter claude; allowed: low, medium, high, xhigh, max") || vr.probes.Load() != 1 {
+			t.Fatalf("out-of-union effort %q after %d probes", e.Message, vr.probes.Load())
 		}
 		missing := vendorRole("claude", "b", "/nonexistent/instruction.md", run)
-		missing.Model = "opus"
-		c.validate("p2", missing)
-		wantResult(t, c.result("p2"), contract.CodeInvalidArgument, "instruction", contract.ReasonManualUnreadable)
-		c.validate("p3", vendorRole("claude", "a", ins, run))
-		if e := c.result("p3"); e != nil || vr.probes.Load() != 1 {
-			t.Fatalf("qualified claude role = %v (%d probes)", e, vr.probes.Load())
+		missing.Model = "claude-fable-5-1"
+		c.validate("p3", missing)
+		wantResult(t, c.result("p3"), contract.CodeInvalidArgument, "instruction", contract.ReasonManualUnreadable)
+		c.validate("p4", vendorRole("claude", "a", ins, run))
+		if e := c.result("p4"); e != nil || vr.probes.Load() != 2 {
+			t.Fatalf("observed-pair claude role = %v (%d probes)", e, vr.probes.Load())
 		}
-		c.validate("p4", vendorRole("codex", "c", ins, run))
-		e = c.result("p4")
+		c.validate("p5", vendorRole("codex", "c", ins, run))
+		e = c.result("p5")
 		wantResult(t, e, contract.CodeInvalidArgument, "adapter", contract.ReasonAdapterDisabled)
 		if e.Message != "codex adapter is disabled on node; start sidecar with --codex-adapter ABSOLUTE_PATH" {
 			t.Fatalf("disabled codex %q", e.Message)
 		}
-		// Every ready-check cycle revalidates each role's selection.
-		good, stale := contract.RoleRecord{RoleConfig: vendorRole("claude", "a", ins, run), RegistrationOrder: 1}, contract.RoleRecord{RoleConfig: bad, RegistrationOrder: 2}
-		if got := vr.d.checkCycle(bg, vr.super(t).env, []contract.RoleRecord{good, stale}); !slices.Equal(got, []bool{true, false}) {
+		// Every ready-check cycle revalidates each role's selection: a
+		// persisted role whose effort is outside the union is unready alone.
+		stale := vendorRole("claude", "s", ins, run)
+		stale.Effort = "none"
+		if got := vr.d.checkCycle(bg, vr.super(t).env, records(vendorRole("claude", "a", ins, run), alt, stale)); !slices.Equal(got, []bool{true, true, false}) {
 			t.Fatalf("cycle = %v", got)
 		}
-		// Task preparation refuses an unqualified effective override
-		// (start_failed, a safe local diagnostic) and launches nothing.
+		// Version transitions, shared probes and independent failures on
+		// scripted probes; then the worker's task-start defenses.
 		fp = startFakePlane(t)
 		vr = startVendorRun(t, fp, runtime.GOOS, nil, nil)
 		ins, run = manuals(t, vr.dir, "a", "m")
-		s := vr.connect(t, 1, 1, vendorRole("codex", "a", ins, run))
-		b := startBody(1, s.cfgs[0], 1, 1, "override")
-		b.Effective.Model = "gpt-5-codex"
-		rid := s.nextP()
-		s.c.sendStart(rid, b)
-		r := s.c.startResult(rid)
-		if r.Err == nil || r.Err.Details["reason"] != contract.ReasonStartFailed {
-			t.Fatalf("unqualified override = %+v", r)
-		}
-		vr.noChild(t)
-		if !hasLog(vr.logs.String(), "task model/effort selection not qualified", "task_id", b.TaskID) || strings.Contains(vr.logs.String(), "gpt-5-codex") {
-			t.Fatalf("override diagnostic:\n%s", vr.logs.String())
-		}
-		if entries, _ := os.ReadDir(vr.tmp); len(entries) != 0 {
-			t.Fatalf("a refused start left scratch %v", entries)
-		}
+		selectionLifecycle(t, vr, ins, run)
+		overrideStarts(t)
 	})
 	t.Run("file", func(t *testing.T) {
 		// The real no-follow helper on the filesystem.
@@ -334,6 +332,14 @@ func TestRealAdapterLocal(t *testing.T) {
 		}
 	})
 	t.Run("ordering", func(t *testing.T) {
+		// The role checks keep their order with an alternate selection
+		// (design 12a-worker-selection): manuals, selection, probe.
+		{
+			fp := startFakePlane(t)
+			vr := startVendorRun(t, fp, runtime.GOOS, nil, nil)
+			ins, run := manuals(t, vr.dir, "a", "m")
+			checkOrder(t, vr, ins, run)
+		}
 		// Extraction happens after the group is gone and before the
 		// journal-owned work directory is removed; stdout is never the
 		// answer.

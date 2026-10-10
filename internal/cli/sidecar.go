@@ -47,25 +47,23 @@ const (
 	sidecarRunDetails = "Flags:\n" + sidecarStateHelp +
 		"  --claude-adapter PATH\n" +
 		"                     enable the claude worker adapter with this absolute path to the\n" +
-		"                     Claude Code executable (qualified: version 2.1.285 (Claude Code),\n" +
-		"                     model sonnet, effort low)\n" +
+		"                     Claude Code executable (minimum version 2.1.285 (Claude Code))\n" +
 		"  --codex-adapter PATH\n" +
 		"                     enable the codex worker adapter with this absolute path to the\n" +
-		"                     Codex CLI executable (qualified: version codex-cli 0.159.0, model\n" +
-		"                     gpt-6.1-sol, effort low)\n" +
+		"                     Codex CLI executable (minimum version codex-cli 0.159.0)\n" +
 		"  --grok-adapter PATH\n" +
 		"                     enable the grok worker adapter with this absolute path to the\n" +
-		"                     Grok Build executable (qualified: version grok 1.0.46\n" +
-		"                     (2765805b9442) [stable], model grok-4.7, effort low; Linux only).\n" +
-		"                     The composed prompt (at most 32 KiB) is passed in argv and may be\n" +
-		"                     visible to process inspection; dontAsk cancelled every measured\n" +
-		"                     write, so exit 0 does not prove requested work completed. On macOS\n" +
-		"                     grok roles are refused pending qualification\n" +
+		"                     Grok Build executable (minimum version grok 1.0.46\n" +
+		"                     (2765805b9442) [stable]; Linux only). The composed prompt (at\n" +
+		"                     most 32 KiB) is passed in argv and may be visible to process\n" +
+		"                     inspection; dontAsk cancelled every measured write, so exit 0\n" +
+		"                     does not prove requested work completed. On macOS grok roles are\n" +
+		"                     refused pending qualification\n" +
 		"  --cursor-adapter PATH\n" +
 		"                     enable the cursor adapter with this absolute path to the Cursor\n" +
-		"                     Agent executable (cursor-agent; known: version 2026.10.01-e373342,\n" +
-		"                     model grok-4.7, effort low) for version probing only: its roles\n" +
-		"                     are refused on every OS because no qualified unattended recipe\n" +
+		"                     Agent executable (cursor-agent; minimum version\n" +
+		"                     2026.10.01-e373342) for version probing only: its roles are\n" +
+		"                     refused on every OS because no qualified unattended recipe\n" +
 		"                     preserves the operator posture\n" +
 		"  --fake-adapter PATH\n" +
 		"                     enable the fake adapter with this absolute executable path:\n" +
@@ -74,11 +72,16 @@ const (
 		"                     give it on every start\n" +
 		"An adapter flag is used literally (no PATH lookup; spaces allowed), never sent to the\n" +
 		"plane and never persisted: give it on every start. Without it roles using that\n" +
-		"adapter fail validation on this node, whatever is installed. The claude and codex\n" +
-		"recipes are qualified on Linux only; on macOS they run with a warning that vendor\n" +
-		"sandbox and exit behavior are unverified (see docs/support-catalog.md). A grok or\n" +
-		"cursor flag is accepted even where its execution is refused, so role registration\n" +
-		"reports the precise refusal and other enabled adapters keep working.\n\n" +
+		"adapter fail validation on this node, whatever is installed. Every check runs the\n" +
+		"executable's --version and accepts a complete version line of that vendor at or above\n" +
+		"its minimum, a newer one without a warning; an older or malformed version, or another\n" +
+		"program's output, makes the adapter's roles unready. Roles name a required free-text\n" +
+		"model and an effort from the adapter's set (see callsheet role add --help); the vendor\n" +
+		"decides whether that pair runs. The claude and codex recipes are qualified on Linux\n" +
+		"only; on macOS they run with a warning that vendor sandbox and exit behavior are\n" +
+		"unverified (see docs/support-catalog.md). A grok or cursor flag is accepted even\n" +
+		"where its execution is refused, so role registration reports the precise refusal and\n" +
+		"other enabled adapters keep working.\n\n" +
 		"Connects out to the enrolled plane over verified TLS (it listens on nothing), proves\n" +
 		"the protocol version and heartbeats every 5 s, reporting each configured role's\n" +
 		"readiness (its manuals readable and its adapter executable invocable, checked locally\n" +

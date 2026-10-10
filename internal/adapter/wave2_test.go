@@ -39,9 +39,11 @@ const (
 	cursorPostureText = "cursor worker execution is refused: no qualified unattended recipe preserves the operator posture; consult the support catalog"
 )
 
-// TestWave2RegistrySelection is UT FP-1 (iteration 11): five sorted
-// defensive descriptors with only fake test-only, the exact Grok and Cursor
-// pairs and their refusals, and a known Cursor pair that is not runnable.
+// TestWave2RegistrySelection is UT FP-1 (iteration 11, design
+// 12a-worker-selection): five sorted defensive descriptors with only fake
+// test-only and Grok's and Cursor's effort unions, their observed pairs
+// among the valid selections, grammar and union refusals, and a valid
+// Cursor selection that is never runnable.
 func TestWave2RegistrySelection(t *testing.T) {
 	r := Builtin(t.TempDir())
 	ds := r.Descriptors()
@@ -49,17 +51,14 @@ func TestWave2RegistrySelection(t *testing.T) {
 	if len(ds) != len(ids) {
 		t.Fatalf("descriptors %+v", ds)
 	}
+	unions := map[string][]string{"claude": claudeUnion, "codex": codexUnion, "cursor": cursorUnion, "fake": {"low", "medium", "high"}, "grok": grokUnion}
 	for i, d := range ds {
-		want := []string{"low"}
-		if d.ID == FakeID {
-			want = []string{"low", "medium", "high"}
-		}
-		if d.ID != ids[i] || d.TestOnly != (d.ID == FakeID) || !slices.Equal(d.Efforts, want) {
+		if d.ID != ids[i] || d.TestOnly != (d.ID == FakeID) || !slices.Equal(d.Efforts, unions[d.ID]) {
 			t.Fatalf("descriptor %d = %+v", i, d)
 		}
 	}
 	// Defensive copies of the registry, each adapter's descriptor and the
-	// qualification table.
+	// observation table.
 	ds[2].Efforts[0], ds[4].ID = "mutated", "mutated"
 	for _, id := range []string{GrokID, CursorID} {
 		a, ok := r.Lookup(id)
@@ -67,16 +66,16 @@ func TestWave2RegistrySelection(t *testing.T) {
 			t.Fatalf("%s not registered", id)
 		}
 		d := a.Descriptor()
-		d.Efforts[0] = "high"
-		if again := a.Descriptor(); again.ID != id || again.TestOnly || !slices.Equal(again.Efforts, []string{"low"}) {
+		d.Efforts[0] = "mutated"
+		if again := a.Descriptor(); again.ID != id || again.TestOnly || !slices.Equal(again.Efforts, unions[id]) {
 			t.Fatalf("%s descriptor %+v", id, again)
 		}
 		info, ok := Lookup()(id)
-		if !ok || info.TestOnly || !slices.Equal(info.Efforts, []string{"low"}) {
+		if !ok || info.TestOnly || !slices.Equal(info.Efforts, unions[id]) {
 			t.Fatalf("lookup %s = %+v %v", id, info, ok)
 		}
 	}
-	if again := r.Descriptors(); again[2].Efforts[0] != "low" || again[4].ID != GrokID {
+	if again := r.Descriptors(); again[2].Efforts[0] != "none" || again[4].ID != GrokID {
 		t.Fatalf("registry mutated: %+v", again)
 	}
 	qs := Qualifications()
@@ -93,47 +92,51 @@ func TestWave2RegistrySelection(t *testing.T) {
 			t.Fatal("a vendor is test-only")
 		}
 	}
-	// Exactly the captured pairs are accepted.
+	// The observed pairs are valid selections (the tagged selection matrix
+	// covers every union and the other valid models, Grok's fast model and
+	// Cursor's vendor model names included).
 	for _, id := range []string{GrokID, CursorID} {
 		if err := ValidateSelection(id, "grok-4.7", "low"); err != nil {
-			t.Fatalf("%s qualified pair refused: %v", id, err)
+			t.Fatalf("%s observed pair refused: %v", id, err)
 		}
 	}
-	// Every other model or effort is refused with the field-specific fixed
-	// message, never echoing the submitted value. Cursor's vendor argument
-	// grok-4.7-low is not a Callsheet model (a literal mapping, not a
-	// concatenation).
+	// Invalid model grammar and efforts outside the union are refused with
+	// the field-specific fixed message, never echoing the submitted value.
 	const secret = "SECRET-MODEL-TEXT"
+	want := map[string]string{
+		GrokID:   "adapter: effort is not allowed for adapter grok; allowed: low, medium, high, xhigh",
+		CursorID: "adapter: effort is not allowed for adapter cursor; allowed: none, minimal, low, medium, high, xhigh, max",
+	}
 	for _, c := range []struct{ id, model, effort, field string }{
-		{GrokID, "grok-4.7-build", "low", "model"},
-		{GrokID, "grok-4.7-low", "low", "model"},
-		{GrokID, "grok-4.7-build-fast", "low", "model"},
-		{GrokID, "grok-4.6", "low", "model"},
-		{GrokID, "auto", "low", "model"},
-		{GrokID, "default", "low", "model"},
-		{GrokID, "grok-4.7[effort=low]", "low", "model"},
-		{GrokID, "GROK-4.7", "low", "model"},
-		{GrokID, secret, "low", "model"},
-		{GrokID, "grok-4.7", "medium", "effort"},
-		{GrokID, "grok-4.7", "high", "effort"},
-		{GrokID, "grok-4.7", "xhigh", "effort"},
+		{GrokID, "grok-4.7-build\n", "low", "model"},
+		{GrokID, "\tgrok-4.7-low", "low", "model"},
+		{GrokID, "grok-4.7-build-fast\x00", "low", "model"},
+		{GrokID, "", "low", "model"},
+		{GrokID, " ", "low", "model"},
+		{GrokID, "\u0085", "low", "model"},
+		{GrokID, "grok-4.7[effort=low]\x7f", "low", "model"},
+		{GrokID, "\xff", "low", "model"},
+		{GrokID, secret + "\n", "low", "model"},
+		{GrokID, "grok-4.7", "max", "effort"},
+		{GrokID, "grok-4.7", "ultra", "effort"},
+		{GrokID, "grok-4.7", "XHIGH", "effort"},
 		{GrokID, "grok-4.7", "", "effort"},
-		{CursorID, "grok-4.7-low", "low", "model"},
-		{CursorID, "grok-4.7-low-fast", "low", "model"},
-		{CursorID, "grok-4.7-medium", "low", "model"},
-		{CursorID, "auto", "low", "model"},
-		{CursorID, "grok-4.7[effort=low]", "low", "model"},
-		{CursorID, "\"grok-4.7[effort=high]\"", "low", "model"},
-		{CursorID, secret, "low", "model"},
-		{CursorID, "grok-4.7", "medium", "effort"},
-		{CursorID, "grok-4.7", "high", "effort"},
-		{CursorID, "grok-4.7", "xhigh", "effort"},
+		{CursorID, "grok-4.7-low\n", "low", "model"},
+		{CursorID, "\tgrok-4.7-low-fast", "low", "model"},
+		{CursorID, "   ", "low", "model"},
+		{CursorID, "", "low", "model"},
+		{CursorID, "\x00", "low", "model"},
+		{CursorID, "\"grok-4.7[effort=high]\"\x1b", "low", "model"},
+		{CursorID, secret + "\r", "low", "model"},
+		{CursorID, "grok-4.7", "ultra", "effort"},
+		{CursorID, "grok-4.7", "extra-high", "effort"},
+		{CursorID, "grok-4.7", "Medium", "effort"},
 		{CursorID, "grok-4.7", "fast", "effort"},
 	} {
 		err := ValidateSelection(c.id, c.model, c.effort)
 		var se *SelectionError
-		want := "the " + c.id + " model/effort selection is not qualified; supported: model grok-4.7, effort low"
-		if !errors.As(err, &se) || se.Field != c.field || se.Error() != want || strings.Contains(se.Error(), secret) {
+		msg := map[string]string{"model": "adapter: invalid model", "effort": want[c.id]}[c.field]
+		if !errors.As(err, &se) || se.Field != c.field || se.Error() != msg || strings.Contains(se.Error(), secret) {
 			t.Fatalf("ValidateSelection(%q, %q, %q) = %v", c.id, c.model, c.effort, err)
 		}
 	}
@@ -143,8 +146,9 @@ func TestWave2RegistrySelection(t *testing.T) {
 		se.Error() != "adapter: unknown adapter; registered adapters: claude, codex, cursor, fake, grok" {
 		t.Fatalf("unknown adapter = %v", err)
 	}
-	// Cursor's known pair does not make it runnable: its selection passes,
-	// its posture is refused on every OS and its invocation always errors.
+	// Cursor's observed pair does not make it runnable: its selection
+	// passes, its posture is refused on every OS and its invocation always
+	// errors.
 	cursor, _ := r.Lookup(CursorID)
 	inv, err := cursor.Invocation(TaskInput{TaskID: taskID, Model: "grok-4.7", Effort: "low", Prompt: []byte("prompt")})
 	if err == nil || err.Error() != cursorPostureText || inv.Argv != nil || inv.Stdin != nil || inv.FinalFile != "" {
@@ -220,26 +224,29 @@ func TestWave2VendorProbe(t *testing.T) {
 		err             error
 		reason          string
 	}{
-		"grok wrong version":     {GrokID, "grok 1.0.45 (1111111aaaaa) [stable]\n", "", nil, "has an unqualified grok version; expected grok 1.0.46 (2765805b9442) [stable]"},
-		"grok other channel":     {GrokID, "grok 1.0.46 (2765805b9442) [beta]\n", "", nil, "has an unqualified grok version; expected grok 1.0.46 (2765805b9442) [stable]"},
-		"cursor wrong version":   {CursorID, "2026.10.02-abcdef0\n", "", nil, "has an unqualified cursor version; expected 2026.10.01-e373342"},
-		"cursor lexical shape":   {CursorID, "2026.13.45-e373342\n", "", nil, "has an unqualified cursor version; expected 2026.10.01-e373342"},
+		// Design 12a-worker-selection: an older Grok is refused, the same
+		// version on another channel and a newer Cursor date are eligible,
+		// and an impossible date is an invalid version of the vendor.
+		"grok older version":     {GrokID, "grok 1.0.45 (1111111aaaaa) [stable]\n", "", nil, "has an older grok version; minimum grok 1.0.46 (2765805b9442) [stable]"},
+		"grok other channel":     {GrokID, "grok 1.0.46 (2765805b9442) [beta]\n", "", nil, ""},
+		"cursor newer date":      {CursorID, "2026.10.02-abcdef0\n", "", nil, ""},
+		"cursor invalid date":    {CursorID, "2026.13.45-e373342\n", "", nil, "has an invalid cursor version; expected an orderable version at or above 2026.10.01-e373342"},
 		"grok given cursor":      {GrokID, cursorV + "\n", "", nil, "is not the grok CLI (unexpected version output)"},
 		"cursor given grok":      {CursorID, grokV + "\n", "", nil, "is not the cursor CLI (unexpected version output)"},
 		"grok given codex":       {GrokID, "codex-cli 0.159.0\n", "", nil, "is not the grok CLI (unexpected version output)"},
 		"cursor given codex":     {CursorID, "codex-cli 0.159.0\n", "", nil, "is not the cursor CLI (unexpected version output)"},
 		"cursor given claude":    {CursorID, "2.1.285 (Claude Code)\n", "", nil, "is not the cursor CLI"},
-		"cursor uppercase hex":   {CursorID, "2026.10.01-E373342\n", "", nil, "is not the cursor CLI"},
+		"cursor uppercase hex":   {CursorID, "2026.10.01-E373342\n", "", nil, "has an invalid cursor version"},
 		"cursor short year":      {CursorID, "26.10.01-e373342\n", "", nil, "is not the cursor CLI"},
 		"cursor short month":     {CursorID, "2026.1.01-e373342\n", "", nil, "is not the cursor CLI"},
-		"cursor empty hash":      {CursorID, "2026.10.01-\n", "", nil, "is not the cursor CLI"},
-		"cursor trailing space":  {CursorID, cursorV + " \n", "", nil, "is not the cursor CLI"},
+		"cursor empty hash":      {CursorID, "2026.10.01-\n", "", nil, "has an invalid cursor version"},
+		"cursor trailing space":  {CursorID, cursorV + " \n", "", nil, "has an invalid cursor version"},
 		"cursor named":           {CursorID, "cursor-agent " + cursorV + "\n", "", nil, "is not the cursor CLI"},
 		"grok bare name":         {GrokID, "grok\n", "", nil, "is not the grok CLI"},
-		"grok extra line":        {GrokID, grokV + "\nupdate available\n", "", nil, "is not the grok CLI"},
-		"cursor extra line":      {CursorID, cursorV + "\n" + cursorV + "\n", "", nil, "is not the cursor CLI"},
+		"grok extra line":        {GrokID, grokV + "\nupdate available\n", "", nil, "has an invalid grok version"},
+		"cursor extra line":      {CursorID, cursorV + "\n" + cursorV + "\n", "", nil, "has an invalid cursor version"},
 		"grok banner":            {GrokID, "Welcome!\n" + grokV + "\n", "", nil, "is not the grok CLI"},
-		"grok two newlines":      {GrokID, grokV + "\n\n", "", nil, "is not the grok CLI"},
+		"grok two newlines":      {GrokID, grokV + "\n\n", "", nil, "has an invalid grok version"},
 		"cursor carriage return": {CursorID, "2026.10.01\r-e373342\n", "", nil, "is not the cursor CLI"},
 		"grok empty":             {GrokID, "", "", nil, "is not the grok CLI"},
 		"cursor nonzero exit":    {CursorID, cursorV + "\n", "", errors.New("exit status 1"), "exited unsuccessfully"},
@@ -251,9 +258,15 @@ func TestWave2VendorProbe(t *testing.T) {
 		r := &fakeRunner{out: c.out, errOut: c.errOut, err: c.err}
 		a, _ := vendorProber(t, c.id, r, nil)
 		err := a.Probe(bg, exe)
-		wantProbeErr(t, err, c.reason)
-		if strings.Contains(err.Error(), "SECRET") || strings.Contains(err.Error(), "update available") || strings.Contains(err.Error(), "Welcome") {
-			t.Fatalf("%s: output leaked: %v", name, err)
+		if c.reason == "" {
+			if err != nil {
+				t.Fatalf("%s: an eligible version was refused: %v", name, err)
+			}
+		} else {
+			wantProbeErr(t, err, c.reason)
+			if strings.Contains(err.Error(), "SECRET") || strings.Contains(err.Error(), "update available") || strings.Contains(err.Error(), "Welcome") {
+				t.Fatalf("%s: output leaked: %v", name, err)
+			}
 		}
 		if r.waits != 1 || r.starts != 1 || !slices.Equal(r.args, []string{"--version"}) {
 			t.Fatalf("%s: %d starts, %d waits, args %q", name, r.starts, r.waits, r.args)
@@ -398,15 +411,18 @@ func TestWave2VendorInvocation(t *testing.T) {
 		grokPromptUTF8Reason != "the grok prompt must be valid UTF-8" || grokPromptNULReason != "the grok prompt must not contain NUL" || MaxGrokPromptBytes != 32768 {
 		t.Fatal("the grok prompt policy changed")
 	}
-	// Task ID, model grammar and selection are validated before the prompt.
+	// Task ID, model grammar and selection are validated before the prompt:
+	// invalid model grammar and an effort outside Grok's union (the valid
+	// grok-4.7-build/high selection's positive argv is in the tagged
+	// selection matrix).
 	for name, c := range map[string]struct {
 		in   TaskInput
 		want string
 	}{
 		"task id":   {TaskInput{TaskID: "t_x", Model: "grok-4.7", Effort: "low"}, "adapter: invalid task ID"},
 		"model":     {TaskInput{TaskID: taskID, Model: " ", Effort: "low"}, "adapter: invalid model"},
-		"selection": {TaskInput{TaskID: taskID, Model: "grok-4.7-build", Effort: "low"}, "the grok model/effort selection is not qualified; supported: model grok-4.7, effort low"},
-		"effort":    {TaskInput{TaskID: taskID, Model: "grok-4.7", Effort: "high"}, "the grok model/effort selection is not qualified"},
+		"selection": {TaskInput{TaskID: taskID, Model: "grok-4.7\x7f", Effort: "low"}, "adapter: invalid model"},
+		"effort":    {TaskInput{TaskID: taskID, Model: "grok-4.7", Effort: "max"}, "adapter: effort is not allowed for adapter grok; allowed: low, medium, high, xhigh"},
 	} {
 		if _, err := grok.Invocation(c.in); err == nil || !strings.HasPrefix(err.Error(), c.want) {
 			t.Fatalf("%s: %v", name, err)
@@ -466,7 +482,7 @@ func TestWave2VendorInvocation(t *testing.T) {
 			t.Fatalf("cursor %d-byte prompt: %+v %v", len(p), inv, err)
 		}
 	}
-	for _, in := range []TaskInput{{TaskID: "t_x", Model: "grok-4.7", Effort: "low"}, {TaskID: taskID, Model: "grok-4.7-low", Effort: "low"}} {
+	for _, in := range []TaskInput{{TaskID: "t_x", Model: "grok-4.7", Effort: "low"}, {TaskID: taskID, Model: "grok-4.7-low\n", Effort: "low"}} {
 		if inv, err := cursor.Invocation(in); err == nil || err.Error() == cursorPostureText || inv.Argv != nil {
 			t.Fatalf("cursor invalid input %+v: %v", in, err)
 		}

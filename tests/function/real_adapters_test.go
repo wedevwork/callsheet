@@ -409,8 +409,17 @@ func requestFor(id, goal string) contract.DispatchRequest {
 }
 
 // composed is the exact stdin the worker composes for req on role (the
-// task ID a placeholder): the callsheet-task-v1 envelope of iteration 05.
+// task ID a placeholder): the callsheet-task-v1 envelope of iteration 05,
+// with the observed pair as the role's (and the task's) selection.
 func (r *realRig) composed(t *testing.T, req contract.DispatchRequest, roleID, vendor string) string {
+	t.Helper()
+	q := qualification(vendor)
+	return r.composedWith(t, req, roleID, contract.TaskEffective{Model: q.Model, Effort: q.Effort, Timeout: contract.DefaultRoleTimeout})
+}
+
+// composedWith is composed for an explicit effective selection (design
+// 12a-worker-selection: an override's model and effort, or another role's).
+func (r *realRig) composedWith(t *testing.T, req contract.DispatchRequest, roleID string, eff contract.TaskEffective) string {
 	t.Helper()
 	type role struct {
 		ID   string `json:"id"`
@@ -427,14 +436,13 @@ func (r *realRig) composed(t *testing.T, req contract.DispatchRequest, roleID, v
 		TimeoutEnforced bool                   `json:"timeout_enforced"`
 		RequestedBy     contract.RequestedBy   `json:"requested_by"`
 	}
-	q := qualification(vendor)
 	env := struct {
 		Format      string `json:"format"`
 		Instruction string `json:"instruction"`
 		Runbook     string `json:"runbook"`
 		Task        task   `json:"task"`
 	}{"callsheet-task-v1", r.insTxt, r.runTxt, task{TaskID: "{task_id}", Target: req.Target, Role: role{roleID, roleID}, Goal: req.Goal, Payload: req.Payload,
-		Acceptance: req.Acceptance, Effective: contract.TaskEffective{Model: q.Model, Effort: q.Effort, Timeout: contract.DefaultRoleTimeout}, RequestedBy: req.RequestedBy}}
+		Acceptance: req.Acceptance, Effective: eff, RequestedBy: req.RequestedBy}}
 	var b bytes.Buffer
 	enc := json.NewEncoder(&b)
 	enc.SetEscapeHTML(false)
@@ -662,8 +670,9 @@ func logRecords(logs, msg string) int {
 	return n
 }
 
-// FP-1: explicit sidecar flags enable the vendor roles; unqualified pairs
-// and disabled vendors are refused; the fake stays test-only and needs its
+// FP-1: explicit sidecar flags enable the vendor roles; invalid models,
+// efforts outside the adapter's union and disabled vendors are refused
+// (design 12a-worker-selection); the fake stays test-only and needs its
 // own flag.
 func TestRealAdapterRegistration(t *testing.T) {
 	t.Parallel()
@@ -711,11 +720,11 @@ func TestRealAdapterRegistration(t *testing.T) {
 		if n := logRecords(r.a.Logs.String(), sidecar.DarwinVendorWarning); n != darwin || darwin == 0 && strings.Contains(r.a.Logs.String(), "macOS") {
 			t.Fatalf("worker A logged the Darwin warning %d times on %s (want %d):\n%s", n, runtime.GOOS, darwin, r.a.Logs.String())
 		}
-		// The plane refuses effort outside the vendor's descriptor.
+		// The plane refuses an effort outside the vendor's union.
 		bad := contract.RoleConfig{ID: "reg-effort", Name: "reg", Node: r.a.NodeID, Adapter: "claude", Instruction: r.ins, Runbook: r.run,
-			Model: "sonnet", Effort: "medium", Concurrency: 1}
-		if _, err := r.addRole(ctx, bad); contract.CodeOf(err) != contract.CodeInvalidArgument || !strings.Contains(err.Error(), "allowed: low") {
-			t.Fatalf("claude medium: %v", err)
+			Model: "sonnet", Effort: "minimal", Concurrency: 1}
+		if _, err := r.addRole(ctx, bad); contract.CodeOf(err) != contract.CodeInvalidArgument || !strings.Contains(err.Error(), "allowed: low, medium, high, xhigh, max") {
+			t.Fatalf("claude minimal: %v", err)
 		}
 	})
 	t.Run("paths", func(t *testing.T) {
@@ -752,33 +761,45 @@ func TestRealAdapterRegistration(t *testing.T) {
 		}
 	})
 	t.Run("selection", func(t *testing.T) {
-		delegate(t, taggedSidecarBinary(t), "./internal/sidecar", "^TestRealAdapterLocal$/^selection$", "TestRealAdapterLocal", "TestRealAdapterLocal/selection")
-		for vendor, model := range map[string]string{"claude": "opus[1m]", "codex": "gpt-5-codex"} {
-			rc := contract.RoleConfig{ID: "sel-" + vendor, Name: "sel", Node: r.a.NodeID, Adapter: vendor, Instruction: r.ins, Runbook: r.run,
-				Model: model, Effort: "low", Concurrency: 1}
-			_, err := r.addRole(ctx, rc)
+		// Design 12a-worker-selection: the plane refuses invalid model
+		// grammar and efforts outside the union before the node, without
+		// echoing the value, and records nothing (valid alternate selections
+		// are registered on the selection deployment: role-lifecycle).
+		for _, c := range []struct{ vendor, model, effort, field, want string }{
+			{"claude", " ", "low", "model", "model must be nonblank text"},
+			{"codex", "gpt\x7f", "low", "model", "model must be nonblank text"},
+			{"claude", "claude-opus-5-5", "ultra", "effort", "effort is not allowed for adapter claude; allowed: low, medium, high, xhigh, max"},
+			{"codex", "gpt-6-astra", "none", "effort", "effort is not allowed for adapter codex; allowed: low, medium, high, xhigh, max, ultra"},
+		} {
+			id := "sel-" + c.vendor + "-" + c.field
+			_, err := r.addRole(ctx, contract.RoleConfig{ID: id, Name: "sel", Node: r.a.NodeID, Adapter: c.vendor, Instruction: r.ins, Runbook: r.run,
+				Model: c.model, Effort: c.effort, Concurrency: 1})
 			var ce *contract.Error
-			q := qualification(vendor)
-			if !errors.As(err, &ce) || ce.Code != contract.CodeInvalidArgument || ce.Details["field"] != "model" || ce.Details["reason"] != contract.ReasonProbeFailed ||
-				!strings.Contains(ce.Message, "the "+vendor+" model/effort selection is not qualified; supported: model "+q.Model+", effort low") ||
-				strings.Contains(ce.Message, model) {
-				t.Fatalf("%s %s: %v", vendor, model, err)
+			if !errors.As(err, &ce) || ce.Code != contract.CodeInvalidArgument || ce.Details["field"] != c.field || !strings.Contains(ce.Message, c.want) ||
+				strings.Contains(ce.Message, "gpt\x7f") {
+				t.Fatalf("%s %q/%q: %v", c.vendor, c.model, c.effort, err)
+			}
+			if _, err := r.dep.Client.ShowRole(ctx, id); contract.CodeOf(err) != contract.CodeNotFound {
+				t.Fatalf("refused role %s recorded: %v", id, err)
 			}
 		}
-		// An unqualified per-task override is refused by the worker
-		// (start_failed) before any launch.
+		// An override outside the union is refused at admission: no task and
+		// no launch (the override policy is TestRealAdapterDispatch/codex's).
 		goal := r.goal("override")
-		writeScenario(t, r.kit, captureScenario(t, "claude", goal, "runs-scratch/claude-stdin-success"))
 		req := requestFor("rc", goal)
-		m := "claude-sonnet-5-5"
-		req.Override = &contract.TaskOverride{Model: &m}
-		f := r.dispatch(t, req)
-		if f.view.State == contract.TaskSucceeded || f.view.Reason == nil || f.view.Reason.Code != contract.ReasonStartFailed {
-			t.Fatalf("override %s", f)
+		e := "ultra"
+		req.Override = &contract.TaskOverride{Effort: &e}
+		ctx, cancel := context.WithTimeout(context.Background(), rigWait)
+		defer cancel()
+		if v, err := r.send(ctx, req); contract.CodeOf(err) != contract.CodeInvalidArgument || v.TaskID != "" ||
+			!strings.Contains(err.Error(), "effort is not allowed for adapter claude") {
+			t.Fatalf("out-of-union override %+v %v", v, err)
 		}
-		if ls := launches(t, r.kit, func(l launch) bool { return l.TaskID == f.view.TaskID }); len(ls) != 0 {
-			t.Fatalf("an unqualified override launched %+v", ls)
+		if ls := launches(t, r.kit, func(l launch) bool { return strings.Contains(string(l.Stdin), goal) }); len(ls) != 0 {
+			t.Fatalf("a refused override launched %+v", ls)
 		}
+		t.Run("union-policy", unionPolicy)
+		t.Run("role-lifecycle", roleLifecycle)
 	})
 }
 
@@ -830,7 +851,7 @@ func TestRealAdapterProbe(t *testing.T) {
 		}
 		t.Cleanup(func() { c.Stop() })
 		for vendor, want := range map[string]string{
-			"claude": "has an unqualified claude version; expected 2.1.285 (Claude Code)",
+			"claude": "has an older claude version; minimum 2.1.285 (Claude Code)",
 			"codex":  "is not the codex CLI (unexpected version output)",
 		} {
 			q := qualification(vendor)
@@ -857,12 +878,13 @@ func TestRealAdapterProbe(t *testing.T) {
 		if b, err := os.ReadFile(k.trapLog); err == nil && len(b) > 0 {
 			t.Fatalf("PATH traps were called: %s", b)
 		}
+		t.Run("minimum-version-policy", minimumVersionPolicy)
 	})
 }
 
 // FP-3: the stub records the exact argv, the complete composed stdin, a
-// private non-git cwd and the explicit qualified pair, with no prohibited
-// flag.
+// private non-git cwd and the explicit selection (the observed pair, or a
+// per-task override), with no prohibited flag.
 func TestRealAdapterInvocation(t *testing.T) {
 	t.Parallel()
 	r := sharedRig(t)
@@ -909,7 +931,10 @@ func TestRealAdapterInvocation(t *testing.T) {
 			t.Fatalf("%s cwd %s %s", vendor, l.Cwd, l.CwdMode)
 		}
 	}
-	t.Run("claude", func(t *testing.T) { check(t, "claude", "rc", r.goal("invocation claude")) })
+	t.Run("claude", func(t *testing.T) {
+		check(t, "claude", "rc", r.goal("invocation claude"))
+		t.Run("explicit-selection", func(t *testing.T) { explicitSelection(t, r) })
+	})
 	t.Run("codex", func(t *testing.T) { check(t, "codex", "rx", r.goal("invocation codex")) })
 	t.Run("stdin", func(t *testing.T) {
 		delegate(t, contractBinary(t, "./internal/adapter"), "./internal/adapter", "^TestVendorInvocation$", "TestVendorInvocation")
@@ -1246,7 +1271,7 @@ func TestRealAdapterCatalog(t *testing.T) {
 		// not claim M3 has happened.
 		ra := string(repoFile(t, "docs/real-adapters.md"))
 		requireTerms(t, "docs/real-adapters.md", ra, "## Remote acceptance (M3)", "M3 has not been demonstrated", "task_wait", "task_show", "task_logs",
-			"unqualified-selection refusal", workersmoke.Command, "--claude-adapter", "--codex-adapter")
+			"out-of-union effort", workersmoke.Command, "--claude-adapter", "--codex-adapter")
 		for _, claim := range []string{"M3 was demonstrated", "M3 is demonstrated", "M3 has been demonstrated", "M3 demonstrated on", "M3 passed"} {
 			if strings.Contains(ra, claim) {
 				t.Fatalf("docs/real-adapters.md claims %q", claim)
@@ -1277,6 +1302,7 @@ func TestRealAdapterCatalog(t *testing.T) {
 				t.Fatalf("docs/support-catalog.md lost %q", s)
 			}
 		}
+		t.Run("selection-evidence", func(t *testing.T) { selectionEvidence(t, root, entries) })
 	})
 }
 
@@ -1328,8 +1354,14 @@ func TestRealAdapterDispatch(t *testing.T) {
 			t.Fatalf("%s launch %+v", vendor, l)
 		}
 	}
-	t.Run("claude", func(t *testing.T) { run(t, "claude", "rc", "runs-scratch/claude-stdin-success") })
-	t.Run("codex", func(t *testing.T) { run(t, "codex", "rx", "runs-scratch/codex-skip-success") })
+	t.Run("claude", func(t *testing.T) {
+		run(t, "claude", "rc", "runs-scratch/claude-stdin-success")
+		t.Run("selection-surfaces", selectionSurfaces)
+	})
+	t.Run("codex", func(t *testing.T) {
+		run(t, "codex", "rx", "runs-scratch/codex-skip-success")
+		t.Run("override-policy", overridePolicy)
+	})
 	t.Run("no-vendors", func(t *testing.T) {
 		// Every launch came from the explicit replay paths; the PATH traps
 		// (the sidecar's whole PATH) were never called, although a PATH
@@ -1413,8 +1445,9 @@ func TestRealAdapterSmokeGate(t *testing.T) {
 	t.Run("enabled", func(t *testing.T) {
 		stub := replayBinary(t)
 		root := t.TempDir()
-		versions, _ := hostVersions(testkit.MustRepoRoot(t))
-		k, err := newReplayKit(root, stub, versions)
+		// Design 12a-worker-selection: the stub smoke's banners are the
+		// newer recorded host versions, eligible by the minimum policy.
+		k, err := newReplayKit(root, stub, newerHostVersions)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1434,27 +1467,7 @@ func TestRealAdapterSmokeGate(t *testing.T) {
 			}
 			writeScenario(t, k, captureScenario(t, vendor, goal+" ("+vendor+")", rel))
 		}
-		home := filepath.Join(root, "home")
-		os.MkdirAll(home, 0o700)
-		base := []string{"PATH=" + k.traps, "HOME=" + home}
-		bin := nodeBinary(t) // built here, never inside the goroutines
-		var wg sync.WaitGroup
-		for _, vendor := range []string{"claude", "codex"} {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				dir := filepath.Join(root, "smoke-"+vendor)
-				os.MkdirAll(dir, 0o755)
-				ctx, cancel := context.WithTimeout(context.Background(), workersmoke.OuterBound)
-				defer cancel()
-				res, err := workersmoke.Run(ctx, bin, dir, base, append(slices.Clone(base), replayDirEnv+"="+k.dir), vendor, g.Vendor(vendor).Path, goal+" ("+vendor+")")
-				if err != nil || res.View.State != contract.TaskSucceeded || res.View.Result == nil || *res.View.Result.ExitCode != 0 ||
-					res.View.Result.FinalMessage == nil || *res.View.Result.FinalMessage != "pong" {
-					t.Errorf("%s smoke %+v %v", vendor, res.View, err)
-				}
-			}()
-		}
-		wg.Wait()
+		t.Run("newer-version", func(t *testing.T) { newerVersionSmoke(t, k, root, goal, g) })
 		// The real smoke exists only with its tag: every Go file in
 		// tests/smoke carries the constraint, which the ordinary and the
 		// tagged native builds never satisfy.

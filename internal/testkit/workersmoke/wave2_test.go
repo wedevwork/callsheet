@@ -17,12 +17,15 @@ import (
 
 // Iteration 11's shell stand-ins: each records every launch (version or
 // task) in launches.log beside itself. Grok's task mode validates the exact
-// recipe argv and an empty stdin, keeps the -p value and answers pong;
-// Cursor's has no task mode: any task launch is recorded and fails.
+// recipe argv with the observed smoke pair and an empty stdin, keeps the -p
+// value and answers pong; Cursor's has no task mode: any task launch is
+// recorded and fails. Since design 12a-worker-selection the Grok and
+// Cursor stand-ins print versions newer than their minimum (eligible, so
+// Cursor still reaches its posture refusal) and wrongCursor an older one.
 const (
 	fakeGrok = `#!/bin/sh
 here=$(dirname "$0")
-if [ "$#" = 1 ] && [ "$1" = --version ]; then echo version >> "$here/launches.log"; echo 'grok 1.0.46 (2765805b9442) [stable]'; exit 0; fi
+if [ "$#" = 1 ] && [ "$1" = --version ]; then echo version >> "$here/launches.log"; echo 'grok 1.0.47 (0123456789ab) [stable]'; exit 0; fi
 stdin=$(cat)
 if [ "$#" != 10 ] || [ "$1 $2 $3 $4 $5 $6 $7 $8 $9" != "--output-format json --model grok-4.7 --reasoning-effort low --permission-mode dontAsk -p" ] || [ -n "$stdin" ]; then
   echo "task bad" >> "$here/launches.log"; exit 97
@@ -34,14 +37,14 @@ printf '{"text":"pong","stopReason":"end_turn","sessionId":"s"}\n'
 `
 	fakeCursor = `#!/bin/sh
 here=$(dirname "$0")
-if [ "$#" = 1 ] && [ "$1" = --version ]; then echo version >> "$here/launches.log"; echo '2026.10.01-e373342'; exit 0; fi
+if [ "$#" = 1 ] && [ "$1" = --version ]; then echo version >> "$here/launches.log"; echo '2026.10.02-abcdef0'; exit 0; fi
 echo task >> "$here/launches.log"
 exit 97
 `
 	wrongCursor = `#!/bin/sh
 here=$(dirname "$0")
 echo version >> "$here/launches.log"
-echo '2026.10.02-abcdef0'
+echo '2026.09.30-abcdef0'
 `
 )
 
@@ -138,8 +141,8 @@ func TestWave2Replay(t *testing.T) {
 	if l := launchLog(cursor); len(l) == 0 || strings.Contains(strings.Join(l, " "), "task") {
 		t.Fatalf("cursor launches %q (a refused vendor must only be version-probed)", l)
 	}
-	// A wrong version is a probe failure, never the posture refusal.
-	if !errors.Is(wrongErr, ErrNotRefused) || !strings.Contains(wrongErr.Error(), "has an unqualified cursor version") {
+	// An older version is a probe failure, never the posture refusal.
+	if !errors.Is(wrongErr, ErrNotRefused) || !strings.Contains(wrongErr.Error(), "has an older cursor version; minimum 2026.10.01-e373342") {
 		t.Fatalf("wrong cursor version: %v", wrongErr)
 	}
 	// The refusal helper on a shared deployment: an eligible pair is not a
