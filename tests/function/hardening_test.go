@@ -243,9 +243,9 @@ func TestHardeningPlatformSeams(t *testing.T) {
 }
 
 // validGuardTree is a complete miniature source tree satisfying the fixed
-// production guard policy: the six wrappers (iteration 07b added
-// cmd/mcpqual's) and the six exempt files (iteration 09b added the
-// transfer publication primitives).
+// production guard policy: the seven wrappers (iteration 07b added
+// cmd/mcpqual's, design 12a-real-e2e the tagged cmd/reale2e's) and the six
+// exempt files (iteration 09b added the transfer publication primitives).
 func validGuardTree() map[string]string {
 	return map[string]string{
 		"internal/cli/cli.go": "package cli\n\nimport (\n\t\"context\"\n\t\"io\"\n\t\"runtime\"\n)\n\n" +
@@ -259,6 +259,9 @@ func validGuardTree() map[string]string {
 		"internal/testkit/fakeadapter/fakeadapter.go": "package fakeadapter\n\nimport \"runtime\"\n\n" +
 			"func Parse(args []string) (Options, error) {\n\treturn parseFor(args, runtime.GOOS, signalsSupported)\n}\n",
 		"cmd/mcpqual/main.go": "package main\n\nimport (\n\t\"io\"\n\t\"runtime\"\n)\n\n" +
+			"func run(args []string, getenv func(string) string, stdin io.Reader, stdout, stderr io.Writer) int {\n" +
+			"\treturn runFor(runtime.GOOS, runtime.GOARCH, args, getenv, stdin, stdout, stderr)\n}\n",
+		"cmd/reale2e/main.go": "//go:build reale2e\n\npackage main\n\nimport (\n\t\"io\"\n\t\"runtime\"\n)\n\n" +
 			"func run(args []string, getenv func(string) string, stdin io.Reader, stdout, stderr io.Writer) int {\n" +
 			"\treturn runFor(runtime.GOOS, runtime.GOARCH, args, getenv, stdin, stdout, stderr)\n}\n",
 		"internal/spikes/processgroup/sys_linux.go":     "//go:build linux\n\npackage processgroup\n",

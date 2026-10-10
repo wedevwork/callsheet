@@ -2856,6 +2856,17 @@ as the single forwarded argument of exactly these wrappers:
 | `internal/spikes/processgroup/experiment.go` | `RunHelper` | `return runHelperFor(getenv, runtime.GOOS, runtime.GOARCH)` |
 | `internal/testkit/fakeadapter/fakeadapter.go` | `Parse` | `return parseFor(args, runtime.GOOS, signalsSupported)` |
 | `cmd/mcpqual/main.go` | `run` | `return runFor(runtime.GOOS, runtime.GOARCH, args, getenv, stdin, stdout, stderr)` |
+| `cmd/reale2e/main.go` | `run` | `return runFor(runtime.GOOS, runtime.GOARCH, args, getenv, stdin, stdout, stderr)` |
+
+Design 12a-real-e2e adds the seventh wrapper: the `reale2e`-tagged real
+end-to-end command (see [real-e2e.md](real-e2e.md)) forwards the host
+platform to `internal/reale2e`, whose decisions all take the supplied `goos`.
+The guard scans the tagged file irrespective of its build constraint; the
+six exemptions are unchanged. The command's forwarding-only `main.go` is
+absent from `devcheck coverage` (its profile compiles `realadaptercheck`,
+not `reale2e`, and `go list ./cmd/...` under default tags does not select
+it); every new untagged `internal/reale2e` file is a whole-file
+`GroupChanged` coverage entry on both hosts.
 
 A missing or renamed wrapper fails the guard, so moving one is an intentional
 policy change. Syscall exceptions are the six build-selected native files

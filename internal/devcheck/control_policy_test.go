@@ -218,7 +218,7 @@ func TestControlPolicy(t *testing.T) {
 		if err := CheckPlatformSources(root); err != nil {
 			t.Fatalf("platform guard: %v", err)
 		}
-		if len(platformGuardPolicy.wrappers) != 6 || len(platformGuardPolicy.exemptions) != 6 {
+		if len(platformGuardPolicy.wrappers) != 7 || len(platformGuardPolicy.exemptions) != 6 {
 			t.Fatal("the platform guard's exception list grew")
 		}
 		// No new package contract starts an OS process or enables real

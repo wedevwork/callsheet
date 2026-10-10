@@ -22,8 +22,9 @@ import (
 //	internal/spikes/processgroup/experiment.go    RunHelper  return runHelperFor(getenv, runtime.GOOS, runtime.GOARCH)
 //	internal/testkit/fakeadapter/fakeadapter.go   Parse      return parseFor(args, runtime.GOOS, signalsSupported)
 //	cmd/mcpqual/main.go                           run        return runFor(runtime.GOOS, runtime.GOARCH, args, getenv, stdin, stdout, stderr)
+//	cmd/reale2e/main.go                           run        return runFor(runtime.GOOS, runtime.GOARCH, args, getenv, stdin, stdout, stderr)
 //
-//	exempt native file                              //go:build
+//	exempt native file                             //go:build
 //	internal/spikes/processgroup/sys_linux.go       linux
 //	internal/spikes/processgroup/sys_darwin.go      darwin
 //	internal/testkit/fakeadapter/signals_unix.go    linux || darwin
@@ -112,6 +113,25 @@ func parseFor(args []string, goos string, supported bool) (Options, error) {
 }
 `,
 		"cmd/mcpqual/main.go": `package main
+
+import (
+	"io"
+	"runtime"
+)
+
+func run(args []string, getenv func(string) string, stdin io.Reader, stdout, stderr io.Writer) int {
+	return runFor(runtime.GOOS, runtime.GOARCH, args, getenv, stdin, stdout, stderr)
+}
+
+func runFor(goos, goarch string, args []string, getenv func(string) string, stdin io.Reader, stdout, stderr io.Writer) int {
+	return 0
+}
+`,
+		// Design 12a-real-e2e: the tagged command's wrapper, scanned
+		// irrespective of its build constraint.
+		"cmd/reale2e/main.go": `//go:build reale2e
+
+package main
 
 import (
 	"io"
@@ -457,4 +477,35 @@ func TestPlatformGuardFixturePolicy(t *testing.T) {
 	if v := (wrapperArg{name: "x"}).String(); v != "x" {
 		t.Fatal(v)
 	}
+}
+
+// TestRealE2EWrapperPolicy (design 12a-real-e2e, UT-8): the seventh
+// approved wrapper is the reale2e-tagged command's run, forwarding the
+// host platform exactly like cmd/mcpqual's; the tagged file is scanned
+// irrespective of its build constraint (a branch in it is a violation, an
+// unapproved read elsewhere in it too); the six exemptions are unchanged.
+func TestRealE2EWrapperPolicy(t *testing.T) {
+	w := platformGuardPolicy.wrappers[6]
+	if w.file != "cmd/reale2e/main.go" || w.fn != "run" || !w.ret || w.callee != "runFor" ||
+		w.shape() != "return runFor(runtime.GOOS, runtime.GOARCH, args, getenv, stdin, stdout, stderr)" {
+		t.Fatalf("seventh wrapper %+v (%s)", w, w.shape())
+	}
+	var ex []string
+	for _, e := range platformGuardPolicy.exemptions {
+		ex = append(ex, e.file+"|"+e.build)
+	}
+	if strings.Join(ex, ",") != "internal/spikes/processgroup/sys_linux.go|linux,internal/spikes/processgroup/sys_darwin.go|darwin,"+
+		"internal/testkit/fakeadapter/signals_unix.go|linux || darwin,internal/testkit/fakeadapter/signals_other.go|!linux && !darwin,"+
+		"internal/workspacetransfer/publish_linux.go|linux,internal/workspacetransfer/publish_darwin.go|darwin" {
+		t.Fatalf("exemptions changed: %v", ex)
+	}
+	branch := policyTree(t, func(f map[string]string) {
+		f["cmd/reale2e/main.go"] = "//go:build reale2e\n\npackage main\n\nimport (\n\t\"io\"\n\t\"runtime\"\n)\n\n" +
+			"func run(args []string, getenv func(string) string, stdin io.Reader, stdout, stderr io.Writer) int {\n" +
+			"\tif runtime.GOOS == \"linux\" {\n\t\treturn 0\n\t}\n\treturn runFor(runtime.GOOS, runtime.GOARCH, args, getenv, stdin, stdout, stderr)\n}\n"
+	})
+	requireViolations(t, "reale2e branch", guardViolations(t, branch),
+		"cmd/reale2e/main.go:10:1: approved wrapper run must be exactly", "cmd/reale2e/main.go:11:5: unapproved", "cmd/reale2e/main.go:14:16: unapproved")
+	missing := policyTree(t, func(f map[string]string) { delete(f, "cmd/reale2e/main.go") })
+	requireViolations(t, "reale2e missing", guardViolations(t, missing), "cmd/reale2e/main.go: approved wrapper run is missing")
 }

@@ -144,7 +144,7 @@ func TestNodeVerificationPolicyContract(t *testing.T) {
 				t.Fatalf("unexpected exemption %s", e.file)
 			}
 		}
-		if len(platformGuardPolicy.exemptions) != 6 || len(platformGuardPolicy.wrappers) != 6 {
+		if len(platformGuardPolicy.exemptions) != 6 || len(platformGuardPolicy.wrappers) != 7 {
 			t.Fatal("the guard's exception list grew")
 		}
 	})

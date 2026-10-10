@@ -75,7 +75,7 @@ type platformPolicy struct {
 	exemptions []platformExemption
 }
 
-// platformGuardPolicy is the fixed production policy: the only six approved
+// platformGuardPolicy is the fixed production policy: the only seven approved
 // wrappers and the only six exempt native files.
 var platformGuardPolicy = platformPolicy{
 	wrappers: []platformWrapper{
@@ -92,6 +92,11 @@ var platformGuardPolicy = platformPolicy{
 		// Iteration 07b: the developer-only qualification command selects
 		// its linux/darwin cleanup policy and records the host platform.
 		{file: "cmd/mcpqual/main.go", fn: "run", ret: true, callee: "runFor",
+			args: []wrapperArg{hostArg("GOOS"), hostArg("GOARCH"), paramArg("args"), paramArg("getenv"), paramArg("stdin"), paramArg("stdout"), paramArg("stderr")}},
+		// Design 12a-real-e2e: the reale2e-tagged real end-to-end command
+		// forwards the host platform to internal/reale2e (scanned
+		// irrespective of its build tag).
+		{file: "cmd/reale2e/main.go", fn: "run", ret: true, callee: "runFor",
 			args: []wrapperArg{hostArg("GOOS"), hostArg("GOARCH"), paramArg("args"), paramArg("getenv"), paramArg("stdin"), paramArg("stdout"), paramArg("stderr")}},
 	},
 	exemptions: []platformExemption{
