@@ -1708,4 +1708,6 @@ func TestMCPCursorConfirmation(t *testing.T) {
 			}
 		}},
 	})
+	// Design catalog-version FP-6: the pinned owner runbook.
+	t.Run("publication-runbook", func(t *testing.T) { publicationRunbook(t) })
 }

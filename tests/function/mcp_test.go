@@ -1100,6 +1100,22 @@ func TestMCPWaitCancel(t *testing.T) {
 		if err := checkShortPollCatalog(string(doc), raw); err != nil {
 			t.Fatal(err)
 		}
+		// The vectors below assume pre-publication managed facts: start
+		// them from the frozen baseline (design catalog-version, amendment
+		// A1), whatever the checkout has published.
+		seeded, err := catalog.Decode(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		baseline := catalog.PublicationBaselineFacts()
+		for i := range seeded {
+			for key, f := range baseline[seeded[i].ID] {
+				seeded[i].Facts[key] = f
+			}
+		}
+		if raw, err = mcpqual.RenderCatalog(seeded); err != nil {
+			t.Fatal(err)
+		}
 		promote := func(value, evidence string) func(string, []byte) (string, []byte) {
 			return func(d string, j []byte) (string, []byte) {
 				es, _ := catalog.Decode(j)

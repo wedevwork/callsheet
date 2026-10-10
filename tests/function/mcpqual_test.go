@@ -80,15 +80,17 @@ func TestMCPSetup(t *testing.T) {
 	factRows := func(t *testing.T, id string) {
 		t.Helper()
 		e := entries[id]
+		// Design catalog-version, amendment A1: the shared row validation
+		// (the four managed rows refer to the catalog, the runbook row
+		// mirrors its fact), the common status sentence, and every linked
+		// file present.
+		if err := mcpqual.CheckSetupFactRows(secs[id], e); err != nil || !strings.Contains(secs[id].Text, mcpqual.TimeoutStatusSentence) {
+			t.Fatalf("%s rows: %v", id, err)
+		}
 		for _, key := range []string{"mcp_config", "mcp_timeout", "mcp_timeout_override", "mcp_progress_extension", "runbook"} {
-			row, jf := secs[id].Facts[key], e.Facts[key]
-			if row.Status != jf.Status || len(row.Evidence) == 0 {
-				t.Fatalf("%s.%s row %+v, JSON %s", id, key, row, jf.Status)
-			}
-			for _, ev := range row.Evidence {
-				st, err := os.Stat(filepath.Join(root, ev))
-				if !slices.Contains(jf.Evidence, ev) || err != nil || st.Size() == 0 {
-					t.Fatalf("%s.%s evidence %s (JSON %v, %v)", id, key, ev, jf.Evidence, err)
+			for _, ev := range secs[id].Facts[key].Evidence {
+				if st, err := os.Stat(filepath.Join(root, ev)); err != nil || st.Size() == 0 {
+					t.Fatalf("%s.%s evidence %s: %v", id, key, ev, err)
 				}
 			}
 		}
@@ -538,10 +540,12 @@ func TestMCPQualificationMeasurements(t *testing.T) {
 
 // FP-14: publication of redacted evidence and matching facts.
 func TestMCPQualificationPublish(t *testing.T) {
-	root := testkit.MustRepoRoot(t)
-	base := repoFacts(t, root)
 	q := newQualEnv(t)
 	repo := qualRepo(t)
+	// The pre-publication facts are the scratch catalog's frozen baseline
+	// (design catalog-version, amendment A1), never whatever the checkout
+	// has published.
+	base := repoFacts(t, repo)
 	out := filepath.Join(q.dir, "out")
 	const secret = "sk-fake-secret-0123456789abcdef"
 	r := q.qualify(qualPlan(q.fakeClient("claude", map[string]string{"SECRET": secret}, map[string]any{"default": map[string]any{"delays_ms": []int{10, 200}}})), out, "", nil, "--publish-catalog", repo)
@@ -679,6 +683,10 @@ func TestMCPQualificationPublish(t *testing.T) {
 			t.Fatal("clientInfo evidence moved mcp_config's owner")
 		}
 	})
+	// Design catalog-version FP-2, FP-4 and FP-7.
+	t.Run("coordinator-version", func(t *testing.T) { publishCoordinatorVersion(t, repo, out) })
+	t.Run("evidence-package", func(t *testing.T) { publishEvidencePackage(t, q, repo, out, secret) })
+	t.Run("publication-recovery", func(t *testing.T) { publishRecovery(t, q, repo, out) })
 	q.groupsGone()
 }
 

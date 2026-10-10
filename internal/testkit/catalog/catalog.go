@@ -60,12 +60,19 @@ type Fact struct {
 	VerificationIteration string   `json:"verification_iteration"`
 }
 
-// Entry is one CLI's fact sheet.
+// Entry is one CLI's fact sheet. Version is the worker qualification (or
+// known-version) identity the worker facts describe; its presence is not
+// itself permission to execute a worker. CoordinatorVersion (design
+// catalog-version) is the exact CLI --version identity that new MCP
+// timeout publication targets: a separate claim, never a worker
+// qualification and never a fallback for Version. Both are compared
+// byte-for-byte, without normalization.
 type Entry struct {
-	ID       string          `json:"id"`
-	Version  string          `json:"version"`
-	Platform string          `json:"platform"`
-	Facts    map[string]Fact `json:"facts"`
+	ID                 string          `json:"id"`
+	Version            string          `json:"version"`
+	CoordinatorVersion string          `json:"coordinator_version"`
+	Platform           string          `json:"platform"`
+	Facts              map[string]Fact `json:"facts"`
 }
 
 // Load strictly decodes a catalog manifest (unknown fields are errors).
@@ -129,6 +136,11 @@ func Validate(root string, entries []Entry) error {
 		seen[e.ID] = true
 		if strings.TrimSpace(e.Version) == "" {
 			add("%s: missing version", where)
+		}
+		// A missing MCP publication identity fails visibly: it never falls
+		// back to the worker version (design catalog-version).
+		if strings.TrimSpace(e.CoordinatorVersion) == "" {
+			add("%s: missing coordinator_version", where)
 		}
 		if strings.TrimSpace(e.Platform) == "" {
 			add("%s: missing platform", where)

@@ -210,8 +210,11 @@ func TestCoverageManifestFiles(t *testing.T) {
 		}
 		// m3-m4-container-e2e: the container acceptance helper package is the
 		// one test-support package whose executable logic the design
-		// requires in the manifest; every other testkit path stays out.
-		if strings.HasSuffix(rel, "_test.go") || (strings.HasPrefix(rel, "internal/testkit/") && !strings.HasPrefix(rel, "internal/testkit/containeracceptance/")) {
+		// requires in the manifest; design catalog-version adds exactly the
+		// catalog schema and validator file and (amendment A1) its frozen
+		// publication baseline; every other testkit path stays out.
+		if strings.HasSuffix(rel, "_test.go") || (strings.HasPrefix(rel, "internal/testkit/") && !strings.HasPrefix(rel, "internal/testkit/containeracceptance/") &&
+			rel != "internal/testkit/catalog/catalog.go" && rel != "internal/testkit/catalog/publication_baseline.go") {
 			t.Fatalf("manifest lists non-production %s", rel)
 		}
 		if os := buildOS(t, filepath.Join(root, filepath.FromSlash(rel))); os != e.OS {
@@ -779,6 +782,69 @@ func TestDecoderEnrollmentB3Docs(t *testing.T) {
 	for _, n := range b3Names() {
 		if !strings.Contains(s, "`"+n+"`") {
 			t.Fatalf("docs/ci.md does not name %s", n)
+		}
+	}
+}
+
+// catalogVersionFiles are the production files design catalog-version
+// changes (CI plan, against the actual diff), each required whole in the
+// changed group.
+var catalogVersionFiles = []string{"internal/testkit/catalog/catalog.go", "internal/mcpqual/publish.go",
+	// Amendment A1.
+	"internal/testkit/catalog/publication_baseline.go", "internal/mcpqual/setupdoc.go"}
+
+// TestCatalogVersionCoverageManifest (design catalog-version, CI plan):
+// every changed production file is a whole-file changed-group entry with
+// its build OS, none keeps a partial-range entry, and each is gated
+// strictly above the threshold on its own on both systems.
+func TestCatalogVersionCoverageManifest(t *testing.T) {
+	root := testkit.MustRepoRoot(t)
+	listed := map[string]CoverageEntry{}
+	for _, e := range WorkspaceCoverageManifest {
+		listed[strings.TrimPrefix(e.File, modulePath+"/")] = e
+	}
+	for _, rel := range catalogVersionFiles {
+		e, ok := listed[rel]
+		if !ok || e.Group != GroupChanged || len(e.Ranges) != 0 || e.OS != "" || e.OS != buildOS(t, filepath.Join(root, filepath.FromSlash(rel))) {
+			t.Fatalf("catalog-version file %s missing from the changed group as a whole file", rel)
+		}
+	}
+	// The catalog file passes or fails on its own, strictly above 80%,
+	// even when its group as a whole is above the threshold.
+	file := modulePath + "/internal/testkit/catalog/catalog.go"
+	m := append(baseManifest(), CoverageEntry{Group: GroupChanged, File: file})
+	others := block(wsFile, 1, 1, 1, 1) + block(chgFile, 10, 10, 1, 1) + block(trFile, 1, 1, 1, 1) + block(linFile, 1, 1, 1, 1) + block(darFile, 1, 1, 1, 1)
+	for _, goos := range []string{"linux", "darwin"} {
+		if _, err := CheckCoverageManifest(goos, "mode: atomic\n"+others+block(file, 1, 2, 80, 1)+block(file, 3, 4, 20, 0), m); err == nil || !strings.Contains(err.Error(), "catalog.go") {
+			t.Fatalf("%s: exactly 80%% passed: %v", goos, err)
+		}
+		if _, err := CheckCoverageManifest(goos, "mode: atomic\n"+others+block(file, 1, 2, 81, 1)+block(file, 3, 4, 19, 0), m); err != nil {
+			t.Fatalf("%s: 81%%: %v", goos, err)
+		}
+	}
+}
+
+// TestCatalogVersionDocs (design catalog-version, CI plan): docs/ci.md
+// records the catalog version change, its whole-file entries and the
+// unchanged inventory, stages, budget and stress policy.
+func TestCatalogVersionDocs(t *testing.T) {
+	doc, err := os.ReadFile(filepath.Join(testkit.MustRepoRoot(t), "docs", "ci.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := strings.Join(strings.Fields(string(doc)), " ")
+	for _, w := range []string{"Catalog version (design catalog-version)", "`coordinator_version`", "no new function parent (429 names, the same order)",
+		"`TestFP7CatalogContract/catalog-version-model`", "`TestMCPQualificationPublish/coordinator-version`", "`TestMCPRealEnrollmentConfirmation/publication-claims`",
+		"`TestMCPQualificationPublish/evidence-package`", "`TestMCPCaptureRunbook/publication-review`", "`TestMCPCursorConfirmation/publication-runbook`",
+		"`TestMCPQualificationPublish/publication-recovery`", "`TestMCPEnrollmentCIPolicy/catalog-version-policy`", "`TestMCPEnrollmentCIPolicy/catalog-version-ci`",
+		"the whole-file coverage manifest adds `internal/testkit/catalog/catalog.go`", "`internal/mcpqual/publish.go` stays a whole-file entry",
+		"`devcheck native` still makes 9 ordinary calls", "`devcheck bench` keeps 13 steps", "cross keeps 12 artifacts", "Linux `all` still makes 32 ordinary calls",
+		"The workflow keeps its twenty jobs", "catalog-version adds no new stress selector or workload", "catalog-version makes no new budget allocation",
+		// Amendment A1.
+		"Amendment A1 (catalog-version r0.3)", "`internal/testkit/catalog/publication_baseline.go` and `internal/mcpqual/setupdoc.go`",
+		"`a1-baseline`, `a1-generated-publication` and `a1-hand-edits`", "A1 adds no new function parent", "the later evidence pull request edits no code, test, guide or constant"} {
+		if !strings.Contains(s, w) {
+			t.Fatalf("docs/ci.md lacks %q", w)
 		}
 	}
 }

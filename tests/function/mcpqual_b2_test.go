@@ -959,6 +959,13 @@ func TestMCPCaptureCursorToolPermission(t *testing.T) {
 // It returns the report and the evidence directory holding report.md.
 func realQualify(t *testing.T, client, timeoutMS, goos string, mutate func(c map[string]any)) (*mcpqual.Report, string, error) {
 	t.Helper()
+	return realQualifyAs(t, "run-real-"+client, client, timeoutMS, goos, mutate)
+}
+
+// realQualifyAs is realQualify with an explicit run ID (design
+// catalog-version A1: one vendor's ordered publication history).
+func realQualifyAs(t *testing.T, runID, client, timeoutMS, goos string, mutate func(c map[string]any)) (*mcpqual.Report, string, error) {
+	t.Helper()
 	var w struct{ decoder, version string }
 	for _, c := range b2Clients {
 		if c.id == client {
@@ -988,7 +995,7 @@ func realQualify(t *testing.T, client, timeoutMS, goos string, mutate func(c map
 	out := filepath.Join(realTemp(t), "out")
 	r := &mcpqual.Runner{Plan: p, PlanSHA256: sha(b), OutDir: out, GOOS: goos, GOARCH: "amd64", Hostname: "function-host", ServerPath: server,
 		BaseEnv: q.env(""), Launcher: &clockedVendor{t: t, clock: clock, server: server}, Reaper: clockedReaper{}, Clock: clock,
-		Registry: mcpqual.DefaultRegistry(), Log: io.Discard, RunID: "run-real-" + client, Nonce: "noncereal" + client, CaptureDate: "2026-10-08",
+		Registry: mcpqual.DefaultRegistry(), Log: io.Discard, RunID: runID, Nonce: "noncereal" + client, CaptureDate: "2026-10-08",
 		HarnessVersion: mcpqual.HarnessVersion, Home: q.home,
 		HashFile: func(p string) (string, error) {
 			if p != exe {
@@ -1312,8 +1319,9 @@ func (clockedReaper) Reap(p mcpqual.Proc) mcpqual.CaseCleanup {
 	}
 }
 
-// entryRepo is a scratch repository whose catalog entry id has version
-// and platform.
+// entryRepo is a scratch repository whose catalog entry id has the
+// coordinator (MCP publication) version and platform given; its worker
+// version stays the checked-in worker identity (design catalog-version).
 func entryRepo(t *testing.T, id, version, platform string) (string, *mcpqual.CatalogBase) {
 	t.Helper()
 	repo := qualRepo(t)
@@ -1324,7 +1332,7 @@ func entryRepo(t *testing.T, id, version, platform string) (string, *mcpqual.Cat
 	}
 	for i := range es {
 		if es[i].ID == id {
-			es[i].Version, es[i].Platform = version, platform
+			es[i].CoordinatorVersion, es[i].Platform = version, platform
 		}
 	}
 	b, _ := mcpqual.RenderCatalog(es)
@@ -1481,6 +1489,8 @@ func TestMCPRealEnrollmentConfirmation(t *testing.T) {
 			}
 		}},
 	})
+	// Design catalog-version FP-3: exactly the measured claims.
+	t.Run("publication-claims", func(t *testing.T) { publicationClaims(t, codexRep, codexOut) })
 }
 
 // clockedPromptCase is the case the scripted prompt names.

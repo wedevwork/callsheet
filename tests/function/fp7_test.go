@@ -81,4 +81,7 @@ func TestFP7CatalogContract(t *testing.T) {
 			t.Fatalf("docs/support-catalog.md lacks %q", s)
 		}
 	}
+	// Design catalog-version FP-1: the separate worker and coordinator
+	// identities, the frozen worker projection and committed receipts.
+	t.Run("catalog-version-model", func(t *testing.T) { catalogVersionModel(t, root, entries) })
 }
