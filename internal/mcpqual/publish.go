@@ -70,6 +70,14 @@ func ReadCatalogBase(repo string) (*CatalogBase, error) {
 	if err != nil {
 		return nil, contract.Wrap(contract.CodeInvalidArgument, "--publish-catalog: invalid catalog", err)
 	}
+	// Every entry needs its explicit MCP publication identity before any
+	// session is launched (design catalog-version): there is no fallback
+	// to the worker version and no runtime migration.
+	for i, e := range entries {
+		if strings.TrimSpace(e.CoordinatorVersion) == "" {
+			return nil, contract.New(contract.CodeInvalidArgument, fmt.Sprintf("--publish-catalog: invalid catalog: entry %d (%s): missing coordinator_version", i, e.ID))
+		}
+	}
 	if r, err := RenderCatalog(entries); err != nil || !bytes.Equal(r, j) {
 		return nil, contract.New(contract.CodeInvalidArgument, "--publish-catalog: "+CatalogJSONPath+" is not in canonical form")
 	}
@@ -114,17 +122,20 @@ func (f orderedFacts) MarshalJSON() ([]byte, error) {
 }
 
 // RenderCatalog is the canonical catalog encoding: two-space indentation,
-// no HTML escaping, facts in RequiredFacts order, a final newline.
+// no HTML escaping, the entry members in the order id, version,
+// coordinator_version, platform, facts, facts in RequiredFacts order, a
+// final newline.
 func RenderCatalog(entries []catalog.Entry) ([]byte, error) {
 	type ordered struct {
-		ID       string       `json:"id"`
-		Version  string       `json:"version"`
-		Platform string       `json:"platform"`
-		Facts    orderedFacts `json:"facts"`
+		ID                 string       `json:"id"`
+		Version            string       `json:"version"`
+		CoordinatorVersion string       `json:"coordinator_version"`
+		Platform           string       `json:"platform"`
+		Facts              orderedFacts `json:"facts"`
 	}
 	out := make([]ordered, len(entries))
 	for i, e := range entries {
-		out[i] = ordered{e.ID, e.Version, e.Platform, orderedFacts(e.Facts)}
+		out[i] = ordered{e.ID, e.Version, e.CoordinatorVersion, e.Platform, orderedFacts(e.Facts)}
 	}
 	return encodeIndent(out)
 }
@@ -158,7 +169,9 @@ type Patch struct {
 
 // ProposePatch builds the patch for rep from base and writes it (with the
 // intended final bytes) into outDir. Only clients whose sessions ran are
-// touched; worker facts never change.
+// touched, and only when the run's observed version equals the entry's
+// coordinator_version exactly; worker facts and both identities never
+// change.
 func ProposePatch(rep *Report, base *CatalogBase, outDir string) (*Patch, error) {
 	if !rep.Cleanup.OK || rep.Interrupted {
 		return nil, contract.New(contract.CodeUnavailable, "publication refused: the run's cleanup failed or it was interrupted")
@@ -206,8 +219,14 @@ func ProposePatch(rep *Report, base *CatalogBase, outDir string) (*Patch, error)
 			return nil, conflict("the catalog has no %s entry", c.ID)
 		}
 		e := final[idx]
-		if c.ObservedVersion == nil || *c.ObservedVersion != e.Version {
-			return nil, conflict("%s: the run's observed version does not equal the catalog's %q", c.ID, e.Version)
+		// Publication targets the entry's explicit MCP publication identity
+		// (design catalog-version), never the worker version: a missing
+		// observation, a blank target or any byte difference is a conflict.
+		if strings.TrimSpace(e.CoordinatorVersion) == "" {
+			return nil, conflict("%s: the catalog entry has no coordinator_version", c.ID)
+		}
+		if c.ObservedVersion == nil || *c.ObservedVersion != e.CoordinatorVersion {
+			return nil, conflict("%s: the run's observed version does not equal the catalog's coordinator_version %q", c.ID, e.CoordinatorVersion)
 		}
 		facts := proposeFacts(rep, c, e, reportPath)
 		for _, key := range append(append([]string(nil), TimeoutKeys...), "mcp_config") {

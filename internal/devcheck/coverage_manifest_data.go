@@ -265,6 +265,19 @@ var WorkspaceCoverageManifest = []CoverageEntry{
 	// listed whole: mcpqual/cursor_residue.go, mcpqual/cursor_preparation.go,
 	// mcpqual/capture_approval.go, mcpqual/capture.go,
 	// mcpqual/capture_manifest.go and mcpqual/report.go.
+
+	// Catalog version (design catalog-version, base 1038b09): the catalog
+	// schema and validator that gained coordinator_version, whole (no build
+	// constraint: evaluated on both systems). It is the one internal/testkit
+	// file outside containeracceptance whose executable logic is production
+	// catalog validation (mcpqual's publisher imports it). Its other changed
+	// production file is already listed whole: mcpqual/publish.go.
+	{Group: GroupChanged, File: modulePath + "/internal/testkit/catalog/catalog.go"},
+	// Catalog version, amendment A1: the frozen publication baseline (the
+	// second internal/testkit/catalog production file) and the setup
+	// guide's shared row validation, whole.
+	{Group: GroupChanged, File: modulePath + "/internal/testkit/catalog/publication_baseline.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/mcpqual/setupdoc.go"},
 }
 
 // modulePath is the profile's import-path prefix.

@@ -925,24 +925,18 @@ func TestWave2Catalog(t *testing.T) {
 				}
 			}
 		}
-		var timeouts, coord []catalog.Fact
-		for _, vendor := range []string{"claude", "codex", "grok", "cursor"} {
-			for _, key := range []string{"mcp_timeout", "mcp_timeout_override", "mcp_progress_extension"} {
-				timeouts = append(timeouts, byID[vendor].Facts[key])
-			}
+		// Design catalog-version, amendment A1: the frozen pre-publication
+		// baseline still matches the historical freezes (wave2TimeoutsSHA256
+		// with its four restored short-poll suffixes, wave2CoordSHA256 over
+		// the baseline Grok/Cursor configuration and the current runbook
+		// facts), and the current publisher-managed facts equal either that
+		// baseline or their exact regeneration from validated, receipted
+		// qualification runs.
+		if err := checkPublicationBaseline(entries); err != nil {
+			t.Fatal(err)
 		}
-		for _, vendor := range []string{"grok", "cursor"} {
-			for _, key := range []string{"mcp_config", "runbook"} {
-				coord = append(coord, byID[vendor].Facts[key])
-			}
-		}
-		// Apart from the short-poll policy that replaced each mcp_timeout's
-		// retired interim suffix (design nonblocking-coordinator-waits).
-		timeouts, restored := preShortPoll(timeouts)
-		tb, _ := json.Marshal(timeouts)
-		cb, _ := json.Marshal(coord)
-		if ts, cs := sha256.Sum256(tb), sha256.Sum256(cb); hex.EncodeToString(ts[:]) != wave2TimeoutsSHA256 || hex.EncodeToString(cs[:]) != wave2CoordSHA256 || restored != 4 {
-			t.Fatal("a frozen 07b timeout or coordinator fact changed")
+		if err := validatePublishedCatalog(t, root, entries); err != nil {
+			t.Fatalf("the publisher-managed facts: %v", err)
 		}
 		for _, s := range []string{"## Grok Build", "## Cursor Agent", `<a id="interim-mcp-wait-exception"></a>`, "`07b` for the three coordinator timeout facts"} {
 			if !strings.Contains(doc, s) {

@@ -315,6 +315,15 @@ func TestShortPollCatalogCheck(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The mutations below assume pre-publication managed facts: start from
+	// the frozen baseline (design catalog-version, amendment A1), never
+	// from whatever the checkout has published.
+	baseline := catalog.PublicationBaselineFacts()
+	for i := range shipped {
+		for key, f := range baseline[shipped[i].ID] {
+			shipped[i].Facts[key] = f
+		}
+	}
 	// load is a fresh deep copy of the shipped entries (read once).
 	load := func() []catalog.Entry { return cloneEntries(shipped) }
 	doc := string(md)

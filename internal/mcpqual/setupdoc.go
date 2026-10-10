@@ -4,7 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
+
+	"github.com/wedevwork/callsheet/internal/testkit/catalog"
 )
 
 // SetupDocPath is the operator setup guide (FP-9).
@@ -31,9 +34,57 @@ type SetupFact struct {
 
 var (
 	fenceRe   = regexp.MustCompile("(?s)```(sh|json)\n(.*?)\n```")
-	factRowRe = regexp.MustCompile("(?m)^\\| `([a-z_]+)` \\| (VERIFIED|UNVERIFIED) \\| (.*) \\|$")
+	factRowRe = regexp.MustCompile("(?m)^\\| `([a-z_]+)` \\| (VERIFIED|UNVERIFIED|" + CatalogReferenceStatus + ") \\| (.*) \\|$")
 	linkRe    = regexp.MustCompile(`\]\(\.\./([^)#\s]+)\)`)
 )
+
+// CatalogReferenceStatus is the setup guide's reference cell for a
+// publisher-managed fact row (design catalog-version, amendment A1): a
+// navigation instruction to the vendor's current fact in the catalog
+// JSON, never a catalog status (catalog facts stay VERIFIED or
+// UNVERIFIED).
+const CatalogReferenceStatus = "SEE CATALOG"
+
+// TimeoutStatusSentence is each vendor section's common timeout and
+// configuration status sentence (amendment A1): it holds before and after
+// any valid publication.
+const TimeoutStatusSentence = "Timeout and configuration status: see the catalog for this vendor's current facts and evidence. A larger call budget requires local qualification with response margin."
+
+// managedSetupRows are the guide rows that refer to the catalog: exactly
+// the facts the publisher manages.
+var managedSetupRows = []string{"mcp_config", "mcp_timeout", "mcp_timeout_override", "mcp_progress_extension"}
+
+// CheckSetupFactRows checks a vendor section's five fact rows against the
+// vendor's catalog entry (amendment A1): each publisher-managed row is
+// exactly the CatalogReferenceStatus cell with the single catalog JSON
+// link, and the runbook row carries the fact's current status and only
+// links among its evidence. It checks the guide's references only, not
+// the catalog facts' integrity; callers also check that every linked file
+// exists.
+func CheckSetupFactRows(section SetupSection, entry catalog.Entry) error {
+	if section.Client != entry.ID {
+		return fmt.Errorf("setup guide: %s section checked against the %s entry", section.Client, entry.ID)
+	}
+	for _, key := range append(append([]string(nil), managedSetupRows...), "runbook") {
+		row, ok := section.Facts[key]
+		switch {
+		case !ok:
+			return fmt.Errorf("setup guide: %s has no %s row", entry.ID, key)
+		case key != "runbook" && (row.Status != CatalogReferenceStatus || len(row.Evidence) != 1 || row.Evidence[0] != CatalogJSONPath):
+			return fmt.Errorf("setup guide: %s.%s row must be %q linking only %s, not %s %v", entry.ID, key, CatalogReferenceStatus, CatalogJSONPath, row.Status, row.Evidence)
+		case key == "runbook" && (row.Status != entry.Facts[key].Status || len(row.Evidence) == 0):
+			return fmt.Errorf("setup guide: %s.runbook row %s %v, catalog %s", entry.ID, row.Status, row.Evidence, entry.Facts[key].Status)
+		}
+		if key == "runbook" {
+			for _, ev := range row.Evidence {
+				if !slices.Contains(entry.Facts[key].Evidence, ev) {
+					return fmt.Errorf("setup guide: %s.runbook links %s, not the fact's evidence %v", entry.ID, ev, entry.Facts[key].Evidence)
+				}
+			}
+		}
+	}
+	return nil
+}
 
 // ParseSetupDoc splits the guide into the four client sections.
 func ParseSetupDoc(doc string) (map[string]SetupSection, error) {

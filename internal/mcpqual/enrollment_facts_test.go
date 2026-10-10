@@ -39,7 +39,7 @@ func TestEnrolledShortConfirmation(t *testing.T) {
 	if d := ShortPollDecision(ShortPollBudget, rep, c); !strings.Contains(d, "not established: the lower bound L = 150ms is too short") {
 		t.Fatalf("decision %q", d)
 	}
-	e := catalog.Entry{ID: "claude", Version: "2.1.282 (Claude Code)", Platform: "linux/amd64", Facts: map[string]catalog.Fact{}}
+	e := catalog.Entry{ID: "claude", Version: "2.1.282 (Claude Code)", CoordinatorVersion: "2.1.282 (Claude Code)", Platform: "linux/amd64", Facts: map[string]catalog.Fact{}}
 	facts := proposeFacts(rep, c, e, "tests/testdata/mcp-qualification/run-1/report.json")
 	if f := facts["mcp_timeout"]; f.Status != catalog.Verified || !strings.Contains(f.Value, "lower bound") {
 		t.Fatalf("eligible lower bound: %+v", f)
@@ -102,7 +102,7 @@ func TestEnrolledFactEligibility(t *testing.T) {
 			{Name: PhaseDefault, Status: StatusConclusive, Result: result, LowerBoundMS: i64(15000), UpperBoundMS: upper, Observations: 2}}}
 	}
 	rep := &Report{RunID: "run-1", OS: "linux", Arch: "amd64", Cleanup: CleanupReport{OK: true}}
-	e := catalog.Entry{ID: "claude", Version: "v", Platform: "linux/amd64", Facts: map[string]catalog.Fact{}}
+	e := catalog.Entry{ID: "claude", Version: "v", CoordinatorVersion: "v", Platform: "linux/amd64", Facts: map[string]catalog.Fact{}}
 	success := &DecoderVersion{Version: "v", Fixture: "f", Qualified: true, Evidence: []DecoderEvidence{{Platform: "linux/amd64", Fixture: "f", Kinds: []string{CapToolCall, CapToolResult, CapTerminalSuccess}}}}
 	for name, tc := range map[string]struct {
 		c    ClientReport

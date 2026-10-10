@@ -302,7 +302,10 @@ func qualRepo(t *testing.T) string {
 	}
 	// The iteration 08 worker evidence is linked read-only; the fake
 	// vendors report their fixture versions, which the scratch catalog
-	// records (publication compares a run's observed version with it).
+	// records as each entry's coordinator (MCP publication) version:
+	// publication compares a run's observed version with it (design
+	// catalog-version). The worker version stays the checked-in worker
+	// qualification identity, which the fakes never report.
 	if err := os.Symlink(filepath.Join(root, "tests", "testdata", "real-adapters"), filepath.Join(repo, "tests", "testdata", "real-adapters")); err != nil {
 		t.Fatal(err)
 	}
@@ -311,14 +314,35 @@ func qualRepo(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The four publisher-managed facts start from the frozen
+	// pre-publication baseline (design catalog-version, amendment A1), so
+	// no scenario depends on whether the checkout has received published
+	// evidence.
+	baseline := catalog.PublicationBaselineFacts()
 	for i := range es {
-		es[i].Version = fakeVersions[es[i].ID]
+		for key, f := range baseline[es[i].ID] {
+			es[i].Facts[key] = f
+		}
+		es[i].CoordinatorVersion = fakeVersions[es[i].ID]
 	}
 	b, err := mcpqual.RenderCatalog(es)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(p, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// So do the Markdown's three timeout bullets per vendor.
+	mp := filepath.Join(repo, mcpqual.CatalogMDPath)
+	md, err := os.ReadFile(mp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seeded, err := catalog.WithPublicationBaselineBullets(string(md))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(mp, []byte(seeded), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return repo

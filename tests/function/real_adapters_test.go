@@ -1230,19 +1230,17 @@ func TestRealAdapterCatalog(t *testing.T) {
 				}
 			}
 		}
-		// The 07b timeout facts are unchanged, byte for byte.
-		var timeouts []catalog.Fact
-		for _, vendor := range []string{"claude", "codex"} {
-			for _, key := range []string{"mcp_timeout", "mcp_timeout_override", "mcp_progress_extension"} {
-				timeouts = append(timeouts, byID[vendor].Facts[key])
-			}
+		// The 07b timeout facts (design catalog-version, amendment A1): the
+		// frozen pre-publication baseline still matches the historical
+		// freeze (timeoutFactsSHA256 with its two restored short-poll
+		// suffixes), and the current publisher-managed facts equal either
+		// that baseline or their exact regeneration from validated,
+		// receipted qualification runs.
+		if err := checkPublicationBaseline(entries); err != nil {
+			t.Fatal(err)
 		}
-		// (Apart from the short-poll policy that replaced each mcp_timeout's
-		// retired interim suffix, design nonblocking-coordinator-waits.)
-		timeouts, restored := preShortPoll(timeouts)
-		b, _ := json.Marshal(timeouts)
-		if sum := sha256.Sum256(b); hex.EncodeToString(sum[:]) != timeoutFactsSHA256 || restored != 2 {
-			t.Fatalf("the Claude/Codex timeout facts changed: %s", hex.EncodeToString(sum[:]))
+		if err := validatePublishedCatalog(t, root, entries); err != nil {
+			t.Fatalf("the publisher-managed facts: %v", err)
 		}
 		// The operator guide describes the manual remote procedure and does
 		// not claim M3 has happened.

@@ -53,15 +53,59 @@ func tempRepo(t *testing.T) string {
 			t.Fatal(err)
 		}
 	}
+	seedPublicationBaseline(t, repo)
 	alignVersions(t, repo, map[string]string{"claude": "2.1.282 (Claude Code)", "codex": "codex-cli 0.156.1"})
 	return repo
 }
 
+// seedPublicationBaseline sets the scratch catalog's four publisher-managed
+// facts of every vendor to the frozen pre-publication baseline (design
+// catalog-version, amendment A1), so a scenario that assumes
+// pre-publication facts never depends on whether the checkout has received
+// published evidence. Identities, platforms and worker facts stay.
+func seedPublicationBaseline(t *testing.T, repo string) {
+	t.Helper()
+	p := filepath.Join(repo, CatalogJSONPath)
+	es, err := catalog.Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline := catalog.PublicationBaselineFacts()
+	for i := range es {
+		for key, f := range baseline[es[i].ID] {
+			es[i].Facts[key] = f
+		}
+	}
+	b, err := RenderCatalog(es)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The Markdown's three timeout bullets per vendor start from the
+	// frozen baseline too.
+	mp := filepath.Join(repo, CatalogMDPath)
+	md, err := os.ReadFile(mp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seeded, err := catalog.WithPublicationBaselineBullets(string(md))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(mp, []byte(seeded), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // alignVersions records the fake vendors' versions (the 07b help-capture
-// versions the fixture runs observe) as the scratch catalog's versions,
-// canonically rendered: publication compares a run's observed version with
-// the catalog's, and the real catalog's Claude/Codex versions are the
-// iteration 08 worker qualification's, which these fakes do not report.
+// versions the fixture runs observe) as the scratch catalog's coordinator
+// (MCP publication) versions, canonically rendered: publication compares a
+// run's observed version with the entry's coordinator_version (design
+// catalog-version), which these fakes report. The worker version (the
+// iteration 08 worker qualification's) is preserved: it is a separate
+// identity the fakes never observe.
 func alignVersions(t *testing.T, repo string, versions map[string]string) {
 	t.Helper()
 	p := filepath.Join(repo, CatalogJSONPath)
@@ -71,7 +115,7 @@ func alignVersions(t *testing.T, repo string, versions map[string]string) {
 	}
 	for i := range es {
 		if v, ok := versions[es[i].ID]; ok {
-			es[i].Version = v
+			es[i].CoordinatorVersion = v
 		}
 	}
 	b, err := RenderCatalog(es)
@@ -534,7 +578,9 @@ func TestPublishRefusals(t *testing.T) {
 	t.Run("version-mismatch", func(t *testing.T) {
 		repo := tempRepo(t)
 		base, _ := ReadCatalogBase(repo)
-		base.Entries[0].Version = "3.0.0 (Claude Code)"
+		// The publication target (design catalog-version) differs from the
+		// observed version.
+		base.Entries[0].CoordinatorVersion = "3.0.0 (Claude Code)"
 		r := newRunner(t, newWorld(t, fullModel()), planWith(Phases{}))
 		rep := runPlan(t, r, context.Background())
 		if _, err := ProposePatch(rep, base, r.OutDir); contract.ExitCode(err) != 4 || !strings.Contains(err.Error(), "version") {

@@ -1191,7 +1191,7 @@ func shortRun(t *testing.T, timeoutMS string, kinds []string) (*mcpqual.Report, 
 }
 
 // shortRepo is a scratch repository whose claude entry has the given
-// exact version and platform.
+// exact coordinator (MCP publication) version and platform.
 func shortRepo(t *testing.T, version, platform string) (string, *mcpqual.CatalogBase) {
 	t.Helper()
 	repo := qualRepo(t)
@@ -1202,7 +1202,9 @@ func shortRepo(t *testing.T, version, platform string) (string, *mcpqual.Catalog
 	}
 	for i := range es {
 		if es[i].ID == "claude" {
-			es[i].Version, es[i].Platform = version, platform
+			// The publication target (design catalog-version); the worker
+			// version stays the checked-in worker identity.
+			es[i].CoordinatorVersion, es[i].Platform = version, platform
 		}
 	}
 	b, _ := mcpqual.RenderCatalog(es)
@@ -1411,6 +1413,8 @@ func TestMCPCaptureRunbook(t *testing.T) {
 			}
 		}},
 	})
+	// Design catalog-version FP-5: the review then owner gate.
+	t.Run("publication-review", func(t *testing.T) { publicationReview(t, guide) })
 }
 
 // FP-9: devcheck's native, test, benchmark and stress plans and the
@@ -1531,6 +1535,9 @@ func TestMCPEnrollmentCIPolicy(t *testing.T) {
 			}
 		}},
 	})
+	// Design catalog-version FP-8 and FP-9.
+	t.Run("catalog-version-policy", func(t *testing.T) { catalogVersionPolicy(t) })
+	t.Run("catalog-version-ci", func(t *testing.T) { catalogVersionCI(t, live) })
 }
 
 // Decoder enrollment, slice B1 (design decoder-enrollment B1): one

@@ -2,6 +2,7 @@
   {
     "id": "claude",
     "version": "2.1.285 (Claude Code)",
+    "coordinator_version": "2.1.292 (Claude Code)",
     "platform": "linux/amd64",
     "facts": {
       "headless": {
@@ -132,6 +133,7 @@
   {
     "id": "codex",
     "version": "codex-cli 0.159.0",
+    "coordinator_version": "codex-cli 0.160.0",
     "platform": "linux/amd64",
     "facts": {
       "headless": {
@@ -265,6 +267,7 @@
   {
     "id": "grok",
     "version": "grok 1.0.46 (2765805b9442) [stable]",
+    "coordinator_version": "grok 1.0.46 (2765805b9442) [stable]",
     "platform": "linux/amd64",
     "facts": {
       "headless": {
@@ -406,6 +409,7 @@
   {
     "id": "cursor",
     "version": "2026.10.01-e373342",
+    "coordinator_version": "2026.10.01-e373342",
     "platform": "linux/amd64",
     "facts": {
       "headless": {

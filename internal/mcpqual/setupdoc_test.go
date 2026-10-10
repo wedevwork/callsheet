@@ -83,25 +83,26 @@ func TestSetupGuide(t *testing.T) {
 		if s.Runbook[0] != vendorExe[id] || s.Runbook[len(s.Runbook)-1] != "$(cat -- '<runbook>')" || strings.Contains(strings.Join(s.Register, " "), "runbook") {
 			t.Errorf("%s runbook example %q", id, s.Runbook)
 		}
-		if !strings.Contains(s.Text, "no supported override is established—run local qualification") {
-			t.Errorf("%s: timeout rows lack the qualification wording", id)
+		// Design catalog-version A1: the common status sentence, the four
+		// catalog references and the runbook row (shared row validation),
+		// and every linked file present.
+		if !strings.Contains(s.Text, TimeoutStatusSentence) {
+			t.Errorf("%s: the timeout and configuration status sentence is missing", id)
+		}
+		if err := CheckSetupFactRows(s, e); err != nil {
+			t.Error(err)
 		}
 		for _, key := range []string{"mcp_config", "mcp_timeout", "mcp_timeout_override", "mcp_progress_extension", "runbook"} {
-			row, ok := s.Facts[key]
-			jf := e.Facts[key]
-			if !ok || row.Status != jf.Status || len(row.Evidence) == 0 {
-				t.Errorf("%s.%s row %+v, JSON %s", id, key, row, jf.Status)
-				continue
-			}
-			for _, ev := range row.Evidence {
-				if !slices.Contains(jf.Evidence, ev) {
-					t.Errorf("%s.%s links %s, not the fact's evidence %v", id, key, ev, jf.Evidence)
-				}
+			for _, ev := range s.Facts[key].Evidence {
 				if st, err := os.Stat(filepath.Join(root, ev)); err != nil || st.Size() == 0 {
 					t.Errorf("%s.%s evidence %s missing", id, key, ev)
 				}
 			}
 		}
+		// The row checker's rejection matrix lives in the non-stress
+		// function proof (TestMCPQualificationPublish/publication-recovery/
+		// a1-hand-edits/guide-row-matrix), never in this stress-selected
+		// package.
 	}
 	for _, s := range []string{mcp.BudgetDeferralNote, mcp.ShortPollNotice, "<callsheet-binary>", "<plane-url>", "<ca-path>", "<runbook>",
 		"`--ca-fingerprint <sha256>` can replace `--ca <ca-path>`; never pass both", "wrong URL or certificate name (SAN), the CA file and the clock",

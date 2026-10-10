@@ -754,6 +754,65 @@ and run in the unchanged per-CPU `stress-packages-cpu` invocations;
 coverage manifest is unchanged; no stage, command, selector, count, CPU
 list, timeout or workflow job changes.
 
+Catalog version (design catalog-version) separates each catalog entry's
+worker `version` from its MCP publication identity `coordinator_version`
+and makes publication match the latter. It adds no new function parent
+(429 names, the same order): its nine logical function tests are subtests
+of existing ordinary, race and native parents, outside their fixed case
+inventories and never in a stress shard:
+`TestFP7CatalogContract/catalog-version-model`,
+`TestMCPQualificationPublish/coordinator-version`,
+`TestMCPRealEnrollmentConfirmation/publication-claims`,
+`TestMCPQualificationPublish/evidence-package`,
+`TestMCPCaptureRunbook/publication-review`,
+`TestMCPCursorConfirmation/publication-runbook`,
+`TestMCPQualificationPublish/publication-recovery`,
+`TestMCPEnrollmentCIPolicy/catalog-version-policy` and
+`TestMCPEnrollmentCIPolicy/catalog-version-ci`. They are offline: the
+publisher and report APIs on temporary catalog and output trees, the fake
+vendor and the clocked real-format fakes already used there, and the
+unchanged checked-in fixtures, whose index stays pinned by its SHA-256. The
+new unit vectors live in `internal/testkit/catalog` (not a stress-selected
+package: the catalog schema, the exact missing-identity diagnostic and the
+frozen worker projection's sensitivity); the `internal/mcpqual` edits only
+populate the new field in its existing synthetic catalogs, so
+catalog-version adds no new stress selector or workload and
+`stress-packages-cpu` keeps its unchanged mcpqual invocations. `devcheck
+native` still makes 9 ordinary calls, `devcheck bench` keeps 13 steps
+(`BenchmarkMCPQualificationTranscript`, `BenchmarkMCPQualificationProbe`
+and `BenchmarkMCPCaptureEvidence` are unchanged: the change adds one scalar
+field and comparison, no hot path), Linux `all` still makes 32 ordinary
+calls, cross keeps 12 artifacts, and the whole-file coverage manifest adds
+`internal/testkit/catalog/catalog.go` (its changed group gate is strictly
+above 80% on both systems); `internal/mcpqual/publish.go` stays a
+whole-file entry. The workflow keeps its twenty jobs, four required checks,
+commands, stress selectors, counts, CPU lists and timeouts;
+catalog-version makes no new budget allocation.
+
+Amendment A1 (catalog-version r0.3) replaces the remaining publication
+freezes so the later evidence pull request edits no code, test, guide or
+constant. The historical timeout and coordinator digests now check the
+frozen pre-publication baseline
+(`catalog.PublicationBaselineFacts`, sixteen facts taken from 1038b09,
+with `catalog.PublicationBaselineBullets`, the twelve matching support
+catalog bullets that scratch catalogs also start from), and the current
+publisher-managed facts and bullets must equal that baseline or their
+exact `ProposePatch` regeneration from the vendor's ordered, receipted
+qualification runs; the setup guide's four managed rows read `SEE CATALOG`
+and a shared row check validates them. A1 adds no new function parent (429
+names, the same order): its offline proof is the `a1-baseline`,
+`a1-generated-publication` and `a1-hand-edits` subtests of
+`TestMCPQualificationPublish/publication-recovery`, built from the existing
+fake and clocked real-format report builders (no new process session and no
+wall-clock delay), with the setup-guide row checker's rejection matrix in
+its `a1-hand-edits/guide-row-matrix` subtest (never in the stress-selected
+mcpqual package, whose setup-guide test keeps only the positive checks);
+its unit vectors extend existing `internal/testkit/catalog` tests in place,
+so it adds no stress selector or workload. The whole-file coverage manifest adds
+`internal/testkit/catalog/publication_baseline.go` and
+`internal/mcpqual/setupdoc.go`; stages, counts, CPU lists, timeouts and the
+workflow's twenty jobs are unchanged.
+
 Cross-build matrix (FP-8; moved out of `tests/function` on 2026-10-02).
 `devcheck cross` is FP-8's proof. It builds callsheet, fake-adapter and the
 process-group test binary (`go test -c`) with `CGO_ENABLED=0` for
