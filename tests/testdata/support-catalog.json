@@ -20,7 +20,7 @@
       },
       "model": {
         "status": "VERIFIED",
-        "value": "`--model sonnet` ran with 2.1.285 on the recorded Linux recipe (exit 0, result `pong`); Callsheet passes exactly `sonnet` for claude. The success output's modelUsage key `claude-sonnet-5-5` is evidence of that run, not a second accepted selection.",
+        "value": "`--model sonnet` ran with 2.1.285 on the recorded Linux recipe (exit 0, result `pong`). This is an observed model, not a model allowlist.",
         "evidence": [
           "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/claude-stdin-success/argv.txt",
           "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/claude-stdin-success/stdout.bin"
@@ -29,7 +29,7 @@
       },
       "effort": {
         "status": "VERIFIED",
-        "value": "`--effort low` with `--model sonnet` ran with 2.1.285 on the recorded Linux recipe (exit 0); Callsheet passes only `low` for claude.",
+        "value": "`--effort low` with `--model sonnet` ran with 2.1.285 on the recorded Linux recipe (exit 0). This is an observed effort, not the adapter's complete allowed effort set.",
         "evidence": [
           "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/claude-stdin-success/argv.txt",
           "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/claude-stdin-success/exit.txt"
@@ -153,7 +153,7 @@
       },
       "model": {
         "status": "VERIFIED",
-        "value": "`--model gpt-6.1-sol` ran with codex-cli 0.159.0 on the recorded Linux recipe (exit 0, final `pong`); Callsheet passes exactly `gpt-6.1-sol` for codex.",
+        "value": "`--model gpt-6.1-sol` ran with codex-cli 0.159.0 on the recorded Linux recipe (exit 0, final `pong`). This is an observed model, not a model allowlist.",
         "evidence": [
           "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-success/argv.txt",
           "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-success/final.saved.txt"
@@ -162,7 +162,7 @@
       },
       "effort": {
         "status": "VERIFIED",
-        "value": "`-c model_reasoning_effort=\"low\"` (the quotes are literal bytes of one argument) with `--model gpt-6.1-sol` ran with codex-cli 0.159.0 on the recorded Linux recipe (exit 0); Callsheet passes only `low` for codex.",
+        "value": "`-c model_reasoning_effort=\"low\"` (the quotes are literal bytes of one argument) with `--model gpt-6.1-sol` ran with codex-cli 0.159.0 on the recorded Linux recipe (exit 0). This is an observed effort, not the adapter's complete allowed effort set.",
         "evidence": [
           "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-success/argv.txt",
           "tests/testdata/real-adapters/linux-2026-09-30/runs-scratch/codex-skip-success/exit.txt"
@@ -287,7 +287,7 @@
       },
       "model": {
         "status": "VERIFIED",
-        "value": "`--model grok-4.7` ran with grok 1.0.46 on the recorded Linux recipe (exit 0, text `pong`); Callsheet passes exactly `grok-4.7` for grok. The success output's modelUsage key `grok-4.7-build` is evidence of that run, not an extra alias or accepted selection.",
+        "value": "`--model grok-4.7` ran with grok 1.0.46 on the recorded Linux recipe (exit 0, text `pong`). This is an observed model, not a model allowlist. The success output's modelUsage key grok-4.7-build identifies that run; it does not rewrite the requested model.",
         "evidence": [
           "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-stdin-success/argv.txt",
           "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-stdin-success/stdout.bin",
@@ -297,7 +297,7 @@
       },
       "effort": {
         "status": "VERIFIED",
-        "value": "`--reasoning-effort low` with `--model grok-4.7` ran with grok 1.0.46 on the recorded Linux recipe (exit 0); Callsheet passes only `low` for grok. The other listed or accepted efforts (xhigh, high, medium) were not run and are refused.",
+        "value": "`--reasoning-effort low` with `--model grok-4.7` ran with grok 1.0.46 on the recorded Linux recipe (exit 0). This is an observed effort, not the adapter's complete allowed effort set.",
         "evidence": [
           "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-stdin-success/argv.txt",
           "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-stdin-success/exit.txt",
@@ -427,7 +427,7 @@
       },
       "model": {
         "status": "VERIFIED",
-        "value": "The measured vendor model argument is `grok-4.7-low` (listed by the CLI; it ran with exit 0 under the rejected candidate). Callsheet's role pair model `grok-4.7`, effort `low` maps to that literal argument; Cursor execution itself is refused.",
+        "value": "The measured vendor model argument is `grok-4.7-low` (listed by the CLI; it ran with exit 0 under the rejected candidate). Callsheet's role pair model `grok-4.7`, effort `low` maps to that literal argument; Cursor execution itself is refused. The observed pair is not a selection allowlist.",
         "evidence": [
           "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-stdin-success/argv.txt",
           "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-stdin-success/stdout.bin",
@@ -437,7 +437,7 @@
       },
       "effort": {
         "status": "VERIFIED",
-        "value": "Only the literal mapping of (`grok-4.7`, `low`) to `grok-4.7-low` is recorded; the CLI has no standalone effort flag and Callsheet applies no general model-plus-effort concatenation. The listed medium, high and xhigh variants and the bracket syntax were not run and are refused.",
+        "value": "Only the literal mapping of (`grok-4.7`, `low`) to `grok-4.7-low` is recorded; the CLI has no standalone effort flag and Callsheet applies no general model-plus-effort concatenation. The other listed variants and bracket syntax are listing/help evidence, not additional measured executions. All Cursor task execution remains refused.",
         "evidence": [
           "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-stdin-success/argv.txt",
           "tests/testdata/real-adapters/linux-2026-10-04/cursor-models.txt",

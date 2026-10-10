@@ -212,9 +212,11 @@ func TestCoverageManifestFiles(t *testing.T) {
 		// one test-support package whose executable logic the design
 		// requires in the manifest; design catalog-version adds exactly the
 		// catalog schema and validator file and (amendment A1) its frozen
-		// publication baseline; every other testkit path stays out.
+		// publication baseline, and design 12a-worker-selection the smoke
+		// deployment harness it edits; every other testkit path stays out.
 		if strings.HasSuffix(rel, "_test.go") || (strings.HasPrefix(rel, "internal/testkit/") && !strings.HasPrefix(rel, "internal/testkit/containeracceptance/") &&
-			rel != "internal/testkit/catalog/catalog.go" && rel != "internal/testkit/catalog/publication_baseline.go") {
+			rel != "internal/testkit/catalog/catalog.go" && rel != "internal/testkit/catalog/publication_baseline.go" &&
+			rel != "internal/testkit/workersmoke/deployment.go") {
 			t.Fatalf("manifest lists non-production %s", rel)
 		}
 		if os := buildOS(t, filepath.Join(root, filepath.FromSlash(rel))); os != e.OS {
@@ -478,6 +480,63 @@ func TestTaskWorkspaceBudgets(t *testing.T) {
 		t.Fatal("the 10b budgets entry is not a Budgets allocation before the measurements")
 	case !strings.Contains(s[:at], "Iteration 10b allocation (design 10b r0.2 Budgets; planning allowances"):
 		t.Fatal("the 10b budgets entry is not labelled as planning allowances")
+	}
+}
+
+// workerSelectionBudget is design 12a-worker-selection's Budgets entry,
+// verbatim.
+const workerSelectionBudget = "12a worker selection: against the pre-12a implementation base under matched runner and cache conditions, allocate ordinary/race/native " +
+	"function-binary growth of 5 s Linux / 8 s macOS per invocation, coverage-command growth of 5 s Linux / 8 s macOS, and 2 s additional Linux adapter " +
+	"benchmark execution. No macOS benchmark step is added. Main-job growth allowance is 15 s Linux / 20 s macOS, inclusive of those execution allowances " +
+	"rather than additional to them. No stress change: all stress workloads, selectors, repetition counts, CPU lists and timeouts remain unchanged; every " +
+	"stress binary has zero planned execution growth, including mcpqual. Allow at most 5 s shared compilation growth per job, included in the main-job " +
+	"allowance where applicable. Preserve the workflow, native inventory of 429 and every existing watchdog. Record the implementation base revision and " +
+	"compare binary, command and job times separately, retaining first-run evidence. An allocation miss requires investigation, fixture/build reuse or " +
+	"design revision, never weakened assertions, skipped cases, reduced counts or raised timeouts."
+
+// TestWorkerSelectionBudgets (design 12a-worker-selection, sign-off fold):
+// docs/ci.md carries the exact 12a allocation once, as a Budgets planning
+// allocation before the measurements; the native inventory stays 429.
+func TestWorkerSelectionBudgets(t *testing.T) {
+	doc, err := os.ReadFile(filepath.Join(testkit.MustRepoRoot(t), "docs", "ci.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(doc)
+	at := strings.Index(s, workerSelectionBudget)
+	budgets, measured := strings.Index(s, "\nBudgets:\n"), strings.Index(s, "\nMeasurements, newest first.")
+	switch {
+	case at < 0 || strings.Count(s, workerSelectionBudget) != 1:
+		t.Fatal("docs/ci.md does not carry the 12a budgets entry exactly once")
+	case budgets < 0 || measured < 0 || at < budgets || at > measured:
+		t.Fatal("the 12a budgets entry is not a Budgets allocation before the measurements")
+	case !strings.Contains(s[:at], "- Iteration 12a worker-selection allocation (design 12a-worker-selection\n  r0.3, Coverage and budget allocation; planning allowances, not\n  measurements or pass/fail timing gates"):
+		t.Fatal("the 12a budgets entry is not labelled as planning allowances")
+	case len(NativeRequiredTests()) != 429:
+		t.Fatalf("native inventory %d, want 429", len(NativeRequiredTests()))
+	}
+}
+
+// workerSelectionFiles are design 12a-worker-selection's new and changed
+// production files.
+var workerSelectionFiles = []string{"internal/adapter/vendor_version.go", "internal/adapter/vendor.go", "internal/adapter/adapter.go",
+	"internal/sidecar/roles.go", "internal/sidecar/tasks.go", "internal/cli/role.go", "internal/cli/sidecar.go", "internal/mcp/schemas.go",
+	"internal/testkit/catalog/catalog.go", "internal/testkit/workersmoke/deployment.go"}
+
+// TestWorkerSelectionCoverageManifest (design 12a-worker-selection,
+// Coverage and budget allocation): every new or changed production file is
+// a whole-file changed-group entry evaluated on both systems.
+func TestWorkerSelectionCoverageManifest(t *testing.T) {
+	root := testkit.MustRepoRoot(t)
+	listed := map[string]CoverageEntry{}
+	for _, e := range WorkspaceCoverageManifest {
+		listed[strings.TrimPrefix(e.File, modulePath+"/")] = e
+	}
+	for _, rel := range workerSelectionFiles {
+		e, ok := listed[rel]
+		if !ok || e.Group != GroupChanged || len(e.Ranges) != 0 || e.OS != "" || buildOS(t, filepath.Join(root, filepath.FromSlash(rel))) != "" {
+			t.Fatalf("12a file %s is not a whole-file changed-group entry for both systems", rel)
+		}
 	}
 }
 

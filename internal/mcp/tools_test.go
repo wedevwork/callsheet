@@ -284,7 +284,7 @@ func TestRegistryTools(t *testing.T) {
 		`{}`, add + `,"extra":1}`, add + `,"timeout":null}`, add + `,"timeout":5}`, add + `,"timeout":"-1s"}`, add + `,"timeout":" "}`,
 		strings.Replace(add, `"concurrency":2`, `"concurrency":0`, 1) + `}`, strings.Replace(add, `"concurrency":2`, `"concurrency":2147483648`, 1) + `}`,
 		strings.Replace(add, `"concurrency":2`, `"concurrency":1.5`, 1) + `}`, strings.Replace(add, `"concurrency":2`, `"concurrency":"2"`, 1) + `}`,
-		strings.Replace(add, `"fake"`, `"claude"`, 1) + `}`, strings.Replace(add, `/srv/i.md`, `relative.md`, 1) + `}`,
+		strings.Replace(strings.Replace(add, `"fake"`, `"claude"`, 1), `"medium"`, `"ultra"`, 1) + `}`, strings.Replace(add, `/srv/i.md`, `relative.md`, 1) + `}`,
 		strings.Replace(add, `"medium"`, `"max"`, 1) + `}`, strings.Replace(add, `"worker-a"`, `"Worker"`, 1) + `}`,
 	} {
 		if e := h.ask(toolRoleAdd, bad).errorOf(t); e.Code != contract.CodeInvalidArgument {

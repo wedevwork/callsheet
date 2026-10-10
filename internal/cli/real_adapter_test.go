@@ -83,33 +83,49 @@ func TestRealAdapterCLIOptions(t *testing.T) {
 			t.Fatalf("%v = %d %q (%d runs)", c.args, code, errOut, len(got))
 		}
 	}
-	// Help names every flag, the qualified pairs, the macOS limit and
-	// (iteration 11) Grok's argv/32 KiB/dontAsk limits and Cursor's refusal.
+	// Help names every flag, each vendor's minimum version (design
+	// 12a-worker-selection: no exact-only version or pair), the required
+	// free model and the effort sets, the macOS limit and (iteration 11)
+	// Grok's argv/32 KiB/dontAsk limits and Cursor's refusal.
+	flat := func(s string) string { return strings.Join(strings.Fields(s), " ") }
 	_, help, _ := exec(t, "linux", "sidecar", "run", "--help")
 	for _, w := range []string{"[--claude-adapter PATH] [--codex-adapter PATH] [--grok-adapter PATH] [--cursor-adapter PATH] [--fake-adapter PATH]",
-		"version 2.1.285 (Claude Code)", "model sonnet, effort low", "codex-cli 0.159.0", "gpt-6.1-sol, effort low", "no PATH lookup", "give it on every start",
+		"(minimum version 2.1.285 (Claude Code))", "(minimum version codex-cli 0.159.0)", "no PATH lookup", "give it on every start",
+		"accepts a complete version line of that vendor at or above its minimum, a newer one without a warning",
+		"an older or malformed version, or another program's output, makes the adapter's roles unready",
+		"Roles name a required free-text model and an effort from the adapter's set", "the vendor decides whether that pair runs",
 		"qualified on Linux only", "test/demo adapter; never calls a model",
-		"--grok-adapter PATH", "version grok 1.0.46\n                     (2765805b9442) [stable], model grok-4.7, effort low; Linux only)",
-		"(at most 32 KiB) is passed in argv", "visible to process inspection", "dontAsk cancelled every measured", "On macOS\n                     grok roles are refused",
-		"--cursor-adapter PATH", "(cursor-agent; known: version 2026.10.01-e373342", "for version probing only", "are refused on every OS",
-		"no qualified unattended recipe\n                     preserves the operator posture"} {
-		if !strings.Contains(help, w) {
+		"--grok-adapter PATH", "(minimum version grok 1.0.46 (2765805b9442) [stable]; Linux only)",
+		"(at most 32 KiB) is passed in argv", "visible to process inspection", "dontAsk cancelled every measured", "On macOS grok roles are refused",
+		"--cursor-adapter PATH", "(cursor-agent; minimum version 2026.10.01-e373342) for version probing only", "are refused on every OS",
+		"no qualified unattended recipe preserves the operator posture"} {
+		if !strings.Contains(flat(help), w) {
 			t.Fatalf("sidecar run help lacks %q:\n%s", w, help)
+		}
+	}
+	for _, stale := range []string{"qualified: version", "model sonnet, effort low", "known: version"} {
+		if strings.Contains(flat(help), stale) {
+			t.Fatalf("sidecar run help keeps the exact-only %q:\n%s", stale, help)
 		}
 	}
 	for _, leaf := range []string{"add", "set"} {
 		_, h, _ := exec(t, "linux", "role", leaf, "--help")
-		for _, w := range []string{"claude (Claude Code), codex (Codex CLI), grok (Grok\n                     Build; Linux workers only), cursor (Cursor Agent",
-			"or\n                     fake (test/demo adapter; never calls a model)", "its roles are refused on every OS",
-			"claude model", "sonnet, effort low; codex model gpt-6.1-sol, effort low", "grok and cursor: model grok-4.7, effort low",
-			"(claude, codex, grok, cursor:\n                     low; fake: low, medium, high)"} {
-			if !strings.Contains(h, w) {
+		for _, w := range []string{"claude (Claude Code), codex (Codex CLI), grok (Grok Build; Linux workers only), cursor (Cursor Agent",
+			"or fake (test/demo adapter; never calls a model)", "its roles are refused on every OS",
+			"required model name, free text passed unchanged to the adapter (never inferred or defaulted; no model list is kept)",
+			"the vendor decides whether it runs the model with the effort, and a vendor refusal is the task's result",
+			"effort, one of the adapter's efforts: claude low, medium, high, xhigh, max; codex low, medium, high, xhigh, max, ultra; grok low, medium, high, xhigh; " +
+				"cursor none, minimal, low, medium, high, xhigh, max; fake low, medium, high"} {
+			if !strings.Contains(flat(h), w) {
 				t.Fatalf("role %s help lacks %q:\n%s", leaf, w, h)
 			}
 		}
+		if strings.Contains(h, "qualified pair") || strings.Contains(flat(h), "model grok-4.7, effort low") {
+			t.Fatalf("role %s help keeps the exact pairs:\n%s", leaf, h)
+		}
 	}
-	// Role diagnostics name every registered adapter and the vendors'
-	// single effort, before any trust or network.
+	// Role diagnostics name every registered adapter and the vendor's
+	// effort set, before any trust or network.
 	add := func(adapterID, effort string) []string {
 		return []string{"role", "add", "w", "--name", "coder", "--node", "n_0123456789abcdef0123456789abcdef", "--adapter", adapterID,
 			"--instruction", "/i.md", "--runbook", "/r.md", "--model", "sonnet", "--effort", effort, "--concurrency", "1", "--plane", "https://127.0.0.1:1"}
@@ -119,10 +135,10 @@ func TestRealAdapterCLIOptions(t *testing.T) {
 		want string
 	}{
 		{add("nosuch-adapter", "low"), "unknown adapter; registered adapters: claude, codex, cursor, fake, grok"},
-		{add("claude", "medium"), "effort is not allowed for adapter claude; allowed: low"},
-		{add("codex", "high"), "effort is not allowed for adapter codex; allowed: low"},
-		{add("grok", "medium"), "effort is not allowed for adapter grok; allowed: low"},
-		{add("cursor", "xhigh"), "effort is not allowed for adapter cursor; allowed: low"},
+		{add("claude", "ultra"), "effort is not allowed for adapter claude; allowed: low, medium, high, xhigh, max"},
+		{add("codex", "minimal"), "effort is not allowed for adapter codex; allowed: low, medium, high, xhigh, max, ultra"},
+		{add("grok", "max"), "effort is not allowed for adapter grok; allowed: low, medium, high, xhigh"},
+		{add("cursor", "ultra"), "effort is not allowed for adapter cursor; allowed: none, minimal, low, medium, high, xhigh, max"},
 		{[]string{"role", "set", "w", "--adapter", "unknown-vendor", "--plane", "https://127.0.0.1:1"}, "unknown adapter; registered adapters: claude, codex, cursor, fake, grok"},
 	} {
 		code, _, errOut := exec(t, "linux", c.args...)

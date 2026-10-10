@@ -59,6 +59,17 @@ func duration(desc string) schema {
 	return str(desc + " A Go duration string such as 90s, 5m or 2h (not a JSON number).")
 }
 
+// The role and override model/effort descriptions (design
+// 12a-worker-selection): the model is required free text and never an
+// enum; the effort set depends on the selected role's adapter, so it is
+// described here and checked by the plane, never a universal enum.
+const (
+	modelPolicyDesc = "free text passed unchanged to the adapter (never inferred or defaulted; no model list is kept); the vendor decides whether it runs the model with the effort, and a vendor refusal is the task's result."
+	effortSetsDesc  = "claude low, medium, high, xhigh, max; codex low, medium, high, xhigh, max, ultra; grok low, medium, high, xhigh; cursor none, minimal, low, medium, high, xhigh, max; fake low, medium, high."
+	roleModelDesc   = "Required model name, " + modelPolicyDesc + " Worker executables are accepted at or above their adapter's minimum version."
+	roleEffortDesc  = "Effort, one of the adapter's efforts: " + effortSetsDesc
+)
+
 // roleText is a role field of printable UTF-8 text.
 func roleText(desc string) schema {
 	return schema{"type": "string", "minLength": 1, "maxLength": 1024, "description": desc}
@@ -79,8 +90,8 @@ func schemaFor(name string) schema {
 			"adapter":     slug("A registered adapter ID: claude (Claude Code), codex (Codex CLI), grok (Grok Build; Linux workers only), cursor (Cursor Agent; registered but its roles are refused on every OS) or fake (a test/demo adapter that never calls a model)."),
 			"instruction": roleText("Absolute path of the instruction manual on the worker node (never opened by the coordinator)."),
 			"runbook":     roleText("Absolute path of the runbook manual on the worker node (never opened by the coordinator)."),
-			"model":       roleText("Model name passed to the adapter (never inferred or defaulted); claude accepts only sonnet and codex only gpt-6.1-sol (their qualified pairs, checked by the worker node); fake: free text."),
-			"effort":      slug("Effort, one of the adapter's efforts (claude, codex: low; fake: low, medium, high)."),
+			"model":       roleText(roleModelDesc),
+			"effort":      slug(roleEffortDesc),
 			"concurrency": integer("Concurrent tasks for this role, shared by all coordinators.", 1, contract.MaxConcurrency, 0, false),
 			"timeout":     duration("Task execution timeout; 0 is unlimited; omitted keeps the role default (2h)."),
 		}, "id", "name", "node", "adapter", "instruction", "runbook", "model", "effort", "concurrency")
@@ -91,8 +102,8 @@ func schemaFor(name string) schema {
 			"adapter":     slug("New registered adapter ID: claude, codex or fake."),
 			"instruction": roleText("New absolute instruction manual path on the worker node."),
 			"runbook":     roleText("New absolute runbook manual path on the worker node."),
-			"model":       roleText("New model name."),
-			"effort":      slug("New effort, one of the adapter's efforts."),
+			"model":       roleText("New model name: " + modelPolicyDesc),
+			"effort":      slug("New effort, one of the role's adapter's efforts: " + effortSetsDesc),
 			"concurrency": integer("New concurrency.", 1, contract.MaxConcurrency, 0, false),
 			"timeout":     duration("New task execution timeout; 0 is unlimited."),
 		}, "id")
@@ -108,8 +119,8 @@ func schemaFor(name string) schema {
 		}, "id")
 	case toolDispatch:
 		override := object(schema{
-			"model":   roleText("Override the role's model for this task only."),
-			"effort":  slug("Override the role's effort for this task only."),
+			"model":   roleText("Override the role's model for this task only (omitted: the role's model): " + modelPolicyDesc),
+			"effort":  slug("Override the role's effort for this task only (omitted: the role's effort); it must be one of the selected role's adapter's efforts: " + effortSetsDesc),
 			"timeout": duration("This task's execution timeout; 0 is unlimited."),
 		})
 		override["minProperties"] = 1

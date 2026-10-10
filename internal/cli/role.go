@@ -32,13 +32,14 @@ const (
 		"                     fake (test/demo adapter; never calls a model)\n" +
 		"  --instruction PATH absolute path of the instruction manual on the worker node\n" +
 		"  --runbook PATH     absolute path of the runbook manual on the worker node\n" +
-		"  --model MODEL      model name passed to the adapter (never inferred or defaulted);\n" +
-		"                     claude and codex accept only their qualified pair: claude model\n" +
-		"                     sonnet, effort low; codex model gpt-6.1-sol, effort low (the node\n" +
-		"                     refuses any other); grok and cursor: model grok-4.7, effort low\n" +
-		"                     only; fake: free text\n" +
-		"  --effort EFFORT    effort, one of the adapter's efforts (claude, codex, grok, cursor:\n" +
-		"                     low; fake: low, medium, high)\n" +
+		"  --model MODEL      required model name, free text passed unchanged to the adapter\n" +
+		"                     (never inferred or defaulted; no model list is kept): the vendor\n" +
+		"                     decides whether it runs the model with the effort, and a vendor\n" +
+		"                     refusal is the task's result\n" +
+		"  --effort EFFORT    effort, one of the adapter's efforts: claude low, medium, high,\n" +
+		"                     xhigh, max; codex low, medium, high, xhigh, max, ultra; grok low,\n" +
+		"                     medium, high, xhigh; cursor none, minimal, low, medium, high,\n" +
+		"                     xhigh, max; fake low, medium, high\n" +
 		"  --concurrency N    concurrent tasks for this role, shared by all coordinators (1 or more)\n" +
 		"  --timeout DURATION task timeout, e.g. 2h or 90m; 0 is unlimited (default 2h)\n"
 	roleJSONHelp = "  --json             print the plane's response envelope as one JSON value\n"

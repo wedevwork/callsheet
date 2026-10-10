@@ -39,15 +39,25 @@ func readCapture(t testing.TB, rel string) []byte {
 	return b
 }
 
+// Each real vendor's effort union (design 12a-worker-selection, Selection
+// policy), written out independently of the production table.
+var (
+	claudeUnion = []string{"low", "medium", "high", "xhigh", "max"}
+	codexUnion  = []string{"low", "medium", "high", "xhigh", "max", "ultra"}
+	grokUnion   = []string{"low", "medium", "high", "xhigh"}
+	cursorUnion = []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}
+)
+
 // TestRealAdapterRegistry is UT FP-1: the built-in registry of claude,
 // codex and fake (with iteration 11's cursor and grok between and after
-// them), their immutable descriptors, the qualification table and
-// ValidateSelection.
+// them), their immutable descriptors carrying each vendor's effort union
+// (design 12a-worker-selection), the observation table and
+// ValidateSelection's grammar and union checks.
 func TestRealAdapterRegistry(t *testing.T) {
 	r := Builtin(t.TempDir())
 	ds := r.Descriptors()
-	want := []Descriptor{{ID: "claude", Efforts: []string{"low"}}, {ID: "codex", Efforts: []string{"low"}}, {ID: "cursor", Efforts: []string{"low"}},
-		{ID: "fake", Efforts: []string{"low", "medium", "high"}, TestOnly: true}, {ID: "grok", Efforts: []string{"low"}}}
+	want := []Descriptor{{ID: "claude", Efforts: claudeUnion}, {ID: "codex", Efforts: codexUnion}, {ID: "cursor", Efforts: cursorUnion},
+		{ID: "fake", Efforts: []string{"low", "medium", "high"}, TestOnly: true}, {ID: "grok", Efforts: grokUnion}}
 	if len(ds) != len(want) {
 		t.Fatalf("descriptors = %+v", ds)
 	}
@@ -59,14 +69,14 @@ func TestRealAdapterRegistry(t *testing.T) {
 	// Defensive copies: neither a returned slice nor a descriptor mutates
 	// the registry; only fake is test-only.
 	ds[0].Efforts[0], ds[1].ID = "mutated", "mutated"
-	for _, id := range []string{"claude", "codex"} {
+	for id, union := range map[string][]string{"claude": claudeUnion, "codex": codexUnion} {
 		a, ok := r.Lookup(id)
 		if !ok {
 			t.Fatalf("%s missing", id)
 		}
 		d := a.Descriptor()
-		d.Efforts[0] = "high"
-		if again := a.Descriptor(); again.TestOnly || !slices.Equal(again.Efforts, []string{"low"}) || again.ID != id {
+		d.Efforts[0] = "mutated"
+		if again := a.Descriptor(); again.TestOnly || !slices.Equal(again.Efforts, union) || again.ID != id {
 			t.Fatalf("%s descriptor %+v", id, again)
 		}
 	}
@@ -79,8 +89,9 @@ func TestRealAdapterRegistry(t *testing.T) {
 			t.Fatalf("lookup %s = %+v %v", id, info, ok)
 		}
 	}
-	// Exactly the captured pairs and versions (iteration 11's two rows after
-	// the unchanged iteration 08 rows, the table sorted by ID).
+	// Exactly the observed pairs and versions (iteration 11's two rows after
+	// the unchanged iteration 08 rows, the table sorted by ID): evidence,
+	// each still a valid selection, never the only one.
 	qs := Qualifications()
 	if len(qs) != 4 || qs[0] != (Qualification{ID: "claude", Version: "2.1.285 (Claude Code)", Model: "sonnet", Effort: "low"}) ||
 		qs[1] != (Qualification{ID: "codex", Version: "codex-cli 0.159.0", Model: "gpt-6.1-sol", Effort: "low"}) ||
@@ -94,20 +105,22 @@ func TestRealAdapterRegistry(t *testing.T) {
 	}
 	for _, q := range Qualifications() {
 		if err := ValidateSelection(q.ID, q.Model, q.Effort); err != nil {
-			t.Fatalf("%s qualified pair refused: %v", q.ID, err)
+			t.Fatalf("%s observed pair refused: %v", q.ID, err)
 		}
 	}
-	// Unqualified pairs and unknown IDs: fixed messages naming the adapter
-	// and its supported pair, never the submitted text.
+	// Invalid model grammar, efforts outside the union and unknown IDs:
+	// fixed messages from static metadata only, never the submitted text
+	// (the tagged selection matrix covers every union and the valid
+	// alternate selections).
 	const secret = "SECRET-MODEL-TEXT"
 	for _, c := range []struct{ id, model, effort, field, msg string }{
-		{"claude", "opus[1m]", "low", "model", "the claude model/effort selection is not qualified; supported: model sonnet, effort low"},
-		{"claude", "claude-sonnet-5-5", "low", "model", "supported: model sonnet, effort low"},
-		{"claude", "sonnet", "medium", "effort", "the claude model/effort selection is not qualified"},
-		{"claude", secret, "high", "model", "claude"},
-		{"codex", "gpt-6.1-sol", "medium", "effort", "the codex model/effort selection is not qualified; supported: model gpt-6.1-sol, effort low"},
-		{"codex", secret, "low", "model", "codex"},
-		{"codex", "GPT-6.1-SOL", "low", "model", "codex"},
+		{"claude", " ", "low", "model", "adapter: invalid model"},
+		{"claude", secret + "\n", "high", "model", "adapter: invalid model"},
+		{"claude", "sonnet", "ultra", "effort", "adapter: effort is not allowed for adapter claude; allowed: low, medium, high, xhigh, max"},
+		{"claude", secret, "SECRET-EFFORT", "effort", "allowed: low, medium, high, xhigh, max"},
+		{"codex", "gpt-6.1-sol", "minimal", "effort", "adapter: effort is not allowed for adapter codex; allowed: low, medium, high, xhigh, max, ultra"},
+		{"codex", "", "low", "model", "adapter: invalid model"},
+		{"codex", "gpt-6.1-sol", "LOW", "effort", "allowed: low, medium, high, xhigh, max, ultra"},
 		{"unknown-vendor", "m", "low", "adapter", "unknown adapter; registered adapters: claude, codex, cursor, fake, grok"},
 		{secret, "m", "low", "adapter", "unknown adapter"},
 		{"fake", " ", "low", "model", "invalid model"},
@@ -115,7 +128,7 @@ func TestRealAdapterRegistry(t *testing.T) {
 	} {
 		err := ValidateSelection(c.id, c.model, c.effort)
 		var se *SelectionError
-		if !errors.As(err, &se) || se.Field != c.field || !strings.Contains(se.Error(), c.msg) || strings.Contains(se.Error(), secret) {
+		if !errors.As(err, &se) || se.Field != c.field || !strings.Contains(se.Error(), c.msg) || strings.Contains(se.Error(), "SECRET") {
 			t.Fatalf("ValidateSelection(%q, %q, %q) = %v", c.id, c.model, c.effort, err)
 		}
 	}
@@ -233,13 +246,15 @@ func TestVendorProbe(t *testing.T) {
 		err             error
 		reason          string
 	}{
-		"claude wrong version":  {"claude", "2.1.284 (Claude Code)\n", "", nil, "has an unqualified claude version; expected 2.1.285 (Claude Code)"},
-		"codex wrong version":   {"codex", "codex-cli 0.160.0\n", "", nil, "has an unqualified codex version; expected codex-cli 0.159.0"},
+		// Design 12a-worker-selection: an older Claude is refused and the
+		// newer Codex host version is eligible (reason "": success).
+		"claude older version":  {"claude", "2.1.284 (Claude Code)\n", "", nil, "has an older claude version; minimum 2.1.285 (Claude Code)"},
+		"codex newer version":   {"codex", "codex-cli 0.160.0\n", "", nil, ""},
 		"claude wrong vendor":   {"claude", codexV + "\n", "", nil, "is not the claude CLI (unexpected version output)"},
 		"codex wrong vendor":    {"codex", claudeV + "\n", "", nil, "is not the codex CLI (unexpected version output)"},
 		"banner":                {"claude", "Welcome!\n" + claudeV + "\n", "", nil, "is not the claude CLI"},
-		"extra line":            {"codex", codexV + "\nupdate available\n", "", nil, "is not the codex CLI"},
-		"two newlines":          {"claude", claudeV + "\n\n", "", nil, "is not the claude CLI"},
+		"extra line":            {"codex", codexV + "\nupdate available\n", "", nil, "has an invalid codex version; expected an orderable version at or above codex-cli 0.159.0"},
+		"two newlines":          {"claude", claudeV + "\n\n", "", nil, "has an invalid claude version; expected an orderable version at or above 2.1.285 (Claude Code)"},
 		"leading space":         {"codex", " " + codexV + "\n", "", nil, "is not the codex CLI"},
 		"empty":                 {"claude", "", "", nil, "is not the claude CLI"},
 		"nonzero exit":          {"claude", claudeV + "\n", "", errors.New("exit status 1"), "exited unsuccessfully"},
@@ -251,9 +266,15 @@ func TestVendorProbe(t *testing.T) {
 		r := &fakeRunner{out: c.out, errOut: c.errOut, err: c.err}
 		v, _ := vendorProber(t, c.id, r, nil)
 		err := v.Probe(bg, exe)
-		wantProbeErr(t, err, c.reason)
-		if strings.Contains(err.Error(), "SECRET") || strings.Contains(err.Error(), "update available") {
-			t.Fatalf("%s: output leaked: %v", name, err)
+		if c.reason == "" {
+			if err != nil {
+				t.Fatalf("%s: an eligible version was refused: %v", name, err)
+			}
+		} else {
+			wantProbeErr(t, err, c.reason)
+			if strings.Contains(err.Error(), "SECRET") || strings.Contains(err.Error(), "update available") {
+				t.Fatalf("%s: output leaked: %v", name, err)
+			}
 		}
 		if r.waits != 1 {
 			t.Fatalf("%s: waited %d times", name, r.waits)
@@ -341,7 +362,9 @@ var forbidden = []string{"--dangerously-skip-permissions", "--dangerously-bypass
 	"--resume", "--continue", "--worktree", "--permission-mode", "--approve-for-me", "--full-auto", "--yolo", "--cloud", "--mcp-server", "--auto-review", "-m"}
 
 // TestVendorInvocation is UT FP-3: the exact captured argv arrays, owned
-// stdin, the prompt bound and the refusals, with no process.
+// stdin, the prompt bound and the refusals (invalid model grammar and an
+// effort outside both unions; the tagged selection matrix covers the
+// alternate valid selections), with no process.
 func TestVendorInvocation(t *testing.T) {
 	scratch := filepath.Join(t.TempDir(), "callsheet-task-"+taskID+"-1")
 	prompt := []byte("{\"format\":\"callsheet-task-v1\"}\n\x00\xff 'quoted' \"double\" $(not a shell) \\n`tick`")
@@ -398,8 +421,8 @@ func TestVendorInvocation(t *testing.T) {
 			"task id":    {TaskID: "t_x", Model: q.Model, Effort: q.Effort, ScratchDir: scratch},
 			"no model":   {TaskID: taskID, Effort: q.Effort, ScratchDir: scratch},
 			"control":    {TaskID: taskID, Model: q.Model + "\n", Effort: q.Effort, ScratchDir: scratch},
-			"model":      {TaskID: taskID, Model: "other", Effort: q.Effort, ScratchDir: scratch},
-			"effort":     {TaskID: taskID, Model: q.Model, Effort: "high", ScratchDir: scratch},
+			"model":      {TaskID: taskID, Model: "\t", Effort: q.Effort, ScratchDir: scratch},
+			"effort":     {TaskID: taskID, Model: q.Model, Effort: "minimal", ScratchDir: scratch},
 			"prompt":     {TaskID: taskID, Model: q.Model, Effort: q.Effort, Prompt: make([]byte, contract.MaxPromptBytes+1), ScratchDir: scratch},
 			"no default": {TaskID: taskID, ScratchDir: scratch},
 		} {

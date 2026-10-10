@@ -115,11 +115,12 @@ func TestGate(t *testing.T) {
 	}
 }
 
-// fakeClaude is a shell stand-in for the claude CLI: the qualified version
-// line, and for a task one JSON result object ("pong"), or a hang when the
-// composed prompt asks for one.
+// fakeClaude is a shell stand-in for the claude CLI: a version line newer
+// than the observed minimum (design 12a-worker-selection: eligible without
+// a version-drift warning), and for a task one JSON result object
+// ("pong"), or a hang when the composed prompt asks for one.
 const fakeClaude = `#!/bin/sh
-if [ "$1" = --version ]; then echo '2.1.285 (Claude Code)'; exit 0; fi
+if [ "$1" = --version ]; then echo '2.1.292 (Claude Code)'; exit 0; fi
 if grep -q hang-forever; then exec sleep 30; fi
 printf '{"type":"result","is_error":false,"result":"pong"}'
 `

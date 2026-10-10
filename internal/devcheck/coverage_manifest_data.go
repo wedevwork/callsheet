@@ -278,6 +278,17 @@ var WorkspaceCoverageManifest = []CoverageEntry{
 	// guide's shared row validation, whole.
 	{Group: GroupChanged, File: modulePath + "/internal/testkit/catalog/publication_baseline.go"},
 	{Group: GroupChanged, File: modulePath + "/internal/mcpqual/setupdoc.go"},
+
+	// Design 12a-worker-selection (base 24d5ad6): the new worker version
+	// policy and the smoke harness whose observed-pair documentation it
+	// changes (the design counts that workersmoke edit among its production
+	// edits), whole (no build constraint: evaluated on both systems). Its
+	// other changed production files are already listed whole:
+	// adapter/vendor.go, adapter/adapter.go, sidecar/roles.go,
+	// sidecar/tasks.go, cli/role.go, cli/sidecar.go, mcp/schemas.go and
+	// testkit/catalog/catalog.go.
+	{Group: GroupChanged, File: modulePath + "/internal/adapter/vendor_version.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/testkit/workersmoke/deployment.go"},
 }
 
 // modulePath is the profile's import-path prefix.

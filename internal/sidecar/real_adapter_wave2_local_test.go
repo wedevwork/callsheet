@@ -235,14 +235,17 @@ func wave2Posture(t *testing.T) {
 	if e := c.result("p2"); runtime.GOOS == "linux" && e != nil || runtime.GOOS == "darwin" && (e == nil || e.Message != wave2GrokPosture) {
 		t.Fatalf("native grok candidate on %s: %v", runtime.GOOS, e)
 	}
-	bad := vendorRole(adapter.CursorID, "cur", ins, run)
-	bad.Model = "grok-4.7-low"
+	// Cursor's vendor model name is valid free model text (design
+	// 12a-worker-selection): it passes the selection, is probed once more
+	// and is then refused by the posture.
+	vendorName := vendorRole(adapter.CursorID, "cur", ins, run)
+	vendorName.Model = "grok-4.7-low"
 	before := vr.probes.Load()
-	c.validate("p3", bad)
+	c.validate("p3", vendorName)
 	e = c.result("p3")
-	wantResult(t, e, contract.CodeInvalidArgument, "model", contract.ReasonProbeFailed)
-	if e.Message != "the cursor model/effort selection is not qualified; supported: model grok-4.7, effort low" || vr.probes.Load() != before {
-		t.Fatalf("cursor selection %q (%d probes)", e.Message, vr.probes.Load()-before)
+	wantResult(t, e, contract.CodeInvalidArgument, "adapter", contract.ReasonProbeFailed)
+	if e.Message != wave2CursorPosture || vr.probes.Load()-before != 1 {
+		t.Fatalf("cursor vendor model name %q (%d probes)", e.Message, vr.probes.Load()-before)
 	}
 	c.validate("p4", vendorRole(adapter.ClaudeID, "cl", ins, run))
 	e = c.result("p4")
