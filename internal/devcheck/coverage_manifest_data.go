@@ -289,6 +289,35 @@ var WorkspaceCoverageManifest = []CoverageEntry{
 	// testkit/catalog/catalog.go.
 	{Group: GroupChanged, File: modulePath + "/internal/adapter/vendor_version.go"},
 	{Group: GroupChanged, File: modulePath + "/internal/testkit/workersmoke/deployment.go"},
+
+	// Design 12a-real-e2e (base 8a7cc54): every new untagged production
+	// file of the real end-to-end harness, and the changed platform guard
+	// (its seventh approved wrapper), whole (no build constraint: evaluated
+	// on both systems). The reale2e-tagged cmd/reale2e/main.go is
+	// forwarding-only and absent from the coverage profile (the profile
+	// compiles realadaptercheck, not reale2e) and from the default-tag cmd
+	// listing, so it is not listed.
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/bundle.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/check.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/collect.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/control.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/coordinator.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/deploy.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/evidence.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/flow.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/gate.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/gitrepo.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/hops.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/main.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/preflight.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/proc.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/report.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/schema.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/seed.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/strictjson.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/supervisor.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/templates.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/devcheck/platform.go"},
 }
 
 // modulePath is the profile's import-path prefix.
