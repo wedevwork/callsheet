@@ -69,6 +69,8 @@ type World struct {
 // runArgs are run's absolute paths.
 type runArgs struct {
 	callsheet, claude, codex, grok, evidence, flow string
+	// settings is the owner's sandbox-only coordinator settings file (A2).
+	settings string
 }
 
 func (a runArgs) vendor(id string) string {
@@ -100,10 +102,13 @@ func codeOf(err error) string {
 	return CodeInternalError
 }
 
-// ctrlMsg is a control request forwarded to the loop.
+// ctrlMsg is a control request forwarded to the loop: an observe or
+// finish (reply) or a wait (wait, answered within ctx).
 type ctrlMsg struct {
 	req   ControlRequest
 	reply chan string
+	ctx   context.Context
+	wait  chan waitReply
 }
 
 // hopState is one feature hop's live state.
@@ -145,9 +150,13 @@ type supervisor struct {
 	templates   map[string][]byte
 	rendered    map[string][]byte
 	sessionID   string
-	goBin       string
-	pathEnv     string
-	red         Redactor
+	// settings is the validated coordinator settings snapshot (A2);
+	// settingsWritten is set once its runtime copy exists.
+	settings        []byte
+	settingsWritten bool
+	goBin           string
+	pathEnv         string
+	red             Redactor
 
 	plane      Plane
 	puller     Puller
@@ -184,7 +193,10 @@ type supervisor struct {
 	// coordinatorReady is set once the launch instructions are offered.
 	coordinatorReady bool
 
-	ctl      *controlServer
+	ctl *controlServer
+	// life is the supervisor's cancellation, fixed before the control
+	// socket starts (the socket goroutines read it; ctx is loop-owned).
+	life     context.Context
 	reqs     chan ctrlMsg
 	lines    chan string
 	closing  atomic.Bool
@@ -474,7 +486,11 @@ func (s *supervisor) featureLoop() error {
 		select {
 		case m := <-s.reqs:
 			stop()
-			m.reply <- s.handleRequest(m.req)
+			if m.wait != nil {
+				m.wait <- s.handleWait(m.ctx, m.req)
+			} else {
+				m.reply <- s.handleRequest(m.req)
+			}
 		case line, ok := <-s.lines:
 			stop()
 			s.handleLine(line, ok)
@@ -517,6 +533,71 @@ func (s *supervisor) handleControl(req ControlRequest) string {
 		return code
 	case <-time.After(forwardWait):
 		return CodeInternalError
+	}
+}
+
+// waitClosed reports, from the socket goroutine, the lifecycle signals a
+// wait answer must not mask: closing, an ended loop, the supervisor's
+// cancellation, or the attempt bound passed (by the injected clock and the
+// immutable attempt start; loop-owned state is never read here).
+func (s *supervisor) waitClosed() bool {
+	select {
+	case <-s.loopDone:
+		return true
+	default:
+	}
+	return s.closing.Load() || s.life.Err() != nil || s.w.Clock.Now().Sub(s.attempt) > AttemptBound
+}
+
+// handleWaitControl forwards a wait request to the loop within ctx (the
+// connection's shared 4s work budget). A closed lifecycle answers
+// closing, before the handoff and again before a busy answer. Delivery on
+// the unbuffered request channel is the loop's acceptance (amendment
+// A2.1): a handoff not taken when the work budget expires (cause
+// errWorkExpired) answers pending, the loop being busy, with nothing left
+// queued; any other cancellation before the handoff is an internal error.
+// Once taken, the loop's answer stands unless the lifecycle closed by the
+// time it is selected (closing), and a fetch that fails or outlives the
+// budget is an internal error, never pending (the helper retries
+// neither).
+func (s *supervisor) handleWaitControl(ctx context.Context, req ControlRequest) waitReply {
+	if s.waitClosed() {
+		return waitReply{code: CodeClosing}
+	}
+	m := ctrlMsg{req: req, ctx: ctx, wait: make(chan waitReply, 1)}
+	select {
+	case s.reqs <- m:
+	case <-s.loopDone:
+		return waitReply{code: CodeClosing}
+	case <-s.life.Done():
+		return waitReply{code: CodeClosing}
+	case <-ctx.Done():
+		switch {
+		case s.waitClosed():
+			return waitReply{code: CodeClosing}
+		case context.Cause(ctx) == errWorkExpired:
+			return waitReply{code: CodePending}
+		}
+		return waitReply{code: CodeInternalError}
+	}
+	// The answer is selected with lifecycle precedence: a reply computed
+	// before the supervisor was cancelled or began closing is never
+	// delivered after it, and signals ready together resolve to closing.
+	select {
+	case r := <-m.wait:
+		if s.waitClosed() {
+			return waitReply{code: CodeClosing}
+		}
+		return r
+	case <-s.loopDone:
+		return waitReply{code: CodeClosing}
+	case <-s.life.Done():
+		return waitReply{code: CodeClosing}
+	case <-ctx.Done():
+		if s.waitClosed() {
+			return waitReply{code: CodeClosing}
+		}
+		return waitReply{code: CodeInternalError}
 	}
 }
 

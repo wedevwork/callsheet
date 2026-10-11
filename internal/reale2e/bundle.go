@@ -53,7 +53,7 @@ func manualFiles() []string {
 func bundleFiles() map[string]bool {
 	m := map[string]bool{}
 	for _, f := range []string{"manifest.json", "events.jsonl", "owner-decision.json", "cleanup.json", "report.json", "report.txt",
-		"setup/coordinator-prompt.md", "setup/flow.json", "setup/mcp-config.json", "setup/launch.json", "setup/roles.json",
+		"setup/coordinator-prompt.md", "setup/flow.json", "setup/mcp-config.json", "setup/launch.json", "setup/roles.json", SettingsEvidence,
 		"session/transcript.jsonl", "session/event-map.json", "session/setup-attestation.json",
 		"workspace/tree-manifest.json",
 		"validation/baseline.json", "validation/baseline-stdout.txt", "validation/baseline-stderr.txt",

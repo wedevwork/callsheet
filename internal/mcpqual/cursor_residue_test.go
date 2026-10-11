@@ -70,7 +70,7 @@ func socketAt(m *memFS, name string, entries map[string]fs.FileMode) {
 		entries = map[string]fs.FileMode{cursorWorkerSocket: fs.ModeSocket | 0o755}
 	}
 	for e, mode := range entries {
-		m.nodes[rsProjects+"/"+name+"/"+e] = &memNode{mode: mode}
+		m.set(rsProjects+"/"+name+"/"+e, &memNode{mode: mode})
 	}
 }
 
@@ -78,7 +78,7 @@ func socketAt(m *memFS, name string, entries map[string]fs.FileMode) {
 // directory (the approval file is enable's).
 func rsInPlace(m *memFS, ws string) {
 	d := rsDir(ws)
-	m.nodes[d+"/"+cursorWorkerSocket] = &memNode{mode: fs.ModeSocket | 0o775}
+	m.set(d+"/"+cursorWorkerSocket, &memNode{mode: fs.ModeSocket | 0o775})
 	m.file(d+"/"+inPlaceLog, rsLog)
 	m.file(d+"/"+inPlaceRepo, rsRepo)
 	m.file(d+"/"+inPlaceTrusted, rsTrusted)
@@ -89,7 +89,7 @@ func rsInPlace(m *memFS, ws string) {
 func rsDel(m *memFS, p string) {
 	for k := range m.nodes {
 		if k == p || strings.HasPrefix(k, p+"/") {
-			delete(m.nodes, k)
+			m.del(k)
 		}
 	}
 }
@@ -365,7 +365,7 @@ func TestWorkerResidueRefused(t *testing.T) {
 	inPlace := func(change func(m *memFS)) func(m *memFS) {
 		return func(m *memFS) { rsInPlace(m, rsWS1); change(m) }
 	}
-	set := func(p string, n *memNode) func(m *memFS) { return func(m *memFS) { m.nodes[p] = n } }
+	set := func(p string, n *memNode) func(m *memFS) { return func(m *memFS) { m.set(p, n) } }
 	del := func(p string) func(m *memFS) { return func(m *memFS) { rsDel(m, p) } }
 	link := &memNode{mode: fs.ModeSymlink | 0o777}
 	const layout = "not the exact in-place layout"
@@ -413,7 +413,7 @@ func TestWorkerResidueRefused(t *testing.T) {
 		"unknown-file":  {true, func(m *memFS) { m.file(rsProjects+"/notes.txt", "x") }, "not a residue directory", ApprovalScanLimits{}},
 		"nested": {false, func(m *memFS) {
 			m.mkdirs(rsProjects + "/x/y")
-			m.nodes[rsProjects+"/x/y/worker.sock"] = &memNode{mode: sock}
+			m.set(rsProjects+"/x/y/worker.sock", &memNode{mode: sock})
 		}, ReasonForeignNew, ApprovalScanLimits{}},
 		// Elsewhere, replacement, listing.
 		"elsewhere":    {false, set(rsWS1+"/.cursor/worker.sock", &memNode{mode: sock}), "special file", ApprovalScanLimits{}},
@@ -436,7 +436,7 @@ func TestWorkerResidueRefused(t *testing.T) {
 		// Partial trees, with and without the socket.
 		"partial-socket": {true, set(d+"/"+cursorWorkerSocket, &memNode{mode: sock}), layout, ApprovalScanLimits{}},
 		"partial-socket-log": {true, func(m *memFS) {
-			m.nodes[d+"/"+cursorWorkerSocket] = &memNode{mode: sock}
+			m.set(d+"/"+cursorWorkerSocket, &memNode{mode: sock})
 			m.file(d+"/"+inPlaceLog, rsLog)
 		}, layout, ApprovalScanLimits{}},
 		"partial-no-socket": {true, inPlace(del(d + "/" + cursorWorkerSocket)), layout, ApprovalScanLimits{}},
@@ -466,10 +466,10 @@ func TestWorkerResidueRefused(t *testing.T) {
 		"link-repo":        {true, inPlace(set(d+"/"+inPlaceRepo, link)), layout, ApprovalScanLimits{}},
 		"link-trusted":     {true, inPlace(set(d+"/"+inPlaceTrusted, link)), layout, ApprovalScanLimits{}},
 		"link-transcript":  {true, inPlace(set(tfile, link)), layout, ApprovalScanLimits{}},
-		"link-uuid-dir":    {true, inPlace(func(m *memFS) { rsDel(m, tdir); m.nodes[tdir] = link }), layout, ApprovalScanLimits{}},
-		"link-transcripts": {true, inPlace(func(m *memFS) { rsDel(m, d+"/"+inPlaceTranscripts); m.nodes[d+"/"+inPlaceTranscripts] = link }), layout, ApprovalScanLimits{}},
+		"link-uuid-dir":    {true, inPlace(func(m *memFS) { rsDel(m, tdir); m.set(tdir, link) }), layout, ApprovalScanLimits{}},
+		"link-transcripts": {true, inPlace(func(m *memFS) { rsDel(m, d+"/"+inPlaceTranscripts); m.set(d+"/"+inPlaceTranscripts, link) }), layout, ApprovalScanLimits{}},
 		"link-approval":    {true, inPlace(set(d+"/"+cursorApprovalsFile, link)), layout, ApprovalScanLimits{}},
-		"link-project-dir": {true, func(m *memFS) { rsDel(m, d); m.nodes[d] = link }, "replaced", ApprovalScanLimits{}},
+		"link-project-dir": {true, func(m *memFS) { rsDel(m, d); m.set(d, link) }, "replaced", ApprovalScanLimits{}},
 		"uuid-upper": {true, inPlace(func(m *memFS) {
 			up := strings.ToUpper(rsUUID)
 			rsDel(m, tdir)
@@ -540,7 +540,7 @@ func TestWorkerResidueRefused(t *testing.T) {
 	}
 	// A root that is a link or a file fails closed; an absent root has none.
 	m = rsWorld()
-	m.nodes[rsProjects] = &memNode{mode: fs.ModeSymlink | 0o777}
+	m.set(rsProjects, &memNode{mode: fs.ModeSymlink | 0o777})
 	if _, err := rsPreparer(m, ApprovalScanLimits{}).residueSnapshot(); err == nil {
 		t.Fatal("a linked projects root")
 	}
@@ -570,7 +570,7 @@ func TestWorkerResiduePreflight(t *testing.T) {
 		"leftover-in-place": func(m *memFS) { m.file(d+"/"+cursorApprovalsFile, rsApproval); rsInPlace(m, rsWS1) },
 		"leftover-hashed":   func(m *memFS) { socketAt(m, "c-out-work-cu-1b81996", nil) },
 		"leftover-socket": func(m *memFS) {
-			m.nodes[rsProjects+"/owner-project/agent.sock"] = &memNode{mode: fs.ModeSocket | 0o755}
+			m.set(rsProjects+"/owner-project/agent.sock", &memNode{mode: fs.ModeSocket | 0o755})
 		},
 		"leftover-partial": func(m *memFS) { m.file(d+"/"+cursorApprovalsFile, rsApproval); m.file(d+"/"+inPlaceLog, rsLog) },
 		"leftover-nested":  func(m *memFS) { m.file(rsProjects+"/owner-project/a/b/"+inPlaceRepo, rsRepo) },
@@ -598,11 +598,11 @@ func TestWorkerResiduePreflight(t *testing.T) {
 		setup func(m *memFS)
 		want  string
 	}{
-		"fifo": {func(m *memFS) { m.nodes[rsProjects+"/owner-project/q"] = &memNode{mode: fs.ModeNamedPipe | 0o600} }, ReasonForeignUnverifiable},
+		"fifo": {func(m *memFS) { m.set(rsProjects+"/owner-project/q", &memNode{mode: fs.ModeNamedPipe | 0o600}) }, ReasonForeignUnverifiable},
 		"reserved-link": {func(m *memFS) {
-			m.nodes[rsProjects+"/owner-project/"+inPlaceLog] = &memNode{mode: fs.ModeSymlink | 0o777}
+			m.set(rsProjects+"/owner-project/"+inPlaceLog, &memNode{mode: fs.ModeSymlink | 0o777})
 		}, ReasonForeignUnverifiable},
-		"reserved-device": {func(m *memFS) { m.nodes[rsProjects+"/owner-project/repo.json"] = &memNode{mode: fs.ModeDevice | 0o600} }, ReasonForeignUnverifiable},
+		"reserved-device": {func(m *memFS) { m.set(rsProjects+"/owner-project/repo.json", &memNode{mode: fs.ModeDevice | 0o600}) }, ReasonForeignUnverifiable},
 		"unlistable":      {func(m *memFS) { m.nodes[rsProjects+"/owner-project"].listError = fs.ErrPermission }, ReasonForeignUnverifiable},
 		"unlookable":      {func(m *memFS) { m.nodes[rsProjects+"/owner-project/notes.json"].lstatErr = fs.ErrPermission }, ReasonForeignUnverifiable},
 		"root-is-file":    {func(m *memFS) { rsDel(m, rsProjects); m.file(rsProjects, "") }, ReasonForeignUnverifiable},
@@ -625,7 +625,7 @@ func TestWorkerResiduePreflight(t *testing.T) {
 	for name, change := range map[string]func(m *memFS){
 		"enable-socket": func(m *memFS) {
 			m.file(d+"/"+cursorApprovalsFile, rsApproval)
-			m.nodes[d+"/"+cursorWorkerSocket] = &memNode{mode: fs.ModeSocket | 0o755}
+			m.set(d+"/"+cursorWorkerSocket, &memNode{mode: fs.ModeSocket | 0o755})
 		},
 		"enable-transcript": func(m *memFS) {
 			m.file(d+"/"+cursorApprovalsFile, rsApproval)
@@ -655,14 +655,14 @@ func TestWorkerResiduePreflight(t *testing.T) {
 	// own policy) and approval-only directories pass.
 	m = rsWorld()
 	m.file(d+"/"+cursorApprovalsFile, rsApproval)
-	m.nodes[rsProjects+"/owner-project/link"] = &memNode{mode: fs.ModeSymlink | 0o777}
+	m.set(rsProjects+"/owner-project/link", &memNode{mode: fs.ModeSymlink | 0o777})
 	if err := rsPreparer(m, ApprovalScanLimits{}).preflight(nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	// The pre-launch recheck after enable.
 	for name, change := range map[string]func(m *memFS){
 		"session-file":    func(m *memFS) { m.file(d+"/"+inPlaceLog, rsLog) },
-		"socket":          func(m *memFS) { m.nodes[d+"/"+cursorWorkerSocket] = &memNode{mode: fs.ModeSocket | 0o755} },
+		"socket":          func(m *memFS) { m.set(d+"/"+cursorWorkerSocket, &memNode{mode: fs.ModeSocket | 0o755}) },
 		"same-size":       func(m *memFS) { m.nodes[d+"/"+cursorApprovalsFile].data = `["probe-fedcba9876543210"]` },
 		"approval-mtime":  func(m *memFS) { m.nodes[d+"/"+cursorApprovalsFile].mtime = epoch.Add(time.Second) },
 		"approval-gone":   func(m *memFS) { rsDel(m, d+"/"+cursorApprovalsFile) },
@@ -690,7 +690,7 @@ func TestWorkerResiduePreflight(t *testing.T) {
 	if _, err := p.approvalBaseline(rsSlug(rsWS1), info, data); err == nil {
 		t.Fatal("a baseline with another file")
 	}
-	m.nodes[d] = &memNode{mode: 0o600}
+	m.set(d, &memNode{mode: 0o600})
 	if _, err := p.approvalBaseline(rsSlug(rsWS1), info, data); err == nil {
 		t.Fatal("a baseline of a file")
 	}
@@ -733,12 +733,12 @@ func TestWorkerResidueLedger(t *testing.T) {
 		t.Fatalf("after a drop: %+v", w)
 	}
 	for name, change := range map[string]func(m *memFS){
-		"socket-gone":     func(m *memFS) { delete(m.nodes, dir+"/worker.sock") },
-		"dir-gone":        func(m *memFS) { delete(m.nodes, dir) },
-		"socket-replaced": func(m *memFS) { m.nodes[dir+"/worker.sock"] = &memNode{mode: fs.ModeSocket | 0o700} },
-		"socket-to-file":  func(m *memFS) { m.nodes[dir+"/worker.sock"] = &memNode{mode: 0o600} },
-		"dir-replaced":    func(m *memFS) { m.nodes[dir] = &memNode{mode: fs.ModeDir | 0o755} },
-		"sibling":         func(m *memFS) { m.nodes[dir+"/x"] = &memNode{mode: 0o600} },
+		"socket-gone":     func(m *memFS) { m.del(dir + "/worker.sock") },
+		"dir-gone":        func(m *memFS) { m.del(dir) },
+		"socket-replaced": func(m *memFS) { m.set(dir+"/worker.sock", &memNode{mode: fs.ModeSocket | 0o700}) },
+		"socket-to-file":  func(m *memFS) { m.set(dir+"/worker.sock", &memNode{mode: 0o600}) },
+		"dir-replaced":    func(m *memFS) { m.set(dir, &memNode{mode: fs.ModeDir | 0o755}) },
+		"sibling":         func(m *memFS) { m.set(dir+"/x", &memNode{mode: 0o600}) },
 		"unlistable":      func(m *memFS) { m.nodes[dir].listError = fs.ErrPermission },
 	} {
 		m, p := admitHashed()
@@ -758,7 +758,7 @@ func TestWorkerResidueLedger(t *testing.T) {
 		"transcript-mtime":  func(m *memFS) { m.nodes[tfile].mtime = epoch.Add(time.Second) },
 		"repo-mode":         func(m *memFS) { m.nodes[d+"/"+inPlaceRepo].mode = 0o644 },
 		"trusted-size":      func(m *memFS) { m.nodes[d+"/"+inPlaceTrusted].size = 1 },
-		"socket-replaced":   func(m *memFS) { m.nodes[d+"/"+cursorWorkerSocket] = &memNode{mode: fs.ModeSocket | 0o700} },
+		"socket-replaced":   func(m *memFS) { m.set(d+"/"+cursorWorkerSocket, &memNode{mode: fs.ModeSocket | 0o700}) },
 		"uuid-dir-mtime":    func(m *memFS) { m.nodes[tdir].mtime = epoch.Add(time.Second) },
 		"dir-replaced":      func(m *memFS) { m.nodes[d].mtime = epoch.Add(time.Second) },
 		"approval-bytes":    func(m *memFS) { m.nodes[d+"/"+cursorApprovalsFile].data = `["probe-fedcba9876543210"]` },
@@ -937,7 +937,7 @@ func TestWorkerResidueNames(t *testing.T) {
 				socketAt(m, parent+"-c-1b81996", nil)
 			case "in_place":
 				d := rsProjects + "/" + slug
-				m.nodes[d+"/"+cursorWorkerSocket] = &memNode{mode: fs.ModeSocket | 0o775}
+				m.set(d+"/"+cursorWorkerSocket, &memNode{mode: fs.ModeSocket | 0o775})
 				m.file(d+"/"+inPlaceLog, rsLog)
 				m.file(d+"/"+inPlaceRepo, rsRepo)
 				m.file(d+"/"+inPlaceTrusted, rsTrusted)
@@ -1277,11 +1277,11 @@ func rsForeign(m *memFS) {
 	m.file(rsDev+"/"+inPlaceTrusted, `{"note":"`+rsCanary+`"}`)
 	m.file(rsDev+"/"+inPlaceTranscripts+"/u1/u1.jsonl", rsCanary)
 	m.file(rsDev+"/"+inPlaceTranscripts+"/u1/subagents/notes.txt", rsCanary)
-	m.nodes[rsDev+"/"+cursorWorkerSocket] = &memNode{mode: fs.ModeSocket | 0o755}
+	m.set(rsDev+"/"+cursorWorkerSocket, &memNode{mode: fs.ModeSocket | 0o755})
 	m.file(rsProjects+"/old-partial/"+inPlaceLog, rsCanary)
 	m.mkdirs(rsProjects + "/old-empty/" + inPlaceTranscripts)
 	m.mkdirs(rsProjects + "/old-sock")
-	m.nodes[rsProjects+"/old-sock/agent.sock"] = &memNode{mode: fs.ModeSocket | 0o755}
+	m.set(rsProjects+"/old-sock/agent.sock", &memNode{mode: fs.ModeSocket | 0o755})
 	socketAt(m, "c-out-work-cu-0123abc", nil)
 }
 
@@ -1388,16 +1388,16 @@ func TestForeignBaselineChanges(t *testing.T) {
 		"size":                {func(m *memFS) { m.nodes[rsDev+"/"+inPlaceLog].data += "x" }, ReasonForeignChanged},
 		"mtime":               {func(m *memFS) { m.nodes[rsDev+"/"+inPlaceLog].mtime = epoch.Add(time.Nanosecond) }, ReasonForeignChanged},
 		"mode":                {func(m *memFS) { m.nodes[rsDev+"/"+inPlaceRepo].mode = 0o644 }, ReasonForeignChanged},
-		"socket-to-fifo":      {func(m *memFS) { m.nodes[rsDev+"/"+cursorWorkerSocket] = &memNode{mode: fs.ModeNamedPipe | 0o600} }, ReasonForeignChanged},
-		"socket-replaced":     {func(m *memFS) { m.nodes[rsProjects+"/old-sock/agent.sock"] = &memNode{mode: fs.ModeSocket | 0o700} }, ReasonForeignChanged},
-		"regular-to-link":     {func(m *memFS) { m.nodes[rsDev+"/"+inPlaceRepo] = link }, ReasonForeignChanged},
-		"regular-to-dir":      {func(m *memFS) { m.nodes[rsDev+"/"+inPlaceRepo] = &memNode{mode: fs.ModeDir | 0o700} }, ReasonForeignChanged},
-		"dir-to-link":         {func(m *memFS) { rsDel(m, rsDev+"/"+inPlaceTranscripts); m.nodes[rsDev+"/"+inPlaceTranscripts] = link }, ReasonForeignChanged},
+		"socket-to-fifo":      {func(m *memFS) { m.set(rsDev+"/"+cursorWorkerSocket, &memNode{mode: fs.ModeNamedPipe | 0o600}) }, ReasonForeignChanged},
+		"socket-replaced":     {func(m *memFS) { m.set(rsProjects+"/old-sock/agent.sock", &memNode{mode: fs.ModeSocket | 0o700}) }, ReasonForeignChanged},
+		"regular-to-link":     {func(m *memFS) { m.set(rsDev+"/"+inPlaceRepo, link) }, ReasonForeignChanged},
+		"regular-to-dir":      {func(m *memFS) { m.set(rsDev+"/"+inPlaceRepo, &memNode{mode: fs.ModeDir | 0o700}) }, ReasonForeignChanged},
+		"dir-to-link":         {func(m *memFS) { rsDel(m, rsDev+"/"+inPlaceTranscripts); m.set(rsDev+"/"+inPlaceTranscripts, link) }, ReasonForeignChanged},
 		"ancestor-replaced":   {func(m *memFS) { m.nodes[rsDev].mode = fs.ModeDir | 0o755 }, ReasonForeignChanged},
-		"ancestor-to-link":    {func(m *memFS) { rsDel(m, rsDev); m.nodes[rsDev] = link }, ReasonForeignChanged},
+		"ancestor-to-link":    {func(m *memFS) { rsDel(m, rsDev); m.set(rsDev, link) }, ReasonForeignChanged},
 		"ancestor-to-file":    {func(m *memFS) { rsDel(m, rsProjects+"/old-sock"); m.file(rsProjects+"/old-sock", "") }, ReasonForeignChanged},
 		"new-reserved":        {func(m *memFS) { m.file(rsProjects+"/new-project/"+inPlaceLog, "x") }, ReasonForeignNew},
-		"new-socket":          {func(m *memFS) { m.nodes[rsProjects+"/old-sock/new.sock"] = &memNode{mode: sock} }, ReasonForeignNew},
+		"new-socket":          {func(m *memFS) { m.set(rsProjects+"/old-sock/new.sock", &memNode{mode: sock}) }, ReasonForeignNew},
 		"new-descendant":      {func(m *memFS) { m.file(rsDev+"/"+inPlaceTranscripts+"/u1/u2.jsonl", "x") }, ReasonForeignNew},
 		"new-in-empty":        {func(m *memFS) { m.file(rsProjects+"/old-empty/"+inPlaceTranscripts+"/x", "") }, ReasonForeignNew},
 		"removed-file":        {func(m *memFS) { rsDel(m, rsDev+"/"+inPlaceRepo) }, ReasonForeignRemoved},
@@ -1407,8 +1407,8 @@ func TestForeignBaselineChanges(t *testing.T) {
 		"removed-project":     {func(m *memFS) { rsDel(m, rsDev) }, ReasonForeignRemoved},
 		"removed-and-changed": {func(m *memFS) { rsDel(m, rsDev+"/"+inPlaceRepo); m.nodes[rsDev+"/"+inPlaceLog].data += "x" }, ReasonForeignRemoved},
 		"changed-and-new":     {func(m *memFS) { m.nodes[rsDev+"/"+inPlaceLog].data += "x"; m.file(rsProjects+"/n/"+inPlaceRepo, "") }, ReasonForeignChanged},
-		"unrecorded-fifo":     {func(m *memFS) { m.nodes[rsDev+"/q"] = &memNode{mode: fs.ModeNamedPipe | 0o600} }, ReasonForeignUnverifiable},
-		"unrecorded-link":     {func(m *memFS) { m.nodes[rsProjects+"/old-partial/"+inPlaceRepo] = link }, ReasonForeignUnverifiable},
+		"unrecorded-fifo":     {func(m *memFS) { m.set(rsDev+"/q", &memNode{mode: fs.ModeNamedPipe | 0o600}) }, ReasonForeignUnverifiable},
+		"unrecorded-link":     {func(m *memFS) { m.set(rsProjects+"/old-partial/"+inPlaceRepo, link) }, ReasonForeignUnverifiable},
 		"unverifiable-first": {func(m *memFS) {
 			rsDel(m, rsDev+"/"+inPlaceRepo)
 			m.nodes[rsProjects+"/old-sock"].listError = fs.ErrPermission
@@ -1485,7 +1485,7 @@ func TestForeignBaselineOwnership(t *testing.T) {
 		"approval-only":   {func(m *memFS) { m.file(d+"/"+cursorApprovalsFile, rsApproval) }, ReasonCaseProjectExists},
 		"full-tree":       {func(m *memFS) { m.file(d+"/"+cursorApprovalsFile, rsApproval); rsInPlace(m, rsWS1) }, ReasonCaseProjectExists},
 		"file":            {func(m *memFS) { m.file(d, "") }, ReasonCaseProjectExists},
-		"link":            {func(m *memFS) { m.nodes[d] = &memNode{mode: fs.ModeSymlink | 0o777} }, ReasonCaseProjectExists},
+		"link":            {func(m *memFS) { m.set(d, &memNode{mode: fs.ModeSymlink | 0o777}) }, ReasonCaseProjectExists},
 		"before-traverse": {func(m *memFS) { m.mkdirs(d); m.nodes[rsProjects+"/owner-project"].listError = fs.ErrPermission }, ReasonCaseProjectExists},
 		"unlookable":      {func(m *memFS) { m.mkdirs(d); m.nodes[d].lstatErr = fs.ErrPermission }, ReasonForeignUnverifiable},
 		"short-no-hashed": {func(m *memFS) { socketAt(m, rsSlug(rsWS1)+"-0123abc", nil) }, ""},
@@ -1776,7 +1776,7 @@ func TestForeignBaselineReviewWarnings(t *testing.T) {
 	}{
 		"directory": {func(m *memFS) { m.mkdirs(rsProjects + "/" + name) }, ReasonHashedCandidateExists},
 		"file":      {func(m *memFS) { m.file(rsProjects+"/"+name, "x") }, ""},
-		"link":      {func(m *memFS) { m.nodes[rsProjects+"/"+name] = &memNode{mode: fs.ModeSymlink | 0o777} }, ""},
+		"link":      {func(m *memFS) { m.set(rsProjects+"/"+name, &memNode{mode: fs.ModeSymlink | 0o777}) }, ""},
 	} {
 		m := rsWorld()
 		m.file(ws+"/.cursor/mcp.json", "{}")
@@ -1796,9 +1796,9 @@ func TestForeignBaselineReviewWarnings(t *testing.T) {
 	}{
 		"dir-to-link": {func(m *memFS) {
 			rsDel(m, rsDev+"/"+inPlaceTranscripts)
-			m.nodes[rsDev+"/"+inPlaceTranscripts] = &memNode{mode: fs.ModeSymlink | 0o777}
+			m.set(rsDev+"/"+inPlaceTranscripts, &memNode{mode: fs.ModeSymlink | 0o777})
 		}, rsDev + "/" + inPlaceTranscripts + "/", ReasonForeignChanged},
-		"project-to-link": {func(m *memFS) { rsDel(m, rsDev); m.nodes[rsDev] = &memNode{mode: fs.ModeSymlink | 0o777} }, rsDev + "/", ReasonForeignChanged},
+		"project-to-link": {func(m *memFS) { rsDel(m, rsDev); m.set(rsDev, &memNode{mode: fs.ModeSymlink | 0o777}) }, rsDev + "/", ReasonForeignChanged},
 		"project-removed": {func(m *memFS) { rsDel(m, rsDev) }, rsDev + "/", ReasonForeignRemoved},
 	} {
 		m := rsWorld()
@@ -1912,7 +1912,7 @@ func TestForeignBaselineLinkedRootNotListed(t *testing.T) {
 		rsInPlace(m, rsWS1)
 		// The root becomes a link; its children stay visible through it (the
 		// in-memory view lists by prefix, as following the link would).
-		m.nodes[rsProjects] = &memNode{mode: fs.ModeSymlink | 0o777}
+		m.set(rsProjects, &memNode{mode: fs.ModeSymlink | 0o777})
 		s.onList = func(path string) {
 			if path == rsProjects {
 				listed++

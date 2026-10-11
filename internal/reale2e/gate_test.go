@@ -95,7 +95,8 @@ func TestGateUnits(t *testing.T) {
 	}
 	// A world that cannot be built fails the run (exit 1).
 	var out, errOut bytes.Buffer
-	h := Host{GOOS: "linux", Args: []string{"run", "--callsheet", "/c", "--claude", "/a", "--codex", "/b", "--grok", "/g", "--evidence", "/e"},
+	h := Host{GOOS: "linux", Args: []string{"run", "--callsheet", "/c", "--claude", "/a", "--codex", "/b", "--grok", "/g", "--evidence", "/e",
+		"--coordinator-settings", "/s"},
 		Getenv: on, LookupEnv: none, Stdout: &out, Stderr: &errOut,
 		NewWorld: func(Host) (*World, func(), error) { return nil, nil, os.ErrPermission }}
 	if code := MainWith(h); code != 1 || !strings.Contains(errOut.String(), "permission") {

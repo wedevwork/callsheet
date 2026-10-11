@@ -86,9 +86,12 @@ func (s *supervisor) prepareCoordinator() error {
 	}
 	s.sessionID = sid
 	rt := s.runtime
-	vals := map[string]string{"RUN_ID": s.runID, "RUNTIME": rt, "PLANE_URL": s.dep.url, "CA_PATH": s.dep.caPath, "CALLSHEET": s.args.callsheet,
-		"REALE2E": s.w.Executable, "WORKSPACE": s.workspace.Name, "INSTANCE": s.workspace.Instance, "SEED_PATH": s.seed.Path,
-		"SEED_COMMIT": s.workspace.SeedCommit, "WAITS_DIR": filepath.Join(rt, "waits"), "RECEIPT": filepath.Join(rt, "owner-receipt.json"),
+	// The helper, runtime and wait paths appear in the prompt's shell
+	// commands (A2's background wait lines): they are rendered shell-quoted
+	// (unchanged when they need no quoting).
+	vals := map[string]string{"RUN_ID": s.runID, "RUNTIME": shellQuote(rt), "PLANE_URL": s.dep.url, "CA_PATH": s.dep.caPath, "CALLSHEET": s.args.callsheet,
+		"REALE2E": shellQuote(s.w.Executable), "WORKSPACE": s.workspace.Name, "INSTANCE": s.workspace.Instance, "SEED_PATH": s.seed.Path,
+		"SEED_COMMIT": s.workspace.SeedCommit, "WAITS_DIR": shellQuote(filepath.Join(rt, "waits")), "RECEIPT": filepath.Join(rt, "owner-receipt.json"),
 		"OWNER_DIR": filepath.Join(rt, "owner"), "COORD_DIR": filepath.Join(rt, "coord")}
 	prompt, err := renderTemplate(CoordinatorPrompt, s.templates[CoordinatorPrompt], vals)
 	if err != nil {
@@ -99,17 +102,21 @@ func (s *supervisor) prepareCoordinator() error {
 	if err != nil {
 		return failure("internal_error", err)
 	}
-	promptPath, cfgPath := filepath.Join(rt, CoordinatorPrompt), filepath.Join(rt, "mcp.json")
+	promptPath, cfgPath, settingsPath := filepath.Join(rt, CoordinatorPrompt), filepath.Join(rt, "mcp.json"), filepath.Join(rt, SettingsFile)
 	for _, f := range []struct {
 		p string
 		b []byte
-	}{{promptPath, prompt}, {cfgPath, cfg}} {
+	}{{promptPath, prompt}, {cfgPath, cfg}, {settingsPath, s.settings}} {
 		if err := os.WriteFile(f.p, f.b, 0o600); err != nil {
 			return failure("runtime_unavailable", err)
 		}
 	}
-	argv := []string{s.args.claude, "--session-id", sid, "--mcp-config", cfgPath, "--strict-mcp-config", "--append-system-prompt",
-		"$(cat " + promptPath + ")"}
+	s.settingsWritten = true
+	// A2: the user's own settings are excluded (project and local sources
+	// only) and the owner's sandbox-only snapshot is passed explicitly, from
+	// the runtime copy, never the mutable source the owner supplied.
+	argv := []string{s.args.claude, "--setting-sources", SettingSources, "--settings", settingsPath, "--mcp-config", cfgPath, "--strict-mcp-config",
+		"--session-id", sid, "--append-system-prompt", "$(cat " + promptPath + ")"}
 	launch := LaunchRecord{Schema: LaunchSchema, SessionID: sid, CoordinatorDir: s.tok(filepath.Join(rt, "coord"))}
 	for _, a := range argv {
 		launch.Argv = append(launch.Argv, s.tok(a))
@@ -118,7 +125,8 @@ func (s *supervisor) prepareCoordinator() error {
 	if err != nil {
 		return failure("internal_error", err)
 	}
-	setup := map[string][]byte{"setup/coordinator-prompt.md": prompt, "setup/flow.json": s.flowBytes, "setup/mcp-config.json": sanitized}
+	setup := map[string][]byte{"setup/coordinator-prompt.md": prompt, "setup/flow.json": s.flowBytes, "setup/mcp-config.json": sanitized,
+		SettingsEvidence: s.settings}
 	for _, h := range Hops {
 		for _, k := range []string{"instruction", "runbook"} {
 			setup["setup/manuals/"+manualName(h, k)] = s.rendered[manualName(h, k)]
@@ -138,7 +146,10 @@ func (s *supervisor) prepareCoordinator() error {
 	if err := os.WriteFile(filepath.Join(rt, RunFileName), append(b, '\n'), 0o600); err != nil {
 		return failure("runtime_unavailable", err)
 	}
-	if s.ctl, err = listenControl(rt, s.runID, s.handleControl); err != nil {
+	// The socket goroutines read the supervisor's cancellation, its world
+	// clock and the attempt start (set in run), all fixed from here on.
+	s.life = s.ctx
+	if s.ctl, err = serveControl(rt, s.runID, s.w.Clock, s.handleControl, s.handleWaitControl); err != nil {
 		return failure("control_socket_failed", err)
 	}
 	s.ev.event(Event{Type: EvCoordinatorReady})

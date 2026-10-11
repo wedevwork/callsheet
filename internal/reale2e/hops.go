@@ -1,6 +1,7 @@
 package reale2e
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -121,6 +122,54 @@ func (s *supervisor) handleRequest(req ControlRequest) string {
 	}
 	s.say("observed %s task %s", req.Hop, req.Task)
 	return CodeAccepted
+}
+
+// handleWait judges one wait request inside the loop (design 12a-real-e2e,
+// amendment A2): the task must be the accepted observation of its hop
+// (and, for the coder, the owner's receipt must exist); the authoritative
+// task is fetched inline within ctx, the closing and deadline state is
+// rechecked after the fetch and takes precedence, and the task's
+// observation bindings are verified again. A durably terminal task
+// answers a version 1 terminal WaitResponse (the view unchanged, an
+// immediate status fetch: effective_wait_ms 0); any other state is
+// pending. A wait never registers, admits, approves or advances anything
+// and records no event.
+func (s *supervisor) handleWait(ctx context.Context, req ControlRequest) waitReply {
+	refuse := func(code string) waitReply { return waitReply{code: code} }
+	if s.checkDeadlines() {
+		return refuse(CodeClosing)
+	}
+	i := hopIndex(req.Hop)
+	if h := s.hops[i]; !h.observed || h.task != req.Task {
+		if label, ok := s.known[req.Task]; ok && label != req.Hop {
+			return refuse(CodeObservationClash)
+		}
+		return refuse(CodeTaskMismatch)
+	}
+	if req.Hop == HopCoder && s.decision == nil {
+		return refuse(CodeOwnerGateClosed)
+	}
+	v, err := s.plane.ShowTask(ctx, req.Task, 0)
+	switch {
+	case s.checkDeadlines() || s.ctx.Err() != nil:
+		return refuse(CodeClosing)
+	case err != nil || ctx.Err() != nil:
+		return refuse(CodeInternalError)
+	case v.TaskID != req.Task || v.Role.ID != req.Hop:
+		return refuse(CodeTaskMismatch)
+	}
+	if _, code := s.bindingOf(i, v); code != "" {
+		return refuse(CodeTaskMismatch)
+	}
+	if !contract.TaskTerminal(v.State) || !v.DurabilityConfirmed {
+		return waitReply{code: CodePending}
+	}
+	b, err := contract.EncodeWaitResponse(contract.WaitResponse{Version: contract.ProtocolVersion, Status: contract.WaitTerminal, EffectiveWaitMS: 0,
+		Winner: req.Task, Task: &v})
+	if err != nil {
+		return refuse(CodeInternalError)
+	}
+	return waitReply{code: CodeTerminal, result: b}
 }
 
 // bindingOf checks a hop task's authoritative bindings and returns its

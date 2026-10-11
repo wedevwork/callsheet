@@ -29,10 +29,11 @@ import (
 
 // Usage is the command's usage text, with the bounds shown before opt-in.
 const Usage = `usage:
-  reale2e run --callsheet ABS --claude ABS --codex ABS --grok ABS --evidence ABS [--flow ABS]
+  reale2e run --callsheet ABS --claude ABS --codex ABS --grok ABS --evidence ABS --coordinator-settings ABS [--flow ABS]
       (requires ` + EnvOptIn + `=1 and no CI variable; linux only; calls paid models)
   reale2e check --evidence ABS
   reale2e observe --run ABS --task ID --hop designer|design-reviewer|coder|code-reviewer
+  reale2e wait --run ABS --task ID --hop designer|design-reviewer|coder|code-reviewer
   reale2e finish --run ABS
 See docs/real-e2e.md.
 ` + Bounds
@@ -48,13 +49,17 @@ type Host struct {
 	Stdout       io.Writer
 	Stderr       io.Writer
 	NewWorld     func(h Host) (*World, func(), error)
+	// NewWaitWorld builds the wait helper's capabilities (nil: the live
+	// ones).
+	NewWaitWorld func() (WaitWorld, func())
 }
 
 // Main is the reale2e command: 0 success, 1 failure or refusal of a
-// helper's request, 2 usage, gate, schema or transport error.
+// helper's request, 2 usage, gate, schema or transport error (wait: every
+// error but usage exits 1, design 12a-real-e2e amendment A2).
 func Main(goos, goarch string, args []string, getenv func(string) string, lookupEnv func(string) (string, bool), stdin io.Reader, stdout, stderr io.Writer) int {
 	return MainWith(Host{GOOS: goos, GOARCH: goarch, Args: args, Getenv: getenv, LookupEnv: lookupEnv, Stdin: stdin, Stdout: stdout, Stderr: stderr,
-		NewWorld: LiveWorld})
+		NewWorld: LiveWorld, NewWaitWorld: LiveWaitWorld})
 }
 
 // usageError prints msg and the usage.
@@ -109,12 +114,13 @@ func MainWith(h Host) int {
 			fmt.Fprintf(h.Stderr, "%v\n%s", err, Bounds)
 			return 2
 		}
-		names := []string{"callsheet", "claude", "codex", "grok", "evidence", "flow"}
+		names := []string{"callsheet", "claude", "codex", "grok", "evidence", "coordinator-settings", "flow"}
 		v, ok := flags(h, "run", names, all("flow"), all(names...))
 		if !ok {
-			return usageError(h, "run needs absolute --callsheet, --claude, --codex, --grok and --evidence paths (and an optional absolute --flow)")
+			return usageError(h, "run needs absolute --callsheet, --claude, --codex, --grok, --evidence and --coordinator-settings paths (and an optional absolute --flow)")
 		}
-		return runLive(h, runArgs{callsheet: v["callsheet"], claude: v["claude"], codex: v["codex"], grok: v["grok"], evidence: v["evidence"], flow: v["flow"]})
+		return runLive(h, runArgs{callsheet: v["callsheet"], claude: v["claude"], codex: v["codex"], grok: v["grok"], evidence: v["evidence"], flow: v["flow"],
+			settings: v["coordinator-settings"]})
 	case "check":
 		v, ok := flags(h, "check", []string{"evidence"}, nil, all("evidence"))
 		if !ok {
@@ -127,6 +133,18 @@ func MainWith(h Host) int {
 			return usageError(h, "observe needs an absolute --run runtime directory, a --task ID and a --hop of designer, design-reviewer, coder or code-reviewer")
 		}
 		return helper(h, v["run"], opObserve, v["task"], v["hop"])
+	case "wait":
+		v, ok := flags(h, "wait", []string{"run", "task", "hop"}, nil, all("run"))
+		if !ok || !contract.ValidTaskID(v["task"]) || hopIndex(v["hop"]) < 0 {
+			return usageError(h, "wait needs an absolute --run runtime directory, a --task ID and a --hop of designer, design-reviewer, coder or code-reviewer")
+		}
+		newWorld := h.NewWaitWorld
+		if newWorld == nil {
+			newWorld = LiveWaitWorld
+		}
+		ww, release := newWorld()
+		defer release()
+		return waitHelper(ww, h.Stdout, h.Stderr, v["run"], v["task"], v["hop"])
 	case "finish":
 		v, ok := flags(h, "finish", []string{"run"}, nil, all("run"))
 		if !ok {

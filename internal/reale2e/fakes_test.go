@@ -1,6 +1,7 @@
 package reale2e
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -40,6 +41,9 @@ type autoClock struct {
 	// skip is the number of next timers that fire without advancing the
 	// time (a test holds the time for one tick; it never moves back).
 	skip int
+	// held, when set, supplies the timer for a duration it accepts (ok):
+	// the test fires it explicitly and the time does not move.
+	held func(d time.Duration) (<-chan time.Time, func() bool, bool)
 }
 
 // holdNext makes the next timer fire without advancing the time.
@@ -61,6 +65,12 @@ func (c *autoClock) Now() time.Time {
 
 func (c *autoClock) NewTimer(d time.Duration) (<-chan time.Time, func() bool) {
 	c.mu.Lock()
+	if c.held != nil {
+		if ch, stop, ok := c.held(d); ok {
+			c.mu.Unlock()
+			return ch, stop
+		}
+	}
 	switch {
 	case c.skip > 0:
 		c.skip--
@@ -265,6 +275,8 @@ type fakePlane struct {
 	afterDispatch func(req contract.DispatchRequest)
 	// unbounded counts task polls made without a context deadline.
 	unbounded int
+	// shows counts every task fetch.
+	shows int
 	// onList runs on every ListTasks call (the scripted coordinator).
 	onList func()
 }
@@ -427,11 +439,12 @@ func (p *fakePlane) finish(id, state string, final *string, truncated bool, comm
 }
 
 func (p *fakePlane) ShowTask(ctx context.Context, id string, _ int) (contract.TaskView, error) {
+	p.mu.Lock()
+	p.shows++
 	if _, ok := ctx.Deadline(); !ok {
-		p.mu.Lock()
 		p.unbounded++
-		p.mu.Unlock()
 	}
+	p.mu.Unlock()
 	if p.showErr != nil {
 		if err := p.showErr(id); err != nil {
 			return contract.TaskView{}, err
@@ -505,6 +518,13 @@ func (p *fakePlane) CreateWorkspace(_ context.Context, name string) (contract.Wo
 	defer p.mu.Unlock()
 	p.ws = &contract.WorkspaceView{Name: name, Instance: hexID("", 0xabc)}
 	return *p.ws, nil
+}
+
+// showCount is the number of task fetches so far.
+func (p *fakePlane) showCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.shows
 }
 
 // resultCommit returns task id's published commit.
@@ -649,10 +669,13 @@ type coordScript struct {
 	pendingObserve bool
 	before         func(c *coordScript) bool
 	ownerInput     func(c *coordScript)
+	// helperWait is the hop whose wait records the test writes from the
+	// real wait helper's output (-1: none; every hop's are synthetic).
+	helperWait int
 }
 
 func newCoordScript(t *testing.T) *coordScript {
-	c := &coordScript{t: t, failHop: -1, extraAt: -1, stopAfter: -1, waitExit: "0", overrideHop: -1, nilFinal: -1, unpublished: -1}
+	c := &coordScript{t: t, failHop: -1, extraAt: -1, stopAfter: -1, waitExit: "0", overrideHop: -1, nilFinal: -1, unpublished: -1, helperWait: -1}
 	c.finals = [4]string{"Design written.\nSTATUS: DESIGN_DRAFT\n", "Approved.\nSTATUS: DESIGN_REVIEW_APPROVED\n",
 		"Implemented.\nSTATUS: IMPL_COMPLETE\n", "Looks right.\nSTATUS: REVIEW_APPROVED\n"}
 	c.hopFiles = [4]map[string][]byte{{"design.md": designDoc}, {"design-review.md": designReview},
@@ -738,6 +761,9 @@ func (c *coordScript) complete(i int) {
 		commit = nil
 	}
 	c.p.finish(c.tasks[i], state, final, false, commit)
+	if i == c.helperWait {
+		return
+	}
 	v, _ := c.p.ShowTask(context.Background(), c.tasks[i], 0)
 	wr := contract.WaitResponse{Version: contract.ProtocolVersion, Status: contract.WaitTerminal, EffectiveWaitMS: 30000, Winner: c.tasks[i], Task: &v}
 	b, err := json.Marshal(wr)
@@ -940,7 +966,25 @@ type fakeWorld struct {
 	override func(ProcSpec) (behavior, bool)
 	flow     string
 	sup      *supervisor
+	// settings is the owner's coordinator settings file (A2).
+	settings string
+	// executable replaces the helper's path (empty: fakeReale2e).
+	executable string
 }
+
+// mustRead reads a file.
+func mustRead(t *testing.T, p string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// testSettings is a valid sandbox-only coordinator settings snapshot, as
+// the runbook's extraction writes it (the owner's socket permission kept).
+const testSettings = "{\n  \"sandbox\": {\n    \"enabled\": true,\n    \"network\": {\n      \"allowAllUnixSockets\": true\n    }\n  }\n}\n"
 
 // syncBuffer is a goroutine-safe buffer.
 type syncBuffer struct {
@@ -1038,6 +1082,10 @@ func newFakeWorld(t *testing.T) *fakeWorld {
 	f.puller = &fakePuller{p: f.plane}
 	f.launcher = &fakeLauncher{script: f.script}
 	f.coord = newCoordScript(t)
+	f.settings = filepath.Join(t.TempDir(), "coordinator-settings.json")
+	if err := os.WriteFile(f.settings, []byte(testSettings), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	pr, pw := io.Pipe()
 	t.Cleanup(func() { pw.Close() })
 	f.stdin, f.stdinW = pr, pw
@@ -1089,7 +1137,7 @@ func (f *fakeWorld) base(s ProcSpec) behavior {
 // world returns the supervisor's world.
 func (f *fakeWorld) world() *World {
 	return &World{Context: f.ctx, Launcher: f.launcher, Clock: f.clock, Environ: []string{"PATH=/fake/bin", "HOME=/home/owner"}, Cwd: f.checkout,
-		Executable: fakeReale2e, Home: "/home/owner", TempRoot: f.tempRoot, Rand: &countingRand{n: f.randSeed},
+		Executable: cmp.Or(f.executable, fakeReale2e), Home: "/home/owner", TempRoot: f.tempRoot, Rand: &countingRand{n: f.randSeed},
 		LookPath: func(n string) (string, error) {
 			if err := f.lookErr[n]; err != nil {
 				return "", err
@@ -1119,7 +1167,8 @@ func (r *countingRand) Read(p []byte) (int, error) {
 
 // host returns run's host inputs with the opt-in set.
 func (f *fakeWorld) host() Host {
-	args := []string{"run", "--callsheet", fakeCallsheet, "--claude", fakeClaude, "--codex", fakeCodex, "--grok", fakeGrok, "--evidence", f.evidence}
+	args := []string{"run", "--callsheet", fakeCallsheet, "--claude", fakeClaude, "--codex", fakeCodex, "--grok", fakeGrok, "--evidence", f.evidence,
+		"--coordinator-settings", f.settings}
 	if f.flow != "" {
 		args = append(args, "--flow", f.flow)
 	}
@@ -1142,7 +1191,7 @@ func (f *fakeWorld) attempt() int {
 		}
 	}
 	f.coord.p = f.plane
-	a := runArgs{callsheet: fakeCallsheet, claude: fakeClaude, codex: fakeCodex, grok: fakeGrok, evidence: f.evidence, flow: f.flow}
+	a := runArgs{callsheet: fakeCallsheet, claude: fakeClaude, codex: fakeCodex, grok: fakeGrok, evidence: f.evidence, flow: f.flow, settings: f.settings}
 	return runWith(f.host(), a, func(s *supervisor) {
 		f.sup = s
 		f.coord.s = s

@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"hash"
 	"io"
 	"io/fs"
@@ -671,9 +672,22 @@ func (f reaperFunc) Reap(p Proc) CaseCleanup { return f(p) }
 // memFS is a tiny injected approval filesystem: entries by absolute path
 // (directories implicit in their children too), with injectable lookup,
 // listing and open failures, and racy files whose size changes while read.
+// Every change to the set of paths in nodes goes through set or del (as
+// mkdirs, file, rsDel and clone do), which keep the child index; a node's
+// fields may be edited in place.
 type memFS struct {
 	nodes map[string]*memNode
 	links map[string]string
+	// kids indexes the paths in nodes by parent directory (filepath.Dir of
+	// the path; the root is never its own child), so a listing examines
+	// only the listed directory's children (fix
+	// mcpqual-macos-stress-budget). count is the number of paths set and
+	// del have recorded: ReadDir refuses a nodes map changed behind them.
+	kids  map[string]map[string]bool
+	count int
+	// visit, when set, sees every node path ReadDir examines (its
+	// regression test, TestMemFSReadDirVisitsChildren).
+	visit func(string)
 }
 
 type memNode struct {
@@ -688,12 +702,40 @@ type memNode struct {
 	size int64
 }
 
-func newMemFS() *memFS { return &memFS{nodes: map[string]*memNode{}, links: map[string]string{}} }
+func newMemFS() *memFS {
+	return &memFS{nodes: map[string]*memNode{}, links: map[string]string{}, kids: map[string]map[string]bool{}}
+}
+
+// set adds the node at p, or replaces the one there.
+func (m *memFS) set(p string, n *memNode) {
+	if _, ok := m.nodes[p]; !ok {
+		if d := filepath.Dir(p); d != p {
+			if m.kids[d] == nil {
+				m.kids[d] = map[string]bool{}
+			}
+			m.kids[d][p] = true
+		}
+		m.count++
+	}
+	m.nodes[p] = n
+}
+
+// del removes the node at p (not the nodes below it: rsDel does).
+func (m *memFS) del(p string) {
+	if _, ok := m.nodes[p]; !ok {
+		return
+	}
+	delete(m.nodes, p)
+	if d := filepath.Dir(p); d != p {
+		delete(m.kids[d], p)
+	}
+	m.count--
+}
 
 func (m *memFS) mkdirs(p string) {
 	for d := p; ; d = filepath.Dir(d) {
 		if _, ok := m.nodes[d]; !ok {
-			m.nodes[d] = &memNode{mode: fs.ModeDir | 0o700}
+			m.set(d, &memNode{mode: fs.ModeDir | 0o700})
 		}
 		if d == filepath.Dir(d) {
 			return
@@ -704,7 +746,7 @@ func (m *memFS) mkdirs(p string) {
 func (m *memFS) file(p, data string) *memNode {
 	m.mkdirs(filepath.Dir(p))
 	n := &memNode{mode: 0o600, data: data}
-	m.nodes[p] = n
+	m.set(p, n)
 	return n
 }
 
@@ -714,6 +756,13 @@ func (m *memFS) clone() *memFS {
 		n := *v
 		c.nodes[k] = &n
 	}
+	for d, ks := range m.kids {
+		c.kids[d] = make(map[string]bool, len(ks))
+		for k := range ks {
+			c.kids[d][k] = true
+		}
+	}
+	c.count = m.count
 	for k, v := range m.links {
 		c.links[k] = v
 	}
@@ -746,11 +795,19 @@ func (m *memFS) ReadDir(p string) ([]fs.DirEntry, error) {
 	if n, ok := m.nodes[p]; ok && n.listError != nil {
 		return nil, n.listError
 	}
+	if len(m.nodes) != m.count {
+		panic("memFS: nodes changed without set or del")
+	}
 	var out []fs.DirEntry
-	for k, n := range m.nodes {
-		if filepath.Dir(k) == p && k != p {
-			out = append(out, fs.FileInfoToDirEntry(m.info(k, n)))
+	for k := range m.kids[p] {
+		if m.visit != nil {
+			m.visit(k)
 		}
+		n, ok := m.nodes[k]
+		if !ok {
+			panic("memFS: " + k + " deleted without del")
+		}
+		out = append(out, fs.FileInfoToDirEntry(m.info(k, n)))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name() > out[j].Name() })
 	return out, nil
@@ -793,6 +850,115 @@ func (f *memFile) Stat() (fs.FileInfo, error) {
 
 func (f *memFile) Close() error { return nil }
 
+// TestMemFSReadDirVisitsChildren (fix mcpqual-macos-stress-budget): a
+// listing examines only the listed directory's children, whatever else the
+// filesystem holds, and lists them in descending name order.
+func TestMemFSReadDirVisitsChildren(t *testing.T) {
+	m := newMemFS()
+	for _, p := range []string{"/h/d/a", "/h/d/c", "/h/d/sub/x"} {
+		m.file(p, "x")
+	}
+	for i := range 200 {
+		m.file(fmt.Sprintf("/h/other/%03d", i), "")
+	}
+	var seen []string
+	m.visit = func(p string) { seen = append(seen, p) }
+	es, err := m.ReadDir("/h/d")
+	var names []string
+	for _, e := range es {
+		names = append(names, e.Name())
+	}
+	if err != nil || !slices.Equal(names, []string{"sub", "c", "a"}) {
+		t.Fatalf("listing %v, %v", names, err)
+	}
+	slices.Sort(seen)
+	if !slices.Equal(seen, []string{"/h/d/a", "/h/d/c", "/h/d/sub"}) {
+		t.Fatalf("ReadDir examined %d nodes, want only the listed directory's 3 children", len(seen))
+	}
+}
+
+// memListAll is the listing ReadDir gave before its child index: every node
+// whose parent is p, found by a scan of all nodes
+// (TestMemFSReadDirMatchesScan's oracle).
+func memListAll(m *memFS, p string) ([]fs.DirEntry, error) {
+	if n, ok := m.nodes[p]; ok && n.listError != nil {
+		return nil, n.listError
+	}
+	var out []fs.DirEntry
+	for k, n := range m.nodes {
+		if filepath.Dir(k) == p && k != p {
+			out = append(out, fs.FileInfoToDirEntry(m.info(k, n)))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name() > out[j].Name() })
+	return out, nil
+}
+
+// TestMemFSReadDirMatchesScan (fix mcpqual-macos-stress-budget): through
+// mkdirs, file, set, del, rsDel and clone, every listing equals the scan of
+// all nodes the child index replaced: the same entries (names, modes,
+// sizes and times) in the same descending order, the same listing errors,
+// and no entries for a directory without children; a clone's edits never
+// reach the original's index, nor the original's the clone's.
+func TestMemFSReadDirMatchesScan(t *testing.T) {
+	const p = "/h/.cursor/projects/p"
+	m := newMemFS()
+	m.file(p+"/a.json", "{}")
+	m.file(p+"/t/u/u.jsonl", "x")
+	m.file("/h/.cursor/projects/q/b", "")
+	m.mkdirs("/h/empty/dir")
+	m.set(p+"/worker.sock", &memNode{mode: fs.ModeSocket | 0o755})
+	m.set("/orphan/child", &memNode{mode: 0o600})
+	m.set(p+"/a.json", &memNode{mode: 0o644, data: "{}", mtime: epoch.Add(time.Second)})
+	m.nodes["/h/.cursor/projects/q"].listError = syscall.EACCES
+	m.nodes[p+"/t/u/u.jsonl"].size = 9
+	c := m.clone()
+	c.del(p + "/a.json")
+	rsDel(c, p+"/t")
+	c.set(p+"/t", &memNode{mode: fs.ModeSymlink | 0o777})
+	c.file("/h/.cursor/projects/r/new", "n")
+	c.del("/missing")
+	m.file(p+"/later", "")
+	for name, fsys := range map[string]*memFS{"original": m, "clone": c} {
+		dirs := map[string]bool{"/nowhere": true, "h": true, "/h/": true}
+		for k := range fsys.nodes {
+			dirs[k], dirs[filepath.Dir(k)] = true, true
+		}
+		for d := range dirs {
+			got, gerr := fsys.ReadDir(d)
+			want, werr := memListAll(fsys, d)
+			if gerr != werr || (got == nil) != (want == nil) || len(got) != len(want) {
+				t.Fatalf("%s %s: %d entries (%v), the scan %d (%v)", name, d, len(got), gerr, len(want), werr)
+			}
+			for i := range got {
+				gi, _ := got[i].Info()
+				wi, _ := want[i].Info()
+				if got[i].Name() != want[i].Name() || gi.Mode() != wi.Mode() || gi.Size() != wi.Size() || !gi.ModTime().Equal(wi.ModTime()) {
+					t.Fatalf("%s %s entry %d: %s %v %d %v, the scan %s %v %d %v", name, d, i, got[i].Name(), gi.Mode(), gi.Size(), gi.ModTime(),
+						want[i].Name(), wi.Mode(), wi.Size(), wi.ModTime())
+				}
+			}
+		}
+	}
+	names := func(fsys *memFS, d string) []string {
+		es, _ := fsys.ReadDir(d)
+		var out []string
+		for _, e := range es {
+			out = append(out, e.Name())
+		}
+		return out
+	}
+	if got := names(m, p); !slices.Equal(got, []string{"worker.sock", "t", "later", "a.json"}) {
+		t.Fatalf("original %v", got)
+	}
+	if got := names(c, p); !slices.Equal(got, []string{"worker.sock", "t"}) {
+		t.Fatalf("clone %v", got)
+	}
+	if got := names(m, "/h/.cursor/projects"); !slices.Equal(got, []string{"q", "p"}) {
+		t.Fatalf("original projects %v", got)
+	}
+}
+
 // UT-13: the bounded, keyed, no-follow inventories on injected tiny trees:
 // complete, absent, created, changed and deleted roots and files, their
 // kinds and labels; a symbolic link, special, unreadable or racy file, a
@@ -828,7 +994,7 @@ func TestApprovalScanner(t *testing.T) {
 	after.file(ws+"/.cursor/approved.json", `["probe"]`)
 	after.file(ws+"/.cursor/mcp.json", `{"mcpServers":{"p":1}}`)
 	after.nodes[home+"/.cursor/cli-config.json"].mode = 0o644
-	delete(after.nodes, ws+"/case.json")
+	after.del(ws + "/case.json")
 	after.file("/c/out/.work/.cursor/new", "x")
 	s := sc(ApprovalScanLimits{})
 	s.fs = base
@@ -849,8 +1015,8 @@ func TestApprovalScanner(t *testing.T) {
 	same := base.clone()
 	same.file(ws+"/case.json", `{"y":1}`)
 	same.nodes[ws+"/.cursor/mcp.json"].mode = fs.ModeDir | 0o700
-	delete(same.nodes, home+"/.cursor")
-	delete(same.nodes, home+"/.cursor/cli-config.json")
+	same.del(home + "/.cursor")
+	same.del(home + "/.cursor/cli-config.json")
 	s.fs = same
 	got = diffSnapshots(p1, s.snapshot(roots))
 	want = []approvalChange{{CaptureApprovalChange{"<home>/.cursor", ChangeRemoved}, false}, {CaptureApprovalChange{"<home>/.cursor/cli-config.json", ChangeRemoved}, true},
@@ -869,8 +1035,8 @@ func TestApprovalScanner(t *testing.T) {
 	}
 	// Every unsafe observation fails closed.
 	for name, mutate := range map[string]func(m *memFS){
-		"symlink":     func(m *memFS) { m.nodes[ws+"/.cursor/link"] = &memNode{mode: fs.ModeSymlink | 0o777} },
-		"special":     func(m *memFS) { m.nodes[home+"/.cursor/fifo"] = &memNode{mode: fs.ModeNamedPipe | 0o600} },
+		"symlink":     func(m *memFS) { m.set(ws+"/.cursor/link", &memNode{mode: fs.ModeSymlink | 0o777}) },
+		"special":     func(m *memFS) { m.set(home+"/.cursor/fifo", &memNode{mode: fs.ModeNamedPipe | 0o600}) },
 		"unreadable":  func(m *memFS) { m.nodes[ws+"/case.json"].openErr = syscall.EACCES },
 		"racy":        func(m *memFS) { m.nodes[ws+"/case.json"].racy = true },
 		"lookup":      func(m *memFS) { m.nodes[ws+"/.cursor"].lstatErr = syscall.EIO },
@@ -887,7 +1053,7 @@ func TestApprovalScanner(t *testing.T) {
 	// An incomplete post-inventory reports what it saw, never removals.
 	m := base.clone()
 	m.nodes[home+"/.cursor"].listError = syscall.EACCES
-	delete(m.nodes, ws+"/case.json")
+	m.del(ws + "/case.json")
 	s.fs = m
 	post := s.snapshot(roots)
 	for _, ch := range diffSnapshots(p1, post) {

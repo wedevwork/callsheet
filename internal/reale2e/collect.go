@@ -44,6 +44,19 @@ func (s *supervisor) finishRun() int {
 	// Cleanup still talks to the plane after an interrupt: it keeps the
 	// context's values but not its cancellation (each wait has its bound).
 	s.ctx = context.WithoutCancel(s.ctx)
+	// A2: the coordinator was launched with the runtime settings copy; it
+	// must still be the validated snapshot, or setup fails (recorded even
+	// after an earlier failure, so the setup criterion sees it).
+	if s.settingsWritten {
+		if err := s.checkSettingsCopy(); err != nil {
+			if s.failed {
+				s.ev.event(Event{Type: EvAttemptFailed, Code: codeSettingsModified})
+				fmt.Fprintf(s.stderr, "reale2e: %v\n", err)
+			} else {
+				s.fail(codeSettingsModified, err)
+			}
+		}
+	}
 	s.ev.event(Event{Type: EvCollectionStarted})
 	start := s.w.Clock.Now()
 	s.cleanupBy = start.Add(CleanupBound)
