@@ -24,16 +24,32 @@ import (
 // hash and prior-value conflicts, the three Markdown anchors and
 // retry-safe installation.
 
+// seededCatalog holds the catalog's JSON and Markdown (by repository path)
+// as tempRepo seeds them: deterministic for the checked-in files, so they
+// are seeded and rendered once per test process and written into every
+// scratch repository. Under sharedMu.
+var seededCatalog map[string][]byte
+
 // tempRepo copies the catalog, its Markdown and the captured CLI evidence
-// into a scratch repository.
+// into a scratch repository, the catalog seeded with the publication
+// baseline and tempRepoVersions.
 func tempRepo(t *testing.T) string {
 	t.Helper()
 	root := testkit.MustRepoRoot(t)
 	repo := t.TempDir()
-	copyFile := func(rel string) {
-		b, err := os.ReadFile(filepath.Join(root, rel))
-		if err != nil {
-			t.Fatal(err)
+	sharedMu.Lock()
+	defer sharedMu.Unlock()
+	catalogFiles := []string{CatalogJSONPath, CatalogMDPath}
+	// The two catalog files are writable copies (the seeded bytes once
+	// there are any); the captured evidence and the setup guide are
+	// read-only links to the real repository.
+	for _, rel := range catalogFiles {
+		b, ok := seededCatalog[rel]
+		if !ok {
+			var err error
+			if b, err = os.ReadFile(filepath.Join(root, rel)); err != nil {
+				t.Fatal(err)
+			}
 		}
 		dst := filepath.Join(repo, rel)
 		os.MkdirAll(filepath.Dir(dst), 0o755)
@@ -41,10 +57,6 @@ func tempRepo(t *testing.T) string {
 			t.Fatal(err)
 		}
 	}
-	// The two catalog files are writable copies; the captured evidence and
-	// the setup guide are read-only links to the real repository.
-	copyFile(CatalogJSONPath)
-	copyFile(CatalogMDPath)
 	// docs/real-adapters.md and the iteration 08 evidence are linked from
 	// the catalog's Markdown and JSON (read-only links too).
 	for _, rel := range []string{SetupDocPath, filepath.Join("docs", "real-adapters.md"), filepath.Join("tests", "testdata", "cli-help"),
@@ -53,9 +65,82 @@ func tempRepo(t *testing.T) string {
 			t.Fatal(err)
 		}
 	}
-	seedPublicationBaseline(t, repo)
-	alignVersions(t, repo, map[string]string{"claude": "2.1.282 (Claude Code)", "codex": "codex-cli 0.156.1"})
+	if seededCatalog == nil {
+		seedRuns++
+		seedPublicationBaseline(t, repo)
+		alignVersions(t, repo, tempRepoVersions)
+		seeded := map[string][]byte{}
+		for _, rel := range catalogFiles {
+			b, err := os.ReadFile(filepath.Join(repo, rel))
+			if err != nil {
+				t.Fatal(err)
+			}
+			seeded[rel] = b
+		}
+		seededCatalog = seeded
+	}
 	return repo
+}
+
+// tempRepoVersions are the fake vendors' versions tempRepo records as the
+// scratch catalog's coordinator versions (alignVersions).
+var tempRepoVersions = map[string]string{"claude": "2.1.282 (Claude Code)", "codex": "codex-cli 0.156.1"}
+
+// seedRuns counts the catalog seedings (seedPublicationBaseline and
+// alignVersions renders) tempRepo has made in this test process
+// (TestTempRepoSeededOnce). Under sharedMu.
+var seedRuns int
+
+// TestTempRepoSeededOnce (fix mcpqual-macos-stress-budget): tempRepo seeds
+// and renders the catalog once per test process, and every scratch
+// repository still gets its own writable catalog holding exactly the bytes
+// a fresh seeding of the checked-in files renders, beside the read-only
+// links.
+func TestTempRepoSeededOnce(t *testing.T) {
+	root := testkit.MustRepoRoot(t)
+	first := tempRepo(t)
+	for _, rel := range []string{CatalogJSONPath, CatalogMDPath} {
+		if err := os.WriteFile(filepath.Join(first, rel), []byte("edited"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	repo := tempRepo(t)
+	// The reference: the checked-in files seeded and aligned afresh.
+	ref := t.TempDir()
+	for _, rel := range []string{CatalogJSONPath, CatalogMDPath} {
+		b, err := os.ReadFile(filepath.Join(root, rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		os.MkdirAll(filepath.Dir(filepath.Join(ref, rel)), 0o755)
+		if err := os.WriteFile(filepath.Join(ref, rel), b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seedPublicationBaseline(t, ref)
+	alignVersions(t, ref, tempRepoVersions)
+	for _, rel := range []string{CatalogJSONPath, CatalogMDPath} {
+		got, err := os.ReadFile(filepath.Join(repo, rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, _ := os.ReadFile(filepath.Join(ref, rel))
+		if fi, err := os.Lstat(filepath.Join(repo, rel)); err != nil || !fi.Mode().IsRegular() || !bytes.Equal(got, want) {
+			t.Fatalf("%s: not a fresh seeding's bytes in a regular file (%v)", rel, err)
+		}
+	}
+	for _, rel := range []string{SetupDocPath, filepath.Join("docs", "real-adapters.md"), filepath.Join("tests", "testdata", "cli-help"),
+		filepath.Join("tests", "testdata", "real-adapters")} {
+		if to, err := os.Readlink(filepath.Join(repo, rel)); err != nil || to != filepath.Join(root, rel) {
+			t.Fatalf("%s links to %q (%v)", rel, to, err)
+		}
+	}
+	sharedMu.Lock()
+	runs := seedRuns
+	sharedMu.Unlock()
+	if runs != 1 {
+		t.Fatalf("tempRepo seeded the catalog %d times in this process, want 1", runs)
+	}
 }
 
 // seedPublicationBaseline sets the scratch catalog's four publisher-managed

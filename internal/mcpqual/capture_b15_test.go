@@ -1178,7 +1178,7 @@ func TestApprovalInventoryExclusions(t *testing.T) {
 	// addition, removal and mode changes are not.
 	after := base.clone()
 	after.file(home+"/.cursor/chats/new", "x")
-	delete(after.nodes, home+"/.cursor/ai-tracking/f")
+	after.del(home + "/.cursor/ai-tracking/f")
 	sc, _ := newApprovalScanner(excludeFS{base, t, []string{home + "/.cursor/chats", home + "/.cursor/ai-tracking"}}, ApprovalScanLimits{})
 	sc.exclude(home)
 	p1 := sc.snapshot(roots)
@@ -1190,7 +1190,7 @@ func TestApprovalInventoryExclusions(t *testing.T) {
 	moved.nodes[home+"/.cursor/chats"].mode = fs.ModeDir | 0o755
 	for k := range moved.nodes {
 		if strings.HasPrefix(k, home+"/.cursor/ai-tracking") {
-			delete(moved.nodes, k)
+			moved.del(k)
 		}
 	}
 	sc.fs = excludeFS{moved, t, nil}
@@ -1201,7 +1201,7 @@ func TestApprovalInventoryExclusions(t *testing.T) {
 	none := base.clone()
 	for k := range none.nodes {
 		if strings.HasPrefix(k, home+"/.cursor/chats") || strings.HasPrefix(k, home+"/.cursor/ai-tracking") {
-			delete(none.nodes, k)
+			none.del(k)
 		}
 	}
 	if s := scan(none, ApprovalScanLimits{}); !s.complete || s.count != 14 {
@@ -1213,7 +1213,7 @@ func TestApprovalInventoryExclusions(t *testing.T) {
 		"link":    func(m *memFS) { m.nodes[home+"/.cursor/chats"].mode = fs.ModeSymlink | 0o777 },
 		"file":    func(m *memFS) { m.nodes[home+"/.cursor/ai-tracking"].mode = 0o600 },
 		"lookup":  func(m *memFS) { m.nodes[home+"/.cursor/chats"].lstatErr = syscall.EACCES },
-		"special": func(m *memFS) { m.nodes[home+"/.cursor/projects/p/sock"] = &memNode{mode: fs.ModeSocket | 0o600} },
+		"special": func(m *memFS) { m.set(home+"/.cursor/projects/p/sock", &memNode{mode: fs.ModeSocket | 0o600}) },
 	} {
 		m := base.clone()
 		mutate(m)

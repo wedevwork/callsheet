@@ -317,6 +317,10 @@ var WorkspaceCoverageManifest = []CoverageEntry{
 	{Group: GroupChanged, File: modulePath + "/internal/reale2e/strictjson.go"},
 	{Group: GroupChanged, File: modulePath + "/internal/reale2e/supervisor.go"},
 	{Group: GroupChanged, File: modulePath + "/internal/reale2e/templates.go"},
+	// Design 12a-real-e2e amendment A2: the coordinator settings snapshot
+	// and the background wait helper, new untagged files, whole.
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/settings.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/wait.go"},
 	{Group: GroupChanged, File: modulePath + "/internal/devcheck/platform.go"},
 }
 

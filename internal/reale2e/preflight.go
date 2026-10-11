@@ -58,6 +58,12 @@ func (s *supervisor) staticPreflight() error {
 		return failure("templates_missing", err)
 	}
 	s.templates, s.rendered = tpl, map[string][]byte{}
+	// A2: the owner's sandbox-only settings are read and validated here,
+	// after the gate and before any executable probe, deployment or paid
+	// preflight.
+	if s.settings, err = readCoordinatorSettings(s.args.settings); err != nil {
+		return failure("coordinator_settings_invalid", err)
+	}
 	for _, h := range Hops {
 		for _, k := range []string{"instruction", "runbook"} {
 			n := manualName(h, k)

@@ -1,11 +1,13 @@
 package mcpqual
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"unicode/utf8"
 
@@ -65,20 +67,64 @@ func TestR2AggregateReportBound(t *testing.T) {
 	}
 }
 
+var (
+	// r2BoundSrc is r2BoundSource's report, built once per test process
+	// (like cachedRun): only the input the stages test bounds at every
+	// limit. Under r2BoundMu.
+	r2BoundSrc []byte
+	// r2BoundSourceBuilds counts the runs r2BoundSource has made in this
+	// test process (TestR2BoundSourceOnce). Under r2BoundMu.
+	r2BoundSourceBuilds int
+	r2BoundMu           sync.Mutex
+)
+
+// r2BoundSource is (a copy of) the encoded oversize report
+// TestR2BoundReportStages bounds: a real run with long tool IDs and long
+// client, phase and cleanup strings.
+func r2BoundSource(t *testing.T) []byte {
+	t.Helper()
+	r2BoundMu.Lock()
+	defer r2BoundMu.Unlock()
+	if r2BoundSrc == nil {
+		r2BoundSourceBuilds++
+		m := fullModel()
+		m.toolID = strings.Repeat("x", 1500)
+		rep := runPlan(t, newRunner(t, newWorld(t, m), planWith(defaultOnly(100, 300))), context.Background())
+		rep.Clients[0].ObservedVersion = sptr(strings.Repeat("v", 3000))
+		rep.Clients[0].Phases[0].Result = sptr(strings.Repeat("r", 3000))
+		rep.Cleanup.Failures = []string{strings.Repeat("f", 3000)}
+		src, err := encodeJSON(rep)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r2BoundSrc = src
+	}
+	return bytes.Clone(r2BoundSrc)
+}
+
+// TestR2BoundSourceOnce (fix mcpqual-macos-stress-budget): the stages
+// test's oversize report is built once per test process, and each call
+// hands out its own copy.
+func TestR2BoundSourceOnce(t *testing.T) {
+	a := r2BoundSource(t)
+	want := bytes.Clone(a)
+	a[0] ^= 0xff
+	if b := r2BoundSource(t); !bytes.Equal(b, want) {
+		t.Fatal("an edit of one copy reached the next")
+	}
+	r2BoundMu.Lock()
+	builds := r2BoundSourceBuilds
+	r2BoundMu.Unlock()
+	if builds != 1 {
+		t.Fatalf("the oversize report was built %d times in this process, want 1", builds)
+	}
+}
+
 // r2 C2: at every budget boundReport either yields a valid report within
 // the budget (cutting client and phase strings, then dropping case
 // summaries, as needed) or refuses; it never writes an oversize report.
 func TestR2BoundReportStages(t *testing.T) {
-	m := fullModel()
-	m.toolID = strings.Repeat("x", 1500)
-	rep := runPlan(t, newRunner(t, newWorld(t, m), planWith(defaultOnly(100, 300))), context.Background())
-	rep.Clients[0].ObservedVersion = sptr(strings.Repeat("v", 3000))
-	rep.Clients[0].Phases[0].Result = sptr(strings.Repeat("r", 3000))
-	rep.Cleanup.Failures = []string{strings.Repeat("f", 3000)}
-	src, err := encodeJSON(rep)
-	if err != nil {
-		t.Fatal(err)
-	}
+	src := r2BoundSource(t)
 	sawCut, sawDrop, refused := false, false, false
 	for limit := len(src); limit > 0 && !refused; limit = limit * 15 / 16 {
 		var cp Report

@@ -666,24 +666,106 @@ func TestFixtureEmbeddedResults(t *testing.T) {
 	}
 }
 
-// exportedBundle is an export of client and its validated bundle.
-func exportedBundle(t *testing.T, client string) (*CaptureBundle, []byte, *FixturePolicy, string) {
+// exportedFiles is one client's exported bundle as exportedBundle validated
+// it: the manifest's bytes, the payloads and the sanitization receipt.
+type exportedFiles struct {
+	manifest []byte
+	files    map[string][]byte
+	receipt  []byte
+}
+
+var (
+	// exportedBundles caches each client's export for the life of the test
+	// process, like cachedRun: the export is only input to the tests that
+	// use it (the tests that prove the exporter call ExportFixture
+	// themselves). Under sharedMu.
+	exportedBundles = map[string]*exportedFiles{}
+	// exportRuns counts, per client, the ExportFixture runs exportedBundle
+	// has made in this test process (TestExportedBundleOnce). Under
+	// sharedMu.
+	exportRuns = map[string]int{}
+)
+
+// exportedBundle is an export of client, its validated bundle and receipt,
+// and the test policy accepting its source. The export runs once per
+// client and test process (single-flight under sharedMu); every call hands
+// out fresh copies of its bytes and a freshly parsed manifest, so a caller
+// may edit what it gets.
+func exportedBundle(t *testing.T, client string) (*CaptureBundle, []byte, *FixturePolicy) {
 	t.Helper()
 	sc, pol := exportSource(t, client)
-	out := filepath.Join(realDir(t), "out")
-	if _, err := ExportFixture(sc.dir, out, pol); err != nil {
-		t.Fatal(err)
+	sharedMu.Lock()
+	defer sharedMu.Unlock()
+	e, ok := exportedBundles[client]
+	if !ok {
+		out := filepath.Join(realDir(t), "out")
+		exportRuns[client]++
+		if _, err := ExportFixture(sc.dir, out, pol); err != nil {
+			t.Fatal(err)
+		}
+		b, err := ValidateCaptureBundle(os.DirFS(out), ".", SanitizationName)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sb, _ := os.ReadFile(filepath.Join(out, SanitizationName))
+		e = &exportedFiles{manifest: b.ManifestBytes, files: b.Files, receipt: sb}
+		exportedBundles[client] = e
 	}
-	b, err := ValidateCaptureBundle(os.DirFS(out), ".", SanitizationName)
+	mb := bytes.Clone(e.manifest)
+	man, err := ParseCaptureManifest(mb)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sb, _ := os.ReadFile(filepath.Join(out, SanitizationName))
-	return b, sb, pol, out
+	files := make(map[string][]byte, len(e.files))
+	for k, v := range e.files {
+		files[k] = bytes.Clone(v)
+	}
+	return &CaptureBundle{Manifest: man, ManifestBytes: mb, Files: files}, bytes.Clone(e.receipt), pol
+}
+
+// TestExportedBundleOnce (fix mcpqual-macos-stress-budget): exportedBundle
+// runs ExportFixture at most once per client and test process, and every
+// call hands out its own copies, so a caller's edit of one bundle (its
+// bytes, payload map or parsed manifest) never reaches the next.
+func TestExportedBundleOnce(t *testing.T) {
+	b, sb, pol := exportedBundle(t, "grok")
+	man, receipt, runID := bytes.Clone(b.ManifestBytes), bytes.Clone(sb), b.Manifest.RunID
+	files := map[string][]byte{}
+	for k, v := range b.Files {
+		files[k] = bytes.Clone(v)
+	}
+	b.ManifestBytes[0] ^= 0xff
+	for k, v := range b.Files {
+		if len(v) > 0 {
+			v[0] ^= 0xff
+		}
+		delete(b.Files, k)
+	}
+	b.Files["edited"] = []byte("x")
+	sb[0] ^= 0xff
+	b.Manifest.RunID = "edited"
+	b2, sb2, _ := exportedBundle(t, "grok")
+	if !bytes.Equal(b2.ManifestBytes, man) || !bytes.Equal(sb2, receipt) || b2.Manifest.RunID != runID || len(b2.Files) != len(files) {
+		t.Fatalf("a caller's edit reached the next bundle: run %q, %d payloads", b2.Manifest.RunID, len(b2.Files))
+	}
+	for k, v := range files {
+		if !bytes.Equal(b2.Files[k], v) {
+			t.Fatalf("payload %s changed between calls", k)
+		}
+	}
+	if _, err := CheckFixtureSanitization(pol, b2, sb2); err != nil {
+		t.Fatal(err)
+	}
+	sharedMu.Lock()
+	runs := exportRuns["grok"]
+	sharedMu.Unlock()
+	if runs != 1 {
+		t.Fatalf("exportedBundle ran ExportFixture %d times for grok in this process, want 1", runs)
+	}
 }
 
 func TestFixtureSanitizationReceipt(t *testing.T) {
-	b, sb, pol, _ := exportedBundle(t, "grok")
+	b, sb, pol := exportedBundle(t, "grok")
 	if _, err := CheckFixtureSanitization(pol, b, sb); err != nil {
 		t.Fatal(err)
 	}
@@ -758,7 +840,7 @@ func TestFixtureSanitizationReceipt(t *testing.T) {
 // with attestation a, the injected policy and its test registry.
 func sanitizedRepo(t *testing.T, a Attestation) (fstest.MapFS, EnrollmentOptions, EnrollmentEntry) {
 	t.Helper()
-	b, sb, pol, _ := exportedBundle(t, "claude")
+	b, sb, pol := exportedBundle(t, "claude")
 	m := b.Manifest
 	c := m.Clients[0]
 	version := capVersions["claude"]

@@ -3,15 +3,19 @@ package reale2e
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"slices"
 	"sync"
 	"time"
+
+	"github.com/wedevwork/callsheet/internal/contract"
 )
 
 // The supervisor's control socket (design 12a-real-e2e, Implementation
@@ -23,6 +27,15 @@ import (
 // malformed JSON, extra frames and unknown operations are refused. A run
 // ID other than the live supervisor's cannot mutate state. Responses carry
 // only fixed codes, never raw diagnostics.
+//
+// Amendment A2 adds wait requests, exactly {"run","op":"wait","task",
+// "hop"}: the helper half-closes its write side after the request and the
+// server requires EOF before executing it, then answers one line and
+// closes (the helper requires EOF after it), so a delayed extra frame is
+// refused as well as a buffered one. A wait answers pending, terminal
+// with the encoded contract.WaitResponse as "result", or an existing
+// refusal code; the handoff to the loop and the authoritative fetch share
+// one 4s context within the connection's 5s budget.
 
 // Control protocol constants.
 const (
@@ -31,7 +44,14 @@ const (
 	RunFileSchema   = "callsheet-real-e2e-run/v1"
 	maxControlLine  = 4096
 	controlExchange = 5 * time.Second
-	maxSocketPath   = 90
+	// waitHandoff bounds a wait's hand-off to the loop plus its
+	// authoritative fetch, from the connection's start; the rest of the
+	// exchange is left for serialization and the write.
+	waitHandoff   = 4 * time.Second
+	maxSocketPath = 90
+	// maxWaitLine bounds a wait response line (newline included): a
+	// terminal answer's nested result has its own contract bound.
+	maxWaitLine = contract.MaxWaitResponseBytes + maxControlLine
 )
 
 // Response codes.
@@ -46,7 +66,10 @@ const (
 	CodeOwnerGateClosed  = "owner_gate_closed"
 	CodeClosing          = "closing"
 	CodeInternalError    = "internal_error"
-	opObserve, opFinish  = "observe", "finish"
+	// A2 wait answers.
+	CodePending                 = "pending"
+	CodeTerminal                = "terminal"
+	opObserve, opFinish, opWait = "observe", "finish", "wait"
 )
 
 // okCodes are the success codes.
@@ -110,7 +133,7 @@ func parseControlRequest(line []byte) (ControlRequest, bool) {
 		return ControlRequest{}, false
 	}
 	switch r.Op {
-	case opObserve:
+	case opObserve, opWait:
 		var ok3, ok4 bool
 		r.Task, ok3 = str("task")
 		r.Hop, ok4 = str("hop")
@@ -127,17 +150,65 @@ func parseControlRequest(line []byte) (ControlRequest, bool) {
 	return r, true
 }
 
+// waitReply is a wait request's answer: pending, terminal with its
+// encoded result, or a refusal code.
+type waitReply struct {
+	code   string
+	result []byte
+}
+
+// line renders the reply's response line (newline included).
+func (r waitReply) line() []byte {
+	switch r.code {
+	case CodePending:
+		return []byte(`{"ok":true,"code":"pending"}` + "\n")
+	case CodeTerminal:
+		// The encoded result is embedded unchanged (json.Marshal would
+		// re-escape it); its own bound was asserted by its encoder.
+		out := append([]byte(`{"ok":true,"code":"terminal","result":`), r.result...)
+		return append(out, "}\n"...)
+	}
+	code := r.code
+	if !slices.Contains(errorCodes, code) {
+		code = CodeInternalError
+	}
+	b, _ := json.Marshal(controlResponse{OK: false, Code: code})
+	return append(b, '\n')
+}
+
+// errWorkExpired is the cause with which a wait's shared work budget
+// expires (amendment A2.1): only this cause, before the loop took the
+// handoff, makes a busy pending.
+var errWorkExpired = errors.New("the wait's work budget expired")
+
 // controlServer serves the socket.
 type controlServer struct {
 	ln     net.Listener
 	runID  string
 	handle func(ControlRequest) string
-	wg     sync.WaitGroup
+	// wait answers wait requests within its context (nil: a wait is an
+	// unknown operation).
+	wait func(ctx context.Context, req ControlRequest) waitReply
+	// clock times a wait's work budget (the supervisor's world clock).
+	clock Clock
+	// frameRead, when set (tests only, at construction), runs after a
+	// wait request's frame was read and before its EOF is required.
+	frameRead func()
+	ctx       context.Context
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
 }
 
 // listenControl creates the socket mode 0600 and serves it; handle is
 // called for requests whose run ID matches.
 func listenControl(runtime, runID string, handle func(ControlRequest) string) (*controlServer, error) {
+	return serveControl(runtime, runID, realClock{}, handle, nil)
+}
+
+// serveControl is listenControl with a wait handler whose work budget is
+// timed by clock; opts adjust the server before it serves (tests).
+func serveControl(runtime, runID string, clock Clock, handle func(ControlRequest) string,
+	wait func(context.Context, ControlRequest) waitReply, opts ...func(*controlServer)) (*controlServer, error) {
 	p, err := socketPath(runtime)
 	if err != nil {
 		return nil, err
@@ -150,7 +221,11 @@ func listenControl(runtime, runID string, handle func(ControlRequest) string) (*
 		ln.Close()
 		return nil, err
 	}
-	s := &controlServer{ln: ln, runID: runID, handle: handle}
+	ctx, cancel := context.WithCancel(context.Background())
+	s := &controlServer{ln: ln, runID: runID, handle: handle, wait: wait, clock: clock, ctx: ctx, cancel: cancel}
+	for _, o := range opts {
+		o(s)
+	}
 	s.wg.Add(1)
 	go s.serve()
 	return s, nil
@@ -171,38 +246,96 @@ func (s *controlServer) serve() {
 	}
 }
 
-// exchange handles one connection.
+// exchange handles one connection within one absolute 5s budget (the
+// real socket deadline, the I/O safeguard); a wait's work budget is the
+// first 4s of it on the injected clock, leaving 1s for the answer.
 func (s *controlServer) exchange(conn net.Conn) {
 	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(controlExchange))
-	code := s.request(conn)
+	start, workStart := time.Now(), s.clock.Now()
+	conn.SetDeadline(start.Add(controlExchange))
+	req, code := s.request(conn)
+	if code == "" && req.Op == opWait {
+		ctx, release := s.workContext(workStart)
+		r := s.wait(ctx, req)
+		release()
+		conn.Write(r.line())
+		return
+	}
+	if code == "" {
+		code = s.handle(req)
+	}
 	resp := controlResponse{OK: slices.Contains(okCodes, code), Code: code}
 	b, _ := json.Marshal(resp)
 	conn.Write(append(b, '\n'))
 }
 
-// request reads and judges one request.
-func (s *controlServer) request(conn net.Conn) string {
+// workContext is a wait's shared work budget (amendment A2.1): a child of
+// the server's context (cancelled when the server closes) that the
+// injected clock cancels with errWorkExpired waitHandoff after the
+// exchange started (reading the request used part of it; the handoff and
+// a taken fetch share the rest, never reset). release stops the timer,
+// joins its watcher and cancels the context.
+func (s *controlServer) workContext(start time.Time) (context.Context, func()) {
+	ctx, cancel := context.WithCancelCause(s.ctx)
+	t, stop := s.clock.NewTimer(max(0, waitHandoff-s.clock.Now().Sub(start)))
+	quit, done := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(done)
+		select {
+		case <-t:
+			cancel(errWorkExpired)
+		case <-quit:
+		}
+	}()
+	return ctx, func() {
+		close(quit)
+		stop()
+		<-done
+		cancel(nil)
+	}
+}
+
+// request reads and judges one request: the decoded request with an
+// empty code to execute it, or a refusal code.
+func (s *controlServer) request(conn net.Conn) (ControlRequest, string) {
 	br := bufio.NewReaderSize(conn, maxControlLine+1)
 	line, err := br.ReadSlice('\n')
 	if err != nil || len(line) > maxControlLine || br.Buffered() > 0 {
-		return CodeInvalidRequest
+		return ControlRequest{}, CodeInvalidRequest
 	}
 	req, ok := parseControlRequest(bytes.TrimSuffix(line, []byte("\n")))
+	if ok && req.Op == opWait {
+		// The single request must be followed by EOF (the helper's
+		// half-close): any later byte, even a delayed one, is an extra
+		// frame.
+		if s.wait == nil {
+			return ControlRequest{}, CodeInvalidRequest
+		}
+		if s.frameRead != nil {
+			s.frameRead()
+		}
+		if n, err := br.Read(make([]byte, 1)); n != 0 || !errors.Is(err, io.EOF) {
+			return ControlRequest{}, CodeInvalidRequest
+		}
+	}
 	switch {
 	case !ok:
-		return CodeInvalidRequest
+		return ControlRequest{}, CodeInvalidRequest
 	case req.Run != s.runID:
-		return CodeRunMismatch
-	case req.Op == opObserve && hopIndex(req.Hop) < 0:
-		return CodeInvalidHop
+		return ControlRequest{}, CodeRunMismatch
+	case (req.Op == opObserve || req.Op == opWait) && hopIndex(req.Hop) < 0:
+		return ControlRequest{}, CodeInvalidHop
+	case req.Op == opWait && !contract.ValidTaskID(req.Task):
+		return ControlRequest{}, CodeInvalidRequest
 	}
-	return s.handle(req)
+	return req, ""
 }
 
-// close stops accepting and waits for open exchanges.
+// close stops accepting, cancels in-flight wait fetches and waits for
+// open exchanges (each bounded by its 5s budget).
 func (s *controlServer) close() {
 	s.ln.Close()
+	s.cancel()
 	s.wg.Wait()
 }
 

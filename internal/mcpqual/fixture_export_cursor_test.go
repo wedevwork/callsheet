@@ -249,12 +249,12 @@ func TestCursorFixturePolicyBinding(t *testing.T) {
 		!strings.Contains(err.Error(), "not an accepted source identity") {
 		t.Fatalf("a B2-bound Cursor source: %v", err)
 	}
-	b, sb, cpol, _ := exportedBundle(t, "cursor")
+	b, sb, cpol := exportedBundle(t, "cursor")
 	swapped := bytes.Replace(sb, []byte(SanitizationPolicyB3Cursor), []byte(SanitizationPolicyB2), 1)
 	if _, err := CheckFixtureSanitization(cpol, b, swapped); err == nil || !strings.Contains(err.Error(), "bound to this source") {
 		t.Fatalf("a Cursor receipt under the B2 policy: %v", err)
 	}
-	gb, gsb, gpol, _ := exportedBundle(t, "grok")
+	gb, gsb, gpol := exportedBundle(t, "grok")
 	if _, err := CheckFixtureSanitization(gpol, gb, bytes.Replace(gsb, []byte(SanitizationPolicyB2), []byte(SanitizationPolicyB3Cursor), 1)); err == nil ||
 		!strings.Contains(err.Error(), "bound to this source") {
 		t.Fatalf("a B2 receipt under the Cursor policy: %v", err)
@@ -277,7 +277,7 @@ func TestCursorFixturePolicyBinding(t *testing.T) {
 // holding the production Cursor version (its real parser) only.
 func cursorSanitizedRepo(t *testing.T, a Attestation) (fstest.MapFS, EnrollmentOptions, EnrollmentEntry) {
 	t.Helper()
-	b, sb, pol, _ := exportedBundle(t, "cursor")
+	b, sb, pol := exportedBundle(t, "cursor")
 	m := b.Manifest
 	c := m.Clients[0]
 	tr, _ := ReplayTranscript(b.Files[ClientFile("cursor", FileVendorEvents)])

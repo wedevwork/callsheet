@@ -20,6 +20,7 @@ Bounds are policy, not measured performance:
 - The Callsheet checkout, built: `go build -o /abs/path/callsheet ./cmd/callsheet` and `go build -tags reale2e -o /abs/path/reale2e ./cmd/reale2e`.
 - Logged-in vendor CLIs at or above the minimum versions, given by absolute path: Claude Code `2.1.285 (Claude Code)`, Codex `codex-cli 0.159.0`, Grok `grok 1.0.46 (...) [stable]` (the existing adapter version policy; newer versions are accepted silently). The harness never logs in, inspects credentials or rewrites profiles: resolve login, model access or posture outside it.
 - Go and Git on `PATH` (development prerequisites of the throwaway Go project, not Callsheet runtime requirements).
+- `python3` in your own terminal for the settings extraction and the `CLAUDE.md` move and restore commands below (you run them; the harness and its tests never do), and Claude Code's sandbox enabled in your user settings.
 - The parent of a new evidence directory inside the checkout's ignored `design/` tree: `mkdir -p design/real-e2e-runs`. Each attempt names its own new bundle directory there (it must not exist yet), for example `design/real-e2e-runs/<date>`.
 
 ## Roles, models and efforts
@@ -57,30 +58,70 @@ Each hop builds on the previous hop's published result commit, on one pinned wor
 
 ## Running it
 
-1. Start the supervisor in a terminal you keep open (it is the decision terminal):
+1. Extract the coordinator's sandbox settings into a new private file. The coordinator session excludes your user settings (`--setting-sources project,local`) and is given only your own `sandbox` object, so it keeps your sandbox posture (including your Unix-socket permissions, which the wait relay needs) without your other user settings. Run this in your own terminal, with an absolute path of a file that does not exist yet substituted for `/ABS/coordinator-settings.json`; it reads only your `~/.claude/settings.json`, requires `sandbox.enabled` to be true and refuses an existing destination:
+
+```sh
+python3 - /ABS/coordinator-settings.json <<'PYSETTINGS'
+import json, os, pathlib, sys
+source = json.loads((pathlib.Path.home() / '.claude/settings.json').read_text())
+value = source['sandbox']
+assert isinstance(value, dict) and value.get('enabled') is True
+fd = os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(fd, 'w') as f:
+    json.dump({'sandbox': value}, f, indent=2)
+    f.write('\n')
+PYSETTINGS
+```
+
+The harness never reads your settings or authentication stores itself. It reads only this file (a regular file, not a symlink, at most 64 KiB), requires exactly one strict JSON object whose sole key is `sandbox`, an object with `enabled` set to `true`, and keeps the whole sandbox object unchanged. It copies the validated bytes to `<runtime>/coordinator-settings.json` (the copy the coordinator is launched with; do not change it during the session) and to the private evidence `setup/coordinator-settings.json`, whose SHA-256 the manifest records. It never relaxes a vendor setting.
+
+2. Start the supervisor in a terminal you keep open (it is the decision terminal):
 
    ```sh
    cd /abs/path/to/callsheet-checkout
    CALLSHEET_REAL_E2E=1 /abs/path/reale2e run \
      --callsheet /abs/path/callsheet \
      --claude /abs/path/claude --codex /abs/path/codex --grok /abs/path/grok \
-     --evidence "$PWD/design/real-e2e-runs/$(date -u +%Y%m%dT%H%M%SZ)" [--flow /abs/path/flow.json]
+     --evidence "$PWD/design/real-e2e-runs/$(date -u +%Y%m%dT%H%M%SZ)" \
+     --coordinator-settings /ABS/coordinator-settings.json [--flow /abs/path/flow.json]
    ```
 
-   It prints the bounds, checks versions and the private temporary directory, creates a short private runtime `/tmp/ce-*` (mode 0700), starts the plane on 127.0.0.1 with an ephemeral port, three sidecars and the four roles, reconnects every sidecar and awaits the roles ready, runs the four authenticated preflights, creates the seed and its baseline tests and a fresh workspace, and prints the coordinator launch command, the run ID and the runtime path. `--evidence` is the bundle directory itself: it must not exist yet (a reused path is refused before anything starts) and its existing parent must lie inside the checkout's `design/` tree; the run creates it and records the generated run ID in its `manifest.json`.
+   It prints the bounds, validates the coordinator settings, checks versions and the private temporary directory, creates a short private runtime `/tmp/ce-*` (mode 0700), starts the plane on 127.0.0.1 with an ephemeral port, three sidecars and the four roles, reconnects every sidecar and awaits the roles ready, runs the four authenticated preflights, creates the seed and its baseline tests and a fresh workspace, and prints the coordinator launch command, the run ID and the runtime path. `--evidence` is the bundle directory itself: it must not exist yet (a reused path is refused before anything starts) and its existing parent must lie inside the checkout's `design/` tree; the run creates it and records the generated run ID in its `manifest.json`.
 
-2. Prepare a clean coordinator session. Inspect the active instruction sources (user and project `CLAUDE.md`, skills, plugins, hooks, agents) and disable unrelated ones for this session with supported vendor controls. If a clean session cannot be established without weakening security, abort. Keep your normal authentication and sandbox posture: do not use `--bare` (it changes OAuth and keychain behavior) or any broad permission bypass.
+3. Prepare a clean coordinator session. No other Claude Code session may run during the exercise, from here until you restore below. Inspect the active instruction sources (project `CLAUDE.md`, skills, plugins, hooks, agents) and disable unrelated ones for this session with supported vendor controls. If a clean session cannot be established without weakening security, abort. Keep your normal authentication and sandbox posture: do not use `--bare` (it changes OAuth and keychain behavior), `--safe-mode`, `--disable-slash-commands` (it prevents the built-in checks below) or any broad permission bypass.
 
-3. In a new terminal, run exactly the printed command. It starts a fresh session in the new empty directory `<runtime>/coord`, never resumed:
+Then move your user instruction file aside in your own terminal. This exact command refuses an existing backup (even a dangling symlink) by an exclusive hard link on the same filesystem, then removes only the original name; a missing `CLAUDE.md` is fine, while a symlink or other nonregular file is refused and you must resolve it before starting. The restore below uses the same fixed backup name:
+
+```sh
+python3 - <<'PYMOVE'
+import os, pathlib, stat
+p = pathlib.Path.home() / '.claude/CLAUDE.md'
+b = p.with_name('CLAUDE.md.reale2e-backup')
+if os.path.lexists(b):
+    raise SystemExit('refusing existing CLAUDE.md backup')
+if os.path.lexists(p):
+    if not stat.S_ISREG(p.lstat().st_mode):
+        raise SystemExit('CLAUDE.md must be a regular file')
+    os.link(p, b)
+    p.unlink()
+PYMOVE
+```
+
+4. In a new terminal, run exactly the printed command. It starts a fresh session in the new empty directory `<runtime>/coord`, never resumed:
 
    ```sh
-   cd <runtime>/coord && /abs/path/claude --session-id <uuid> --mcp-config <runtime>/mcp.json --strict-mcp-config \
+   cd <runtime>/coord && /abs/path/claude --setting-sources project,local --settings <runtime>/coordinator-settings.json \
+     --mcp-config <runtime>/mcp.json --strict-mcp-config --session-id <uuid> \
      --append-system-prompt "$(cat <runtime>/coordinator-prompt.md)"
    ```
 
-   The session-local MCP configuration starts `callsheet mcp --plane URL --ca PATH --wait-call-budget 10s` (see [coordinator.md](coordinator.md)). Tell the coordinator to begin (for example "start the run").
+   The session-local MCP configuration starts `callsheet mcp --plane URL --ca PATH --wait-call-budget 10s` (see [coordinator.md](coordinator.md)).
 
-4. The coordinator pushes the seed (`ws_push`), dispatches each hop without a wait, reports it with `reale2e observe --run <runtime> --task ID --hop NAME`, and waits with `callsheet task wait ID --until-done --json` in Claude Code's Bash `run_in_background: true` facility, ending its turn until the harness wakes it. `observe` answers `accepted` or `already_observed` (exit 0), a refusal code (exit 1: `invalid_request`, `run_mismatch`, `invalid_hop`, `task_mismatch`, `observation_conflict`, `owner_gate_closed`, `closing`, `internal_error`) or a local error (exit 2). It can never approve a design.
+5. Before sending the start instruction, run the free built-in checks `/mcp`, `/context` and `/sandbox` in the session (no model call): Callsheet MCP must be configured (23 tools for the observed installation), the context must not contain your user `CLAUDE.md` or unrelated instructions or skills, and the sandbox must show enabled with your posture retained. Abort the attempt if any check fails. The empty coordinator directory and the excluded user settings are not proof that your user `CLAUDE.md` is absent: `/context` is your check. Then tell the coordinator to begin (for example "start the run").
+
+6. The coordinator pushes the seed (`ws_push`), dispatches each hop without a wait, reports it with `reale2e observe --run <runtime> --task ID --hop NAME`, and waits with `reale2e wait --run <runtime> --task ID --hop NAME` in Claude Code's Bash `run_in_background: true` facility, ending its turn until the harness wakes it. `observe` answers `accepted` or `already_observed` (exit 0), a refusal code (exit 1: `invalid_request`, `run_mismatch`, `invalid_hop`, `task_mismatch`, `observation_conflict`, `owner_gate_closed`, `closing`, `internal_error`) or a local error (exit 2). It can never approve a design.
+
+   `reale2e wait` relays the hop's completion from the supervisor over the runtime's Unix socket, because a sandboxed Bash command cannot reach the plane on host loopback (see [coordinator.md](coordinator.md)). It is one background process that sends a short status request every 250ms and never contacts the plane itself; it never registers a task, approves anything or advances a hop, and the task must already be observed. When the task is durably terminal it prints exactly what `callsheet task wait --until-done --json` prints on success (one encoded wait response line) and exits 0, whatever the worker's own exit code (a failed worker still fails the attempt's task checks). Every error (a refusal, a missing run file or socket, a lost supervisor, a malformed or oversized answer, the 5s exchange timeout, cancellation or its 90-minute ceiling) prints a fixed diagnostic on stderr, nothing on stdout, and exits 1; usage errors exit 2. A wait error aborts the hop: the coordinator stops instead of falling back to an MCP long wait, direct HTTP, disabling the sandbox or a redispatch.
 
 ## Your decision
 
@@ -88,7 +129,26 @@ After an approved design review, the supervisor terminal prints the reviewed `de
 
 ## Finishing and evidence
 
-When the coordinator reports the finished chain (and the supervisor printed that the final tests passed), close the Claude Code session, make sure its background waits and the MCP child have ended, and place these files in `<runtime>/owner/`:
+When the coordinator reports the finished chain (and the supervisor printed that the final tests passed), close the Claude Code session and make sure its background waits and the MCP child have ended.
+
+Immediately after the coordinator session and its jobs close, on success or failure, restore your user instruction file, **before `reale2e finish`** and before opening another Claude session:
+
+```sh
+python3 - <<'PYRESTORE'
+import os, pathlib, stat
+p = pathlib.Path.home() / '.claude/CLAUDE.md'
+b = p.with_name('CLAUDE.md.reale2e-backup')
+if os.path.lexists(b):
+    if not stat.S_ISREG(b.lstat().st_mode):
+        raise SystemExit('backup must be a regular file')
+    os.link(b, p)
+    b.unlink()
+PYRESTORE
+```
+
+The restore refuses to overwrite an existing original: on a conflict it leaves the backup intact and you resolve it by hand; never delete either file automatically. Restoring is mandatory even when startup, the session or the supervisor failed (a supervisor crash does not remove this responsibility). Never put the instruction file or its contents in the evidence.
+
+Then place these files in `<runtime>/owner/`:
 
 - `transcript.jsonl`: the session transcript exported with the installed Claude Code version's supported mechanism (for example the session's JSONL file named after its session ID). It stays private and local.
 - `setup-attestation.json`: your attestation of the clean setup:
@@ -99,6 +159,8 @@ When the coordinator reports the finished chain (and the supervisor printed that
    "no_unrelated_instructions":true,"instruction_sources_checked":true,"setup_inputs":["runbook","coordinator-prompt","mcp-config"],
    "transcript_export":"<how you exported it>"}
   ```
+
+  Complete it only after the restore above and before `reale2e finish`. `instruction_sources_checked` true attests that the three pre-start built-in checks (`/mcp`, `/context`, `/sandbox`) passed, that your user `CLAUDE.md` was absent throughout the session (moved aside if it existed), that no other Claude session ran during the exercise, and that you restored it after the session closed if it was moved. A false or missing attestation fails the run; it is your trusted statement, not automated proof of your home directory's history.
 
 - `event-map.json`: your reviewed map of transcript lines (1-based inclusive spans of JSONL records) to the session launch, each hop's dispatch, background wait start (`"background":true`, handle `hop-01`..`hop-04`) and its consumption (`"automatic_wake":true,"user_message_between":false` where the harness woke the session), the owner-gate pause and resume, and the final result, in that order; a recovery `task_wait` is an `mcp_wait` entry with `"recovery":true` and its budget (at most 10000 ms). Every event states every field (`kind`, `hop`, `task`, `handle`, `background`, `automatic_wake`, `user_message_between`, `budget_ms`, `recovery`, `lines`), with `""`, `false` or `0` where it does not apply: an omitted field is refused, never read as "none":
 
@@ -128,7 +190,7 @@ Re-check any bundle offline (read-only, no model call, runs nothing named in evi
 /abs/path/reale2e check --evidence "$PWD/design/real-e2e-runs/<date>"
 ```
 
-It prints the JSON report and exits 0 for PASS, 1 for failed or incomplete evidence, 2 for schema or usage errors. Every missing or negative criterion is a hard failure: the gate, versions and four authenticated preflights; the exact role/pair snapshot; the clean setup attestation, template digests, transcript and valid event-map spans; exactly four unique succeeded feature tasks with their selections, markers, complete final answers and publications; the pinned instance, seed, base bindings, single parents, allowed changes per hop, required artifacts, immutable approved design and the unchanged Grok tree; the approved design review before your yes, the decision bound to that commit and digests, coding only after it, no other admission; background waits with at least one automatic wake and no long blocking MCP call; the Grok review's approval and its inline files equal to the coder's bytes; the final tests on the fourth result; verified cleanup; every deadline. The shareable `report.json` holds only structured fields with `$HOME`, `$RUN` and `$CHECKOUT` tokens and fixed codes, never logs, prompts, transcript or final prose. Nothing is published or uploaded automatically.
+It prints the JSON report and exits 0 for PASS, 1 for failed or incomplete evidence, 2 for schema or usage errors. Every missing or negative criterion is a hard failure: the gate, versions and four authenticated preflights; the exact role/pair snapshot; the clean setup attestation, template digests, the sandbox-only settings snapshot and its recorded hash, the launch's `--setting-sources project,local` and `--settings $RUN/coordinator-settings.json` (each exactly once, never `--safe-mode` or `--disable-slash-commands`), an unchanged runtime settings copy, transcript and valid event-map spans; exactly four unique succeeded feature tasks with their selections, markers, complete final answers and publications; the pinned instance, seed, base bindings, single parents, allowed changes per hop, required artifacts, immutable approved design and the unchanged Grok tree; the approved design review before your yes, the decision bound to that commit and digests, coding only after it, no other admission; background waits with at least one automatic wake and no long blocking MCP call; the Grok review's approval and its inline files equal to the coder's bytes; the final tests on the fourth result; verified cleanup; every deadline. The shareable `report.json` holds only structured fields with `$HOME`, `$RUN` and `$CHECKOUT` tokens and fixed codes, never logs, prompts, transcript or final prose. Nothing is published or uploaded automatically.
 
 ## Failure, rerun and cleanup
 
@@ -141,4 +203,5 @@ There is no resume and no reuse of vendor sessions. After a rejected design, a n
 - Linux only for live runs (Grok worker execution is not qualified elsewhere); the checker runs on Linux and macOS.
 - Cursor is not a worker here (slice 3).
 - The run depends on no long blocking MCP call: `task_wait` stays a 10s short poll; MCP timeout compatibility remains unverified.
+- The coordinator's background waits go through the supervisor's Unix-socket relay (`reale2e wait`) so its sandbox stays enabled; they are not product waits, and only their success output matches `callsheet task wait --until-done --json`.
 - Generated code runs under your existing vendor and OS posture; containing malicious generated code, hostile same-user processes, tampered evidence, hidden vendor prompts and telemetry is outside this exercise. Grok's goal is visible in its argv: use only this public throwaway project.

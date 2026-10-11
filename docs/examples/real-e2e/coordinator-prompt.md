@@ -20,7 +20,8 @@ You coordinate one attempt of Callsheet's real end-to-end exercise. Four workers
 - Each dispatch uses the role ID as its target, the workspace and instance above and an explicit full base commit, and carries exactly one payload pointer, the run marker shown for that hop.
 - Right after each dispatch answer, report the task with the observe command (foreground Bash). It must print accepted or already_observed; anything else means stop and tell the owner.
 - Never redispatch after a lost dispatch answer. Never dispatch a hop twice. Never dispatch the coder before the owner's receipt exists.
-- Wait with the background CLI wait below, launched with the Bash tool's run_in_background: true and no timeout. Then do independent work (for example prepare the next hop's checklist without changing any file), and end your turn when nothing is left. Never use &, nohup, setsid, disown, a foreground sleep or a polling loop, and never poll the task with repeated model calls.
+- Wait with the background wait below (the harness helper relays the task's completion from the supervisor over its local socket), launched with the Bash tool's run_in_background: true and no timeout, only after the observe command accepted the task. Then do independent work (for example prepare the next hop's checklist without changing any file), and end your turn when nothing is left. Never use &, nohup, setsid, disown, a foreground sleep or a polling loop, and never poll the task with repeated model calls.
+- A wait whose exit-code is not 0 aborts the hop: stop and tell the owner. Do not fall back to an MCP long wait, direct HTTP to the plane, disabling the sandbox or a redispatch.
 - When the harness notifies you that the wait finished, read its exit-code and result.json, then inspect the task with task_show {"task_id":"TASK_ID"}: it must be succeeded with exit code 0, result.workspace.publication must be "published", and result.workspace.commit is the next hop's base. ws_status {"task_id":"TASK_ID"} and ws_diff {"task_id":"TASK_ID"} show its change.
 - If anything fails, stop dispatching, tell the owner what failed and end your turn. There are no retries and no fix loops.
 
@@ -35,7 +36,7 @@ dispatch {"target":{"kind":"id","value":"designer"},"goal":"Read FEATURE.md, mai
 Observe: {{REALE2E}} observe --run {{RUNTIME}} --task TASK_ID --hop designer
 
 Background wait (run_in_background: true, no timeout):
-{{CALLSHEET}} task wait TASK_ID --until-done --json --plane {{PLANE_URL}} --ca {{CA_PATH}} >{{WAITS_DIR}}/01/result.json 2>{{WAITS_DIR}}/01/error.txt; echo $? >{{WAITS_DIR}}/01/exit-code
+{{REALE2E}} wait --run {{RUNTIME}} --task TASK_ID --hop designer >{{WAITS_DIR}}/01/result.json 2>{{WAITS_DIR}}/01/error.txt; echo $? >{{WAITS_DIR}}/01/exit-code
 
 ## Hop 2: design-reviewer
 
@@ -46,7 +47,7 @@ dispatch {"target":{"kind":"id","value":"design-reviewer"},"goal":"Review design
 Observe: {{REALE2E}} observe --run {{RUNTIME}} --task TASK_ID --hop design-reviewer
 
 Background wait (run_in_background: true, no timeout):
-{{CALLSHEET}} task wait TASK_ID --until-done --json --plane {{PLANE_URL}} --ca {{CA_PATH}} >{{WAITS_DIR}}/02/result.json 2>{{WAITS_DIR}}/02/error.txt; echo $? >{{WAITS_DIR}}/02/exit-code
+{{REALE2E}} wait --run {{RUNTIME}} --task TASK_ID --hop design-reviewer >{{WAITS_DIR}}/02/result.json 2>{{WAITS_DIR}}/02/error.txt; echo $? >{{WAITS_DIR}}/02/exit-code
 
 ## Owner sign-off
 
@@ -63,7 +64,7 @@ dispatch {"target":{"kind":"id","value":"coder"},"goal":"Implement the approved 
 Observe: {{REALE2E}} observe --run {{RUNTIME}} --task TASK_ID --hop coder
 
 Background wait (run_in_background: true, no timeout):
-{{CALLSHEET}} task wait TASK_ID --until-done --json --plane {{PLANE_URL}} --ca {{CA_PATH}} >{{WAITS_DIR}}/03/result.json 2>{{WAITS_DIR}}/03/error.txt; echo $? >{{WAITS_DIR}}/03/exit-code
+{{REALE2E}} wait --run {{RUNTIME}} --task TASK_ID --hop coder >{{WAITS_DIR}}/03/result.json 2>{{WAITS_DIR}}/03/error.txt; echo $? >{{WAITS_DIR}}/03/exit-code
 
 ## Hop 4: code-reviewer
 
@@ -78,7 +79,7 @@ dispatch {"target":{"kind":"id","value":"code-reviewer"},"goal":"Review the impl
 Observe: {{REALE2E}} observe --run {{RUNTIME}} --task TASK_ID --hop code-reviewer
 
 Background wait (run_in_background: true, no timeout):
-{{CALLSHEET}} task wait TASK_ID --until-done --json --plane {{PLANE_URL}} --ca {{CA_PATH}} >{{WAITS_DIR}}/04/result.json 2>{{WAITS_DIR}}/04/error.txt; echo $? >{{WAITS_DIR}}/04/exit-code
+{{REALE2E}} wait --run {{RUNTIME}} --task TASK_ID --hop code-reviewer >{{WAITS_DIR}}/04/result.json 2>{{WAITS_DIR}}/04/error.txt; echo $? >{{WAITS_DIR}}/04/exit-code
 
 The review is the task's final message: read it with task_show. Its published tree is unchanged; that is expected.
 

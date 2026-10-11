@@ -185,7 +185,7 @@ func checkerMutations() []mutation {
 			editDoc(t, b, "setup/launch.json", func(l *LaunchRecord) { l.Argv = append(l.Argv, "--bare") })
 		}},
 		{"session argument", CritSetup, "session_id_mismatch", func(t *testing.T, b string) {
-			editDoc(t, b, "setup/launch.json", func(l *LaunchRecord) { l.Argv[2] = "other" })
+			editDoc(t, b, "setup/launch.json", func(l *LaunchRecord) { l.Argv[slices.Index(l.Argv, "--session-id")+1] = "other" })
 		}},
 		{"strict MCP", CritSetup, "launch_incomplete", func(t *testing.T, b string) {
 			editDoc(t, b, "setup/launch.json", func(l *LaunchRecord) {
@@ -600,7 +600,118 @@ func checkerMutations() []mutation {
 			})
 		}},
 	}
-	return m
+	return append(m, a2SetupMutations()...)
+}
+
+// launchArgv edits the recorded launch argv.
+func launchArgv(t *testing.T, b string, f func(argv []string) []string) {
+	editDoc(t, b, "setup/launch.json", func(l *LaunchRecord) { l.Argv = f(l.Argv) })
+}
+
+// withoutFlag removes a flag and its value from argv.
+func withoutFlag(argv []string, flag string) []string {
+	i := slices.Index(argv, flag)
+	return slices.Delete(slices.Clone(argv), i, i+2)
+}
+
+// setFlagValue replaces a flag's value in argv.
+func setFlagValue(argv []string, flag, value string) []string {
+	out := slices.Clone(argv)
+	out[slices.Index(out, flag)+1] = value
+	return out
+}
+
+// equalsForm joins a flag and its value as --flag=value.
+func equalsForm(argv []string, flag string) []string {
+	i := slices.Index(argv, flag)
+	return slices.Replace(slices.Clone(argv), i, i+2, flag+"="+argv[i+1])
+}
+
+// replaceSettings replaces the settings snapshot and recomputes its
+// manifest hash, so only the content policy can fail.
+func replaceSettings(t *testing.T, b, content string) {
+	writeBundleFile(t, b, SettingsEvidence, []byte(content))
+	editDoc(t, b, "manifest.json", func(m *Manifest) {
+		for i := range m.Rendered {
+			if m.Rendered[i].Name == SettingsEvidence {
+				m.Rendered[i].SHA256 = sha256Hex([]byte(content))
+			}
+		}
+	})
+}
+
+// a2SetupMutations (UT-6, FP-7, amendment A2) mutate each new setup
+// predicate independently: the two settings flags (missing, duplicated,
+// wrong value, --flag=value), safe mode and disabled slash commands in
+// both forms, the settings snapshot (missing, hash wrong, its manifest
+// row missing or duplicated; content mutations recompute the hash) and a
+// runtime copy changed during the session.
+func a2SetupMutations() []mutation {
+	argv := func(f func(a []string) []string) func(t *testing.T, b string) {
+		return func(t *testing.T, b string) { launchArgv(t, b, f) }
+	}
+	return []mutation{
+		{"setting sources missing", CritSetup, "setting_sources_invalid", argv(func(a []string) []string { return withoutFlag(a, "--setting-sources") })},
+		{"setting sources duplicated", CritSetup, "setting_sources_invalid", argv(func(a []string) []string {
+			return append(slices.Clone(a), "--setting-sources", SettingSources)
+		})},
+		{"setting sources with user", CritSetup, "setting_sources_invalid", argv(func(a []string) []string {
+			return setFlagValue(a, "--setting-sources", "user,project,local")
+		})},
+		{"setting sources equals form", CritSetup, "setting_sources_invalid", argv(func(a []string) []string { return equalsForm(a, "--setting-sources") })},
+		{"setting sources without value", CritSetup, "setting_sources_invalid", argv(func(a []string) []string {
+			return append(withoutFlag(a, "--setting-sources"), "--setting-sources")
+		})},
+		{"settings missing", CritSetup, "settings_flag_invalid", argv(func(a []string) []string { return withoutFlag(a, "--settings") })},
+		{"settings duplicated", CritSetup, "settings_flag_invalid", argv(func(a []string) []string {
+			return append(slices.Clone(a), "--settings", SettingsArg)
+		})},
+		{"settings of the user", CritSetup, "settings_flag_invalid", argv(func(a []string) []string {
+			return setFlagValue(a, "--settings", "$HOME/.claude/settings.json")
+		})},
+		{"settings equals form", CritSetup, "settings_flag_invalid", argv(func(a []string) []string { return equalsForm(a, "--settings") })},
+		{"safe mode", CritSetup, "launch_flag_forbidden", argv(func(a []string) []string { return append(slices.Clone(a), "--safe-mode") })},
+		{"safe mode equals form", CritSetup, "launch_flag_forbidden", argv(func(a []string) []string { return append(slices.Clone(a), "--safe-mode=true") })},
+		{"slash commands disabled", CritSetup, "launch_flag_forbidden", argv(func(a []string) []string {
+			return append(slices.Clone(a), "--disable-slash-commands")
+		})},
+		{"slash commands disabled equals form", CritSetup, "launch_flag_forbidden", argv(func(a []string) []string {
+			return append(slices.Clone(a), "--disable-slash-commands=true")
+		})},
+		{"settings snapshot missing", CritSetup, "coordinator_settings_missing", func(t *testing.T, b string) { removeBundleFile(t, b, SettingsEvidence) }},
+		{"settings hash wrong", CritSetup, "coordinator_settings_hash_mismatch", func(t *testing.T, b string) {
+			editDoc(t, b, "manifest.json", func(m *Manifest) {
+				for i := range m.Rendered {
+					if m.Rendered[i].Name == SettingsEvidence {
+						m.Rendered[i].SHA256 = zeros64
+					}
+				}
+			})
+		}},
+		{"settings hash row missing", CritSetup, "coordinator_settings_hash_mismatch", func(t *testing.T, b string) {
+			editDoc(t, b, "manifest.json", func(m *Manifest) {
+				m.Rendered = slices.DeleteFunc(m.Rendered, func(r FileHash) bool { return r.Name == SettingsEvidence })
+			})
+		}},
+		{"settings hash row duplicated", CritSetup, "coordinator_settings_hash_mismatch", func(t *testing.T, b string) {
+			editDoc(t, b, "manifest.json", func(m *Manifest) {
+				m.Rendered = append(m.Rendered, FileHash{Name: SettingsEvidence, SHA256: sha256Hex([]byte(testSettings))})
+			})
+		}},
+		{"settings extra key", CritSetup, "coordinator_settings_invalid", func(t *testing.T, b string) {
+			replaceSettings(t, b, `{"sandbox":{"enabled":true},"permissions":{"allow":["Bash"]}}`+"\n")
+		}},
+		{"settings sandbox disabled", CritSetup, "coordinator_settings_invalid", func(t *testing.T, b string) {
+			replaceSettings(t, b, `{"sandbox":{"enabled":false}}`+"\n")
+		}},
+		{"settings malformed", CritSetup, "coordinator_settings_invalid", func(t *testing.T, b string) { replaceSettings(t, b, `{"sandbox":`) }},
+		{"runtime settings modified", CritSetup, codeSettingsModified, func(t *testing.T, b string) {
+			editEvents(t, b, true, func(evs []Event) []Event {
+				i := slices.IndexFunc(evs, func(e Event) bool { return e.Type == EvCollectionStarted })
+				return slices.Insert(evs, i, Event{Type: EvAttemptFailed, Code: codeSettingsModified, Time: evs[i].Time})
+			})
+		}},
+	}
 }
 
 // TestCheckerMutations (UT-4, UT-6): the passing synthetic bundle passes
@@ -670,6 +781,22 @@ func TestEvidenceCommand(t *testing.T) {
 	if len(seen) != len(criteriaOrder) {
 		t.Fatalf("criteria exercised %d of %d", len(seen), len(criteriaOrder))
 	}
+	// A2: every new setup predicate through the command; a content
+	// mutation (its hash recomputed) fails the content policy, not the
+	// digest.
+	for _, m := range a2SetupMutations() {
+		b := passingBundle(t)
+		m.mutate(t, b)
+		code, out, _ := run("check", "--evidence", b)
+		var r Report
+		json.Unmarshal([]byte(out), &r)
+		requireCode(t, m.name, code, r, m.crit, m.code)
+		if m.code == "coordinator_settings_invalid" && (slices.Contains(criterion(r, CritSetup).Codes, "coordinator_settings_hash_mismatch") ||
+			criterion(r, CritManifest).Result != "pass") {
+			t.Errorf("%s: failed on its digest %v", m.name, failedCodes(r))
+		}
+	}
+	t.Run("A2 helper output", testA2HelperEvidence)
 	// A schema error.
 	bad := passingBundle(t)
 	writeBundleFile(t, bad, "manifest.json", []byte("{"))
@@ -680,6 +807,100 @@ func TestEvidenceCommand(t *testing.T) {
 		if code, _, errOut := run(args...); code != 2 || !strings.Contains(errOut, "usage:") {
 			t.Errorf("%v = %d %q", args, code, errOut)
 		}
+	}
+}
+
+// testA2HelperEvidence (FP-7, amendment A2): the wait helper's output,
+// redirected as the coordinator's shell does, is collected through the
+// unchanged ParseWaitResponse/WaitRecord path into a bundle: a successful
+// task passes; a worker exit 7 keeps the wait's transport success but
+// fails task success; a lost or silent supervisor fails the unchanged wait
+// criteria.
+func testA2HelperEvidence(t *testing.T) {
+	// collect serves the bundle's designer task view from a rig adopting
+	// its run, runs the helper, stores its shell records and collects them
+	// into the bundle's hops/01/wait.json.
+	collect := func(t *testing.T, b string, prep func(r *waitRig) WaitWorld) (WaitRecord, waitRun) {
+		var m Manifest
+		readDoc(t, filepath.Join(b, "manifest.json"), &m)
+		r := newWaitRig(t)
+		r.adopt(m.RunID, m.Workspace, readTask(t, b, "hops/01"))
+		r.observe(0)
+		ww := prep(r)
+		w := runWait(t, ww, "--run", r.rt, "--task", r.tasks[0], "--hop", HopDesigner)
+		dir := filepath.Join(r.rt, "waits", "01")
+		for name, data := range map[string]string{"result.json": w.out, "error.txt": w.errOut, "exit-code": w.exitCodeFile()} {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(data), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		r.s.collectWaits()
+		data := mustRead(t, filepath.Join(r.s.ev.root, "hops", "01", "wait.json"))
+		var rec WaitRecord
+		if err := decodeStrict(data, &rec); err != nil {
+			t.Fatal(err)
+		}
+		writeBundleFile(t, b, "hops/01/wait.json", data)
+		return rec, w
+	}
+	served := func(r *waitRig) WaitWorld {
+		r.serve()
+		return helperWorld(&pollClock{})
+	}
+	t.Run("success", func(t *testing.T) {
+		t.Parallel()
+		b := passingBundle(t)
+		rec, w := collect(t, b, served)
+		if w.code != 0 || rec.ExitCode == nil || *rec.ExitCode != 0 || rec.Winner != rec.Task || rec.WinnerState != contract.TaskSucceeded ||
+			rec.ResultSHA256 != sha256Hex([]byte(w.out)) {
+			t.Fatalf("wait %d, record %+v", w.code, rec)
+		}
+		if code, r, _ := checkBundle(t, b); code != 0 {
+			t.Fatalf("the relayed wait failed the bundle: %v", failedCodes(r))
+		}
+	})
+	t.Run("worker exit 7", func(t *testing.T) {
+		t.Parallel()
+		b := passingBundle(t)
+		editTask(t, b, "hops/01", func(v *contract.TaskView) {
+			res := *v.Result
+			res.State, res.ExitCode = contract.TaskFailed, ptr(7)
+			v.State, v.Result = contract.TaskFailed, &res
+		})
+		rec, w := collect(t, b, served)
+		if w.code != 0 || *rec.ExitCode != 0 || rec.WinnerState != contract.TaskFailed {
+			t.Fatalf("wait %d, record %+v", w.code, rec)
+		}
+		code, r, _ := checkBundle(t, b)
+		if c := criterion(r, CritHops); code != 1 || c.Result != "fail" {
+			t.Fatalf("a failed worker passed the hops: %d %v", code, failedCodes(r))
+		}
+	})
+	for name, prep := range map[string]func(r *waitRig) WaitWorld{
+		"supervisor lost": func(r *waitRig) WaitWorld {
+			r.writeRunFile()
+			return helperWorld(&pollClock{})
+		},
+		"silent supervisor": func(r *waitRig) WaitWorld {
+			r.p.block = true
+			r.serve()
+			ww := helperWorld(&pollClock{})
+			ww.Exchange = 100 * time.Millisecond
+			return ww
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			b := passingBundle(t)
+			rec, w := collect(t, b, prep)
+			if w.code != 1 || w.out != "" || rec.ExitCode == nil || *rec.ExitCode != 1 || rec.Winner != "" {
+				t.Fatalf("wait %d %q, record %+v", w.code, w.errOut, rec)
+			}
+			code, r, _ := checkBundle(t, b)
+			if c := criterion(r, CritWaits); code != 1 || c.Result != "fail" {
+				t.Fatalf("a failed wait passed: %d %v", code, failedCodes(r))
+			}
+		})
 	}
 }
 

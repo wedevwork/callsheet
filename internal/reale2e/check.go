@@ -187,9 +187,10 @@ func (c *checker) manifest() {
 	}
 }
 
-// renderedInventory is the exact sorted list of rendered setup files.
+// renderedInventory is the exact sorted list of rendered setup files (A2:
+// the coordinator settings snapshot too).
 func renderedInventory() []string {
-	out := append([]string{"setup/coordinator-prompt.md", "setup/flow.json", "setup/mcp-config.json"}, manualFiles()...)
+	out := append([]string{"setup/coordinator-prompt.md", "setup/flow.json", "setup/mcp-config.json", SettingsEvidence}, manualFiles()...)
 	sort.Strings(out)
 	return out
 }
@@ -345,7 +346,75 @@ func (c *checker) preflight() {
 // launchForbidden are coordinator launch flags that resume a session,
 // change authentication or bypass permissions.
 var launchForbidden = []string{"--resume", "-r", "--continue", "-c", "--bare", "--dangerously-skip-permissions", "--fork-session",
-	"--permission-mode", "--allow-dangerously-skip-permissions"}
+	"--permission-mode", "--allow-dangerously-skip-permissions", "--safe-mode", "--disable-slash-commands"}
+
+// launchForbiddenEquals are forbidden flags also refused in their
+// --flag=value form (A2: safe mode would hide, and disabled slash commands
+// would prevent, the owner's required built-in checks).
+var launchForbiddenEquals = []string{"--resume=", "--permission-mode=", "--safe-mode=", "--disable-slash-commands="}
+
+// launchSettingFlags are A2's required launch flags and their exact
+// recorded values: each must appear exactly once as a separate flag and
+// value, never as --flag=value.
+var launchSettingFlags = map[string]struct{ value, code string }{
+	"--setting-sources": {SettingSources, "setting_sources_invalid"},
+	"--settings":        {SettingsArg, "settings_flag_invalid"},
+}
+
+// launchSettings checks A2's two settings flags in a recorded argv.
+func (c *checker) launchSettings(argv []string) {
+	seen := map[string]int{}
+	for i, arg := range argv {
+		for flag, want := range launchSettingFlags {
+			switch {
+			case arg == flag:
+				seen[flag]++
+				if i+1 >= len(argv) || argv[i+1] != want.value {
+					c.fail(CritSetup, want.code)
+				}
+			case strings.HasPrefix(arg, flag+"="):
+				c.fail(CritSetup, want.code)
+			}
+		}
+	}
+	for flag, want := range launchSettingFlags {
+		if seen[flag] != 1 {
+			c.fail(CritSetup, want.code)
+		}
+	}
+}
+
+// settingsSnapshot checks A2's coordinator settings snapshot: present,
+// valid sandbox-only settings, and exactly one manifest rendered row with
+// its SHA-256; a runtime copy changed during the session fails too.
+func (c *checker) settingsSnapshot() {
+	data, ok := c.b.Files[SettingsEvidence]
+	switch {
+	case !ok:
+		c.fail(CritSetup, "coordinator_settings_missing")
+	case ValidateCoordinatorSettings(data) != nil:
+		c.fail(CritSetup, "coordinator_settings_invalid")
+	}
+	rows := 0
+	if m := c.b.Manifest; m != nil {
+		for _, r := range m.Rendered {
+			if r.Name == SettingsEvidence {
+				rows++
+				if !ok || r.SHA256 != sha256Hex(data) {
+					c.fail(CritSetup, "coordinator_settings_hash_mismatch")
+				}
+			}
+		}
+	}
+	if rows != 1 {
+		c.fail(CritSetup, "coordinator_settings_hash_mismatch")
+	}
+	for _, e := range c.eventsOf(EvAttemptFailed) {
+		if e.Code == codeSettingsModified {
+			c.fail(CritSetup, codeSettingsModified)
+		}
+	}
+}
 
 func (c *checker) setup() {
 	l, a, m := c.b.Launch, c.b.Attestation, c.b.Manifest
@@ -360,7 +429,11 @@ func (c *checker) setup() {
 			if _, ok := required[arg]; ok {
 				required[arg] = true
 			}
-			if slices.Contains(launchForbidden, arg) || strings.HasPrefix(arg, "--resume=") || strings.HasPrefix(arg, "--permission-mode=") {
+			forbidden := slices.Contains(launchForbidden, arg)
+			for _, p := range launchForbiddenEquals {
+				forbidden = forbidden || strings.HasPrefix(arg, p)
+			}
+			if forbidden {
 				c.fail(CritSetup, "launch_flag_forbidden")
 			}
 			if arg == "--session-id" && (i+1 >= len(l.Argv) || l.Argv[i+1] != l.SessionID) {
@@ -372,7 +445,9 @@ func (c *checker) setup() {
 				c.fail(CritSetup, "launch_incomplete")
 			}
 		}
+		c.launchSettings(l.Argv)
 	}
+	c.settingsSnapshot()
 	for _, f := range []string{"setup/coordinator-prompt.md", "setup/mcp-config.json"} {
 		if len(c.b.Files[f]) == 0 {
 			c.fail(CritSetup, "setup_file_missing")
