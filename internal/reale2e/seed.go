@@ -42,6 +42,22 @@ Add an optional --name NAME flag to this greeting CLI.
   including Unicode, a whitespace name, every error and help.
 - No dependencies, network or persistence. Keep the whole project under
   16 KiB.
+
+Cases (each is one subtest of the table test TestRun, named exactly by its
+case ID, calling run):
+
+| Case ID | Arguments | Result |
+|---|---|---|
+| no_args | (none) | exit 0, stdout "Hello, world!\n", empty stderr |
+| name | --name Ada | exit 0, stdout "Hello, Ada!\n", empty stderr |
+| spaces | --name "Ada Lovelace" | exit 0, stdout "Hello, Ada Lovelace!\n", empty stderr |
+| unicode | --name 世界 | exit 0, stdout "Hello, 世界!\n", empty stderr |
+| whitespace | --name " " | exit 0, stdout "Hello,  !\n", empty stderr |
+| empty_name | --name "" | exit 2, empty stdout, nonempty stderr |
+| unknown_flag | --unknown | exit 2, empty stdout, nonempty stderr |
+| missing_value | --name | exit 2, empty stdout, nonempty stderr |
+| positional | Ada | exit 2, empty stdout, nonempty stderr |
+| help | --help | exit 0, usage mentioning name |
 `
 
 // seedMain is the seed's main.go.
@@ -154,34 +170,41 @@ func testEnv(dir, path string) []string {
 // commandRunner runs one short command (the supervisor's command).
 type commandRunner func(spec ProcSpec, timeout time.Duration, limit int) (CommandResult, error)
 
-// runGoTests exports files into the new directory dir/src (only project
-// files, regular, private) and runs "go test -count=1 ./..." there with an
-// isolated environment, bounded by FinalTestBound. The record names the
-// commit and tree the files came from.
-func runGoTests(run commandRunner, goBin, pathEnv, dir string, files map[string][]byte, commit, tree string) (TestRun, []byte, []byte, error) {
-	rec := TestRun{Schema: TestRunSchema, Argv: append([]string(nil), testArgv...), Commit: commit, Tree: tree, Files: sortedKeys(files)}
-	for _, n := range rec.Files {
+// exportProject exports files into the new directory dir/src (only
+// project files, regular, private) with its private caches, returning the
+// source directory and the isolated environment.
+func exportProject(dir string, files map[string][]byte, pathEnv string) (string, []string, error) {
+	for _, n := range sortedKeys(files) {
 		if !projectFiles[n] {
-			return rec, nil, nil, fmt.Errorf("the tree holds the unexpected file %s; nothing was executed", n)
+			return "", nil, fmt.Errorf("the tree holds the unexpected file %s; nothing was executed", n)
 		}
 	}
 	src := filepath.Join(dir, "src")
-	for _, d := range []string{src, filepath.Join(dir, "gocache"), filepath.Join(dir, "gomodcache"), filepath.Join(dir, "gopath"), filepath.Join(dir, "home"), filepath.Join(dir, "tmp")} {
+	for _, d := range []string{src, filepath.Join(dir, "gocache"), filepath.Join(dir, "gomodcache"), filepath.Join(dir, "gopath"), filepath.Join(dir, "home"),
+		filepath.Join(dir, "tmp"), filepath.Join(dir, "bin")} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
-			return rec, nil, nil, err
+			return "", nil, err
 		}
 	}
-	for _, n := range rec.Files {
+	for _, n := range sortedKeys(files) {
 		if err := os.WriteFile(filepath.Join(src, n), files[n], 0o600); err != nil {
-			return rec, nil, nil, err
+			return "", nil, err
 		}
 	}
-	env := testEnv(dir, pathEnv)
-	for _, e := range env {
-		if k, _, _ := strings.Cut(e, "="); k == "GOTOOLCHAIN" || k == "GOPROXY" || k == "GOSUMDB" || k == "GOWORK" {
-			rec.Env = append(rec.Env, e)
-		}
+	return src, testEnv(dir, pathEnv), nil
+}
+
+// runGoTests exports files into the new directory dir/src and runs "go
+// test -count=1 ./..." there with an isolated environment, bounded by
+// FinalTestBound (the seed's baseline). The record names the commit and
+// tree the files came from.
+func runGoTests(run commandRunner, goBin, pathEnv, dir string, files map[string][]byte, commit, tree string) (TestRun, []byte, []byte, error) {
+	rec := TestRun{Schema: TestRunSchema, Argv: append([]string(nil), testArgv...), Commit: commit, Tree: tree, Files: sortedKeys(files)}
+	src, env, err := exportProject(dir, files, pathEnv)
+	if err != nil {
+		return rec, nil, nil, err
 	}
+	rec.Env = offlineEnv(env)
 	ver, err := run(ProcSpec{Path: goBin, Args: []string{"version"}, Env: env, Dir: src}, 30*time.Second, 4096)
 	if err != nil {
 		return rec, nil, nil, err

@@ -27,10 +27,13 @@ import (
 	"github.com/wedevwork/callsheet/internal/testkit"
 )
 
-// Offline doubles of the supervisor's world (design 12a-real-e2e, FP-9):
-// an auto-advancing clock, scripted processes, an in-memory plane with a
-// go-git hub and a scripted coordinator. No vendor, network or real child
-// is ever used by them.
+// Offline doubles of the supervisor's world (design 12a-real-e2e, FP-9,
+// amendment A3): an auto-advancing clock, scripted processes, an in-memory
+// plane with a go-git hub, a fake headless Claude coordinator that emits
+// print-mode stream records and writes its transcript under a t.TempDir()
+// home, a fake terminal that delivers input only once the decision prompt
+// is open, and a fake read-only Git runner. No vendor, network or real
+// owner file is ever used by them.
 
 // autoClock fires every timer at once, advancing its time by the timer's
 // duration: a single-goroutine supervisor run is then deterministic and
@@ -162,6 +165,9 @@ type behavior struct {
 	ignoreTerm bool
 	ignoreKill bool
 	after      func()
+	// onStart receives the started process (a long-running scripted child
+	// the test ends itself).
+	onStart func(p *fakeProc)
 	// lingering leaves a descendant in the short command's group after
 	// the leader exits.
 	lingering bool
@@ -196,6 +202,9 @@ func (l *fakeLauncher) Start(s ProcSpec) (Proc, error) {
 	if b.after != nil {
 		b.after()
 	}
+	if b.onStart != nil {
+		b.onStart(p)
+	}
 	if !b.long {
 		p.exit(b.exit, "")
 	}
@@ -209,6 +218,30 @@ func (l *fakeLauncher) argv() []string {
 	var out []string
 	for _, s := range l.started {
 		out = append(out, strings.Join(append([]string{s.Path}, s.Args...), " "))
+	}
+	return out
+}
+
+// phaseSpecs returns the started coordinator phases' specs.
+func (l *fakeLauncher) phaseSpecs() []ProcSpec {
+	var out []ProcSpec
+	for _, s := range l.specsOf(fakeClaude) {
+		if len(s.Args) > 0 && s.Args[0] == "-p" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// specsOf returns the started specs of path.
+func (l *fakeLauncher) specsOf(path string) []ProcSpec {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []ProcSpec
+	for _, s := range l.started {
+		if s.Path == path {
+			out = append(out, s)
+		}
 	}
 	return out
 }
@@ -623,18 +656,226 @@ func withFiles(base map[string][]byte, changes map[string][]byte) map[string][]b
 	return out
 }
 
-// Hop contents of the scripted happy path.
-var (
-	designDoc     = []byte("# Design\n\nAdd --name with flag parsing in run(args, stdout, stderr).\n\nSTATUS: DESIGN_DRAFT\n")
-	designReview  = []byte("# Review\n\nThe design covers every case.\n\nSTATUS: DESIGN_REVIEW_APPROVED\n")
-	codedMain     = []byte("package main\n\n// run is the CLI.\nfunc run() int { return 0 }\n\nfunc greeting() string { return \"Hello, world!\\n\" }\n\nfunc main() {}\n")
-	codedMainTest = []byte("package main\n\nimport \"testing\"\n\nfunc TestRun(t *testing.T) { _ = run() }\n")
+// fixtureMain and fixtureTest are an actually conforming implementation of
+// the feature: run with the required signature and the ten TestRun table
+// subtests named by the fixed case IDs.
+const fixtureMain = `// Command greeting prints a greeting.
+package main
+
+import (
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"os"
 )
 
-// coordScript is the scripted coordinator: each step runs on one
-// ListTasks call of the feature loop, on the supervisor's goroutine.
+// run is the testable command; it returns the exit status.
+func run(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("greeting", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	name := fs.String("name", "world", "the name to greet")
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintln(stderr, "greeting: unexpected argument", fs.Arg(0))
+		return 2
+	}
+	if *name == "" {
+		fmt.Fprintln(stderr, "greeting: --name must not be empty")
+		return 2
+	}
+	fmt.Fprintf(stdout, "Hello, %s!\n", *name)
+	return 0
+}
+
+func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
+`
+
+const fixtureTest = `package main
+
+import (
+	"bytes"
+	"strings"
+	"testing"
+)
+
+func TestRun(t *testing.T) {
+	cases := []struct {
+		id     string
+		args   []string
+		code   int
+		stdout string
+		stderr bool
+	}{
+		{"no_args", nil, 0, "Hello, world!\n", false},
+		{"name", []string{"--name", "Ada"}, 0, "Hello, Ada!\n", false},
+		{"spaces", []string{"--name", "Ada Lovelace"}, 0, "Hello, Ada Lovelace!\n", false},
+		{"unicode", []string{"--name", "世界"}, 0, "Hello, 世界!\n", false},
+		{"whitespace", []string{"--name", " "}, 0, "Hello,  !\n", false},
+		{"empty_name", []string{"--name", ""}, 2, "", true},
+		{"unknown_flag", []string{"--unknown"}, 2, "", true},
+		{"missing_value", []string{"--name"}, 2, "", true},
+		{"positional", []string{"Ada"}, 2, "", true},
+		{"help", []string{"--help"}, 0, "", true},
+	}
+	for _, c := range cases {
+		t.Run(c.id, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if got := run(c.args, &stdout, &stderr); got != c.code {
+				t.Fatalf("run(%q) = %d, want %d", c.args, got, c.code)
+			}
+			if stdout.String() != c.stdout || (stderr.Len() > 0) != c.stderr {
+				t.Fatalf("run(%q) wrote %q and %q", c.args, stdout.String(), stderr.String())
+			}
+			if c.id == "help" && !strings.Contains(stderr.String(), "name") {
+				t.Fatalf("usage %q does not mention name", stderr.String())
+			}
+		})
+	}
+}
+`
+
+// Hop contents of the scripted happy path.
+var (
+	designDoc     = []byte("# Design\n\nAdd --name with flag parsing in run(args, stdout, stderr); TestRun covers every case ID.\n\nSTATUS: DESIGN_DRAFT\n")
+	designReview  = []byte("# Review\n\nThe design covers every case.\n\nSTATUS: DESIGN_REVIEW_APPROVED\n")
+	codedMain     = []byte(fixtureMain)
+	codedMainTest = []byte(fixtureTest)
+)
+
+// testSession is the fake coordinator's session ID.
+const testSession = "0f1e2d3c-4b5a-4968-8786-a5b4c3d2e1f0"
+
+// fakeSession is the fake headless coordinator's output: each phase's
+// print-mode stream records (written to the phase's stdout) and the
+// session transcript (rewritten whole under the fake Claude home, as the
+// vendor appends to it).
+type fakeSession struct {
+	t          *testing.T
+	home       string
+	sid        string
+	cwd        string
+	transcript []string
+	stream     [2]io.Writer
+	n          int
+	// path is the transcript's location below the fake home.
+	path string
+}
+
+// rec renders one JSON record.
+func rec(v map[string]any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
+}
+
+// emit writes a record to phase p's stream (with session_id).
+func (s *fakeSession) emit(p int, v map[string]any) {
+	if s.stream[p-1] == nil {
+		// The phase is not running: only the transcript records it.
+		return
+	}
+	v["session_id"] = s.sid
+	io.WriteString(s.stream[p-1], rec(v)+"\n")
+}
+
+// log appends a record to the transcript (with sessionId and cwd).
+func (s *fakeSession) log(v map[string]any) {
+	v["sessionId"], v["cwd"] = s.sid, s.cwd
+	s.transcript = append(s.transcript, rec(v))
+	s.flush()
+}
+
+// flush rewrites the transcript file.
+func (s *fakeSession) flush() {
+	if s.path == "" {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
+		s.t.Error(err)
+	}
+	if err := os.WriteFile(s.path, []byte(strings.Join(s.transcript, "\n")+"\n"), 0o600); err != nil {
+		s.t.Error(err)
+	}
+}
+
+// init emits phase p's init record.
+func (s *fakeSession) init(p int, sid string) {
+	io.WriteString(s.stream[p-1], rec(map[string]any{"type": "system", "subtype": "init", "session_id": sid, "cwd": s.cwd, "model": "claude-opus-5-5",
+		"permissionMode": "default", "tools": []string{"Bash", "Read", toolDispatch, toolTaskShow}, "mcp_servers": []map[string]string{{"name": "callsheet", "status": "connected"}}})+"\n")
+}
+
+// prompt logs phase p's user prompt.
+func (s *fakeSession) prompt(text string) {
+	s.log(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": text}})
+}
+
+// use logs and emits one tool use and its result; it returns the tool
+// use ID.
+func (s *fakeSession) use(p int, name string, input map[string]any, result string, isError bool) string {
+	s.n++
+	id := fmt.Sprintf("toolu_%04d", s.n)
+	use := func() map[string]any {
+		return map[string]any{"type": "assistant", "message": map[string]any{"role": "assistant",
+			"content": []map[string]any{{"type": "tool_use", "id": id, "name": name, "input": input}}}}
+	}
+	res := func() map[string]any {
+		return map[string]any{"type": "user", "message": map[string]any{"role": "user",
+			"content": []map[string]any{{"type": "tool_result", "tool_use_id": id, "content": result, "is_error": isError}}}}
+	}
+	s.emit(p, use())
+	s.log(use())
+	s.emit(p, res())
+	s.log(res())
+	return id
+}
+
+// say logs and emits assistant text.
+func (s *fakeSession) say(p int, text string) {
+	m := func() map[string]any {
+		return map[string]any{"type": "assistant", "message": map[string]any{"role": "assistant", "content": []map[string]any{{"type": "text", "text": text}}}}
+	}
+	s.emit(p, m())
+	s.log(m())
+}
+
+// user logs an ordinary user-role text message.
+func (s *fakeSession) user(text string) {
+	s.log(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": text}})
+}
+
+// notify logs the background completion notification of a handle.
+func (s *fakeSession) notify(handle, toolUse string) {
+	s.user("<task-notification>\n<task-id>" + handle + "</task-id>\n<tool-use-id>" + toolUse + "</tool-use-id>\n<status>completed</status>\n" +
+		"<summary>Background command completed (exit code 0)</summary>\n</task-notification>")
+}
+
+// result emits phase p's terminal result record.
+func (s *fakeSession) result(p int, ok bool, denials []map[string]string) {
+	sub := "success"
+	if !ok {
+		sub = "error_during_execution"
+	}
+	v := map[string]any{"type": "result", "subtype": sub, "is_error": !ok, "result": "Phase done."}
+	if denials != nil {
+		v["permission_denials"] = denials
+	}
+	s.emit(p, v)
+}
+
+// coordScript is the scripted headless coordinator: each step runs on one
+// ListTasks call of the feature loop, on the supervisor's goroutine, while
+// its phase process is running.
 type coordScript struct {
 	t      *testing.T
+	f      *fakeWorld
 	s      *supervisor
 	p      *fakePlane
 	step   int
@@ -642,16 +883,18 @@ type coordScript struct {
 	tasks  [4]string
 	files  [5]map[string][]byte
 	commit [5]plumbing.Hash
+	// The two phase processes and the session they write.
+	procs   [2]*fakeProc
+	specs   [2]ProcSpec
+	sess    *fakeSession
+	handles [4]string
+	waitUse [4]string
 	// Variations.
 	finals             [4]string
 	hopFiles           [4]map[string][]byte
 	parentOf           func(i int) plumbing.Hash
-	skipOwner          bool
-	ownerLine          string
 	dispatchEarlyCoder bool
 	stopAfter          int
-	noOwnerFiles       bool
-	mutateOwner        func(dir string)
 	goalOf             func(i int, goal string) string
 	baseOf             func(i int, base string) string
 	failHop            int
@@ -668,19 +911,59 @@ type coordScript struct {
 	eager          string
 	pendingObserve bool
 	before         func(c *coordScript) bool
-	ownerInput     func(c *coordScript)
-	// helperWait is the hop whose wait records the test writes from the
-	// real wait helper's output (-1: none; every hop's are synthetic).
-	helperWait int
+	// Session variations.
+	noWake       [4]bool
+	userBetween  int
+	phaseExit    [2]int
+	phase2SID    string
+	rewrite      bool
+	badWake      bool
+	longPoll     bool
+	denied       bool
+	toolFailed   bool
+	earlyResult  bool
+	waitCommand  func(i int, cmd string) string
+	lingering    [2]bool
+	noTranscript bool
+	afterPhase   func(c *coordScript, p int)
+	failResult   [2]bool
 }
 
 func newCoordScript(t *testing.T) *coordScript {
-	c := &coordScript{t: t, failHop: -1, extraAt: -1, stopAfter: -1, waitExit: "0", overrideHop: -1, nilFinal: -1, unpublished: -1, helperWait: -1}
+	c := &coordScript{t: t, failHop: -1, extraAt: -1, stopAfter: -1, waitExit: "0", overrideHop: -1, nilFinal: -1, unpublished: -1, userBetween: -1}
 	c.finals = [4]string{"Design written.\nSTATUS: DESIGN_DRAFT\n", "Approved.\nSTATUS: DESIGN_REVIEW_APPROVED\n",
 		"Implemented.\nSTATUS: IMPL_COMPLETE\n", "Looks right.\nSTATUS: REVIEW_APPROVED\n"}
 	c.hopFiles = [4]map[string][]byte{{"design.md": designDoc}, {"design-review.md": designReview},
 		{"main.go": codedMain, "main_test.go": codedMainTest}, {}}
 	return c
+}
+
+// started records a coordinator phase process (the fake launcher's
+// claude behavior).
+func (c *coordScript) started(spec ProcSpec, p *fakeProc) {
+	k := 0
+	if slices.Contains(spec.Args, "--resume") {
+		k = 1
+	}
+	c.procs[k], c.specs[k] = p, spec
+	p.lingering = c.lingering[k]
+	if c.sess == nil {
+		c.sess = &fakeSession{t: c.t, home: c.f.home, sid: testSession, cwd: spec.Dir}
+		if !c.noTranscript {
+			c.sess.path = filepath.Join(c.f.home, ".claude", "projects", strings.ReplaceAll(spec.Dir, string(filepath.Separator), "-"), testSession+".jsonl")
+		}
+	}
+	c.sess.stream[k] = spec.Stdout
+}
+
+// promptOf is a launch's -p argument.
+func promptOf(spec ProcSpec) string {
+	for i, a := range spec.Args {
+		if a == "-p" && i+1 < len(spec.Args) {
+			return spec.Args[i+1]
+		}
+	}
+	return ""
 }
 
 // goal is hop i's goal text.
@@ -702,15 +985,36 @@ func (c *coordScript) goal(i int) string {
 	return g
 }
 
-// dispatch dispatches hop i as the coordinator would and observes it.
+// phaseOf is the running phase (1 or 2) for hop i.
+func (c *coordScript) phaseOf(i int) int { return hopPhase(i) }
+
+// dispatch dispatches hop i as the coordinator would, observes it and
+// starts its background wait.
 func (c *coordScript) dispatch(i int) {
 	c.dispatchOnly(i)
 	c.observe(i)
+	c.startWait(i)
 }
 
 // observe reports hop i's task as the coordinator's observe helper would.
 func (c *coordScript) observe(i int) {
-	c.codes = append(c.codes, c.s.handleRequest(ControlRequest{Run: c.s.runID, Op: opObserve, Task: c.tasks[i], Hop: Hops[i]}))
+	code := c.s.handleRequest(ControlRequest{Run: c.s.runID, Op: opObserve, Task: c.tasks[i], Hop: Hops[i]})
+	c.codes = append(c.codes, code)
+	if c.sess != nil && c.sess.stream[c.phaseOf(i)-1] != nil {
+		c.sess.use(c.phaseOf(i), toolBash, map[string]any{"command": fakeReale2e + " observe --run " + c.s.runtime + " --task " + c.tasks[i] + " --hop " + Hops[i],
+			"description": "observe"}, code, false)
+	}
+}
+
+// startWait starts hop i's background wait (the rendered template).
+func (c *coordScript) startWait(i int) {
+	cmd := strings.ReplaceAll(c.s.waitTemplate(i), "TASK_ID", c.tasks[i])
+	if c.waitCommand != nil {
+		cmd = c.waitCommand(i, cmd)
+	}
+	c.handles[i] = fmt.Sprintf("b%d", i+1)
+	c.waitUse[i] = c.sess.use(c.phaseOf(i), toolBash, map[string]any{"command": cmd, "run_in_background": true, "description": "wait"},
+		"Command running in background with ID: "+c.handles[i]+". Output is being written to: /tmp/x", false)
 }
 
 // dispatchOnly dispatches hop i without observing it.
@@ -733,9 +1037,15 @@ func (c *coordScript) dispatchOnly(i int) {
 		c.t.Fatalf("coordinator dispatch %s: %v", Hops[i], err)
 	}
 	c.tasks[i] = v.TaskID
+	if c.sess != nil && c.sess.stream[c.phaseOf(i)-1] != nil {
+		out, _ := json.Marshal(map[string]any{"task_id": v.TaskID, "state": v.State})
+		c.sess.use(c.phaseOf(i), toolDispatch, map[string]any{"target": map[string]string{"kind": "id", "value": Hops[i]}, "goal": req.Goal,
+			"acceptance": req.Acceptance, "payload": req.Payload, "workspace": ws, "workspace_instance": inst, "base": base}, string(out), false)
+	}
 }
 
-// complete finishes hop i's task with its commit and wait record.
+// complete finishes hop i's task with its commit and wait files, and the
+// coordinator consumes the completion.
 func (c *coordScript) complete(i int) {
 	files := withFiles(c.files[i], c.hopFiles[i])
 	parent := c.commit[i]
@@ -761,9 +1071,6 @@ func (c *coordScript) complete(i int) {
 		commit = nil
 	}
 	c.p.finish(c.tasks[i], state, final, false, commit)
-	if i == c.helperWait {
-		return
-	}
 	v, _ := c.p.ShowTask(context.Background(), c.tasks[i], 0)
 	wr := contract.WaitResponse{Version: contract.ProtocolVersion, Status: contract.WaitTerminal, EffectiveWaitMS: 30000, Winner: c.tasks[i], Task: &v}
 	b, err := json.Marshal(wr)
@@ -773,13 +1080,63 @@ func (c *coordScript) complete(i int) {
 	dir := filepath.Join(c.s.runtime, "waits", hopDir(i))
 	os.WriteFile(filepath.Join(dir, "result.json"), append(b, '\n'), 0o600)
 	os.WriteFile(filepath.Join(dir, "error.txt"), nil, 0o600)
-	os.WriteFile(filepath.Join(dir, "exit-code"), []byte(c.waitExit+"\n"), 0o600)
+	if c.waitExit != "" {
+		os.WriteFile(filepath.Join(dir, "exit-code"), []byte(c.waitExit+"\n"), 0o600)
+	}
+	p := c.phaseOf(i)
+	switch {
+	case c.badWake && i == 0:
+		c.sess.user("<task-notification><task-id>" + c.handles[i] + "</task-id></task-notification> and more")
+	case !c.noWake[i]:
+		c.sess.notify(c.handles[i], c.waitUse[i])
+	}
+	if c.userBetween == i {
+		c.sess.user("are you done yet?")
+	}
+	if c.longPoll && i == 0 {
+		c.sess.use(p, toolTaskWait, map[string]any{"task_ids": []string{c.tasks[i]}, "wait": "5m"}, `{"status":"terminal"}`, false)
+	}
+	v, _ = c.p.ShowTask(context.Background(), c.tasks[i], 0)
+	show, _ := json.Marshal(contract.TaskShowResponse{Version: contract.ProtocolVersion, Task: v})
+	c.sess.use(p, toolTaskShow, map[string]any{"id": c.tasks[i]}, string(show), false)
+}
+
+// endPhase ends phase p with its result and exit.
+func (c *coordScript) endPhase(p int) {
+	var denials []map[string]string
+	if c.denied && p == 1 {
+		c.sess.use(p, toolBash, map[string]any{"command": "rm -rf /tmp/whatever"}, "Permission to use Bash with command rm -rf /tmp/whatever has been denied.", true)
+		denials = []map[string]string{{"tool_name": "Bash", "tool_use_id": fmt.Sprintf("toolu_%04d", c.sess.n)}}
+	}
+	if c.toolFailed && p == 2 {
+		c.sess.use(p, "Read", map[string]any{"file_path": "/nonexistent"}, "File does not exist.", true)
+	}
+	c.sess.say(p, "Phase "+fmt.Sprint(p)+" done.")
+	c.sess.result(p, !c.failResult[p-1], denials)
+	if c.afterPhase != nil {
+		c.afterPhase(c, p)
+	}
+	c.procs[p-1].exit(c.phaseExit[p-1], "")
+}
+
+// beginPhase writes phase p's init and prompt.
+func (c *coordScript) beginPhase(p int) {
+	sid := c.sess.sid
+	if p == 2 && c.phase2SID != "" {
+		sid = c.phase2SID
+	}
+	c.sess.init(p, sid)
+	if p == 2 && c.rewrite {
+		// The vendor rewrote (compacted) the transcript on resume.
+		c.sess.transcript[0] += " "
+	}
+	c.sess.prompt(promptOf(c.specs[p-1]))
 }
 
 // run is the ListTasks hook.
 func (c *coordScript) run() {
 	s := c.s
-	if s.ctl == nil || s.failed || s.finish || c.step == c.stopAfter {
+	if s.ctl == nil || s.failed || c.step == c.stopAfter {
 		return
 	}
 	if c.before != nil && (c.before(c) || s.failed) {
@@ -787,6 +1144,10 @@ func (c *coordScript) run() {
 	}
 	switch c.step {
 	case 0:
+		if c.procs[0] == nil {
+			return
+		}
+		c.beginPhase(1)
 		seed, err := git.PlainOpen(s.seed.Path)
 		if err != nil {
 			c.t.Fatal(err)
@@ -794,6 +1155,7 @@ func (c *coordScript) run() {
 		if err := copyObjects(seed.Storer, c.p.hub, []plumbing.Hash{s.seed.Commit}); err != nil {
 			c.t.Fatal(err)
 		}
+		c.sess.use(1, "mcp__callsheet__ws_push", map[string]any{"name": s.workspace.Name, "path": s.seed.Path}, `{"commit":"`+s.seed.Commit.String()+`"}`, false)
 		c.files[0], c.commit[0] = s.seed.Files, s.seed.Commit
 		if c.extraAt == 0 {
 			c.extra(0)
@@ -801,6 +1163,11 @@ func (c *coordScript) run() {
 		c.dispatch(0)
 	case 1:
 		c.complete(0)
+		if c.earlyResult {
+			c.endPhase(1)
+			c.step = 99
+			return
+		}
 		switch c.eager {
 		case "observe":
 			c.dispatch(1)
@@ -818,33 +1185,21 @@ func (c *coordScript) run() {
 		if c.pendingObserve {
 			c.pendingObserve = false
 			c.observe(1)
+			c.startWait(1)
 			return
 		}
 		c.complete(1)
 	case 4:
-		if s.owner != ownerAwaiting {
-			return
-		}
-		if c.dispatchEarlyCoder {
+		c.endPhase(1)
+	case 5:
+		if c.dispatchEarlyCoder && s.owner == ownerAwaiting {
 			c.dispatch(2)
 			return
 		}
-		if c.ownerInput != nil {
-			c.ownerInput(c)
-			break
-		}
-		if c.skipOwner {
+		if c.procs[1] == nil {
 			return
 		}
-		line := "yes " + s.runID
-		if c.ownerLine != "" {
-			line = c.ownerLine
-		}
-		s.handleLine(line, true)
-	case 5:
-		if s.decision == nil {
-			return
-		}
+		c.beginPhase(2)
 		if c.extraAt == 2 {
 			c.extra(2)
 			return
@@ -863,13 +1218,7 @@ func (c *coordScript) run() {
 		if !s.complete {
 			return
 		}
-		if !c.noOwnerFiles {
-			writeOwnerFiles(c.t, s, c.tasks)
-		}
-		if c.mutateOwner != nil {
-			c.mutateOwner(filepath.Join(s.runtime, "owner"))
-		}
-		c.codes = append(c.codes, s.handleRequest(ControlRequest{Run: s.runID, Op: opFinish}))
+		c.endPhase(2)
 	default:
 		return
 	}
@@ -887,71 +1236,69 @@ func (c *coordScript) extra(i int) {
 	}
 }
 
-// transcriptAndMap returns a synthetic transcript and its owner-attested
-// event map for the four tasks.
-func transcriptAndMap(runID, sessionID string, tasks [4]string) ([]byte, EventMap) {
-	var lines []string
-	add := func(s string) int {
-		lines = append(lines, fmt.Sprintf(`{"type":"assistant","n":%d,"text":%q}`, len(lines)+1, s))
-		return len(lines)
-	}
-	em := EventMap{Schema: EventMapSchema, RunID: runID, SessionID: sessionID, AttestedByOwner: true}
-	span := func(k, hop, task, handle string) MapEvent {
-		n := add(k + " " + hop)
-		return MapEvent{Kind: k, Hop: hop, Task: task, Handle: handle, Lines: []int{n, n}}
-	}
-	em.Events = append(em.Events, span(MapSessionLaunch, "", "", ""))
-	for i, h := range Hops {
-		if i == 2 {
-			em.Events = append(em.Events, span(MapOwnerPause, "", "", ""), span(MapOwnerResume, "", "", ""))
-		}
-		em.Events = append(em.Events, span(MapDispatch, h, tasks[i], ""))
-		ws := span(MapWaitStart, h, tasks[i], waitHandle(i))
-		ws.Background = true
-		wc := span(MapWaitConsumed, h, tasks[i], waitHandle(i))
-		wc.AutomaticWake = true
-		em.Events = append(em.Events, ws, wc)
-	}
-	em.Events = append(em.Events, span(MapFinalResult, "", "", ""))
-	data := []byte(strings.Join(lines, "\n") + "\n")
-	em.TranscriptSHA256 = sha256Hex(data)
-	return data, em
+// fakeTerminal is the operator terminal: its scripted lines are delivered
+// only once the decision prompt activated it; input typed before the
+// prompt is never delivered.
+type fakeTerminal struct {
+	mu        sync.Mutex
+	lines     []string
+	eof       bool
+	early     []string
+	activated int
+	// onActivate runs when the prompt opens (a test moves the time).
+	onActivate func()
 }
 
-// writeOwnerFiles writes the owner's session files into the runtime.
-func writeOwnerFiles(t *testing.T, s *supervisor, tasks [4]string) {
-	t.Helper()
-	dir := filepath.Join(s.runtime, "owner")
-	tr, em := transcriptAndMap(s.runID, s.sessionID, tasks)
-	att := SetupAttestation{Schema: AttestationSchema, RunID: s.runID, SessionID: s.sessionID, ClaudeVersion: "2.1.292 (Claude Code)", FreshSession: true,
-		EmptyCoordinatorDir: true, NoPriorConversation: true, NoExtraPrompt: true, NoUnrelatedInstructions: true, InstructionSourcesChecked: true,
-		SetupInputs: slices.Clone(allowedSetupInputs), TranscriptExport: "session JSONL file"}
-	ce := CoordinatorExit{Schema: CoordExitSchema, SessionClosed: true, MCPChildExited: true}
-	for i := range Hops {
-		ce.WaitHandles = append(ce.WaitHandles, WaitHandleExit{Handle: waitHandle(i)})
+func (t *fakeTerminal) Activate() <-chan string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.onActivate != nil {
+		t.onActivate()
 	}
-	for name, v := range map[string]any{"event-map.json": em, "setup-attestation.json": att, "coordinator-exit.json": ce} {
-		b, _ := encodeJSON(v)
-		if err := os.WriteFile(filepath.Join(dir, name), b, 0o600); err != nil {
-			t.Fatal(err)
-		}
+	t.activated++
+	ch := make(chan string, len(t.lines)+1)
+	for _, l := range t.lines {
+		ch <- l
 	}
-	if err := os.WriteFile(filepath.Join(dir, "transcript.jsonl"), tr, 0o600); err != nil {
-		t.Fatal(err)
+	if t.eof {
+		close(ch)
 	}
+	return ch
+}
+
+// drainedTerminal runs the production line reader over a finite input to
+// its end before the prompt receives the channel, so the outcome never
+// depends on the reader goroutine racing the auto clock's timers.
+type drainedTerminal struct{ r io.Reader }
+
+func (d drainedTerminal) Activate() <-chan string {
+	ch := make(chan string, 16)
+	readLines(d.r, ch)
+	return ch
+}
+
+// typeEarly records input typed before the prompt (discarded).
+func (t *fakeTerminal) typeEarly(l string) {
+	t.mu.Lock()
+	t.early = append(t.early, l)
+	t.mu.Unlock()
 }
 
 // fakeWorld is one offline attempt's world.
 type fakeWorld struct {
-	t          *testing.T
-	clock      *autoClock
-	launcher   *fakeLauncher
-	plane      *fakePlane
-	puller     *fakePuller
-	coord      *coordScript
+	t        *testing.T
+	clock    *autoClock
+	launcher *fakeLauncher
+	plane    *fakePlane
+	puller   *fakePuller
+	coord    *coordScript
+	term     *fakeTerminal
+	// liveTerm, when set, replaces term with a production Terminal.
+	liveTerm   Terminal
 	checkout   string
 	evidence   string
 	tempRoot   string
+	home       string
 	stdout     *syncBuffer
 	stderr     *syncBuffer
 	stdin      io.Reader
@@ -961,15 +1308,29 @@ type fakeWorld struct {
 	ctx        context.Context
 	lookErr    map[string]error
 	randSeed   byte
-	stdinW     *io.PipeWriter
 	// script overrides individual commands (nil: default).
 	override func(ProcSpec) (behavior, bool)
 	flow     string
 	sup      *supervisor
-	// settings is the owner's coordinator settings file (A2).
-	settings string
 	// executable replaces the helper's path (empty: fakeReale2e).
 	executable string
+	// roots are the supplied --protect-root values; git is the read-only
+	// Git runner (default: the fake one, which knows only the evidence
+	// checks).
+	roots []string
+	depth string
+	git   GitRunner
+	// testActions sets a TestRun/<case> action in go test -json ("" omits
+	// the subtest; default pass); cases overrides a CLI case's output.
+	testActions map[string]string
+	cases       map[string]behavior
+	// jsonExtra is appended to the go test -json stream, which exits
+	// jsonExit.
+	jsonExtra string
+	jsonExit  int
+	// build is the go build's behavior (zero: success).
+	build behavior
+	env   map[string]string
 }
 
 // mustRead reads a file.
@@ -981,10 +1342,6 @@ func mustRead(t *testing.T, p string) []byte {
 	}
 	return b
 }
-
-// testSettings is a valid sandbox-only coordinator settings snapshot, as
-// the runbook's extraction writes it (the owner's socket permission kept).
-const testSettings = "{\n  \"sandbox\": {\n    \"enabled\": true,\n    \"network\": {\n      \"allowAllUnixSockets\": true\n    }\n  }\n}\n"
 
 // syncBuffer is a goroutine-safe buffer.
 type syncBuffer struct {
@@ -1019,6 +1376,9 @@ func newCheckout(t *testing.T) string {
 	if err := os.WriteFile(filepath.Join(co, "go.mod"), []byte("module "+modulePath+"\n\ngo 1.26.0\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(co, ".gitignore"), []byte("/design/real-e2e-runs/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	dst := filepath.Join(co, filepath.FromSlash(ExamplesDir))
 	if err := os.MkdirAll(dst, 0o755); err != nil {
 		t.Fatal(err)
@@ -1042,11 +1402,39 @@ func newCheckout(t *testing.T) string {
 	}
 	wt, _ := r.Worktree()
 	wt.Add("go.mod")
+	wt.Add(".gitignore")
 	sig := object.Signature{Name: "t", Email: "t@invalid", When: time.Unix(0, 0)}
 	if _, err := wt.Commit("checkout\n", &git.CommitOptions{Author: &sig, Committer: &sig}); err != nil {
 		t.Fatal(err)
 	}
 	return co
+}
+
+// newHome creates a fake owner home with owner configuration in each
+// vendor home (Cursor absent).
+func newHome(t *testing.T) string {
+	t.Helper()
+	h := t.TempDir()
+	for rel, content := range map[string]string{
+		".claude/CLAUDE.md":          "# my instructions\n",
+		".claude/settings.json":      `{"permissions":{"allow":["Bash(callsheet:*)"]}}` + "\n",
+		".claude/history.jsonl":      `{"display":"old"}` + "\n",
+		".claude/.credentials.json":  `{"token":"old"}` + "\n",
+		".claude/skills/a/SKILL.md":  "skill\n",
+		".claude/projects/-old/x.md": "memory\n",
+		".codex/config.toml":         "model = \"x\"\n",
+		".codex/auth.json":           "{}\n",
+		".grok/settings.json":        "{}\n",
+	} {
+		p := filepath.Join(h, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return h
 }
 
 // shortRoot is the short parent of every socket-bearing fixture.
@@ -1071,24 +1459,38 @@ func shortTemp(t *testing.T) string {
 	return d
 }
 
+// fakeGitRunner answers the evidence destination's checks (ignored, no
+// tracked path) and fails any repository probe (no protected root).
+func fakeGitRunner(t *testing.T) GitRunner {
+	return func(dir string, _ io.Writer, args ...string) ([]byte, int, error) {
+		switch {
+		case len(args) > 0 && args[0] == "check-ignore":
+			return nil, 0, nil
+		case len(args) > 0 && args[0] == "ls-files":
+			return nil, 0, nil
+		}
+		t.Errorf("unexpected git probe in %s: %v", dir, args)
+		return nil, 128, errors.New("unexpected git probe")
+	}
+}
+
 func newFakeWorld(t *testing.T) *fakeWorld {
 	f := &fakeWorld{t: t, clock: newAutoClock(), stdout: &syncBuffer{}, stderr: &syncBuffer{}, probeErr: map[string]error{}, lookErr: map[string]error{},
-		ctx: context.Background(), versions: map[string]string{fakeClaude: "2.1.290 (Claude Code)", fakeCodex: "codex-cli 0.160.0", fakeGrok: "grok 1.0.47 (abcdef0) [stable]"}}
+		ctx: context.Background(), versions: map[string]string{fakeClaude: "2.1.290 (Claude Code)", fakeCodex: "codex-cli 0.160.0", fakeGrok: "grok 1.0.47 (abcdef0) [stable]"},
+		testActions: map[string]string{}, cases: map[string]behavior{}, env: map[string]string{EnvOptIn: "1"}}
 	f.checkout = newCheckout(t)
 	// The bundle directory itself: new, under the checkout's design/ tree.
 	f.evidence = filepath.Join(f.checkout, "design", "real-e2e-runs", "attempt")
 	f.tempRoot = shortTemp(t)
+	f.home = newHome(t)
 	f.plane = newFakePlane(t, f.clock)
 	f.puller = &fakePuller{p: f.plane}
 	f.launcher = &fakeLauncher{script: f.script}
 	f.coord = newCoordScript(t)
-	f.settings = filepath.Join(t.TempDir(), "coordinator-settings.json")
-	if err := os.WriteFile(f.settings, []byte(testSettings), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	pr, pw := io.Pipe()
-	t.Cleanup(func() { pw.Close() })
-	f.stdin, f.stdinW = pr, pw
+	f.coord.f = f
+	f.term = &fakeTerminal{lines: []string{"yes"}}
+	f.git = fakeGitRunner(t)
+	f.stdin = strings.NewReader("")
 	return f
 }
 
@@ -1102,6 +1504,39 @@ func (f *fakeWorld) script(s ProcSpec) behavior {
 	return f.base(s)
 }
 
+// conformingCase is a conforming program's output for case c.
+func conformingCase(c FeatureCase) behavior {
+	switch c.Kind {
+	case "ok":
+		return behavior{stdout: c.Stdout}
+	case "error":
+		return behavior{stderr: "greeting: invalid arguments\n", exit: 2}
+	}
+	return behavior{stderr: "Usage of greeting:\n  -name string\n    \tthe name to greet\n"}
+}
+
+// testJSON is a go test -json stream for the ten TestRun subtests with the
+// world's actions.
+func (f *fakeWorld) testJSON() string {
+	var b strings.Builder
+	b.WriteString(`{"Action":"start","Package":"example.com/greeting"}` + "\n")
+	b.WriteString(`{"Action":"run","Package":"example.com/greeting","Test":"TestRun"}` + "\n")
+	for _, c := range FeatureCases {
+		action, set := f.testActions[c.ID]
+		if !set {
+			action = "pass"
+		}
+		if action == "" {
+			continue
+		}
+		fmt.Fprintf(&b, `{"Action":"run","Package":"example.com/greeting","Test":"TestRun/%s"}`+"\n", c.ID)
+		fmt.Fprintf(&b, `{"Action":"%s","Package":"example.com/greeting","Test":"TestRun/%s","Elapsed":0}`+"\n", action, c.ID)
+	}
+	b.WriteString(`{"Action":"pass","Package":"example.com/greeting","Test":"TestRun","Elapsed":0}` + "\n")
+	b.WriteString(`{"Action":"pass","Package":"example.com/greeting","Elapsed":0.01}` + "\n")
+	return b.String()
+}
+
 // base is a child's default behavior.
 func (f *fakeWorld) base(s ProcSpec) behavior {
 	a := s.Args
@@ -1110,10 +1545,26 @@ func (f *fakeWorld) base(s ProcSpec) behavior {
 		return behavior{stdout: "callsheet dev protocol=6\n"}
 	case len(a) == 1 && a[0] == "--version" && f.versions[s.Path] != "":
 		return behavior{stdout: f.versions[s.Path] + "\n"}
+	case s.Path == fakeClaude && len(a) > 1 && a[0] == "-p":
+		spec := s
+		return behavior{long: true, onStart: func(p *fakeProc) { f.coord.started(spec, p) }}
 	case s.Path == fakeGo && len(a) == 1 && a[0] == "version":
 		return behavior{stdout: "go version go1.26.4 linux/amd64\n"}
-	case s.Path == fakeGo && strings.Join(a, " ") == "test -count=1 ./...":
+	case s.Path == fakeGo && strings.Join(a, " ") == "test -buildvcs=false -count=1 ./...":
 		return behavior{stdout: "ok  \texample.com/greeting\t0.01s\n"}
+	case s.Path == fakeGo && strings.Join(a, " ") == "test -json -buildvcs=false -count=1 ./...":
+		return behavior{stdout: f.testJSON() + f.jsonExtra, exit: f.jsonExit}
+	case s.Path == fakeGo && len(a) == 5 && strings.Join(a[:3], " ") == "build -buildvcs=false -o" && a[4] == ".":
+		return f.build
+	case filepath.Base(s.Path) == "greeting":
+		for _, c := range FeatureCases {
+			if slices.Equal(c.Args, a) {
+				if b, ok := f.cases[c.ID]; ok {
+					return b
+				}
+				return conformingCase(c)
+			}
+		}
 	case s.Path == fakeGit:
 		return behavior{stdout: "git version 2.43.0\n"}
 	case s.Path == fakeCallsheet && len(a) > 2 && a[0] == "plane" && a[1] == "init":
@@ -1136,8 +1587,12 @@ func (f *fakeWorld) base(s ProcSpec) behavior {
 
 // world returns the supervisor's world.
 func (f *fakeWorld) world() *World {
-	return &World{Context: f.ctx, Launcher: f.launcher, Clock: f.clock, Environ: []string{"PATH=/fake/bin", "HOME=/home/owner"}, Cwd: f.checkout,
-		Executable: cmp.Or(f.executable, fakeReale2e), Home: "/home/owner", TempRoot: f.tempRoot, Rand: &countingRand{n: f.randSeed},
+	var term Terminal = f.term
+	if f.liveTerm != nil {
+		term = f.liveTerm
+	}
+	return &World{Context: f.ctx, Launcher: f.launcher, Clock: f.clock, Environ: []string{"PATH=/fake/bin", "HOME=" + f.home}, Cwd: f.checkout,
+		Executable: cmp.Or(f.executable, fakeReale2e), Home: f.home, TempRoot: f.tempRoot, Rand: &countingRand{n: f.randSeed},
 		LookPath: func(n string) (string, error) {
 			if err := f.lookErr[n]; err != nil {
 				return "", err
@@ -1151,7 +1606,7 @@ func (f *fakeWorld) world() *World {
 			}
 			return f.plane, f.puller, func() {}, nil
 		},
-		Poll: 2 * time.Second}
+		Poll: 2 * time.Second, Terminal: term, Git: f.git}
 }
 
 // countingRand is a deterministic random source.
@@ -1165,20 +1620,38 @@ func (r *countingRand) Read(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// host returns run's host inputs with the opt-in set.
-func (f *fakeWorld) host() Host {
-	args := []string{"run", "--callsheet", fakeCallsheet, "--claude", fakeClaude, "--codex", fakeCodex, "--grok", fakeGrok, "--evidence", f.evidence,
-		"--coordinator-settings", f.settings}
+// args is run's command line.
+func (f *fakeWorld) args() []string {
+	args := []string{"run", "--callsheet", fakeCallsheet, "--claude", fakeClaude, "--codex", fakeCodex, "--grok", fakeGrok, "--evidence", f.evidence}
 	if f.flow != "" {
 		args = append(args, "--flow", f.flow)
 	}
-	return Host{GOOS: "linux", GOARCH: "amd64", Args: args,
-		Getenv:    func(k string) string { return map[string]string{EnvOptIn: "1"}[k] },
-		LookupEnv: func(string) (string, bool) { return "", false },
-		Stdin:     f.stdin, Stdout: f.stdout, Stderr: f.stderr,
+	for _, r := range f.roots {
+		args = append(args, "--protect-root", r)
+	}
+	if f.depth != "" {
+		args = append(args, "--protect-depth", f.depth)
+	}
+	return args
+}
+
+// host returns run's host inputs with the opt-in set; the scripted
+// coordinator sees the new supervisor through its observe seam.
+func (f *fakeWorld) host() Host {
+	return Host{GOOS: "linux", GOARCH: "amd64", Args: f.args(),
+		Getenv: func(k string) string { return f.env[k] },
+		LookupEnv: func(k string) (string, bool) {
+			v, ok := f.env[k]
+			return v, ok
+		},
+		Stdin: f.stdin, Stdout: f.stdout, Stderr: f.stderr,
 		NewWorld: func(Host) (*World, func(), error) {
 			w := f.world()
 			return w, func() {}, nil
+		},
+		observe: func(s *supervisor) {
+			f.sup = s
+			f.coord.s = s
 		}}
 }
 
@@ -1191,11 +1664,7 @@ func (f *fakeWorld) attempt() int {
 		}
 	}
 	f.coord.p = f.plane
-	a := runArgs{callsheet: fakeCallsheet, claude: fakeClaude, codex: fakeCodex, grok: fakeGrok, evidence: f.evidence, flow: f.flow, settings: f.settings}
-	return runWith(f.host(), a, func(s *supervisor) {
-		f.sup = s
-		f.coord.s = s
-	})
+	return MainWith(f.host())
 }
 
 // bundle returns the attempt's evidence directory.

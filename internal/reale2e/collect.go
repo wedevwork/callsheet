@@ -17,25 +17,22 @@ import (
 	"github.com/wedevwork/callsheet/internal/contract"
 )
 
-// Collection, cleanup and the final judgement (design 12a-real-e2e,
-// Evidence and checker, Failure and lifecycle): active tasks are cancelled
-// through the plane and awaited, the owner-supplied session files and the
-// coordinator's wait records are copied (bounded, regular files only),
-// the evidence repository and manifests are written, the owned children
-// are stopped by handle with their exits verified, and the bundle is
-// judged by the offline checker. The runtime is removed only when every
-// child was proved gone, through its ownership marker and canonical path,
-// never through a symlink.
+// Collection, cleanup, the final fingerprint and the judgement (design
+// 12a-real-e2e, Evidence and checker, Failure and lifecycle, A3): a still
+// running coordinator phase is stopped by its captured process group and
+// observed; active tasks are cancelled through the plane and awaited; the
+// session evidence (raw streams, transcript snapshots, the supervisor's
+// own process observation and the machine-derived event map), the raw
+// wait files, the evidence repository and manifests are written; the
+// owned children are stopped by handle with their exits verified; the
+// runtime is removed only when every child was proved gone (ownership
+// marker and canonical path, never through a symlink); then the owner
+// environment is fingerprinted again and compared, and the bundle is
+// judged by the offline checker and audited. Collection is automatic: no
+// owner file and no finish command.
 
-// ownerFiles maps the owner directory's files to their evidence names.
-var ownerFiles = map[string]string{
-	"transcript.jsonl":       "session/transcript.jsonl",
-	"event-map.json":         "session/event-map.json",
-	"setup-attestation.json": "session/setup-attestation.json",
-}
-
-// finishRun collects, cleans up, judges and reports; its exit code is
-// the report's.
+// finishRun collects, cleans up, fingerprints, judges and audits; its exit
+// code is the report's.
 func (s *supervisor) finishRun() int {
 	s.closing.Store(true)
 	if s.loopDone != nil {
@@ -44,64 +41,78 @@ func (s *supervisor) finishRun() int {
 	// Cleanup still talks to the plane after an interrupt: it keeps the
 	// context's values but not its cancellation (each wait has its bound).
 	s.ctx = context.WithoutCancel(s.ctx)
-	// A2: the coordinator was launched with the runtime settings copy; it
-	// must still be the validated snapshot, or setup fails (recorded even
-	// after an earlier failure, so the setup criterion sees it).
-	if s.settingsWritten {
-		if err := s.checkSettingsCopy(); err != nil {
-			if s.failed {
-				s.ev.event(Event{Type: EvAttemptFailed, Code: codeSettingsModified})
-				fmt.Fprintf(s.stderr, "reale2e: %v\n", err)
-			} else {
-				s.fail(codeSettingsModified, err)
-			}
-		}
-	}
 	s.ev.event(Event{Type: EvCollectionStarted})
 	start := s.w.Clock.Now()
 	s.cleanupBy = start.Add(CleanupBound)
+	s.stopPhase()
 	s.cancelActive()
-	owner := s.collectOwnerFiles()
+	s.collectSession()
 	s.collectWaits()
 	s.writeRepository()
-	s.ev.writeJSON("manifest.json", s.manifest)
-	rec := s.cleanup(start, owner)
+	rec := s.cleanup(start)
 	if s.ctl != nil {
 		s.ctl.close()
 	}
 	if s.closePlane != nil {
 		s.closePlane()
 	}
+	if rec.Complete {
+		if err := s.removeRuntime(); err != nil {
+			fmt.Fprintf(s.stderr, "reale2e: runtime %s kept: %v\n", s.runtime, err)
+		} else if s.runtime != "" {
+			rec.RuntimeRemoved = true
+			s.ev.event(Event{Type: EvRuntimeRemoved})
+		}
+	}
+	rec.Complete = rec.Complete && (rec.RuntimeRemoved || s.runtime == "")
+	rec.FinishedAt = formatTime(s.w.Clock.Now())
+	s.ev.writeJSON("cleanup.json", rec)
+	s.ev.event(Event{Type: EvCleanupFinished})
+	s.manifest.Launches = s.launchHashes()
+	s.ev.writeJSON("manifest.json", s.manifest)
+	s.compareEnvironment()
 	if err := s.ev.failure(); err != nil {
 		fmt.Fprintf(s.stderr, "reale2e: evidence is incomplete: %v\n", err)
 	}
 	s.ev.close()
 	code := s.judge()
-	if rec.Complete {
-		if err := s.removeRuntime(); err != nil {
-			fmt.Fprintf(s.stderr, "reale2e: runtime %s kept: %v\n", s.runtime, err)
-		}
-	} else {
-		if s.runtime != "" {
-			s.say("cleanup is unresolved: the runtime %s is kept.", s.runtime)
-		} else {
-			s.say("cleanup is unresolved (no runtime was created yet).")
-		}
-		s.say("Recovery: stop these owned process groups yourself after checking them (PID reuse makes stale PIDs unsafe to signal blindly):")
-		for _, p := range rec.Processes {
-			if !p.ExitVerified {
-				s.say("  %s pid %d", p.Name, p.PID)
-			}
-		}
-		for _, t := range rec.UnsettledTasks {
-			s.say("  task %s did not settle", t)
-		}
-		if !s.ownerChildrenVerified(rec.Owner) {
-			s.say("  the owner-started coordinator session, its MCP child and its background waits are not confirmed stopped: close the session,")
-			s.say("  stop its waits, put a complete coordinator-exit.json in %s, then remove the runtime yourself", filepath.Join(s.runtime, "owner"))
-		}
+	if !rec.Complete {
+		s.recovery(rec)
 	}
 	return code
+}
+
+// launchHashes is the manifest's launch inventory: each launch record
+// written, as encoded, in phase order.
+func (s *supervisor) launchHashes() []FileHash {
+	out := []FileHash{}
+	for i, l := range s.launches {
+		if l == nil {
+			continue
+		}
+		if b, err := encodeJSON(l); err == nil {
+			out = append(out, FileHash{Name: launchFiles[i], SHA256: sha256Hex(b)})
+		}
+	}
+	return out
+}
+
+// recovery prints what cleanup could not prove stopped.
+func (s *supervisor) recovery(rec CleanupRecord) {
+	if s.runtime != "" {
+		s.say("cleanup is unresolved: the runtime %s is kept.", s.runtime)
+	} else {
+		s.say("cleanup is unresolved (no runtime was created yet).")
+	}
+	s.say("Recovery: stop these owned process groups yourself after checking them (PID reuse makes stale PIDs unsafe to signal blindly):")
+	for _, p := range rec.Processes {
+		if !p.ExitVerified {
+			s.say("  %s pid %d", p.Name, p.PID)
+		}
+	}
+	for _, t := range rec.UnsettledTasks {
+		s.say("  task %s did not settle", t)
+	}
 }
 
 // left is the time remaining before the cleanup bound, at most max.
@@ -114,6 +125,52 @@ func maxDuration(a, b time.Duration) time.Duration {
 		return a
 	}
 	return b
+}
+
+// childNamed returns the tracked child named name.
+func (s *supervisor) childNamed(name string) *child {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, c := range s.children {
+		if c.name == name {
+			return c
+		}
+	}
+	return nil
+}
+
+// stopPhase stops a still running coordinator phase by its captured
+// process group (its MCP child and background commands with it) and
+// records the observation.
+func (s *supervisor) stopPhase() {
+	p := s.current()
+	if p == nil {
+		return
+	}
+	c := s.childNamed(phaseHandle(p.phase))
+	rec := stopProc(phaseHandle(p.phase), p.proc, s.w.Clock, s.left(15*time.Second))
+	if c != nil {
+		s.stopped(c, rec)
+	}
+	p.stopped = true
+	s.observePhase(p, rec.StoppedBy, s.left(groupBound))
+}
+
+// collectSession writes the supervisor's coordinator process observation
+// and the machine-derived event map.
+func (s *supervisor) collectSession() {
+	if s.phases[0] == nil {
+		return
+	}
+	ce := CoordinatorExit{Schema: CoordExitSchema, Phases: []PhaseProcess{}}
+	for _, p := range s.phases {
+		if p != nil && p.handled {
+			ce.Phases = append(ce.Phases, p.rec)
+		}
+	}
+	s.ev.writeJSON(coordinatorExitFile, ce)
+	em := DeriveSession(s.sessionInput())
+	s.ev.writeJSON(eventMapFile, em)
 }
 
 // cancelActive cancels every known nonterminal task and awaits its
@@ -163,52 +220,62 @@ func (s *supervisor) cancelActive() {
 	}
 }
 
-// maxOwnerFile bounds one owner-supplied file.
-const maxOwnerFile = maxTextFile
+// Raw wait file names in a hop's evidence.
+const (
+	waitResultFile = "wait-result.json"
+	waitStderrFile = "wait-stderr.txt"
+	waitExitFile   = "wait-exit.txt"
+)
 
-// readOwnerFile reads a regular, non-symlinked file of the runtime's
-// owner directory.
-func (s *supervisor) readOwnerFile(name string) ([]byte, error) {
-	p := filepath.Join(s.runtime, "owner", name)
-	st, err := os.Lstat(p)
-	if err != nil {
-		return nil, err
+// readWaitFiles reads hop i's raw wait output from the runtime.
+func (s *supervisor) readWaitFiles(i int) (result, stderr, exit []byte, okR, okE, okX bool) {
+	if s.runtime == "" {
+		return
 	}
-	if !st.Mode().IsRegular() {
-		return nil, errors.New("not a regular file")
+	dir := filepath.Join(s.runtime, "waits", hopDir(i))
+	read := func(name string, limit int64) ([]byte, bool) {
+		p := filepath.Join(dir, name)
+		st, err := os.Lstat(p)
+		if err != nil || !st.Mode().IsRegular() {
+			return nil, false
+		}
+		b, err := readBounded(p, limit)
+		return b, err == nil
 	}
-	return readBounded(p, maxOwnerFile)
+	result, okR = read("result.json", maxTextFile)
+	stderr, okE = read("error.txt", maxTextFile)
+	exit, okX = read("exit-code", 64)
+	return
 }
 
-// collectOwnerFiles copies the owner's session files and returns the
-// coordinator exit record, if valid.
-func (s *supervisor) collectOwnerFiles() *CoordinatorExit {
-	if s.runtime == "" {
-		return nil
-	}
-	for name, rel := range ownerFiles {
-		b, err := s.readOwnerFile(name)
-		if err != nil {
-			s.say("owner file %s not collected: %v", name, err)
-			continue
+// waitRecordOf derives a wait record from the raw wait output (the
+// unchanged collector rule, reparsing the terminal JSON independently).
+func waitRecordOf(hop int, task string, result, stderr, exit []byte, okR, okX bool) WaitRecord {
+	w := WaitRecord{Schema: WaitSchema, Hop: Hops[hop], Handle: waitHandle(hop), Task: task}
+	if okX {
+		if n, err := strconv.Atoi(strings.TrimSpace(string(exit))); err == nil {
+			w.ExitCode = &n
 		}
-		s.ev.writeFile(rel, b)
 	}
-	b, err := s.readOwnerFile("coordinator-exit.json")
-	if err != nil {
-		s.say("owner file coordinator-exit.json not collected: %v", err)
-		return nil
+	if okR {
+		w.ResultSHA256 = sha256Hex(result)
+		if wr, err := contract.ParseWaitResponse([]byte(strings.TrimSpace(string(result))), []string{task}, 40*time.Second); err == nil &&
+			wr.Status == contract.WaitTerminal && wr.Task != nil {
+			w.Winner, w.WinnerState = wr.Winner, wr.Task.State
+		}
 	}
-	var ce CoordinatorExit
-	if err := decodeStrict(b, &ce); err != nil || ce.Schema != CoordExitSchema {
-		s.say("owner file coordinator-exit.json is not a version 1 record")
-		return nil
-	}
-	return &ce
+	w.StderrBytes = len(stderr)
+	return w
+}
+
+// waitRecord is hop i's current wait record.
+func (s *supervisor) waitRecord(i int) WaitRecord {
+	r, e, x, okR, _, okX := s.readWaitFiles(i)
+	return waitRecordOf(i, s.hops[i].task, r, e, x, okR, okX)
 }
 
 // collectWaits records each observed hop's background wait from the files
-// its own redirected command wrote.
+// its own redirected command wrote, with those raw files.
 func (s *supervisor) collectWaits() {
 	if s.runtime == "" {
 		return
@@ -218,24 +285,18 @@ func (s *supervisor) collectWaits() {
 		if h.task == "" {
 			continue
 		}
-		dir := filepath.Join(s.runtime, "waits", hopDir(i))
-		w := WaitRecord{Schema: WaitSchema, Hop: Hops[i], Handle: waitHandle(i), Task: h.task}
-		if b, err := readBounded(filepath.Join(dir, "exit-code"), 64); err == nil {
-			if n, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil {
-				w.ExitCode = &n
-			}
+		r, e, x, okR, okE, okX := s.readWaitFiles(i)
+		dir := "hops/" + hopDir(i) + "/"
+		if okR {
+			s.ev.writeFile(dir+waitResultFile, []byte(toValidUTF8(r)))
 		}
-		if b, err := readBounded(filepath.Join(dir, "result.json"), maxTextFile); err == nil {
-			w.ResultSHA256 = sha256Hex(b)
-			if wr, err := contract.ParseWaitResponse([]byte(strings.TrimSpace(string(b))), []string{h.task}, 40*time.Second); err == nil &&
-				wr.Status == contract.WaitTerminal && wr.Task != nil {
-				w.Winner, w.WinnerState = wr.Winner, wr.Task.State
-			}
+		if okE {
+			s.ev.writeFile(dir+waitStderrFile, []byte(toValidUTF8(e)))
 		}
-		if st, err := os.Lstat(filepath.Join(dir, "error.txt")); err == nil && st.Mode().IsRegular() {
-			w.StderrBytes = int(st.Size())
+		if okX {
+			s.ev.writeFile(dir+waitExitFile, []byte(toValidUTF8(x)))
 		}
-		s.ev.writeJSON("hops/"+hopDir(i)+"/wait.json", w)
+		s.ev.writeJSON(dir+"wait.json", waitRecordOf(i, h.task, r, e, x, okR, okX))
 	}
 }
 
@@ -262,9 +323,11 @@ func (s *supervisor) writeRepository() {
 	s.ev.writeJSON("workspace/tree-manifest.json", tm)
 }
 
-// cleanup stops every owned child by its handle (sidecars, then the
-// plane) and writes cleanup.json.
-func (s *supervisor) cleanup(start time.Time, owner *CoordinatorExit) CleanupRecord {
+// cleanup stops every owned child by its handle (the coordinator phases,
+// sidecars, then the plane) and returns the cleanup record; it is
+// complete only when every task settled, every child's exit was verified
+// and every coordinator phase's whole group was observed gone.
+func (s *supervisor) cleanup(start time.Time) CleanupRecord {
 	s.ev.event(Event{Type: EvCleanupStarted})
 	s.mu.Lock()
 	children := append([]*child(nil), s.children...)
@@ -279,59 +342,99 @@ func (s *supervisor) cleanup(start time.Time, owner *CoordinatorExit) CleanupRec
 		}
 	}
 	rec := CleanupRecord{Schema: CleanupSchema, Processes: append([]ProcRecord{}, s.records...), CancelledTasks: append([]string{}, s.cancelled...),
-		UnsettledTasks: append([]string{}, s.unsettled...), Owner: owner, StartedAt: formatTime(start), Complete: len(s.unsettled) == 0}
+		UnsettledTasks: append([]string{}, s.unsettled...), StartedAt: formatTime(start), Complete: len(s.unsettled) == 0}
 	for _, p := range rec.Processes {
 		rec.Complete = rec.Complete && p.ExitVerified
 	}
-	rec.Complete = rec.Complete && s.ownerChildrenVerified(owner)
-	rec.FinishedAt = formatTime(s.w.Clock.Now())
-	s.ev.writeJSON("cleanup.json", rec)
-	s.ev.event(Event{Type: EvCleanupFinished})
+	for _, p := range s.phases {
+		if p != nil {
+			rec.Complete = rec.Complete && p.handled && p.rec.GroupGone
+		}
+	}
 	return rec
 }
 
-// ownerChildrenVerified reports whether the owner-started processes are
-// accounted for: nothing to account for when the coordinator was never
-// offered a launch; otherwise the owner's exit record must show the
-// session closed, its MCP child exited and an exit for the background
-// wait of every admitted hop.
-func (s *supervisor) ownerChildrenVerified(owner *CoordinatorExit) bool {
-	if !s.coordinatorReady {
-		return true
+// compareEnvironment takes the final fingerprint and writes the diff
+// (when a baseline was taken): every protected difference is recorded,
+// whatever else failed.
+func (s *supervisor) compareEnvironment() {
+	if s.before == nil {
+		return
 	}
-	if owner == nil || !owner.SessionClosed || !owner.MCPChildExited {
-		return false
-	}
-	handles := map[string]bool{}
-	for _, w := range owner.WaitHandles {
-		handles[w.Handle] = true
-	}
-	for i, h := range s.hops {
-		if h.task != "" && !handles[waitHandle(i)] {
-			return false
+	after := s.snapshot("after", s.cleanupBy)
+	diff := CompareEnvironment(s.before, after, s.manifest.ProtectedRoots)
+	for _, phase := range []string{"before", "after"} {
+		for _, name := range envFiles(phase) {
+			sum := ""
+			if b, err := readBounded(filepath.Join(s.ev.root, filepath.FromSlash(name)), maxShardBytes); err == nil {
+				sum = sha256Hex(b)
+			}
+			fh := FileHash{Name: name, SHA256: sum}
+			if phase == "before" {
+				diff.Before = append(diff.Before, fh)
+			} else {
+				diff.After = append(diff.After, fh)
+			}
 		}
 	}
-	return true
+	data, err := encodeDiff(diff)
+	if err != nil {
+		diff = EnvDiff{Schema: DiffSchema, ProtectedRoots: diff.ProtectedRoots, Before: diff.Before, After: diff.After, Codes: []string{CodeEnvLimit},
+			Protected: []EnvChange{}, Housekeeping: []EnvChange{}, OversizedConfig: []string{}, Detail: []EnvDetail{}}
+		data, _ = encodeDiff(diff)
+	}
+	s.ev.writeFile("environment/diff.json", data)
+	for _, c := range diff.Protected {
+		s.say("PROTECTED CHANGE (%s): %s %s %s", CodeEnvModified, c.Scope, c.Path, c.Kind)
+	}
+	if len(diff.Housekeeping) > 0 {
+		s.say("%d vendor housekeeping changes (report-only), listed in report.txt", len(diff.Housekeeping))
+	}
 }
 
 // judge runs the offline checker on the bundle, writes report.json and
-// report.txt, and prints the summary.
+// report.txt, then audit.json and audit.md from that report, and prints
+// the summary and the paths.
 func (s *supervisor) judge() int {
 	b, err := LoadBundle(s.ev.root)
 	var r Report
+	var a *Audit
 	if err != nil {
 		r = schemaReport()
 		fmt.Fprintf(s.stderr, "reale2e: %v\n", err)
 	} else {
-		red := s.red
-		red.Run = s.runtime
-		r = BuildReport(b, Check(b), red)
+		r = BuildReport(b, Check(b))
 	}
 	data, _ := encodeJSON(r)
-	writeAtomic(s.ev.root, "report.json", data)
 	text := RenderText(r)
-	writeAtomic(s.ev.root, "report.txt", []byte(text))
+	writes := []struct {
+		name string
+		data []byte
+	}{{"report.json", data}, {"report.txt", []byte(text)}}
+	if b != nil {
+		au := BuildAudit(b, r)
+		a = &au
+		aj, _ := encodeJSON(au)
+		writes = append(writes, struct {
+			name string
+			data []byte
+		}{"audit.json", aj}, struct {
+			name string
+			data []byte
+		}{"audit.md", []byte(RenderAudit(au))})
+	}
+	for _, w := range writes {
+		if err := s.ev.reserve(w.name, len(w.data)); err != nil {
+			fmt.Fprintf(s.stderr, "reale2e: %s not written: %v\n", w.name, err)
+			continue
+		}
+		writeAtomic(s.ev.root, w.name, w.data)
+	}
 	fmt.Fprint(s.stdout, text)
+	s.say("report: %s", filepath.Join(s.ev.root, "report.txt"))
+	if a != nil {
+		s.say("audit: %s (%s)", filepath.Join(s.ev.root, "audit.md"), PendingReview)
+	}
 	if r.Result == ResultPass {
 		return 0
 	}

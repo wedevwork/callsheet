@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -242,15 +243,9 @@ func TestAttemptLifecycle(t *testing.T) {
 	t.Run("feature timeout", func(t *testing.T) {
 		t.Parallel()
 		f := newFakeWorld(t)
-		// The designer task never finishes; the owner has closed the
-		// session and recorded its exits (its wait for hop 1 included).
-		f.coord.before = func(c *coordScript) bool {
-			if c.step == 1 {
-				writeCoordinatorExit(t, c.s, 1)
-				return true
-			}
-			return false
-		}
+		// The designer task never finishes while phase 1 waits for it: the
+		// still running coordinator group is stopped by its handle.
+		f.coord.before = func(c *coordScript) bool { return c.step == 1 }
 		if code := f.attempt(); code != 1 {
 			t.Fatalf("attempt = %d", code)
 		}
@@ -261,8 +256,13 @@ func TestAttemptLifecycle(t *testing.T) {
 		b := f.bundle()
 		var c CleanupRecord
 		readDoc(t, filepath.Join(b, "cleanup.json"), &c)
-		if !c.Complete || len(c.Processes) != 7 || !slices.Equal(c.CancelledTasks, []string{f.coord.tasks[0]}) {
+		if !c.Complete || len(c.Processes) != 8 || !slices.Equal(c.CancelledTasks, []string{f.coord.tasks[0]}) {
 			t.Fatalf("cleanup %+v", c)
+		}
+		var ce CoordinatorExit
+		readDoc(t, filepath.Join(b, filepath.FromSlash(coordinatorExitFile)), &ce)
+		if len(ce.Phases) != 1 || ce.Phases[0].StoppedBy != StoppedTerm || !ce.Phases[0].GroupGone || ce.Phases[0].ExitCode != nil {
+			t.Fatalf("coordinator exit %+v", ce)
 		}
 		for _, p := range f.launcher.procs {
 			if _, sig := p.Exit(); !isDone(p) {
@@ -333,29 +333,80 @@ func TestAttemptLifecycle(t *testing.T) {
 			t.Fatalf("cleanup took %s, complete %v, unsettled %v", e.Sub(s), c.Complete, c.UnsettledTasks)
 		}
 	})
-	t.Run("owner children", func(t *testing.T) {
+	t.Run("coordinator phases", func(t *testing.T) {
 		t.Parallel()
-		for name, mutate := range map[string]func(dir string){
-			"missing":      func(dir string) { os.Remove(filepath.Join(dir, "coordinator-exit.json")) },
-			"session open": func(dir string) { editOwnerExit(t, dir, func(c *CoordinatorExit) { c.SessionClosed = false }) },
-			"MCP child":    func(dir string) { editOwnerExit(t, dir, func(c *CoordinatorExit) { c.MCPChildExited = false }) },
-			"a wait handle": func(dir string) {
-				editOwnerExit(t, dir, func(c *CoordinatorExit) { c.WaitHandles = c.WaitHandles[1:] })
-			},
-			"invalid record": func(dir string) { os.WriteFile(filepath.Join(dir, "coordinator-exit.json"), []byte("{}"), 0o600) },
+		for name, tc := range map[string]struct {
+			set  func(c *coordScript)
+			code string
+		}{
+			"leader reaped but group alive":      {func(c *coordScript) { c.lingering[0] = true }, "coordinator_group_alive"},
+			"phase 2 group alive":                {func(c *coordScript) { c.lingering[1] = true }, "coordinator_group_alive"},
+			"nonzero exit":                       {func(c *coordScript) { c.phaseExit[0] = 1 }, "coordinator_exit_nonzero"},
+			"exit while background work remains": {func(c *coordScript) { c.earlyResult = true }, CodePhaseEarly},
+			"transcript missing":                 {func(c *coordScript) { c.noTranscript = true }, CodeSessionUnobserved},
+			"error result":                       {func(c *coordScript) { c.failResult[0] = true }, CodeSessionUnobserved},
+			"denied tool":                        {func(c *coordScript) { c.denied = true }, CodeToolDenied},
+			"failed tool in phase 2":             {func(c *coordScript) { c.toolFailed = true }, CodeToolFailed},
+			"changed session on resume":          {func(c *coordScript) { c.phase2SID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" }, CodeSessionMismatch},
+			"rewritten transcript":               {func(c *coordScript) { c.rewrite = true }, CodeSessionUnobserved},
+			"stream overflow": {func(c *coordScript) {
+				c.before = func(c *coordScript) bool {
+					if c.step == 1 {
+						io.WriteString(c.specs[0].Stdout, strings.Repeat("x", maxTextFile+1))
+						return true
+					}
+					return false
+				}
+			}, "coordinator_stream_limit"},
 		} {
-			f := newFakeWorld(t)
-			f.coord.mutateOwner = mutate
-			if code := f.attempt(); code != 1 || !slices.Contains(failedCodes(f.report()), "owner_children_unverified") {
-				t.Fatalf("%s: attempt = %d %v", name, code, failedCodes(f.report()))
-			}
-			// Without the owner-child exit evidence nothing is removed and
-			// the recovery steps are printed.
-			var c CleanupRecord
-			readDoc(t, filepath.Join(f.bundle(), "cleanup.json"), &c)
-			if _, err := os.Stat(f.sup.runtime); err != nil || c.Complete || !strings.Contains(f.stdout.String(), "coordinator-exit.json") {
-				t.Fatalf("%s: runtime %v, cleanup complete %v\n%s", name, err, c.Complete, f.stdout.String())
-			}
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				f := newFakeWorld(t)
+				tc.set(f.coord)
+				if code := f.attempt(); code != 1 || f.sup.failCode != tc.code {
+					t.Fatalf("attempt = %d %q, want %s\n%s", code, f.sup.failCode, tc.code, f.stderr.String())
+				}
+				var c CleanupRecord
+				readDoc(t, filepath.Join(f.bundle(), "cleanup.json"), &c)
+				if strings.Contains(name, "group alive") {
+					// A leader exit without its group's end is not cleanup:
+					// the runtime is kept with recovery instructions.
+					if _, err := os.Stat(f.sup.runtime); err != nil || c.Complete || !strings.Contains(f.stdout.String(), "cleanup is unresolved") {
+						t.Fatalf("runtime %v complete %v", err, c.Complete)
+					}
+					return
+				}
+				if !c.Complete || coderDispatched(f.plane) != (f.sup.decision != nil) {
+					t.Fatalf("cleanup %+v", c)
+				}
+				if f.term.activated != 0 && f.sup.decision == nil {
+					t.Fatal("the owner was prompted after a failed phase 1")
+				}
+				if r := f.report(); r.Result != ResultFail {
+					t.Fatal("PASS")
+				}
+				if name == "denied tool" {
+					// W2: the private audit names the denied command and
+					// cites its raw input line; report.txt does not.
+					audit := string(mustRead(t, filepath.Join(f.bundle(), "audit.md")))
+					if !strings.Contains(audit, "coordinator_tool_denied: Bash tool use toolu_") || !strings.Contains(audit, "command rm -rf /tmp/whatever") {
+						t.Fatalf("the audit does not name the denied command:\n%s", audit)
+					}
+					var a Audit
+					readDoc(t, filepath.Join(f.bundle(), "audit.json"), &a)
+					cited := 0
+					for _, row := range a.Rows {
+						for _, ref := range row.Evidence {
+							if ref.File == phaseStreamFiles[0] && len(ref.Lines) == 2 {
+								cited++
+							}
+						}
+					}
+					if cited == 0 || strings.Contains(string(mustRead(t, filepath.Join(f.bundle(), "report.txt"))), "rm -rf") {
+						t.Fatalf("raw input cited %d times, or report.txt names the arguments", cited)
+					}
+				}
+			})
 		}
 	})
 	t.Run("rerun isolation", func(t *testing.T) {
@@ -381,7 +432,6 @@ func TestAttemptLifecycle(t *testing.T) {
 		g.randSeed = 100
 		g.launcher = &fakeLauncher{script: g.script}
 		g.coord.stopAfter = 0
-		g.coord.skipOwner = true
 		if code := g.attempt(); code != 1 {
 			t.Fatalf("second attempt = %d", code)
 		}
@@ -418,6 +468,49 @@ func TestAttemptLifecycle(t *testing.T) {
 		}
 		if code := f.attempt(); code != 1 || f.sup.failCode != "interrupted" {
 			t.Fatalf("attempt = %d %q", code, f.sup.failCode)
+		}
+	})
+	t.Run("interrupted in phase 1", func(t *testing.T) {
+		t.Parallel()
+		f := newFakeWorld(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		f.ctx = ctx
+		f.coord.before = func(c *coordScript) bool {
+			if c.step == 1 {
+				cancel()
+				return true
+			}
+			return false
+		}
+		if code := f.attempt(); code != 1 || f.sup.failCode != "interrupted" {
+			t.Fatalf("attempt = %d %q", code, f.sup.failCode)
+		}
+		var ce CoordinatorExit
+		readDoc(t, filepath.Join(f.bundle(), filepath.FromSlash(coordinatorExitFile)), &ce)
+		if len(ce.Phases) != 1 || ce.Phases[0].StoppedBy != StoppedTerm {
+			t.Fatalf("the running phase was not stopped by its group: %+v", ce)
+		}
+	})
+	t.Run("evidence destination", func(t *testing.T) {
+		t.Parallel()
+		for name, git := range map[string]GitRunner{
+			"not ignored": func(string, io.Writer, ...string) ([]byte, int, error) { return nil, 1, nil },
+			"tracked path": func(dir string, _ io.Writer, args ...string) ([]byte, int, error) {
+				if args[0] == "ls-files" {
+					return []byte("design/real-e2e-runs/attempt/x\x00"), 0, nil
+				}
+				return nil, 0, nil
+			},
+			"git unavailable": func(string, io.Writer, ...string) ([]byte, int, error) { return nil, 0, errors.New("no git") },
+		} {
+			f := newFakeWorld(t)
+			f.git = git
+			if code := f.attempt(); code != 2 || !strings.Contains(f.stderr.String(), "Git-ignored") {
+				t.Fatalf("%s: attempt = %d %q", name, code, f.stderr.String())
+			}
+			if _, err := os.Stat(f.evidence); !os.IsNotExist(err) || len(f.launcher.argv()) != 0 {
+				t.Fatalf("%s: evidence or executables after a refused destination", name)
+			}
 		}
 	})
 	t.Run("attempt deadline", func(t *testing.T) {
@@ -549,6 +642,7 @@ func TestLifecycleUnits(t *testing.T) {
 		// A cancelled out-of-chain admission is awaited too: one that
 		// never settles leaves cleanup incomplete.
 		f := newFakeWorld(t)
+		f.term.lines = nil
 		f.coord.dispatchEarlyCoder = true
 		f.plane.cancelIgnored = true
 		if code := f.attempt(); code != 1 {
@@ -618,31 +712,6 @@ func TestLifecycleUnits(t *testing.T) {
 			t.Fatal("removed outside its root")
 		}
 	})
-}
-
-// writeCoordinatorExit writes the owner's exit record for the first n
-// hops' waits.
-func writeCoordinatorExit(t *testing.T, s *supervisor, n int) {
-	t.Helper()
-	ce := CoordinatorExit{Schema: CoordExitSchema, SessionClosed: true, MCPChildExited: true, WaitHandles: []WaitHandleExit{}}
-	for i := 0; i < n; i++ {
-		ce.WaitHandles = append(ce.WaitHandles, WaitHandleExit{Handle: waitHandle(i)})
-	}
-	b, _ := encodeJSON(ce)
-	if err := os.WriteFile(filepath.Join(s.runtime, "owner", "coordinator-exit.json"), b, 0o600); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// editOwnerExit edits the owner's exit record in dir.
-func editOwnerExit(t *testing.T, dir string, f func(c *CoordinatorExit)) {
-	t.Helper()
-	p := filepath.Join(dir, "coordinator-exit.json")
-	var c CoordinatorExit
-	readDoc(t, p, &c)
-	f(&c)
-	b, _ := encodeJSON(c)
-	os.WriteFile(p, b, 0o600)
 }
 
 // TestUnresolvedCommandGroups (C4 of the round-2 review): a short command

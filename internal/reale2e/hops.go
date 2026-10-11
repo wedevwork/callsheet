@@ -1,12 +1,14 @@
 package reale2e
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
+	"strings"
+	"time"
 
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
@@ -47,14 +49,6 @@ func (s *supervisor) expectedBase(i int) (string, bool) {
 
 // handleRequest judges one control request inside the loop.
 func (s *supervisor) handleRequest(req ControlRequest) string {
-	if req.Op == opFinish {
-		if !s.finish {
-			s.finish = true
-			s.ev.event(Event{Type: EvFinishRequested})
-			s.say("finish requested: collecting evidence and stopping")
-		}
-		return CodeAccepted
-	}
 	// Deadlines first: an observation never admits work past a bound.
 	if s.checkDeadlines() {
 		s.cancelLate(req.Task)
@@ -122,54 +116,6 @@ func (s *supervisor) handleRequest(req ControlRequest) string {
 	}
 	s.say("observed %s task %s", req.Hop, req.Task)
 	return CodeAccepted
-}
-
-// handleWait judges one wait request inside the loop (design 12a-real-e2e,
-// amendment A2): the task must be the accepted observation of its hop
-// (and, for the coder, the owner's receipt must exist); the authoritative
-// task is fetched inline within ctx, the closing and deadline state is
-// rechecked after the fetch and takes precedence, and the task's
-// observation bindings are verified again. A durably terminal task
-// answers a version 1 terminal WaitResponse (the view unchanged, an
-// immediate status fetch: effective_wait_ms 0); any other state is
-// pending. A wait never registers, admits, approves or advances anything
-// and records no event.
-func (s *supervisor) handleWait(ctx context.Context, req ControlRequest) waitReply {
-	refuse := func(code string) waitReply { return waitReply{code: code} }
-	if s.checkDeadlines() {
-		return refuse(CodeClosing)
-	}
-	i := hopIndex(req.Hop)
-	if h := s.hops[i]; !h.observed || h.task != req.Task {
-		if label, ok := s.known[req.Task]; ok && label != req.Hop {
-			return refuse(CodeObservationClash)
-		}
-		return refuse(CodeTaskMismatch)
-	}
-	if req.Hop == HopCoder && s.decision == nil {
-		return refuse(CodeOwnerGateClosed)
-	}
-	v, err := s.plane.ShowTask(ctx, req.Task, 0)
-	switch {
-	case s.checkDeadlines() || s.ctx.Err() != nil:
-		return refuse(CodeClosing)
-	case err != nil || ctx.Err() != nil:
-		return refuse(CodeInternalError)
-	case v.TaskID != req.Task || v.Role.ID != req.Hop:
-		return refuse(CodeTaskMismatch)
-	}
-	if _, code := s.bindingOf(i, v); code != "" {
-		return refuse(CodeTaskMismatch)
-	}
-	if !contract.TaskTerminal(v.State) || !v.DurabilityConfirmed {
-		return waitReply{code: CodePending}
-	}
-	b, err := contract.EncodeWaitResponse(contract.WaitResponse{Version: contract.ProtocolVersion, Status: contract.WaitTerminal, EffectiveWaitMS: 0,
-		Winner: req.Task, Task: &v})
-	if err != nil {
-		return refuse(CodeInternalError)
-	}
-	return waitReply{code: CodeTerminal, result: b}
 }
 
 // bindingOf checks a hop task's authoritative bindings and returns its
@@ -404,10 +350,9 @@ func (s *supervisor) terminal(i int, v contract.TaskView) {
 		return
 	}
 	s.say("hop %s succeeded: result %s", Hops[i], h.commit)
-	switch Hops[i] {
-	case HopDesignReviewer:
-		s.awaitOwner()
-	case HopCodeReviewer:
+	// The owner gate opens only once phase 1 itself ended with its pause
+	// result and observed exit (phaseExited), never on the review alone.
+	if Hops[i] == HopCodeReviewer {
 		s.runFinalTests()
 	}
 }
@@ -504,21 +449,58 @@ func (s *supervisor) awaitOwner() {
 	if !ok {
 		at = s.w.Clock.Now()
 	}
-	s.owner, s.ownerDeadline = ownerAwaiting, at.Add(OwnerDecisionBound)
-	s.say("OWNER DECISION NEEDED (within 20m). Read the reviewed design and its approval:")
-	s.say("  %s  sha256 %s", dp, s.reviewSums[0])
-	s.say("  %s  sha256 %s", rp, s.reviewSums[1])
-	s.say("Type exactly 'yes %s' to approve coding, or 'no %s' to stop. Anything else is not approval.", s.runID, s.runID)
+	// The window is at most 20m from the prompt, bounded by the attempt.
+	s.owner, s.ownerDeadline = ownerAwaiting, minTime(at.Add(OwnerDecisionBound), s.attempt.Add(AttemptBound))
+	s.say("OWNER DECISION NEEDED (within 20m). The reviewed design and its approving review:")
+	for _, f := range []struct {
+		label, path, sum string
+		text             []byte
+	}{{"design.md", dp, s.reviewSums[0], design}, {"design-review.md", rp, s.reviewSums[1], review}} {
+		s.say("----- %s (%s, sha256 %s) -----", f.label, f.path, f.sum)
+		fmt.Fprintln(s.stdout, terminalSafe(f.text))
+		s.say("----- end of %s -----", f.label)
+	}
+	s.prompt()
+	// The terminal is read only from now on.
+	s.lines = s.w.Terminal.Activate()
 }
 
-// handleLine handles one operator terminal line (ok false: EOF).
+// decisionPrompt is the exact owner prompt.
+const decisionPrompt = "Approve this design and start coding? [yes/no]"
+
+// prompt prints the decision prompt.
+func (s *supervisor) prompt() { fmt.Fprintln(s.stdout, decisionPrompt) }
+
+// minTime returns the earlier time.
+func minTime(a, b time.Time) time.Time {
+	if b.Before(a) {
+		return b
+	}
+	return a
+}
+
+// terminalSafe renders text for the terminal: control characters other
+// than newline and tab escaped.
+func terminalSafe(b []byte) string {
+	var out strings.Builder
+	for _, r := range toValidUTF8(b) {
+		if (r < 0x20 && r != '\n' && r != '\t') || r == 0x7f || (r >= 0x80 && r < 0xa0) {
+			fmt.Fprintf(&out, "\\x%02x", r)
+			continue
+		}
+		out.WriteRune(r)
+	}
+	return out.String()
+}
+
+// handleLine handles one operator terminal line (ok false: EOF). Only
+// "yes" or "no" (surrounding whitespace trimmed) decides; anything else
+// is reprompted within the same window.
 func (s *supervisor) handleLine(line string, ok bool) {
 	// The owner deadline is checked before any input is accepted: a yes
 	// arriving together with (or after) the timeout is never approval.
 	if s.checkDeadlines() {
-		if !ok {
-			s.lines = nil
-		}
+		s.lines = nil
 		return
 	}
 	if !ok {
@@ -528,32 +510,27 @@ func (s *supervisor) handleLine(line string, ok bool) {
 		}
 		return
 	}
-	switch s.owner {
-	case ownerNone:
-		s.say("no decision is pending; input ignored")
-		return
-	case ownerDecided:
-		s.say("the owner decision is already recorded and cannot change")
+	if s.owner != ownerAwaiting {
 		return
 	}
-	var decision string
-	switch line {
-	case DecisionYes + " " + s.runID:
-		decision = DecisionYes
-	case DecisionNo + " " + s.runID:
-		decision = DecisionNo
+	switch strings.TrimSpace(line) {
+	case DecisionYes:
+		s.decide(DecisionYes)
+	case DecisionNo:
+		s.decide(DecisionNo)
 	default:
-		s.say("not a decision: type exactly 'yes %s' or 'no %s'", s.runID, s.runID)
-		return
+		s.say("not a decision: answer yes or no")
+		s.prompt()
 	}
-	s.decide(decision)
 }
 
 // decide records the owner's decision bound to the reviewed task, commit
-// and digests; yes creates the read-only receipt, no ends the attempt.
+// and digests; yes creates the read-only receipt and, its bindings
+// rechecked, automatically resumes the session in phase 2; no ends the
+// attempt without coding.
 func (s *supervisor) decide(decision string) {
 	h := s.hops[1]
-	s.owner = ownerDecided
+	s.owner, s.lines = ownerDecided, nil
 	ev := s.ev.event(Event{Type: EvOwnerDecision, Hop: HopDesignReviewer, Task: h.task, Code: decision})
 	rec := DecisionRecord{Schema: DecisionSchema, RunID: s.runID, Decision: decision, ReviewedTask: h.task, ResultCommit: h.commit.String(),
 		DesignSHA256: s.reviewSums[0], ReviewSHA256: s.reviewSums[1], Seq: ev.Seq, DecidedAt: ev.Time}
@@ -566,6 +543,14 @@ func (s *supervisor) decide(decision string) {
 		s.fail("owner_rejected", errors.New("the owner answered no"))
 		return
 	}
+	// The bindings are rechecked immediately before continuing.
+	for i, name := range []string{"design.md", "design-review.md"} {
+		b, err := readBounded(filepath.Join(s.runtime, "review", name), projectBound)
+		if err != nil || sha256Hex(b) != s.reviewSums[i] || sha256Hex(h.files[name]) != s.reviewSums[i] {
+			s.fail("decision_binding_changed", errors.New("the reviewed artifacts changed before coding"))
+			return
+		}
+	}
 	b, _ := encodeJSON(rec)
 	if err := writePrivateReadOnly(filepath.Join(s.runtime, "owner-receipt.json"), b); err != nil {
 		s.fail("runtime_unavailable", err)
@@ -573,34 +558,81 @@ func (s *supervisor) decide(decision string) {
 	}
 	s.decision = &rec
 	s.ev.event(Event{Type: EvReceiptCreated, Hop: HopDesignReviewer, Task: h.task})
-	s.say("decision recorded. Resume the coordinator session with: continue after recorded decision")
+	vals := map[string]string{"RUN_ID": s.runID, "RECEIPT": filepath.Join(s.runtime, "owner-receipt.json"), "REVIEWED_TASK": h.task,
+		"RESULT_COMMIT": h.commit.String(), "DESIGN_SHA256": s.reviewSums[0], "REVIEW_SHA256": s.reviewSums[1], "WORKSPACE": s.workspace.Name,
+		"INSTANCE": s.workspace.Instance, "COORD_DIR": filepath.Join(s.runtime, "coord")}
+	prompt, err := renderTemplate(PhasePrompt2, s.templates[PhasePrompt2], vals)
+	if err != nil {
+		s.fail("templates_invalid", err)
+		return
+	}
+	s.rendered[PhasePrompt2] = prompt
+	if err := s.ev.writeFile("setup/"+PhasePrompt2, prompt); err != nil {
+		s.fail("evidence_write_failed", err)
+		return
+	}
+	s.manifest.Rendered = append(s.manifest.Rendered, FileHash{Name: "setup/" + PhasePrompt2, SHA256: sha256Hex(prompt)})
+	sort.Slice(s.manifest.Rendered, func(i, j int) bool { return s.manifest.Rendered[i].Name < s.manifest.Rendered[j].Name })
+	s.say("decision recorded: yes. Resuming the coordinator session for coding")
+	if err := s.launchPhase(2, prompt); err != nil {
+		s.fail(codeOf(err), err)
+	}
 }
 
 // runFinalTests checks the reviewer's unchanged tree and runs the final
-// tests on an export of the fourth result.
+// validation (tests, build, the ten CLI cases and go test -json) on an
+// export of the fourth result, within the one shared budget.
 func (s *supervisor) runFinalTests() {
 	coder, rev := s.hops[2], s.hops[3]
 	if coder.tree != rev.tree {
 		s.fail("reviewer_tree_changed", errors.New("the code reviewer's result tree differs from the coder's"))
 		return
 	}
-	run, out, errOut, err := runGoTests(s.command, s.goBin, s.pathEnv, filepath.Join(s.runtime, "final"), rev.files, rev.commit.String(), rev.tree.String())
-	s.finalTests = &run
-	s.ev.writeJSON("validation/final-test.json", run)
-	s.ev.writeFile("validation/final-stdout.txt", []byte(toValidUTF8(out)))
-	s.ev.writeFile("validation/final-stderr.txt", []byte(toValidUTF8(errOut)))
+	mark := func(typ, name string) int { return s.ev.event(Event{Type: typ, Code: name}).Seq }
+	v := runFinalValidation(s.command, s.w.Clock, s.goBin, s.pathEnv, filepath.Join(s.runtime, "final"), rev.files, rev.commit.String(), rev.tree.String(), mark)
+	s.validation = &v
+	s.finalTests = &v.Test
+	s.ev.writeJSON("validation/final-test.json", v.Test)
+	s.ev.writeFile("validation/final-stdout.txt", []byte(toValidUTF8(v.TestOut)))
+	s.ev.writeFile("validation/final-stderr.txt", []byte(toValidUTF8(v.TestErr)))
+	s.ev.writeJSON("validation/cases.json", v.Cases)
+	s.ev.writeFile(buildStdoutFile, []byte(toValidUTF8(v.BuildOut)))
+	s.ev.writeFile(buildStderrFile, []byte(toValidUTF8(v.BuildErr)))
+	s.ev.writeFile("validation/tests.jsonl", []byte(toValidUTF8(v.TestJSON)))
+	s.ev.writeFile("validation/test-json-stderr.txt", []byte(toValidUTF8(v.TestJSONEr)))
+	s.ev.writeJSON("validation/requirements.json", v.Reqs)
 	s.ev.event(Event{Type: EvFinalTests, Hop: HopCodeReviewer, Task: rev.task})
+	casesOK := v.Cases.Build.Started && v.Cases.Build.ExitCode == 0 && len(v.Cases.Cases) == len(FeatureCases)
+	for _, c := range v.Cases.Cases {
+		casesOK = casesOK && c.Pass
+	}
 	switch {
-	case err != nil:
-		s.fail("final_tests_failed", err)
-	case run.ExitCode != 0 || run.TimedOut:
-		s.fail("final_tests_failed", fmt.Errorf("go test exited %d", run.ExitCode))
+	case v.Err != nil || v.Test.ExitCode != 0 || v.Test.TimedOut || v.Test.Toolchain == "":
+		s.fail("final_tests_failed", fmt.Errorf("go test exited %d: %v", v.Test.ExitCode, v.Err))
+	case !casesOK && !v.Cases.Build.Started:
+		s.fail(CodeCaseFailed, errors.New("the CLI build did not start"))
+	case !casesOK && (v.Cases.Build.ExitCode != 0 || v.Cases.Build.TimedOut):
+		s.fail(CodeCaseFailed, fmt.Errorf("the CLI build exited %d (timed out %t); %s: %s", v.Cases.Build.ExitCode, v.Cases.Build.TimedOut,
+			buildStderrFile, contract.SafeText(string(v.BuildErr), maxBuildDiagnostic)))
+	case !casesOK:
+		s.fail(CodeCaseFailed, errors.New("a CLI feature case did not produce its required result"))
+	case len(v.Reqs.MissingTests) > 0 || len(v.Reqs.FailedTests) > 0 || !v.Reqs.RunSignature || !v.Reqs.TableTests || !v.Reqs.TestCallsRun:
+		s.fail(CodeTestMapping, errors.New("a required TestRun/<case-id> subtest or the run/table structure is missing or failing"))
+	case !v.Reqs.TestRunPassed:
+		s.fail(CodeValidationFail, fmt.Errorf("go test -json did not pass (exit %d, failures %v)", v.Reqs.TestRun.ExitCode, v.Reqs.TestFailures))
 	default:
 		s.complete = true
-		s.say("the chain is complete and the final tests passed. Close the coordinator session, place the owner files in %s, then run: %s finish --run %s",
-			filepath.Join(s.runtime, "owner"), s.w.Executable, s.runtime)
+		s.say("the chain is complete and the final validation passed")
 	}
 }
+
+// buildStdoutFile and buildStderrFile keep the final validation's build
+// output; maxBuildDiagnostic bounds the excerpt a failure prints.
+const (
+	buildStdoutFile    = "validation/build-stdout.txt"
+	buildStderrFile    = "validation/build-stderr.txt"
+	maxBuildDiagnostic = 2000
+)
 
 // writePrivateReadOnly creates p (new) with b, mode 0400.
 func writePrivateReadOnly(p string, b []byte) error {

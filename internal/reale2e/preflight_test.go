@@ -45,6 +45,17 @@ func TestAuthenticatedPreflight(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("preflights %v, want %v", got, want)
 	}
+	// A3: the gate passed and the baseline fingerprint was taken before
+	// any executable probe; the paid probes follow deployment.
+	types := eventTypesOf(t, f.bundle())
+	snap, probe, ready, auth := slices.Index(types, EvSnapshotTaken+":before"), slices.Index(types, EvVersionsChecked),
+		slices.Index(types, EvRolesReady), slices.Index(types, EvPreflightFinished)
+	if snap < 0 || probe < snap || ready < probe || auth < ready {
+		t.Fatalf("order %v", types)
+	}
+	if first := f.launcher.argv()[0]; first != fakeCallsheet+" version" {
+		t.Fatalf("first executable %q", first)
+	}
 	for i := range Hops {
 		v := readTask(t, f.bundle(), "preflight/"+hopDir(i))
 		r, _ := f.plane.role(Hops[i])

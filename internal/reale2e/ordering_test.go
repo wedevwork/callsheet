@@ -109,17 +109,18 @@ func TestDeadlinesStopWork(t *testing.T) {
 			}
 		}, result{"attempt_deadline_exceeded", HopDesignReviewer, 0}},
 		"yes after the owner timeout": {func(f *fakeWorld) {
-			f.coord.ownerInput = func(c *coordScript) {
-				f.clock.advance(21 * time.Minute)
-				c.s.handleLine("yes "+c.s.runID, true)
+			f.term.lines = nil
+			f.coord.before = func(c *coordScript) bool {
+				if c.s.owner == ownerAwaiting {
+					f.clock.advance(21 * time.Minute)
+					c.s.handleLine("yes", true)
+					return true
+				}
+				return false
 			}
 		}, result{"owner_decision_timeout", HopCoder, 2}},
 		"yes and the timeout ready together": {func(f *fakeWorld) {
-			f.coord.ownerInput = func(c *coordScript) {
-				f.clock.advance(21 * time.Minute)
-				typeLines(f, "yes "+c.s.runID)(c)
-			}
-			f.coord.before = holdForDecision(f)
+			f.term.onActivate = func() { f.clock.advance(21 * time.Minute) }
 		}, result{"owner_decision_timeout", HopCoder, 2}},
 	}
 	for name, tc := range cases {

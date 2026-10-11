@@ -6,27 +6,37 @@ import (
 	"strings"
 )
 
-// Version 1 evidence documents (design 12a-real-e2e, Evidence and
-// checker). The live collector writes them and the offline checker reads
-// them strictly (unknown fields, duplicate keys and unknown schema
-// identifiers are refused before any semantic check).
+// Evidence documents (design 12a-real-e2e, Evidence and checker, A3
+// Checker migration). The live collector writes them and the offline
+// checker reads them strictly (unknown fields, duplicate keys and unknown
+// schema identifiers are refused before any semantic check). A3 bumps the
+// manifest, launch, event-map, cleanup, coordinator-exit and report
+// schemas to v2; the task, dispatch, wait, decision, tree, test-run, log
+// and roles formats are unchanged; the environment, validation and audit
+// records are new (v1). A version 1 manifest is unsupported.
 
 // Schema identifiers.
 const (
-	ManifestSchema    = "callsheet-real-e2e/v1"
-	LaunchSchema      = "callsheet-real-e2e-launch/v1"
-	RolesSchema       = "callsheet-real-e2e-roles/v1"
-	DispatchSchema    = "callsheet-real-e2e-dispatch/v1"
-	WaitSchema        = "callsheet-real-e2e-wait/v1"
-	DecisionSchema    = "callsheet-real-e2e-decision/v1"
-	TreeSchema        = "callsheet-real-e2e-trees/v1"
-	TestRunSchema     = "callsheet-real-e2e-test-run/v1"
-	CleanupSchema     = "callsheet-real-e2e-cleanup/v1"
-	EventMapSchema    = "callsheet-real-e2e-event-map/v1"
-	AttestationSchema = "callsheet-real-e2e-setup-attestation/v1"
-	CoordExitSchema   = "callsheet-real-e2e-coordinator-exit/v1"
-	LogMetaSchema     = "callsheet-real-e2e-log/v1"
-	ReportSchema      = "callsheet-real-e2e-report/v1"
+	ManifestSchema     = "callsheet-real-e2e/v2"
+	ManifestSchemaV1   = "callsheet-real-e2e/v1"
+	LaunchSchema       = "callsheet-real-e2e-launch/v2"
+	RolesSchema        = "callsheet-real-e2e-roles/v1"
+	DispatchSchema     = "callsheet-real-e2e-dispatch/v1"
+	WaitSchema         = "callsheet-real-e2e-wait/v1"
+	DecisionSchema     = "callsheet-real-e2e-decision/v1"
+	TreeSchema         = "callsheet-real-e2e-trees/v1"
+	TestRunSchema      = "callsheet-real-e2e-test-run/v1"
+	CleanupSchema      = "callsheet-real-e2e-cleanup/v2"
+	EventMapSchema     = "callsheet-real-e2e-event-map/v2"
+	CoordExitSchema    = "callsheet-real-e2e-coordinator-exit/v2"
+	LogMetaSchema      = "callsheet-real-e2e-log/v1"
+	ReportSchema       = "callsheet-real-e2e-report/v2"
+	SnapshotSchema     = "callsheet-real-e2e-snapshot/v2"
+	DiffSchema         = "callsheet-real-e2e-environment-diff/v2"
+	ExecSchema         = "callsheet-real-e2e-exec/v1"
+	CasesSchema        = "callsheet-real-e2e-cases/v1"
+	RequirementsSchema = "callsheet-real-e2e-requirements/v1"
+	AuditSchema        = "callsheet-real-e2e-audit/v1"
 )
 
 // runIDRE is a run ID: UTC start second and 8 random hex digits.
@@ -91,16 +101,34 @@ type Manifest struct {
 	Workspace        WorkspaceRecord `json:"workspace"`
 	Templates        []FileHash      `json:"templates"`
 	Rendered         []FileHash      `json:"rendered"`
-	StartedAt        string          `json:"started_at"`
+	// Launches are the coordinator launch records written, in phase order.
+	Launches []FileHash `json:"launches"`
+	// ProtectedRoots are the canonical supplied --protect-root values,
+	// sorted, tokenized as in the environment snapshots.
+	ProtectedRoots []string `json:"protected_roots"`
+	// ProtectDepth is the discovery depth below each root (A3.2).
+	ProtectDepth int    `json:"protect_depth"`
+	StartedAt    string `json:"started_at"`
 }
 
-// LaunchRecord is setup/launch.json: the coordinator launch with personal
-// paths tokenized.
+// LaunchRecord is setup/launch-phase-N.json: one coordinator phase's exact
+// launch (private evidence) and its sanitized rendering. Argv is the real
+// argument vector after the executable (prompts included); Display
+// replaces local prefixes with tokens and each prompt with its hash.
 type LaunchRecord struct {
-	Schema         string   `json:"schema"`
-	SessionID      string   `json:"session_id"`
-	Argv           []string `json:"argv"`
-	CoordinatorDir string   `json:"coordinator_dir"`
+	Schema        string   `json:"schema"`
+	Phase         int      `json:"phase"`
+	Executable    string   `json:"executable"`
+	Argv          []string `json:"argv"`
+	Cwd           string   `json:"cwd"`
+	Display       []string `json:"display"`
+	ResumeSession string   `json:"resume_session"`
+	PromptSHA256  string   `json:"prompt_sha256"`
+	SystemSHA256  string   `json:"system_sha256"`
+	StartedSeq    int      `json:"started_seq"`
+	// WaitTemplates are the four rendered per-hop background wait
+	// commands (TASK_ID where the coordinator substitutes the task ID).
+	WaitTemplates []string `json:"wait_templates"`
 }
 
 // RoleSnapshot is one registered role as the plane reported it once ready.
@@ -221,93 +249,237 @@ type TestRun struct {
 	Files      []string `json:"files"`
 }
 
-// WaitHandleExit is one owner-reported coordinator wait handle's exit.
-type WaitHandleExit struct {
-	Handle   string `json:"handle"`
-	ExitCode int    `json:"exit_code"`
+// PhaseProcess is one coordinator phase's supervisor-observed process:
+// its captured PID (also its group), whether the leader was reaped and
+// the whole group was observed gone, and its exit.
+type PhaseProcess struct {
+	Phase      int    `json:"phase"`
+	PID        int    `json:"pid"`
+	Reaped     bool   `json:"reaped"`
+	GroupGone  bool   `json:"group_gone"`
+	ExitCode   *int   `json:"exit_code"`
+	Signal     string `json:"signal"`
+	StoppedBy  string `json:"stopped_by"`
+	StartedSeq int    `json:"started_seq"`
+	ExitedSeq  int    `json:"exited_seq"`
 }
 
-// CoordinatorExit is the owner's record of the owner-started processes
-// (supplied as owner/coordinator-exit.json, copied into cleanup.json).
+// CoordinatorExit is session/coordinator-exit.json: the supervisor's own
+// observation of the coordinator phases it started (never owner-written).
 type CoordinatorExit struct {
-	Schema         string           `json:"schema"`
-	SessionClosed  bool             `json:"session_closed"`
-	MCPChildExited bool             `json:"mcp_child_exited"`
-	WaitHandles    []WaitHandleExit `json:"wait_handles"`
+	Schema string         `json:"schema"`
+	Phases []PhaseProcess `json:"phases"`
 }
 
 // CleanupRecord is cleanup.json.
 type CleanupRecord struct {
-	Schema         string           `json:"schema"`
-	Processes      []ProcRecord     `json:"processes"`
-	CancelledTasks []string         `json:"cancelled_tasks"`
-	UnsettledTasks []string         `json:"unsettled_tasks"`
-	Owner          *CoordinatorExit `json:"owner"`
-	StartedAt      string           `json:"started_at"`
-	FinishedAt     string           `json:"finished_at"`
-	Complete       bool             `json:"complete"`
+	Schema         string       `json:"schema"`
+	Processes      []ProcRecord `json:"processes"`
+	CancelledTasks []string     `json:"cancelled_tasks"`
+	UnsettledTasks []string     `json:"unsettled_tasks"`
+	RuntimeRemoved bool         `json:"runtime_removed"`
+	StartedAt      string       `json:"started_at"`
+	FinishedAt     string       `json:"finished_at"`
+	Complete       bool         `json:"complete"`
 }
 
-// SetupAttestation is session/setup-attestation.json, the owner's
-// statement about the coordinator session's setup (trusted provenance,
-// not cryptographic proof).
-type SetupAttestation struct {
-	Schema                    string   `json:"schema"`
-	RunID                     string   `json:"run_id"`
-	SessionID                 string   `json:"session_id"`
-	ClaudeVersion             string   `json:"claude_version"`
-	FreshSession              bool     `json:"fresh_session"`
-	Resumed                   bool     `json:"resumed"`
-	EmptyCoordinatorDir       bool     `json:"empty_coordinator_dir"`
-	NoPriorConversation       bool     `json:"no_prior_conversation"`
-	NoExtraPrompt             bool     `json:"no_extra_prompt"`
-	NoUnrelatedInstructions   bool     `json:"no_unrelated_instructions"`
-	InstructionSourcesChecked bool     `json:"instruction_sources_checked"`
-	SetupInputs               []string `json:"setup_inputs"`
-	TranscriptExport          string   `json:"transcript_export"`
+// SourceRef points at an inclusive 1-based line span of a fixed bundle
+// file with that file's SHA-256.
+type SourceRef struct {
+	File      string `json:"file"`
+	SHA256    string `json:"sha256"`
+	FirstLine int    `json:"first_line"`
+	LastLine  int    `json:"last_line"`
 }
 
-// allowedSetupInputs are the only declared coordinator setup inputs.
-var allowedSetupInputs = []string{"runbook", "coordinator-prompt", "mcp-config"}
-
-// MapEvent is one owner-attested transcript event: a kind, its hop/task
-// bindings and an inclusive 1-based line span of the transcript. Every
-// field is explicit in every event ("" or false or 0 where it does not
-// apply): an omitted user_message_between or budget_ms must never read as
-// an attested "none".
-type MapEvent struct {
-	Kind               string `json:"kind"`
-	Hop                string `json:"hop"`
-	Task               string `json:"task"`
-	Handle             string `json:"handle"`
-	Background         bool   `json:"background"`
-	AutomaticWake      bool   `json:"automatic_wake"`
-	UserMessageBetween bool   `json:"user_message_between"`
-	BudgetMS           int    `json:"budget_ms"`
-	Recovery           bool   `json:"recovery"`
-	Lines              []int  `json:"lines"`
+// MapEntry is one machine-derived session fact.
+type MapEntry struct {
+	Kind      string `json:"kind"`
+	Phase     int    `json:"phase"`
+	SessionID string `json:"session_id"`
+	Hop       string `json:"hop"`
+	Task      string `json:"task"`
+	ToolUseID string `json:"tool_use_id"`
+	Handle    string `json:"handle"`
+	Seq       int    `json:"seq"`
+	// Automatic marks a wake consumed with no ordinary user input between.
+	Automatic bool        `json:"automatic"`
+	Sources   []SourceRef `json:"sources"`
 }
 
-// EventMap is session/event-map.json.
+// MapFinding is a derivation finding: a fixed code, the tool-use it is
+// linked to (when any) and its sources.
+type MapFinding struct {
+	Code      string      `json:"code"`
+	ToolUseID string      `json:"tool_use_id"`
+	Tool      string      `json:"tool"`
+	Sources   []SourceRef `json:"sources"`
+}
+
+// EventMap is session/event-map.json, derived by the supervisor from the
+// raw phase streams, transcript snapshots, launches and its own events
+// (never attested).
 type EventMap struct {
-	Schema           string     `json:"schema"`
-	RunID            string     `json:"run_id"`
-	SessionID        string     `json:"session_id"`
-	TranscriptSHA256 string     `json:"transcript_sha256"`
-	AttestedByOwner  bool       `json:"attested_by_owner"`
-	Events           []MapEvent `json:"events"`
+	Schema    string       `json:"schema"`
+	RunID     string       `json:"run_id"`
+	SessionID string       `json:"session_id"`
+	Source    string       `json:"source"`
+	Entries   []MapEntry   `json:"entries"`
+	Findings  []MapFinding `json:"findings"`
+	Init      []InitRecord `json:"init"`
 }
+
+// InitRecord is one phase's loaded-configuration evidence from its init
+// record, kept as plain evidence and never judged.
+type InitRecord struct {
+	Phase          int      `json:"phase"`
+	SessionID      string   `json:"session_id"`
+	Model          string   `json:"model"`
+	PermissionMode string   `json:"permission_mode"`
+	Tools          []string `json:"tools"`
+	MCPServers     []string `json:"mcp_servers"`
+}
+
+// MapSourceDerived is the event map's only source.
+const MapSourceDerived = "machine-derived"
 
 // Event-map kinds.
 const (
-	MapSessionLaunch = "session_launch"
-	MapDispatch      = "dispatch"
-	MapWaitStart     = "wait_start"
-	MapWaitConsumed  = "wait_consumed"
-	MapOwnerPause    = "owner_gate_pause"
-	MapOwnerResume   = "owner_resume"
-	MapMCPWait       = "mcp_wait"
-	MapFinalResult   = "final_result"
+	MapLaunch       = "launch"
+	MapDispatch     = "dispatch"
+	MapWaitStart    = "wait_start"
+	MapWake         = "wake"
+	MapWaitConsumed = "wait_consumed"
+	MapPause        = "pause"
+	MapDecision     = "decision"
+	MapResume       = "resume"
+	MapFinalResult  = "final_result"
+)
+
+// ExecRecord binds one final-validation command: argv, input tree and
+// commit, output hashes, the supervisor sequence of its start and end,
+// its exit and the deadline it ran under.
+type ExecRecord struct {
+	Schema       string   `json:"schema"`
+	Name         string   `json:"name"`
+	Argv         []string `json:"argv"`
+	Commit       string   `json:"commit"`
+	Tree         string   `json:"tree"`
+	StdoutSHA256 string   `json:"stdout_sha256"`
+	StderrSHA256 string   `json:"stderr_sha256"`
+	StdoutBytes  int      `json:"stdout_bytes"`
+	StderrBytes  int      `json:"stderr_bytes"`
+	Truncated    bool     `json:"truncated"`
+	StartSeq     int      `json:"start_seq"`
+	EndSeq       int      `json:"end_seq"`
+	ExitCode     int      `json:"exit_code"`
+	Signal       string   `json:"signal"`
+	TimedOut     bool     `json:"timed_out"`
+	DeadlineMS   int64    `json:"deadline_ms"`
+	DurationMS   int64    `json:"duration_ms"`
+	Started      bool     `json:"started"`
+}
+
+// CaseResult is one CLI feature case run against the built program.
+type CaseResult struct {
+	ID     string     `json:"id"`
+	Exec   ExecRecord `json:"exec"`
+	Stdout string     `json:"stdout"`
+	Stderr string     `json:"stderr"`
+	Pass   bool       `json:"pass"`
+	Code   string     `json:"code"`
+}
+
+// CasesRecord is validation/cases.json.
+type CasesRecord struct {
+	Schema string       `json:"schema"`
+	Commit string       `json:"commit"`
+	Tree   string       `json:"tree"`
+	Build  ExecRecord   `json:"build"`
+	Cases  []CaseResult `json:"cases"`
+}
+
+// RequirementRow maps one feature case to its committed evidence.
+type RequirementRow struct {
+	CaseID       string `json:"case_id"`
+	RequestPath  string `json:"request_path"`
+	RequestSHA   string `json:"request_sha256"`
+	DesignPath   string `json:"design_path"`
+	DesignSHA    string `json:"design_sha256"`
+	MainSHA      string `json:"main_sha256"`
+	TestSHA      string `json:"test_sha256"`
+	TestName     string `json:"test_name"`
+	TestLines    []int  `json:"test_lines"`
+	TestResult   string `json:"test_result"`
+	CLICase      string `json:"cli_case"`
+	CLIPass      bool   `json:"cli_pass"`
+	MappingFound bool   `json:"mapping_found"`
+}
+
+// RequirementsRecord is validation/requirements.json: the supervisor's
+// requirement-to-test map plus the source-structure findings.
+type RequirementsRecord struct {
+	Schema        string           `json:"schema"`
+	Commit        string           `json:"commit"`
+	TestRun       ExecRecord       `json:"test_run"`
+	RunSignature  bool             `json:"run_signature"`
+	TableTests    bool             `json:"table_tests"`
+	TestCallsRun  bool             `json:"test_calls_run"`
+	Rows          []RequirementRow `json:"rows"`
+	MissingTests  []string         `json:"missing_tests"`
+	FailedTests   []string         `json:"failed_tests"`
+	ParseFindings []string         `json:"parse_findings"`
+	// TestRunPassed: the whole go test -json run exited 0 cleanly,
+	// untruncated, with a well-formed stream and no failing test or
+	// package; TestFailures lists every failing test and package.
+	TestRunPassed bool     `json:"test_run_passed"`
+	TestFailures  []string `json:"test_failures"`
+}
+
+// AuditRef is one audit evidence pointer.
+type AuditRef struct {
+	File   string `json:"file"`
+	SHA256 string `json:"sha256"`
+	Lines  []int  `json:"lines"`
+	Task   string `json:"task"`
+	Commit string `json:"commit"`
+}
+
+// AuditRow is one ordered audit row.
+type AuditRow struct {
+	ID          string     `json:"id"`
+	FPs         []string   `json:"fps"`
+	Layer       string     `json:"layer"`
+	Requirement string     `json:"requirement"`
+	Observed    string     `json:"observed"`
+	Evidence    []AuditRef `json:"evidence"`
+	Verdict     string     `json:"verdict"`
+	Correction  string     `json:"correction"`
+	Criteria    []string   `json:"criteria"`
+}
+
+// Audit is audit.json.
+type Audit struct {
+	Schema       string     `json:"schema"`
+	RunID        string     `json:"run_id"`
+	ReportSHA256 string     `json:"report_sha256"`
+	Scope        string     `json:"scope"`
+	Mechanical   string     `json:"mechanical"`
+	ResultReview string     `json:"result_review"`
+	Sources      []FileHash `json:"sources"`
+	Rows         []AuditRow `json:"rows"`
+}
+
+// Audit layers, verdicts and fixed statements.
+const (
+	LayerMechanical    = "mechanical"
+	LayerJudgment      = "judgment"
+	VerdictCorrect     = "correct"
+	VerdictIncorrect   = "incorrect"
+	VerdictUnobserved  = "unobserved"
+	AuditScope         = "mechanical-and-deterministic-results"
+	PendingReview      = "needs owner/coordinator review"
+	JudgmentReportLine = "Result judgments: needs owner/coordinator review"
 )
 
 // markerFor is the run marker a hop's task carries as its first payload

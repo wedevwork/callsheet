@@ -317,10 +317,14 @@ var WorkspaceCoverageManifest = []CoverageEntry{
 	{Group: GroupChanged, File: modulePath + "/internal/reale2e/strictjson.go"},
 	{Group: GroupChanged, File: modulePath + "/internal/reale2e/supervisor.go"},
 	{Group: GroupChanged, File: modulePath + "/internal/reale2e/templates.go"},
-	// Design 12a-real-e2e amendment A2: the coordinator settings snapshot
-	// and the background wait helper, new untagged files, whole.
-	{Group: GroupChanged, File: modulePath + "/internal/reale2e/settings.go"},
-	{Group: GroupChanged, File: modulePath + "/internal/reale2e/wait.go"},
+	// Design 12a-real-e2e amendment A3: the post-run audit, the owner
+	// environment fingerprints, the machine-derived session evidence and
+	// the deterministic feature checks, new untagged files, whole (A3
+	// retired A2's settings.go and wait.go).
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/audit.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/environment.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/session.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/validate.go"},
 	{Group: GroupChanged, File: modulePath + "/internal/devcheck/platform.go"},
 }
 

@@ -2,6 +2,7 @@ package reale2e
 
 import (
 	"bytes"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -36,11 +37,18 @@ const (
 	CritFinalTests = "final_tests"
 	CritCleanup    = "cleanup"
 	CritDeadlines  = "deadlines"
+	// A3.
+	CritOwnerEnv = "owner_environment"
+	CritResult   = "result_correctness"
 )
 
 // criteriaOrder is the report order.
 var criteriaOrder = []string{CritManifest, CritEvents, CritRoles, CritPreflight, CritSetup, CritEventMap, CritWaits, CritHops,
-	CritChain, CritArtifacts, CritOwner, CritAdmissions, CritGrok, CritFinalTests, CritCleanup, CritDeadlines}
+	CritChain, CritArtifacts, CritOwner, CritAdmissions, CritGrok, CritFinalTests, CritResult, CritCleanup, CritOwnerEnv, CritDeadlines}
+
+// CodeDerivedMismatch is a stored report or audit that differs from its
+// recomputation.
+const CodeDerivedMismatch = "derived_report_mismatch"
 
 // Criterion is one predicate's result: pass with no codes, or fail with
 // its fixed failure codes.
@@ -59,6 +67,7 @@ type checker struct {
 	commits [4]*object.Commit
 	files   [5]map[string][]byte // seed, hop 1..4
 	seed    *object.Commit
+	derived EventMap
 }
 
 func (c *checker) fail(crit, code string) {
@@ -70,13 +79,45 @@ func (c *checker) fail(crit, code string) {
 // Check validates b and returns its criteria (PASS only when every
 // criterion passes).
 func Check(b *Bundle) []Criterion {
+	c := newChecker(b)
+	c.run()
+	out := c.criteria()
+	// The stored derived outputs, when present, must equal their
+	// recomputation from the source evidence (never trusted).
+	if stored, ok := b.Files["report.json"]; ok {
+		r := BuildReport(b, out)
+		data, _ := encodeJSON(r)
+		mismatch := !bytes.Equal(stored, data) || !bytes.Equal(b.Files["report.txt"], []byte(RenderText(r)))
+		if aj, ok := b.Files["audit.json"]; ok || len(b.Files["audit.md"]) > 0 {
+			au := BuildAudit(b, r)
+			want, _ := encodeJSON(au)
+			mismatch = mismatch || !ok || !bytes.Equal(aj, want) || !bytes.Equal(b.Files["audit.md"], []byte(RenderAudit(au)))
+		} else {
+			mismatch = true
+		}
+		if mismatch {
+			c.fail(CritResult, CodeDerivedMismatch)
+			out = c.criteria()
+		}
+	}
+	return out
+}
+
+// newChecker returns a checker of b with its derived facts loaded.
+func newChecker(b *Bundle) *checker {
 	c := &checker{b: b, codes: map[string][]string{}}
+	c.loadHops()
+	c.derived = DeriveSession(sessionInputOf(b))
+	return c
+}
+
+// run evaluates every criterion.
+func (c *checker) run() {
 	c.manifest()
 	c.events()
 	c.roles()
 	c.preflight()
 	c.setup()
-	c.loadHops()
 	c.eventMap()
 	c.waits()
 	c.hops()
@@ -86,18 +127,41 @@ func Check(b *Bundle) []Criterion {
 	c.admissions()
 	c.grok()
 	c.finalTests()
+	c.resultCorrectness()
 	c.cleanup()
+	c.ownerEnvironment()
 	c.deadlines()
+}
+
+// criteria returns the criteria in report order.
+func (c *checker) criteria() []Criterion {
 	out := make([]Criterion, 0, len(criteriaOrder))
 	for _, id := range criteriaOrder {
 		cr := Criterion{ID: id, Result: "pass", Codes: []string{}}
-		if codes := c.codes[id]; len(codes) > 0 {
+		if codes := slices.Clone(c.codes[id]); len(codes) > 0 {
 			sort.Strings(codes)
 			cr.Result, cr.Codes = "fail", codes
 		}
 		out = append(out, cr)
 	}
 	return out
+}
+
+// sessionInputOf is the derivation input stored in a bundle.
+func sessionInputOf(b *Bundle) SessionInput {
+	in := SessionInput{Launches: b.Launches, Events: b.Events}
+	if b.Manifest != nil {
+		in.RunID = b.Manifest.RunID
+	}
+	for i := 0; i < 2; i++ {
+		if d, ok := b.Files[phaseStreamFiles[i]]; ok {
+			in.Streams[i] = d
+		}
+		if d, ok := b.Files[transcriptFiles[i]]; ok {
+			in.Transcripts[i] = d
+		}
+	}
+	return in
 }
 
 // passed reports whether every criterion passed.
@@ -179,18 +243,46 @@ func (c *checker) manifest() {
 			c.fail(CritManifest, "rendered_hash_mismatch")
 		}
 	}
-	if !slices.Equal(names, renderedInventory()) {
+	if !slices.Equal(names, renderedInventory(c.b.Decision != nil && c.b.Decision.Decision == DecisionYes)) {
 		c.fail(CritManifest, "rendered_inventory_mismatch")
+	}
+	// The launch inventory is exactly the launch records present, in phase
+	// order, each with its hash.
+	names = nil
+	for _, l := range m.Launches {
+		names = append(names, l.Name)
+		if data, ok := c.b.Files[l.Name]; !ok || sha256Hex(data) != l.SHA256 {
+			c.fail(CritManifest, "launch_hash_mismatch")
+		}
+	}
+	var launched []string
+	for _, f := range launchFiles {
+		if _, ok := c.b.Files[f]; ok {
+			launched = append(launched, f)
+		}
+	}
+	if !slices.Equal(names, launched) {
+		c.fail(CritManifest, "launch_inventory_mismatch")
 	}
 	if _, ok := parseTime(m.StartedAt); !ok {
 		c.fail(CritManifest, "started_at_invalid")
 	}
+	// The roots are in canonical-path order, which their tokens need not
+	// follow lexically; only uniqueness is checkable here.
+	if m.ProtectedRoots == nil || len(slices.Compact(slices.Sorted(slices.Values(m.ProtectedRoots)))) != len(m.ProtectedRoots) {
+		c.fail(CritManifest, "protected_roots_invalid")
+	}
 }
 
-// renderedInventory is the exact sorted list of rendered setup files (A2:
-// the coordinator settings snapshot too).
-func renderedInventory() []string {
-	out := append([]string{"setup/coordinator-prompt.md", "setup/flow.json", "setup/mcp-config.json", SettingsEvidence}, manualFiles()...)
+// renderedInventory is the exact sorted list of rendered setup files: the
+// coordinator instructions, both phase prompts (phase 2's exists once the
+// owner answered yes), the flow, the sanitized MCP configuration and every
+// role manual.
+func renderedInventory(withPhase2 bool) []string {
+	out := append([]string{"setup/coordinator-prompt.md", "setup/" + PhasePrompt1, "setup/flow.json", "setup/mcp-config.json"}, manualFiles()...)
+	if withPhase2 {
+		out = append(out, "setup/"+PhasePrompt2)
+	}
 	sort.Strings(out)
 	return out
 }
@@ -245,13 +337,40 @@ func (c *checker) events() {
 		c.fail(CritEvents, "run_started_not_first")
 	}
 	for _, typ := range []string{EvPreflightStarted, EvVersionsChecked, EvRuntimeCreated, EvRolesRegistered, EvSidecarsReconnected, EvRolesReady,
-		EvSeedCreated, EvBaselineTests, EvCoordinatorReady, EvFinalTests, EvCollectionStarted, EvCleanupStarted, EvCleanupFinished} {
+		EvSeedCreated, EvBaselineTests, EvCoordinatorReady, EvFinalTests, EvCollectionStarted, EvCleanupStarted, EvCleanupFinished, EvRuntimeRemoved,
+		EvAwaitingOwner, EvOwnerDecision, EvReceiptCreated} {
 		if len(c.eventsOf(typ)) != 1 {
+			c.fail(CritEvents, "required_event_missing")
+		}
+	}
+	for _, typ := range []string{EvSnapshotTaken, EvPhaseStarted, EvPhaseExited, EvTranscriptCaptured} {
+		if len(c.eventsOf(typ)) != 2 {
 			c.fail(CritEvents, "required_event_missing")
 		}
 	}
 	if len(c.eventsOf(EvAttemptFailed)) != 0 {
 		c.fail(CritEvents, "attempt_failed")
+	}
+	// A3 lifecycle order: the baseline fingerprint before any probe; phase
+	// 1, its exit, the prompt, the decision, the receipt, phase 2 and its
+	// exit; collection, cleanup, runtime removal and the final fingerprint.
+	seq := func(typ, handle, code string) int {
+		for _, e := range evs {
+			if e.Type == typ && (handle == "" || e.Handle == handle) && (code == "" || e.Code == code) {
+				return e.Seq
+			}
+		}
+		return 0
+	}
+	order := []int{seq(EvPreflightStarted, "", ""), seq(EvSnapshotTaken, "", "before"), seq(EvVersionsChecked, "", ""), seq(EvCoordinatorReady, "", ""),
+		seq(EvPhaseStarted, phaseHandle(1), ""), seq(EvPhaseExited, phaseHandle(1), ""), seq(EvAwaitingOwner, "", ""), seq(EvOwnerDecision, "", ""),
+		seq(EvReceiptCreated, "", ""), seq(EvPhaseStarted, phaseHandle(2), ""), seq(EvPhaseExited, phaseHandle(2), ""), seq(EvCollectionStarted, "", ""),
+		seq(EvCleanupFinished, "", ""), seq(EvSnapshotTaken, "", "after")}
+	for i := 1; i < len(order); i++ {
+		if order[i] == 0 || order[i] <= order[i-1] {
+			c.fail(CritEvents, "lifecycle_out_of_order")
+			break
+		}
 	}
 }
 
@@ -343,142 +462,73 @@ func (c *checker) preflight() {
 	}
 }
 
-// launchForbidden are coordinator launch flags that resume a session,
-// change authentication or bypass permissions.
-var launchForbidden = []string{"--resume", "-r", "--continue", "-c", "--bare", "--dangerously-skip-permissions", "--fork-session",
-	"--permission-mode", "--allow-dangerously-skip-permissions", "--safe-mode", "--disable-slash-commands"}
-
-// launchForbiddenEquals are forbidden flags also refused in their
-// --flag=value form (A2: safe mode would hide, and disabled slash commands
-// would prevent, the owner's required built-in checks).
-var launchForbiddenEquals = []string{"--resume=", "--permission-mode=", "--safe-mode=", "--disable-slash-commands="}
-
-// launchSettingFlags are A2's required launch flags and their exact
-// recorded values: each must appear exactly once as a separate flag and
-// value, never as --flag=value.
-var launchSettingFlags = map[string]struct{ value, code string }{
-	"--setting-sources": {SettingSources, "setting_sources_invalid"},
-	"--settings":        {SettingsArg, "settings_flag_invalid"},
+// expectedArgv is phase p's only permitted launch shape: the stream-json
+// print phase with the session-only sandbox-off settings, the generated
+// MCP configuration and the rendered instructions (phase 2 adds --resume
+// with the phase-1 session); nothing else, so no bypass, session pinning,
+// settings-source filter, safe mode or MCP isolation.
+func expectedArgv(p int, prompt, mcpPath, system, session string) []string {
+	argv := []string{"-p", prompt, "--output-format", "stream-json", "--verbose", "--settings", SandboxOffSettings,
+		"--mcp-config", mcpPath, "--append-system-prompt", system}
+	if p == 2 {
+		argv = append(argv, "--resume", session)
+	}
+	return argv
 }
 
-// launchSettings checks A2's two settings flags in a recorded argv.
-func (c *checker) launchSettings(argv []string) {
-	seen := map[string]int{}
-	for i, arg := range argv {
-		for flag, want := range launchSettingFlags {
-			switch {
-			case arg == flag:
-				seen[flag]++
-				if i+1 >= len(argv) || argv[i+1] != want.value {
-					c.fail(CritSetup, want.code)
-				}
-			case strings.HasPrefix(arg, flag+"="):
-				c.fail(CritSetup, want.code)
-			}
-		}
-	}
-	for flag, want := range launchSettingFlags {
-		if seen[flag] != 1 {
-			c.fail(CritSetup, want.code)
-		}
-	}
-}
-
-// settingsSnapshot checks A2's coordinator settings snapshot: present,
-// valid sandbox-only settings, and exactly one manifest rendered row with
-// its SHA-256; a runtime copy changed during the session fails too.
-func (c *checker) settingsSnapshot() {
-	data, ok := c.b.Files[SettingsEvidence]
-	switch {
-	case !ok:
-		c.fail(CritSetup, "coordinator_settings_missing")
-	case ValidateCoordinatorSettings(data) != nil:
-		c.fail(CritSetup, "coordinator_settings_invalid")
-	}
-	rows := 0
-	if m := c.b.Manifest; m != nil {
-		for _, r := range m.Rendered {
-			if r.Name == SettingsEvidence {
-				rows++
-				if !ok || r.SHA256 != sha256Hex(data) {
-					c.fail(CritSetup, "coordinator_settings_hash_mismatch")
-				}
-			}
-		}
-	}
-	if rows != 1 {
-		c.fail(CritSetup, "coordinator_settings_hash_mismatch")
-	}
-	for _, e := range c.eventsOf(EvAttemptFailed) {
-		if e.Code == codeSettingsModified {
-			c.fail(CritSetup, codeSettingsModified)
-		}
-	}
-}
-
+// setup (A3): the two permitted launch shapes with the rendered prompt
+// bytes and one MCP configuration, the same executable, cwd and wait
+// templates; phase 2 resumes the session phase 1 reported, observed again
+// in phase 2's init; both phases' supervisor-observed exits are 0 with
+// their groups gone.
 func (c *checker) setup() {
-	l, a, m := c.b.Launch, c.b.Attestation, c.b.Manifest
-	if l == nil {
-		c.fail(CritSetup, "launch_missing")
-	} else {
-		if !sessionIDRE.MatchString(l.SessionID) {
-			c.fail(CritSetup, "session_id_invalid")
-		}
-		required := map[string]bool{"--session-id": false, "--mcp-config": false, "--strict-mcp-config": false, "--append-system-prompt": false}
-		for i, arg := range l.Argv {
-			if _, ok := required[arg]; ok {
-				required[arg] = true
-			}
-			forbidden := slices.Contains(launchForbidden, arg)
-			for _, p := range launchForbiddenEquals {
-				forbidden = forbidden || strings.HasPrefix(arg, p)
-			}
-			if forbidden {
-				c.fail(CritSetup, "launch_flag_forbidden")
-			}
-			if arg == "--session-id" && (i+1 >= len(l.Argv) || l.Argv[i+1] != l.SessionID) {
-				c.fail(CritSetup, "session_id_mismatch")
-			}
-		}
-		for _, ok := range required {
-			if !ok {
-				c.fail(CritSetup, "launch_incomplete")
-			}
-		}
-		c.launchSettings(l.Argv)
-	}
-	c.settingsSnapshot()
-	for _, f := range []string{"setup/coordinator-prompt.md", "setup/mcp-config.json"} {
+	for _, f := range []string{"setup/coordinator-prompt.md", "setup/mcp-config.json", "setup/" + PhasePrompt1} {
 		if len(c.b.Files[f]) == 0 {
 			c.fail(CritSetup, "setup_file_missing")
 		}
 	}
-	if len(transcriptLines(c.b.Files["session/transcript.jsonl"])) == 0 {
-		c.fail(CritSetup, "transcript_missing")
-	}
-	if a == nil {
-		c.fail(CritSetup, "attestation_missing")
+	sid := c.derived.SessionID
+	system := string(c.b.Files["setup/coordinator-prompt.md"])
+	l1, l2 := c.b.Launches[0], c.b.Launches[1]
+	if l1 == nil || l2 == nil {
+		c.fail(CritSetup, "launch_missing")
 		return
 	}
-	if m == nil || a.RunID != m.RunID || l == nil || a.SessionID != l.SessionID {
-		c.fail(CritSetup, "attestation_binding_mismatch")
-	}
-	if a.Resumed || !a.FreshSession {
-		c.fail(CritSetup, "session_resumed")
-	}
-	if !a.EmptyCoordinatorDir || !a.NoPriorConversation || !a.NoExtraPrompt || !a.NoUnrelatedInstructions || !a.InstructionSourcesChecked {
-		c.fail(CritSetup, "setup_not_clean")
-	}
-	if len(a.SetupInputs) == 0 {
-		c.fail(CritSetup, "setup_inputs_missing")
-	}
-	for _, in := range a.SetupInputs {
-		if !slices.Contains(allowedSetupInputs, in) {
-			c.fail(CritSetup, "undeclared_setup_input")
+	mcp := ""
+	for i, a := range l1.Argv {
+		if i > 0 && l1.Argv[i-1] == "--mcp-config" {
+			mcp = a
 		}
 	}
-	if strings.TrimSpace(a.ClaudeVersion) == "" || strings.TrimSpace(a.TranscriptExport) == "" {
-		c.fail(CritSetup, "attestation_incomplete")
+	prompts := [2]string{string(c.b.Files["setup/"+PhasePrompt1]), string(c.b.Files["setup/"+PhasePrompt2])}
+	for i, l := range []*LaunchRecord{l1, l2} {
+		want := expectedArgv(i+1, prompts[i], mcp, system, sid)
+		if l.Phase != i+1 || !slices.Equal(l.Argv, want) || !filepath.IsAbs(mcp) || filepath.Base(mcp) != "mcp.json" ||
+			l.PromptSHA256 != sha256Hex([]byte(prompts[i])) || l.SystemSHA256 != sha256Hex([]byte(system)) {
+			c.fail(CritSetup, "launch_shape_invalid")
+		}
+		if l.Executable != l1.Executable || l.Cwd != l1.Cwd || !slices.Equal(l.WaitTemplates, l1.WaitTemplates) || len(l.WaitTemplates) != len(Hops) {
+			c.fail(CritSetup, "launch_shape_invalid")
+		}
+	}
+	for _, w := range l1.WaitTemplates {
+		if !strings.Contains(system, w) {
+			c.fail(CritSetup, "launch_shape_invalid")
+		}
+	}
+	if !sessionIDRE.MatchString(sid) || l1.ResumeSession != "" || l2.ResumeSession != sid || len(c.derived.Init) != 2 || c.derived.Init[1].SessionID != sid {
+		c.fail(CritSetup, "session_resume_mismatch")
+	}
+	ce := c.b.CoordExit
+	if ce == nil || len(ce.Phases) != 2 {
+		c.fail(CritSetup, "coordinator_exit_unobserved")
+		return
+	}
+	for i, p := range ce.Phases {
+		if p.Phase != i+1 || !p.Reaped || !p.GroupGone || p.ExitCode == nil || *p.ExitCode != 0 || p.Signal != "" || p.PID <= 0 ||
+			p.StartedSeq != c.b.Launches[i].StartedSeq || p.ExitedSeq <= p.StartedSeq {
+			c.fail(CritSetup, "coordinator_exit_nonzero")
+		}
 	}
 }
 
@@ -522,57 +572,65 @@ func (c *checker) hopTask(i int) string {
 	return c.views[i].TaskID
 }
 
-// mapCanonical is the event map's required kinds in their required order:
-// each entry is a kind and, for hop-bound kinds, the 0-based hop.
+// mapStep is one required event-map entry: a kind and, for hop-bound
+// kinds, the 0-based hop.
 type mapStep struct {
 	kind string
 	hop  int
 }
 
+// canonicalMap is the event map's required entries in their required
+// order (a hop's wake, when observed, sits between its wait start and its
+// consumption and is not itself required for every hop).
 func canonicalMap() []mapStep {
-	steps := []mapStep{{MapSessionLaunch, -1}}
+	steps := []mapStep{{MapLaunch, -1}}
 	for i := range Hops {
 		if i == 2 {
-			steps = append(steps, mapStep{MapOwnerPause, -1}, mapStep{MapOwnerResume, -1})
+			steps = append(steps, mapStep{MapPause, -1}, mapStep{MapDecision, -1}, mapStep{MapResume, -1})
 		}
 		steps = append(steps, mapStep{MapDispatch, i}, mapStep{MapWaitStart, i}, mapStep{MapWaitConsumed, i})
 	}
 	return append(steps, mapStep{MapFinalResult, -1})
 }
 
+// eventMap (A3): the stored map is re-derived from the raw phase streams,
+// transcript snapshots, launches and supervisor events and must equal the
+// derivation; it is machine-derived with every source reference bound to
+// a fixed bundle file's hash and line span, holds the required entries in
+// order and has no finding (each finding's code fails the criterion).
 func (c *checker) eventMap() {
 	em, m := c.b.EventMap, c.b.Manifest
 	if em == nil {
 		c.fail(CritEventMap, "event_map_missing")
-		return
+	} else {
+		stored, _ := encodeJSON(em)
+		derived, _ := encodeJSON(c.derived)
+		if !bytes.Equal(stored, derived) {
+			c.fail(CritEventMap, "event_map_mismatch")
+		}
+		if em.Source != MapSourceDerived {
+			c.fail(CritEventMap, "event_map_not_derived")
+		}
 	}
-	data := c.b.Files["session/transcript.jsonl"]
-	lines := transcriptLines(data)
-	if !em.AttestedByOwner {
-		c.fail(CritEventMap, "event_map_not_attested")
-	}
-	if m == nil || em.RunID != m.RunID || c.b.Launch == nil || em.SessionID != c.b.Launch.SessionID || em.TranscriptSHA256 != sha256Hex(data) {
+	d := c.derived
+	if m == nil || d.RunID != m.RunID || !sessionIDRE.MatchString(d.SessionID) {
 		c.fail(CritEventMap, "event_map_binding_mismatch")
 	}
-	known := map[string]bool{MapSessionLaunch: true, MapDispatch: true, MapWaitStart: true, MapWaitConsumed: true, MapOwnerPause: true,
-		MapOwnerResume: true, MapMCPWait: true, MapFinalResult: true}
-	var ordered []MapEvent
-	for _, e := range em.Events {
-		if !known[e.Kind] {
-			c.fail(CritEventMap, "event_kind_unknown")
-			continue
-		}
-		if len(e.Lines) != 2 || e.Lines[0] < 1 || e.Lines[1] < e.Lines[0] || e.Lines[1] > len(lines) {
-			c.fail(CritEventMap, "transcript_span_invalid")
-			continue
-		}
-		for _, l := range lines[e.Lines[0]-1 : e.Lines[1]] {
-			if !validJSONLine(l) {
-				c.fail(CritEventMap, "transcript_span_invalid")
-				break
+	for _, f := range d.Findings {
+		c.fail(CritEventMap, f.Code)
+	}
+	allowed := map[string]bool{phaseStreamFiles[0]: true, phaseStreamFiles[1]: true, transcriptFiles[0]: true, transcriptFiles[1]: true}
+	for _, e := range d.Entries {
+		for _, s := range e.Sources {
+			data, ok := c.b.Files[s.File]
+			if !allowed[s.File] || !ok || s.SHA256 != sha256Hex(data) || s.FirstLine < 1 || s.LastLine < s.FirstLine || s.LastLine > len(transcriptLines(data)) {
+				c.fail(CritEventMap, "source_span_invalid")
 			}
 		}
-		if e.Kind != MapMCPWait {
+	}
+	var ordered []MapEntry
+	for _, e := range d.Entries {
+		if e.Kind != MapWake {
 			ordered = append(ordered, e)
 		}
 	}
@@ -581,68 +639,76 @@ func (c *checker) eventMap() {
 		c.fail(CritEventMap, "event_map_incomplete")
 		return
 	}
-	prev := 0
 	for i, s := range steps {
 		e := ordered[i]
-		ok := e.Kind == s.kind
+		ok := e.Kind == s.kind && e.SessionID == d.SessionID
 		if s.hop >= 0 {
 			ok = ok && e.Hop == Hops[s.hop] && e.Task != "" && e.Task == c.hopTask(s.hop)
-			if s.kind != MapDispatch {
-				ok = ok && e.Handle == waitHandle(s.hop)
-			}
 		}
 		if !ok {
 			c.fail(CritEventMap, "event_map_incomplete")
 			return
 		}
-		if len(e.Lines) == 2 && e.Lines[0] < prev {
-			c.fail(CritEventMap, "event_map_out_of_order")
-		}
-		if len(e.Lines) == 2 {
-			prev = e.Lines[0]
+		if e.Kind == MapDispatch {
+			if dr := c.b.Hops[s.hop].Dispatch; dr == nil || dr.ObservedSeq != e.Seq {
+				c.fail(CritEventMap, "dispatch_not_observed")
+			}
 		}
 	}
 }
 
+// waits (A3): every hop's direct CLI background wait (the rendered
+// template run with run_in_background, its handle returned), its raw
+// redirected files reparsed into exactly the stored wait record, its
+// consumption after the wait started, and at least one automatic wake (a
+// vendor completion notification consumed with no ordinary user input
+// between). A long blocking MCP call is a finding of the derivation.
 func (c *checker) waits() {
-	em := c.b.EventMap
+	d := c.derived
 	wakes := 0
-	if em != nil {
-		for _, e := range em.Events {
-			switch e.Kind {
-			case MapWaitStart:
-				if !e.Background {
-					c.fail(CritWaits, "wait_not_background")
-				}
-			case MapWaitConsumed:
-				if e.AutomaticWake && !e.UserMessageBetween {
-					wakes++
-				}
-			case MapMCPWait:
-				if !e.Recovery || e.BudgetMS <= 0 || e.BudgetMS > 10000 {
-					c.fail(CritWaits, "unqualified_long_poll")
-				}
-			case MapDispatch:
-				if e.BudgetMS != 0 {
-					c.fail(CritWaits, "dispatch_with_wait")
-				}
-			}
+	for _, e := range d.Entries {
+		if e.Kind == MapWake && e.Automatic {
+			wakes++
 		}
 	}
 	if wakes == 0 {
 		c.fail(CritWaits, "automatic_wake_unobserved")
 	}
+	if slices.ContainsFunc(d.Findings, func(f MapFinding) bool { return f.Code == CodeLongPoll }) {
+		c.fail(CritWaits, CodeLongPoll)
+	}
 	for i := range Hops {
+		if len(entriesOf(d, MapWaitStart, Hops[i])) != 1 || len(entriesOf(d, MapWaitConsumed, Hops[i])) != 1 {
+			c.fail(CritWaits, "wait_unobserved")
+		}
 		w := c.b.Hops[i].Wait
+		dir := "hops/" + hopDir(i) + "/"
+		result, okR := c.b.Files[dir+waitResultFile]
+		stderr := c.b.Files[dir+waitStderrFile]
+		exit, okX := c.b.Files[dir+waitExitFile]
 		switch {
 		case w == nil:
 			c.fail(CritWaits, "wait_record_missing")
+		case !okR || !okX:
+			c.fail(CritWaits, "wait_files_missing")
 		case w.Hop != Hops[i] || w.Handle != waitHandle(i) || w.Task == "" || w.Task != c.hopTask(i) || w.Winner != w.Task:
 			c.fail(CritWaits, "wait_binding_mismatch")
 		case w.ExitCode == nil || *w.ExitCode != 0 || w.WinnerState != contract.TaskSucceeded || !hex64RE.MatchString(w.ResultSHA256):
 			c.fail(CritWaits, "wait_unsuccessful")
 		}
+		if w != nil && okR && okX {
+			re := waitRecordOf(i, w.Task, result, stderr, exit, true, true)
+			if a, b := mustJSON(re), mustJSON(*w); !bytes.Equal(a, b) {
+				c.fail(CritWaits, "wait_record_mismatch")
+			}
+		}
 	}
+}
+
+// mustJSON renders v (a value the package itself encodes).
+func mustJSON(v any) []byte {
+	b, _ := encodeJSON(v)
+	return b
 }
 
 func (c *checker) hops() {
@@ -930,8 +996,9 @@ func (c *checker) grok() {
 // finalTestEnv must be present in the final test's environment record.
 var finalTestEnv = []string{"GOTOOLCHAIN=local", "GOPROXY=off", "GOSUMDB=off", "GOWORK=off"}
 
-// testArgv is the required test command.
-var testArgv = []string{"go", "test", "-count=1", "./..."}
+// testArgv is the required test command. -buildvcs=false: the throwaway
+// export never consults the VCS state of a directory above it.
+var testArgv = []string{"go", "test", "-buildvcs=false", "-count=1", "./..."}
 
 func (c *checker) testRun(t *TestRun, commit, tree string, files map[string][]byte, missing, bad string) {
 	if t == nil {
@@ -965,6 +1032,7 @@ func (c *checker) finalTests() {
 		commit, tree = cm.Hash.String(), cm.TreeHash.String()
 	}
 	c.testRun(c.b.Final, commit, tree, c.files[4], "final_tests_missing", "final_tests_failed")
+	c.validationRuns(commit, tree)
 }
 
 func (c *checker) cleanup() {
@@ -983,24 +1051,24 @@ func (c *checker) cleanup() {
 			c.fail(CritCleanup, "process_exit_unverified")
 		}
 	}
-	for _, n := range []string{"plane", "sidecar-codex", "sidecar-claude", "sidecar-grok"} {
+	for _, n := range []string{"plane", "sidecar-codex", "sidecar-claude", "sidecar-grok", phaseHandle(1), phaseHandle(2)} {
 		if !names[n] {
 			c.fail(CritCleanup, "process_record_missing")
 		}
 	}
-	o := cl.Owner
-	if o == nil || o.Schema != CoordExitSchema || !o.SessionClosed || !o.MCPChildExited {
-		c.fail(CritCleanup, "owner_children_unverified")
+	if !cl.RuntimeRemoved {
+		c.fail(CritCleanup, "runtime_not_removed")
+	}
+	// A3: the coordinator phases are the supervisor's own observation: each
+	// leader reaped and its whole group (MCP child, background waits) gone.
+	ce := c.b.CoordExit
+	if ce == nil || len(ce.Phases) != 2 {
+		c.fail(CritCleanup, "coordinator_group_unverified")
 	} else {
-		var handles []string
-		for _, w := range o.WaitHandles {
-			handles = append(handles, w.Handle)
-			if w.ExitCode != 0 {
-				c.fail(CritCleanup, "owner_children_unverified")
+		for _, p := range ce.Phases {
+			if !p.Reaped || !p.GroupGone {
+				c.fail(CritCleanup, "coordinator_group_unverified")
 			}
-		}
-		if !slices.Equal(handles, []string{waitHandle(0), waitHandle(1), waitHandle(2), waitHandle(3)}) {
-			c.fail(CritCleanup, "owner_children_unverified")
 		}
 	}
 	s, ok1 := parseTime(cl.StartedAt)
@@ -1027,5 +1095,243 @@ func (c *checker) deadlines() {
 	end, ok2 := c.firstEvent(EvCollectionStarted, nil)
 	if !ok1 || !ok2 || eventTime(end).Sub(eventTime(start)) > AttemptBound {
 		c.fail(CritDeadlines, "attempt_deadline_exceeded")
+	}
+}
+
+// validationArgvJSON and validationArgvBuild are the final validation's go
+// test -json and build commands ($BIN: the runtime's binary path).
+var (
+	validationArgvJSON  = []string{"go", "test", "-json", "-buildvcs=false", "-count=1", "./..."}
+	validationArgvBuild = []string{"go", "build", "-buildvcs=false", "-o", "$BIN", "."}
+)
+
+// validationRuns (A3, final_tests): the build, the ten CLI cases and the
+// JSON test run are bound to the fourth result's commit and tree, ran
+// within the one shared final-validation budget, and each start and end is
+// a supervisor validation event of that command.
+func (c *checker) validationRuns(commit, tree string) {
+	cs, rq := c.b.Cases, c.b.Requirements
+	if cs == nil || rq == nil {
+		c.fail(CritFinalTests, "validation_missing")
+		return
+	}
+	execs := []ExecRecord{cs.Build}
+	ok := cs.Commit == commit && cs.Tree == tree && commit != "" && cs.Build.Name == "go_build" && slices.Equal(cs.Build.Argv, validationArgvBuild) &&
+		cs.Build.Started && cs.Build.ExitCode == 0 &&
+		!cs.Build.TimedOut && cs.Build.Signal == "" && len(cs.Cases) == len(FeatureCases)
+	for i, r := range cs.Cases {
+		if i >= len(FeatureCases) {
+			break
+		}
+		fc := FeatureCases[i]
+		ok = ok && r.ID == fc.ID && r.Exec.Name == "case_"+fc.ID && slices.Equal(r.Exec.Argv, append([]string{"greeting"}, fc.Args...))
+		if r.Exec.Started {
+			execs = append(execs, r.Exec)
+		}
+	}
+	t := rq.TestRun
+	ok = ok && t.Name == "go_test_json" && slices.Equal(t.Argv, validationArgvJSON) && t.Started && !t.TimedOut && t.Signal == "" &&
+		t.StdoutSHA256 == sha256Hex(c.b.Files["validation/tests.jsonl"])
+	execs = append(execs, t)
+	if passed, _ := testRunVerdict(t, c.b.Files["validation/tests.jsonl"]); !passed {
+		c.fail(CritFinalTests, CodeValidationFail)
+	}
+	var total int64
+	for _, e := range execs {
+		ok = ok && e.Schema == ExecSchema && e.Commit == commit && e.Tree == tree
+		start, end := c.eventAt(e.StartSeq), c.eventAt(e.EndSeq)
+		ok = ok && start != nil && end != nil && start.Type == EvValidationStarted && end.Type == EvValidationFinished && start.Code == e.Name &&
+			end.Code == e.Name && e.StartSeq < e.EndSeq
+		total += max(0, e.DurationMS)
+	}
+	if !ok {
+		c.fail(CritFinalTests, "validation_binding_mismatch")
+	}
+	starts, ends := c.eventsOf(EvValidationStarted), c.eventsOf(EvValidationFinished)
+	if time.Duration(total)*time.Millisecond > FinalTestBound ||
+		(len(starts) > 0 && len(ends) > 0 && eventTime(ends[len(ends)-1]).Sub(eventTime(starts[0])) > FinalTestBound) {
+		c.fail(CritFinalTests, "validation_deadline_exceeded")
+	}
+}
+
+// eventAt returns the event with sequence seq, or nil.
+func (c *checker) eventAt(seq int) *Event {
+	if seq < 1 || seq > len(c.b.Events) || c.b.Events[seq-1].Seq != seq {
+		return nil
+	}
+	return &c.b.Events[seq-1]
+}
+
+// resultCorrectness (A3, FP-7/FP-12): the deterministic feature checks
+// recomputed from the stored records (every case's verdict from its
+// captured output, the requirement-to-test map and source structure from
+// the fourth tree and the go test -json stream), an approving review never
+// alongside failing tests, and every mechanical audit row correct. The
+// semantic judgments are explicitly excluded.
+func (c *checker) resultCorrectness() {
+	cs, rq := c.b.Cases, c.b.Requirements
+	commit := ""
+	if cm := c.commits[3]; cm != nil {
+		commit = cm.Hash.String()
+	}
+	switch {
+	case cs == nil:
+		c.fail(CritResult, CodeCaseFailed)
+	case len(cs.Cases) != len(FeatureCases):
+		c.fail(CritResult, CodeCaseFailed)
+	}
+	if cs != nil {
+		for i, r := range cs.Cases {
+			if i >= len(FeatureCases) {
+				break
+			}
+			pass, code := evaluateCase(FeatureCases[i], r.Exec, r.Stdout, r.Stderr)
+			if pass != r.Pass || code != r.Code || r.ID != FeatureCases[i].ID ||
+				(r.Exec.Started && (sha256Hex([]byte(r.Stdout)) != r.Exec.StdoutSHA256 || sha256Hex([]byte(r.Stderr)) != r.Exec.StderrSHA256)) {
+				c.fail(CritResult, "case_record_mismatch")
+			}
+			if !pass {
+				c.fail(CritResult, CodeCaseFailed)
+			}
+		}
+	}
+	testsFailed := c.b.Final == nil || c.b.Final.ExitCode != 0 || c.b.Final.TimedOut
+	if rq == nil {
+		c.fail(CritResult, CodeTestMapping)
+	} else {
+		var cases []CaseResult
+		if cs != nil {
+			cases = cs.Cases
+		}
+		want := buildRequirements(c.files[4], c.b.Files["validation/tests.jsonl"], cases, rq.TestRun, commit)
+		if !requirementsEqual(want, *rq) {
+			c.fail(CritResult, "requirements_mismatch")
+		}
+		if len(want.MissingTests) > 0 || len(want.FailedTests) > 0 || !want.RunSignature || !want.TableTests || !want.TestCallsRun {
+			c.fail(CritResult, CodeTestMapping)
+		}
+		testsFailed = testsFailed || len(want.FailedTests) > 0 || !want.TestRunPassed
+	}
+	if v := c.views[3]; v != nil && v.Result != nil && v.Result.FinalMessage != nil &&
+		finalMarker(HopCodeReviewer, *v.Result.FinalMessage) == approvedMarkers[HopCodeReviewer] && testsFailed {
+		c.fail(CritResult, CodeReviewContra)
+	}
+	for _, r := range auditRows(c) {
+		if r.Layer == LayerMechanical && r.Verdict != VerdictCorrect {
+			c.fail(CritResult, "audit_row_not_correct")
+		}
+	}
+}
+
+// snapshotShards returns a phase's two stored shards, or false when one
+// is missing.
+func (c *checker) snapshotShards(phase string) ([][]byte, bool) {
+	var out [][]byte
+	for _, name := range envFiles(phase) {
+		data, ok := c.b.Files[name]
+		if !ok {
+			return nil, false
+		}
+		out = append(out, data)
+	}
+	return out, true
+}
+
+// ownerEnvironment (A3, FP-11): the manifest's supplied roots (sorted,
+// unique, never nested) are exactly both snapshots' and the diff's; both
+// snapshots parse and are complete; the diff's full-record detail is bound
+// to exactly the entries whose compact records differ (A3.4), and the
+// stored diff is exactly its recomputation from that detail under the
+// owner-configuration and housekeeping classes;
+// every protected difference fails (owner_environment_modified, whatever
+// else failed) and housekeeping alone never does. It resolves no host path.
+func (c *checker) ownerEnvironment() {
+	m, d := c.b.Manifest, c.b.Diff
+	var roots []string
+	if m != nil {
+		roots = m.ProtectedRoots
+	}
+	var snaps [2]*Snapshot
+	for i, phase := range []string{"before", "after"} {
+		shards, ok := c.snapshotShards(phase)
+		if !ok {
+			c.fail(CritOwnerEnv, CodeEnvUnobserved)
+			continue
+		}
+		s, err := parseSnapshot(shards)
+		if err != nil || s.Phase != phase {
+			c.fail(CritOwnerEnv, "snapshot_invalid")
+			continue
+		}
+		// A complete claim needs the vendor homes and supplied roots
+		// observed, with every record of a valid kind, scope and path.
+		if err := checkInventory(s, roots); err != nil {
+			c.fail(CritOwnerEnv, CodeEnvInventory)
+			c.fail(CritOwnerEnv, CodeEnvUnobserved)
+			continue
+		}
+		snaps[i] = s
+	}
+	for i, a := range roots {
+		for _, b := range roots[i+1:] {
+			if a == b || tokenStrictlyUnder(a, b) || tokenStrictlyUnder(b, a) {
+				c.fail(CritOwnerEnv, "protected_roots_invalid")
+			}
+		}
+	}
+	for _, s := range snaps {
+		if s != nil && (m == nil || !slices.Equal(s.Roots, roots)) {
+			c.fail(CritOwnerEnv, "protected_roots_mismatch")
+		}
+		// A3.2: both snapshots discovered at the manifest's depth.
+		if s != nil && (m == nil || s.Depth != m.ProtectDepth || m.ProtectDepth < 0 || m.ProtectDepth > maxProtectDepth) {
+			c.fail(CritOwnerEnv, "protect_depth_mismatch")
+		}
+	}
+	if d == nil {
+		c.fail(CritOwnerEnv, "environment_diff_missing")
+		return
+	}
+	if m == nil || !slices.Equal(d.ProtectedRoots, roots) {
+		c.fail(CritOwnerEnv, "protected_roots_mismatch")
+	}
+	if snaps[0] != nil && snaps[1] != nil {
+		// A3.4: the stored snapshots are compact; the diff's detail must
+		// list exactly the entries whose compact records differ, each full
+		// record hashing to its snapshot's, and every change is re-derived
+		// from that bound detail.
+		if err := verifyDetail(snaps[0], snaps[1], d.Detail); err != nil {
+			c.fail(CritOwnerEnv, "environment_diff_mismatch")
+			c.fail(CritOwnerEnv, CodeEnvUnobserved)
+			snaps[0] = nil
+		}
+	}
+	if snaps[0] != nil && snaps[1] != nil {
+		want := diffFromDetail(snaps[0], snaps[1], roots, d.Detail)
+		for _, phase := range []string{"before", "after"} {
+			for _, name := range envFiles(phase) {
+				fh := FileHash{Name: name, SHA256: sha256Hex(c.b.Files[name])}
+				if phase == "before" {
+					want.Before = append(want.Before, fh)
+				} else {
+					want.After = append(want.After, fh)
+				}
+			}
+		}
+		if !bytes.Equal(mustJSON(want), mustJSON(*d)) {
+			c.fail(CritOwnerEnv, "environment_diff_mismatch")
+		}
+		for _, code := range want.Codes {
+			c.fail(CritOwnerEnv, code)
+		}
+	}
+	for _, code := range d.Codes {
+		c.fail(CritOwnerEnv, code)
+	}
+	if !d.Complete {
+		c.fail(CritOwnerEnv, CodeEnvUnobserved)
+	}
+	if len(d.Protected) > 0 {
+		c.fail(CritOwnerEnv, CodeEnvModified)
 	}
 }

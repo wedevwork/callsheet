@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -64,13 +65,39 @@ type World struct {
 	Probe      func(ctx context.Context, vendor, exe, dir string) error
 	Connect    func(url string, caPEM []byte) (Plane, Puller, func(), error)
 	Poll       time.Duration
+	// Terminal is the operator's decision terminal (read only while the
+	// owner prompt is open); Git runs the environment's read-only probes.
+	Terminal Terminal
+	Git      GitRunner
 }
 
-// runArgs are run's absolute paths.
+// Terminal is the operator's decision terminal: Activate starts reading
+// it (once; nothing is read before) and returns its lines, closed at EOF.
+type Terminal interface {
+	Activate() <-chan string
+}
+
+// readerTerminal is a Terminal over a reader (the live stdin).
+type readerTerminal struct {
+	r    io.Reader
+	once sync.Once
+	ch   chan string
+}
+
+func (t *readerTerminal) Activate() <-chan string {
+	t.once.Do(func() {
+		t.ch = make(chan string, 16)
+		go readLines(t.r, t.ch)
+	})
+	return t.ch
+}
+
+// runArgs are run's absolute paths and supplied protected roots.
 type runArgs struct {
 	callsheet, claude, codex, grok, evidence, flow string
-	// settings is the owner's sandbox-only coordinator settings file (A2).
-	settings string
+	protectRoots                                   []string
+	// protectDepth is --protect-depth (A3.2).
+	protectDepth int
 }
 
 func (a runArgs) vendor(id string) string {
@@ -102,13 +129,10 @@ func codeOf(err error) string {
 	return CodeInternalError
 }
 
-// ctrlMsg is a control request forwarded to the loop: an observe or
-// finish (reply) or a wait (wait, answered within ctx).
+// ctrlMsg is an observe request forwarded to the loop.
 type ctrlMsg struct {
 	req   ControlRequest
 	reply chan string
-	ctx   context.Context
-	wait  chan waitReply
 }
 
 // hopState is one feature hop's live state.
@@ -150,13 +174,21 @@ type supervisor struct {
 	templates   map[string][]byte
 	rendered    map[string][]byte
 	sessionID   string
-	// settings is the validated coordinator settings snapshot (A2);
-	// settingsWritten is set once its runtime copy exists.
-	settings        []byte
-	settingsWritten bool
-	goBin           string
-	pathEnv         string
-	red             Redactor
+	goBin       string
+	pathEnv     string
+	red         Redactor
+	// roots are the canonical protected roots; before is the baseline
+	// environment snapshot.
+	roots  []string
+	before *Snapshot
+	// mcpPath, phases and launches are the coordinator's configuration
+	// and its two headless phases; done is set once phase 2 completed.
+	mcpPath     string
+	phases      [2]*phaseRun
+	launches    [2]*LaunchRecord
+	transcripts [2][]byte
+	done        bool
+	validation  *finalValidation
 
 	plane      Plane
 	puller     Puller
@@ -182,7 +214,6 @@ type supervisor struct {
 
 	failed     bool
 	failCode   string
-	finish     bool
 	complete   bool
 	finalTests *TestRun
 	baseline   *TestRun
@@ -190,15 +221,12 @@ type supervisor struct {
 	cancelled  []string
 	unsettled  []string
 	cleanupBy  time.Time
-	// coordinatorReady is set once the launch instructions are offered.
-	coordinatorReady bool
 
 	ctl *controlServer
-	// life is the supervisor's cancellation, fixed before the control
-	// socket starts (the socket goroutines read it; ctx is loop-owned).
-	life     context.Context
+	// lines are the owner's terminal lines, read only once the decision
+	// prompt is open (nil before and after).
 	reqs     chan ctrlMsg
-	lines    chan string
+	lines    <-chan string
 	closing  atomic.Bool
 	loopDone chan struct{}
 }
@@ -268,18 +296,6 @@ func newRunID(now time.Time, r io.Reader) (string, error) {
 	return now.UTC().Format("20060102T150405Z") + "-" + hex.EncodeToString(b[:]), nil
 }
 
-// newSessionID returns a random version 4 UUID.
-func newSessionID(r io.Reader) (string, error) {
-	var b [16]byte
-	if _, err := io.ReadFull(r, b[:]); err != nil {
-		return "", err
-	}
-	b[6] = b[6]&0x0f | 0x40
-	b[8] = b[8]&0x3f | 0x80
-	h := hex.EncodeToString(b[:])
-	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:], nil
-}
-
 // modulePath is the checkout's module.
 const modulePath = "github.com/wedevwork/callsheet"
 
@@ -308,6 +324,9 @@ func within(p, root string) bool {
 // errEvidencePath is an unusable --evidence destination.
 var errEvidencePath = errors.New("--evidence must be a new directory (it must not exist yet) whose existing parent is inside the checkout's ignored design/ tree, for example design/real-e2e-runs/<date>")
 
+// errEvidenceIgnored is an evidence destination Git does not ignore.
+var errEvidenceIgnored = errors.New("--evidence must be Git-ignored in the checkout and contain no tracked path (design/ is ignored)")
+
 // locate finds the checkout and validates the evidence destination (design
 // 12a-real-e2e, command interface): the bundle directory itself, which
 // must not exist yet, whose existing parent resolves (symlinks evaluated)
@@ -334,6 +353,16 @@ func (s *supervisor) locate() error {
 	}
 	if _, err := os.Lstat(filepath.Join(parent, name)); !errors.Is(err, fs.ErrNotExist) {
 		return errEvidencePath
+	}
+	// A3: the evidence subtree must be Git-ignored and hold no tracked
+	// path before it is created (it is the environment's exact exclusion).
+	rel, _ := filepath.Rel(co, filepath.Join(parent, name))
+	rel = filepath.ToSlash(rel)
+	if _, exit, err := s.w.Git(co, nil, "check-ignore", "-q", "--", rel); err != nil || exit != 0 {
+		return errEvidenceIgnored
+	}
+	if out, exit, err := s.w.Git(co, nil, "ls-files", "-z", "--", rel); err != nil || exit != 0 || len(out) != 0 {
+		return errEvidenceIgnored
 	}
 	s.evidenceDir = filepath.Join(parent, name)
 	s.red = Redactor{Home: s.w.Home, Checkout: co}
@@ -366,7 +395,8 @@ func (s *supervisor) run() int {
 		return 1
 	}
 	s.manifest = Manifest{Schema: ManifestSchema, RunID: id, GOOS: s.goos, GOARCH: s.goarch, StartedAt: formatTime(now),
-		Gate: GateRecord{OptIn: true, CIAbsent: true, Platform: s.goos}, Versions: []VersionRecord{}, Templates: []FileHash{}, Rendered: []FileHash{}}
+		Gate: GateRecord{OptIn: true, CIAbsent: true, Platform: s.goos}, Versions: []VersionRecord{}, Templates: []FileHash{}, Rendered: []FileHash{},
+		ProtectedRoots: []string{}}
 	s.ev.event(Event{Type: EvRunStarted})
 	s.say("run %s: evidence %s", id, s.ev.root)
 	s.attempt = s.w.Clock.Now()
@@ -375,6 +405,69 @@ func (s *supervisor) run() int {
 		s.fail(codeOf(err), err)
 	}
 	return s.finishRun()
+}
+
+// envTokenizer renders environment paths ($CHECKOUT, $HOME).
+func (s *supervisor) envTokenizer() pathTokenizer {
+	return pathTokenizer{home: s.w.Home, checkout: s.checkout}
+}
+
+// protectedRoots validates the supplied roots against the evidence
+// destination (A3, FP-11), before any vendor work.
+func (s *supervisor) protectedRoots() error {
+	roots, err := validateRoots(s.args.protectRoots, s.evidenceDir, "")
+	if err != nil {
+		return failure(CodeInvalidRoot, err)
+	}
+	s.roots = roots
+	s.manifest.ProtectDepth = s.args.protectDepth
+	s.say("repositories are discovered at most %d directory levels below each protected root", s.args.protectDepth)
+	for _, r := range roots {
+		s.manifest.ProtectedRoots = append(s.manifest.ProtectedRoots, s.envTokenizer().token(r))
+	}
+	if len(roots) == 0 {
+		s.say("No repository root was protected (only the four vendor homes are fingerprinted)")
+	}
+	return nil
+}
+
+// snapshot takes and records the environment snapshot of phase, within
+// the attempt (before) or cleanup (after) deadline. Only the compact
+// records are written; the full records stay private in this process
+// (A3.4) for the comparison's diff.json detail.
+func (s *supervisor) snapshot(phase string, deadline time.Time) *Snapshot {
+	exclude := []string{s.evidenceDir}
+	if s.runtime != "" {
+		exclude = append(exclude, s.runtime)
+	}
+	snap := takeSnapshotDepth(phase, s.w.Home, s.roots, exclude, s.w.Git, s.envTokenizer(), s.w.Clock, deadline, s.args.protectDepth)
+	shards, err := encodeSnapshot(snap)
+	if err != nil {
+		snap.Complete, snap.Code, snap.Records = false, CodeEnvLimit, nil
+		shards, _ = encodeSnapshot(snap)
+	}
+	for i, name := range envFiles(phase) {
+		s.ev.writeFile(name, shards[i])
+	}
+	s.ev.event(Event{Type: EvSnapshotTaken, Code: phase})
+	return snap
+}
+
+// baselineSnapshot fingerprints the owner environment before any probe.
+func (s *supervisor) baselineSnapshot() error {
+	s.before = s.snapshot("before", s.attempt.Add(AttemptBound))
+	if !s.before.Complete {
+		return failure(cmpOr(s.before.Code, CodeEnvUnobserved), errors.New("the owner environment could not be fingerprinted completely"))
+	}
+	return nil
+}
+
+// cmpOr returns a, or b when a is empty.
+func cmpOr(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
 }
 
 // fail records the attempt's first failure.
@@ -387,9 +480,11 @@ func (s *supervisor) fail(code string, err error) {
 	fmt.Fprintf(s.stderr, "reale2e: attempt failed (%s): %v\n", code, err)
 }
 
-// attemptRun runs the phases up to the end of the feature loop.
+// attemptRun runs the phases up to the end of the feature loop: root
+// validation and the baseline fingerprint precede every executable probe.
 func (s *supervisor) attemptRun() error {
-	for _, f := range []func() error{s.staticPreflight, s.createRuntime, s.deploy, s.authPreflight, s.prepareSeed, s.prepareCoordinator} {
+	for _, f := range []func() error{s.protectedRoots, s.baselineSnapshot, s.staticPreflight, s.createRuntime, s.deploy, s.authPreflight,
+		s.prepareSeed, s.prepareCoordinator, func() error { return s.launchPhase(1, s.rendered[PhasePrompt1]) }} {
 		if err := s.step(f); err != nil {
 			return err
 		}
@@ -419,7 +514,11 @@ func (s *supervisor) createRuntime() error {
 	if _, err := socketPath(rt); err != nil {
 		return failure("socket_path_too_long", err)
 	}
-	for _, d := range []string{"coord", "owner", "waits", "collect", "review"} {
+	// The supplied roots are rechecked against the actual runtime.
+	if _, err := validateRoots(s.roots, s.evidenceDir, rt); err != nil {
+		return failure(CodeInvalidRoot, err)
+	}
+	for _, d := range []string{"coord", "waits", "collect", "review"} {
 		if err := os.Mkdir(filepath.Join(rt, d), 0o700); err != nil {
 			return failure("runtime_unavailable", err)
 		}
@@ -478,24 +577,26 @@ func (s *supervisor) deploy() error {
 	return nil
 }
 
-// featureLoop serves observations, owner input and the task monitor
-// until finish is requested or the attempt fails.
+// featureLoop serves observations, the coordinator phases' exits, the
+// owner's prompt input and the task monitor until phase 2 completed or
+// the attempt fails. Authoritative admissions are polled throughout,
+// while either phase runs and while the owner decides.
 func (s *supervisor) featureLoop() error {
-	for !s.finish && !s.failed {
+	for !s.done && !s.failed {
 		t, stop := s.w.Clock.NewTimer(s.w.Poll)
 		select {
 		case m := <-s.reqs:
 			stop()
-			if m.wait != nil {
-				m.wait <- s.handleWait(m.ctx, m.req)
-			} else {
-				m.reply <- s.handleRequest(m.req)
-			}
+			m.reply <- s.handleRequest(m.req)
 		case line, ok := <-s.lines:
 			stop()
 			s.handleLine(line, ok)
+		case <-s.phaseDone():
+			stop()
+			s.phaseExited()
 		case <-t:
 			s.tick()
+			s.checkStreams()
 		case <-s.ctx.Done():
 			stop()
 			return failure("interrupted", s.ctx.Err())
@@ -508,22 +609,16 @@ func (s *supervisor) featureLoop() error {
 // within the socket's 5s exchange.
 var forwardWait = controlExchange - time.Second
 
-// handleControl forwards a socket request to the loop; while closing,
-// finish is acknowledged and every other request refused.
+// handleControl forwards a socket request to the loop; while closing
+// every request is refused.
 func (s *supervisor) handleControl(req ControlRequest) string {
 	if s.closing.Load() {
-		if req.Op == opFinish {
-			return CodeAccepted
-		}
 		return CodeClosing
 	}
 	m := ctrlMsg{req: req, reply: make(chan string, 1)}
 	select {
 	case s.reqs <- m:
 	case <-s.loopDone:
-		if req.Op == opFinish {
-			return CodeAccepted
-		}
 		return CodeClosing
 	case <-time.After(forwardWait):
 		return CodeInternalError
@@ -536,73 +631,177 @@ func (s *supervisor) handleControl(req ControlRequest) string {
 	}
 }
 
-// waitClosed reports, from the socket goroutine, the lifecycle signals a
-// wait answer must not mask: closing, an ended loop, the supervisor's
-// cancellation, or the attempt bound passed (by the injected clock and the
-// immutable attempt start; loop-owned state is never read here).
-func (s *supervisor) waitClosed() bool {
+// current is the running phase, or nil.
+func (s *supervisor) current() *phaseRun {
+	for _, p := range s.phases {
+		if p != nil && !p.handled {
+			return p
+		}
+	}
+	return nil
+}
+
+// phaseDone is the running phase's exit channel (nil: none).
+func (s *supervisor) phaseDone() <-chan struct{} {
+	if p := s.current(); p != nil {
+		return p.proc.Done()
+	}
+	return nil
+}
+
+// checkStreams fails the attempt when a running phase's output passed its
+// bound (the phase is stopped by cleanup rather than blocking).
+func (s *supervisor) checkStreams() {
+	if p := s.current(); p != nil && (p.stdout.Truncated() || p.stderr.Truncated()) {
+		s.fail("coordinator_stream_limit", fmt.Errorf("coordinator phase %d output passed its bound", p.phase))
+	}
+}
+
+// groupBound bounds the wait for an exited phase's whole group (its MCP
+// child and background commands) to be gone.
+const groupBound = 30 * time.Second
+
+// observePhase records an exited phase's process observation; its group
+// must be gone within bound.
+func (s *supervisor) observePhase(p *phaseRun, stoppedBy string, bound time.Duration) {
+	p.handled = true
+	code, sig := p.proc.Exit()
+	p.rec = PhaseProcess{Phase: p.phase, PID: p.proc.PID(), Signal: sig, StoppedBy: stoppedBy, StartedSeq: p.startedSeq}
 	select {
-	case <-s.loopDone:
-		return true
+	case <-p.proc.Done():
+		p.rec.Reaped = true
 	default:
 	}
-	return s.closing.Load() || s.life.Err() != nil || s.w.Clock.Now().Sub(s.attempt) > AttemptBound
+	if sig == "" && p.rec.Reaped {
+		p.rec.ExitCode = &code
+	}
+	p.rec.GroupGone = p.rec.Reaped && awaitGone(p.proc, s.w.Clock, bound)
+	ev := s.ev.event(Event{Type: EvPhaseExited, Handle: phaseHandle(p.phase), Code: exitText(p.proc)})
+	p.rec.ExitedSeq = ev.Seq
+	s.ev.writeFile(phaseStreamFiles[p.phase-1], p.stdout.Bytes())
+	s.ev.writeFile(phaseStderrFiles[p.phase-1], []byte(toValidUTF8(p.stderr.Bytes())))
+	s.captureTranscript(p.phase)
 }
 
-// handleWaitControl forwards a wait request to the loop within ctx (the
-// connection's shared 4s work budget). A closed lifecycle answers
-// closing, before the handoff and again before a busy answer. Delivery on
-// the unbuffered request channel is the loop's acceptance (amendment
-// A2.1): a handoff not taken when the work budget expires (cause
-// errWorkExpired) answers pending, the loop being busy, with nothing left
-// queued; any other cancellation before the handoff is an internal error.
-// Once taken, the loop's answer stands unless the lifecycle closed by the
-// time it is selected (closing), and a fetch that fails or outlives the
-// budget is an internal error, never pending (the helper retries
-// neither).
-func (s *supervisor) handleWaitControl(ctx context.Context, req ControlRequest) waitReply {
-	if s.waitClosed() {
-		return waitReply{code: CodeClosing}
+// captureTranscript copies the session's transcript read-only once phase
+// p exited: the unique <session-id>.jsonl below the protected Claude home,
+// absent from the baseline snapshot, copied byte for byte.
+func (s *supervisor) captureTranscript(p int) {
+	if s.sessionID == "" {
+		s.sessionID = streamSession(s.phases[0].stdout.Bytes())
 	}
-	m := ctrlMsg{req: req, ctx: ctx, wait: make(chan waitReply, 1)}
-	select {
-	case s.reqs <- m:
-	case <-s.loopDone:
-		return waitReply{code: CodeClosing}
-	case <-s.life.Done():
-		return waitReply{code: CodeClosing}
-	case <-ctx.Done():
-		switch {
-		case s.waitClosed():
-			return waitReply{code: CodeClosing}
-		case context.Cause(ctx) == errWorkExpired:
-			return waitReply{code: CodePending}
-		}
-		return waitReply{code: CodeInternalError}
+	if !sessionIDRE.MatchString(s.sessionID) {
+		return
 	}
-	// The answer is selected with lifecycle precedence: a reply computed
-	// before the supervisor was cancelled or began closing is never
-	// delivered after it, and signals ready together resolve to closing.
-	select {
-	case r := <-m.wait:
-		if s.waitClosed() {
-			return waitReply{code: CodeClosing}
-		}
-		return r
-	case <-s.loopDone:
-		return waitReply{code: CodeClosing}
-	case <-s.life.Done():
-		return waitReply{code: CodeClosing}
-	case <-ctx.Done():
-		if s.waitClosed() {
-			return waitReply{code: CodeClosing}
-		}
-		return waitReply{code: CodeInternalError}
+	path, rel, err := findTranscript(s.w.Home, s.sessionID)
+	if err != nil {
+		return
 	}
+	if s.before != nil {
+		for _, r := range s.before.Records {
+			if r.Kind == RecEntry && r.Scope == "claude" && r.Path == encodePath(rel) {
+				return
+			}
+		}
+	}
+	data, err := readBounded(path, maxTextFile)
+	if err != nil {
+		return
+	}
+	s.transcripts[p-1] = data
+	s.ev.writeFile(transcriptFiles[p-1], data)
+	s.ev.event(Event{Type: EvTranscriptCaptured, Handle: phaseHandle(p)})
 }
 
-// readLines feeds the operator terminal's lines to the loop; EOF closes
-// the channel.
+// sessionInput is the derivation input from the live state.
+func (s *supervisor) sessionInput() SessionInput {
+	in := SessionInput{RunID: s.runID, Launches: s.launches, Events: s.ev.snapshot()}
+	for i, p := range s.phases {
+		if p != nil && p.handled {
+			in.Streams[i] = p.stdout.Bytes()
+		}
+		in.Transcripts[i] = s.transcripts[i]
+	}
+	return in
+}
+
+// fatalFindings are derivation findings that fail a phase.
+// (the specific causes first: a phase ending early or unobserved evidence
+// is often their consequence).
+var fatalFindings = []string{CodeToolDenied, CodeToolFailed, CodeLongPoll, CodeWaitMismatch, CodeDispatchMismatch, CodeUserInput, CodeWakeUnsupported,
+	CodeSessionMismatch, CodeSessionMalformed, CodeSessionUnobserved, CodePhaseEarly}
+
+// phaseExited handles the running phase's exit: its group must be gone,
+// its exit 0, its init and result present for the same session, its hops
+// accepted and their waits consumed; phase 1 then opens the owner gate
+// and phase 2 completes the attempt. Nothing is retried or resumed after
+// an errored phase.
+func (s *supervisor) phaseExited() {
+	p := s.current()
+	s.observePhase(p, StoppedExited, groupBound)
+	// The phase's hops are judged on their authoritative state now.
+	for i := range s.hops {
+		s.refreshHop(i)
+	}
+	if s.failed {
+		return
+	}
+	hops := []int{0, 1}
+	if p.phase == 2 {
+		hops = []int{2, 3}
+	}
+	em := DeriveSession(s.sessionInput())
+	codes := findingCodes(em)
+	for _, c := range fatalFindings {
+		if slices.Contains(codes, c) {
+			s.fail(c, fmt.Errorf("coordinator phase %d: %s", p.phase, c))
+			return
+		}
+	}
+	switch {
+	case !p.rec.GroupGone:
+		s.fail("coordinator_group_alive", fmt.Errorf("coordinator phase %d's process group did not end", p.phase))
+		return
+	case p.rec.ExitCode == nil || *p.rec.ExitCode != 0:
+		s.fail("coordinator_exit_nonzero", fmt.Errorf("coordinator phase %d exited %s", p.phase, exitText(p.proc)))
+		return
+	case len(em.Init) < p.phase:
+		s.fail(CodeSessionUnobserved, fmt.Errorf("coordinator phase %d has no init record", p.phase))
+		return
+	}
+	_, resultOK := streamResult(p.stdout.Bytes())
+	for _, i := range hops {
+		if !s.hops[i].terminal || s.hops[i].commit.IsZero() || len(entriesOf(em, MapWaitConsumed, Hops[i])) != 1 || !s.waitSucceeded(i) {
+			s.fail(CodePhaseEarly, fmt.Errorf("coordinator phase %d ended before hop %s was complete and its wait consumed", p.phase, Hops[i]))
+			return
+		}
+	}
+	if !resultOK {
+		s.fail(CodeSessionUnobserved, fmt.Errorf("coordinator phase %d has no successful result", p.phase))
+		return
+	}
+	if p.phase == 1 {
+		s.awaitOwner()
+		return
+	}
+	if !s.complete {
+		s.fail("final_tests_failed", errors.New("the final validation did not pass"))
+		return
+	}
+	s.done = true
+	s.say("coordinator phase 2 completed; collecting evidence")
+}
+
+// waitSucceeded reports hop i's wait files: exit 0 and a terminal result
+// for its task.
+func (s *supervisor) waitSucceeded(i int) bool {
+	w := s.waitRecord(i)
+	return w.ExitCode != nil && *w.ExitCode == 0 && w.Winner == s.hops[i].task && w.Winner != ""
+}
+
+// readLines feeds the operator terminal's newline-terminated lines to the
+// loop; EOF or a read error closes the channel and discards an
+// unterminated partial line, which is never a decision.
 func readLines(r io.Reader, out chan<- string) {
 	buf := make([]byte, 0, 512)
 	one := make([]byte, 1)
@@ -617,9 +816,6 @@ func readLines(r io.Reader, out chan<- string) {
 			}
 		}
 		if err != nil {
-			if len(buf) > 0 {
-				out <- string(buf)
-			}
 			close(out)
 			return
 		}

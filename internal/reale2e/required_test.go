@@ -114,17 +114,22 @@ func fieldAt(t reflect.Type, p keyPath) (reflect.StructField, bool) {
 // bundle with its schema type.
 func strictDocs() map[string]func() any {
 	m := map[string]func() any{
-		"manifest.json":                  func() any { return &Manifest{} },
-		"setup/launch.json":              func() any { return &LaunchRecord{} },
-		"setup/roles.json":               func() any { return &RolesRecord{} },
-		"setup/flow.json":                func() any { return &Flow{} },
-		"owner-decision.json":            func() any { return &DecisionRecord{} },
-		"workspace/tree-manifest.json":   func() any { return &TreeManifest{} },
-		"validation/baseline.json":       func() any { return &TestRun{} },
-		"validation/final-test.json":     func() any { return &TestRun{} },
-		"cleanup.json":                   func() any { return &CleanupRecord{} },
-		"session/setup-attestation.json": func() any { return &SetupAttestation{} },
-		"session/event-map.json":         func() any { return &EventMap{} },
+		"manifest.json":                func() any { return &Manifest{} },
+		launchFiles[0]:                 func() any { return &LaunchRecord{} },
+		launchFiles[1]:                 func() any { return &LaunchRecord{} },
+		"setup/roles.json":             func() any { return &RolesRecord{} },
+		"setup/flow.json":              func() any { return &Flow{} },
+		"owner-decision.json":          func() any { return &DecisionRecord{} },
+		"workspace/tree-manifest.json": func() any { return &TreeManifest{} },
+		"validation/baseline.json":     func() any { return &TestRun{} },
+		"validation/final-test.json":   func() any { return &TestRun{} },
+		"validation/cases.json":        func() any { return &CasesRecord{} },
+		"validation/requirements.json": func() any { return &RequirementsRecord{} },
+		"cleanup.json":                 func() any { return &CleanupRecord{} },
+		coordinatorExitFile:            func() any { return &CoordinatorExit{} },
+		eventMapFile:                   func() any { return &EventMap{} },
+		"environment/diff.json":        func() any { return &EnvDiff{} },
+		"audit.json":                   func() any { return &Audit{} },
 	}
 	for i := range Hops {
 		d := "hops/" + hopDir(i)
@@ -182,18 +187,17 @@ func TestRequiredFields(t *testing.T) {
 	if n < 150 {
 		t.Fatalf("only %d key paths checked", n)
 	}
-	// Owner-supplied coordinator exit and the run file.
+	// The supervisor's coordinator observation and the run file.
 	for name, doc := range map[string]struct {
 		data  string
 		proto func() any
 	}{
-		"exit code":      {`{"schema":"` + CoordExitSchema + `","session_closed":true,"mcp_child_exited":true,"wait_handles":[{"handle":"hop-01"}]}`, func() any { return &CoordinatorExit{} }},
-		"null exit code": {`{"schema":"` + CoordExitSchema + `","session_closed":true,"mcp_child_exited":true,"wait_handles":[{"handle":"hop-01","exit_code":null}]}`, func() any { return &CoordinatorExit{} }},
-		"null handles":   {`{"schema":"` + CoordExitSchema + `","session_closed":true,"mcp_child_exited":true,"wait_handles":null}`, func() any { return &CoordinatorExit{} }},
-		"null element":   {`{"schema":"` + CoordExitSchema + `","session_closed":true,"mcp_child_exited":true,"wait_handles":[null]}`, func() any { return &CoordinatorExit{} }},
-		"run file":       {`{"schema":"` + RunFileSchema + `"}`, func() any { return &RunFile{} }},
-		"not an object":  {`[]`, func() any { return &RunFile{} }},
-		"not an array":   {`{"schema":"` + CoordExitSchema + `","session_closed":true,"mcp_child_exited":true,"wait_handles":{}}`, func() any { return &CoordinatorExit{} }},
+		"phase fields":  {`{"schema":"` + CoordExitSchema + `","phases":[{"phase":1}]}`, func() any { return &CoordinatorExit{} }},
+		"null phases":   {`{"schema":"` + CoordExitSchema + `","phases":null}`, func() any { return &CoordinatorExit{} }},
+		"null element":  {`{"schema":"` + CoordExitSchema + `","phases":[null]}`, func() any { return &CoordinatorExit{} }},
+		"run file":      {`{"schema":"` + RunFileSchema + `"}`, func() any { return &RunFile{} }},
+		"not an object": {`[]`, func() any { return &RunFile{} }},
+		"not an array":  {`{"schema":"` + CoordExitSchema + `","phases":{}}`, func() any { return &CoordinatorExit{} }},
 	} {
 		if err := decodeStrict([]byte(doc.data), doc.proto()); err == nil {
 			t.Errorf("%s decoded", name)
@@ -215,14 +219,17 @@ func TestSuccessZeroFields(t *testing.T) {
 		{"validation/final-test.json", keyPath{"signal"}},
 		{"validation/final-test.json", keyPath{"duration_ms"}},
 		{"validation/baseline.json", keyPath{"exit_code"}},
-		{"cleanup.json", keyPath{"owner", "wait_handles", 0, "exit_code"}},
 		{"cleanup.json", keyPath{"unsettled_tasks"}},
-		{"session/setup-attestation.json", keyPath{"resumed"}},
-		{"session/event-map.json", keyPath{"events", 0, "user_message_between"}},
-		{"session/event-map.json", keyPath{"events", 0, "budget_ms"}},
+		{"cleanup.json", keyPath{"runtime_removed"}},
+		{coordinatorExitFile, keyPath{"phases", 0, "exit_code"}},
+		{coordinatorExitFile, keyPath{"phases", 1, "group_gone"}},
+		{eventMapFile, keyPath{"entries", 0, "automatic"}},
+		{eventMapFile, keyPath{"findings"}},
 		{"hops/02/wait.json", keyPath{"exit_code"}},
-		{"cleanup.json", keyPath{"owner"}},
 		{"setup/roles.json", keyPath{"roles", 0, "can_accept"}},
+		{"environment/diff.json", keyPath{"protected"}},
+		{"validation/cases.json", keyPath{"cases", 3, "pass"}},
+		{"validation/requirements.json", keyPath{"failed_tests"}},
 	} {
 		for _, null := range []bool{false, true} {
 			name := fmt.Sprintf("%s%s null=%v", c.rel, c.path, null)
@@ -263,7 +270,7 @@ func TestProvenanceInventories(t *testing.T) {
 			requireCode(t, fmt.Sprintf("template %d dup=%v", i, dup), code, r, CritManifest, "template_inventory_mismatch")
 		}
 	}
-	for i := range renderedInventory() {
+	for i := range renderedInventory(true) {
 		for _, dup := range []bool{false, true} {
 			b := passingBundle(t)
 			editDoc(t, b, "manifest.json", func(m *Manifest) {

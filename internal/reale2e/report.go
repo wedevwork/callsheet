@@ -8,28 +8,44 @@ import (
 	"strings"
 )
 
-// The shareable report (design 12a-real-e2e, Evidence and checker): only
-// allowlisted structured fields (run ID, flow kind, revision, platform,
-// tool versions, fixed criterion IDs and codes, and relative artifact
-// names with their hashes), never raw logs, prompts, transcript or final
-// prose. Version strings pass through the redactor: known home, runtime
-// and checkout prefixes become $HOME, $RUN and $CHECKOUT, URL credentials
-// and credential-shaped fields are replaced. Output is deterministic.
+// The shareable report (design 12a-real-e2e, Evidence and checker, A3):
+// only allowlisted structured fields (run ID, flow kind, revision,
+// platform, tool versions, fixed criterion IDs and codes, the protected
+// roots, the environment's housekeeping and protected changes, the
+// coordinator's tool findings with their private evidence references, and
+// relative artifact names with their hashes), never raw logs, prompts,
+// transcript or final prose. It is derived from the bundle alone (paths
+// were tokenized when written), so the offline check recomputes it byte
+// for byte. Mechanical PASS never claims the role results were judged:
+// those stay pending owner/coordinator review.
 
 // Report is report.json and the check command's output.
 type Report struct {
-	Schema    string          `json:"schema"`
-	RunID     string          `json:"run_id"`
-	Result    string          `json:"result"`
-	Flow      string          `json:"flow"`
-	Claim     string          `json:"claim"`
-	Revision  string          `json:"revision"`
-	Platform  string          `json:"platform"`
-	Versions  []VersionRecord `json:"versions"`
-	Criteria  []Criterion     `json:"criteria"`
-	Artifacts []FileHash      `json:"artifacts"`
-	Error     string          `json:"error,omitempty"`
+	Schema         string          `json:"schema"`
+	RunID          string          `json:"run_id"`
+	Result         string          `json:"result"`
+	Flow           string          `json:"flow"`
+	Claim          string          `json:"claim"`
+	Judgments      string          `json:"judgments"`
+	Revision       string          `json:"revision"`
+	Platform       string          `json:"platform"`
+	Versions       []VersionRecord `json:"versions"`
+	ProtectedRoots []string        `json:"protected_roots"`
+	ProtectDepth   int             `json:"protect_depth"`
+	Criteria       []Criterion     `json:"criteria"`
+	Protected      []EnvChange     `json:"protected_changes"`
+	Housekeeping   []EnvChange     `json:"housekeeping_changes"`
+	// OversizedConfig names configuration files fingerprinted by metadata
+	// only because they exceed 1 MiB (A3.3).
+	OversizedConfig []string     `json:"oversized_config"`
+	ToolFindings    []MapFinding `json:"tool_findings"`
+	Artifacts       []FileHash   `json:"artifacts"`
+	Error           string       `json:"error,omitempty"`
 }
+
+// NestedRepoLimitation is the report's statement of the A3.1 discovery
+// limit.
+const NestedRepoLimitation = "a nested repository that its parent repository ignores is not separately protected"
 
 // Report results.
 const (
@@ -73,14 +89,30 @@ func claimFor(result, flow string) string {
 	case result != ResultPass:
 		return "not demonstrated"
 	case flow == FlowDefault:
-		return "the default flow passed on this installation"
+		return "the default flow's mechanics and deterministic feature cases passed on this installation"
 	}
-	return "an override flow passed; the owner's default pairs are not demonstrated"
+	return "an override flow's mechanics passed; the owner's default pairs are not demonstrated"
+}
+
+// derivedFiles are the report and audit outputs (and the optional
+// external review), excluded from every source inventory.
+var derivedFiles = map[string]bool{"report.json": true, "report.txt": true, "audit.json": true, "audit.md": true, "audit-review.md": true}
+
+// sanitizeChange keeps a change's structured fields, redacted.
+func sanitizeChange(c EnvChange) EnvChange {
+	red := Redactor{}
+	c.Scope, c.Path = red.Redact(c.Scope), red.Redact(c.Path)
+	if c.Fields == nil {
+		c.Fields = []string{}
+	}
+	return c
 }
 
 // BuildReport assembles the report of a loaded bundle's criteria.
-func BuildReport(b *Bundle, cs []Criterion, red Redactor) Report {
-	r := Report{Schema: ReportSchema, Result: ResultFail, Criteria: cs, Versions: []VersionRecord{}, Artifacts: []FileHash{}}
+func BuildReport(b *Bundle, cs []Criterion) Report {
+	red := Redactor{}
+	r := Report{Schema: ReportSchema, Result: ResultFail, Criteria: cs, Versions: []VersionRecord{}, Artifacts: []FileHash{}, ProtectedRoots: []string{},
+		Protected: []EnvChange{}, Housekeeping: []EnvChange{}, OversizedConfig: []string{}, ToolFindings: []MapFinding{}, Judgments: PendingReview}
 	if passed(cs) {
 		r.Result = ResultPass
 	}
@@ -99,10 +131,32 @@ func BuildReport(b *Bundle, cs []Criterion, red Redactor) Report {
 		for _, v := range m.Versions {
 			r.Versions = append(r.Versions, VersionRecord{Tool: red.Redact(v.Tool), Path: red.Redact(v.Path), Version: red.Redact(v.Version), Eligible: v.Eligible})
 		}
+		r.ProtectDepth = m.ProtectDepth
+		for _, root := range m.ProtectedRoots {
+			r.ProtectedRoots = append(r.ProtectedRoots, red.Redact(root))
+		}
+	}
+	if d := b.Diff; d != nil {
+		for _, c := range d.Protected {
+			r.Protected = append(r.Protected, sanitizeChange(c))
+		}
+		for _, c := range d.Housekeeping {
+			r.Housekeeping = append(r.Housekeeping, sanitizeChange(c))
+		}
+		for _, n := range d.OversizedConfig {
+			r.OversizedConfig = append(r.OversizedConfig, red.Redact(n))
+		}
+	}
+	if em := b.EventMap; em != nil {
+		for _, f := range em.Findings {
+			if f.Code == CodeToolDenied || f.Code == CodeToolFailed {
+				r.ToolFindings = append(r.ToolFindings, MapFinding{Code: f.Code, ToolUseID: f.ToolUseID, Tool: red.Redact(f.Tool), Sources: f.Sources})
+			}
+		}
 	}
 	r.Claim = claimFor(r.Result, r.Flow)
 	for name, data := range b.Files {
-		if name == "report.json" || name == "report.txt" {
+		if derivedFiles[name] {
 			continue
 		}
 		r.Artifacts = append(r.Artifacts, FileHash{Name: name, SHA256: sha256Hex(data)})
@@ -113,20 +167,39 @@ func BuildReport(b *Bundle, cs []Criterion, red Redactor) Report {
 
 // schemaReport is the report of a bundle that could not be validated.
 func schemaReport() Report {
-	return Report{Schema: ReportSchema, Result: ResultFail, Claim: claimFor(ResultFail, ""), Versions: []VersionRecord{},
-		Criteria: []Criterion{}, Artifacts: []FileHash{}, Error: "evidence_schema_error"}
+	return Report{Schema: ReportSchema, Result: ResultFail, Claim: claimFor(ResultFail, ""), Judgments: PendingReview, Versions: []VersionRecord{},
+		ProtectedRoots: []string{}, Criteria: []Criterion{}, Protected: []EnvChange{}, Housekeeping: []EnvChange{}, OversizedConfig: []string{}, ToolFindings: []MapFinding{},
+		Artifacts: []FileHash{}, Error: "evidence_schema_error"}
+}
+
+// sizeText renders an optional size.
+func sizeText(p *int64) string {
+	if p == nil {
+		return "absent"
+	}
+	return fmt.Sprint(*p)
 }
 
 // RenderText is the human-readable summary of r.
 func RenderText(r Report) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "result: %s\nrun: %s\nflow: %s\nclaim: %s\nrevision: %s\nplatform: %s\n", r.Result, r.RunID, r.Flow, r.Claim, r.Revision, r.Platform)
+	fmt.Fprintf(&b, "result: %s (mechanical and deterministic criteria)\n%s\n", r.Result, JudgmentReportLine)
+	fmt.Fprintf(&b, "run: %s\nflow: %s\nclaim: %s\nrevision: %s\nplatform: %s\n", r.RunID, r.Flow, r.Claim, r.Revision, r.Platform)
 	if r.Error != "" {
 		fmt.Fprintf(&b, "error: %s\n", r.Error)
 	}
 	for _, v := range r.Versions {
 		fmt.Fprintf(&b, "version %s: %s\n", v.Tool, v.Version)
 	}
+	if len(r.ProtectedRoots) == 0 {
+		b.WriteString("protected roots: No repository root was protected (only the four vendor homes)\n")
+	}
+	for _, root := range r.ProtectedRoots {
+		fmt.Fprintf(&b, "protected root: %s\n", root)
+	}
+	fmt.Fprintf(&b, "protected depth: repositories at most %d directory levels below each protected root; deeper repositories are not protected\n", r.ProtectDepth)
+	b.WriteString("not covered: ~/.claude.json\n")
+	b.WriteString("not covered: " + NestedRepoLimitation + "\n")
 	for _, c := range r.Criteria {
 		if len(c.Codes) == 0 {
 			fmt.Fprintf(&b, "criterion %s: %s\n", c.ID, c.Result)
@@ -134,14 +207,32 @@ func RenderText(r Report) string {
 		}
 		fmt.Fprintf(&b, "criterion %s: %s (%s)\n", c.ID, c.Result, strings.Join(c.Codes, ", "))
 	}
+	for _, c := range r.Protected {
+		fmt.Fprintf(&b, "protected change: %s %s %s [%s]\n", c.Scope, c.Path, c.Kind, strings.Join(c.Fields, ","))
+	}
+	for _, n := range r.OversizedConfig {
+		fmt.Fprintf(&b, "configuration file over 1 MiB, fingerprinted by metadata only: %s\n", n)
+	}
+	fmt.Fprintf(&b, "housekeeping changes (report-only): %d\n", len(r.Housekeeping))
+	for _, c := range r.Housekeeping {
+		fmt.Fprintf(&b, "  %s %s %s (%s) size %s -> %s\n", c.Scope, c.Path, c.Kind, c.Class, sizeText(c.BeforeSize), sizeText(c.AfterSize))
+	}
+	for _, f := range r.ToolFindings {
+		ref := ""
+		if len(f.Sources) > 0 {
+			ref = fmt.Sprintf(" (private evidence %s lines %d-%d)", f.Sources[0].File, f.Sources[0].FirstLine, f.Sources[0].LastLine)
+		}
+		fmt.Fprintf(&b, "coordinator tool %s: %s tool-use %s%s\n", f.Code, f.Tool, f.ToolUseID, ref)
+	}
 	fmt.Fprintf(&b, "artifacts: %d files (names and SHA-256 in report.json)\n", len(r.Artifacts))
 	return b.String()
 }
 
 // CheckEvidence runs the offline check of root and writes the JSON report
 // to out: 0 for PASS, 1 for failed or incomplete evidence, 2 for schema
-// errors. It writes nothing to the bundle.
-func CheckEvidence(root string, red Redactor, out, errOut io.Writer) int {
+// errors (a version 1 bundle included). It writes nothing to the bundle
+// and executes nothing.
+func CheckEvidence(root string, out, errOut io.Writer) int {
 	b, err := LoadBundle(root)
 	if err != nil {
 		// Every load failure is a schema error: malformed or unsafe
@@ -151,7 +242,7 @@ func CheckEvidence(root string, red Redactor, out, errOut io.Writer) int {
 		fmt.Fprintf(errOut, "reale2e check: %v\n", err)
 		return 2
 	}
-	r := BuildReport(b, Check(b), red)
+	r := BuildReport(b, Check(b))
 	data, _ := encodeJSON(r)
 	out.Write(data)
 	if r.Result == ResultPass {

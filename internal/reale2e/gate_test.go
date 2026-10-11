@@ -85,7 +85,9 @@ func TestGateUnits(t *testing.T) {
 		t.Fatalf("order: %v", err)
 	}
 	for _, args := range [][]string{nil, {"bogus"}, {"observe"}, {"observe", "--run", "/r", "--task", "bad", "--hop", HopDesigner},
-		{"observe", "--run", "/r", "--task", hexID("t_", 1), "--hop", "planner"}, {"finish"}, {"finish", "--run", "rel"}} {
+		{"observe", "--run", "/r", "--task", hexID("t_", 1), "--hop", "planner"}, {"finish"}, {"finish", "--run", "rel"}, {"wait"},
+		{"run", "--callsheet", "/c", "--claude", "/a", "--codex", "/b", "--grok", "/g", "--evidence", "/e", "--protect-root", "rel"},
+		{"run", "--callsheet", "/c", "--claude", "/a", "--codex", "/b", "--grok", "/g", "--evidence", "/e", "--coordinator-settings", "/s"}} {
 		var out, errOut bytes.Buffer
 		h := Host{GOOS: "linux", Args: args, Getenv: on, LookupEnv: none, Stdout: &out, Stderr: &errOut,
 			NewWorld: func(Host) (*World, func(), error) { t.Fatal("world built"); return nil, nil, nil }}
@@ -96,7 +98,7 @@ func TestGateUnits(t *testing.T) {
 	// A world that cannot be built fails the run (exit 1).
 	var out, errOut bytes.Buffer
 	h := Host{GOOS: "linux", Args: []string{"run", "--callsheet", "/c", "--claude", "/a", "--codex", "/b", "--grok", "/g", "--evidence", "/e",
-		"--coordinator-settings", "/s"},
+		"--protect-root", "/r1", "--protect-root", "/r2"},
 		Getenv: on, LookupEnv: none, Stdout: &out, Stderr: &errOut,
 		NewWorld: func(Host) (*World, func(), error) { return nil, nil, os.ErrPermission }}
 	if code := MainWith(h); code != 1 || !strings.Contains(errOut.String(), "permission") {

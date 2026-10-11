@@ -116,6 +116,15 @@ func checkerMutations() []mutation {
 		{"started", CritManifest, "started_at_invalid", func(t *testing.T, b string) {
 			editDoc(t, b, "manifest.json", func(m *Manifest) { m.StartedAt = "yesterday" })
 		}},
+		{"launch hash", CritManifest, "launch_hash_mismatch", func(t *testing.T, b string) {
+			editDoc(t, b, launchFiles[1], func(l *LaunchRecord) { l.Display = append(l.Display, "edited") })
+		}},
+		{"launch inventory short", CritManifest, "launch_inventory_mismatch", func(t *testing.T, b string) {
+			editDoc(t, b, "manifest.json", func(m *Manifest) { m.Launches = m.Launches[:1] })
+		}},
+		{"launch inventory order", CritManifest, "launch_inventory_mismatch", func(t *testing.T, b string) {
+			editDoc(t, b, "manifest.json", func(m *Manifest) { m.Launches[0], m.Launches[1] = m.Launches[1], m.Launches[0] })
+		}},
 		// events
 		{"events missing", CritEvents, "events_missing", func(t *testing.T, b string) { writeBundleFile(t, b, "events.jsonl", nil) }},
 		{"sequence", CritEvents, "sequence_not_increasing", func(t *testing.T, b string) {
@@ -173,113 +182,97 @@ func checkerMutations() []mutation {
 			editTask(t, b, "preflight/04", func(v *contract.TaskView) { v.Result.FinalMessageTruncated = true })
 		}},
 		{"preflight final file", CritPreflight, "preflight_not_authenticated", func(t *testing.T, b string) { removeBundleFile(t, b, "preflight/01/final.txt") }},
-		// setup
-		{"launch missing", CritSetup, "launch_missing", func(t *testing.T, b string) { removeBundleFile(t, b, "setup/launch.json") }},
-		{"session ID", CritSetup, "session_id_invalid", func(t *testing.T, b string) {
-			editDoc(t, b, "setup/launch.json", func(l *LaunchRecord) { l.SessionID = "abc" })
-		}},
-		{"resume flag", CritSetup, "launch_flag_forbidden", func(t *testing.T, b string) {
-			editDoc(t, b, "setup/launch.json", func(l *LaunchRecord) { l.Argv = append(l.Argv, "--resume") })
-		}},
-		{"bare flag", CritSetup, "launch_flag_forbidden", func(t *testing.T, b string) {
-			editDoc(t, b, "setup/launch.json", func(l *LaunchRecord) { l.Argv = append(l.Argv, "--bare") })
-		}},
-		{"session argument", CritSetup, "session_id_mismatch", func(t *testing.T, b string) {
-			editDoc(t, b, "setup/launch.json", func(l *LaunchRecord) { l.Argv[slices.Index(l.Argv, "--session-id")+1] = "other" })
-		}},
-		{"strict MCP", CritSetup, "launch_incomplete", func(t *testing.T, b string) {
-			editDoc(t, b, "setup/launch.json", func(l *LaunchRecord) {
-				l.Argv = slices.DeleteFunc(l.Argv, func(a string) bool { return a == "--strict-mcp-config" })
+		// setup (A3)
+		{"launch missing", CritSetup, "launch_missing", func(t *testing.T, b string) { removeBundleFile(t, b, launchFiles[1]) }},
+		{"permission bypass", CritSetup, "launch_shape_invalid", launchEdit(1, func(a []string) []string { return append(a, "--dangerously-skip-permissions") })},
+		{"permission mode", CritSetup, "launch_shape_invalid", launchEdit(2, func(a []string) []string {
+			return append(a, "--permission-mode", "bypassPermissions")
+		})},
+		{"strict MCP", CritSetup, "launch_shape_invalid", launchEdit(1, func(a []string) []string { return append(a, "--strict-mcp-config") })},
+		{"setting sources", CritSetup, "launch_shape_invalid", launchEdit(1, func(a []string) []string {
+			return append(a, "--setting-sources", "project,local")
+		})},
+		{"session pinned", CritSetup, "launch_shape_invalid", launchEdit(1, func(a []string) []string { return append(a, "--session-id", testSession) })},
+		{"sandbox kept on", CritSetup, "launch_shape_invalid", launchEdit(1, func(a []string) []string {
+			return setFlagValue(a, "--settings", `{"sandbox":{"enabled":true}}`)
+		})},
+		{"phase 1 resumed", CritSetup, "launch_shape_invalid", launchEdit(1, func(a []string) []string { return append(a, "--resume", testSession) })},
+		{"phase 2 continue", CritSetup, "launch_shape_invalid", launchEdit(2, func(a []string) []string {
+			return append(withoutFlag(a, "--resume"), "--continue")
+		})},
+		{"phase 2 other session", CritSetup, "session_resume_mismatch", func(t *testing.T, b string) {
+			other := "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+			editDoc(t, b, launchFiles[1], func(l *LaunchRecord) {
+				l.ResumeSession = other
+				l.Argv = setFlagValue(l.Argv, "--resume", other)
 			})
+		}},
+		{"prompt hash", CritSetup, "launch_shape_invalid", func(t *testing.T, b string) {
+			editDoc(t, b, launchFiles[0], func(l *LaunchRecord) { l.PromptSHA256 = zeros64 })
 		}},
 		{"MCP config", CritSetup, "setup_file_missing", func(t *testing.T, b string) { writeBundleFile(t, b, "setup/mcp-config.json", nil) }},
-		{"transcript", CritSetup, "transcript_missing", func(t *testing.T, b string) { removeBundleFile(t, b, "session/transcript.jsonl") }},
-		{"attestation missing", CritSetup, "attestation_missing", func(t *testing.T, b string) { removeBundleFile(t, b, "session/setup-attestation.json") }},
-		{"attestation run", CritSetup, "attestation_binding_mismatch", func(t *testing.T, b string) {
-			editDoc(t, b, "session/setup-attestation.json", func(a *SetupAttestation) { a.RunID = "20200101T000000Z-00000000" })
+		{"coordinator exit missing", CritSetup, "coordinator_exit_unobserved", func(t *testing.T, b string) { removeBundleFile(t, b, coordinatorExitFile) }},
+		{"coordinator exit nonzero", CritSetup, "coordinator_exit_nonzero", func(t *testing.T, b string) {
+			editDoc(t, b, coordinatorExitFile, func(c *CoordinatorExit) { c.Phases[1].ExitCode = ptr(1) })
 		}},
-		{"resumed session", CritSetup, "session_resumed", func(t *testing.T, b string) {
-			editDoc(t, b, "session/setup-attestation.json", func(a *SetupAttestation) { a.Resumed = true })
+		{"phase 2 new session", CritSetup, "session_resume_mismatch", func(t *testing.T, b string) {
+			data := mustRead(t, filepath.Join(b, filepath.FromSlash(phaseStreamFiles[1])))
+			writeBundleFile(t, b, phaseStreamFiles[1], []byte(strings.Replace(string(data), testSession, "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", 1)))
 		}},
-		{"stale session", CritSetup, "session_resumed", func(t *testing.T, b string) {
-			editDoc(t, b, "session/setup-attestation.json", func(a *SetupAttestation) { a.FreshSession = false })
+		// event map (A3: machine-derived)
+		{"map missing", CritEventMap, "event_map_missing", func(t *testing.T, b string) { removeBundleFile(t, b, eventMapFile) }},
+		{"map edited", CritEventMap, "event_map_mismatch", func(t *testing.T, b string) {
+			editDoc(t, b, eventMapFile, func(m *EventMap) { m.Entries[1].Task = "t_" + strings.Repeat("9", 32) })
 		}},
-		{"extra prompt", CritSetup, "setup_not_clean", func(t *testing.T, b string) {
-			editDoc(t, b, "session/setup-attestation.json", func(a *SetupAttestation) { a.NoExtraPrompt = false })
+		{"map attested", CritEventMap, "event_map_not_derived", func(t *testing.T, b string) {
+			editDoc(t, b, eventMapFile, func(m *EventMap) { m.Source = "owner-attested" })
 		}},
-		{"no inputs", CritSetup, "setup_inputs_missing", func(t *testing.T, b string) {
-			editDoc(t, b, "session/setup-attestation.json", func(a *SetupAttestation) { a.SetupInputs = []string{} })
+		{"transcripts missing", CritEventMap, CodeSessionUnobserved, func(t *testing.T, b string) {
+			removeBundleFile(t, b, transcriptFiles[0])
+			removeBundleFile(t, b, transcriptFiles[1])
 		}},
-		{"undeclared input", CritSetup, "undeclared_setup_input", func(t *testing.T, b string) {
-			editDoc(t, b, "session/setup-attestation.json", func(a *SetupAttestation) { a.SetupInputs = append(a.SetupInputs, "personal-skill") })
+		{"transcript not a prefix", CritEventMap, CodeSessionUnobserved, func(t *testing.T, b string) {
+			data := mustRead(t, filepath.Join(b, filepath.FromSlash(transcriptFiles[0])))
+			writeBundleFile(t, b, transcriptFiles[0], append(data, []byte(`{"type":"summary","summary":"compacted"}`+"\n")...))
 		}},
-		{"export", CritSetup, "attestation_incomplete", func(t *testing.T, b string) {
-			editDoc(t, b, "session/setup-attestation.json", func(a *SetupAttestation) { a.TranscriptExport = "" })
+		{"malformed record", CritEventMap, CodeSessionMalformed, func(t *testing.T, b string) {
+			data := mustRead(t, filepath.Join(b, filepath.FromSlash(phaseStreamFiles[0])))
+			writeBundleFile(t, b, phaseStreamFiles[0], append(data, []byte("not json\n")...))
 		}},
-		// event map
-		{"map missing", CritEventMap, "event_map_missing", func(t *testing.T, b string) { removeBundleFile(t, b, "session/event-map.json") }},
-		{"map attestation", CritEventMap, "event_map_not_attested", func(t *testing.T, b string) {
-			editDoc(t, b, "session/event-map.json", func(m *EventMap) { m.AttestedByOwner = false })
+		{"dangling tool result", CritEventMap, CodeSessionMalformed, func(t *testing.T, b string) {
+			appendTranscript(t, b, map[string]any{"type": "user", "message": map[string]any{"role": "user",
+				"content": []map[string]any{{"type": "tool_result", "tool_use_id": "toolu_none", "content": "x"}}}})
 		}},
-		{"map binding", CritEventMap, "event_map_binding_mismatch", func(t *testing.T, b string) {
-			editDoc(t, b, "session/event-map.json", func(m *EventMap) { m.TranscriptSHA256 = zeros64 })
+		{"ordinary user input", CritEventMap, CodeUserInput, func(t *testing.T, b string) {
+			appendTranscript(t, b, map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": "please also fix the README"}})
 		}},
-		{"map kind", CritEventMap, "event_kind_unknown", func(t *testing.T, b string) {
-			editDoc(t, b, "session/event-map.json", func(m *EventMap) { m.Events = append(m.Events, MapEvent{Kind: "other", Lines: []int{1, 1}}) })
+		{"unsupported wake", CritEventMap, CodeWakeUnsupported, func(t *testing.T, b string) {
+			replaceInSession(t, b, `<status>completed</status>`, `<state>completed</state>`)
 		}},
-		{"span range", CritEventMap, "transcript_span_invalid", func(t *testing.T, b string) {
-			editDoc(t, b, "session/event-map.json", func(m *EventMap) { m.Events[1].Lines = []int{1, 9999} })
-		}},
-		{"span shape", CritEventMap, "transcript_span_invalid", func(t *testing.T, b string) {
-			editDoc(t, b, "session/event-map.json", func(m *EventMap) { m.Events[1].Lines = []int{3} })
-		}},
-		{"span record", CritEventMap, "transcript_span_invalid", func(t *testing.T, b string) {
-			data, _ := os.ReadFile(filepath.Join(b, "session", "transcript.jsonl"))
-			data = []byte("not json\n" + strings.SplitN(string(data), "\n", 2)[1])
-			writeBundleFile(t, b, "session/transcript.jsonl", data)
-			editDoc(t, b, "session/event-map.json", func(m *EventMap) { m.TranscriptSHA256 = sha256Hex(data) })
-		}},
-		{"map incomplete", CritEventMap, "event_map_incomplete", func(t *testing.T, b string) {
-			editDoc(t, b, "session/event-map.json", func(m *EventMap) { m.Events = slices.Delete(m.Events, 3, 4) })
-		}},
-		{"map task", CritEventMap, "event_map_incomplete", func(t *testing.T, b string) {
-			editDoc(t, b, "session/event-map.json", func(m *EventMap) { m.Events[1].Task = "t_" + strings.Repeat("9", 32) })
-		}},
-		{"map order", CritEventMap, "event_map_out_of_order", func(t *testing.T, b string) {
-			editDoc(t, b, "session/event-map.json", func(m *EventMap) { m.Events[5].Lines = []int{1, 1} })
-		}},
-		// waits
-		{"foreground wait", CritWaits, "wait_not_background", func(t *testing.T, b string) {
-			editDoc(t, b, "session/event-map.json", func(m *EventMap) { m.Events[2].Background = false })
-		}},
-		{"no wake", CritWaits, "automatic_wake_unobserved", func(t *testing.T, b string) {
-			editDoc(t, b, "session/event-map.json", func(m *EventMap) {
-				for i := range m.Events {
-					m.Events[i].AutomaticWake = false
-				}
+		// C3-C5: the raw sources are rewritten consistently and the
+		// checker re-derives the map from them.
+		{"result unbound", CritEventMap, CodeSessionMalformed, func(t *testing.T, b string) {
+			editBundleStream(t, b, 0, func(l []string) []string {
+				last := strings.Replace(l[len(l)-1], `,"session_id":"`+testSession+`"`, "", 1)
+				l[len(l)-1] = strings.Replace(last, `"is_error":false`, `"is_error":"false"`, 1)
+				return l
 			})
 		}},
-		{"user message", CritWaits, "automatic_wake_unobserved", func(t *testing.T, b string) {
-			editDoc(t, b, "session/event-map.json", func(m *EventMap) {
-				for i := range m.Events {
-					m.Events[i].UserMessageBetween = m.Events[i].Kind == MapWaitConsumed
-				}
-			})
+		{"result first", CritEventMap, CodePhaseEarly, func(t *testing.T, b string) {
+			editBundleStream(t, b, 0, func(l []string) []string { return moveResult(l, 1) })
+			editBundleStream(t, b, 1, func(l []string) []string { return moveResult(l, 1) })
 		}},
-		{"long poll", CritWaits, "unqualified_long_poll", func(t *testing.T, b string) {
-			editDoc(t, b, "session/event-map.json", func(m *EventMap) {
-				m.Events = append(m.Events, MapEvent{Kind: MapMCPWait, BudgetMS: 60000, Recovery: true, Lines: []int{1, 1}})
-			})
+		{"task_show response forged", CritEventMap, CodePhaseEarly, func(t *testing.T, b string) {
+			replaceInSession(t, b, `"state":"succeeded"`, `"state":"running"`)
 		}},
-		{"polling only", CritWaits, "unqualified_long_poll", func(t *testing.T, b string) {
-			editDoc(t, b, "session/event-map.json", func(m *EventMap) {
-				m.Events = append(m.Events, MapEvent{Kind: MapMCPWait, BudgetMS: 10000, Lines: []int{1, 1}})
-			})
+		{"denied tool", CritEventMap, CodeToolDenied, func(t *testing.T, b string) {
+			data := string(mustRead(t, filepath.Join(b, filepath.FromSlash(phaseStreamFiles[1]))))
+			data = strings.Replace(data, `"is_error":false,"result":`, `"is_error":false,"permission_denials":[{"tool_name":"Bash","tool_use_id":"toolu_x"}],"result":`, 1)
+			writeBundleFile(t, b, phaseStreamFiles[1], []byte(data))
 		}},
-		{"dispatch wait", CritWaits, "dispatch_with_wait", func(t *testing.T, b string) {
-			editDoc(t, b, "session/event-map.json", func(m *EventMap) { m.Events[1].BudgetMS = 10000 })
-		}},
+		// waits (A3: direct CLI background waits)
 		{"wait missing", CritWaits, "wait_record_missing", func(t *testing.T, b string) { removeBundleFile(t, b, "hops/02/wait.json") }},
+		{"wait files missing", CritWaits, "wait_files_missing", func(t *testing.T, b string) { removeBundleFile(t, b, "hops/03/"+waitExitFile) }},
 		{"wait winner", CritWaits, "wait_binding_mismatch", func(t *testing.T, b string) {
 			editDoc(t, b, "hops/03/wait.json", func(w *WaitRecord) { w.Winner = "t_" + strings.Repeat("9", 32) })
 		}},
@@ -288,6 +281,14 @@ func checkerMutations() []mutation {
 		}},
 		{"wait killed", CritWaits, "wait_unsuccessful", func(t *testing.T, b string) {
 			editDoc(t, b, "hops/04/wait.json", func(w *WaitRecord) { w.ExitCode = nil })
+		}},
+		{"wait raw output", CritWaits, "wait_record_mismatch", func(t *testing.T, b string) { writeBundleFile(t, b, "hops/01/"+waitExitFile, []byte("1\n")) }},
+		{"long poll", CritWaits, CodeLongPoll, func(t *testing.T, b string) {
+			appendTranscript(t, b, map[string]any{"type": "assistant", "message": map[string]any{"role": "assistant",
+				"content": []map[string]any{{"type": "tool_use", "id": "toolu_poll", "name": toolTaskWait, "input": map[string]any{"task_ids": []string{"t_x"}}}}}})
+		}},
+		{"no wake", CritWaits, "automatic_wake_unobserved", func(t *testing.T, b string) {
+			replaceInSession(t, b, `<task-notification>`, `(task-notification)`)
 		}},
 		// hops
 		{"hop missing", CritHops, "hop_missing", func(t *testing.T, b string) { removeBundleFile(t, b, "hops/04/task.json") }},
@@ -563,17 +564,19 @@ func checkerMutations() []mutation {
 				c.Processes = slices.DeleteFunc(c.Processes, func(p ProcRecord) bool { return p.Name == "plane" })
 			})
 		}},
-		{"owner children", CritCleanup, "owner_children_unverified", func(t *testing.T, b string) {
-			editDoc(t, b, "cleanup.json", func(c *CleanupRecord) { c.Owner = nil })
+		{"coordinator group alive", CritCleanup, "coordinator_group_unverified", func(t *testing.T, b string) {
+			editDoc(t, b, coordinatorExitFile, func(c *CoordinatorExit) { c.Phases[0].GroupGone = false })
 		}},
-		{"session open", CritCleanup, "owner_children_unverified", func(t *testing.T, b string) {
-			editDoc(t, b, "cleanup.json", func(c *CleanupRecord) { c.Owner.SessionClosed = false })
+		{"coordinator not reaped", CritCleanup, "coordinator_group_unverified", func(t *testing.T, b string) {
+			editDoc(t, b, coordinatorExitFile, func(c *CoordinatorExit) { c.Phases[1].Reaped = false })
 		}},
-		{"wait handle exit", CritCleanup, "owner_children_unverified", func(t *testing.T, b string) {
-			editDoc(t, b, "cleanup.json", func(c *CleanupRecord) { c.Owner.WaitHandles[1].ExitCode = 1 })
+		{"phase process record", CritCleanup, "process_record_missing", func(t *testing.T, b string) {
+			editDoc(t, b, "cleanup.json", func(c *CleanupRecord) {
+				c.Processes = slices.DeleteFunc(c.Processes, func(p ProcRecord) bool { return p.Name == phaseHandle(2) })
+			})
 		}},
-		{"wait handles", CritCleanup, "owner_children_unverified", func(t *testing.T, b string) {
-			editDoc(t, b, "cleanup.json", func(c *CleanupRecord) { c.Owner.WaitHandles = c.Owner.WaitHandles[:3] })
+		{"runtime kept", CritCleanup, "runtime_not_removed", func(t *testing.T, b string) {
+			editDoc(t, b, "cleanup.json", func(c *CleanupRecord) { c.RuntimeRemoved = false })
 		}},
 		// deadlines
 		{"preflight deadline", CritDeadlines, "preflight_deadline_exceeded", func(t *testing.T, b string) {
@@ -600,12 +603,14 @@ func checkerMutations() []mutation {
 			})
 		}},
 	}
-	return append(m, a2SetupMutations()...)
+	return append(m, a3Mutations()...)
 }
 
-// launchArgv edits the recorded launch argv.
-func launchArgv(t *testing.T, b string, f func(argv []string) []string) {
-	editDoc(t, b, "setup/launch.json", func(l *LaunchRecord) { l.Argv = f(l.Argv) })
+// launchEdit edits coordinator phase p's recorded launch argv.
+func launchEdit(p int, f func(argv []string) []string) func(t *testing.T, b string) {
+	return func(t *testing.T, b string) {
+		editDoc(t, b, launchFiles[p-1], func(l *LaunchRecord) { l.Argv = f(slices.Clone(l.Argv)) })
+	}
 }
 
 // withoutFlag removes a flag and its value from argv.
@@ -621,95 +626,298 @@ func setFlagValue(argv []string, flag, value string) []string {
 	return out
 }
 
-// equalsForm joins a flag and its value as --flag=value.
-func equalsForm(argv []string, flag string) []string {
-	i := slices.Index(argv, flag)
-	return slices.Replace(slices.Clone(argv), i, i+2, flag+"="+argv[i+1])
+// appendTranscript appends one record (with the session's ID and the
+// launch's cwd) to the phase-2 transcript snapshot only (the phase-1 copy
+// stays its prefix).
+func appendTranscript(t *testing.T, b string, v map[string]any) {
+	t.Helper()
+	var l LaunchRecord
+	readDoc(t, filepath.Join(b, filepath.FromSlash(launchFiles[0])), &l)
+	v["sessionId"], v["cwd"] = testSession, l.Cwd
+	line, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(b, filepath.FromSlash(transcriptFiles[1]))
+	writeBundleFile(t, b, transcriptFiles[1], append(mustRead(t, p), append(line, '\n')...))
 }
 
-// replaceSettings replaces the settings snapshot and recomputes its
-// manifest hash, so only the content policy can fail.
-func replaceSettings(t *testing.T, b, content string) {
-	writeBundleFile(t, b, SettingsEvidence, []byte(content))
-	editDoc(t, b, "manifest.json", func(m *Manifest) {
-		for i := range m.Rendered {
-			if m.Rendered[i].Name == SettingsEvidence {
-				m.Rendered[i].SHA256 = sha256Hex([]byte(content))
+// editBundleStream edits phase p's (0-based) stored raw stream line by
+// line.
+func editBundleStream(t *testing.T, b string, p int, f func(lines []string) []string) {
+	t.Helper()
+	data := strings.TrimSuffix(string(mustRead(t, filepath.Join(b, filepath.FromSlash(phaseStreamFiles[p])))), "\n")
+	writeBundleFile(t, b, phaseStreamFiles[p], []byte(strings.Join(f(strings.Split(data, "\n")), "\n")+"\n"))
+}
+
+// replaceInSession replaces old with new in every session stream and
+// transcript snapshot (so the phase-1 copy stays a prefix).
+func replaceInSession(t *testing.T, b, old, new string) {
+	t.Helper()
+	// The records are JSON: compare in their escaped form.
+	esc := func(s string) string {
+		q, _ := json.Marshal(s)
+		return string(q[1 : len(q)-1])
+	}
+	old, new = esc(old), esc(new)
+	n := 0
+	for _, f := range []string{phaseStreamFiles[0], phaseStreamFiles[1], transcriptFiles[0], transcriptFiles[1]} {
+		data := string(mustRead(t, filepath.Join(b, filepath.FromSlash(f))))
+		n += strings.Count(data, old)
+		writeBundleFile(t, b, f, []byte(strings.ReplaceAll(data, old, new)))
+	}
+	if n == 0 {
+		t.Fatalf("%q is not in the session evidence", old)
+	}
+}
+
+// readSnapshot parses a stored environment snapshot.
+func readSnapshot(t *testing.T, b, phase string) *Snapshot {
+	t.Helper()
+	var shards [][]byte
+	for _, name := range envFiles(phase) {
+		shards = append(shards, mustRead(t, filepath.Join(b, filepath.FromSlash(name))))
+	}
+	s, err := parseSnapshot(shards)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// envEdit edits the stored (compact) snapshots of a bundle: put sets the
+// full record r (nil deletes it) of key k in one snapshot, keeping r for
+// the rewritten diff's detail.
+type envEdit struct {
+	before, after *Snapshot
+	full          map[*Snapshot]map[envKey]*EnvRecord
+}
+
+func (e *envEdit) put(s *Snapshot, k envKey, r *EnvRecord) {
+	s.Compact = slices.DeleteFunc(s.Compact, func(c EnvCompact) bool { return compactKey(c) == k })
+	if r != nil {
+		s.Compact = append(s.Compact, compactOf(*r))
+	}
+	e.full[s][k] = r
+}
+
+// change sets the named vendor entry in both snapshots: a synthetic owner
+// configuration file before, and that record edited by f after (f nil
+// deletes it).
+func (e *envEdit) change(scope, rel string, f func(r *EnvRecord)) {
+	r := EnvRecord{Kind: RecEntry, Scope: scope, Path: rel, Class: ClassConfig, Method: MethodContent, Type: TypeFile, Mode: 0o600, Size: 2,
+		SHA256: sha256Hex([]byte("{}"))}
+	k := keyOf(r)
+	e.put(e.before, k, &r)
+	if f == nil {
+		e.put(e.after, k, nil)
+		return
+	}
+	a := r
+	f(&a)
+	e.put(e.after, k, &a)
+}
+
+// rewriteEnvironment applies f to the stored snapshots and rewrites them
+// with a consistently recomputed diff.json whose detail comes from the
+// stored diff and f's full records (so only the comparison's own verdict
+// can fail).
+func rewriteEnvironment(t *testing.T, b string, f func(e *envEdit)) {
+	t.Helper()
+	before, after := readSnapshot(t, b, "before"), readSnapshot(t, b, "after")
+	e := &envEdit{before: before, after: after, full: map[*Snapshot]map[envKey]*EnvRecord{before: {}, after: {}}}
+	var stored EnvDiff
+	readDoc(t, filepath.Join(b, "environment", "diff.json"), &stored)
+	for _, dt := range stored.Detail {
+		for s, r := range map[*Snapshot]*EnvRecord{before: dt.Before, after: dt.After} {
+			if r != nil {
+				if _, set := e.full[s][keyOf(*r)]; !set {
+					e.full[s][keyOf(*r)] = r
+				}
+			}
+		}
+	}
+	f(e)
+	for phase, s := range map[string]*Snapshot{"before": before, "after": after} {
+		shards, err := encodeSnapshot(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, name := range envFiles(phase) {
+			writeBundleFile(t, b, name, shards[i])
+		}
+	}
+	var detail []EnvDetail
+	for _, k := range differingKeys(before.Compact, after.Compact) {
+		dt := EnvDetail{Before: e.full[before][k], After: e.full[after][k]}
+		if (dt.Before == nil) == slices.ContainsFunc(before.Compact, func(c EnvCompact) bool { return compactKey(c) == k }) ||
+			(dt.After == nil) == slices.ContainsFunc(after.Compact, func(c EnvCompact) bool { return compactKey(c) == k }) {
+			t.Fatalf("no full record for the changed entry %v", k)
+		}
+		detail = append(detail, dt)
+	}
+	var m Manifest
+	readDoc(t, filepath.Join(b, "manifest.json"), &m)
+	d := diffFromDetail(before, after, m.ProtectedRoots, detail)
+	for _, phase := range []string{"before", "after"} {
+		for _, name := range envFiles(phase) {
+			fh := FileHash{Name: name, SHA256: sha256Hex(mustRead(t, filepath.Join(b, filepath.FromSlash(name))))}
+			if phase == "before" {
+				d.Before = append(d.Before, fh)
+			} else {
+				d.After = append(d.After, fh)
+			}
+		}
+	}
+	data, err := encodeDiff(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeBundleFile(t, b, "environment/diff.json", data)
+	// The rewrite is consistent: the checker re-derives exactly this diff.
+	if _, r, _ := checkBundle(t, b); slices.Contains(failedCodes(r), "environment_diff_mismatch") || slices.Contains(failedCodes(r), "snapshot_invalid") {
+		t.Fatalf("an inconsistent environment rewrite: %v", failedCodes(r))
+	}
+}
+
+// editCase edits one stored CLI case result.
+func editCase(t *testing.T, b, id string, f func(c *CaseResult)) {
+	editDoc(t, b, "validation/cases.json", func(r *CasesRecord) {
+		for i := range r.Cases {
+			if r.Cases[i].ID == id {
+				f(&r.Cases[i])
 			}
 		}
 	})
 }
 
-// a2SetupMutations (UT-6, FP-7, amendment A2) mutate each new setup
-// predicate independently: the two settings flags (missing, duplicated,
-// wrong value, --flag=value), safe mode and disabled slash commands in
-// both forms, the settings snapshot (missing, hash wrong, its manifest
-// row missing or duplicated; content mutations recompute the hash) and a
-// runtime copy changed during the session.
-func a2SetupMutations() []mutation {
-	argv := func(f func(a []string) []string) func(t *testing.T, b string) {
-		return func(t *testing.T, b string) { launchArgv(t, b, f) }
-	}
+// a3Mutations (UT-6, UT-10, UT-12) cover the A3 lifecycle order, the
+// owner environment, the deterministic result checks and the final
+// validation's execution bindings.
+func a3Mutations() []mutation {
 	return []mutation{
-		{"setting sources missing", CritSetup, "setting_sources_invalid", argv(func(a []string) []string { return withoutFlag(a, "--setting-sources") })},
-		{"setting sources duplicated", CritSetup, "setting_sources_invalid", argv(func(a []string) []string {
-			return append(slices.Clone(a), "--setting-sources", SettingSources)
-		})},
-		{"setting sources with user", CritSetup, "setting_sources_invalid", argv(func(a []string) []string {
-			return setFlagValue(a, "--setting-sources", "user,project,local")
-		})},
-		{"setting sources equals form", CritSetup, "setting_sources_invalid", argv(func(a []string) []string { return equalsForm(a, "--setting-sources") })},
-		{"setting sources without value", CritSetup, "setting_sources_invalid", argv(func(a []string) []string {
-			return append(withoutFlag(a, "--setting-sources"), "--setting-sources")
-		})},
-		{"settings missing", CritSetup, "settings_flag_invalid", argv(func(a []string) []string { return withoutFlag(a, "--settings") })},
-		{"settings duplicated", CritSetup, "settings_flag_invalid", argv(func(a []string) []string {
-			return append(slices.Clone(a), "--settings", SettingsArg)
-		})},
-		{"settings of the user", CritSetup, "settings_flag_invalid", argv(func(a []string) []string {
-			return setFlagValue(a, "--settings", "$HOME/.claude/settings.json")
-		})},
-		{"settings equals form", CritSetup, "settings_flag_invalid", argv(func(a []string) []string { return equalsForm(a, "--settings") })},
-		{"safe mode", CritSetup, "launch_flag_forbidden", argv(func(a []string) []string { return append(slices.Clone(a), "--safe-mode") })},
-		{"safe mode equals form", CritSetup, "launch_flag_forbidden", argv(func(a []string) []string { return append(slices.Clone(a), "--safe-mode=true") })},
-		{"slash commands disabled", CritSetup, "launch_flag_forbidden", argv(func(a []string) []string {
-			return append(slices.Clone(a), "--disable-slash-commands")
-		})},
-		{"slash commands disabled equals form", CritSetup, "launch_flag_forbidden", argv(func(a []string) []string {
-			return append(slices.Clone(a), "--disable-slash-commands=true")
-		})},
-		{"settings snapshot missing", CritSetup, "coordinator_settings_missing", func(t *testing.T, b string) { removeBundleFile(t, b, SettingsEvidence) }},
-		{"settings hash wrong", CritSetup, "coordinator_settings_hash_mismatch", func(t *testing.T, b string) {
-			editDoc(t, b, "manifest.json", func(m *Manifest) {
-				for i := range m.Rendered {
-					if m.Rendered[i].Name == SettingsEvidence {
-						m.Rendered[i].SHA256 = zeros64
+		{"resume before receipt", CritEvents, "lifecycle_out_of_order", func(t *testing.T, b string) {
+			editEvents(t, b, true, func(e []Event) []Event {
+				i := slices.IndexFunc(e, func(x Event) bool { return x.Type == EvPhaseStarted && x.Handle == phaseHandle(2) })
+				x := e[i]
+				e = slices.Delete(e, i, i+1)
+				j := slices.IndexFunc(e, func(y Event) bool { return y.Type == EvOwnerDecision })
+				return slices.Insert(e, j, x)
+			})
+		}},
+		// owner environment
+		{"diff missing", CritOwnerEnv, "environment_diff_missing", func(t *testing.T, b string) { removeBundleFile(t, b, "environment/diff.json") }},
+		{"snapshot missing", CritOwnerEnv, CodeEnvUnobserved, func(t *testing.T, b string) { removeBundleFile(t, b, "environment/after-01.jsonl") }},
+		{"configuration changed", CritOwnerEnv, CodeEnvModified, func(t *testing.T, b string) {
+			rewriteEnvironment(t, b, func(e *envEdit) { e.change("claude", "settings.json", func(r *EnvRecord) { r.SHA256 = zeros64 }) })
+		}},
+		{"configuration deleted", CritOwnerEnv, CodeEnvModified, func(t *testing.T, b string) {
+			rewriteEnvironment(t, b, func(e *envEdit) { e.change("claude", "CLAUDE.md", nil) })
+		}},
+		{"after incomplete", CritOwnerEnv, CodeEnvUnobserved, func(t *testing.T, b string) {
+			rewriteEnvironment(t, b, func(e *envEdit) { e.after.Complete, e.after.Code = false, CodeEnvUnobserved })
+		}},
+		{"diff suppressed", CritOwnerEnv, "environment_diff_mismatch", func(t *testing.T, b string) {
+			rewriteEnvironment(t, b, func(e *envEdit) { e.change("codex", "config.toml", func(r *EnvRecord) { r.SHA256 = zeros64 }) })
+			editDoc(t, b, "environment/diff.json", func(d *EnvDiff) { d.Protected, d.Codes = []EnvChange{}, []string{} })
+		}},
+		// A3.4: the diff's full-record detail is bound to the compact
+		// snapshots; an altered or dropped detail record is a mismatch.
+		{"diff detail altered", CritOwnerEnv, "environment_diff_mismatch", func(t *testing.T, b string) {
+			rewriteEnvironment(t, b, func(e *envEdit) { e.change("codex", "config.toml", func(r *EnvRecord) { r.Mode = 0o644 }) })
+			editDoc(t, b, "environment/diff.json", func(d *EnvDiff) {
+				for _, dt := range d.Detail {
+					if dt.After != nil && dt.After.Scope == "codex" && dt.After.Path == "config.toml" {
+						dt.After.Mode = 0o600
 					}
 				}
 			})
 		}},
-		{"settings hash row missing", CritSetup, "coordinator_settings_hash_mismatch", func(t *testing.T, b string) {
-			editDoc(t, b, "manifest.json", func(m *Manifest) {
-				m.Rendered = slices.DeleteFunc(m.Rendered, func(r FileHash) bool { return r.Name == SettingsEvidence })
+		{"diff detail dropped", CritOwnerEnv, "environment_diff_mismatch", func(t *testing.T, b string) {
+			rewriteEnvironment(t, b, func(e *envEdit) { e.change("claude", "CLAUDE.md", nil) })
+			editDoc(t, b, "environment/diff.json", func(d *EnvDiff) {
+				d.Detail = slices.DeleteFunc(d.Detail, func(dt EnvDetail) bool { return dt.Before != nil && dt.Before.Path == "CLAUDE.md" })
 			})
 		}},
-		{"settings hash row duplicated", CritSetup, "coordinator_settings_hash_mismatch", func(t *testing.T, b string) {
-			editDoc(t, b, "manifest.json", func(m *Manifest) {
-				m.Rendered = append(m.Rendered, FileHash{Name: SettingsEvidence, SHA256: sha256Hex([]byte(testSettings))})
+		// C6: complete, consistently rebound snapshots without the vendor
+		// homes observed prove nothing.
+		{"snapshots empty", CritOwnerEnv, CodeEnvInventory, func(t *testing.T, b string) {
+			rewriteEnvironment(t, b, func(e *envEdit) { e.before.Compact, e.after.Compact = []EnvCompact{}, []EnvCompact{} })
+		}},
+		{"home record missing", CritOwnerEnv, CodeEnvUnobserved, func(t *testing.T, b string) {
+			rewriteEnvironment(t, b, func(e *envEdit) {
+				for _, s := range []*Snapshot{e.before, e.after} {
+					s.Compact = slices.DeleteFunc(s.Compact, func(c EnvCompact) bool { return c.Kind == RecHome && c.Scope == "grok" })
+				}
 			})
 		}},
-		{"settings extra key", CritSetup, "coordinator_settings_invalid", func(t *testing.T, b string) {
-			replaceSettings(t, b, `{"sandbox":{"enabled":true},"permissions":{"allow":["Bash"]}}`+"\n")
+		{"depth mismatch", CritOwnerEnv, "protect_depth_mismatch", func(t *testing.T, b string) {
+			editDoc(t, b, "manifest.json", func(m *Manifest) { m.ProtectDepth = 5 })
 		}},
-		{"settings sandbox disabled", CritSetup, "coordinator_settings_invalid", func(t *testing.T, b string) {
-			replaceSettings(t, b, `{"sandbox":{"enabled":false}}`+"\n")
+		{"roots mismatch", CritOwnerEnv, "protected_roots_mismatch", func(t *testing.T, b string) {
+			editDoc(t, b, "manifest.json", func(m *Manifest) { m.ProtectedRoots = []string{"/elsewhere"} })
 		}},
-		{"settings malformed", CritSetup, "coordinator_settings_invalid", func(t *testing.T, b string) { replaceSettings(t, b, `{"sandbox":`) }},
-		{"runtime settings modified", CritSetup, codeSettingsModified, func(t *testing.T, b string) {
-			editEvents(t, b, true, func(evs []Event) []Event {
-				i := slices.IndexFunc(evs, func(e Event) bool { return e.Type == EvCollectionStarted })
-				return slices.Insert(evs, i, Event{Type: EvAttemptFailed, Code: codeSettingsModified, Time: evs[i].Time})
+		// result correctness
+		{"case failed", CritResult, CodeCaseFailed, func(t *testing.T, b string) {
+			editCase(t, b, "unicode", func(c *CaseResult) {
+				c.Stdout = "Hello, ??!\n"
+				c.Exec.StdoutSHA256 = sha256Hex([]byte(c.Stdout))
+				c.Pass, c.Code = false, "unexpected_result"
 			})
+		}},
+		{"case record", CritResult, "case_record_mismatch", func(t *testing.T, b string) {
+			editCase(t, b, "help", func(c *CaseResult) { c.Pass = false })
+		}},
+		{"subtest missing", CritResult, CodeTestMapping, func(t *testing.T, b string) {
+			lines := strings.Split(string(mustRead(t, filepath.Join(b, "validation", "tests.jsonl"))), "\n")
+			lines = slices.DeleteFunc(lines, func(l string) bool { return strings.Contains(l, `"TestRun/positional"`) })
+			writeBundleFile(t, b, "validation/tests.jsonl", []byte(strings.Join(lines, "\n")))
+		}},
+		{"requirements edited", CritResult, "requirements_mismatch", func(t *testing.T, b string) {
+			editDoc(t, b, "validation/requirements.json", func(r *RequirementsRecord) { r.Rows[0].TestName = "TestOther" })
+		}},
+		{"approval with failing tests", CritResult, CodeReviewContra, func(t *testing.T, b string) {
+			editDoc(t, b, "validation/final-test.json", func(r *TestRun) { r.ExitCode = 1 })
+		}},
+		{"report edited", CritResult, CodeDerivedMismatch, func(t *testing.T, b string) {
+			editDoc(t, b, "report.json", func(r *Report) { r.Claim = "everything is fine" })
+		}},
+		{"audit row reordered", CritResult, CodeDerivedMismatch, func(t *testing.T, b string) {
+			editDoc(t, b, "audit.json", func(a *Audit) { a.Rows[0], a.Rows[1] = a.Rows[1], a.Rows[0] })
+		}},
+		{"audit markdown", CritResult, CodeDerivedMismatch, func(t *testing.T, b string) {
+			writeBundleFile(t, b, "audit.md", []byte("# all correct\n"))
+		}},
+		// final validation bindings
+		{"validation missing", CritFinalTests, "validation_missing", func(t *testing.T, b string) { removeBundleFile(t, b, "validation/cases.json") }},
+		{"build failed", CritFinalTests, "validation_binding_mismatch", func(t *testing.T, b string) {
+			editDoc(t, b, "validation/cases.json", func(r *CasesRecord) { r.Build.ExitCode = 1 })
+		}},
+		{"case commit", CritFinalTests, "validation_binding_mismatch", func(t *testing.T, b string) {
+			editCase(t, b, "name", func(c *CaseResult) { c.Exec.Commit = zeros40 })
+		}},
+		{"validation sequence", CritFinalTests, "validation_binding_mismatch", func(t *testing.T, b string) {
+			editDoc(t, b, "validation/cases.json", func(r *CasesRecord) { r.Build.StartSeq = 1 })
+		}},
+		// A failing go test -json run (another test failing, exit 1) is a
+		// failed validation even with all ten required subtests passing.
+		{"json run failed", CritFinalTests, CodeValidationFail, func(t *testing.T, b string) {
+			stream := string(mustRead(t, filepath.Join(b, "validation", "tests.jsonl"))) +
+				`{"Action":"fail","Package":"example.com/greeting/util","Test":"TestOther","Elapsed":0}` + "\n"
+			writeBundleFile(t, b, "validation/tests.jsonl", []byte(stream))
+			editDoc(t, b, "validation/requirements.json", func(r *RequirementsRecord) {
+				r.TestRun.ExitCode, r.TestRun.StdoutSHA256, r.TestRun.StdoutBytes = 1, sha256Hex([]byte(stream)), len(stream)
+				r.TestRunPassed, r.TestFailures = testRunVerdict(r.TestRun, []byte(stream))
+			})
+		}},
+		{"json run approved", CritResult, CodeReviewContra, func(t *testing.T, b string) {
+			editDoc(t, b, "validation/requirements.json", func(r *RequirementsRecord) {
+				r.TestRun.ExitCode = 1
+				r.TestRunPassed = false
+			})
+		}},
+		{"validation budget", CritFinalTests, "validation_deadline_exceeded", func(t *testing.T, b string) {
+			editDoc(t, b, "validation/requirements.json", func(r *RequirementsRecord) { r.TestRun.DurationMS = 61000 })
 		}},
 	}
 }
@@ -781,22 +989,15 @@ func TestEvidenceCommand(t *testing.T) {
 	if len(seen) != len(criteriaOrder) {
 		t.Fatalf("criteria exercised %d of %d", len(seen), len(criteriaOrder))
 	}
-	// A2: every new setup predicate through the command; a content
-	// mutation (its hash recomputed) fails the content policy, not the
-	// digest.
-	for _, m := range a2SetupMutations() {
-		b := passingBundle(t)
-		m.mutate(t, b)
-		code, out, _ := run("check", "--evidence", b)
-		var r Report
-		json.Unmarshal([]byte(out), &r)
-		requireCode(t, m.name, code, r, m.crit, m.code)
-		if m.code == "coordinator_settings_invalid" && (slices.Contains(criterion(r, CritSetup).Codes, "coordinator_settings_hash_mismatch") ||
-			criterion(r, CritManifest).Result != "pass") {
-			t.Errorf("%s: failed on its digest %v", m.name, failedCodes(r))
-		}
+	// A3: the live collector's final validation on offline fixture
+	// commits, conforming and missing a requirement, then the check.
+	t.Run("collector", testCollectorValidation)
+	// A version 1 bundle is unsupported, never reinterpreted.
+	v1 := passingBundle(t)
+	editJSON(t, v1, "manifest.json", func(m map[string]any) { m["schema"] = ManifestSchemaV1 })
+	if code, out, _ := run("check", "--evidence", v1); code != 2 || !strings.Contains(out, "evidence_schema_error") {
+		t.Fatalf("version 1 bundle = %d %q", code, out)
 	}
-	t.Run("A2 helper output", testA2HelperEvidence)
 	// A schema error.
 	bad := passingBundle(t)
 	writeBundleFile(t, bad, "manifest.json", []byte("{"))
@@ -807,100 +1008,6 @@ func TestEvidenceCommand(t *testing.T) {
 		if code, _, errOut := run(args...); code != 2 || !strings.Contains(errOut, "usage:") {
 			t.Errorf("%v = %d %q", args, code, errOut)
 		}
-	}
-}
-
-// testA2HelperEvidence (FP-7, amendment A2): the wait helper's output,
-// redirected as the coordinator's shell does, is collected through the
-// unchanged ParseWaitResponse/WaitRecord path into a bundle: a successful
-// task passes; a worker exit 7 keeps the wait's transport success but
-// fails task success; a lost or silent supervisor fails the unchanged wait
-// criteria.
-func testA2HelperEvidence(t *testing.T) {
-	// collect serves the bundle's designer task view from a rig adopting
-	// its run, runs the helper, stores its shell records and collects them
-	// into the bundle's hops/01/wait.json.
-	collect := func(t *testing.T, b string, prep func(r *waitRig) WaitWorld) (WaitRecord, waitRun) {
-		var m Manifest
-		readDoc(t, filepath.Join(b, "manifest.json"), &m)
-		r := newWaitRig(t)
-		r.adopt(m.RunID, m.Workspace, readTask(t, b, "hops/01"))
-		r.observe(0)
-		ww := prep(r)
-		w := runWait(t, ww, "--run", r.rt, "--task", r.tasks[0], "--hop", HopDesigner)
-		dir := filepath.Join(r.rt, "waits", "01")
-		for name, data := range map[string]string{"result.json": w.out, "error.txt": w.errOut, "exit-code": w.exitCodeFile()} {
-			if err := os.WriteFile(filepath.Join(dir, name), []byte(data), 0o600); err != nil {
-				t.Fatal(err)
-			}
-		}
-		r.s.collectWaits()
-		data := mustRead(t, filepath.Join(r.s.ev.root, "hops", "01", "wait.json"))
-		var rec WaitRecord
-		if err := decodeStrict(data, &rec); err != nil {
-			t.Fatal(err)
-		}
-		writeBundleFile(t, b, "hops/01/wait.json", data)
-		return rec, w
-	}
-	served := func(r *waitRig) WaitWorld {
-		r.serve()
-		return helperWorld(&pollClock{})
-	}
-	t.Run("success", func(t *testing.T) {
-		t.Parallel()
-		b := passingBundle(t)
-		rec, w := collect(t, b, served)
-		if w.code != 0 || rec.ExitCode == nil || *rec.ExitCode != 0 || rec.Winner != rec.Task || rec.WinnerState != contract.TaskSucceeded ||
-			rec.ResultSHA256 != sha256Hex([]byte(w.out)) {
-			t.Fatalf("wait %d, record %+v", w.code, rec)
-		}
-		if code, r, _ := checkBundle(t, b); code != 0 {
-			t.Fatalf("the relayed wait failed the bundle: %v", failedCodes(r))
-		}
-	})
-	t.Run("worker exit 7", func(t *testing.T) {
-		t.Parallel()
-		b := passingBundle(t)
-		editTask(t, b, "hops/01", func(v *contract.TaskView) {
-			res := *v.Result
-			res.State, res.ExitCode = contract.TaskFailed, ptr(7)
-			v.State, v.Result = contract.TaskFailed, &res
-		})
-		rec, w := collect(t, b, served)
-		if w.code != 0 || *rec.ExitCode != 0 || rec.WinnerState != contract.TaskFailed {
-			t.Fatalf("wait %d, record %+v", w.code, rec)
-		}
-		code, r, _ := checkBundle(t, b)
-		if c := criterion(r, CritHops); code != 1 || c.Result != "fail" {
-			t.Fatalf("a failed worker passed the hops: %d %v", code, failedCodes(r))
-		}
-	})
-	for name, prep := range map[string]func(r *waitRig) WaitWorld{
-		"supervisor lost": func(r *waitRig) WaitWorld {
-			r.writeRunFile()
-			return helperWorld(&pollClock{})
-		},
-		"silent supervisor": func(r *waitRig) WaitWorld {
-			r.p.block = true
-			r.serve()
-			ww := helperWorld(&pollClock{})
-			ww.Exchange = 100 * time.Millisecond
-			return ww
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			b := passingBundle(t)
-			rec, w := collect(t, b, prep)
-			if w.code != 1 || w.out != "" || rec.ExitCode == nil || *rec.ExitCode != 1 || rec.Winner != "" {
-				t.Fatalf("wait %d %q, record %+v", w.code, w.errOut, rec)
-			}
-			code, r, _ := checkBundle(t, b)
-			if c := criterion(r, CritWaits); code != 1 || c.Result != "fail" {
-				t.Fatalf("a failed wait passed: %d %v", code, failedCodes(r))
-			}
-		})
 	}
 }
 
@@ -1161,8 +1268,8 @@ func TestReportDeterministic(t *testing.T) {
 	t.Parallel()
 	b := passingBundle(t)
 	var a1, a2, e bytes.Buffer
-	CheckEvidence(b, Redactor{}, &a1, &e)
-	CheckEvidence(b, Redactor{}, &a2, &e)
+	CheckEvidence(b, &a1, &e)
+	CheckEvidence(b, &a2, &e)
 	if !bytes.Equal(a1.Bytes(), a2.Bytes()) {
 		t.Fatal("reports differ")
 	}
@@ -1201,14 +1308,14 @@ func TestRedaction(t *testing.T) {
 	b := passingBundle(t)
 	editDoc(t, b, "manifest.json", func(m *Manifest) {
 		m.Versions[0].Version = "2.1.290 token=secret123"
-		m.Versions[0].Path = "/home/ada/bin/claude"
+		m.Versions[0].Path = "/tmp/ce-1a2b/bin/claude"
 	})
 	bundle, err := LoadBundle(b)
 	if err != nil {
 		t.Fatal(err)
 	}
-	rep := BuildReport(bundle, Check(bundle), Redactor{Home: "/home/ada"})
-	if rep.Versions[0].Version != "2.1.290 token=REDACTED" || rep.Versions[0].Path != "$HOME/bin/claude" {
+	rep := BuildReport(bundle, Check(bundle))
+	if rep.Versions[0].Version != "2.1.290 token=REDACTED" || rep.Versions[0].Path != "$RUN/bin/claude" {
 		t.Fatalf("report versions %+v", rep.Versions[0])
 	}
 	if claimFor(ResultPass, FlowOverride) == claimFor(ResultPass, FlowDefault) || claimFor(ResultFail, FlowDefault) != "not demonstrated" {

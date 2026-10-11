@@ -2,6 +2,7 @@ package reale2e
 
 import (
 	"bytes"
+	"fmt"
 	"go/ast"
 	"go/build/constraint"
 	"go/parser"
@@ -83,7 +84,7 @@ func TestOfflineBoundary(t *testing.T) {
 	// No other new runtime.GOOS read: the package decides from the
 	// supplied goos only (the platform guard above scans it too).
 	// The checker reaches no process, network or plane client.
-	checker := []string{"check.go", "bundle.go", "report.go", "gitrepo.go", "schema.go", "strictjson.go"}
+	checker := []string{"check.go", "bundle.go", "report.go", "gitrepo.go", "schema.go", "strictjson.go", "audit.go", "session.go"}
 	for _, name := range checker {
 		fset := token.NewFileSet()
 		f, err := parser.ParseFile(fset, filepath.Join(root, "internal", "reale2e", name), nil, 0)
@@ -202,43 +203,78 @@ func shippedTemplates(t *testing.T, root string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"run_in_background: true", `never pass "wait" or "override"`, "<RUNTIME>", "continue after recorded decision",
-		"<RECEIPT>", "sha256sum", "BEGIN FILE", "END FILE", "task_wait once", "never run the finish command"} {
+	for _, want := range []string{"run_in_background: true", `never pass "wait" or "override"`, "Never call task_wait", "<RUNTIME>", "<RECEIPT>",
+		"sha256sum", "BEGIN FILE", "END FILE", "phase 2 only", "completion notification"} {
 		if !bytes.Contains(prompt, []byte(want)) {
 			t.Errorf("the coordinator prompt lacks %q", want)
 		}
 	}
 	for i, h := range Hops {
-		if !bytes.Contains(prompt, []byte(`callsheet-real-e2e run=<RUN_ID> hop=`+h)) || !bytes.Contains(prompt, []byte("<WAITS_DIR>/"+hopDir(i)+"/exit-code")) {
-			t.Errorf("the coordinator prompt lacks hop %s's marker or wait record", h)
+		if !bytes.Contains(prompt, []byte(`callsheet-real-e2e run=<RUN_ID> hop=`+h)) || !bytes.Contains(prompt, []byte("<WAIT_"+hopDir(i)+">")) {
+			t.Errorf("the coordinator prompt lacks hop %s's marker or wait command", h)
 		}
+	}
+	phases := map[string][]byte{}
+	for _, n := range []string{PhasePrompt1, PhasePrompt2} {
+		if phases[n], err = renderTemplate(n, tpl[n], all); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !bytes.Contains(phases[PhasePrompt1], []byte("Do not dispatch the coder or the code reviewer")) ||
+		!bytes.Contains(phases[PhasePrompt2], []byte("<RECEIPT>")) || !bytes.Contains(phases[PhasePrompt2], []byte("<DESIGN_SHA256>")) {
+		t.Error("the phase prompts do not split the authorization at the owner's yes")
 	}
 	for _, p := range Placeholders {
-		if p != "OWNER_DIR" && !bytes.Contains(tpl[CoordinatorPrompt], []byte("{{"+p+"}}")) {
-			t.Errorf("the coordinator prompt never uses %s", p)
+		used := false
+		for _, n := range []string{CoordinatorPrompt, PhasePrompt1, PhasePrompt2} {
+			used = used || bytes.Contains(tpl[n], []byte("{{"+p+"}}"))
+		}
+		if !used {
+			t.Errorf("no coordinator template uses %s", p)
 		}
 	}
-	// The runbook is the single entry point: it links every shipped file
-	// and covers the required topics.
+	// A3 retired the manual session contract everywhere it was shipped.
 	doc, err := os.ReadFile(filepath.Join(root, "docs", "real-e2e.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	shipped := map[string][]byte{"docs/real-e2e.md": doc}
+	for n, b := range tpl {
+		shipped[n] = b
+	}
+	for name, b := range shipped {
+		for _, gone := range []string{"reale2e wait", "reale2e finish", "--coordinator-settings", "--setting-sources", "--strict-mcp-config", "--session-id",
+			"setup-attestation", "attested", "python3", "continue after recorded decision", "move CLAUDE.md", "coordinator-exit.json", "event-map.json"} {
+			if bytes.Contains(b, []byte(gone)) {
+				t.Errorf("%s still carries the retired %q", name, gone)
+			}
+		}
+	}
+	// The short runbook is the single entry point: it links every shipped
+	// file, shows the one command and the exact prompt, and agrees with the
+	// flow's role table and the fixed case IDs.
 	for _, n := range TemplateNames() {
 		if !bytes.Contains(doc, []byte("examples/real-e2e/"+n)) {
 			t.Errorf("docs/real-e2e.md does not link %s", n)
 		}
 	}
-	for _, want := range []string{"## Costs and bounds", "## Prerequisites", "## Roles, models and efforts", "## The feature", "## Running it", "## Your decision",
-		"## Finishing and evidence", "## Failure, rerun and cleanup", "## Limitations", EnvOptIn + "=1", "reale2e check --evidence", "reale2e finish --run",
-		"--strict-mcp-config", "--bare", "transcript.jsonl", "event-map.json", "setup-attestation.json", "coordinator-exit.json", "yes <run-id>"} {
+	for _, want := range []string{"## Prerequisites", "## Roles, models and efforts", "## Run", "## Sign-off", "## Reading the result", "## Rerun",
+		EnvOptIn + "=1", "reale2e run", "--protect-root", decisionPrompt, "report.txt", "audit.md", "audit-review.md", "~/.claude.json",
+		"No repository root was protected", NestedRepoLimitation, "--protect-depth", JudgmentReportLine, `--settings '{"sandbox":{"enabled":false}}'`, "reale2e check --evidence"} {
 		if !bytes.Contains(doc, []byte(want)) {
 			t.Errorf("docs/real-e2e.md lacks %q", want)
 		}
 	}
-	for _, schema := range []string{AttestationSchema, EventMapSchema, CoordExitSchema} {
-		if !bytes.Contains(doc, []byte(schema)) {
-			t.Errorf("docs/real-e2e.md lacks the %s example", schema)
+	for _, r := range flow.Roles {
+		if !bytes.Contains(doc, []byte(fmt.Sprintf("| %s | %s | %s | %s |", r.ID, r.Adapter, r.Model, r.Effort))) {
+			t.Errorf("the runbook's role table disagrees with the flow on %s", r.ID)
+		}
+	}
+	for _, c := range FeatureCases {
+		for name, b := range map[string][]byte{"runbook": doc, "FEATURE.md": []byte(FeatureRequest), "coder runbook": tpl[manualName(HopCoder, "runbook")]} {
+			if !bytes.Contains(b, []byte(c.ID)) {
+				t.Errorf("the %s lacks case %s", name, c.ID)
+			}
 		}
 	}
 }
@@ -337,5 +373,23 @@ func TestUnitContracts(t *testing.T) {
 	}
 	if id, err := newRunID(time.Date(2026, 10, 10, 1, 2, 3, 0, time.UTC), &countingRand{}); err != nil || id != "20261010T010203Z-01020304" || !ValidRunID(id) {
 		t.Fatalf("run ID %q %v", id, err)
+	}
+	// The live terminal starts reading only when the prompt activates it
+	// (once), bounds each line and closes at EOF, discarding an
+	// unterminated final line.
+	term := &readerTerminal{r: strings.NewReader("yes\n\n" + strings.Repeat("x", maxControlLine+10) + "\nno\nyes")}
+	ch := term.Activate()
+	if term.Activate() != ch {
+		t.Fatal("a second activation started a second reader")
+	}
+	var lines []string
+	for l := range ch {
+		lines = append(lines, l)
+	}
+	if len(lines) != 4 || lines[0] != "yes" || lines[1] != "" || len(lines[2]) != maxControlLine || lines[3] != "no" {
+		t.Fatalf("terminal lines %q", lines)
+	}
+	if cmpOr("", "b") != "b" || cmpOr("a", "b") != "a" {
+		t.Fatal("cmpOr")
 	}
 }
