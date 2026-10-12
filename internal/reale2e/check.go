@@ -529,26 +529,12 @@ func shellWord(s string) (word, rest string, ok bool) {
 	return word, rest, word != "" && shellQuote(word)+rest == s
 }
 
-// tokenSpells reports whether a sanitized path token spells real.
-func tokenSpells(token, real string) bool {
-	if token == real {
-		return filepath.IsAbs(real)
-	}
-	for _, t := range []string{"$CHECKOUT", "$RUN", "$HOME"} {
-		if rest, ok := strings.CutPrefix(token, t); ok && strings.HasPrefix(rest, "/") {
-			return filepath.IsAbs(real) && len(real) > len(rest) && strings.HasSuffix(real, rest)
-		}
-	}
-	return false
-}
-
-// permissionInputs reconstructs the allow-list's fixed values (A3.6) from
-// independently bound inputs, never from a recorded rule list: the
-// runtime from the launch's working directory, the plane URL and the CA's
-// runtime path from the sanitized MCP configuration, and the two
-// executables from the first rendered wait template (itself bound to the
-// hashed system prompt), the Callsheet one consistent with the MCP
-// command.
+// permissionInputs reconstructs the allow-list's fixed values (A3.6,
+// A3.7) from independently bound inputs, never from a recorded rule list:
+// the runtime from the launch's working directory and the reale2e
+// executable from the first rendered wait template (itself bound to the
+// hashed system prompt). The sanitized MCP configuration must be exactly
+// the renderer's, its CA inside the runtime.
 func (c *checker) permissionInputs(l *LaunchRecord) (permissionValues, bool) {
 	var v permissionValues
 	if l == nil || !filepath.IsAbs(l.Cwd) || filepath.Base(l.Cwd) != "coord" || len(l.WaitTemplates) != len(Hops) {
@@ -573,15 +559,34 @@ func (c *checker) permissionInputs(l *LaunchRecord) (permissionValues, bool) {
 	if want, err := mcpConfig(srv.Command, srv.Args[2], srv.Args[4]); !ok || !strings.HasPrefix(caRest, "/") || err != nil || !bytes.Equal(want, cfgBytes) {
 		return v, false
 	}
-	v.url, v.ca = srv.Args[2], v.runtime+caRest
-	callsheet, rest, ok := shellWord(l.WaitTemplates[0])
-	_, capture, found := strings.Cut(rest, "; ")
-	reale2e, _, ok2 := shellWord(capture)
-	if !ok || !found || !ok2 || !tokenSpells(srv.Command, callsheet) || !filepath.IsAbs(reale2e) {
+	reale2e, _, ok := shellWord(l.WaitTemplates[0])
+	if !ok || !filepath.IsAbs(reale2e) {
 		return v, false
 	}
-	v.callsheet, v.reale2e = callsheet, reale2e
+	v.reale2e = reale2e
 	return v, true
+}
+
+// waitLinesMatch reports whether the system prompt's wait lines and the
+// allow-list match exactly (A3.7): each hop's wait template is a whole
+// line of the prompt, its hop's wait-task rule is that line with the task
+// slot as the one wildcard and allows it, and every Bash line of the
+// prompt is one simple command without a redirect, separator, pipe or
+// quote.
+func waitLinesMatch(system string, v permissionValues, allowed, waits []string) bool {
+	lines := strings.Split(system, "\n")
+	if len(allowed) != AllowListSize || len(waits) != len(Hops) || slices.ContainsFunc(lines, func(l string) bool { return strings.Contains(l, "capture-wait") }) {
+		return false
+	}
+	for i, w := range waits {
+		rule := allowed[waitRuleOffset+i]
+		if !slices.Contains(lines, w) || strings.Count(w, "TASK_ID") != 1 || rule != "Bash("+strings.Replace(w, "TASK_ID", "*", 1)+")" ||
+			!bashRuleAllows(rule, w) {
+			return false
+		}
+	}
+	bash := promptBashLines(system, v.reale2e)
+	return len(bash) >= 2*len(Hops)+1 && !slices.ContainsFunc(bash, func(l string) bool { return !simpleBashLine(l) })
 }
 
 // expectedLaunch is phase p's only permitted launch: the shared argv with
@@ -604,7 +609,7 @@ func (c *checker) expectedLaunch(p int) (argv, waits []string, ok bool) {
 	prompt := string(c.b.Files["setup/coordinator-phase-"+fmt.Sprint(p)+".md"])
 	system := string(c.b.Files["setup/coordinator-prompt.md"])
 	argv = launchArgv(p, prompt, allowed, filepath.Join(v.runtime, "mcp.json"), system, c.derived.SessionID)
-	if !strings.Contains(system, shellQuote(v.reale2e)+" observe --run "+shellQuote(v.runtime)+" ") {
+	if !strings.Contains(system, v.reale2e+" observe --run "+v.runtime+" ") || !waitLinesMatch(system, v, allowed, waits) {
 		return nil, nil, false
 	}
 	return argv, waits, true

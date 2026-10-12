@@ -43,8 +43,8 @@ func manualName(hop, kind string) string { return hop + "-" + kind + ".md" }
 var placeholderRE = regexp.MustCompile(`\{\{([A-Z0-9_]*)\}\}`)
 
 // Placeholders are the only placeholder names a template may use.
-var Placeholders = []string{"RUN_ID", "RUNTIME", "PLANE_URL", "CA_PATH", "CALLSHEET", "REALE2E", "WORKSPACE", "INSTANCE",
-	"SEED_PATH", "SEED_COMMIT", "WAITS_DIR", "RECEIPT", "COORD_DIR", "WAIT_01", "WAIT_02", "WAIT_03", "WAIT_04",
+var Placeholders = []string{"RUN_ID", "RUNTIME", "PLANE_URL", "CA_PATH", "REALE2E", "WORKSPACE", "INSTANCE",
+	"SEED_PATH", "SEED_COMMIT", "RECEIPT", "COORD_DIR", "WAIT_01", "WAIT_02", "WAIT_03", "WAIT_04",
 	"REVIEWED_TASK", "RESULT_COMMIT", "DESIGN_SHA256", "REVIEW_SHA256"}
 
 // loadTemplates reads every template from dir.

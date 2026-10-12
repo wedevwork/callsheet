@@ -479,7 +479,7 @@ var strictPaths = map[string][]strictPath{
 	"claude": {{name: "CLAUDE.md"}, {prefix: "settings", suffix: ".json", glob: true}, {name: "agents"}, {name: "skills"}, {name: "commands"},
 		{name: "hooks"}, {name: "plugins/installed_plugins.json"}, {name: "plugins/known_marketplaces.json"}, {name: "plugins/blocklist.json"},
 		{name: "plugins/config.json"}},
-	"codex":  {{name: "config.toml"}, {prefix: "AGENTS", suffix: ".md", glob: true}, {name: "instructions.md"}, {name: "prompts"}},
+	"codex":  {{prefix: "AGENTS", suffix: ".md", glob: true}, {name: "instructions.md"}, {name: "prompts"}},
 	"grok":   {{name: "config.toml"}, {name: "managed_config.toml"}, {name: "settings.json"}, {name: "user-settings.json"}},
 	"cursor": {{name: "cli-config.json"}, {name: "mcp.json"}},
 }
@@ -1229,7 +1229,13 @@ func (s *nulSplitter) close() error {
 
 // statusDigest hashes the kept entries of a streamed status (each with its
 // NUL; a rename or copy entry with its second path), leaving out entries
-// inside the exact exclusions, and notes untracked nested repositories.
+// inside the exact exclusions and untracked entries of the worktree's
+// top-level .claude/ (A3.7: Claude Code sandbox placeholders), and notes
+// untracked nested repositories.
+// untrackedClaude prefixes every untracked status entry inside a
+// worktree's top-level .claude/ directory.
+const untrackedClaude = "?? .claude/"
+
 type statusDigest struct {
 	sc       *envScanner
 	worktree string
@@ -1255,7 +1261,7 @@ func (d *statusDigest) entry(e string) {
 }
 
 func (d *statusDigest) keep(e string) {
-	if len(e) > 3 && d.sc.excluded(filepath.Join(d.worktree, filepath.FromSlash(e[3:]))) {
+	if strings.HasPrefix(e, untrackedClaude) || (len(e) > 3 && d.sc.excluded(filepath.Join(d.worktree, filepath.FromSlash(e[3:])))) {
 		return
 	}
 	d.h.Write([]byte(e + "\x00"))
@@ -1516,6 +1522,24 @@ func changedFields(a, b EnvRecord, metadataOnly bool) []string {
 	return f
 }
 
+// ownerConfigFields keeps the fields that change an owner-configuration
+// entry (A3.7): its content, type, mode, link target and class. Device,
+// inode and timestamps alone are no change, so a rewrite with identical
+// bytes is not one. A file over the content-hash bound has no content
+// digest, so its size and mtime remain the only witnesses of its content.
+func ownerConfigFields(a, b EnvRecord, fields []string) []string {
+	proxy := a.Type == TypeFile && b.Type == TypeFile && (a.Oversized || b.Oversized)
+	return slices.DeleteFunc(fields, func(f string) bool {
+		switch f {
+		case "device", "inode", "ctime":
+			return true
+		case "size", "mtime":
+			return !proxy
+		}
+		return false
+	})
+}
+
 // CompareEnvironment returns the sorted protected differences of two
 // collected snapshots (full records), the tool-maintained summary and the
 // full before and after records of every entry that differs (A3.4, A3.6;
@@ -1771,6 +1795,9 @@ func classifyChange(bp, ap *EnvRecord) (EnvChange, bool) {
 		return ch, !tool && !(k.kind == RecEntry && ap.Type == TypeDir && structuralAncestor(k.scope, decodeToken(k.path)))
 	}
 	fields := changedFields(*bp, *ap, tool)
+	if k.kind == RecEntry && !tool {
+		fields = ownerConfigFields(*bp, *ap, fields)
+	}
 	if len(fields) == 0 {
 		ch.Kind = ChangeModified
 		return ch, false

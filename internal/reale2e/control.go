@@ -18,10 +18,10 @@ import (
 // boundaries, A3): <runtime>/s.sock, mode 0600 in the mode-0700 runtime.
 // Each connection carries exactly one newline-delimited JSON request of
 // at most 4096 bytes and one response line, within 5 seconds, then
-// closes. Observe requests are exactly {"run","op","task","hop"}; A3.6
-// adds capture-wait, exactly {"run","op","hop","code"} with an integer
-// code 0..255, and review-material, exactly {"run","op"}. Every other
-// operation (A3 removed finish and wait) and any duplicate or unknown
+// closes. Observe requests are exactly {"run","op","task","hop"}; A3.7's
+// wait-task has the same keys, and A3.6's review-material is exactly
+// {"run","op"}. Every other operation (A3 removed finish and wait, A3.7
+// capture-wait) and any duplicate or unknown
 // key, malformed JSON or extra frame is refused. A run ID other than the
 // live supervisor's cannot mutate state. Responses carry only fixed
 // codes, never raw diagnostics; only a successful review-material
@@ -31,7 +31,7 @@ import (
 const (
 	SocketName      = "s.sock"
 	RunFileName     = "run.json"
-	RunFileSchema   = "callsheet-real-e2e-run/v1"
+	RunFileSchema   = "callsheet-real-e2e-run/v2"
 	maxControlLine  = 4096
 	controlExchange = 5 * time.Second
 	maxSocketPath   = 90
@@ -50,15 +50,15 @@ const (
 	CodeClosing          = "closing"
 	CodeInternalError    = "internal_error"
 	opObserve            = "observe"
-	opCapture            = "capture-wait"
+	opWaitTask           = "wait-task"
 	opReview             = "review-material"
 )
 
 // requestKeys are each operation's exact request keys.
 var requestKeys = map[string][]string{
-	opObserve: {"run", "op", "task", "hop"},
-	opCapture: {"run", "op", "hop", "code"},
-	opReview:  {"run", "op"},
+	opObserve:  {"run", "op", "task", "hop"},
+	opWaitTask: {"run", "op", "task", "hop"},
+	opReview:   {"run", "op"},
 }
 
 // okCodes are the success codes.
@@ -68,11 +68,9 @@ var okCodes = []string{CodeAccepted, CodeAlreadyObserved}
 var errorCodes = []string{CodeInvalidRequest, CodeRunMismatch, CodeInvalidHop, CodeTaskMismatch, CodeObservationClash, CodeOwnerGateClosed,
 	CodeClosing, CodeInternalError}
 
-// ControlRequest is one decoded request; Code is capture-wait's exit
-// code.
+// ControlRequest is one decoded request.
 type ControlRequest struct {
 	Run, Op, Task, Hop string
-	Code               int
 }
 
 // ReviewFile is one review-material file with its expected SHA-256.
@@ -95,10 +93,15 @@ func codeResponse(code string) controlResponse {
 	return controlResponse{OK: slices.Contains(okCodes, code), Code: code}
 }
 
-// RunFile is <runtime>/run.json.
+// RunFile is <runtime>/run.json: the run ID, and the Callsheet
+// executable, plane URL and runtime CA the wait-task helper runs the wait
+// with (A3.7).
 type RunFile struct {
-	Schema string `json:"schema"`
-	RunID  string `json:"run_id"`
+	Schema    string `json:"schema"`
+	RunID     string `json:"run_id"`
+	Callsheet string `json:"callsheet"`
+	Plane     string `json:"plane"`
+	CA        string `json:"ca"`
 }
 
 // errSocketPath is a computed socket path over the bound.
@@ -114,7 +117,7 @@ func socketPath(runtime string) (string, error) {
 }
 
 // parseControlRequest strictly decodes one request line: exactly its
-// operation's keys, strings except capture-wait's integer code.
+// operation's keys, each a string.
 func parseControlRequest(line []byte) (ControlRequest, bool) {
 	if err := checkDuplicateKeys(line); err != nil {
 		return ControlRequest{}, false
@@ -140,26 +143,17 @@ func parseControlRequest(line []byte) (ControlRequest, bool) {
 	}
 	r.Op = op
 	for _, k := range keys {
+		s, ok := str(k)
+		if !ok {
+			return ControlRequest{}, false
+		}
 		switch k {
-		case "op":
-		case "code":
-			v, present := raw[k]
-			if !present || null(v) || json.Unmarshal(v, &r.Code) != nil || r.Code < 0 || r.Code > 255 {
-				return ControlRequest{}, false
-			}
-		default:
-			s, ok := str(k)
-			if !ok {
-				return ControlRequest{}, false
-			}
-			switch k {
-			case "run":
-				r.Run = s
-			case "task":
-				r.Task = s
-			case "hop":
-				r.Hop = s
-			}
+		case "run":
+			r.Run = s
+		case "task":
+			r.Task = s
+		case "hop":
+			r.Hop = s
 		}
 	}
 	return r, true
@@ -250,27 +244,27 @@ func (s *controlServer) close() {
 	s.wg.Wait()
 }
 
-// readRunFile reads the runtime's run ID.
-func readRunFile(runtime string) (string, error) {
+// readRunFile reads the runtime's run file.
+func readRunFile(runtime string) (RunFile, error) {
 	data, err := readRuntimeFile(runtime, maxControlLine, RunFileName)
 	if err != nil {
-		return "", err
+		return RunFile{}, err
 	}
 	var rf RunFile
 	if err := decodeStrict(data, &rf); err != nil {
-		return "", err
+		return RunFile{}, err
 	}
-	if rf.Schema != RunFileSchema || !ValidRunID(rf.RunID) {
-		return "", errors.New("the run file is not a version 1 run file")
+	if rf.Schema != RunFileSchema || !ValidRunID(rf.RunID) || !filepath.IsAbs(rf.Callsheet) || !filepath.IsAbs(rf.CA) || rf.Plane == "" {
+		return RunFile{}, errors.New("the run file is not a version 2 run file")
 	}
-	return rf.RunID, nil
+	return rf, nil
 }
 
 // controlCall makes the one exchange of req, its run ID read from the
 // runtime's run file, with the live supervisor of runtime and returns the
 // operation's strictly decoded response.
 func controlCall(runtime string, req ControlRequest) (controlResponse, error) {
-	runID, err := readRunFile(runtime)
+	rf, err := readRunFile(runtime)
 	if err != nil {
 		return controlResponse{}, fmt.Errorf("cannot read the run file: %w", err)
 	}
@@ -278,12 +272,9 @@ func controlCall(runtime string, req ControlRequest) (controlResponse, error) {
 	if err != nil {
 		return controlResponse{}, err
 	}
-	msg := map[string]any{"run": runID, "op": req.Op}
-	switch req.Op {
-	case opObserve:
+	msg := map[string]any{"run": rf.RunID, "op": req.Op}
+	if req.Op != opReview {
 		msg["task"], msg["hop"] = req.Task, req.Hop
-	case opCapture:
-		msg["hop"], msg["code"] = req.Hop, req.Code
 	}
 	conn, err := net.DialTimeout("unix", p, controlExchange)
 	if err != nil {

@@ -1103,18 +1103,18 @@ func (c *coordScript) complete(i int) {
 	if err != nil {
 		c.t.Fatal(err)
 	}
-	// The rendered wait: the plain CLI wait's redirections, then the
-	// capture-wait helper's admission and local capture.
+	// The rendered wait: the wait-task helper's admission, the CLI wait's
+	// output in the hop's files, then the helper's capture.
 	dir := waitDir(c.s.runtime, i)
+	if got := c.s.handleRequest(ControlRequest{Run: c.s.runID, Op: opWaitTask, Task: c.tasks[i], Hop: Hops[i]}); got != CodeAccepted {
+		c.t.Errorf("wait-task %s = %s", Hops[i], got)
+	}
 	os.WriteFile(filepath.Join(dir, "result.json"), append(b, '\n'), 0o600)
 	os.WriteFile(filepath.Join(dir, "error.txt"), nil, 0o600)
 	if c.waitExit != "" {
 		code, _ := strconv.Atoi(c.waitExit)
-		if got := c.s.handleRequest(ControlRequest{Run: c.s.runID, Op: opCapture, Hop: Hops[i], Code: code}); got != CodeAccepted {
-			c.t.Errorf("capture-wait %s = %s", Hops[i], got)
-		}
 		if err := captureFiles(c.s.runtime, i, code, io.Discard, io.Discard); err != nil {
-			c.t.Errorf("capture-wait %s: %v", Hops[i], err)
+			c.t.Errorf("wait-task %s: %v", Hops[i], err)
 		}
 	}
 	p := c.phaseOf(i)
@@ -1469,6 +1469,7 @@ func newHome(t *testing.T) string {
 		".claude/skills/a/SKILL.md":  "skill\n",
 		".claude/projects/-old/x.md": "memory\n",
 		".codex/config.toml":         "model = \"x\"\n",
+		".codex/AGENTS.md":           "# codex instructions\n",
 		".codex/auth.json":           "{}\n",
 		".grok/settings.json":        "{}\n",
 	} {
@@ -1485,6 +1486,11 @@ func newHome(t *testing.T) string {
 
 // shortRoot is the short parent of every socket-bearing fixture.
 const shortRoot = "/tmp"
+
+// runFileJSON is a version 2 run file for run whose wait runs callsheet.
+func runFileJSON(run, callsheet string) string {
+	return `{"schema":"` + RunFileSchema + `","run_id":"` + run + `","callsheet":"` + callsheet + `","plane":"https://127.0.0.1:1","ca":"/rt/ca.crt"}` + "\n"
+}
 
 // shortTemp returns a short private temporary root (socket paths stay
 // within their bound whatever TMPDIR is).

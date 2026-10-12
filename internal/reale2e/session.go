@@ -790,7 +790,7 @@ func (d *deriver) deriveFacts(timeline []timelineItem, uses map[string]*toolUse,
 					}
 				}
 				if hop < 0 {
-					if strings.Contains(cmd, " task wait ") {
+					if strings.Contains(cmd, " wait-task ") || strings.Contains(cmd, " task wait ") {
 						d.find(CodeWaitMismatch, it.use, toolBash, u.src...)
 					}
 					continue

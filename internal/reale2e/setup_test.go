@@ -72,17 +72,19 @@ func TestRunbookSetup(t *testing.T) {
 	rt := f.sup.runtime
 	coord := filepath.Join(rt, "coord")
 	mcpPath := filepath.Join(rt, "mcp.json")
-	// The 16 rules, enumerated independently of the renderer.
-	u, a := f.sup.dep.url, f.sup.dep.caPath
+	// The 15 rules (A3.7), enumerated independently of the renderer.
 	rules := []string{"mcp__callsheet__ws_push", "mcp__callsheet__dispatch", "mcp__callsheet__task_show", "mcp__callsheet__ws_status",
-		"mcp__callsheet__ws_diff", "mcp__callsheet__ws_pull", "Bash(" + fakeCallsheet + " task wait * --until-done --json --plane " + u + " --ca " + a + ")"}
+		"mcp__callsheet__ws_diff", "mcp__callsheet__ws_pull"}
 	for _, h := range []string{"designer", "design-reviewer", "coder", "code-reviewer"} {
 		rules = append(rules, "Bash("+fakeReale2e+" observe --run "+rt+" --task * --hop "+h+")")
 	}
 	for _, h := range []string{"designer", "design-reviewer", "coder", "code-reviewer"} {
-		rules = append(rules, "Bash("+fakeReale2e+" capture-wait --run "+rt+" --hop "+h+" --code *)")
+		rules = append(rules, "Bash("+fakeReale2e+" wait-task --run "+rt+" --task * --hop "+h+")")
 	}
 	rules = append(rules, "Bash("+fakeReale2e+" review-material --run "+rt+")")
+	if len(rules) != 15 || AllowListSize != 15 {
+		t.Fatalf("%d rules", len(rules))
+	}
 	for i, s := range specs {
 		want := append([]string{"-p", prompts[i], "--output-format", "stream-json", "--verbose", "--settings", `{"sandbox":{"enabled":false}}`, "--allowed-tools"},
 			rules...)
@@ -137,12 +139,29 @@ func TestRunbookSetup(t *testing.T) {
 	var l1, l2 LaunchRecord
 	readDoc(t, filepath.Join(b, filepath.FromSlash(launchFiles[0])), &l1)
 	readDoc(t, filepath.Join(b, filepath.FromSlash(launchFiles[1])), &l2)
+	// A3.7: each wait is the one simple wait-task command, a whole prompt
+	// line its hop's rule allows; no Bash line of the prompt holds a
+	// redirect, separator, pipe or quote.
 	for i, h := range []string{"designer", "design-reviewer", "coder", "code-reviewer"} {
-		dir := rt + "/coord/waits/0" + string(rune('1'+i))
-		want := fakeCallsheet + " task wait TASK_ID --until-done --json --plane " + u + " --ca " + a + " >" + dir + "/result.json 2>" + dir + "/error.txt; " +
-			fakeReale2e + " capture-wait --run " + rt + " --hop " + h + ` --code "$?"`
-		if w := l1.WaitTemplates[i]; w != want || !strings.Contains(system, w) || !slices.Equal(l2.WaitTemplates, l1.WaitTemplates) {
+		want := fakeReale2e + " wait-task --run " + rt + " --task TASK_ID --hop " + h
+		if w := l1.WaitTemplates[i]; w != want || !strings.Contains(system, "\n"+w+"\n") || !slices.Equal(l2.WaitTemplates, l1.WaitTemplates) ||
+			!bashRuleAllows(rules[10+i], strings.Replace(w, "TASK_ID", hexID("t_", 9), 1)) {
 			t.Fatalf("wait template %d %q", i, w)
+		}
+	}
+	bash := promptBashLines(system, fakeReale2e)
+	if len(bash) != 9 {
+		t.Fatalf("prompt Bash lines %q", bash)
+	}
+	for _, l := range bash {
+		if strings.ContainsAny(l, `;|<>'"`) || strings.Contains(l, "&&") || !slices.ContainsFunc(rules, func(r string) bool { return bashRuleAllows(r, l) }) &&
+			!slices.ContainsFunc(rules, func(r string) bool { return bashRuleAllows(r, strings.Replace(l, "TASK_ID", hexID("t_", 9), 1)) }) {
+			t.Errorf("prompt Bash line %q", l)
+		}
+	}
+	for _, gone := range []string{"capture-wait", "task wait", `"$?"`, ">" + rt} {
+		if strings.Contains(system, gone) {
+			t.Errorf("the rendered prompt still carries %q", gone)
 		}
 	}
 	if !slices.Equal(coordEntries, []string{"01", "02", "03", "04"}) {
@@ -209,26 +228,42 @@ func TestRunbookSetup(t *testing.T) {
 		}{
 			"rule removed": {1, func(a []string, s int) []string { return slices.Delete(a, s+9, s+10) }},
 			"wait widened": {1, func(a []string, s int) []string {
-				a[s+6] = strings.Replace(a[s+6], " --until-done --json", "", 1)
+				a[s+10] = strings.Replace(a[s+10], " --hop designer", "", 1)
 				return a
 			}},
 			"observe widened": {1, func(a []string, s int) []string {
-				a[s+7] = strings.Replace(a[s+7], "--hop designer", "--hop *", 1)
+				a[s+6] = strings.Replace(a[s+6], "--hop designer", "--hop *", 1)
 				return a
 			}},
-			"capture widened": {1, func(a []string, s int) []string { a[s+11] = strings.Replace(a[s+11], " --code *", " *", 1); return a }},
+			"wait task slot widened": {1, func(a []string, s int) []string {
+				a[s+11] = strings.Replace(a[s+11], " --task * --hop design-reviewer", " *", 1)
+				return a
+			}},
 			"rule duplicated": {1, func(a []string, s int) []string { return slices.Insert(a, s+1, a[s]) }},
 			"rules reordered": {1, func(a []string, s int) []string { a[s], a[s+1] = a[s+1], a[s]; return a }},
+			"wait rules reordered": {1, func(a []string, s int) []string {
+				a[s+10], a[s+11] = a[s+11], a[s+10]
+				return a
+			}},
 			"fixed path changed": {1, func(a []string, s int) []string {
-				a[s+15] = strings.Replace(a[s+15], "--run /", "--run /tmp/other/", 1)
+				a[s+14] = strings.Replace(a[s+14], "--run /", "--run /tmp/other/", 1)
 				return a
 			}},
 			"fixed option changed": {1, func(a []string, s int) []string {
-				a[s+6] = strings.Replace(a[s+6], "--ca ", "--ca /tmp/other.crt --x ", 1)
+				a[s+12] = strings.Replace(a[s+12], "wait-task --run ", "wait-task --x --run ", 1)
 				return a
 			}},
-			"general Bash":     {1, func(a []string, s int) []string { return slices.Insert(a, s+16, "Bash") }},
-			"Read":             {1, func(a []string, s int) []string { return slices.Insert(a, s+16, "Read") }},
+			// A3.7: the removed compound wait and capture-wait rules.
+			"compound wait rule": {1, func(a []string, s int) []string {
+				r := strings.TrimSuffix(strings.TrimPrefix(a[s+10], "Bash("), ")")
+				a[s+10] = "Bash(" + r + " >/tmp/r.json; " + r + ")"
+				return a
+			}},
+			"capture-wait rule": {1, func(a []string, s int) []string {
+				return slices.Insert(a, s+14, strings.Replace(a[s+10], " wait-task ", " capture-wait ", 1))
+			}},
+			"general Bash":     {1, func(a []string, s int) []string { return slices.Insert(a, s+15, "Bash") }},
+			"Read":             {1, func(a []string, s int) []string { return slices.Insert(a, s+15, "Read") }},
 			"MCP wildcard":     {1, func(a []string, s int) []string { a[s] = "mcp__callsheet__*"; return a }},
 			"skip permissions": {1, func(a []string, s int) []string { return append(a, "--dangerously-skip-permissions") }},
 			"allow skip":       {1, func(a []string, s int) []string { return append(a, "--allow-dangerously-skip-permissions") }},
@@ -237,8 +272,8 @@ func TestRunbookSetup(t *testing.T) {
 				a[s-2] = `{"sandbox":{"enabled":false},"permissions":{"defaultMode":"bypassPermissions"}}`
 				return a
 			}},
-			"allow-list removed":   {1, func(a []string, s int) []string { return slices.Delete(a, s-1, s+16) }},
-			"phase 2 rule removed": {2, func(a []string, s int) []string { return slices.Delete(a, s+15, s+16) }},
+			"allow-list removed":   {1, func(a []string, s int) []string { return slices.Delete(a, s-1, s+15) }},
+			"phase 2 rule removed": {2, func(a []string, s int) []string { return slices.Delete(a, s+14, s+15) }},
 			"phase 2 bypass":       {2, func(a []string, s int) []string { return append(a, "--dangerously-skip-permissions") }},
 		} {
 			// Every mutation against the loaded passing bundle's launch
@@ -387,15 +422,16 @@ func TestSetupUnits(t *testing.T) {
 		streamSession([]byte("not json\n")) != "" {
 		t.Fatal("stream session")
 	}
-	t.Run("capture-wait helper", captureHelperCases)
+	t.Run("wait-task helper", waitTaskHelperCases)
 	t.Run("review-material helper", reviewHelperCases)
 	t.Run("rule inputs", func(t *testing.T) {
 		t.Parallel()
 		// A3.6: a value a rule cannot hold literally is refused before
-		// any rule is rendered.
-		v := permissionValues{callsheet: "/bin/callsheet", reale2e: "/bin/reale2e", url: "https://127.0.0.1:1", ca: "/rt/ca.crt", runtime: "/rt"}
-		if rules, err := allowedTools(v); err != nil || len(rules) != 16 {
-			t.Fatalf("rules %d %v", len(rules), err)
+		// any rule is rendered; A3.7: so is one only a quoted word holds.
+		v := permissionValues{reale2e: "/bin/reale2e", runtime: "/rt"}
+		rules, err := allowedTools(v)
+		if err != nil || len(rules) != AllowListSize || rules[waitRuleOffset] != "Bash(/bin/reale2e wait-task --run /rt --task * --hop designer)" {
+			t.Fatalf("rules %q %v", rules, err)
 		}
 		for _, bad := range []string{"/bin/call*sheet", "/bin/a(b)", "/bin/a?", "/bin/[x]", "/bin/a,b", "/bin/a\nb", "/bin/a\x00"} {
 			w := v
@@ -404,15 +440,58 @@ func TestSetupUnits(t *testing.T) {
 				t.Errorf("%q rendered: %v", bad, err)
 			}
 		}
-		w := v
-		w.runtime = "/tmp/run dir"
-		if rules, err := allowedTools(w); err != nil || !strings.Contains(rules[15], "--run '/tmp/run dir'") {
-			t.Fatalf("a quoted runtime %q %v", rules, err)
+		for _, bad := range []string{"/tmp/run dir", "/tmp/o'brien", `/tmp/a"b`, "/tmp/a;b", "/tmp/a|b", "/tmp/a>b", "/tmp/a&b", "/tmp/$x", ""} {
+			w := v
+			w.runtime = bad
+			if _, err := allowedTools(w); !errors.Is(err, errRuleQuoted) {
+				t.Errorf("runtime %q rendered: %v", bad, err)
+			}
+		}
+		// The rendered command matches its rule; compound, redirected,
+		// quoted or otherwise altered forms are refused.
+		task := hexID("t_", 3)
+		for i := range Hops {
+			cmd := strings.Replace(waitCommand(v, i), "TASK_ID", task, 1)
+			if !bashRuleAllows(rules[waitRuleOffset+i], cmd) || !simpleBashLine(cmd) {
+				t.Errorf("hop %d wait %q is not allowed by %q", i, cmd, rules[waitRuleOffset+i])
+			}
+			if i > 0 && bashRuleAllows(rules[waitRuleOffset], cmd) {
+				t.Errorf("hop %d wait allowed by the designer's rule", i)
+			}
+		}
+		rule, cmd := rules[waitRuleOffset+2], strings.Replace(waitCommand(v, 2), "TASK_ID", task, 1)
+		for _, refused := range []string{
+			cmd + " >/rt/coord/waits/03/result.json",
+			cmd + " 2>/rt/coord/waits/03/error.txt",
+			cmd + "; /bin/reale2e capture-wait --run /rt --hop coder --code \"$?\"",
+			cmd + " && true", cmd + " | cat", cmd + " &",
+			"/bin/reale2e wait-task --run /rt --task '" + task + "' --hop coder",
+			`/bin/reale2e wait-task --run /rt --task "` + task + `" --hop coder`,
+			"/bin/reale2e wait-task --run /rt --task $(cat id) --hop coder",
+			"/bin/reale2e wait-task --run /rt --task `cat id` --hop coder",
+			"/bin/reale2e wait-task --run /rt --task " + task + " --hop coder\n/bin/rm -rf /",
+			"/bin/reale2e wait-task --run /rt --task " + task + "  --hop coder",
+			" " + cmd, cmd + " --extra", "/bin/reale2e wait-task --run /rt --task  --hop coder",
+			"/bin/reale2e wait-task --run /other --task " + task + " --hop coder",
+		} {
+			if bashRuleAllows(rule, refused) {
+				t.Errorf("%q was allowed", refused)
+			}
+		}
+		for _, bad := range []string{"mcp__callsheet__ws_push", "Bash(/bin/reale2e x", "Bash(/bin/reale2e x; y)"} {
+			if bashRuleAllows(bad, "/bin/reale2e x") {
+				t.Errorf("rule %q allowed a command", bad)
+			}
 		}
 		f := newFakeWorld(t)
 		f.executable = "/fake/bin/re*ale2e"
 		if code := f.attempt(); code == 0 || !strings.Contains(f.stderr.String()+f.stdout.String(), "permission_rule_invalid") || len(f.launcher.argv()) != 0 {
 			t.Fatalf("an unquotable executable = %d, launched %v", code, f.launcher.argv())
+		}
+		f = newFakeWorld(t)
+		f.executable = "/fake/bin/real e2e"
+		if code := f.attempt(); code == 0 || !strings.Contains(f.stderr.String()+f.stdout.String(), "permission_rule_invalid") || len(f.launcher.argv()) != 0 {
+			t.Fatalf("an executable needing quotes = %d, launched %v", code, f.launcher.argv())
 		}
 	})
 }
@@ -430,12 +509,12 @@ func helperRun(t *testing.T, args ...string) (int, string, string) {
 const helperRunID = "20261010T120000Z-0a0b0c0d"
 
 // helperRuntime is a live runtime for the coordinator's helpers: its run
-// file, ownership marker, wait and pull directories and a control socket
-// answering with handle.
-func helperRuntime(t *testing.T, handle func(ControlRequest) controlResponse) string {
+// file (the wait running callsheet), ownership marker, wait and pull
+// directories and a control socket answering with handle.
+func helperRuntime(t *testing.T, callsheet string, handle func(ControlRequest) controlResponse) string {
 	t.Helper()
 	rt := shortTemp(t)
-	write(t, filepath.Join(rt, RunFileName), `{"schema":"`+RunFileSchema+`","run_id":"`+helperRunID+`"}`+"\n")
+	write(t, filepath.Join(rt, RunFileName), runFileJSON(helperRunID, callsheet))
 	write(t, filepath.Join(rt, ownerMarker), helperRunID+"\n")
 	for i := range Hops {
 		os.MkdirAll(waitDir(rt, i), 0o700)
@@ -449,39 +528,62 @@ func helperRuntime(t *testing.T, handle func(ControlRequest) controlResponse) st
 	return rt
 }
 
-// captureHelperCases (UT-3, A3.6): capture-wait saves and returns the
-// wait's status only after the supervisor admits the hop's capture, never
-// overwrites, and refuses bad options, stale runs and unsafe or oversized
-// files without writing an exit artifact.
-func captureHelperCases(t *testing.T) {
+// fakeWait writes a fake Callsheet executable for wait-task: a shell
+// script that records its arguments beside itself, then runs body.
+func fakeWait(t *testing.T, body string) (exe, argsFile string) {
+	t.Helper()
+	dir := t.TempDir()
+	exe, argsFile = filepath.Join(dir, "callsheet"), filepath.Join(dir, "args")
+	if err := os.WriteFile(exe, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >\""+argsFile+"\"\n"+body+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return exe, argsFile
+}
+
+// waitTaskHelperCases (UT-3, A3.7): wait-task runs the run file's Callsheet
+// wait only after the supervisor admits the hop's task, writes its stdout,
+// stderr and status to the hop's fixed files, exits with that status,
+// never overwrites, and refuses bad options, stale runs and unsafe,
+// preexisting or oversized files without writing an exit artifact.
+func waitTaskHelperCases(t *testing.T) {
 	t.Parallel()
+	task := hexID("t_", 5)
 	accept := func(r ControlRequest) controlResponse {
-		if r.Op == opCapture && r.Hop == HopCoder {
+		if r.Op == opWaitTask && r.Hop == HopCoder && r.Task == task {
 			return codeResponse(CodeAccepted)
 		}
 		return codeResponse(CodeTaskMismatch)
 	}
 	const result, stderr = `{"status":"terminal"}` + "\n", "warning\n"
-	fresh := func() (string, string) {
-		rt := helperRuntime(t, accept)
-		dir := waitDir(rt, 2)
-		write(t, filepath.Join(dir, "result.json"), result)
-		write(t, filepath.Join(dir, "error.txt"), stderr)
-		return rt, dir
+	emit := `printf '{"status":"terminal"}\n'; printf 'warning\n' >&2`
+	fresh := func(body string) (rt, dir, args string) {
+		exe, args := fakeWait(t, body)
+		rt = helperRuntime(t, exe, accept)
+		return rt, waitDir(rt, 2), args
+	}
+	run := func(rt string, extra ...string) (int, string, string) {
+		return helperRun(t, append([]string{"wait-task", "--run", rt, "--task", task, "--hop", HopCoder}, extra...)...)
 	}
 	for _, c := range []struct {
-		args []string
+		body string
 		want int
-	}{{[]string{"--code", "0"}, 0}, {[]string{"--code", "7"}, 7}, {[]string{"--code=255"}, 255}} {
-		rt, dir := fresh()
-		code, out, errOut := helperRun(t, append([]string{"capture-wait", "--run", rt, "--hop", HopCoder}, c.args...)...)
-		if code != c.want || out != result || errOut != stderr || string(mustRead(t, filepath.Join(dir, "exit-code"))) != strconv.Itoa(c.want)+"\n" {
-			t.Fatalf("capture %v = %d %q %q", c.args, code, out, errOut)
+	}{{emit, 0}, {emit + "; exit 7", 7}, {emit + "; exit 255", 255}, {emit + "; kill -TERM $$", 128 + int(syscall.SIGTERM)}} {
+		rt, dir, args := fresh(c.body)
+		code, out, errOut := run(rt)
+		if code != c.want || out != result || errOut != stderr || string(mustRead(t, filepath.Join(dir, "exit-code"))) != strconv.Itoa(c.want)+"\n" ||
+			string(mustRead(t, filepath.Join(dir, "result.json"))) != result || string(mustRead(t, filepath.Join(dir, "error.txt"))) != stderr {
+			t.Fatalf("wait %q = %d %q %q", c.body, code, out, errOut)
 		}
-		// Never overwritten.
-		if code, _, _ := helperRun(t, "capture-wait", "--run", rt, "--hop", HopCoder, "--code", "1"); code != 2 ||
-			string(mustRead(t, filepath.Join(dir, "exit-code"))) != strconv.Itoa(c.want)+"\n" {
-			t.Fatalf("a second capture = %d", code)
+		if got := string(mustRead(t, args)); got != "task wait "+task+" --until-done --json --plane https://127.0.0.1:1 --ca /rt/ca.crt\n" {
+			t.Fatalf("the wait ran with %q", got)
+		}
+		// Never overwritten, and the wait does not run again.
+		os.Remove(args)
+		if code, _, _ := run(rt); code != 2 || string(mustRead(t, filepath.Join(dir, "exit-code"))) != strconv.Itoa(c.want)+"\n" {
+			t.Fatalf("a second wait = %d", code)
+		}
+		if _, err := os.Lstat(args); !os.IsNotExist(err) {
+			t.Fatal("a second wait ran the CLI")
 		}
 	}
 	noExit := func(name, dir string) {
@@ -490,93 +592,149 @@ func captureHelperCases(t *testing.T) {
 			t.Errorf("%s wrote an exit artifact", name)
 		}
 	}
-	// Refused by the supervisor: exit 1, nothing written.
-	rt, dir := fresh()
-	if code, out, errOut := helperRun(t, "capture-wait", "--run", rt, "--hop", HopDesigner, "--code", "0"); code != 1 || out != "" ||
-		!strings.Contains(errOut, "refused: task_mismatch") {
-		t.Fatalf("refused capture = %d %q %q", code, out, errOut)
-	}
-	noExit("refusal", waitDir(rt, 0))
-	// Options: exactly --run, --hop and a canonical --code of 0..255.
-	for _, args := range [][]string{{"--hop", HopCoder}, {"--hop", HopCoder, "--code", "256"}, {"--hop", HopCoder, "--code", "-1"},
-		{"--hop", HopCoder, "--code", "07"}, {"--hop", HopCoder, "--code", "+7"}, {"--hop", HopCoder, "--code", "x"}, {"--hop", HopCoder, "--code", ""},
-		{"--hop", HopCoder, "--code", "0", "--task", "t"}, {"--hop", HopCoder, "--hop", HopCoder, "--code", "0"}, {"--hop", HopCoder, "--code", "0", "extra"},
-		{"--hop", "planner", "--code", "0"}, {"--hop", HopCoder, "--code"}, {"-hop", HopCoder, "--code", "0"}} {
-		if code, _, errOut := helperRun(t, append([]string{"capture-wait", "--run", rt}, args...)...); code != 2 || !strings.Contains(errOut, "usage:") {
-			t.Errorf("%v = %d %q", args, code, errOut)
+	notRun := func(name, args string) {
+		t.Helper()
+		if _, err := os.Lstat(args); !os.IsNotExist(err) {
+			t.Errorf("%s ran the CLI wait", name)
 		}
 	}
-	if code, _, errOut := helperRun(t, "capture-wait", "--run", "rel/rt", "--hop", HopCoder, "--code", "0"); code != 2 || !strings.Contains(errOut, "usage:") {
+	// Refused by the supervisor (another hop or another task): exit 1,
+	// nothing runs or is written.
+	rt, dir, args := fresh(emit)
+	for name, extra := range map[string][]string{"hop": {"--task", task, "--hop", HopDesigner}, "task": {"--task", hexID("t_", 6), "--hop", HopCoder}} {
+		code, out, errOut := helperRun(t, append([]string{"wait-task", "--run", rt}, extra...)...)
+		if code != 1 || out != "" || !strings.Contains(errOut, "refused: task_mismatch") {
+			t.Fatalf("refused %s = %d %q %q", name, code, out, errOut)
+		}
+	}
+	notRun("refusal", args)
+	for _, d := range []string{waitDir(rt, 0), dir} {
+		if es, _ := os.ReadDir(d); len(es) != 0 {
+			t.Fatalf("a refusal wrote %v", es)
+		}
+	}
+	// Options: exactly --run, --task and --hop, each once.
+	for _, extra := range [][]string{{"--hop", HopCoder}, {"--task", task}, {"--task", "t_bad", "--hop", HopCoder}, {"--task", task, "--hop", "planner"},
+		{"--task", task, "--hop", HopCoder, "--code", "0"}, {"--task", task, "--task", task, "--hop", HopCoder}, {"--task", task, "--hop", HopCoder, "extra"},
+		{"--task", task, "--hop"}, {"-task", task, "--hop", HopCoder}} {
+		if code, _, errOut := helperRun(t, append([]string{"wait-task", "--run", rt}, extra...)...); code != 2 || !strings.Contains(errOut, "usage:") {
+			t.Errorf("%v = %d %q", extra, code, errOut)
+		}
+	}
+	if code, _, errOut := helperRun(t, "wait-task", "--run", "rel/rt", "--task", task, "--hop", HopCoder); code != 2 || !strings.Contains(errOut, "usage:") {
 		t.Errorf("relative runtime = %d %q", code, errOut)
 	}
+	// capture-wait is removed.
+	if code, _, errOut := helperRun(t, "capture-wait", "--run", rt, "--hop", HopCoder, "--code", "0"); code != 2 || !strings.Contains(errOut, "unknown subcommand") {
+		t.Errorf("capture-wait = %d %q", code, errOut)
+	}
 	noExit("usage", dir)
+	notRun("usage", args)
 	// Not the live runtime: unclean, a link, a stale marker, a run file
 	// that is a link, a run the supervisor does not serve.
 	link := filepath.Join(shortTemp(t), "rt")
 	os.Symlink(rt, link)
-	for name, run := range map[string]string{"unclean": rt + "/.", "link": link} {
-		if code, _, _ := helperRun(t, "capture-wait", "--run", run, "--hop", HopCoder, "--code", "0"); code != 2 {
+	for name, r := range map[string]string{"unclean": rt + "/.", "link": link} {
+		if code, _, _ := run(r); code != 2 {
 			t.Errorf("%s runtime = %d", name, code)
 		}
 	}
-	stale, sdir := fresh()
+	stale, sdir, sargs := fresh(emit)
 	write(t, filepath.Join(stale, ownerMarker), "20200101T000000Z-00000000\n")
-	if code, _, _ := helperRun(t, "capture-wait", "--run", stale, "--hop", HopCoder, "--code", "0"); code != 2 {
+	if code, _, _ := run(stale); code != 2 {
 		t.Errorf("stale marker = %d", code)
 	}
 	noExit("stale marker", sdir)
-	other, odir := fresh()
-	write(t, filepath.Join(other, RunFileName), `{"schema":"`+RunFileSchema+`","run_id":"20200101T000000Z-00000000"}`+"\n")
+	notRun("stale marker", sargs)
+	other, odir, oargs := fresh(emit)
+	exe, _ := fakeWait(t, emit)
+	write(t, filepath.Join(other, RunFileName), runFileJSON("20200101T000000Z-00000000", exe))
 	write(t, filepath.Join(other, ownerMarker), "20200101T000000Z-00000000\n")
-	if code, _, errOut := helperRun(t, "capture-wait", "--run", other, "--hop", HopCoder, "--code", "0"); code != 1 || !strings.Contains(errOut, "run_mismatch") {
+	if code, _, errOut := run(other); code != 1 || !strings.Contains(errOut, "run_mismatch") {
 		t.Errorf("another run = %d %q", code, errOut)
 	}
 	noExit("another run", odir)
-	runLink, _ := fresh()
+	notRun("another run", oargs)
+	runLink, _, _ := fresh(emit)
 	os.Rename(filepath.Join(runLink, RunFileName), filepath.Join(runLink, "run.real"))
 	os.Symlink(filepath.Join(runLink, "run.real"), filepath.Join(runLink, RunFileName))
-	if code, _, _ := helperRun(t, "capture-wait", "--run", runLink, "--hop", HopCoder, "--code", "0"); code != 2 {
+	if code, _, _ := run(runLink); code != 2 {
 		t.Errorf("a linked run file = %d", code)
 	}
-	// Unsafe or oversized wait files: refused, no exit artifact.
-	for name, f := range map[string]func(rt, dir string){
-		"result missing": func(rt, dir string) { os.Remove(filepath.Join(dir, "result.json")) },
-		"stderr missing": func(rt, dir string) { os.Remove(filepath.Join(dir, "error.txt")) },
-		"result link": func(rt, dir string) {
-			os.Rename(filepath.Join(dir, "result.json"), filepath.Join(rt, "elsewhere.json"))
-			os.Symlink(filepath.Join(rt, "elsewhere.json"), filepath.Join(dir, "result.json"))
-		},
-		"result fifo": func(rt, dir string) {
-			os.Remove(filepath.Join(dir, "result.json"))
-			if err := syscall.Mkfifo(filepath.Join(dir, "result.json"), 0o600); err != nil {
-				t.Fatal(err)
-			}
-		},
-		"directory link": func(rt, dir string) {
+	// Unsafe or preexisting wait files, an unstartable wait or oversized
+	// output: refused with exit 2, no exit artifact, no link followed.
+	for name, c := range map[string]struct {
+		body  string
+		setup func(rt, dir string)
+		ran   bool
+	}{
+		"result exists":  {emit, func(rt, dir string) { write(t, filepath.Join(dir, "result.json"), "{}\n") }, false},
+		"stderr exists":  {emit, func(rt, dir string) { write(t, filepath.Join(dir, "error.txt"), "") }, false},
+		"exit exists":    {emit, func(rt, dir string) { write(t, filepath.Join(dir, "exit-code"), "0\n") }, false},
+		"result link":    {emit, func(rt, dir string) { os.Symlink(filepath.Join(rt, "target"), filepath.Join(dir, "result.json")) }, false},
+		"exit-code link": {emit, func(rt, dir string) { os.Symlink(filepath.Join(rt, "target"), filepath.Join(dir, "exit-code")) }, false},
+		"directory link": {emit, func(rt, dir string) {
 			os.Rename(dir, dir+".real")
 			os.Symlink(dir+".real", dir)
-		},
-		"exit-code link": func(rt, dir string) { os.Symlink(filepath.Join(rt, "target"), filepath.Join(dir, "exit-code")) },
-		"oversized":      func(rt, dir string) { truncateTo(t, filepath.Join(dir, "result.json"), maxTextFile+1) },
+		}, false},
+		"waits link": {emit, func(rt, dir string) {
+			w := filepath.Dir(dir)
+			os.Rename(w, w+".real")
+			os.Symlink(w+".real", w)
+		}, false},
+		"directory missing": {emit, func(rt, dir string) { os.Remove(dir) }, false},
+		"oversized":         {"head -c " + strconv.Itoa(maxTextFile+1) + " /dev/zero", nil, true},
+		"oversized stderr":  {"head -c " + strconv.Itoa(maxTextFile+1) + " /dev/zero >&2", nil, true},
 	} {
-		rt, dir := fresh()
-		f(rt, dir)
-		if code, out, _ := helperRun(t, "capture-wait", "--run", rt, "--hop", HopCoder, "--code", "0"); code != 2 || out != "" {
+		rt, dir, args := fresh(c.body)
+		if c.setup != nil {
+			c.setup(rt, dir)
+		}
+		if code, out, _ := run(rt); code != 2 || out != "" {
 			t.Errorf("%s = %d %q", name, code, out)
 		}
-		if name != "exit-code link" && name != "directory link" {
+		if name != "exit exists" && name != "exit-code link" {
 			noExit(name, dir)
 		}
 		if _, err := os.Lstat(filepath.Join(rt, "target")); !os.IsNotExist(err) {
 			t.Errorf("%s: a link was followed", name)
 		}
+		if _, err := os.Lstat(args); (err == nil) != c.ran {
+			t.Errorf("%s: ran the CLI wait %v", name, err == nil)
+		}
+		if strings.HasPrefix(name, "oversized") {
+			for _, f := range []string{"result.json", "error.txt"} {
+				if st, err := os.Lstat(filepath.Join(dir, f)); err != nil || st.Size() > maxTextFile+1 {
+					t.Errorf("%s: %s kept beyond its bound: %v", name, f, err)
+				}
+			}
+		}
 	}
-	// No supervisor: a transport error.
+	missing := helperRuntime(t, filepath.Join(t.TempDir(), "absent"), accept)
+	if code, out, errOut := run(missing); code != 2 || out != "" || !strings.Contains(errOut, "reale2e wait-task:") {
+		t.Errorf("an unstartable wait = %d %q %q", code, out, errOut)
+	}
+	noExit("unstartable", waitDir(missing, 2))
+	// No supervisor: a transport error before anything runs.
 	gone := shortTemp(t)
-	write(t, filepath.Join(gone, RunFileName), `{"schema":"`+RunFileSchema+`","run_id":"`+helperRunID+`"}`+"\n")
+	gexe, gargs := fakeWait(t, emit)
+	write(t, filepath.Join(gone, RunFileName), runFileJSON(helperRunID, gexe))
 	write(t, filepath.Join(gone, ownerMarker), helperRunID+"\n")
-	if code, _, errOut := helperRun(t, "capture-wait", "--run", gone, "--hop", HopCoder, "--code", "0"); code != 2 || !strings.Contains(errOut, "cannot reach the supervisor") {
+	if code, _, errOut := run(gone); code != 2 || !strings.Contains(errOut, "cannot reach the supervisor") {
 		t.Errorf("no supervisor = %d %q", code, errOut)
+	}
+	notRun("no supervisor", gargs)
+	// The supervisor admits exactly the task it accepted for the hop.
+	s := &supervisor{}
+	if got := s.waitTask(ControlRequest{Op: opWaitTask, Task: task, Hop: HopCoder}); got != CodeTaskMismatch {
+		t.Errorf("an unobserved hop = %s", got)
+	}
+	s.hops[2].observed, s.hops[2].task = true, task
+	for want, req := range map[string]ControlRequest{CodeAccepted: {Op: opWaitTask, Task: task, Hop: HopCoder},
+		CodeTaskMismatch: {Op: opWaitTask, Task: hexID("t_", 6), Hop: HopCoder}} {
+		if got := s.handleRequest(req); got != want {
+			t.Errorf("wait-task %+v = %s, want %s", req, got, want)
+		}
 	}
 }
 
@@ -600,7 +758,7 @@ func reviewHelperCases(t *testing.T) {
 		}
 	}
 	fresh := func(gate bool) string {
-		rt := helperRuntime(t, answer(gate))
+		rt := helperRuntime(t, "/bin/callsheet", answer(gate))
 		for p, b := range files {
 			write(t, filepath.Join(rt, "coord", "coder", p), string(b))
 		}

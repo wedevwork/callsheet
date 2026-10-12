@@ -556,18 +556,19 @@ func TestOwnerEnvironment(t *testing.T) {
 		f.coord.afterPhase = func(c *coordScript, p int) {
 			if p == 2 {
 				os.Remove(filepath.Join(f.home, ".codex", "auth.json"))
-				os.Remove(filepath.Join(f.home, ".codex", "config.toml"))
+				os.Remove(filepath.Join(f.home, ".codex", "AGENTS.md"))
 			}
 		}
 		if code := f.attempt(); code != 1 {
 			t.Fatalf("attempt = %d", code)
 		}
 		r := f.report()
-		if c, ok := changeOf(r.Protected, "config.toml"); !ok || c.Kind != ChangeDeleted || len(r.Protected) != 1 {
+		if c, ok := changeOf(r.Protected, "AGENTS.md"); !ok || c.Kind != ChangeDeleted || len(r.Protected) != 1 {
 			t.Fatalf("protected %+v", r.Protected)
 		}
 		text := string(mustRead(t, filepath.Join(f.bundle(), "report.txt")))
-		if !strings.Contains(text, strings.Join(ClaudeStateExclusions, "\n")+"\n") || !strings.Contains(text, "  tool-maintained codex .: 0 added, 0 changed, 1 deleted, 1 total\n") {
+		if !strings.Contains(text, strings.Join(append(slices.Clone(ClaudeStateExclusions), OwnerAcceptedExclusions...), "\n")+"\n") ||
+			!strings.Contains(text, "  tool-maintained codex .: 0 added, 0 changed, 1 deleted, 1 total\n") {
 			t.Fatalf("a failed report lacks the disclosures:\n%s", text)
 		}
 	})
@@ -820,7 +821,7 @@ func TestEnvironmentUnits(t *testing.T) {
 			{"claude", "plugins/cache/m/p/plugin.json", tool}, {"claude", "plugins/marketplaces/m/.git/HEAD", tool}, {"claude", "plugins/repos", tool},
 			{"claude", ".config.json", tool}, {"claude", "backups/.config.json.backup.1", tool}, {"claude", "projects/-opt-x/memory/MEMORY.md", tool},
 			{"claude", "history.jsonl", tool}, {"claude", ".credentials.json", tool}, {"claude", "statsig/x", tool},
-			{"codex", "config.toml", owner}, {"codex", "config.toml.bak", tool}, {"codex", "AGENTS.md", owner}, {"codex", "AGENTS.override.md", owner},
+			{"codex", "config.toml", tool}, {"codex", "config.toml.bak", tool}, {"codex", "AGENTS.md", owner}, {"codex", "AGENTS.override.md", owner},
 			{"codex", "AGENTS-team.md", owner}, {"codex", "AGENTS", tool}, {"codex", "AGENTS.md.orig", tool}, {"codex", "sub/AGENTS.md", tool},
 			{"codex", "instructions.md", owner}, {"codex", "prompts", owner}, {"codex", "prompts/p.md", owner}, {"codex", "prompts.bak/p.md", tool},
 			{"codex", "auth.json", tool}, {"codex", "state_5.sqlite", tool}, {"codex", ".tmp/plugins/cache", tool}, {"codex", "plugins/cache/x", tool},
@@ -861,7 +862,7 @@ func TestEnvironmentUnits(t *testing.T) {
 		files := map[string][]string{
 			"claude": {"CLAUDE.md", "settings.json", "settings.local.json", "agents/a.md", "skills/s/SKILL.md", "commands/c.md", "hooks/h.sh",
 				"plugins/installed_plugins.json", "plugins/known_marketplaces.json", "plugins/blocklist.json", "plugins/config.json"},
-			"codex":  {"config.toml", "AGENTS.md", "AGENTS.override.md", "instructions.md", "prompts/p.md"},
+			"codex":  {"AGENTS.md", "AGENTS.override.md", "instructions.md", "prompts/p.md"},
 			"grok":   {"config.toml", "managed_config.toml", "settings.json", "user-settings.json"},
 			"cursor": {"cli-config.json", "mcp.json"},
 		}
@@ -909,6 +910,87 @@ func TestEnvironmentUnits(t *testing.T) {
 				})
 				if c, ok := changeOf(d.Protected, rel); !ok || c.Kind != ChangeAdded {
 					t.Errorf("%s %s added = %+v", vendor, rel, d.Protected)
+				}
+			}
+		}
+		// A3.7: a strict file rewritten with identical bytes (a new inode,
+		// new timestamps) is no change on every vendor; a same-size content
+		// change of the rewrite still fails. A listed directory replaced by
+		// an identical one is no change either.
+		for vendor, rels := range files {
+			for _, rel := range rels {
+				p := func(h string) string { return filepath.Join(h, "."+vendor, filepath.FromSlash(rel)) }
+				setup := func(h string) { write(t, p(h), "aaaa") }
+				rewrite := func(content string) func(h string) {
+					return func(h string) {
+						st, _ := os.Stat(p(h))
+						tmp := p(h) + ".new"
+						write(t, tmp, content)
+						os.Chtimes(tmp, st.ModTime().Add(time.Hour), st.ModTime().Add(time.Hour))
+						if err := os.Rename(tmp, p(h)); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				if d := compare(t, setup, rewrite("aaaa")); len(d.Protected) != 0 || slices.Contains(d.Codes, CodeEnvModified) ||
+					!slices.ContainsFunc(d.Detail, func(e EnvDetail) bool { return e.Before != nil && e.Before.Path == rel && e.Before.Ino != e.After.Ino }) {
+					t.Errorf("%s %s identical rewrite = %+v (detail %d)", vendor, rel, d.Protected, len(d.Detail))
+				}
+				if c, ok := changeOf(compare(t, setup, rewrite("bbbb")).Protected, rel); !ok || c.Kind != ChangeModified || !slices.Equal(c.Fields, []string{"content"}) {
+					t.Errorf("%s %s same-size rewrite = %+v", vendor, rel, c)
+				}
+			}
+		}
+		agents := func(h string) { write(t, filepath.Join(h, ".claude", "agents", "a.md"), "a") }
+		if d := compare(t, agents, func(h string) {
+			dir := filepath.Join(h, ".claude", "agents")
+			st, _ := os.Stat(dir)
+			os.Rename(dir, dir+".old")
+			agents(h)
+			os.Chmod(dir, st.Mode().Perm())
+			os.RemoveAll(dir + ".old")
+		}); len(d.Protected) != 0 {
+			t.Errorf("an identical agents/ replacement = %+v", d.Protected)
+		}
+		// A3.7: an oversized strict file has no content digest; its size
+		// and mtime stay the witnesses of its content.
+		big := func(h string) {
+			write(t, filepath.Join(h, ".grok", "config.toml"), "")
+			truncateTo(t, filepath.Join(h, ".grok", "config.toml"), maxConfigFile+1)
+		}
+		if c, ok := changeOf(compare(t, big, func(h string) {
+			p := filepath.Join(h, ".grok", "config.toml")
+			os.Chtimes(p, time.Unix(1, 0), time.Unix(1, 0))
+		}).Protected, "config.toml"); !ok || !slices.Equal(c.Fields, []string{"mtime"}) {
+			t.Errorf("an oversized strict file's mtime change = %+v", c)
+		}
+		if f := ownerConfigFields(EnvRecord{Type: TypeFile}, EnvRecord{Type: TypeFile},
+			[]string{"type", "mode", "target", "device", "inode", "size", "mtime", "ctime", "content", "class"}); !slices.Equal(f,
+			[]string{"type", "mode", "target", "content", "class"}) {
+			t.Errorf("owner fields %v", f)
+		}
+		// A3.7: Codex's config.toml is tool-maintained: its trust-entry
+		// growth and every other change kind are report-only.
+		codexConfig := func(h string) { write(t, filepath.Join(h, ".codex", "config.toml"), "model = \"x\"\n") }
+		for name, m := range map[string]func(h string){
+			"trust entry": func(h string) {
+				write(t, filepath.Join(h, ".codex", "config.toml"), "model = \"x\"\n[projects.\"/tmp/w\"]\ntrust_level = \"trusted\"\n")
+			},
+			"mode":    func(h string) { os.Chmod(filepath.Join(h, ".codex", "config.toml"), 0o644) },
+			"deleted": func(h string) { os.Remove(filepath.Join(h, ".codex", "config.toml")) },
+			"symlink": func(h string) {
+				os.Remove(filepath.Join(h, ".codex", "config.toml"))
+				os.Symlink("/nonexistent", filepath.Join(h, ".codex", "config.toml"))
+			},
+		} {
+			d := compare(t, codexConfig, m)
+			if len(d.Protected) != 0 || slices.Contains(d.Codes, CodeEnvModified) || len(d.ToolSummary) != 1 || d.ToolSummary[0].Scope != "codex" ||
+				d.ToolSummary[0].TopLevel != "." {
+				t.Errorf("codex config.toml %s = %+v %+v", name, d.Protected, d.ToolSummary)
+			}
+			for _, e := range d.Detail {
+				if r := detailRecord(e); r.SHA256 != "" {
+					t.Errorf("codex config.toml %s: its content was hashed", name)
 				}
 			}
 		}
@@ -1374,6 +1456,49 @@ func TestEnvironmentUnits(t *testing.T) {
 			t.Fatal("the report does not state the nested-repository limitation")
 		}
 	})
+	t.Run("untracked .claude", func(t *testing.T) {
+		t.Parallel()
+		// A3.7: a repository's untracked top-level .claude/ (Claude Code
+		// sandbox placeholders) is left out of its status digest; a
+		// tracked file there, a nested or similarly named untracked
+		// directory and a new commit still fail.
+		mk := func() (string, string, *Snapshot) {
+			top := filepath.Join(t.TempDir(), "top")
+			newRepo(t, top)
+			write(t, filepath.Join(top, ".claude", "tracked.json"), "{}\n")
+			gitIn(t, top, "add", ".claude/tracked.json")
+			gitIn(t, top, "commit", "-q", "-m", "tracked claude")
+			home := t.TempDir()
+			return top, home, snap(t, "before", home, []string{top}, nil)
+		}
+		top, home, before := mk()
+		write(t, filepath.Join(top, ".claude", "settings.local.json"), "{}\n")
+		write(t, filepath.Join(top, ".claude", "sandbox", "placeholder"), "")
+		if d := CompareEnvironment(before, snap(t, "after", home, []string{top}, nil), before.Roots); len(d.Protected) != 0 || len(d.Codes) != 0 {
+			t.Fatalf("untracked .claude/ entries changed the repository: %+v %v", d.Protected, d.Codes)
+		}
+		for name, c := range map[string]struct {
+			mutate func(top string)
+			field  string
+		}{
+			"tracked .claude file": {func(top string) { write(t, filepath.Join(top, ".claude", "tracked.json"), "{\"x\":1}\n") }, "status"},
+			"nested .claude":       {func(top string) { write(t, filepath.Join(top, "sub", ".claude", "x.json"), "{}\n") }, "status"},
+			"similar name":         {func(top string) { write(t, filepath.Join(top, ".claudex", "x.json"), "{}\n") }, "status"},
+			"other untracked":      {func(top string) { write(t, filepath.Join(top, "notes.txt"), "x\n") }, "status"},
+			"new commit": {func(top string) {
+				write(t, filepath.Join(top, ".claude", "settings.local.json"), "{}\n")
+				gitIn(t, top, "add", ".claude/settings.local.json")
+				gitIn(t, top, "commit", "-q", "-m", "track it")
+			}, "head"},
+		} {
+			top, home, before := mk()
+			c.mutate(top)
+			d := CompareEnvironment(before, snap(t, "after", home, []string{top}, nil), before.Roots)
+			if len(d.Protected) != 1 || !slices.Contains(d.Protected[0].Fields, c.field) || !slices.Contains(d.Codes, CodeEnvModified) {
+				t.Errorf("%s = %+v", name, d.Protected)
+			}
+		}
+	})
 	t.Run("dirty gitlink", func(t *testing.T) {
 		t.Parallel()
 		// C7: a tracked gitlink already dirty before the run keeps the same
@@ -1814,7 +1939,7 @@ func TestEnvironmentUnits(t *testing.T) {
 			write(t, filepath.Join(home, ".claude", "flow-snapshots", fmt.Sprintf("run-%03d", i/30), fmt.Sprintf("%s-%d.json", strings.Repeat("s", i%90), i)), "x")
 		}
 		write(t, filepath.Join(home, ".claude", "settings.json"), "{}")
-		write(t, filepath.Join(home, ".codex", "config.toml"), "x")
+		write(t, filepath.Join(home, ".codex", "AGENTS.md"), "x")
 		s := snap(t, "before", home, nil, nil)
 		shards, err := encodeSnapshot(s)
 		if err != nil {
@@ -1849,7 +1974,7 @@ func TestEnvironmentUnits(t *testing.T) {
 		// that detail reproduces the supervisor's diff.
 		write(t, filepath.Join(home, ".claude", "settings.json"), `{"a":1}`)
 		write(t, filepath.Join(home, ".claude", "history.jsonl"), "1\n")
-		os.Remove(filepath.Join(home, ".codex", "config.toml"))
+		os.Remove(filepath.Join(home, ".codex", "AGENTS.md"))
 		after := snap(t, "after", home, nil, nil)
 		d := CompareEnvironment(s, after, nil)
 		sides := map[string]string{}
@@ -1868,7 +1993,7 @@ func TestEnvironmentUnits(t *testing.T) {
 		if len(d.Detail) != 3 || len(sides) != 3 {
 			t.Fatalf("detail %v", sides)
 		}
-		for _, k := range []string{"settings.json:changed", "history.jsonl:added", "config.toml:deleted"} {
+		for _, k := range []string{"settings.json:changed", "history.jsonl:added", "AGENTS.md:deleted"} {
 			if _, ok := sides[k]; !ok {
 				t.Errorf("detail lacks %s: %v", k, sides)
 			}
