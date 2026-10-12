@@ -159,9 +159,17 @@ func TestOwnerGate(t *testing.T) {
 			if len(f.launcher.phaseSpecs()) != 1 {
 				t.Fatal("phase 2 started without a yes")
 			}
+			// A3.8: a refusal or premature coding fails the owner criterion;
+			// without a recorded decision (or with a yes whose reviewed
+			// artifacts changed before the receipt), the steps the owner
+			// gate guards are not reached and name the real cause.
 			r := f.report()
-			if r.Result != ResultFail || criterion(r, CritOwner).Result != "fail" {
-				t.Fatalf("report %v", failedCodes(r))
+			want := ResultCriterionNotReached
+			if name == "no" || strings.Contains(name, "coding") {
+				want = ResultCriterionFail
+			}
+			if c := criterion(r, CritOwner); r.Result != ResultFail || c.Result != want || (want == ResultCriterionNotReached && c.Cause != tc.code) {
+				t.Fatalf("report %v, owner %+v", failedCodes(r), c)
 			}
 		})
 	}

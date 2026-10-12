@@ -30,6 +30,22 @@ type rowFacts struct {
 	missing  []string
 	codes    []string
 	refs     []AuditRef
+	// unreached is proof whose step the attempt stopped before (A3.8).
+	unreached bool
+}
+
+// absent records missing proof what, produced by attempt step m: not
+// reached (A3.8) when the attempt stopped before m, missing otherwise.
+func (f *rowFacts) absent(c *checker, m milestone, what string) { f.absentUnless(c.reached(m), what) }
+
+// absentUnless records missing proof what when its producing step ran
+// (due), and not reached otherwise.
+func (f *rowFacts) absentUnless(due bool, what string) {
+	if due {
+		f.miss(what)
+		return
+	}
+	f.unreached = true
 }
 
 func (f *rowFacts) see(format string, args ...any) {
@@ -76,10 +92,12 @@ func (f *rowFacts) refTree(files map[string][]byte, path, commit string) {
 }
 
 // classify files a criterion's codes: those in absent are missing proof,
-// the rest are contradictions.
+// a part not reached is not reached, the rest are contradictions.
 func (f *rowFacts) classify(codes []string, absent ...string) {
 	for _, code := range codes {
-		if slices.Contains(absent, code) {
+		if code == codeNotReached {
+			f.unreached = true
+		} else if slices.Contains(absent, code) {
 			f.miss(code)
 		} else {
 			f.bad(code)
@@ -93,8 +111,13 @@ type rowSpec struct {
 	fps, criteria          []string
 }
 
-// row renders a row from its facts.
-func row(spec rowSpec, f rowFacts) AuditRow {
+// row renders a row from its facts; stop is the attempt's stopping point,
+// which a row with only unreached proof names (A3.8).
+func row(spec rowSpec, f rowFacts, stop *stopPoint) AuditRow {
+	notReached := spec.layer == LayerMechanical && len(f.codes) == 0 && len(f.missing) == 0 && f.unreached
+	if notReached {
+		f.see("not reached: %s", stop.cause)
+	}
 	r := AuditRow{ID: spec.id, FPs: spec.fps, Layer: spec.layer, Requirement: spec.requirement, Evidence: f.refs, Criteria: slices.Clone(spec.criteria)}
 	if r.Evidence == nil {
 		r.Evidence = []AuditRef{}
@@ -127,6 +150,11 @@ func row(spec rowSpec, f rowFacts) AuditRow {
 	case len(f.missing) > 0:
 		r.Verdict = VerdictUnobserved
 		r.Correction = "Proof is missing (" + strings.Join(f.missing, ", ") + "); unobserved mechanical proof is a FAIL and nothing was inferred."
+	case notReached:
+		r.Verdict, r.notReached = VerdictUnobserved, true
+		r.Correction = fmt.Sprintf("not reached: %s. The attempt stopped (event seq %d) before this step; only that cause is reported, the report records FAIL and nothing was inferred.",
+			stop.cause, stop.seq)
+		r.Criteria = append(r.Criteria, "cause:"+stop.cause)
 	default:
 		r.Verdict = VerdictCorrect
 	}
@@ -177,9 +205,9 @@ func auditRows(c *checker) []AuditRow {
 // deriveAuditRows computes the ordered rows.
 func deriveAuditRows(c *checker) []AuditRow {
 	var rows []AuditRow
-	add := func(spec rowSpec, f rowFacts) { rows = append(rows, row(spec, f)) }
+	add := func(spec rowSpec, f rowFacts) { rows = append(rows, row(spec, f, c.stopPoint())) }
 	add(rowSpec{id: "preflight", layer: LayerMechanical, fps: fpPreflight, criteria: []string{CritPreflight},
-		requirement: "Four authenticated no-workspace preflight tasks, one per configured role and pair, each succeeded with the exact answer " + AuthToken + " within 2m, after deployment and before feature work"},
+		requirement: "Four authenticated no-workspace preflight tasks, one per configured role and pair, each succeeded with exit 0 and a present, non-empty, untruncated final answer from that pair within 2m, after deployment and before feature work; whether the answer echoed " + AuthToken + " is information only (token_echoed)"},
 		c.preflightFacts())
 	add(rowSpec{id: "deployment_roles", layer: LayerMechanical, fps: fpDeploy, criteria: []string{CritRoles},
 		requirement: "The four roles registered with the frozen flow's adapter, model and effort (concurrency 1, timeout 10m), all sidecars reconnected and every role ready"},
@@ -243,7 +271,7 @@ func (c *checker) preflightFacts() rowFacts {
 		dir := "preflight/" + hopDir(i)
 		t := c.b.Preflight[i]
 		if t == nil {
-			f.miss(dir + "/task.json")
+			f.absent(c, msPreflight(i), dir+"/task.json")
 			continue
 		}
 		v := t.View
@@ -253,6 +281,9 @@ func (c *checker) preflightFacts() rowFacts {
 		}
 		f.see("%s: task %s on %s/%s/%s, created %s, finished %s, state %s", preflightHop(i), auditText(v.TaskID, 64), auditText(v.Role.Adapter, 32),
 			auditText(v.Effective.Model, 64), auditText(v.Effective.Effort, 16), auditText(v.CreatedAt, 40), auditText(fin, 40), auditText(v.State, 16))
+		if echoed, ok := tokenEchoed(t); ok {
+			f.see("%s: answer %d bytes, token_echoed: %t (information only)", preflightHop(i), len(*v.Result.FinalMessage), echoed)
+		}
 		f.refFile(c, dir+"/task.json", nil, v.TaskID, "")
 		f.refFile(c, dir+"/final.txt", nil, v.TaskID, "")
 	}
@@ -271,7 +302,7 @@ func (c *checker) rolesFacts() rowFacts {
 	var f rowFacts
 	r := c.b.Roles
 	if r == nil {
-		f.miss("setup/roles.json")
+		f.absent(c, msReady, "setup/roles.json")
 	} else {
 		for _, s := range r.Roles {
 			f.see("%s: %s/%s/%s node %s ready %t", auditText(s.ID, 64), auditText(s.Adapter, 16), auditText(s.Model, 64), auditText(s.Effort, 16),
@@ -280,11 +311,11 @@ func (c *checker) rolesFacts() rowFacts {
 		f.see("ready at %s", auditText(r.ReadyAt, 40))
 		f.refFile(c, "setup/roles.json", nil, "", "")
 	}
-	for _, typ := range []string{EvRolesRegistered, EvSidecarsReconnected, EvRolesReady} {
+	for i, typ := range []string{EvRolesRegistered, EvSidecarsReconnected, EvRolesReady} {
 		if e, ok := c.firstEvent(typ, nil); ok {
 			f.see("%s at %s (seq %d)", typ, e.Time, e.Seq)
 		} else {
-			f.miss(typ + " event")
+			f.absent(c, msRegistered+milestone(i), typ+" event")
 		}
 	}
 	f.classify(c.codesOf((*checker).roles, CritRoles), "roles_missing")
@@ -370,10 +401,10 @@ func (c *checker) phaseFacts(p int) rowFacts {
 	l := c.b.Launches[p-1]
 	stream, hasStream := c.b.Files[phaseStreamFiles[p-1]]
 	if l == nil {
-		f.miss(launchFiles[p-1])
+		f.absent(c, msPhase(p), launchFiles[p-1])
 	}
 	if !hasStream {
-		f.miss(phaseStreamFiles[p-1])
+		f.absent(c, msPhase(p), phaseStreamFiles[p-1])
 	}
 	var exit *PhaseProcess
 	if ce := c.b.CoordExit; ce != nil {
@@ -384,7 +415,7 @@ func (c *checker) phaseFacts(p int) rowFacts {
 		}
 	}
 	if exit == nil {
-		f.miss("phase " + fmt.Sprint(p) + " process observation")
+		f.absent(c, msPhase(p), "phase "+fmt.Sprint(p)+" process observation")
 	}
 	var init *InitRecord
 	for i := range c.derived.Init {
@@ -393,7 +424,7 @@ func (c *checker) phaseFacts(p int) rowFacts {
 		}
 	}
 	if init == nil {
-		f.miss("phase " + fmt.Sprint(p) + " init record")
+		f.absent(c, msPhase(p), "phase "+fmt.Sprint(p)+" init record")
 	} else {
 		f.see("session %s, model %s, permission mode %s, %d tools, MCP servers [%s]", auditText(init.SessionID, 40), auditText(init.Model, 64),
 			auditText(init.PermissionMode, 32), len(init.Tools), auditText(strings.Join(init.MCPServers, ","), 400))
@@ -405,7 +436,7 @@ func (c *checker) phaseFacts(p int) rowFacts {
 		present, ok := c.phaseStreamResult(p, stream)
 		switch {
 		case !present:
-			f.miss("phase " + fmt.Sprint(p) + " result record")
+			f.absent(c, msDone(p), "phase "+fmt.Sprint(p)+" result record")
 		case !ok:
 			f.bad("phase_result_failed")
 		}
@@ -426,8 +457,13 @@ func (c *checker) phaseFacts(p int) rowFacts {
 		if !exit.Reaped || !exit.GroupGone {
 			f.bad("coordinator_group_alive")
 		}
+		// Its own exit status only when it exited before the stop.
 		if exit.ExitCode == nil || *exit.ExitCode != 0 || exit.Signal != "" {
-			f.bad("coordinator_exit_nonzero")
+			if c.reached(msDone(p)) {
+				f.bad("coordinator_exit_nonzero")
+			} else {
+				f.unreached = true
+			}
 		}
 		f.refFile(c, coordinatorExitFile, nil, "", "")
 	}
@@ -436,7 +472,7 @@ func (c *checker) phaseFacts(p int) rowFacts {
 			continue
 		}
 		if slices.Contains(unobservedFindings, fi.Code) {
-			f.miss(fi.Code)
+			f.absent(c, msPhase(p), fi.Code)
 		} else {
 			f.bad(fi.Code)
 		}
@@ -478,14 +514,14 @@ func (c *checker) dispatchFacts(i int) rowFacts {
 	dir := "hops/" + hopDir(i)
 	d, v := c.b.Hops[i].Dispatch, c.views[i]
 	if d == nil {
-		f.miss(dir + "/dispatch.json")
+		f.absentUnless(c.dispatchDue(i), dir+"/dispatch.json")
 	}
 	if v == nil {
-		f.miss(dir + "/task.json")
+		f.absent(c, msHop(i), dir+"/task.json")
 	}
 	es := entriesOf(c.derived, MapDispatch, Hops[i])
 	if len(es) != 1 {
-		f.miss("the coordinator's dispatch tool use linked to the observed task")
+		f.absent(c, msHop(i), "the coordinator's dispatch tool use linked to the observed task")
 	}
 	if v != nil {
 		m := c.b.Manifest
@@ -557,20 +593,24 @@ func (c *checker) waitFacts(i int) rowFacts {
 	w := c.b.Hops[i].Wait
 	result, okR := c.b.Files[dir+waitResultFile]
 	exit, okX := c.b.Files[dir+waitExitFile]
+	// Each part is due once its own step ran (review C1): the record once
+	// the hop was admitted, the files once the started wait's task ended
+	// before the stop, the start and consumption as the checker judges.
 	if w == nil {
-		f.miss(dir + "wait.json")
+		f.absent(c, msHop(i), dir+"wait.json")
 	}
+	filesDue := okR || okX || c.waitEnded(i)
 	if !okR {
-		f.miss(dir + waitResultFile)
+		f.absentUnless(filesDue, dir+waitResultFile)
 	}
 	if !okX {
-		f.miss(dir + waitExitFile)
+		f.absentUnless(filesDue, dir+waitExitFile)
 	}
 	starts := entriesOf(c.derived, MapWaitStart, Hops[i])
 	consumed := entriesOf(c.derived, MapWaitConsumed, Hops[i])
 	wakes := entriesOf(c.derived, MapWake, Hops[i])
 	if len(starts) != 1 {
-		f.miss("the background wait start")
+		f.absentUnless(len(starts) > 1 || c.waitStarted(i), "the background wait start")
 	} else {
 		f.see("background handle %s started by tool-use %s in phase %d", auditText(starts[0].Handle, 64), auditText(starts[0].ToolUseID, 64), starts[0].Phase)
 		f.refSources(starts[0].Sources, starts[0].Task)
@@ -586,12 +626,12 @@ func (c *checker) waitFacts(i int) rowFacts {
 		f.see("no completion notification before consumption")
 	}
 	if len(consumed) != 1 {
-		f.miss("the coordinator's consumption of the wait")
+		f.absentUnless(len(consumed) > 1 || c.consumedDue(i), "the coordinator's consumption of the wait")
 	} else {
 		f.see("consumed by tool-use %s", auditText(consumed[0].ToolUseID, 64))
 		f.refSources(consumed[0].Sources, consumed[0].Task)
 	}
-	if w != nil {
+	if w != nil && filesDue {
 		code := "none"
 		if w.ExitCode != nil {
 			code = fmt.Sprint(*w.ExitCode)
@@ -601,8 +641,11 @@ func (c *checker) waitFacts(i int) rowFacts {
 		switch {
 		case w.Hop != Hops[i] || w.Handle != waitHandle(i) || w.Task == "" || w.Task != c.hopTask(i) || w.Winner != w.Task:
 			f.bad("wait_binding_mismatch")
-		case w.ExitCode == nil || *w.ExitCode != 0 || w.WinnerState != contract.TaskSucceeded:
+		case (w.ExitCode == nil || *w.ExitCode != 0 || w.WinnerState != contract.TaskSucceeded) && c.reached(msTerm(i)):
 			f.bad("wait_unsuccessful")
+		case w.ExitCode == nil || *w.ExitCode != 0 || w.WinnerState != contract.TaskSucceeded:
+			// The cleanup's cancellation, not the hop's own end.
+			f.unreached = true
 		}
 		if okR && okX && !c.waitRecordMatches(i, w, result, c.b.Files[dir+waitStderrFile], exit) {
 			f.bad("wait_record_mismatch")
@@ -619,16 +662,20 @@ func (c *checker) resultFacts(i int) rowFacts {
 	v, cm := c.views[i], c.commits[i]
 	t := c.b.Hops[i].Task
 	if v == nil {
-		f.miss(dir + "/task.json")
+		f.absent(c, msHop(i), dir+"/task.json")
 	}
 	if cm == nil {
-		f.miss("the result commit in workspace/repo.git")
+		f.absent(c, msTerm(i), "the result commit in workspace/repo.git")
 	}
 	if v != nil {
 		r := v.Result
 		f.see("task %s state %s on %s/%s/%s", auditText(v.TaskID, 64), auditText(v.State, 16), auditText(v.Role.Adapter, 16),
 			auditText(v.Effective.Model, 64), auditText(v.Effective.Effort, 16))
+		// The outcome only once the task ended before the stop (review C1).
+		ended := c.reached(msTerm(i))
 		switch {
+		case !ended:
+			f.unreached = true
 		case !succeeded(t):
 			f.bad("hop_not_succeeded")
 		case finalMarker(Hops[i], *r.FinalMessage) != approvedMarkers[Hops[i]]:
@@ -636,10 +683,10 @@ func (c *checker) resultFacts(i int) rowFacts {
 		default:
 			f.see("final answer %d bytes, complete, last line %q", len(*r.FinalMessage), auditText(lastNonEmptyLine(*r.FinalMessage), 80))
 		}
-		if r != nil && r.FinalMessage != nil && r.FinalMessageTruncated {
+		if ended && r != nil && r.FinalMessage != nil && r.FinalMessageTruncated {
 			f.bad("final_message_truncated")
 		}
-		if r == nil || r.Workspace == nil || r.Workspace.Publication != contract.PublicationPublished || r.Workspace.Commit == nil {
+		if ended && (r == nil || r.Workspace == nil || r.Workspace.Publication != contract.PublicationPublished || r.Workspace.Commit == nil) {
 			f.bad("publication_missing")
 		}
 		if !c.selectionMatches(*v, Hops[i]) {
@@ -693,10 +740,10 @@ func (c *checker) layerTwo(i int) []AuditRow {
 	var rows []AuditRow
 	n := "hop" + hopDir(i)
 	judge := func(id, req string, f rowFacts) {
-		rows = append(rows, row(rowSpec{id: n + "_" + id, layer: LayerJudgment, fps: fpJudgment, requirement: req}, f))
+		rows = append(rows, row(rowSpec{id: n + "_" + id, layer: LayerJudgment, fps: fpJudgment, requirement: req}, f, c.stopPoint()))
 	}
 	det := func(id, req string, crit []string, f rowFacts) {
-		rows = append(rows, row(rowSpec{id: n + "_" + id, layer: LayerMechanical, fps: fpDetermin, requirement: req, criteria: crit}, f))
+		rows = append(rows, row(rowSpec{id: n + "_" + id, layer: LayerMechanical, fps: fpDetermin, requirement: req, criteria: crit}, f, c.stopPoint()))
 	}
 	commit := c.resultCommit(i)
 	switch Hops[i] {
@@ -787,7 +834,7 @@ func (c *checker) coderEvidence() (*CasesRecord, *RequirementsRecord) {
 func (c *checker) caseFacts(cs *CasesRecord, k int) rowFacts {
 	var f rowFacts
 	if cs == nil || k >= len(cs.Cases) {
-		f.miss("validation/cases.json")
+		f.absent(c, msFinal, "validation/cases.json")
 		return f
 	}
 	r := cs.Cases[k]
@@ -814,7 +861,7 @@ func (c *checker) caseFacts(cs *CasesRecord, k int) rowFacts {
 func (c *checker) testFacts(rq *RequirementsRecord, k int) rowFacts {
 	var f rowFacts
 	if rq == nil || k >= len(rq.Rows) {
-		f.miss("validation/requirements.json")
+		f.absent(c, msFinal, "validation/requirements.json")
 		return f
 	}
 	r := rq.Rows[k]
@@ -830,7 +877,7 @@ func (c *checker) testFacts(rq *RequirementsRecord, k int) rowFacts {
 func (c *checker) structureFacts(rq *RequirementsRecord, signature bool) rowFacts {
 	var f rowFacts
 	if rq == nil || c.files[4] == nil {
-		f.miss("validation/requirements.json and the fourth result's tree")
+		f.absent(c, msFinal, "validation/requirements.json and the fourth result's tree")
 		return f
 	}
 	f.refFile(c, "validation/requirements.json", nil, "", rq.Commit)
@@ -854,12 +901,14 @@ func (c *checker) reviewMarkerFacts() rowFacts {
 	var f rowFacts
 	v := c.views[3]
 	if v == nil {
-		f.miss("hops/04/task.json")
+		f.absent(c, msHop(3), "hops/04/task.json")
 		return f
 	}
 	f.refFile(c, "hops/04/final.txt", nil, v.TaskID, "")
 	r := v.Result
 	switch {
+	case !c.reached(msTerm(3)):
+		f.unreached = true
 	case r == nil || r.FinalMessage == nil || strings.TrimSpace(*r.FinalMessage) == "" || r.FinalMessageTruncated:
 		f.bad("review_missing")
 	case lastNonEmptyLine(*r.FinalMessage) != approvedMarkers[HopCodeReviewer]:
@@ -873,7 +922,7 @@ func (c *checker) reviewMarkerFacts() rowFacts {
 func (c *checker) inlineFacts() rowFacts {
 	var f rowFacts
 	if c.views[3] == nil || c.files[3] == nil {
-		f.miss("the code reviewer's task and the coder tree")
+		f.absent(c, msHop(3), "the code reviewer's task and the coder tree")
 		return f
 	}
 	f.classify(c.codesOf((*checker).grok, CritGrok), "review_missing", "inline_hashes_missing")
@@ -893,12 +942,12 @@ func (c *checker) verdictFacts() rowFacts {
 	var f rowFacts
 	v, fin := c.views[3], c.b.Final
 	if v == nil || v.Result == nil || v.Result.FinalMessage == nil {
-		f.miss("the code review's final answer")
+		f.absent(c, msTerm(3), "the code review's final answer")
 	}
 	if fin == nil {
-		f.miss("validation/final-test.json")
+		f.absent(c, msFinal, "validation/final-test.json")
 	}
-	if len(f.missing) > 0 {
+	if len(f.missing) > 0 || f.unreached {
 		return f
 	}
 	approved := finalMarker(HopCodeReviewer, *v.Result.FinalMessage) == approvedMarkers[HopCodeReviewer]

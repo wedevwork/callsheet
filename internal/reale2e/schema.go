@@ -460,6 +460,9 @@ type AuditRow struct {
 	Verdict     string     `json:"verdict"`
 	Correction  string     `json:"correction"`
 	Criteria    []string   `json:"criteria"`
+	// notReached marks a mechanical row unobserved only because the
+	// attempt stopped before its step (A3.8); it is derived, not encoded.
+	notReached bool
 }
 
 // Audit is audit.json.
@@ -536,12 +539,27 @@ func finalMarker(hop, final string) string {
 	return ""
 }
 
-// AuthToken is the exact answer of every authentication preflight.
+// AuthToken is the answer every authentication preflight asks for. Since
+// A3.8 echoing it is information only (token_echoed), never a requirement.
 const AuthToken = "CALLSHEET_AUTH_OK"
 
 // authAnswerOK reports whether a preflight final message is the token
-// (surrounding whitespace aside).
+// (surrounding whitespace aside): its token_echoed.
 func authAnswerOK(final string) bool { return strings.TrimSpace(final) == AuthToken }
+
+// authAnswerPresent reports whether a preflight final message is a
+// non-empty answer (A3.8): any such answer, completed by the selected pair,
+// demonstrates authentication; a whitespace-only answer is empty.
+func authAnswerPresent(final string) bool { return strings.TrimSpace(final) != "" }
+
+// tokenEchoed is a stored preflight's token_echoed (A3.8), information
+// only; ok is false when it has no final answer.
+func tokenEchoed(t *taskEvidence) (echoed, ok bool) {
+	if t == nil || t.View.Result == nil || t.View.Result.FinalMessage == nil {
+		return false, false
+	}
+	return authAnswerOK(*t.View.Result.FinalMessage), true
+}
 
 // allowedChanges are each hop's permitted changed paths.
 var allowedChanges = map[string][]string{

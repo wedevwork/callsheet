@@ -355,6 +355,22 @@ func canonicalPath(p string) (string, error) {
 	return filepath.Join(c, filepath.Base(p)), nil
 }
 
+// rootFrame returns t for the paths of the protected-root frame: the
+// supplied roots and everything discovered below them. A prefix whose base
+// lies strictly inside a supplied root is dropped, so a root and every
+// path below it are spelled from the same base (a checkout under a root is
+// the root's raw path, never a $CHECKOUT the checker cannot place inside
+// it), and the checker's textual containment and nesting checks hold.
+// Vendor-home records keep t.
+func (t pathTokenizer) rootFrame(roots []string) pathTokenizer {
+	for _, base := range []*string{&t.checkout, &t.home} {
+		if slices.ContainsFunc(roots, func(r string) bool { return *base != r && under(*base, r) }) {
+			*base = ""
+		}
+	}
+	return t
+}
+
 func (t pathTokenizer) token(p string) string {
 	switch {
 	case t.checkout != "" && under(p, t.checkout):
@@ -550,11 +566,13 @@ func topLevel(path string, dir bool) string {
 
 // envScanner collects one snapshot.
 type envScanner struct {
-	home     string
-	roots    []string
-	exclude  []string
-	git      GitRunner
-	tok      pathTokenizer
+	home    string
+	roots   []string
+	exclude []string
+	git     GitRunner
+	tok     pathTokenizer
+	// rtok tokenizes the root frame: the roots and what lies below them.
+	rtok     pathTokenizer
 	clock    Clock
 	deadline time.Time
 	phase    string
@@ -727,9 +745,10 @@ func takeSnapshotDepth(phase, home string, roots, exclude []string, git GitRunne
 	}
 	sc := &envScanner{home: home, roots: roots, exclude: exclude, git: git, tok: tok.canonical(), clock: clock, deadline: deadline, phase: phase, depth: depth,
 		repoSeen: map[string]bool{}}
+	sc.rtok = sc.tok.rootFrame(roots)
 	sc.snap = Snapshot{Phase: phase, Complete: true, Roots: []string{}, Depth: depth}
 	for _, r := range roots {
-		sc.snap.Roots = append(sc.snap.Roots, tok.token(r))
+		sc.snap.Roots = append(sc.snap.Roots, sc.rtok.token(r))
 	}
 	if err := sc.scanHomes(); err == nil {
 		sc.scanRoots()
@@ -917,7 +936,7 @@ func (sc *envScanner) rootLink(p string) error {
 	if err != nil {
 		return sc.fail(CodeEnvUnobserved)
 	}
-	rec := EnvRecord{Kind: RecLink, Path: sc.tok.token(p), Class: ClassLink, Method: MethodMetadata}
+	rec := EnvRecord{Kind: RecLink, Path: sc.rtok.token(p), Class: ClassLink, Method: MethodMetadata}
 	statRecord(&rec, st)
 	if rec.Type == TypeSymlink {
 		if rec.Target, err = os.Readlink(p); err != nil {
@@ -931,7 +950,7 @@ func (sc *envScanner) rootLink(p string) error {
 func (sc *envScanner) scanRoots() {
 	for _, root := range sc.roots {
 		st, err := os.Lstat(root)
-		rec := EnvRecord{Kind: RecRoot, Path: sc.tok.token(root), Class: ClassRoot, Method: MethodIdentity}
+		rec := EnvRecord{Kind: RecRoot, Path: sc.rtok.token(root), Class: ClassRoot, Method: MethodIdentity}
 		if err != nil {
 			rec.Type, rec.Method = TypeAbsent, MethodAbsent
 			if sc.add(rec) != nil {
@@ -1083,7 +1102,7 @@ func (sc *envScanner) repo(dir string, bare bool) error {
 	if !filepath.IsAbs(common) {
 		common = filepath.Join(canon, common)
 	}
-	rec := EnvRecord{Kind: RecRepo, Path: sc.tok.token(canon), GitDir: sc.tok.token(filepath.Clean(lines[0])), CommonDir: sc.tok.token(filepath.Clean(common)),
+	rec := EnvRecord{Kind: RecRepo, Path: sc.rtok.token(canon), GitDir: sc.rtok.token(filepath.Clean(lines[0])), CommonDir: sc.rtok.token(filepath.Clean(common)),
 		Bare: bare, Class: "repository", Method: MethodContent}
 	head, exit, err := sc.gitText(canon, []int{0, 1}, "rev-parse", "-q", "--verify", "HEAD")
 	if err != nil {
@@ -1161,7 +1180,7 @@ func (sc *envScanner) invalidRepo(canon string, bare bool) error {
 	if err != nil {
 		return sc.fail(CodeEnvUnobserved)
 	}
-	rec := EnvRecord{Kind: RecInvalid, Path: sc.tok.token(canon), Class: "invalid_repository", Method: MethodMetadata, Bare: bare}
+	rec := EnvRecord{Kind: RecInvalid, Path: sc.rtok.token(canon), Class: "invalid_repository", Method: MethodMetadata, Bare: bare}
 	statRecord(&rec, st)
 	rec.Size, rec.MtimeNS = st.Size(), st.ModTime().UnixNano()
 	if rec.Type == TypeDir {

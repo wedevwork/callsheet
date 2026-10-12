@@ -439,8 +439,10 @@ func (s *supervisor) protectedRoots() error {
 	s.roots = roots
 	s.manifest.ProtectDepth = s.args.protectDepth
 	s.say("repositories are discovered at most %d directory levels below each protected root", s.args.protectDepth)
+	// The roots are spelled in the snapshots' root frame (rootFrame).
+	tok := s.envTokenizer().rootFrame(roots)
 	for _, r := range roots {
-		s.manifest.ProtectedRoots = append(s.manifest.ProtectedRoots, s.envTokenizer().token(r))
+		s.manifest.ProtectedRoots = append(s.manifest.ProtectedRoots, tok.token(r))
 	}
 	if len(roots) == 0 {
 		s.say("No repository root was protected (only the four vendor homes are fingerprinted)")

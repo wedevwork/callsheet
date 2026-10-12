@@ -914,23 +914,26 @@ type coordScript struct {
 	pendingObserve bool
 	before         func(c *coordScript) bool
 	// Session variations.
-	noWake       [4]bool
-	userBetween  int
-	phaseExit    [2]int
-	phase2SID    string
-	rewrite      bool
-	badWake      bool
-	longPoll     bool
-	denied       bool
-	firstDenied  bool
-	toolFailed   bool
-	earlyResult  bool
-	waitCommand  func(i int, cmd string) string
-	lingering    [2]bool
-	stubborn     [2]bool
-	noTranscript bool
-	afterPhase   func(c *coordScript, p int)
-	failResult   [2]bool
+	noWake      [4]bool
+	userBetween int
+	phaseExit   [2]int
+	phase2SID   string
+	rewrite     bool
+	badWake     bool
+	longPoll    bool
+	denied      bool
+	firstDenied bool
+	// deniedBeforeWait dispatches and observes the designer, then a denied
+	// Bash command ends phase 1 before its wait starts (A3.8 review C1).
+	deniedBeforeWait bool
+	toolFailed       bool
+	earlyResult      bool
+	waitCommand      func(i int, cmd string) string
+	lingering        [2]bool
+	stubborn         [2]bool
+	noTranscript     bool
+	afterPhase       func(c *coordScript, p int)
+	failResult       [2]bool
 }
 
 func newCoordScript(t *testing.T) *coordScript {
@@ -1205,6 +1208,17 @@ func (c *coordScript) run() {
 		c.files[0], c.commit[0] = s.seed.Files, s.seed.Commit
 		if c.extraAt == 0 {
 			c.extra(0)
+		}
+		if c.deniedBeforeWait {
+			c.dispatchOnly(0)
+			c.observe(0)
+			c.sess.use(1, toolBash, map[string]any{"command": "rm -rf /tmp/whatever"}, "Permission to use Bash with command rm -rf /tmp/whatever has been denied.", true)
+			denials := []map[string]string{{"tool_name": "Bash", "tool_use_id": fmt.Sprintf("toolu_%04d", c.sess.n)}}
+			c.sess.say(1, "I cannot continue.")
+			c.sess.result(1, true, denials)
+			c.procs[0].exit(0, "")
+			c.step = 99
+			return
 		}
 		c.dispatch(0)
 	case 1:

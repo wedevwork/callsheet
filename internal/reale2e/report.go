@@ -15,7 +15,9 @@ import (
 // roots, the environment's protected changes and tool-maintained summary
 // (A3.6: report.txt only), the
 // coordinator's tool findings with their private evidence references, and
-// relative artifact names with their hashes), never raw logs, prompts,
+// relative artifact names with their hashes; A3.8: a not_reached
+// criterion's stopping cause and, in report.txt only, each preflight's
+// token_echoed), never raw logs, prompts,
 // transcript or final prose. It is derived from the bundle alone (paths
 // were tokenized when written), so the offline check recomputes it byte
 // for byte. Mechanical PASS never claims the role results were judged:
@@ -47,6 +49,15 @@ type Report struct {
 	Error           string       `json:"error,omitempty"`
 	// tool is the diff's tool-maintained summary for report.txt.
 	tool toolReport
+	// echoes are the preflights' token_echoed for report.txt (A3.8:
+	// information only, never a criterion).
+	echoes []tokenEcho
+}
+
+// tokenEcho is one stored preflight answer's token_echoed.
+type tokenEcho struct {
+	hop    string
+	echoed bool
 }
 
 // toolReport is the tool-maintained summary the text report prints: one
@@ -182,6 +193,11 @@ func BuildReport(b *Bundle, cs []Criterion) Report {
 			r.OversizedConfig = append(r.OversizedConfig, red.Redact(n))
 		}
 	}
+	for i := range Hops {
+		if echoed, ok := tokenEchoed(b.Preflight[i]); ok {
+			r.echoes = append(r.echoes, tokenEcho{preflightHop(i), echoed})
+		}
+	}
 	if em := b.EventMap; em != nil {
 		for _, f := range em.Findings {
 			if f.Code == CodeToolDenied || f.Code == CodeToolFailed {
@@ -230,11 +246,17 @@ func RenderText(r Report) string {
 	}
 	b.WriteString("not covered: " + NestedRepoLimitation + "\n")
 	for _, c := range r.Criteria {
-		if len(c.Codes) == 0 {
+		switch {
+		case c.Result == ResultCriterionNotReached:
+			fmt.Fprintf(&b, "criterion %s: %s (not reached: %s, attempt failed at event %d)\n", c.ID, c.Result, c.Cause, c.CauseSeq)
+		case len(c.Codes) == 0:
 			fmt.Fprintf(&b, "criterion %s: %s\n", c.ID, c.Result)
-			continue
+		default:
+			fmt.Fprintf(&b, "criterion %s: %s (%s)\n", c.ID, c.Result, strings.Join(c.Codes, ", "))
 		}
-		fmt.Fprintf(&b, "criterion %s: %s (%s)\n", c.ID, c.Result, strings.Join(c.Codes, ", "))
+	}
+	for _, e := range r.echoes {
+		fmt.Fprintf(&b, "%s token_echoed: %t (information only)\n", e.hop, e.echoed)
 	}
 	for _, c := range r.Protected {
 		fmt.Fprintf(&b, "protected change: %s %s %s [%s]\n", c.Scope, c.Path, c.Kind, strings.Join(c.Fields, ","))
