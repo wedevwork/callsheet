@@ -46,10 +46,10 @@ func (s *supervisor) finishRun() int {
 	s.cleanupBy = start.Add(CleanupBound)
 	s.stopPhase()
 	s.cancelActive()
-	s.collectSession()
 	s.collectWaits()
 	s.writeRepository()
 	rec := s.cleanup(start)
+	s.collectSession()
 	if s.ctl != nil {
 		s.ctl.close()
 	}
@@ -157,11 +157,9 @@ func (s *supervisor) stopPhase() {
 }
 
 // collectSession writes the supervisor's coordinator process observation
-// and the machine-derived event map.
+// and the machine-derived event map, after cleanup's last stop attempt
+// (A3.6). With no phase started the observation is a valid empty record.
 func (s *supervisor) collectSession() {
-	if s.phases[0] == nil {
-		return
-	}
 	ce := CoordinatorExit{Schema: CoordExitSchema, Phases: []PhaseProcess{}}
 	for _, p := range s.phases {
 		if p != nil && p.handled {
@@ -169,8 +167,34 @@ func (s *supervisor) collectSession() {
 		}
 	}
 	s.ev.writeJSON(coordinatorExitFile, ce)
+	if s.phases[0] == nil {
+		return
+	}
 	em := DeriveSession(s.sessionInput())
 	s.ev.writeJSON(eventMapFile, em)
+}
+
+// reobservePhases updates a handled phase's unverified observation once
+// cleanup made its last stop attempt: only an actually observed reap and
+// whole-group disappearance of the same captured handle change it.
+func (s *supervisor) reobservePhases() {
+	for _, p := range s.phases {
+		if p == nil || !p.handled || p.rec.GroupGone {
+			continue
+		}
+		select {
+		case <-p.proc.Done():
+			if !p.rec.Reaped {
+				code, sig := p.proc.Exit()
+				p.rec.Reaped, p.rec.Signal = true, sig
+				if sig == "" {
+					p.rec.ExitCode = &code
+				}
+			}
+		default:
+		}
+		p.rec.GroupGone = p.rec.Reaped && awaitGone(p.proc, s.w.Clock, 0)
+	}
 }
 
 // cancelActive cancels every known nonterminal task and awaits its
@@ -227,12 +251,25 @@ const (
 	waitExitFile   = "wait-exit.txt"
 )
 
+// Raw wait file names in a hop's runtime wait directory
+// (<runtime>/coord/waits/NN, A3.6).
+const (
+	runtimeWaitResult = "result.json"
+	runtimeWaitStderr = "error.txt"
+	runtimeWaitExit   = "exit-code"
+)
+
+// waitDir is hop i's runtime wait directory.
+func waitDir(runtime string, i int) string {
+	return filepath.Join(runtime, "coord", "waits", hopDir(i))
+}
+
 // readWaitFiles reads hop i's raw wait output from the runtime.
 func (s *supervisor) readWaitFiles(i int) (result, stderr, exit []byte, okR, okE, okX bool) {
 	if s.runtime == "" {
 		return
 	}
-	dir := filepath.Join(s.runtime, "waits", hopDir(i))
+	dir := waitDir(s.runtime, i)
 	read := func(name string, limit int64) ([]byte, bool) {
 		p := filepath.Join(dir, name)
 		st, err := os.Lstat(p)
@@ -242,9 +279,9 @@ func (s *supervisor) readWaitFiles(i int) (result, stderr, exit []byte, okR, okE
 		b, err := readBounded(p, limit)
 		return b, err == nil
 	}
-	result, okR = read("result.json", maxTextFile)
-	stderr, okE = read("error.txt", maxTextFile)
-	exit, okX = read("exit-code", 64)
+	result, okR = read(runtimeWaitResult, maxTextFile)
+	stderr, okE = read(runtimeWaitStderr, maxTextFile)
+	exit, okX = read(runtimeWaitExit, 64)
 	return
 }
 
@@ -341,8 +378,10 @@ func (s *supervisor) cleanup(start time.Time) CleanupRecord {
 			s.stopped(c, stopProc(c.name, c.proc, s.w.Clock, s.left(15*time.Second)))
 		}
 	}
-	rec := CleanupRecord{Schema: CleanupSchema, Processes: append([]ProcRecord{}, s.records...), CancelledTasks: append([]string{}, s.cancelled...),
-		UnsettledTasks: append([]string{}, s.unsettled...), StartedAt: formatTime(start), Complete: len(s.unsettled) == 0}
+	s.reobservePhases()
+	rec := CleanupRecord{Schema: CleanupSchema, Started: append([]StartedProc{}, s.started...), Processes: append([]ProcRecord{}, s.records...),
+		CancelledTasks: append([]string{}, s.cancelled...), UnsettledTasks: append([]string{}, s.unsettled...), StartedAt: formatTime(start),
+		Complete: len(s.unsettled) == 0}
 	for _, p := range rec.Processes {
 		rec.Complete = rec.Complete && p.ExitVerified
 	}
@@ -377,18 +416,19 @@ func (s *supervisor) compareEnvironment() {
 			}
 		}
 	}
-	data, err := encodeDiff(diff)
+	data, fitted, err := encodeDiff(diff)
 	if err != nil {
 		diff = EnvDiff{Schema: DiffSchema, ProtectedRoots: diff.ProtectedRoots, Before: diff.Before, After: diff.After, Codes: []string{CodeEnvLimit},
-			Protected: []EnvChange{}, Housekeeping: []EnvChange{}, OversizedConfig: []string{}, Detail: []EnvDetail{}}
-		data, _ = encodeDiff(diff)
+			Protected: []EnvChange{}, ToolSummary: []ToolSummaryRow{}, OversizedConfig: []string{}, Detail: []EnvDetail{}}
+		data, fitted, _ = encodeDiff(diff)
 	}
+	diff = fitted
 	s.ev.writeFile("environment/diff.json", data)
 	for _, c := range diff.Protected {
 		s.say("PROTECTED CHANGE (%s): %s %s %s", CodeEnvModified, c.Scope, c.Path, c.Kind)
 	}
-	if len(diff.Housekeeping) > 0 {
-		s.say("%d vendor housekeeping changes (report-only), listed in report.txt", len(diff.Housekeeping))
+	if n := diff.ToolDetailCount + diff.ToolOmittedCount; n > 0 {
+		s.say("%d tool-maintained vendor changes (report-only), summarized in report.txt", n)
 	}
 }
 

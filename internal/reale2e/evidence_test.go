@@ -706,7 +706,7 @@ func (e *envEdit) put(s *Snapshot, k envKey, r *EnvRecord) {
 // configuration file before, and that record edited by f after (f nil
 // deletes it).
 func (e *envEdit) change(scope, rel string, f func(r *EnvRecord)) {
-	r := EnvRecord{Kind: RecEntry, Scope: scope, Path: rel, Class: ClassConfig, Method: MethodContent, Type: TypeFile, Mode: 0o600, Size: 2,
+	r := EnvRecord{Kind: RecEntry, Scope: scope, Path: rel, Class: ownerClass(scope, rel), Method: MethodContent, Type: TypeFile, Mode: 0o600, Size: 2,
 		SHA256: sha256Hex([]byte("{}"))}
 	k := keyOf(r)
 	e.put(e.before, k, &r)
@@ -770,7 +770,7 @@ func rewriteEnvironment(t *testing.T, b string, f func(e *envEdit)) {
 			}
 		}
 	}
-	data, err := encodeDiff(d)
+	data, _, err := encodeDiff(d)
 	if err != nil {
 		t.Fatal(err)
 	}

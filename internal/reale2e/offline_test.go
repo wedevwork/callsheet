@@ -204,9 +204,16 @@ func shippedTemplates(t *testing.T, root string) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"run_in_background: true", `never pass "wait" or "override"`, "Never call task_wait", "<RUNTIME>", "<RECEIPT>",
-		"sha256sum", "BEGIN FILE", "END FILE", "phase 2 only", "completion notification"} {
+		"<REALE2E> review-material --run <RUNTIME>\n", "Use no other tool or shell command", "phase 2 only", "completion notification"} {
 		if !bytes.Contains(prompt, []byte(want)) {
 			t.Errorf("the coordinator prompt lacks %q", want)
+		}
+	}
+	// A3.6: only the six MCP tools, the direct wait and the named
+	// helpers; no formatting loop or file utility.
+	for _, gone := range []string{"sha256sum", "printf", "for f in", "cat ", "BEGIN FILE", "rc=$?", "Read tool", "Write tool"} {
+		if bytes.Contains(prompt, []byte(gone)) {
+			t.Errorf("the coordinator prompt still uses %q", gone)
 		}
 	}
 	for i, h := range Hops {
@@ -262,6 +269,19 @@ func shippedTemplates(t *testing.T, root string) {
 		EnvOptIn + "=1", "reale2e run", "--protect-root", decisionPrompt, "report.txt", "audit.md", "audit-review.md", "~/.claude.json",
 		"No repository root was protected", NestedRepoLimitation, "--protect-depth", JudgmentReportLine, `--settings '{"sandbox":{"enabled":false}}'`, "reale2e check --evidence"} {
 		if !bytes.Contains(doc, []byte(want)) {
+			t.Errorf("docs/real-e2e.md lacks %q", want)
+		}
+	}
+	// A3.6: the exact rule recipe as the shared renderer prints it, and
+	// the three adjacent coverage exclusions.
+	rules, err := allowedTools(symbolicPermissions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"```\n" + strings.Join(rules, "\n") + "\n```\n", "```\n" + strings.Join(ClaudeStateExclusions, "\n") + "\n```\n",
+		"`reale2e capture-wait --run D --hop H --code N`", "`reale2e review-material --run D`", "`coordinator_tool_denied`", "`permission_rule_invalid`",
+		`--code "$?"`, "tool-maintained", "`environment/diff.json`"} {
+		if !strings.Contains(string(doc), want) {
 			t.Errorf("docs/real-e2e.md lacks %q", want)
 		}
 	}

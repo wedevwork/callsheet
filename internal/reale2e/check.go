@@ -2,6 +2,8 @@ package reale2e
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -497,25 +499,144 @@ func (c *checker) preflight() {
 	}
 }
 
-// expectedArgv is phase p's only permitted launch shape: the stream-json
-// print phase with the session-only sandbox-off settings, the generated
-// MCP configuration and the rendered instructions (phase 2 adds --resume
-// with the phase-1 session); nothing else, so no bypass, session pinning,
-// settings-source filter, safe mode or MCP isolation.
-func expectedArgv(p int, prompt, mcpPath, system, session string) []string {
-	argv := []string{"-p", prompt, "--output-format", "stream-json", "--verbose", "--settings", SandboxOffSettings,
-		"--mcp-config", mcpPath, "--append-system-prompt", system}
-	if p == 2 {
-		argv = append(argv, "--resume", session)
+// shellWord splits the first shellQuote-rendered word off s, reporting
+// whether it round-trips exactly.
+func shellWord(s string) (word, rest string, ok bool) {
+	if !strings.HasPrefix(s, "'") {
+		i := strings.IndexByte(s, ' ')
+		if i < 0 {
+			i = len(s)
+		}
+		word, rest = s[:i], s[i:]
+	} else {
+		var b strings.Builder
+		r := s[1:]
+		for {
+			i := strings.IndexByte(r, '\'')
+			if i < 0 {
+				return "", "", false
+			}
+			b.WriteString(r[:i])
+			r = r[i+1:]
+			if !strings.HasPrefix(r, `\''`) {
+				break
+			}
+			b.WriteByte('\'')
+			r = r[3:]
+		}
+		word, rest = b.String(), r
 	}
-	return argv
+	return word, rest, word != "" && shellQuote(word)+rest == s
 }
 
-// setup (A3): the two permitted launch shapes with the rendered prompt
-// bytes and one MCP configuration, the same executable, cwd and wait
-// templates; phase 2 resumes the session phase 1 reported, observed again
-// in phase 2's init; both phases' supervisor-observed exits are 0 with
-// their groups gone.
+// tokenSpells reports whether a sanitized path token spells real.
+func tokenSpells(token, real string) bool {
+	if token == real {
+		return filepath.IsAbs(real)
+	}
+	for _, t := range []string{"$CHECKOUT", "$RUN", "$HOME"} {
+		if rest, ok := strings.CutPrefix(token, t); ok && strings.HasPrefix(rest, "/") {
+			return filepath.IsAbs(real) && len(real) > len(rest) && strings.HasSuffix(real, rest)
+		}
+	}
+	return false
+}
+
+// permissionInputs reconstructs the allow-list's fixed values (A3.6) from
+// independently bound inputs, never from a recorded rule list: the
+// runtime from the launch's working directory, the plane URL and the CA's
+// runtime path from the sanitized MCP configuration, and the two
+// executables from the first rendered wait template (itself bound to the
+// hashed system prompt), the Callsheet one consistent with the MCP
+// command.
+func (c *checker) permissionInputs(l *LaunchRecord) (permissionValues, bool) {
+	var v permissionValues
+	if l == nil || !filepath.IsAbs(l.Cwd) || filepath.Base(l.Cwd) != "coord" || len(l.WaitTemplates) != len(Hops) {
+		return v, false
+	}
+	v.runtime = filepath.Dir(l.Cwd)
+	cfgBytes := c.b.Files["setup/mcp-config.json"]
+	var cfg struct {
+		Servers map[string]struct {
+			Command string   `json:"command"`
+			Args    []string `json:"args"`
+		} `json:"mcpServers"`
+	}
+	if json.Unmarshal(cfgBytes, &cfg) != nil {
+		return v, false
+	}
+	srv, ok := cfg.Servers[mcpServerName]
+	if !ok || len(srv.Args) != 7 {
+		return v, false
+	}
+	caRest, ok := strings.CutPrefix(srv.Args[4], "$RUN")
+	if want, err := mcpConfig(srv.Command, srv.Args[2], srv.Args[4]); !ok || !strings.HasPrefix(caRest, "/") || err != nil || !bytes.Equal(want, cfgBytes) {
+		return v, false
+	}
+	v.url, v.ca = srv.Args[2], v.runtime+caRest
+	callsheet, rest, ok := shellWord(l.WaitTemplates[0])
+	_, capture, found := strings.Cut(rest, "; ")
+	reale2e, _, ok2 := shellWord(capture)
+	if !ok || !found || !ok2 || !tokenSpells(srv.Command, callsheet) || !filepath.IsAbs(reale2e) {
+		return v, false
+	}
+	v.callsheet, v.reale2e = callsheet, reale2e
+	return v, true
+}
+
+// expectedLaunch is phase p's only permitted launch: the shared argv with
+// the allow-list and wait templates rendered from the reconstructed
+// fixed values, the MCP configuration at <runtime>/mcp.json and the
+// rendered prompts (phase 2 resumes the phase-1 session). ok is false
+// when the fixed values are unrecoverable or hold a rule metacharacter.
+func (c *checker) expectedLaunch(p int) (argv, waits []string, ok bool) {
+	v, ok := c.permissionInputs(c.refLaunch())
+	if !ok {
+		return nil, nil, false
+	}
+	allowed, err := allowedTools(v)
+	if err != nil {
+		return nil, nil, false
+	}
+	for i := range Hops {
+		waits = append(waits, waitCommand(v, i))
+	}
+	prompt := string(c.b.Files["setup/coordinator-phase-"+fmt.Sprint(p)+".md"])
+	system := string(c.b.Files["setup/coordinator-prompt.md"])
+	argv = launchArgv(p, prompt, allowed, filepath.Join(v.runtime, "mcp.json"), system, c.derived.SessionID)
+	if !strings.Contains(system, shellQuote(v.reale2e)+" observe --run "+shellQuote(v.runtime)+" ") {
+		return nil, nil, false
+	}
+	return argv, waits, true
+}
+
+// refLaunch is the first recorded launch, whose working directory and
+// templates every launch must share.
+func (c *checker) refLaunch() *LaunchRecord {
+	if c.b.Launches[0] != nil {
+		return c.b.Launches[0]
+	}
+	return c.b.Launches[1]
+}
+
+// launchValid reports whether phase p's recorded launch has exactly the
+// permitted shape.
+func (c *checker) launchValid(p int) bool {
+	l, ref := c.b.Launches[p-1], c.refLaunch()
+	argv, waits, ok := c.expectedLaunch(p)
+	prompt := c.b.Files["setup/coordinator-phase-"+fmt.Sprint(p)+".md"]
+	system := c.b.Files["setup/coordinator-prompt.md"]
+	return ok && l.Phase == p && slices.Equal(l.Argv, argv) && slices.Equal(l.WaitTemplates, waits) && l.Executable == ref.Executable &&
+		l.Cwd == ref.Cwd && l.PromptSHA256 == sha256Hex(prompt) && l.SystemSHA256 == sha256Hex(system)
+}
+
+// setup (A3, A3.6): each recorded launch has the permitted shape with the
+// exact 16-rule allow-list, the rendered prompt bytes and one MCP
+// configuration, the same executable, cwd and wait templates; phase 2
+// resumes the session phase 1 reported, observed again in phase 2's init;
+// each launched phase's supervisor-observed exit is 0 with its group
+// gone. Each phase is validated on its own: an unlaunched phase is only
+// launch_missing, and an exit is unobserved only for a launched phase.
 func (c *checker) setup() {
 	for _, f := range []string{"setup/coordinator-prompt.md", "setup/mcp-config.json", "setup/" + PhasePrompt1} {
 		if len(c.b.Files[f]) == 0 {
@@ -525,46 +646,55 @@ func (c *checker) setup() {
 	sid := c.derived.SessionID
 	system := string(c.b.Files["setup/coordinator-prompt.md"])
 	l1, l2 := c.b.Launches[0], c.b.Launches[1]
-	if l1 == nil || l2 == nil {
-		c.fail(CritSetup, "launch_missing")
-		return
-	}
-	mcp := ""
-	for i, a := range l1.Argv {
-		if i > 0 && l1.Argv[i-1] == "--mcp-config" {
-			mcp = a
+	for p, l := range c.b.Launches {
+		if l == nil {
+			c.fail(CritSetup, "launch_missing")
+			continue
 		}
-	}
-	prompts := [2]string{string(c.b.Files["setup/"+PhasePrompt1]), string(c.b.Files["setup/"+PhasePrompt2])}
-	for i, l := range []*LaunchRecord{l1, l2} {
-		want := expectedArgv(i+1, prompts[i], mcp, system, sid)
-		if l.Phase != i+1 || !slices.Equal(l.Argv, want) || !filepath.IsAbs(mcp) || filepath.Base(mcp) != "mcp.json" ||
-			l.PromptSHA256 != sha256Hex([]byte(prompts[i])) || l.SystemSHA256 != sha256Hex([]byte(system)) {
-			c.fail(CritSetup, "launch_shape_invalid")
-		}
-		if l.Executable != l1.Executable || l.Cwd != l1.Cwd || !slices.Equal(l.WaitTemplates, l1.WaitTemplates) || len(l.WaitTemplates) != len(Hops) {
+		if !c.launchValid(p + 1) {
 			c.fail(CritSetup, "launch_shape_invalid")
 		}
 	}
-	for _, w := range l1.WaitTemplates {
-		if !strings.Contains(system, w) {
-			c.fail(CritSetup, "launch_shape_invalid")
+	if ref := c.refLaunch(); ref != nil {
+		for _, w := range ref.WaitTemplates {
+			if !strings.Contains(system, w) {
+				c.fail(CritSetup, "launch_shape_invalid")
+			}
 		}
 	}
-	if !sessionIDRE.MatchString(sid) || l1.ResumeSession != "" || l2.ResumeSession != sid || len(c.derived.Init) != 2 || c.derived.Init[1].SessionID != sid {
+	if l1 != nil && (!sessionIDRE.MatchString(sid) || l1.ResumeSession != "") {
 		c.fail(CritSetup, "session_resume_mismatch")
 	}
-	ce := c.b.CoordExit
-	if ce == nil || len(ce.Phases) != 2 {
-		c.fail(CritSetup, "coordinator_exit_unobserved")
-		return
+	if l2 != nil && (!sessionIDRE.MatchString(sid) || l2.ResumeSession != sid || len(c.derived.Init) != 2 || c.derived.Init[1].SessionID != sid) {
+		c.fail(CritSetup, "session_resume_mismatch")
 	}
-	for i, p := range ce.Phases {
-		if p.Phase != i+1 || !p.Reaped || !p.GroupGone || p.ExitCode == nil || *p.ExitCode != 0 || p.Signal != "" || p.PID <= 0 ||
-			p.StartedSeq != c.b.Launches[i].StartedSeq || p.ExitedSeq <= p.StartedSeq {
+	for i, l := range c.b.Launches {
+		if l == nil {
+			continue
+		}
+		obs := c.phaseObservations(i + 1)
+		if len(obs) != 1 {
+			c.fail(CritSetup, "coordinator_exit_unobserved")
+			continue
+		}
+		if p := obs[0]; !p.Reaped || !p.GroupGone || p.ExitCode == nil || *p.ExitCode != 0 || p.Signal != "" || p.PID <= 0 ||
+			p.StartedSeq != l.StartedSeq || p.ExitedSeq <= p.StartedSeq {
 			c.fail(CritSetup, "coordinator_exit_nonzero")
 		}
 	}
+}
+
+// phaseObservations are the coordinator exit observations of phase p.
+func (c *checker) phaseObservations(p int) []PhaseProcess {
+	var out []PhaseProcess
+	if ce := c.b.CoordExit; ce != nil {
+		for _, o := range ce.Phases {
+			if o.Phase == p {
+				out = append(out, o)
+			}
+		}
+	}
+	return out
 }
 
 // loadHops derives the views, commits and tree files used by later
@@ -1108,29 +1238,78 @@ func (c *checker) cleanup() {
 	if !cl.Complete || len(cl.UnsettledTasks) != 0 {
 		c.fail(CritCleanup, "cleanup_incomplete")
 	}
-	names := map[string]bool{}
+	// A3.6: started-instance accounting. Every successful start event (a
+	// process or phase start with its captured PID) is one instance; the
+	// cleanup inventory lists exactly these, in order, and each has exactly
+	// one stop record of the same name, PID and start sequence, verified.
+	var started []StartedProc
+	for _, e := range c.b.Events {
+		if e.Type == EvProcessStarted || e.Type == EvPhaseStarted {
+			started = append(started, StartedProc{Name: e.Handle, PID: e.PID, StartedSeq: e.Seq})
+			if e.PID <= 0 || e.Handle == "" {
+				c.fail(CritCleanup, "process_record_conflict")
+			}
+		}
+	}
+	if !slices.Equal(started, cl.Started) {
+		c.fail(CritCleanup, "process_record_conflict")
+	}
+	bySeq := map[int]StartedProc{}
+	for _, s := range started {
+		bySeq[s.StartedSeq] = s
+	}
+	stops := map[int]int{}
 	for _, p := range cl.Processes {
-		names[p.Name] = true
+		if s, ok := bySeq[p.StartedSeq]; !ok || s.Name != p.Name || s.PID != p.PID {
+			c.fail(CritCleanup, "process_record_conflict")
+			continue
+		}
+		stops[p.StartedSeq]++
 		if !p.ExitVerified || p.PID <= 0 {
 			c.fail(CritCleanup, "process_exit_unverified")
 		}
 	}
-	for _, n := range []string{"plane", "sidecar-codex", "sidecar-claude", "sidecar-grok", phaseHandle(1), phaseHandle(2)} {
-		if !names[n] {
+	for _, s := range started {
+		switch stops[s.StartedSeq] {
+		case 0:
 			c.fail(CritCleanup, "process_record_missing")
+		case 1:
+		default:
+			c.fail(CritCleanup, "process_record_conflict")
 		}
 	}
 	if !cl.RuntimeRemoved {
 		c.fail(CritCleanup, "runtime_not_removed")
 	}
 	// A3: the coordinator phases are the supervisor's own observation: each
-	// leader reaped and its whole group (MCP child, background waits) gone.
-	ce := c.b.CoordExit
-	if ce == nil || len(ce.Phases) != 2 {
+	// started phase's leader reaped and its whole group (MCP child,
+	// background waits) gone, observed exactly once for that start; an
+	// unstarted phase has nothing to observe.
+	for p := 1; p <= 2; p++ {
+		var starts []Event
+		for _, e := range c.b.Events {
+			if e.Type == EvPhaseStarted && e.Handle == phaseHandle(p) {
+				starts = append(starts, e)
+			}
+		}
+		obs := c.phaseObservations(p)
+		if len(starts) == 0 && len(obs) == 0 {
+			continue
+		}
+		if len(starts) != 1 || len(obs) != 1 {
+			c.fail(CritCleanup, "coordinator_group_unverified")
+			continue
+		}
+		l := c.b.Launches[p-1]
+		if o := obs[0]; o.PID != starts[0].PID || o.StartedSeq != starts[0].Seq || !o.Reaped || !o.GroupGone || (l != nil && l.StartedSeq != starts[0].Seq) {
+			c.fail(CritCleanup, "coordinator_group_unverified")
+		}
+	}
+	if ce := c.b.CoordExit; ce == nil {
 		c.fail(CritCleanup, "coordinator_group_unverified")
 	} else {
-		for _, p := range ce.Phases {
-			if !p.Reaped || !p.GroupGone {
+		for _, o := range ce.Phases {
+			if o.Phase != 1 && o.Phase != 2 {
 				c.fail(CritCleanup, "coordinator_group_unverified")
 			}
 		}
@@ -1303,12 +1482,16 @@ func (c *checker) snapshotShards(phase string) ([][]byte, bool) {
 
 // ownerEnvironment (A3, FP-11): the manifest's supplied roots (sorted,
 // unique, never nested) are exactly both snapshots' and the diff's; both
-// snapshots parse and are complete; the diff's full-record detail is bound
-// to exactly the entries whose compact records differ (A3.4), and the
-// stored diff is exactly its recomputation from that detail under the
-// owner-configuration and housekeeping classes;
-// every protected difference fails (owner_environment_modified, whatever
-// else failed) and housekeeping alone never does. It resolves no host path.
+// snapshots parse and are complete, every entry's class the one derived
+// from its vendor and path; the diff's full-record detail is bound to the
+// entries whose compact records differ (A3.4: every one that is not
+// tool-maintained and a key-ordered prefix of the tool-maintained ones,
+// A3.6), and the stored diff, its tool-maintained summary and counts
+// included, is exactly its recomputation from that detail and the
+// complete compact inventories; every protected difference fails
+// (owner_environment_modified, whatever else failed) and a
+// tool-maintained change, or omitted tool-maintained detail, alone never
+// does. It resolves no host path.
 func (c *checker) ownerEnvironment() {
 	m, d := c.b.Manifest, c.b.Diff
 	var roots []string

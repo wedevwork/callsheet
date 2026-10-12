@@ -8,6 +8,7 @@ This guide connects the four first-wave coordinator CLIs to Callsheet's MCP serv
 - Install the `callsheet` binary for Linux (`callsheet-linux-amd64` or `callsheet-linux-arm64`) or macOS (`callsheet-darwin-amd64` or `callsheet-darwin-arm64`) from the release artifacts, make it executable and use its absolute path. Install the vendor CLI with its vendor's own instructions for Linux or macOS; the captured versions below are the ones the catalog describes, not the latest release.
 - `--ca-fingerprint <sha256>` can replace `--ca <ca-path>`; never pass both. When the server cannot reach the plane, check the wrong URL or certificate name (SAN), the CA file and the clock first.
 - User configuration stays user-owned. Callsheet never registers itself and never modifies a vendor's configuration; you run the registration command or edit the vendor-owned file yourself. Vendor permission approval may be required; do not turn on broad approval or disable sandboxing to make a tool call pass.
+- Prerequisites are yours to apply or approve in advance. Callsheet uses each agent tool as you configured it and never edits that configuration. Authorize the coordinator's access to the Callsheet MCP server and to any CLI or background execution your chosen recipe uses (such as the background wait of the [coordinator runbook example](#coordinator-runbook-example)), with network access to the configured plane. Where the tool offers it, prefer an approval scoped to the effective session over a configuration change. An incompatibility fails visibly: a denied call is a finding for you to resolve, never something Callsheet works around. Each vendor section below names its approval mechanism; a future tool follows the same pattern of prerequisite, your approval and the effective session.
 - Runbook loading is the user's launcher reading the user's file, never Callsheet reading it. The shell examples pass the file's text on the vendor side (initial prompt, appended system prompt or rules); no runbook flag or path appears in the Callsheet command and no runbook bytes are sent to Callsheet. Initial-prompt loading is the established fallback for Codex and Cursor; it is not a claim about automatic `AGENTS.md` precedence or a system-level instruction. Shell substitution strips trailing newlines and is subject to argument-length limits; for a large manual use a vendor-supported file mechanism once it is qualified, and state its status. Unverified file-discovery mechanisms are not established behaviour.
 - The local transfer tools `ws_push` and `ws_pull` (and the `callsheet ws push` / `ws pull` commands) read and write local files on the machine running `callsheet mcp`, resolving a relative path against that server process's working directory, not the coordinator's. Their commands, supported repositories, ignore rules, results and refusals are in [workspaces.md](workspaces.md).
 - Workspace tasks (iteration 10b, protocol 6; CLI and MCP since iteration 10c) are selected by the `dispatch` tool's optional `workspace`, `base` and `workspace_instance` arguments, `callsheet dispatch --workspace NAME [--base SELECTOR] [--workspace-instance TOKEN]`, or the HTTP dispatch request's fields of the same names. A task's result carries its `workspace` publication object: a failed publication never changes the task's state, so check `result.workspace.publication` before handing a result to the next task. To continue, dispatch the next task with `workspace` and `workspace_instance` from the first task's `workspace_binding` and `base` set to its `result.workspace.commit`, for example `{"target":{"kind":"name","value":"reviewer"},"goal":"review the change","acceptance":"findings listed","workspace":"myproject","base":"<commit>","workspace_instance":"<instance>"}`. Inspect and deliver a result by task ID: `ws_status {"task_id":"t_..."}` (its `available` flag), `ws_diff {"task_id":"t_..."}` (paged metadata against the admitted base) and `ws_pull {"task_id":"t_...","path":"..."}` (CLI: `callsheet ws status|diff|pull TASK_ID`). See [Workspace tasks](workspaces.md#workspace-tasks), [Task results by task ID](workspaces.md#task-results-by-task-id) and the [coordinator workflow](workspaces.md#coordinator-workflow).
@@ -89,6 +90,8 @@ Launch with your runbook appended to the system prompt:
 claude --append-system-prompt "$(cat -- '<runbook>')"
 ```
 
+Prerequisites: an interactive session asks before a tool call your permissions do not allow; headless print mode (`claude -p`) cannot answer, so such a call is denied. Allow the Callsheet tools you use by their exact names, such as `mcp__callsheet__dispatch` and `mcp__callsheet__task_show`; `mcp__callsheet__*` allows every tool of the server, a deliberately wider server-wide scope. Allow your background wait as its exact Bash command. Put the rules in your own permission settings, or allow them for one session only with `--allowed-tools`: that runs the listed rules without a prompt, writes no file and removes none of your other rules or denies. The [real end-to-end exercise](real-e2e.md) uses this session-only allowance, plus the session-only `--settings '{"sandbox":{"enabled":false}}'` for its plane on host loopback (see the sandbox note above); that setting belongs to that local topology and is not a general requirement.
+
 Timeout and configuration status: see the catalog for this vendor's current facts and evidence. A larger call budget requires local qualification with response margin. Historical help-only candidate, never a current status: `MCP_TOOL_TIMEOUT`.
 
 The four `SEE CATALOG` rows refer to the `claude` entry's fact of the same key in the catalog JSON.
@@ -116,6 +119,8 @@ Launch with your runbook as the initial prompt:
 ```sh
 codex "$(cat -- '<runbook>')"
 ```
+
+Prerequisites: approve the Callsheet MCP tools and any command execution of your recipe through Codex's own approval and sandbox posture (its prompts or your configuration), with network access to the plane. This guide adds no Codex flag; its background wake stays UNVERIFIED (see the [runbook example](#coordinator-runbook-example)), so the short `task_wait` fallback needs only MCP approval.
 
 Timeout and configuration status: see the catalog for this vendor's current facts and evidence. A larger call budget requires local qualification with response margin. Historical help-only candidate, never a current status: `mcp_servers.callsheet.tool_timeout_sec`.
 
@@ -145,6 +150,8 @@ Launch with your runbook appended as rules:
 grok --rules "$(cat -- '<runbook>')"
 ```
 
+Prerequisites: approve the Callsheet MCP tools and the `monitor` command of the [runbook example](#coordinator-runbook-example) through Grok's own permission prompts or your configuration, keeping your sandbox posture and network access to the plane. This guide adds no Grok flag and no qualification beyond the runbook example's static evidence.
+
 Timeout and configuration status: see the catalog for this vendor's current facts and evidence. A larger call budget requires local qualification with response margin. Historical help-only observation, never a current status: the captured help named no override key.
 
 The four `SEE CATALOG` rows refer to the `grok` entry's fact of the same key in the catalog JSON.
@@ -172,6 +179,8 @@ Launch with your runbook as the initial prompt:
 ```sh
 cursor-agent "$(cat -- '<runbook>')"
 ```
+
+Prerequisites: approve the Callsheet MCP tools and the background shell of the [runbook example](#coordinator-runbook-example) through Cursor's own approval mechanism or your configuration, with network access to the plane. This guide adds no Cursor flag, and a local coordinator approval neither qualifies cloud agents nor lifts the worker refusal.
 
 Timeout and configuration status: see the catalog for this vendor's current facts and evidence. A larger call budget requires local qualification with response margin. Historical help-only observation, never a current status: the installed bundle's `resetTimeoutOnProgress` symbol is not call-site evidence.
 

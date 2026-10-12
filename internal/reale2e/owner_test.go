@@ -3,6 +3,7 @@ package reale2e
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"io"
 	"net"
 	"os"
@@ -268,12 +269,17 @@ func TestControlProtocol(t *testing.T) {
 	rt := shortTemp(t)
 	const run = "20261010T120000Z-0a0b0c0d"
 	var seen []ControlRequest
-	srv, err := listenControl(rt, run, func(r ControlRequest) string {
+	review := controlResponse{OK: true, Code: CodeAccepted, Commit: strings.Repeat("a", 40), Files: []ReviewFile{{Path: "design.md", SHA256: zeros64},
+		{Path: "main.go", SHA256: zeros64}, {Path: "main_test.go", SHA256: zeros64}}}
+	srv, err := listenControl(rt, run, func(r ControlRequest) controlResponse {
 		seen = append(seen, r)
-		if r.Task == hexID("t_", 2) {
-			return CodeOwnerGateClosed
+		switch {
+		case r.Op == opReview:
+			return review
+		case r.Task == hexID("t_", 2):
+			return codeResponse(CodeOwnerGateClosed)
 		}
-		return CodeAccepted
+		return codeResponse(CodeAccepted)
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -287,24 +293,40 @@ func TestControlProtocol(t *testing.T) {
 	invalid := `{"ok":false,"code":"invalid_request"}` + "\n"
 	task := hexID("t_", 1)
 	observe := `{"run":"` + run + `","op":"observe","task":"` + task + `","hop":"designer"}`
+	capture := func(rest string) string { return `{"run":"` + run + `","op":"capture-wait"` + rest + "}\n" }
+	reviewLine, _ := json.Marshal(review)
 	for name, tc := range map[string]struct{ in, want string }{
-		"observe":        {observe + "\n", ok},
-		"finish removed": {`{"run":"` + run + `","op":"finish"}` + "\n", invalid},
-		"wait removed":   {`{"run":"` + run + `","op":"wait","task":"` + task + `","hop":"designer"}` + "\n", invalid},
-		"stale run":      {`{"run":"20200101T000000Z-00000000","op":"observe","task":"` + task + `","hop":"designer"}` + "\n", `{"ok":false,"code":"run_mismatch"}` + "\n"},
-		"bad hop":        {`{"run":"` + run + `","op":"observe","task":"` + task + `","hop":"planner"}` + "\n", `{"ok":false,"code":"invalid_hop"}` + "\n"},
-		"malformed":      {`{"run":` + "\n", invalid},
-		"array":          {`[1]` + "\n", invalid},
-		"null":           {`null` + "\n", invalid},
-		"duplicate key":  {`{"run":"` + run + `","run":"` + run + `","op":"observe","task":"` + task + `","hop":"designer"}` + "\n", invalid},
-		"unknown key":    {`{"run":"` + run + `","op":"observe","task":"` + task + `","hop":"designer","x":1}` + "\n", invalid},
-		"observe no hop": {`{"run":"` + run + `","op":"observe","task":"` + task + `"}` + "\n", invalid},
-		"null task":      {`{"run":"` + run + `","op":"observe","task":null,"hop":"designer"}` + "\n", invalid},
-		"number run":     {`{"run":1,"op":"observe","task":"` + task + `","hop":"designer"}` + "\n", invalid},
-		"unknown op":     {`{"run":"` + run + `","op":"approve","task":"` + task + `","hop":"designer"}` + "\n", invalid},
-		"extra frame":    {observe + "\n" + observe + "\n", invalid},
-		"no newline":     {observe, invalid},
-		"too long":       {`{"run":"` + strings.Repeat("x", maxControlLine) + `"}` + "\n", invalid},
+		"observe":               {observe + "\n", ok},
+		"capture":               {capture(`,"hop":"coder","code":7`), ok},
+		"capture bad hop":       {capture(`,"hop":"planner","code":0`), `{"ok":false,"code":"invalid_hop"}` + "\n"},
+		"capture code 256":      {capture(`,"hop":"coder","code":256`), invalid},
+		"capture negative code": {capture(`,"hop":"coder","code":-1`), invalid},
+		"capture fractional":    {capture(`,"hop":"coder","code":1.5`), invalid},
+		"capture string code":   {capture(`,"hop":"coder","code":"0"`), invalid},
+		"capture null code":     {capture(`,"hop":"coder","code":null`), invalid},
+		"capture no code":       {capture(`,"hop":"coder"`), invalid},
+		"capture task key":      {capture(`,"hop":"coder","code":0,"task":"` + task + `"`), invalid},
+		"review":                {`{"run":"` + run + `","op":"review-material"}` + "\n", string(reviewLine) + "\n"},
+		"review extra key":      {`{"run":"` + run + `","op":"review-material","hop":"coder"}` + "\n", invalid},
+		"review stale run":      {`{"run":"20200101T000000Z-00000000","op":"review-material"}` + "\n", `{"ok":false,"code":"run_mismatch"}` + "\n"},
+		"observe with code":     {`{"run":"` + run + `","op":"observe","task":"` + task + `","hop":"designer","code":0}` + "\n", invalid},
+		"observe numeric op":    {`{"run":"` + run + `","op":7,"task":"` + task + `","hop":"designer"}` + "\n", invalid},
+		"finish removed":        {`{"run":"` + run + `","op":"finish"}` + "\n", invalid},
+		"wait removed":          {`{"run":"` + run + `","op":"wait","task":"` + task + `","hop":"designer"}` + "\n", invalid},
+		"stale run":             {`{"run":"20200101T000000Z-00000000","op":"observe","task":"` + task + `","hop":"designer"}` + "\n", `{"ok":false,"code":"run_mismatch"}` + "\n"},
+		"bad hop":               {`{"run":"` + run + `","op":"observe","task":"` + task + `","hop":"planner"}` + "\n", `{"ok":false,"code":"invalid_hop"}` + "\n"},
+		"malformed":             {`{"run":` + "\n", invalid},
+		"array":                 {`[1]` + "\n", invalid},
+		"null":                  {`null` + "\n", invalid},
+		"duplicate key":         {`{"run":"` + run + `","run":"` + run + `","op":"observe","task":"` + task + `","hop":"designer"}` + "\n", invalid},
+		"unknown key":           {`{"run":"` + run + `","op":"observe","task":"` + task + `","hop":"designer","x":1}` + "\n", invalid},
+		"observe no hop":        {`{"run":"` + run + `","op":"observe","task":"` + task + `"}` + "\n", invalid},
+		"null task":             {`{"run":"` + run + `","op":"observe","task":null,"hop":"designer"}` + "\n", invalid},
+		"number run":            {`{"run":1,"op":"observe","task":"` + task + `","hop":"designer"}` + "\n", invalid},
+		"unknown op":            {`{"run":"` + run + `","op":"approve","task":"` + task + `","hop":"designer"}` + "\n", invalid},
+		"extra frame":           {observe + "\n" + observe + "\n", invalid},
+		"no newline":            {observe, invalid},
+		"too long":              {`{"run":"` + strings.Repeat("x", maxControlLine) + `"}` + "\n", invalid},
 	} {
 		// Sequential: the subtests share the parent's server.
 		t.Run(name, func(t *testing.T) {
@@ -324,7 +346,8 @@ func TestControlProtocol(t *testing.T) {
 			}
 		})
 	}
-	if len(seen) != 1 {
+	if len(seen) != 3 || !slices.Contains(seen, ControlRequest{Run: run, Op: opCapture, Hop: HopCoder, Code: 7}) ||
+		!slices.Contains(seen, ControlRequest{Run: run, Op: opReview}) {
 		t.Fatalf("the handler saw %d requests: %+v", len(seen), seen)
 	}
 	// The helper and the removed subcommands through MainWith.
@@ -388,10 +411,38 @@ func TestControlProtocol(t *testing.T) {
 			c.Write([]byte(answer))
 			c.Close()
 		}()
-		if _, _, err := controlCall(dir, task, HopDesigner); err == nil {
+		if _, err := controlCall(dir, ControlRequest{Op: opObserve, Task: task, Hop: HopDesigner}); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
 		ln.Close()
+	}
+	// Responses decode strictly per operation: observe and capture-wait
+	// keep exactly ok and code; only a successful review-material adds the
+	// commit and the three files.
+	files := `[{"path":"design.md","sha256":"` + zeros64 + `"},{"path":"main.go","sha256":"` + zeros64 + `"},{"path":"main_test.go","sha256":"` + zeros64 + `"}]`
+	commit := strings.Repeat("a", 40)
+	for _, tc := range []struct {
+		op, line string
+		ok       bool
+	}{
+		{opObserve, `{"ok":true,"code":"accepted"}`, true},
+		{opCapture, `{"ok":false,"code":"task_mismatch"}`, true},
+		{opCapture, `{"ok":true,"code":"accepted","commit":"` + commit + `"}`, false},
+		{opObserve, `{"ok":true}`, false},
+		{opObserve, `{"ok":true,"code":"accepted","code":"accepted"}`, false},
+		{opReview, `{"ok":true,"code":"accepted","commit":"` + commit + `","files":` + files + `}`, true},
+		{opReview, `{"ok":false,"code":"owner_gate_closed"}`, true},
+		{opReview, `{"ok":false,"code":"owner_gate_closed","commit":"` + commit + `","files":` + files + `}`, false},
+		{opReview, `{"ok":true,"code":"accepted"}`, false},
+		{opReview, `{"ok":true,"code":"accepted","commit":"abc","files":` + files + `}`, false},
+		{opReview, `{"ok":true,"code":"accepted","commit":"` + commit + `","files":[]}`, false},
+		{opReview, `{"ok":true,"code":"accepted","commit":"` + commit + `","files":` + strings.Replace(files, "main.go", "x.go", 1) + `}`, false},
+		{opReview, `{"ok":true,"code":"accepted","commit":"` + commit + `","files":` + strings.Replace(files, zeros64, "x", 1) + `}`, false},
+		{opReview, `{"ok":true,"code":"accepted","commit":"` + commit + `","files":` + files + `,"x":1}`, false},
+	} {
+		if _, err := decodeControlResponse(tc.op, []byte(tc.line)); (err == nil) != tc.ok {
+			t.Errorf("%s %s: err %v", tc.op, tc.line, err)
+		}
 	}
 }
 
@@ -401,17 +452,17 @@ func TestControlForwarding(t *testing.T) {
 	s := &supervisor{reqs: make(chan ctrlMsg), loopDone: make(chan struct{})}
 	go func() {
 		m := <-s.reqs
-		m.reply <- CodeAlreadyObserved
+		m.reply <- codeResponse(CodeAlreadyObserved)
 	}()
-	if code := s.handleControl(ControlRequest{Op: opObserve}); code != CodeAlreadyObserved {
-		t.Fatal(code)
+	if resp := s.handleControl(ControlRequest{Op: opObserve}); resp.Code != CodeAlreadyObserved {
+		t.Fatal(resp)
 	}
 	close(s.loopDone)
-	if s.handleControl(ControlRequest{Op: opObserve}) != CodeClosing {
+	if s.handleControl(ControlRequest{Op: opObserve}).Code != CodeClosing {
 		t.Fatal("loop done")
 	}
 	s.closing.Store(true)
-	if s.handleControl(ControlRequest{Op: opObserve}) != CodeClosing {
+	if s.handleControl(ControlRequest{Op: opObserve}).Code != CodeClosing {
 		t.Fatal("closing")
 	}
 	// A loop that never answers is an internal error, not a hang.
@@ -423,7 +474,7 @@ func TestControlForwarding(t *testing.T) {
 	busy := &supervisor{reqs: make(chan ctrlMsg), loopDone: make(chan struct{})}
 	busyCode := busy.handleControl(ControlRequest{Op: opObserve})
 	forwardWait = saved
-	if stuckCode != CodeInternalError || busyCode != CodeInternalError {
+	if stuckCode.Code != CodeInternalError || busyCode.Code != CodeInternalError {
 		t.Fatal(stuckCode, busyCode)
 	}
 	// The live loop serves a socket request end to end.
@@ -437,11 +488,11 @@ func TestControlForwarding(t *testing.T) {
 		if !started {
 			started = true
 			go func() {
-				code, ok, err := controlCall(c.s.runtime, c.tasks[0], HopDesigner)
-				if !ok || err != nil {
-					code = "error"
+				resp, err := controlCall(c.s.runtime, ControlRequest{Op: opObserve, Task: c.tasks[0], Hop: HopDesigner})
+				if !resp.OK || err != nil {
+					resp.Code = "error"
 				}
-				result <- code
+				result <- resp.Code
 			}()
 		}
 		select {

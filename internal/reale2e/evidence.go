@@ -83,7 +83,8 @@ func isEnvironmentFile(rel string) bool { return strings.HasPrefix(rel, "environ
 
 // Event is one events.jsonl line. Hop is a feature hop name or
 // "preflight-NN"; Handle names a process or wait handle; Code is a fixed
-// diagnostic code, never raw text.
+// diagnostic code, never raw text. PID is a process or phase start's
+// captured PID (A3.6).
 type Event struct {
 	Seq    int    `json:"seq"`
 	Type   string `json:"type"`
@@ -92,6 +93,7 @@ type Event struct {
 	Task   string `json:"task,omitempty"`
 	Handle string `json:"handle,omitempty"`
 	Code   string `json:"code,omitempty"`
+	PID    int    `json:"pid,omitempty"`
 }
 
 // formatTime renders an evidence timestamp.

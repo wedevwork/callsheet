@@ -185,7 +185,7 @@ func deriveAuditRows(c *checker) []AuditRow {
 		requirement: "The four roles registered with the frozen flow's adapter, model and effort (concurrency 1, timeout 10m), all sidecars reconnected and every role ready"},
 		c.rolesFacts())
 	add(rowSpec{id: "coordinator_phase1", layer: LayerMechanical, fps: fpPhase, criteria: []string{CritSetup, CritEventMap},
-		requirement: "The supervisor launched the fresh headless phase-1 session with the exact configuration-preserving argv (sandbox-off settings only, no bypass), observed its init and successful pause result, exit 0 and its whole process group gone"},
+		requirement: "The supervisor launched the fresh headless phase-1 session with the exact configuration-preserving argv (the session-only sandbox-off settings and the exact 16-rule allow-list, no bypass), observed its init and successful pause result, exit 0 and its whole process group gone"},
 		c.phaseFacts(1))
 	for i := range Hops {
 		if i == 2 {
@@ -201,7 +201,7 @@ func deriveAuditRows(c *checker) []AuditRow {
 			requirement: "The coordinator dispatched hop " + Hops[i] + " once through MCP (no wait) on the pinned workspace instance and required base, with the run marker and the role's frozen selection, and the supervisor observed it"},
 			c.dispatchFacts(i))
 		add(rowSpec{id: n + "_wait", layer: LayerMechanical, fps: fpWait, criteria: []string{CritWaits},
-			requirement: "The hop's direct CLI wait ran as one Bash background job from the rendered template, its raw output was captured and reparsed, and the coordinator consumed its completion"},
+			requirement: "The hop's direct CLI wait ran as one Bash background job from the rendered template, its status captured by the capture-wait helper, its raw output was captured and reparsed, and the coordinator consumed its completion"},
 			c.waitFacts(i))
 		add(rowSpec{id: n + "_result", layer: LayerMechanical, fps: fpResult, criteria: []string{CritHops, CritChain, CritArtifacts},
 			requirement: "Hop " + Hops[i] + " succeeded with exit 0 on its role's adapter, model and effort, published one commit whose single parent is its base, changed only its allowed paths and ended its complete, untruncated final answer with " + approvedMarkers[Hops[i]]},
@@ -212,10 +212,10 @@ func deriveAuditRows(c *checker) []AuditRow {
 		requirement: "The supervisor ran go test -buildvcs=false -count=1 ./... (exit 0) on an export of the fourth result, the build, the ten CLI cases and go test -json, all bound to that commit within the shared 60s budget; the baseline tests passed"},
 		c.criterionFacts((*checker).finalTests, CritFinalTests, "final_tests_missing", "baseline_missing", "validation_missing"))
 	add(rowSpec{id: "cleanup", layer: LayerMechanical, fps: fpCleanup, criteria: []string{CritCleanup, CritDeadlines},
-		requirement: "Every owned process (both coordinator groups, sidecars and plane) was stopped by its captured handle with its exit verified, every task settled and the runtime removed within the 2m cleanup bound"},
+		requirement: "Every started owned process (each started coordinator group, every sidecar generation and the plane) was stopped by its captured handle with its exit verified, every task settled and the runtime removed within the 2m cleanup bound"},
 		c.cleanupFacts())
 	add(rowSpec{id: "owner_environment", layer: LayerMechanical, fps: fpEnv, criteria: []string{CritOwnerEnv},
-		requirement: "Complete before and after fingerprints of every supplied protected root's repositories and the four vendor homes show no protected change; housekeeping changes are listed only"},
+		requirement: "Complete before and after fingerprints of every supplied protected root's repositories and the four vendor homes show no owner-configuration change; tool-maintained changes are summarized per vendor top-level directory only"},
 		c.environmentFacts())
 	return rows
 }
@@ -411,17 +411,7 @@ func (c *checker) phaseFacts(p int) rowFacts {
 		}
 	}
 	if l != nil {
-		system := string(c.b.Files["setup/coordinator-prompt.md"])
-		prompt := string(c.b.Files["setup/coordinator-phase-"+fmt.Sprint(p)+".md"])
-		mcp := ""
-		if l1 := c.b.Launches[0]; l1 != nil {
-			for i, a := range l1.Argv {
-				if i > 0 && l1.Argv[i-1] == "--mcp-config" {
-					mcp = a
-				}
-			}
-		}
-		if !slices.Equal(l.Argv, expectedArgv(p, prompt, mcp, system, c.derived.SessionID)) || l.Phase != p {
+		if !c.launchValid(p) {
 			f.bad("launch_shape_invalid")
 		}
 		f.see("launch %s", auditText(strings.Join(l.Display, " "), 1200))
@@ -927,8 +917,9 @@ func (c *checker) cleanupFacts() rowFacts {
 	f := c.criterionFacts((*checker).cleanup, CritCleanup, "cleanup_missing")
 	f.observed = nil
 	if cl := c.b.Cleanup; cl != nil {
-		f.see("%d processes recorded, %d tasks cancelled, %d unsettled, runtime removed %t, started %s, finished %s", len(cl.Processes),
-			len(cl.CancelledTasks), len(cl.UnsettledTasks), cl.RuntimeRemoved, auditText(cl.StartedAt, 40), auditText(cl.FinishedAt, 40))
+		f.see("%d started process instances, %d stop records, %d tasks cancelled, %d unsettled, runtime removed %t, started %s, finished %s",
+			len(cl.Started), len(cl.Processes), len(cl.CancelledTasks), len(cl.UnsettledTasks), cl.RuntimeRemoved, auditText(cl.StartedAt, 40),
+			auditText(cl.FinishedAt, 40))
 		f.refFile(c, "cleanup.json", nil, "", "")
 	}
 	f.refFile(c, coordinatorExitFile, nil, "", "")
@@ -946,11 +937,16 @@ func (c *checker) environmentFacts() rowFacts {
 		if len(d.ProtectedRoots) > 0 {
 			roots = strings.Join(d.ProtectedRoots, ", ")
 		}
-		f.see("protected roots: %s; %d protected changes, %d housekeeping changes (report-only), complete %t; %d differing entries detailed in diff.json against the compact snapshots",
-			auditText(roots, 1000), len(d.Protected), len(d.Housekeeping), d.Complete, len(d.Detail))
+		f.see("protected roots: %s; %d protected changes, %d tool-maintained changes (report-only; %d detailed, %d omitted), complete %t; %d differing entries detailed in diff.json against the compact snapshots",
+			auditText(roots, 1000), len(d.Protected), d.ToolDetailCount+d.ToolOmittedCount, d.ToolDetailCount, d.ToolOmittedCount, d.Complete, len(d.Detail))
 		for _, ch := range d.Protected {
 			f.see("protected change %s %s %s [%s]", auditText(ch.Scope, 200), auditText(ch.Path, 400), ch.Kind, strings.Join(ch.Fields, ","))
 		}
+		for _, row := range d.ToolSummary {
+			f.see("tool-maintained %s %s: %d added, %d changed, %d deleted, %d total", auditText(row.Scope, 40), auditText(row.TopLevel, 200),
+				row.Added, row.Changed, row.Deleted, row.Total)
+		}
+		f.see("%s", strings.Join(ClaudeStateExclusions, "; "))
 		f.refFile(c, "environment/diff.json", nil, "", "")
 	}
 	for _, phase := range []string{"before", "after"} {
