@@ -299,7 +299,7 @@ func addCommit(t *testing.T, r *git.Repository, ref string, files map[string][]b
 func checkBundle(t *testing.T, bundle string) (int, Report, string) {
 	t.Helper()
 	var out, errOut bytes.Buffer
-	code := CheckEvidence(bundle, Redactor{}, &out, &errOut)
+	code := CheckEvidence(bundle, &out, &errOut)
 	var r Report
 	if err := json.Unmarshal(out.Bytes(), &r); err != nil {
 		t.Fatalf("check printed no report: %v\n%s", err, out.String())

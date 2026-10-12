@@ -69,8 +69,9 @@ func TestEvidenceWriter(t *testing.T) {
 	if _, err := newEvidenceWriter(filepath.Join(ro, "file", "x"), clock); err == nil {
 		t.Fatal("created below a file")
 	}
-	if err := os.Chmod(ro, 0o500); err == nil && os.Getuid() != 0 {
-		defer os.Chmod(ro, 0o700)
+	err = os.Chmod(ro, 0o500)
+	defer os.Chmod(ro, 0o700)
+	if err == nil && os.Getuid() != 0 {
 		if err := writeAtomic(ro, "y", nil); err == nil {
 			t.Fatal("wrote into a read-only directory")
 		}

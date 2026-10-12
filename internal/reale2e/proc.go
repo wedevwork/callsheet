@@ -294,12 +294,16 @@ var errCommandStart = errors.New("the command could not be started")
 var errUnverifiedStop = errors.New("the command's process group could not be proved gone")
 
 // runCommand runs a short command with output bounded to limit bytes per
-// stream and a timeout measured from before its start, after which its
+// captured stream (a spec's own Stdout, when set, receives the standard
+// output unbounded instead of the capture) and a timeout measured from before its start, after which its
 // process group is stopped by its handle. Even a command that ended on
 // its own has its group stopped; an unverified stop is an error.
 func runCommand(l Launcher, clock Clock, s ProcSpec, timeout time.Duration, limit int) (CommandResult, error) {
 	out, errOut := newLimitBuffer(limit), newLimitBuffer(limit)
-	s.Stdout, s.Stderr = out, errOut
+	if s.Stdout == nil {
+		s.Stdout = out
+	}
+	s.Stderr = errOut
 	start := clock.Now()
 	p, err := l.Start(s)
 	if err != nil {

@@ -1,8 +1,9 @@
 package reale2e
 
 import (
-	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,12 +11,27 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 )
 
-// Coordinator setup (design 12a-real-e2e, Coordinator setup and
-// provenance): the seed repository and its baseline tests, a fresh
-// workspace pinned to one instance, the session-local MCP configuration,
-// the rendered coordinator prompt and the exact launch command with a
-// fresh session ID. The coordinator then works only from those; the
-// supervisor never dispatches a feature hop.
+// Coordinator setup and headless launch (design 12a-real-e2e, amendment
+// A3): the supervisor renders the coordinator's system prompt, its two
+// phase prompts and the session-local MCP configuration in the new
+// <runtime>/coord directory and launches Claude Code headless itself, in
+// two print-mode phases of one session: phase 1 runs the seed push, the
+// designer and the design reviewer and ends with a pause result; after the
+// owner's yes, phase 2 resumes the same session (--resume with the
+// session ID phase 1 reported) for the coder and the code reviewer. The
+// owner's configuration stays active: the only additional settings input
+// is the inline, session-only {"sandbox":{"enabled":false}}; no permission
+// bypass, session pinning, settings-source filter or MCP isolation. The
+// real argv is recorded privately with a sanitized rendering.
+
+// SandboxOffSettings is the only additional settings input.
+const SandboxOffSettings = `{"sandbox":{"enabled":false}}`
+
+// Phase prompt template names.
+const (
+	PhasePrompt1 = "coordinator-phase-1.md"
+	PhasePrompt2 = "coordinator-phase-2.md"
+)
 
 // prepareSeed creates the seed, runs its baseline tests and creates the
 // workspace the coordinator pushes it into.
@@ -64,12 +80,12 @@ func (s *supervisor) prepareSeed() error {
 
 // mcpConfig is the session-local MCP configuration.
 func mcpConfig(callsheet, url, ca string) ([]byte, error) {
-	cfg := map[string]any{"mcpServers": map[string]any{"callsheet": map[string]any{
+	cfg := map[string]any{"mcpServers": map[string]any{mcpServerName: map[string]any{
 		"type": "stdio", "command": callsheet, "args": []string{"mcp", "--plane", url, "--ca", ca, "--wait-call-budget", "10s"}}}}
 	return encodeJSON(cfg)
 }
 
-// shellQuote quotes one argument for the printed launch command.
+// shellQuote quotes one argument for a rendered shell command.
 func shellQuote(s string) string {
 	if s != "" && strings.Trim(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_./:=") == "" {
 		return s
@@ -77,56 +93,53 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// prepareCoordinator renders the coordinator's setup, records it, starts
-// the control socket and prints the launch instructions.
+// waitTemplate is hop i's background wait command: the plain CLI wait
+// with stdout and stderr redirected to the hop's files, its status saved
+// to a third file and returned. TASK_ID is the coordinator's substitution.
+func (s *supervisor) waitTemplate(i int) string {
+	dir := filepath.Join(s.runtime, "waits", hopDir(i))
+	q := shellQuote
+	return q(s.args.callsheet) + " task wait TASK_ID --until-done --json --plane " + q(s.dep.url) + " --ca " + q(s.dep.caPath) +
+		" >" + q(filepath.Join(dir, "result.json")) + " 2>" + q(filepath.Join(dir, "error.txt")) + "; rc=$?; echo $rc >" +
+		q(filepath.Join(dir, "exit-code")) + "; exit $rc"
+}
+
+// prepareCoordinator renders the coordinator's system prompt, phase-1
+// prompt and MCP configuration, records them and starts the control
+// socket.
 func (s *supervisor) prepareCoordinator() error {
-	sid, err := newSessionID(s.w.Rand)
-	if err != nil {
-		return failure("internal_error", err)
-	}
-	s.sessionID = sid
 	rt := s.runtime
-	// The helper, runtime and wait paths appear in the prompt's shell
-	// commands (A2's background wait lines): they are rendered shell-quoted
-	// (unchanged when they need no quoting).
-	vals := map[string]string{"RUN_ID": s.runID, "RUNTIME": shellQuote(rt), "PLANE_URL": s.dep.url, "CA_PATH": s.dep.caPath, "CALLSHEET": s.args.callsheet,
-		"REALE2E": shellQuote(s.w.Executable), "WORKSPACE": s.workspace.Name, "INSTANCE": s.workspace.Instance, "SEED_PATH": s.seed.Path,
-		"SEED_COMMIT": s.workspace.SeedCommit, "WAITS_DIR": shellQuote(filepath.Join(rt, "waits")), "RECEIPT": filepath.Join(rt, "owner-receipt.json"),
-		"OWNER_DIR": filepath.Join(rt, "owner"), "COORD_DIR": filepath.Join(rt, "coord")}
-	prompt, err := renderTemplate(CoordinatorPrompt, s.templates[CoordinatorPrompt], vals)
+	q := shellQuote
+	vals := map[string]string{"RUN_ID": s.runID, "RUNTIME": q(rt), "PLANE_URL": s.dep.url, "CA_PATH": s.dep.caPath, "CALLSHEET": s.args.callsheet,
+		"REALE2E": q(s.w.Executable), "WORKSPACE": s.workspace.Name, "INSTANCE": s.workspace.Instance, "SEED_PATH": s.seed.Path,
+		"SEED_COMMIT": s.workspace.SeedCommit, "WAITS_DIR": q(filepath.Join(rt, "waits")), "RECEIPT": filepath.Join(rt, "owner-receipt.json"),
+		"COORD_DIR": filepath.Join(rt, "coord")}
+	for i := range Hops {
+		vals["WAIT_"+hopDir(i)] = s.waitTemplate(i)
+	}
+	system, err := renderTemplate(CoordinatorPrompt, s.templates[CoordinatorPrompt], vals)
 	if err != nil {
 		return failure("templates_invalid", err)
 	}
-	s.rendered[CoordinatorPrompt] = prompt
+	phase1, err := renderTemplate(PhasePrompt1, s.templates[PhasePrompt1], vals)
+	if err != nil {
+		return failure("templates_invalid", err)
+	}
+	s.rendered[CoordinatorPrompt], s.rendered[PhasePrompt1] = system, phase1
 	cfg, err := mcpConfig(s.args.callsheet, s.dep.url, s.dep.caPath)
 	if err != nil {
 		return failure("internal_error", err)
 	}
-	promptPath, cfgPath, settingsPath := filepath.Join(rt, CoordinatorPrompt), filepath.Join(rt, "mcp.json"), filepath.Join(rt, SettingsFile)
-	for _, f := range []struct {
-		p string
-		b []byte
-	}{{promptPath, prompt}, {cfgPath, cfg}, {settingsPath, s.settings}} {
-		if err := os.WriteFile(f.p, f.b, 0o600); err != nil {
-			return failure("runtime_unavailable", err)
-		}
-	}
-	s.settingsWritten = true
-	// A2: the user's own settings are excluded (project and local sources
-	// only) and the owner's sandbox-only snapshot is passed explicitly, from
-	// the runtime copy, never the mutable source the owner supplied.
-	argv := []string{s.args.claude, "--setting-sources", SettingSources, "--settings", settingsPath, "--mcp-config", cfgPath, "--strict-mcp-config",
-		"--session-id", sid, "--append-system-prompt", "$(cat " + promptPath + ")"}
-	launch := LaunchRecord{Schema: LaunchSchema, SessionID: sid, CoordinatorDir: s.tok(filepath.Join(rt, "coord"))}
-	for _, a := range argv {
-		launch.Argv = append(launch.Argv, s.tok(a))
+	s.mcpPath = filepath.Join(rt, "mcp.json")
+	if err := os.WriteFile(s.mcpPath, cfg, 0o600); err != nil {
+		return failure("runtime_unavailable", err)
 	}
 	sanitized, err := mcpConfig(s.tok(s.args.callsheet), s.dep.url, s.tok(s.dep.caPath))
 	if err != nil {
 		return failure("internal_error", err)
 	}
-	setup := map[string][]byte{"setup/coordinator-prompt.md": prompt, "setup/flow.json": s.flowBytes, "setup/mcp-config.json": sanitized,
-		SettingsEvidence: s.settings}
+	setup := map[string][]byte{"setup/coordinator-prompt.md": system, "setup/" + PhasePrompt1: phase1, "setup/flow.json": s.flowBytes,
+		"setup/mcp-config.json": sanitized}
 	for _, h := range Hops {
 		for _, k := range []string{"instruction", "runbook"} {
 			setup["setup/manuals/"+manualName(h, k)] = s.rendered[manualName(h, k)]
@@ -139,30 +152,146 @@ func (s *supervisor) prepareCoordinator() error {
 		s.manifest.Rendered = append(s.manifest.Rendered, FileHash{Name: name, SHA256: sha256Hex(setup[name])})
 	}
 	s.manifest.Templates = templateHashes(s.templates)
-	if err := s.ev.writeJSON("setup/launch.json", launch); err != nil {
-		return failure("evidence_write_failed", err)
-	}
-	b, _ := json.Marshal(RunFile{Schema: RunFileSchema, RunID: s.runID})
-	if err := os.WriteFile(filepath.Join(rt, RunFileName), append(b, '\n'), 0o600); err != nil {
+	b, _ := encodeJSON(RunFile{Schema: RunFileSchema, RunID: s.runID})
+	if err := os.WriteFile(filepath.Join(rt, RunFileName), b, 0o600); err != nil {
 		return failure("runtime_unavailable", err)
 	}
-	// The socket goroutines read the supervisor's cancellation, its world
-	// clock and the attempt start (set in run), all fixed from here on.
-	s.life = s.ctx
-	if s.ctl, err = serveControl(rt, s.runID, s.w.Clock, s.handleControl, s.handleWaitControl); err != nil {
+	if s.ctl, err = listenControl(rt, s.runID, s.handleControl); err != nil {
 		return failure("control_socket_failed", err)
 	}
 	s.ev.event(Event{Type: EvCoordinatorReady})
-	// From here the owner may start the coordinator: its exit evidence is
-	// required before cleanup is complete.
-	s.coordinatorReady = true
-	quoted := make([]string, len(argv)-1)
-	for i, a := range argv[:len(argv)-1] {
-		quoted[i] = shellQuote(a)
-	}
-	s.say("ready for the coordinator. In a new terminal, start a fresh Claude Code session (never resume):")
-	s.say("  cd %s && %s \"$(cat %s)\"", shellQuote(filepath.Join(rt, "coord")), strings.Join(quoted, " "), shellQuote(promptPath))
-	s.say("seed %s at %s; workspace %s instance %s", s.seed.Path, s.workspace.SeedCommit, s.workspace.Name, s.workspace.Instance)
-	s.say("this terminal takes the owner decision; finish with: %s finish --run %s", s.w.Executable, rt)
 	return nil
+}
+
+// phaseArgv is phase p's exact argument vector (after the executable).
+func (s *supervisor) phaseArgv(p int, prompt []byte) []string {
+	argv := []string{"-p", string(prompt), "--output-format", "stream-json", "--verbose", "--settings", SandboxOffSettings,
+		"--mcp-config", s.mcpPath, "--append-system-prompt", string(s.rendered[CoordinatorPrompt])}
+	if p == 2 {
+		argv = append(argv, "--resume", s.sessionID)
+	}
+	return argv
+}
+
+// launchPhase starts coordinator phase p (1 or 2) headless, with the
+// owner's inherited environment, in the coordinator directory, its stdin
+// closed and its streams captured within their bounds.
+func (s *supervisor) launchPhase(p int, prompt []byte) error {
+	coord := filepath.Join(s.runtime, "coord")
+	argv := s.phaseArgv(p, prompt)
+	pr := &phaseRun{phase: p, stdout: newLimitBuffer(maxTextFile), stderr: newLimitBuffer(maxStderr)}
+	spec := ProcSpec{Path: s.args.claude, Args: argv, Env: s.w.Environ, Dir: coord, Stdout: pr.stdout, Stderr: pr.stderr}
+	ev := s.ev.event(Event{Type: EvPhaseStarted, Handle: phaseHandle(p)})
+	pr.startedSeq = ev.Seq
+	proc, err := s.w.Launcher.Start(spec)
+	if err != nil {
+		return failure("coordinator_start_failed", err)
+	}
+	pr.proc = proc
+	s.phases[p-1] = pr
+	s.track(&child{name: phaseHandle(p), spec: spec, proc: proc, logs: newLineLog()})
+	rec := LaunchRecord{Schema: LaunchSchema, Phase: p, Executable: s.args.claude, Argv: argv, Cwd: coord, PromptSHA256: sha256Hex(prompt),
+		SystemSHA256: sha256Hex(s.rendered[CoordinatorPrompt]), StartedSeq: ev.Seq, Display: []string{s.tok(s.args.claude)}, WaitTemplates: []string{}}
+	for i := range Hops {
+		rec.WaitTemplates = append(rec.WaitTemplates, s.waitTemplate(i))
+	}
+	if p == 2 {
+		rec.ResumeSession = s.sessionID
+	}
+	for i, a := range argv {
+		switch {
+		case i > 0 && argv[i-1] == "-p":
+			a = "<phase-" + fmt.Sprint(p) + " prompt sha256=" + rec.PromptSHA256 + ">"
+		case i > 0 && argv[i-1] == "--append-system-prompt":
+			a = "<coordinator instructions sha256=" + rec.SystemSHA256 + ">"
+		default:
+			a = s.tok(a)
+		}
+		rec.Display = append(rec.Display, a)
+	}
+	s.launches[p-1] = &rec
+	if err := s.ev.writeJSON(launchFiles[p-1], rec); err != nil {
+		return failure("evidence_write_failed", err)
+	}
+	s.say("coordinator phase %d started (pid %d)", p, proc.PID())
+	return nil
+}
+
+// maxStderr bounds a phase's retained stderr.
+const maxStderr = 1 << 20
+
+// phaseRun is one coordinator phase's live state.
+type phaseRun struct {
+	phase      int
+	proc       Proc
+	stdout     *limitBuffer
+	stderr     *limitBuffer
+	startedSeq int
+	handled    bool
+	stopped    bool
+	rec        PhaseProcess
+}
+
+// maxProjectDirs bounds the transcript search's directory entries.
+const maxProjectDirs = 10000
+
+// errTranscript is a transcript that cannot be located unambiguously.
+var errTranscript = errors.New("the coordinator transcript was not found exactly once")
+
+// findTranscript locates <session-id>.jsonl read-only below the protected
+// Claude home's projects directory: one regular, non-symlinked file in a
+// real project directory, never guessed from the encoded directory name.
+// Only the vendor home itself is resolved (A3.4); no component below it
+// may be a link, so the transcript is contained in the protected root the
+// baseline scanner walked. It returns the file and its slash path relative
+// to that root (the baseline record's path).
+func findTranscript(home, sid string) (string, string, error) {
+	root, err := filepath.EvalSymlinks(filepath.Join(home, ".claude"))
+	if err != nil {
+		return "", "", err
+	}
+	projects := filepath.Join(root, "projects")
+	if st, err := os.Lstat(projects); err != nil {
+		return "", "", err
+	} else if !st.IsDir() {
+		return "", "", errTranscript
+	}
+	ents, err := readDirBounded(openDir, projects, maxProjectDirs, nil)
+	if errors.Is(err, errDirBudget) {
+		return "", "", errTranscript
+	}
+	if err != nil {
+		return "", "", err
+	}
+	var found []string
+	for _, e := range ents {
+		if !e.Type().IsDir() {
+			continue
+		}
+		p := filepath.Join(projects, e.Name(), sid+".jsonl")
+		st, err := os.Lstat(p)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil || !st.Mode().IsRegular() {
+			return "", "", errTranscript
+		}
+		found = append(found, e.Name())
+	}
+	if len(found) != 1 {
+		return "", "", errTranscript
+	}
+	rel := "projects/" + found[0] + "/" + sid + ".jsonl"
+	return filepath.Join(root, filepath.FromSlash(rel)), rel, nil
+}
+
+// streamSession returns the session ID of a phase stream's init record.
+func streamSession(stream []byte) string {
+	d := &deriver{codes: map[string]bool{}}
+	for _, r := range d.decodeLines(phaseStreamFiles[0], stream) {
+		if r.kind == "init" {
+			return r.sessionID
+		}
+	}
+	return ""
 }

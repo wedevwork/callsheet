@@ -53,8 +53,9 @@ const (
 const Bounds = `Cost and time bounds (policy, not measurements):
   - four paid authentication preflight tasks (one per role/pair), each at most 2m;
   - four paid feature tasks (designer, design reviewer, coder, code reviewer), each at most 10m;
-  - the owner decision at most 20m; the whole attempt at most 90m from preflight start,
-    then at most 2m of cleanup; the final local tests at most 60s;
-  - the interactive Claude Code coordinator adds vendor-dependent turns and tool calls;
+  - the owner decision at most 20m; the whole attempt at most 90m from preflight start
+    (the first owner-environment fingerprint included), then at most 2m of cleanup, the
+    final fingerprint and the audit; all final validation (tests, build, CLI cases) at most 60s;
+  - the headless Claude Code coordinator adds vendor-dependent turns and tool calls;
   - no automatic retries or fix loops; no token-price ceiling is claimed.
 `

@@ -8,8 +8,9 @@ import (
 )
 
 // Shipped templates (design 12a-real-e2e, Coordinator setup and
-// provenance): docs/examples/real-e2e holds the flow, the coordinator
-// prompt and an instruction/runbook pair per role. Rendering replaces
+// provenance, A3): docs/examples/real-e2e holds the flow, the coordinator
+// prompt, the two phase prompts and an instruction/runbook pair per role.
+// Rendering replaces
 // placeholders only ({{NAME}}, from a fixed value set); an unknown or
 // unreplaced placeholder is an error. Source and rendered hashes are
 // recorded in the manifest.
@@ -28,7 +29,7 @@ const maxTemplateBytes = 32 << 10
 
 // TemplateNames are every shipped template, in manifest order.
 func TemplateNames() []string {
-	out := []string{FlowFile, CoordinatorPrompt}
+	out := []string{FlowFile, CoordinatorPrompt, PhasePrompt1, PhasePrompt2}
 	for _, h := range Hops {
 		out = append(out, manualName(h, "instruction"), manualName(h, "runbook"))
 	}
@@ -43,7 +44,8 @@ var placeholderRE = regexp.MustCompile(`\{\{([A-Z0-9_]*)\}\}`)
 
 // Placeholders are the only placeholder names a template may use.
 var Placeholders = []string{"RUN_ID", "RUNTIME", "PLANE_URL", "CA_PATH", "CALLSHEET", "REALE2E", "WORKSPACE", "INSTANCE",
-	"SEED_PATH", "SEED_COMMIT", "WAITS_DIR", "RECEIPT", "OWNER_DIR", "COORD_DIR"}
+	"SEED_PATH", "SEED_COMMIT", "WAITS_DIR", "RECEIPT", "COORD_DIR", "WAIT_01", "WAIT_02", "WAIT_03", "WAIT_04",
+	"REVIEWED_TASK", "RESULT_COMMIT", "DESIGN_SHA256", "REVIEW_SHA256"}
 
 // loadTemplates reads every template from dir.
 func loadTemplates(dir string) (map[string][]byte, error) {

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -59,13 +60,11 @@ func keyPaths(v any, prefix keyPath) []keyPath {
 	return out
 }
 
-// mutateTree returns a copy of v with the value at p deleted (null false)
-// or replaced by null.
+// mutateTree renders v with the value at p deleted (null false) or
+// replaced by null, leaving v as it was.
 func mutateTree(t *testing.T, v any, p keyPath, null bool) []byte {
 	t.Helper()
-	b, _ := json.Marshal(v)
-	c := decodeTree(t, b)
-	cur := c
+	cur := v
 	for _, k := range p[:len(p)-1] {
 		switch k := k.(type) {
 		case string:
@@ -76,12 +75,18 @@ func mutateTree(t *testing.T, v any, p keyPath, null bool) []byte {
 	}
 	m := cur.(map[string]any)
 	last := p[len(p)-1].(string)
+	old, had := m[last]
 	if null {
 		m[last] = nil
 	} else {
 		delete(m, last)
 	}
-	out, _ := json.Marshal(c)
+	out, _ := json.Marshal(v)
+	if had {
+		m[last] = old
+	} else {
+		delete(m, last)
+	}
 	return out
 }
 
@@ -114,17 +119,22 @@ func fieldAt(t reflect.Type, p keyPath) (reflect.StructField, bool) {
 // bundle with its schema type.
 func strictDocs() map[string]func() any {
 	m := map[string]func() any{
-		"manifest.json":                  func() any { return &Manifest{} },
-		"setup/launch.json":              func() any { return &LaunchRecord{} },
-		"setup/roles.json":               func() any { return &RolesRecord{} },
-		"setup/flow.json":                func() any { return &Flow{} },
-		"owner-decision.json":            func() any { return &DecisionRecord{} },
-		"workspace/tree-manifest.json":   func() any { return &TreeManifest{} },
-		"validation/baseline.json":       func() any { return &TestRun{} },
-		"validation/final-test.json":     func() any { return &TestRun{} },
-		"cleanup.json":                   func() any { return &CleanupRecord{} },
-		"session/setup-attestation.json": func() any { return &SetupAttestation{} },
-		"session/event-map.json":         func() any { return &EventMap{} },
+		"manifest.json":                func() any { return &Manifest{} },
+		launchFiles[0]:                 func() any { return &LaunchRecord{} },
+		launchFiles[1]:                 func() any { return &LaunchRecord{} },
+		"setup/roles.json":             func() any { return &RolesRecord{} },
+		"setup/flow.json":              func() any { return &Flow{} },
+		"owner-decision.json":          func() any { return &DecisionRecord{} },
+		"workspace/tree-manifest.json": func() any { return &TreeManifest{} },
+		"validation/baseline.json":     func() any { return &TestRun{} },
+		"validation/final-test.json":   func() any { return &TestRun{} },
+		"validation/cases.json":        func() any { return &CasesRecord{} },
+		"validation/requirements.json": func() any { return &RequirementsRecord{} },
+		"cleanup.json":                 func() any { return &CleanupRecord{} },
+		coordinatorExitFile:            func() any { return &CoordinatorExit{} },
+		eventMapFile:                   func() any { return &EventMap{} },
+		"environment/diff.json":        func() any { return &EnvDiff{} },
+		"audit.json":                   func() any { return &Audit{} },
 	}
 	for i := range Hops {
 		d := "hops/" + hopDir(i)
@@ -142,33 +152,38 @@ func strictDocs() map[string]func() any {
 func TestRequiredFields(t *testing.T) {
 	t.Parallel()
 	b := passingBundle(t)
-	n := 0
-	for rel, proto := range strictDocs() {
-		data, err := os.ReadFile(filepath.Join(b, filepath.FromSlash(rel)))
-		if err != nil {
-			t.Fatal(err)
+	var n atomic.Int64
+	t.Run("documents", func(t *testing.T) {
+		for rel, proto := range strictDocs() {
+			t.Run(rel, func(t *testing.T) {
+				t.Parallel()
+				data, err := os.ReadFile(filepath.Join(b, filepath.FromSlash(rel)))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := decodeStrict(data, proto()); err != nil {
+					t.Fatalf("%s: the passing document failed: %v", rel, err)
+				}
+				tree := decodeTree(t, data)
+				typ := reflect.TypeOf(proto())
+				for _, p := range keyPaths(tree, nil) {
+					f, ok := fieldAt(typ, p)
+					if !ok {
+						t.Fatalf("%s%s: no schema field", rel, p)
+					}
+					_, omitempty := jsonField(f)
+					n.Add(1)
+					if err := decodeStrict(mutateTree(t, tree, p, false), proto()); (err == nil) != omitempty {
+						t.Errorf("%s%s omitted: decode error %v", rel, p, err)
+					}
+					nullable := f.Type.Kind() == reflect.Pointer
+					if err := decodeStrict(mutateTree(t, tree, p, true), proto()); (err == nil) != nullable {
+						t.Errorf("%s%s null: decode error %v", rel, p, err)
+					}
+				}
+			})
 		}
-		if err := decodeStrict(data, proto()); err != nil {
-			t.Fatalf("%s: the passing document failed: %v", rel, err)
-		}
-		tree := decodeTree(t, data)
-		typ := reflect.TypeOf(proto())
-		for _, p := range keyPaths(tree, nil) {
-			f, ok := fieldAt(typ, p)
-			if !ok {
-				t.Fatalf("%s%s: no schema field", rel, p)
-			}
-			_, omitempty := jsonField(f)
-			n++
-			if err := decodeStrict(mutateTree(t, tree, p, false), proto()); (err == nil) != omitempty {
-				t.Errorf("%s%s omitted: decode error %v", rel, p, err)
-			}
-			nullable := f.Type.Kind() == reflect.Pointer
-			if err := decodeStrict(mutateTree(t, tree, p, true), proto()); (err == nil) != nullable {
-				t.Errorf("%s%s null: decode error %v", rel, p, err)
-			}
-		}
-	}
+	})
 	// events.jsonl: seq, type and time are required; hop, task, handle and
 	// code are optional (empty means not applicable, never success).
 	for _, k := range []string{"seq", "type", "time"} {
@@ -179,21 +194,20 @@ func TestRequiredFields(t *testing.T) {
 			t.Errorf("event %s not required", k)
 		}
 	}
-	if n < 150 {
+	if n := n.Load(); n < 150 {
 		t.Fatalf("only %d key paths checked", n)
 	}
-	// Owner-supplied coordinator exit and the run file.
+	// The supervisor's coordinator observation and the run file.
 	for name, doc := range map[string]struct {
 		data  string
 		proto func() any
 	}{
-		"exit code":      {`{"schema":"` + CoordExitSchema + `","session_closed":true,"mcp_child_exited":true,"wait_handles":[{"handle":"hop-01"}]}`, func() any { return &CoordinatorExit{} }},
-		"null exit code": {`{"schema":"` + CoordExitSchema + `","session_closed":true,"mcp_child_exited":true,"wait_handles":[{"handle":"hop-01","exit_code":null}]}`, func() any { return &CoordinatorExit{} }},
-		"null handles":   {`{"schema":"` + CoordExitSchema + `","session_closed":true,"mcp_child_exited":true,"wait_handles":null}`, func() any { return &CoordinatorExit{} }},
-		"null element":   {`{"schema":"` + CoordExitSchema + `","session_closed":true,"mcp_child_exited":true,"wait_handles":[null]}`, func() any { return &CoordinatorExit{} }},
-		"run file":       {`{"schema":"` + RunFileSchema + `"}`, func() any { return &RunFile{} }},
-		"not an object":  {`[]`, func() any { return &RunFile{} }},
-		"not an array":   {`{"schema":"` + CoordExitSchema + `","session_closed":true,"mcp_child_exited":true,"wait_handles":{}}`, func() any { return &CoordinatorExit{} }},
+		"phase fields":  {`{"schema":"` + CoordExitSchema + `","phases":[{"phase":1}]}`, func() any { return &CoordinatorExit{} }},
+		"null phases":   {`{"schema":"` + CoordExitSchema + `","phases":null}`, func() any { return &CoordinatorExit{} }},
+		"null element":  {`{"schema":"` + CoordExitSchema + `","phases":[null]}`, func() any { return &CoordinatorExit{} }},
+		"run file":      {`{"schema":"` + RunFileSchema + `"}`, func() any { return &RunFile{} }},
+		"not an object": {`[]`, func() any { return &RunFile{} }},
+		"not an array":  {`{"schema":"` + CoordExitSchema + `","phases":{}}`, func() any { return &CoordinatorExit{} }},
 	} {
 		if err := decodeStrict([]byte(doc.data), doc.proto()); err == nil {
 			t.Errorf("%s decoded", name)
@@ -215,30 +229,36 @@ func TestSuccessZeroFields(t *testing.T) {
 		{"validation/final-test.json", keyPath{"signal"}},
 		{"validation/final-test.json", keyPath{"duration_ms"}},
 		{"validation/baseline.json", keyPath{"exit_code"}},
-		{"cleanup.json", keyPath{"owner", "wait_handles", 0, "exit_code"}},
 		{"cleanup.json", keyPath{"unsettled_tasks"}},
-		{"session/setup-attestation.json", keyPath{"resumed"}},
-		{"session/event-map.json", keyPath{"events", 0, "user_message_between"}},
-		{"session/event-map.json", keyPath{"events", 0, "budget_ms"}},
+		{"cleanup.json", keyPath{"runtime_removed"}},
+		{coordinatorExitFile, keyPath{"phases", 0, "exit_code"}},
+		{coordinatorExitFile, keyPath{"phases", 1, "group_gone"}},
+		{eventMapFile, keyPath{"entries", 0, "automatic"}},
+		{eventMapFile, keyPath{"findings"}},
 		{"hops/02/wait.json", keyPath{"exit_code"}},
-		{"cleanup.json", keyPath{"owner"}},
 		{"setup/roles.json", keyPath{"roles", 0, "can_accept"}},
+		{"environment/diff.json", keyPath{"protected"}},
+		{"validation/cases.json", keyPath{"cases", 3, "pass"}},
+		{"validation/requirements.json", keyPath{"failed_tests"}},
 	} {
 		for _, null := range []bool{false, true} {
 			name := fmt.Sprintf("%s%s null=%v", c.rel, c.path, null)
-			b := passingBundle(t)
-			p := filepath.Join(b, filepath.FromSlash(c.rel))
-			data, _ := os.ReadFile(p)
-			os.WriteFile(p, mutateTree(t, decodeTree(t, data), c.path, null), 0o600)
-			code, r, _ := checkBundle(t, b)
-			f, _ := fieldAt(reflect.TypeOf(strictDocs()[c.rel]()), c.path)
-			want := 2
-			if null && f.Type.Kind() == reflect.Pointer {
-				want = 1
-			}
-			if code != want || r.Result == ResultPass {
-				t.Errorf("%s = exit %d %s, want %d", name, code, r.Result, want)
-			}
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				b := passingBundle(t)
+				p := filepath.Join(b, filepath.FromSlash(c.rel))
+				data, _ := os.ReadFile(p)
+				os.WriteFile(p, mutateTree(t, decodeTree(t, data), c.path, null), 0o600)
+				code, r, _ := checkBundle(t, b)
+				f, _ := fieldAt(reflect.TypeOf(strictDocs()[c.rel]()), c.path)
+				want := 2
+				if null && f.Type.Kind() == reflect.Pointer {
+					want = 1
+				}
+				if code != want || r.Result == ResultPass {
+					t.Errorf("%s = exit %d %s, want %d", name, code, r.Result, want)
+				}
+			})
 		}
 	}
 }
@@ -251,45 +271,59 @@ func TestProvenanceInventories(t *testing.T) {
 	t.Parallel()
 	for i := range TemplateNames() {
 		for _, dup := range []bool{false, true} {
-			b := passingBundle(t)
-			editDoc(t, b, "manifest.json", func(m *Manifest) {
-				if dup {
-					m.Templates = append(m.Templates, m.Templates[i])
-				} else {
-					m.Templates = append(m.Templates[:i:i], m.Templates[i+1:]...)
-				}
+			name := fmt.Sprintf("template %d dup=%v", i, dup)
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				b := passingBundle(t)
+				editDoc(t, b, "manifest.json", func(m *Manifest) {
+					if dup {
+						m.Templates = append(m.Templates, m.Templates[i])
+					} else {
+						m.Templates = append(m.Templates[:i:i], m.Templates[i+1:]...)
+					}
+				})
+				code, r, _ := checkBundle(t, b)
+				requireCode(t, name, code, r, CritManifest, "template_inventory_mismatch")
 			})
-			code, r, _ := checkBundle(t, b)
-			requireCode(t, fmt.Sprintf("template %d dup=%v", i, dup), code, r, CritManifest, "template_inventory_mismatch")
 		}
 	}
-	for i := range renderedInventory() {
+	for i := range renderedInventory(true) {
 		for _, dup := range []bool{false, true} {
-			b := passingBundle(t)
-			editDoc(t, b, "manifest.json", func(m *Manifest) {
-				if dup {
-					m.Rendered = append(m.Rendered, m.Rendered[i])
-				} else {
-					m.Rendered = append(m.Rendered[:i:i], m.Rendered[i+1:]...)
-				}
+			name := fmt.Sprintf("rendered %d dup=%v", i, dup)
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				b := passingBundle(t)
+				editDoc(t, b, "manifest.json", func(m *Manifest) {
+					if dup {
+						m.Rendered = append(m.Rendered, m.Rendered[i])
+					} else {
+						m.Rendered = append(m.Rendered[:i:i], m.Rendered[i+1:]...)
+					}
+				})
+				code, r, _ := checkBundle(t, b)
+				requireCode(t, name, code, r, CritManifest, "rendered_inventory_mismatch")
 			})
-			code, r, _ := checkBundle(t, b)
-			requireCode(t, fmt.Sprintf("rendered %d dup=%v", i, dup), code, r, CritManifest, "rendered_inventory_mismatch")
 		}
 	}
 	for _, f := range manualFiles() {
-		b := passingBundle(t)
-		removeBundleFile(t, b, f)
-		code, r, _ := checkBundle(t, b)
-		requireCode(t, "missing "+f, code, r, CritManifest, "rendered_hash_mismatch")
+		t.Run("missing "+filepath.Base(f), func(t *testing.T) {
+			t.Parallel()
+			b := passingBundle(t)
+			removeBundleFile(t, b, f)
+			code, r, _ := checkBundle(t, b)
+			requireCode(t, "missing "+f, code, r, CritManifest, "rendered_hash_mismatch")
+		})
 	}
 	// The reviewer's probe: a missing manual and both lists cut to one.
-	b := passingBundle(t)
-	removeBundleFile(t, b, "setup/manuals/designer-instruction.md")
-	editDoc(t, b, "manifest.json", func(m *Manifest) { m.Templates, m.Rendered = m.Templates[:1], m.Rendered[:1] })
-	code, r, _ := checkBundle(t, b)
-	requireCode(t, "reduced inventories", code, r, CritManifest, "rendered_inventory_mismatch")
-	requireCode(t, "reduced inventories", code, r, CritManifest, "template_inventory_mismatch")
+	t.Run("reduced inventories", func(t *testing.T) {
+		t.Parallel()
+		b := passingBundle(t)
+		removeBundleFile(t, b, "setup/manuals/designer-instruction.md")
+		editDoc(t, b, "manifest.json", func(m *Manifest) { m.Templates, m.Rendered = m.Templates[:1], m.Rendered[:1] })
+		code, r, _ := checkBundle(t, b)
+		requireCode(t, "reduced inventories", code, r, CritManifest, "rendered_inventory_mismatch")
+		requireCode(t, "reduced inventories", code, r, CritManifest, "template_inventory_mismatch")
+	})
 }
 
 // TestRepositoryConfig (C7 of the round-1 review): the evidence
@@ -303,11 +337,14 @@ func TestRepositoryConfig(t *testing.T) {
 		"generated":             base,
 		"with a format version": "[core]\n\trepositoryformatversion = 0\n\tbare = true\n",
 	} {
-		b := passingBundle(t)
-		writeBundleFile(t, b, "workspace/repo.git/config", []byte(cfg))
-		if code, r, errOut := checkBundle(t, b); code != 0 {
-			t.Errorf("%s = %d %v %s", name, code, failedCodes(r), errOut)
-		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			b := passingBundle(t)
+			writeBundleFile(t, b, "workspace/repo.git/config", []byte(cfg))
+			if code, r, errOut := checkBundle(t, b); code != 0 {
+				t.Errorf("%s = %d %v %s", name, code, failedCodes(r), errOut)
+			}
+		})
 	}
 	for name, cfg := range map[string]string{
 		"remote":           base + "[remote \"origin\"]\n\turl = https://example.invalid/x.git\n",
@@ -325,17 +362,23 @@ func TestRepositoryConfig(t *testing.T) {
 		"malformed":        "[core\n",
 		"oversized":        base + "#" + strings.Repeat("x", maxRepoConfig) + "\n",
 	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			b := passingBundle(t)
+			writeBundleFile(t, b, "workspace/repo.git/config", []byte(cfg))
+			if code, r, _ := checkBundle(t, b); code != 2 || r.Error != "evidence_schema_error" {
+				t.Errorf("%s = %d %+v", name, code, r.Error)
+			}
+		})
+	}
+	t.Run("missing config", func(t *testing.T) {
+		t.Parallel()
 		b := passingBundle(t)
-		writeBundleFile(t, b, "workspace/repo.git/config", []byte(cfg))
-		if code, r, _ := checkBundle(t, b); code != 2 || r.Error != "evidence_schema_error" {
-			t.Errorf("%s = %d %+v", name, code, r.Error)
+		removeBundleFile(t, b, "workspace/repo.git/config")
+		if code, _, _ := checkBundle(t, b); code != 2 {
+			t.Errorf("missing config = %d", code)
 		}
-	}
-	b := passingBundle(t)
-	removeBundleFile(t, b, "workspace/repo.git/config")
-	if code, _, _ := checkBundle(t, b); code != 2 {
-		t.Errorf("missing config = %d", code)
-	}
+	})
 	if got := contractSafe("a\x01b" + strings.Repeat("c", 40)); len(got) != 32 || got[1] != '?' {
 		t.Errorf("contractSafe = %q", got)
 	}
