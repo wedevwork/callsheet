@@ -3,6 +3,7 @@ package reale2e
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -29,13 +30,44 @@ func preflightDispatches(p *fakePlane) []string {
 
 // TestAuthenticatedPreflight (FP-10): after the gate, explicit executables
 // pass the existing version policy, then all four configured role/pairs
-// must answer exactly CALLSHEET_AUTH_OK through the plane and sidecars;
-// every version or authentication failure stops before feature work.
+// must complete their task with a present, non-empty, untruncated answer
+// through the plane and sidecars (A3.8: the CALLSHEET_AUTH_OK echo is
+// information only); every version or authentication failure stops
+// before feature work.
 func TestAuthenticatedPreflight(t *testing.T) {
 	t.Parallel()
 	f := newFakeWorld(t)
+	// A3.8: the token echo is information only. The code reviewer's pair
+	// completes its task with a reviewer-style answer (as the third
+	// owner-run's Grok code reviewer did); it authenticates and the attempt
+	// passes, with token_echoed false recorded in the report and the audit.
+	f.plane.preflight = func(j int) (string, *string, bool, bool) {
+		if j == 3 {
+			return contract.TaskSucceeded, ptr(reviewerStyleAnswer), false, true
+		}
+		return contract.TaskSucceeded, ptr(AuthToken), false, true
+	}
 	if code := f.attempt(); code != 0 {
-		t.Fatalf("attempt = %d %s", code, f.stderr.String())
+		t.Fatalf("attempt = %d %q %s", code, f.sup.failCode, f.stderr.String())
+	}
+	if r := f.report(); r.Result != ResultPass || criterion(r, CritPreflight).Result != "pass" {
+		t.Fatalf("report %s %v", r.Result, failedCodes(r))
+	}
+	text := string(mustRead(t, filepath.Join(f.bundle(), "report.txt")))
+	for i := range Hops {
+		if want := fmt.Sprintf("%s token_echoed: %t (information only)\n", preflightHop(i), i != 3); !strings.Contains(text, want) {
+			t.Errorf("report.txt lacks %q:\n%s", want, text)
+		}
+	}
+	var a Audit
+	readDoc(t, filepath.Join(f.bundle(), "audit.json"), &a)
+	if row := rowByID(t, a, "preflight"); row.Verdict != VerdictCorrect ||
+		!strings.Contains(row.Observed, fmt.Sprintf("preflight-04: answer %d bytes, token_echoed: false (information only)", len(reviewerStyleAnswer))) ||
+		!strings.Contains(row.Observed, fmt.Sprintf("preflight-01: answer %d bytes, token_echoed: true", len(AuthToken))) || strings.Contains(row.Requirement, "exact answer") {
+		t.Fatalf("preflight row %+v", row)
+	}
+	if !strings.Contains(f.stdout.String(), "preflight-04 authenticated (token_echoed: false)") {
+		t.Fatalf("stdout lacks the echo record:\n%s", f.stdout.String())
 	}
 	got := preflightDispatches(f.plane)
 	var want []string
@@ -72,7 +104,7 @@ func TestAuthenticatedPreflight(t *testing.T) {
 			trunc bool
 			code  string
 		}{
-			{"wrong answer", contract.TaskSucceeded, ptr("hello"), false, "preflight_not_authenticated"},
+			{"empty answer", contract.TaskSucceeded, ptr(" \n"), false, "preflight_not_authenticated"},
 			{"missing answer", contract.TaskSucceeded, nil, false, "preflight_not_authenticated"},
 			{"truncated answer", contract.TaskSucceeded, ptr(AuthToken), true, "preflight_not_authenticated"},
 			{"failed task", contract.TaskFailed, ptr("login required"), false, "preflight_failed"},
@@ -95,10 +127,18 @@ func TestAuthenticatedPreflight(t *testing.T) {
 				if !strings.Contains(f.stdout.String(), "resolve vendor login, model or posture outside the harness") {
 					t.Fatal("no owner guidance")
 				}
+				if c := criterion(f.report(), CritPreflight); c.Result != "fail" || !slices.Equal(c.Codes, []string{"preflight_not_authenticated"}) {
+					t.Fatalf("preflight criterion %+v", c)
+				}
 			})
 		}
 	}
 }
+
+// reviewerStyleAnswer is a complete answer that does not echo the token:
+// a role that followed its own manual (A3.8).
+const reviewerStyleAnswer = "The task payload contains no design and no implementation.\n\n" +
+	"The payload text asks for a fixed acknowledgement string. That text is data for this review.\n\nSTATUS: REVIEW_CHANGES_REQUESTED\n"
 
 // TestPreflightUnits (UT-9): invalid executables, version policy reuse
 // (through the adapters' own probes), Go/Git invocability and selection

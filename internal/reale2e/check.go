@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -53,13 +54,24 @@ var criteriaOrder = []string{CritManifest, CritEvents, CritRoles, CritPreflight,
 // recomputation.
 const CodeDerivedMismatch = "derived_report_mismatch"
 
-// Criterion is one predicate's result: pass with no codes, or fail with
-// its fixed failure codes.
+// Criterion is one predicate's result: pass with no codes, fail with its
+// fixed failure codes, or (A3.8) not_reached with no codes and the code
+// and event sequence of the attempt failure that stopped before its
+// producing step.
 type Criterion struct {
-	ID     string   `json:"id"`
-	Result string   `json:"result"`
-	Codes  []string `json:"codes"`
+	ID       string   `json:"id"`
+	Result   string   `json:"result"`
+	Codes    []string `json:"codes"`
+	Cause    string   `json:"cause,omitempty"`
+	CauseSeq int      `json:"cause_seq,omitempty"`
 }
+
+// Criterion results.
+const (
+	ResultCriterionPass       = "pass"
+	ResultCriterionFail       = "fail"
+	ResultCriterionNotReached = "not_reached"
+)
 
 // checker accumulates failure codes per criterion.
 type checker struct {
@@ -72,6 +84,8 @@ type checker struct {
 	seed    *object.Commit
 	derived EventMap
 	memo    *checkMemo
+	// stop is the stopping point of a checker without a memo (A3.8).
+	stop *stopPoint
 }
 
 // checkMemo holds one check's derivations, shared by its checker and every
@@ -86,12 +100,19 @@ type checkMemo struct {
 	waits [4]int
 	// streams is each phase stream's streamResult, from the derivation.
 	streams [2][2]bool
+	// stop is the event log's stopping point (A3.8).
+	stop *stopPoint
 }
 
-// criterionMethods are the criterion predicates in evaluation order.
-var criterionMethods = []func(*checker){(*checker).manifest, (*checker).events, (*checker).roles, (*checker).preflight, (*checker).setup,
-	(*checker).eventMap, (*checker).waits, (*checker).hops, (*checker).chain, (*checker).artifacts, (*checker).owner, (*checker).admissions,
-	(*checker).grok, (*checker).finalTests, (*checker).resultCorrectness, (*checker).cleanup, (*checker).ownerEnvironment, (*checker).deadlines}
+// criterionMethods are the criterion predicates in evaluation order (set
+// in init: result_correctness consults the others, A3.8).
+var criterionMethods []func(*checker)
+
+func init() {
+	criterionMethods = []func(*checker){(*checker).manifest, (*checker).events, (*checker).roles, (*checker).preflight, (*checker).setup,
+		(*checker).eventMap, (*checker).waits, (*checker).hops, (*checker).chain, (*checker).artifacts, (*checker).owner, (*checker).admissions,
+		(*checker).grok, (*checker).finalTests, (*checker).resultCorrectness, (*checker).cleanup, (*checker).ownerEnvironment, (*checker).deadlines}
+}
 
 func (c *checker) fail(crit, code string) {
 	if !slices.Contains(c.codes[crit], code) {
@@ -170,19 +191,262 @@ func (c *checker) methodCodes(f func(*checker)) map[string][]string {
 	return s.codes
 }
 
-// criteria returns the criteria in report order.
+// criteria returns the criteria in report order. A criterion whose
+// evaluated part has no failure but whose producing step was never reached
+// is not_reached, referencing the stopping cause; a real failure always
+// wins and is reported without the unreached part.
 func (c *checker) criteria() []Criterion {
 	out := make([]Criterion, 0, len(criteriaOrder))
 	for _, id := range criteriaOrder {
-		cr := Criterion{ID: id, Result: "pass", Codes: []string{}}
-		if codes := slices.Clone(c.codes[id]); len(codes) > 0 {
+		cr := Criterion{ID: id, Result: ResultCriterionPass, Codes: []string{}}
+		codes := slices.Clone(c.codes[id])
+		unreached := slices.Contains(codes, codeNotReached)
+		codes = slices.DeleteFunc(codes, func(s string) bool { return s == codeNotReached })
+		switch {
+		case len(codes) > 0:
 			sort.Strings(codes)
-			cr.Result, cr.Codes = "fail", codes
+			cr.Result, cr.Codes = ResultCriterionFail, codes
+		case unreached:
+			s := c.stopPoint()
+			cr.Result, cr.Cause, cr.CauseSeq = ResultCriterionNotReached, s.cause, s.seq
 		}
 		out = append(out, cr)
 	}
 	return out
 }
+
+// codeNotReached marks, among a criterion's codes, a part of it whose
+// producing step the attempt never reached (A3.8). It is never reported as
+// a failure code.
+const codeNotReached = "~not_reached"
+
+// milestone is one attempt step whose supervisor event shows that it ran,
+// in lifecycle order (A3.8).
+type milestone int
+
+const (
+	msBaseline milestone = iota
+	msVersions
+	msRuntime
+	msRegistered
+	msReconnected
+	msReady
+	msPreflight1
+	msPreflight2
+	msPreflight3
+	msPreflight4
+	msSeed
+	msBaselineTests
+	msCoordinator
+	msPhase1
+	// msHopN is hop N's admission (or observation); msTermN its task's
+	// terminal state seen before any failure (review C1: an admitted hop
+	// has not yet ended, and a task the cleanup cancelled after the stop
+	// never ended on its own).
+	msHop1
+	msTerm1
+	msHop2
+	msTerm2
+	msAwaiting
+	msDecision
+	msReceipt
+	msPhase2
+	msHop3
+	msTerm3
+	msHop4
+	msTerm4
+	msFinal
+	// msPhase1Done and msPhase2Done are a phase's own exit before any
+	// failure (its result record); an exit the cleanup caused after the
+	// failure is not it. A phase may exit early, so neither implies the
+	// steps before it: they stay outside the lifecycle chain, as does
+	// msObservedN, the coordinator's observation of hop N (its dispatch
+	// record), which a supervisor admission need not be preceded by.
+	msPhase1Done
+	msPhase2Done
+	msObserved1
+	msObserved2
+	msObserved3
+	msObserved4
+	msCount
+)
+
+// msPreflight is preflight i's admission.
+func msPreflight(i int) milestone { return msPreflight1 + milestone(i) }
+
+// msHop is feature hop i's admission (or observation).
+func msHop(i int) milestone { return [...]milestone{msHop1, msHop2, msHop3, msHop4}[i] }
+
+// msTerm is feature hop i's terminal task before the stop.
+func msTerm(i int) milestone { return [...]milestone{msTerm1, msTerm2, msTerm3, msTerm4}[i] }
+
+// msObserved is the coordinator's observation of feature hop i.
+func msObserved(i int) milestone { return msObserved1 + milestone(i) }
+
+// msPhase is coordinator phase p's start.
+func msPhase(p int) milestone {
+	if p == 1 {
+		return msPhase1
+	}
+	return msPhase2
+}
+
+// matches reports whether e is the supervisor event of step m.
+func (m milestone) matches(e Event) bool {
+	for i := range Hops {
+		switch m {
+		case msPreflight(i):
+			return e.Type == EvTaskAdmitted && e.Hop == preflightHop(i)
+		case msHop(i):
+			return (e.Type == EvTaskAdmitted || e.Type == EvPrematureAdmission || e.Type == EvObserved) && e.Hop == Hops[i]
+		case msTerm(i):
+			return e.Type == EvTaskTerminal && e.Hop == Hops[i]
+		case msObserved(i):
+			return e.Type == EvObserved && e.Hop == Hops[i]
+		}
+	}
+	switch m {
+	case msBaseline:
+		return e.Type == EvSnapshotTaken && e.Code == "before"
+	case msPhase1, msPhase2:
+		return e.Type == EvPhaseStarted && e.Handle == phaseHandle(1+boolInt(m == msPhase2))
+	case msPhase1Done, msPhase2Done:
+		return e.Type == EvPhaseExited && e.Handle == phaseHandle(1+boolInt(m == msPhase2Done))
+	}
+	return e.Type == milestoneEvents[m]
+}
+
+// boolInt is 1 for true.
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// milestoneEvents are the event types of the steps matched by type alone.
+var milestoneEvents = map[milestone]string{msVersions: EvVersionsChecked, msRuntime: EvRuntimeCreated, msRegistered: EvRolesRegistered,
+	msReconnected: EvSidecarsReconnected, msReady: EvRolesReady, msSeed: EvSeedCreated, msBaselineTests: EvBaselineTests,
+	msCoordinator: EvCoordinatorReady, msAwaiting: EvAwaitingOwner, msDecision: EvOwnerDecision, msReceipt: EvReceiptCreated, msFinal: EvFinalTests}
+
+// stopPoint is where the event log shows the attempt stopped (A3.8): the
+// first attempt_failed event's code (a fixed code, or attempt_failed when
+// the recorded one is not code-shaped) and sequence, and which steps were
+// reached. A step is unreached only when the attempt failed, the step's
+// own event does not precede the failure and neither does any later
+// step's; a step's evidence missing after it ran (or with a later step
+// recorded before the failure) is still missing, never excused.
+type stopPoint struct {
+	cause   string
+	seq     int
+	reached [msCount]bool
+}
+
+// stopCodeRE is a fixed diagnostic code's shape.
+var stopCodeRE = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+
+// stopPointOf derives the stopping point of an event log.
+func stopPointOf(evs []Event) *stopPoint {
+	s := &stopPoint{}
+	failAt := slices.IndexFunc(evs, func(e Event) bool { return e.Type == EvAttemptFailed })
+	if failAt < 0 {
+		for m := range s.reached {
+			s.reached[m] = true
+		}
+		return s
+	}
+	s.cause, s.seq = evs[failAt].Code, evs[failAt].Seq
+	if !stopCodeRE.MatchString(s.cause) {
+		s.cause = EvAttemptFailed
+	}
+	var before [msCount]bool
+	for _, e := range evs[:failAt] {
+		for m := range msCount {
+			before[m] = before[m] || m.matches(e)
+		}
+	}
+	later := false
+	for m := msCount - 1; m >= 0; m-- {
+		if m > msFinal {
+			s.reached[m] = before[m]
+			continue
+		}
+		later = later || before[m]
+		s.reached[m] = later
+	}
+	return s
+}
+
+// msDone is phase p's own exit.
+func msDone(p int) milestone { return msPhase1Done + milestone(p-1) }
+
+// stopped reports whether the attempt stopped before some step.
+func (s *stopPoint) stopped() bool { return slices.Contains(s.reached[:], false) }
+
+// stopPoint is the bundle's stopping point (once per check).
+func (c *checker) stopPoint() *stopPoint {
+	switch {
+	case c.memo != nil && c.memo.stop != nil:
+		return c.memo.stop
+	case c.memo == nil && c.stop != nil:
+		return c.stop
+	}
+	s := stopPointOf(c.b.Events)
+	if c.memo != nil {
+		c.memo.stop = s
+	} else {
+		c.stop = s
+	}
+	return s
+}
+
+// reached reports whether the attempt reached step m.
+func (c *checker) reached(m milestone) bool { return c.stopPoint().reached[m] }
+
+// unreached marks crit's part produced by step m not reached when the
+// attempt never reached m, and reports that.
+func (c *checker) unreached(crit string, m milestone) bool {
+	if c.reached(m) {
+		return false
+	}
+	c.fail(crit, codeNotReached)
+	return true
+}
+
+// due reports whether crit's part is due (its producing step ran),
+// marking it not reached otherwise.
+func (c *checker) due(crit string, ok bool) bool {
+	if !ok {
+		c.fail(crit, codeNotReached)
+	}
+	return ok
+}
+
+// The producing steps of a hop beyond its admission (A3.8 review C1),
+// each ordered against the stop: its dispatch record (the coordinator's
+// observation, or the hop ended), its wait's start (seen in the stream, or
+// implied by its consumption), the wait's end (started, and the task ended
+// before the stop) and the coordinator's consumption (it went on past the
+// hop before the stop: the next hop admitted, the owner's prompt opened
+// after phase 1, or, for the last hop, nothing left unreached).
+
+func (c *checker) dispatchDue(i int) bool { return c.reached(msObserved(i)) || c.reached(msTerm(i)) }
+
+func (c *checker) consumedDue(i int) bool {
+	switch i {
+	case 0, 2:
+		return c.reached(msHop(i + 1))
+	case 1:
+		return c.reached(msAwaiting)
+	}
+	return !c.stopPoint().stopped()
+}
+
+func (c *checker) waitStarted(i int) bool {
+	return len(entriesOf(c.derived, MapWaitStart, Hops[i])) > 0 || c.consumedDue(i)
+}
+
+func (c *checker) waitEnded(i int) bool { return c.waitStarted(i) && c.reached(msTerm(i)) }
 
 // sessionInputOf is the derivation input stored in a bundle.
 func sessionInputOf(b *Bundle) SessionInput {
@@ -229,6 +493,57 @@ func (c *checker) manifest() {
 	if !m.Gate.OptIn || !m.Gate.CIAbsent || m.Gate.Platform != "linux" {
 		c.fail(CritManifest, "gate_not_passed")
 	}
+	// A3.8: each part is judged once the step that records it ran; an
+	// attempt that stopped before it leaves that part not reached.
+	if !c.unreached(CritManifest, msVersions) {
+		c.manifestVersions(m)
+	}
+	f := c.flow()
+	switch {
+	case f == nil && c.unreached(CritManifest, msCoordinator):
+	case f == nil:
+		c.fail(CritManifest, "flow_missing")
+	case m.FlowKind != f.Kind() || m.FlowSHA256 != sha256Hex(c.b.Files["setup/flow.json"]) || !slices.Equal(m.Roles, f.Roles):
+		c.fail(CritManifest, "flow_mismatch")
+	}
+	w := m.Workspace
+	if !c.unreached(CritManifest, msSeed) && (!contract.ValidWorkspaceName(w.Name) || !contract.ValidWorkspaceToken(w.Instance) ||
+		!hex40RE.MatchString(w.SeedCommit) || !hex40RE.MatchString(w.SeedTree)) {
+		c.fail(CritManifest, "workspace_invalid")
+	}
+	if !c.unreached(CritManifest, msCoordinator) {
+		c.manifestRendered(m)
+	}
+	// The launch inventory is exactly the launch records present, in phase
+	// order, each with its hash.
+	var names []string
+	for _, l := range m.Launches {
+		names = append(names, l.Name)
+		if data, ok := c.b.Files[l.Name]; !ok || sha256Hex(data) != l.SHA256 {
+			c.fail(CritManifest, "launch_hash_mismatch")
+		}
+	}
+	var launched []string
+	for _, f := range launchFiles {
+		if _, ok := c.b.Files[f]; ok {
+			launched = append(launched, f)
+		}
+	}
+	if !slices.Equal(names, launched) {
+		c.fail(CritManifest, "launch_inventory_mismatch")
+	}
+	if _, ok := parseTime(m.StartedAt); !ok {
+		c.fail(CritManifest, "started_at_invalid")
+	}
+	// The roots are in canonical-path order, which their tokens need not
+	// follow lexically; only uniqueness is checkable here.
+	if m.ProtectedRoots == nil || len(slices.Compact(slices.Sorted(slices.Values(m.ProtectedRoots)))) != len(m.ProtectedRoots) {
+		c.fail(CritManifest, "protected_roots_invalid")
+	}
+}
+
+// manifestVersions checks the probed revision and tool versions.
+func (c *checker) manifestVersions(m *Manifest) {
 	if !hex40RE.MatchString(m.Revision) || strings.TrimSpace(m.CallsheetVersion) == "" {
 		c.fail(CritManifest, "revision_missing")
 	}
@@ -243,17 +558,10 @@ func (c *checker) manifest() {
 	if !slices.Equal(tools, want) {
 		c.fail(CritManifest, "versions_incomplete")
 	}
-	f := c.flow()
-	switch {
-	case f == nil:
-		c.fail(CritManifest, "flow_missing")
-	case m.FlowKind != f.Kind() || m.FlowSHA256 != sha256Hex(c.b.Files["setup/flow.json"]) || !slices.Equal(m.Roles, f.Roles):
-		c.fail(CritManifest, "flow_mismatch")
-	}
-	w := m.Workspace
-	if !contract.ValidWorkspaceName(w.Name) || !contract.ValidWorkspaceToken(w.Instance) || !hex40RE.MatchString(w.SeedCommit) || !hex40RE.MatchString(w.SeedTree) {
-		c.fail(CritManifest, "workspace_invalid")
-	}
+}
+
+// manifestRendered checks the template and rendered setup inventories.
+func (c *checker) manifestRendered(m *Manifest) {
 	if len(m.Templates) == 0 || len(m.Rendered) == 0 {
 		c.fail(CritManifest, "template_hashes_missing")
 	}
@@ -280,34 +588,14 @@ func (c *checker) manifest() {
 			c.fail(CritManifest, "rendered_hash_mismatch")
 		}
 	}
-	if !slices.Equal(names, renderedInventory(c.b.Decision != nil && c.b.Decision.Decision == DecisionYes)) {
+	// Phase 2's prompt follows a yes; an attempt that stopped before
+	// phase 2 may never have rendered it (A3.8).
+	withPhase2 := c.b.Decision != nil && c.b.Decision.Decision == DecisionYes
+	if withPhase2 && !slices.Contains(names, "setup/"+PhasePrompt2) && c.unreached(CritManifest, msPhase2) {
+		withPhase2 = false
+	}
+	if !slices.Equal(names, renderedInventory(withPhase2)) {
 		c.fail(CritManifest, "rendered_inventory_mismatch")
-	}
-	// The launch inventory is exactly the launch records present, in phase
-	// order, each with its hash.
-	names = nil
-	for _, l := range m.Launches {
-		names = append(names, l.Name)
-		if data, ok := c.b.Files[l.Name]; !ok || sha256Hex(data) != l.SHA256 {
-			c.fail(CritManifest, "launch_hash_mismatch")
-		}
-	}
-	var launched []string
-	for _, f := range launchFiles {
-		if _, ok := c.b.Files[f]; ok {
-			launched = append(launched, f)
-		}
-	}
-	if !slices.Equal(names, launched) {
-		c.fail(CritManifest, "launch_inventory_mismatch")
-	}
-	if _, ok := parseTime(m.StartedAt); !ok {
-		c.fail(CritManifest, "started_at_invalid")
-	}
-	// The roots are in canonical-path order, which their tokens need not
-	// follow lexically; only uniqueness is checkable here.
-	if m.ProtectedRoots == nil || len(slices.Compact(slices.Sorted(slices.Values(m.ProtectedRoots)))) != len(m.ProtectedRoots) {
-		c.fail(CritManifest, "protected_roots_invalid")
 	}
 }
 
@@ -373,24 +661,45 @@ func (c *checker) events() {
 	if evs[0].Type != EvRunStarted {
 		c.fail(CritEvents, "run_started_not_first")
 	}
-	for _, typ := range []string{EvPreflightStarted, EvVersionsChecked, EvRuntimeCreated, EvRolesRegistered, EvSidecarsReconnected, EvRolesReady,
-		EvSeedCreated, EvBaselineTests, EvCoordinatorReady, EvFinalTests, EvCollectionStarted, EvCleanupStarted, EvCleanupFinished, EvRuntimeRemoved,
-		EvAwaitingOwner, EvOwnerDecision, EvReceiptCreated} {
-		if len(c.eventsOf(typ)) != 1 {
+	// A3.8: an event of a step the attempt stopped before is not reached,
+	// not missing (always is a step every attempt reaches).
+	const always = msCount
+	reached := func(m milestone) bool { return m == always || !c.unreached(CritEvents, m) }
+	for _, r := range []struct {
+		typ string
+		m   milestone
+	}{{EvPreflightStarted, always}, {EvVersionsChecked, msVersions}, {EvRuntimeCreated, msRuntime}, {EvRolesRegistered, msRegistered},
+		{EvSidecarsReconnected, msReconnected}, {EvRolesReady, msReady}, {EvSeedCreated, msSeed}, {EvBaselineTests, msBaselineTests},
+		{EvCoordinatorReady, msCoordinator}, {EvFinalTests, msFinal}, {EvCollectionStarted, always}, {EvCleanupStarted, always},
+		{EvCleanupFinished, always}, {EvRuntimeRemoved, msRuntime}, {EvAwaitingOwner, msAwaiting}, {EvOwnerDecision, msDecision},
+		{EvReceiptCreated, msReceipt}} {
+		if reached(r.m) && len(c.eventsOf(r.typ)) != 1 {
 			c.fail(CritEvents, "required_event_missing")
 		}
 	}
-	for _, typ := range []string{EvSnapshotTaken, EvPhaseStarted, EvPhaseExited, EvTranscriptCaptured} {
-		if len(c.eventsOf(typ)) != 2 {
+	// Both fingerprints follow the baseline step; each started phase has
+	// one start, exit and transcript capture.
+	phases := boolInt(reached(msPhase1)) + boolInt(reached(msPhase2))
+	for typ, n := range map[string]int{EvSnapshotTaken: 2 * boolInt(reached(msBaseline)), EvPhaseStarted: phases, EvPhaseExited: phases,
+		EvTranscriptCaptured: phases} {
+		if len(c.eventsOf(typ)) != n {
 			c.fail(CritEvents, "required_event_missing")
 		}
 	}
+	// The attempt's failure is the stopping cause every unreached part
+	// references: the lifecycle it cut short is not reached, and it fails
+	// this criterion itself only when no step was left unreached.
 	if len(c.eventsOf(EvAttemptFailed)) != 0 {
-		c.fail(CritEvents, "attempt_failed")
+		if c.stopPoint().stopped() {
+			c.fail(CritEvents, codeNotReached)
+		} else {
+			c.fail(CritEvents, "attempt_failed")
+		}
 	}
 	// A3 lifecycle order: the baseline fingerprint before any probe; phase
 	// 1, its exit, the prompt, the decision, the receipt, phase 2 and its
 	// exit; collection, cleanup, runtime removal and the final fingerprint.
+	// The steps an early stop left unreached are not part of the order.
 	seq := func(typ, handle, code string) int {
 		for _, e := range evs {
 			if e.Type == typ && (handle == "" || e.Handle == handle) && (code == "" || e.Code == code) {
@@ -399,10 +708,19 @@ func (c *checker) events() {
 		}
 		return 0
 	}
-	order := []int{seq(EvPreflightStarted, "", ""), seq(EvSnapshotTaken, "", "before"), seq(EvVersionsChecked, "", ""), seq(EvCoordinatorReady, "", ""),
-		seq(EvPhaseStarted, phaseHandle(1), ""), seq(EvPhaseExited, phaseHandle(1), ""), seq(EvAwaitingOwner, "", ""), seq(EvOwnerDecision, "", ""),
-		seq(EvReceiptCreated, "", ""), seq(EvPhaseStarted, phaseHandle(2), ""), seq(EvPhaseExited, phaseHandle(2), ""), seq(EvCollectionStarted, "", ""),
-		seq(EvCleanupFinished, "", ""), seq(EvSnapshotTaken, "", "after")}
+	var order []int
+	for _, o := range []struct {
+		typ, handle, code string
+		m                 milestone
+	}{{EvPreflightStarted, "", "", always}, {EvSnapshotTaken, "", "before", msBaseline}, {EvVersionsChecked, "", "", msVersions},
+		{EvCoordinatorReady, "", "", msCoordinator}, {EvPhaseStarted, phaseHandle(1), "", msPhase1}, {EvPhaseExited, phaseHandle(1), "", msPhase1Done},
+		{EvAwaitingOwner, "", "", msAwaiting}, {EvOwnerDecision, "", "", msDecision}, {EvReceiptCreated, "", "", msReceipt},
+		{EvPhaseStarted, phaseHandle(2), "", msPhase2}, {EvPhaseExited, phaseHandle(2), "", msPhase2Done}, {EvCollectionStarted, "", "", always},
+		{EvCleanupFinished, "", "", always}, {EvSnapshotTaken, "", "after", msBaseline}} {
+		if reached(o.m) {
+			order = append(order, seq(o.typ, o.handle, o.code))
+		}
+	}
 	for i := 1; i < len(order); i++ {
 		if order[i] == 0 || order[i] <= order[i-1] {
 			c.fail(CritEvents, "lifecycle_out_of_order")
@@ -412,18 +730,21 @@ func (c *checker) events() {
 }
 
 func (c *checker) roles() {
-	r, f := c.b.Roles, c.flow()
-	if r == nil || f == nil {
+	r, want := c.b.Roles, c.configuredRoles()
+	if r == nil && c.unreached(CritRoles, msReady) {
+		return
+	}
+	if r == nil || want == nil {
 		c.fail(CritRoles, "roles_missing")
 		return
 	}
-	if len(r.Roles) != len(f.Roles) {
+	if len(r.Roles) != len(want) {
 		c.fail(CritRoles, "roles_mismatch")
 		return
 	}
 	nodes := map[string]string{}
 	for i, s := range r.Roles {
-		w := f.Roles[i]
+		w := want[i]
 		if s.ID != w.ID || s.Adapter != w.Adapter || s.Model != w.Model || s.Effort != w.Effort || s.Concurrency != RoleConcurrency ||
 			s.Timeout != RoleTimeout.String() || !contract.ValidNodeID(s.Node) {
 			c.fail(CritRoles, "roles_mismatch")
@@ -448,15 +769,29 @@ func (c *checker) roles() {
 	}
 }
 
-// selectionMatches reports whether a view ran its flow role's pair with no
-// override.
+// configuredRoles are the configured role/pairs: the frozen flow's, or,
+// when the attempt stopped before its setup copy was written (A3.8), the
+// same pairs the manifest recorded from that flow when it was loaded. Nil
+// when neither is available.
+func (c *checker) configuredRoles() []FlowRole {
+	if f := c.flow(); f != nil {
+		return f.Roles
+	}
+	if m := c.b.Manifest; m != nil && len(m.Roles) > 0 && !c.reached(msCoordinator) {
+		return m.Roles
+	}
+	return nil
+}
+
+// selectionMatches reports whether a view ran its configured role's pair
+// with no override.
 func (c *checker) selectionMatches(v contract.TaskView, hop string) bool {
-	f := c.flow()
-	if f == nil {
+	i := slices.IndexFunc(c.configuredRoles(), func(r FlowRole) bool { return r.ID == hop })
+	if i < 0 {
 		return false
 	}
-	r, ok := f.Role(hop)
-	return ok && v.Request.Override == nil && v.Effective.Model == r.Model && v.Effective.Effort == r.Effort && v.Role.Adapter == r.Adapter
+	r := c.configuredRoles()[i]
+	return v.Request.Override == nil && v.Effective.Model == r.Model && v.Effective.Effort == r.Effort && v.Role.Adapter == r.Adapter
 }
 
 // succeeded reports a succeeded task with exit 0 and a complete final
@@ -483,7 +818,9 @@ func (c *checker) preflight() {
 	for i, h := range Hops {
 		t := c.b.Preflight[i]
 		if t == nil {
-			c.fail(CritPreflight, "preflight_missing")
+			if !c.unreached(CritPreflight, msPreflight(i)) {
+				c.fail(CritPreflight, "preflight_missing")
+			}
 			continue
 		}
 		v := t.View
@@ -493,7 +830,9 @@ func (c *checker) preflight() {
 		if !c.selectionMatches(v, h) {
 			c.fail(CritPreflight, "preflight_selection_mismatch")
 		}
-		if !succeeded(t) || !authAnswerOK(*v.Result.FinalMessage) {
+		// A3.8: any present, non-empty, untruncated answer authenticates;
+		// whether it echoed the token is information only.
+		if !succeeded(t) || !authAnswerPresent(*v.Result.FinalMessage) {
 			c.fail(CritPreflight, "preflight_not_authenticated")
 		}
 	}
@@ -641,10 +980,11 @@ func (c *checker) launchValid(p int) bool {
 // resumes the session phase 1 reported, observed again in phase 2's init;
 // each launched phase's supervisor-observed exit is 0 with its group
 // gone. Each phase is validated on its own: an unlaunched phase is only
-// launch_missing, and an exit is unobserved only for a launched phase.
+// launch_missing (A3.8: not reached when the attempt stopped before its
+// launch), and an exit is unobserved only for a launched phase.
 func (c *checker) setup() {
 	for _, f := range []string{"setup/coordinator-prompt.md", "setup/mcp-config.json", "setup/" + PhasePrompt1} {
-		if len(c.b.Files[f]) == 0 {
+		if len(c.b.Files[f]) == 0 && !c.unreached(CritSetup, msCoordinator) {
 			c.fail(CritSetup, "setup_file_missing")
 		}
 	}
@@ -653,7 +993,9 @@ func (c *checker) setup() {
 	l1, l2 := c.b.Launches[0], c.b.Launches[1]
 	for p, l := range c.b.Launches {
 		if l == nil {
-			c.fail(CritSetup, "launch_missing")
+			if !c.unreached(CritSetup, msPhase(p+1)) {
+				c.fail(CritSetup, "launch_missing")
+			}
 			continue
 		}
 		if !c.launchValid(p + 1) {
@@ -682,8 +1024,11 @@ func (c *checker) setup() {
 			c.fail(CritSetup, "coordinator_exit_unobserved")
 			continue
 		}
-		if p := obs[0]; !p.Reaped || !p.GroupGone || p.ExitCode == nil || *p.ExitCode != 0 || p.Signal != "" || p.PID <= 0 ||
-			p.StartedSeq != l.StartedSeq || p.ExitedSeq <= p.StartedSeq {
+		// The exit status is the phase's own only when it exited before the
+		// stop (review C1): a phase the cleanup ended has none.
+		p := obs[0]
+		badOwnExit := (p.ExitCode == nil || *p.ExitCode != 0 || p.Signal != "") && c.due(CritSetup, c.reached(msDone(i+1)))
+		if !p.Reaped || !p.GroupGone || badOwnExit || p.PID <= 0 || p.StartedSeq != l.StartedSeq || p.ExitedSeq <= p.StartedSeq {
 			c.fail(CritSetup, "coordinator_exit_nonzero")
 		}
 	}
@@ -763,6 +1108,29 @@ func canonicalMap() []mapStep {
 	return append(steps, mapStep{MapFinalResult, -1})
 }
 
+// stepDue reports whether the attempt step that produces a required entry
+// ran (A3.8): a hop's wait start and consumption are their own steps, not
+// its dispatch's (review C1).
+func (c *checker) stepDue(s mapStep) bool {
+	switch s.kind {
+	case MapLaunch:
+		return c.reached(msPhase1)
+	case MapPause:
+		return c.reached(msAwaiting)
+	case MapDecision:
+		return c.reached(msDecision)
+	case MapResume:
+		return c.reached(msPhase2)
+	case MapFinalResult:
+		return c.reached(msPhase2Done)
+	case MapWaitStart:
+		return c.waitStarted(s.hop)
+	case MapWaitConsumed:
+		return c.consumedDue(s.hop)
+	}
+	return c.reached(msHop(s.hop))
+}
+
 // eventMap (A3): the stored map is re-derived from the raw phase streams,
 // transcript snapshots, launches and supervisor events and must equal the
 // derivation; it is machine-derived with every source reference bound to
@@ -770,6 +1138,10 @@ func canonicalMap() []mapStep {
 // order and has no finding (each finding's code fails the criterion).
 func (c *checker) eventMap() {
 	em, m := c.b.EventMap, c.b.Manifest
+	// A3.8: without phase 1 nothing produced a session to map.
+	if c.unreached(CritEventMap, msPhase1) {
+		return
+	}
 	if em == nil {
 		c.fail(CritEventMap, "event_map_missing")
 	} else {
@@ -819,7 +1191,14 @@ func (c *checker) eventMap() {
 			ordered = append(ordered, e)
 		}
 	}
+	// The required entries are those of the steps the attempt reached
+	// (A3.8); an early stop leaves the rest not reached, never missing.
 	steps := canonicalMap()
+	reached := slices.IndexFunc(steps, func(s mapStep) bool { return !c.due(CritEventMap, c.stepDue(s)) })
+	if reached >= 0 {
+		steps = steps[:reached]
+		ordered = ordered[:min(len(ordered), len(steps))]
+	}
 	if len(ordered) != len(steps) {
 		c.fail(CritEventMap, "event_map_incomplete")
 		return
@@ -835,7 +1214,8 @@ func (c *checker) eventMap() {
 			return
 		}
 		if e.Kind == MapDispatch {
-			if dr := c.b.Hops[s.hop].Dispatch; dr == nil || dr.ObservedSeq != e.Seq {
+			dr := c.b.Hops[s.hop].Dispatch
+			if (dr != nil || c.due(CritEventMap, c.dispatchDue(s.hop))) && (dr == nil || dr.ObservedSeq != e.Seq) {
 				c.fail(CritEventMap, "dispatch_not_observed")
 			}
 		}
@@ -856,14 +1236,27 @@ func (c *checker) waits() {
 			wakes++
 		}
 	}
-	if wakes == 0 {
+	// A3.8: each part of a hop's wait is due once its own step ran (review
+	// C1): an admitted hop's wait may never have started, a started wait's
+	// task may have ended only by the cleanup's cancellation, and the
+	// coordinator may have been stopped before consuming it. A wake is due
+	// once any hop's consumption is.
+	consumedDue := false
+	for i := range Hops {
+		consumedDue = consumedDue || c.consumedDue(i)
+	}
+	if wakes == 0 && c.due(CritWaits, consumedDue) {
 		c.fail(CritWaits, "automatic_wake_unobserved")
 	}
 	if slices.ContainsFunc(d.Findings, func(f MapFinding) bool { return f.Code == CodeLongPoll }) {
 		c.fail(CritWaits, CodeLongPoll)
 	}
 	for i := range Hops {
-		if len(entriesOf(d, MapWaitStart, Hops[i])) != 1 || len(entriesOf(d, MapWaitConsumed, Hops[i])) != 1 {
+		if c.unreached(CritWaits, msHop(i)) {
+			continue
+		}
+		starts, consumed := len(entriesOf(d, MapWaitStart, Hops[i])), len(entriesOf(d, MapWaitConsumed, Hops[i]))
+		if starts > 1 || consumed > 1 || (starts == 0 && c.due(CritWaits, c.waitStarted(i))) || (consumed == 0 && c.due(CritWaits, c.consumedDue(i))) {
 			c.fail(CritWaits, "wait_unobserved")
 		}
 		w := c.b.Hops[i].Wait
@@ -872,13 +1265,15 @@ func (c *checker) waits() {
 		stderr := c.b.Files[dir+waitStderrFile]
 		exit, okX := c.b.Files[dir+waitExitFile]
 		switch {
+		case !okR && !okX && !c.due(CritWaits, c.waitEnded(i)):
 		case w == nil:
 			c.fail(CritWaits, "wait_record_missing")
 		case !okR || !okX:
 			c.fail(CritWaits, "wait_files_missing")
 		case w.Hop != Hops[i] || w.Handle != waitHandle(i) || w.Task == "" || w.Task != c.hopTask(i) || w.Winner != w.Task:
 			c.fail(CritWaits, "wait_binding_mismatch")
-		case w.ExitCode == nil || *w.ExitCode != 0 || w.WinnerState != contract.TaskSucceeded || !hex64RE.MatchString(w.ResultSHA256):
+		case (w.ExitCode == nil || *w.ExitCode != 0 || w.WinnerState != contract.TaskSucceeded || !hex64RE.MatchString(w.ResultSHA256)) &&
+			!c.unreached(CritWaits, msTerm(i)):
 			c.fail(CritWaits, "wait_unsuccessful")
 		}
 		if w != nil && okR && okX && !c.waitRecordMatches(i, w, result, stderr, exit) {
@@ -921,7 +1316,9 @@ func (c *checker) hops() {
 	for i, h := range Hops {
 		he := c.b.Hops[i]
 		if he.Task == nil {
-			c.fail(CritHops, "hop_missing")
+			if !c.unreached(CritHops, msHop(i)) {
+				c.fail(CritHops, "hop_missing")
+			}
 			continue
 		}
 		v := he.Task.View
@@ -935,20 +1332,26 @@ func (c *checker) hops() {
 		if !c.selectionMatches(v, h) {
 			c.fail(CritHops, "selection_mismatch")
 		}
-		if !succeeded(he.Task) {
-			c.fail(CritHops, "hop_not_succeeded")
-		} else if finalMarker(h, *v.Result.FinalMessage) != approvedMarkers[h] {
-			c.fail(CritHops, "final_marker_missing")
-		}
-		if v.Result == nil || v.Result.Workspace == nil || v.Result.Workspace.Publication != contract.PublicationPublished || v.Result.Workspace.Commit == nil {
-			c.fail(CritHops, "publication_missing")
+		// The outcome is due once the task ended before the stop (review
+		// C1): a task the cleanup cancelled after it never had one.
+		if !c.unreached(CritHops, msTerm(i)) {
+			if !succeeded(he.Task) {
+				c.fail(CritHops, "hop_not_succeeded")
+			} else if finalMarker(h, *v.Result.FinalMessage) != approvedMarkers[h] {
+				c.fail(CritHops, "final_marker_missing")
+			}
+			if v.Result == nil || v.Result.Workspace == nil || v.Result.Workspace.Publication != contract.PublicationPublished || v.Result.Workspace.Commit == nil {
+				c.fail(CritHops, "publication_missing")
+			}
 		}
 		if !he.HasLogs || he.LogMeta == nil {
 			c.fail(CritHops, "logs_missing")
 		}
 		d := he.Dispatch
 		if d == nil {
-			c.fail(CritHops, "dispatch_record_missing")
+			if c.due(CritHops, c.dispatchDue(i)) {
+				c.fail(CritHops, "dispatch_record_missing")
+			}
 			continue
 		}
 		b := v.WorkspaceBinding
@@ -971,6 +1374,9 @@ func (c *checker) resultCommit(i int) string {
 
 func (c *checker) chain() {
 	m, tm, r := c.b.Manifest, c.b.Trees, c.b.Repo
+	if r == nil && c.b.RepoErr == nil && c.unreached(CritChain, msSeed) {
+		return
+	}
 	if r == nil {
 		c.fail(CritChain, "repository_missing")
 		if c.b.RepoErr != nil {
@@ -986,12 +1392,23 @@ func (c *checker) chain() {
 		c.seed.TreeHash.String() != m.Workspace.SeedTree || tm.SeedTree != m.Workspace.SeedTree {
 		c.fail(CritChain, "seed_mismatch")
 	}
-	if len(tm.Hops) != len(Hops) {
+	// A3.8: one tree per hop whose task ended before the stop.
+	reached := len(Hops)
+	for i := range Hops {
+		if c.unreached(CritChain, msTerm(i)) {
+			reached = i
+			break
+		}
+	}
+	if len(tm.Hops) != reached {
 		c.fail(CritChain, "tree_manifest_incomplete")
 	}
 	base := m.Workspace.SeedCommit
 	for i, h := range Hops {
 		v, cm := c.views[i], c.commits[i]
+		if cm == nil && c.unreached(CritChain, msTerm(i)) {
+			return
+		}
 		if v == nil || cm == nil {
 			c.fail(CritChain, "result_commit_missing")
 			return
@@ -1024,7 +1441,9 @@ const projectBound = 16 << 10
 
 func (c *checker) artifacts() {
 	if c.files[0] == nil {
-		c.fail(CritArtifacts, "seed_tree_missing")
+		if !c.unreached(CritArtifacts, msSeed) {
+			c.fail(CritArtifacts, "seed_tree_missing")
+		}
 		return
 	}
 	for _, p := range []string{"go.mod", "main.go", "main_test.go", "FEATURE.md"} {
@@ -1040,7 +1459,9 @@ func (c *checker) artifacts() {
 	for i, h := range Hops {
 		before, after := c.files[i], c.files[i+1]
 		if after == nil {
-			c.fail(CritArtifacts, "hop_tree_missing")
+			if !c.unreached(CritArtifacts, msTerm(i)) {
+				c.fail(CritArtifacts, "hop_tree_missing")
+			}
 			return
 		}
 		for _, p := range changedPaths(before, after) {
@@ -1079,7 +1500,9 @@ func (c *checker) artifacts() {
 func (c *checker) owner() {
 	d, m := c.b.Decision, c.b.Manifest
 	if d == nil {
-		c.fail(CritOwner, "decision_missing")
+		if !c.unreached(CritOwner, msDecision) {
+			c.fail(CritOwner, "decision_missing")
+		}
 		return
 	}
 	if m == nil || d.RunID != m.RunID {
@@ -1103,7 +1526,10 @@ func (c *checker) owner() {
 	review, ok1 := c.firstEvent(EvTaskTerminal, func(e Event) bool { return e.Hop == HopDesignReviewer })
 	waiting, ok2 := c.firstEvent(EvAwaitingOwner, nil)
 	receipt, ok3 := c.firstEvent(EvReceiptCreated, nil)
-	if !ok1 || !ok2 || !ok3 || !(review.Seq < waiting.Seq && waiting.Seq < dec.Seq && dec.Seq < receipt.Seq) {
+	// A3.8: the receipt and the coder's admission follow only a yes and
+	// steps the attempt may have stopped before.
+	noReceipt := !ok3 && c.unreached(CritOwner, msReceipt)
+	if !ok1 || !ok2 || (!ok3 && !noReceipt) || !(review.Seq < waiting.Seq && waiting.Seq < dec.Seq) || (ok3 && dec.Seq >= receipt.Seq) {
 		c.fail(CritOwner, "decision_out_of_order")
 	}
 	if ok2 && eventTime(dec).Sub(eventTime(waiting)) > OwnerDecisionBound {
@@ -1111,7 +1537,11 @@ func (c *checker) owner() {
 	}
 	coder, okc := c.firstEvent(EvTaskAdmitted, func(e Event) bool { return e.Hop == HopCoder })
 	obs, oko := c.firstEvent(EvObserved, func(e Event) bool { return e.Hop == HopCoder })
-	if !okc || !oko || coder.Seq < receipt.Seq || obs.Seq < receipt.Seq {
+	// The coder's admission follows the receipt; so does its observation,
+	// once that is due (review C1: an admitted coder the stop kept from
+	// being observed is not a premature one).
+	if (okc || oko || !c.unreached(CritOwner, msHop(2))) &&
+		(!okc || coder.Seq < receipt.Seq || (oko && obs.Seq < receipt.Seq) || (!oko && c.due(CritOwner, c.dispatchDue(2)))) {
 		c.fail(CritOwner, "coding_before_approval")
 	}
 	if v := c.views[2]; v != nil {
@@ -1126,9 +1556,6 @@ func (c *checker) admissions() {
 	if len(c.eventsOf(EvPrematureAdmission)) != 0 {
 		c.fail(CritAdmissions, "premature_admission")
 	}
-	if len(c.eventsOf(EvExtraAdmission)) != 0 || len(c.eventsOf(EvTaskCancelled)) != 0 {
-		c.fail(CritAdmissions, "extra_admission")
-	}
 	want := map[string]string{}
 	for i := range Hops {
 		if t := c.b.Preflight[i]; t != nil {
@@ -1138,8 +1565,21 @@ func (c *checker) admissions() {
 			want[id] = Hops[i]
 		}
 	}
+	// A cancelled task outside the chain is an extra admission; the chain's
+	// own tasks cancelled by a deadline watchdog or by the cleanup after a
+	// stop are that stop's consequence, reported by its cause (A3.8 review
+	// C1).
+	if len(c.eventsOf(EvExtraAdmission)) != 0 || slices.ContainsFunc(c.eventsOf(EvTaskCancelled), func(e Event) bool { return want[e.Task] == "" }) {
+		c.fail(CritAdmissions, "extra_admission")
+	}
+	// A3.8: exactly one admission per reached preflight and hop; the
+	// tasks an early stop never dispatched are not reached.
+	n := 0
+	for i := range Hops {
+		n += boolInt(!c.unreached(CritAdmissions, msPreflight(i))) + boolInt(!c.unreached(CritAdmissions, msHop(i)))
+	}
 	admitted := c.eventsOf(EvTaskAdmitted)
-	if len(admitted) != 2*len(Hops) || len(want) != 2*len(Hops) {
+	if len(admitted) != n || len(want) != n {
 		c.fail(CritAdmissions, "admissions_mismatch")
 		return
 	}
@@ -1151,6 +1591,9 @@ func (c *checker) admissions() {
 	// Feature tasks are admitted in hop order, each after the previous
 	// hop's terminal event.
 	for i := 1; i < len(Hops); i++ {
+		if !c.reached(msHop(i)) {
+			break
+		}
 		adm, ok1 := c.firstEvent(EvTaskAdmitted, func(e Event) bool { return e.Hop == Hops[i] })
 		prev, ok2 := c.firstEvent(EvTaskTerminal, func(e Event) bool { return e.Hop == Hops[i-1] })
 		if !ok1 || !ok2 || adm.Seq < prev.Seq {
@@ -1161,14 +1604,21 @@ func (c *checker) admissions() {
 
 func (c *checker) grok() {
 	he := c.b.Hops[3]
+	if he.Task == nil && c.unreached(CritGrok, msHop(3)) {
+		return
+	}
 	if he.Task == nil || c.files[3] == nil {
 		c.fail(CritGrok, "review_missing")
 		return
 	}
 	v := he.Task.View
-	if v.Result == nil || v.Result.FinalMessage == nil || strings.TrimSpace(*v.Result.FinalMessage) == "" || v.Result.FinalMessageTruncated {
+	switch {
+	case c.unreached(CritGrok, msTerm(3)):
+		// Review C1: the review was never given (the task ended only by
+		// the cleanup's cancellation, or not at all).
+	case v.Result == nil || v.Result.FinalMessage == nil || strings.TrimSpace(*v.Result.FinalMessage) == "" || v.Result.FinalMessageTruncated:
 		c.fail(CritGrok, "review_missing")
-	} else if lastNonEmptyLine(*v.Result.FinalMessage) != approvedMarkers[HopCodeReviewer] {
+	case lastNonEmptyLine(*v.Result.FinalMessage) != approvedMarkers[HopCodeReviewer]:
 		c.fail(CritGrok, "review_not_approved")
 	}
 	inline, err := parseInlineFiles(v.Request.Goal)
@@ -1181,6 +1631,9 @@ func (c *checker) grok() {
 		}
 	}
 	d := he.Dispatch
+	if d == nil && !c.due(CritGrok, c.dispatchDue(3)) {
+		return
+	}
 	if d == nil || len(d.InlineFiles) != len(inlinePaths) {
 		c.fail(CritGrok, "inline_hashes_missing")
 		return
@@ -1199,9 +1652,11 @@ var finalTestEnv = []string{"GOTOOLCHAIN=local", "GOPROXY=off", "GOSUMDB=off", "
 // export never consults the VCS state of a directory above it.
 var testArgv = []string{"go", "test", "-buildvcs=false", "-count=1", "./..."}
 
-func (c *checker) testRun(t *TestRun, commit, tree string, files map[string][]byte, missing, bad string) {
+func (c *checker) testRun(t *TestRun, step milestone, commit, tree string, files map[string][]byte, missing, bad string) {
 	if t == nil {
-		c.fail(CritFinalTests, missing)
+		if !c.unreached(CritFinalTests, step) {
+			c.fail(CritFinalTests, missing)
+		}
 		return
 	}
 	var want []string
@@ -1225,12 +1680,12 @@ func (c *checker) finalTests() {
 	if c.seed != nil {
 		seedCommit, seedTree = c.seed.Hash.String(), c.seed.TreeHash.String()
 	}
-	c.testRun(c.b.Baseline, seedCommit, seedTree, c.files[0], "baseline_missing", "baseline_failed")
+	c.testRun(c.b.Baseline, msBaselineTests, seedCommit, seedTree, c.files[0], "baseline_missing", "baseline_failed")
 	commit, tree := "", ""
 	if cm := c.commits[3]; cm != nil {
 		commit, tree = cm.Hash.String(), cm.TreeHash.String()
 	}
-	c.testRun(c.b.Final, commit, tree, c.files[4], "final_tests_missing", "final_tests_failed")
+	c.testRun(c.b.Final, msFinal, commit, tree, c.files[4], "final_tests_missing", "final_tests_failed")
 	c.validationRuns(commit, tree)
 }
 
@@ -1283,7 +1738,7 @@ func (c *checker) cleanup() {
 			c.fail(CritCleanup, "process_record_conflict")
 		}
 	}
-	if !cl.RuntimeRemoved {
+	if !cl.RuntimeRemoved && !c.unreached(CritCleanup, msRuntime) {
 		c.fail(CritCleanup, "runtime_not_removed")
 	}
 	// A3: the coordinator phases are the supervisor's own observation: each
@@ -1359,6 +1814,9 @@ var (
 // a supervisor validation event of that command.
 func (c *checker) validationRuns(commit, tree string) {
 	cs, rq := c.b.Cases, c.b.Requirements
+	if cs == nil && rq == nil && c.unreached(CritFinalTests, msFinal) {
+		return
+	}
 	if cs == nil || rq == nil {
 		c.fail(CritFinalTests, "validation_missing")
 		return
@@ -1423,6 +1881,7 @@ func (c *checker) resultCorrectness() {
 		commit = cm.Hash.String()
 	}
 	switch {
+	case cs == nil && c.unreached(CritResult, msFinal):
 	case cs == nil:
 		c.fail(CritResult, CodeCaseFailed)
 	case len(cs.Cases) != len(FeatureCases):
@@ -1445,7 +1904,9 @@ func (c *checker) resultCorrectness() {
 	}
 	testsFailed := c.b.Final == nil || c.b.Final.ExitCode != 0 || c.b.Final.TimedOut
 	if rq == nil {
-		c.fail(CritResult, CodeTestMapping)
+		if !c.unreached(CritResult, msFinal) {
+			c.fail(CritResult, CodeTestMapping)
+		}
 	} else {
 		var cases []CaseResult
 		if cs != nil {
@@ -1464,11 +1925,59 @@ func (c *checker) resultCorrectness() {
 		finalMarker(HopCodeReviewer, *v.Result.FinalMessage) == approvedMarkers[HopCodeReviewer] && testsFailed {
 		c.fail(CritResult, CodeReviewContra)
 	}
+	// A row unobserved only because the attempt stopped before its step is
+	// not reached (A3.8); every other row short of correct fails. When the
+	// attempt stopped before this criterion's own validation ran, a row
+	// whose shortfall a criterion it cites already reports is not restated
+	// here: the early stop reports only its real cause, once.
+	var reported map[string][]string
+	if !c.reached(msFinal) {
+		reported = c.otherCodes()
+	}
 	for _, r := range auditRows(c) {
-		if r.Layer == LayerMechanical && r.Verdict != VerdictCorrect {
+		switch {
+		case r.Layer != LayerMechanical || r.Verdict == VerdictCorrect:
+		case r.notReached || rowReported(r, reported):
+			c.fail(CritResult, codeNotReached)
+		default:
 			c.fail(CritResult, "audit_row_not_correct")
 		}
 	}
+}
+
+// otherCodes are the real failure codes of every criterion but this one,
+// by criterion.
+func (c *checker) otherCodes() map[string][]string {
+	self := reflect.ValueOf((*checker).resultCorrectness).Pointer()
+	out := map[string][]string{}
+	for _, f := range criterionMethods {
+		if reflect.ValueOf(f).Pointer() == self {
+			continue
+		}
+		for crit, codes := range c.methodCodes(f) {
+			out[crit] = append(out[crit], slices.DeleteFunc(slices.Clone(codes), func(s string) bool { return s == codeNotReached })...)
+		}
+	}
+	return out
+}
+
+// rowReported reports whether a row's shortfall is already reported: a
+// criterion it cites fails, and each contradiction code it names is a
+// failure code of one of those criteria (nil reported: never).
+func rowReported(r AuditRow, reported map[string][]string) bool {
+	var codes []string
+	for _, x := range r.Criteria {
+		codes = append(codes, reported[x]...)
+	}
+	if len(codes) == 0 {
+		return false
+	}
+	for _, x := range r.Criteria {
+		if code, ok := strings.CutPrefix(x, "code:"); ok && !slices.Contains(codes, code) {
+			return false
+		}
+	}
+	return true
 }
 
 // snapshotShards returns a phase's two stored shards, or false when one
@@ -1507,7 +2016,9 @@ func (c *checker) ownerEnvironment() {
 	for i, phase := range []string{"before", "after"} {
 		shards, ok := c.snapshotShards(phase)
 		if !ok {
-			c.fail(CritOwnerEnv, CodeEnvUnobserved)
+			if !c.unreached(CritOwnerEnv, msBaseline) {
+				c.fail(CritOwnerEnv, CodeEnvUnobserved)
+			}
 			continue
 		}
 		s, err := parseSnapshot(shards)
@@ -1541,7 +2052,9 @@ func (c *checker) ownerEnvironment() {
 		}
 	}
 	if d == nil {
-		c.fail(CritOwnerEnv, "environment_diff_missing")
+		if !c.unreached(CritOwnerEnv, msBaseline) {
+			c.fail(CritOwnerEnv, "environment_diff_missing")
+		}
 		return
 	}
 	if m == nil || !slices.Equal(d.ProtectedRoots, roots) {

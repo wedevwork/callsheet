@@ -20,7 +20,9 @@ import (
 // no warning for newer versions), the flow's selections pass the existing
 // validators, Go and Git are invocable and the private temporary
 // directory is usable. After deployment, one no-workspace task per
-// configured role/pair must answer exactly CALLSHEET_AUTH_OK; a 2m
+// configured role/pair is asked to answer exactly CALLSHEET_AUTH_OK and
+// passes (A3.8) on success, exit 0 and a present, non-empty, untruncated
+// answer from its pair, the echo recorded as information; a 2m
 // supervisor watchdog cancels a preflight that runs longer. A failure
 // stops before feature work; there is no login automation, credential
 // inspection or weaker retry.
@@ -238,9 +240,11 @@ func (s *supervisor) preflightOne(i int, hop string) error {
 	switch {
 	case v.State != contract.TaskSucceeded || r == nil || r.ExitCode == nil || *r.ExitCode != 0:
 		return failure("preflight_failed", fmt.Errorf("%s ended %s", label, v.State))
-	case r.FinalMessage == nil || r.FinalMessageTruncated || !authAnswerOK(*r.FinalMessage):
-		return failure("preflight_not_authenticated", fmt.Errorf("%s did not answer %s", label, AuthToken))
+	case r.FinalMessage == nil || r.FinalMessageTruncated || !authAnswerPresent(*r.FinalMessage):
+		return failure("preflight_not_authenticated", fmt.Errorf("%s gave no complete, non-empty answer", label))
 	}
+	// A3.8: whether the answer echoed the token is information only.
+	s.say("%s authenticated (token_echoed: %t)", label, authAnswerOK(*r.FinalMessage))
 	return nil
 }
 

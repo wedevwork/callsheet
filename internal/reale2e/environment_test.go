@@ -222,6 +222,68 @@ func TestOwnerEnvironment(t *testing.T) {
 			t.Fatalf("report %v", failedCodes(r))
 		}
 	})
+	t.Run("checkout and home inside a protected root", func(t *testing.T) {
+		t.Parallel()
+		// The owner's shape: the checkout (/opt/gitspace/callsheet) lies
+		// under a supplied root (/opt/gitspace); so may the home. Every
+		// record discovered under the root is spelled in the root's own
+		// frame, so the checkout's repository is inside its root, not a
+		// $CHECKOUT the checker cannot place.
+		// One attempt covers both bases (each alone also failed before the
+		// root frame: the checkout as $CHECKOUT, a repository in the home as
+		// $HOME/proj, neither textually inside the raw root).
+		for name, tc := range map[string]struct{ checkout, home bool }{"checkout and home": {true, true}} {
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				f := newFakeWorld(t)
+				f.git = realGit(t)
+				root := t.TempDir()
+				var want []string
+				if tc.checkout {
+					co := filepath.Join(root, "callsheet")
+					if err := os.Rename(f.checkout, co); err != nil {
+						t.Fatal(err)
+					}
+					f.checkout, f.evidence = co, filepath.Join(co, "design", "real-e2e-runs", "attempt")
+					want = append(want, "/callsheet")
+				}
+				if tc.home {
+					h := filepath.Join(root, "home")
+					if err := os.Rename(f.home, h); err != nil {
+						t.Fatal(err)
+					}
+					f.home = h
+					newRepo(t, filepath.Join(h, "proj"))
+					want = append(want, "/home/proj")
+				}
+				newRepo(t, filepath.Join(root, "other"))
+				want = append(want, "/other")
+				f.roots = []string{root}
+				if code := f.attempt(); code != 0 {
+					t.Fatalf("attempt = %d %v\n%s", code, failedCodes(f.report()), f.stderr.String())
+				}
+				croot, _ := filepath.EvalSymlinks(root)
+				for i := range want {
+					want[i] = croot + want[i]
+				}
+				slices.Sort(want)
+				before := readSnapshot(t, f.bundle(), "before")
+				var repos []string
+				for _, r := range before.Compact {
+					if r.Kind == RecRepo {
+						repos = append(repos, r.Path)
+					}
+				}
+				slices.Sort(repos)
+				if !slices.Equal(repos, want) {
+					t.Fatalf("repositories %v, want %v", repos, want)
+				}
+				if code, r, _ := checkBundle(t, f.bundle()); code != 0 || r.Result != ResultPass {
+					t.Fatalf("check = %d %v", code, failedCodes(r))
+				}
+			})
+		}
+	})
 	t.Run("canonical root order survives tokenization", func(t *testing.T) {
 		t.Parallel()
 		// C10: a sibling sorting before the home canonically comes first,
@@ -639,6 +701,44 @@ func TestOwnerEnvironment(t *testing.T) {
 // and every bound.
 func TestEnvironmentUnits(t *testing.T) {
 	t.Parallel()
+	t.Run("root frame", func(t *testing.T) {
+		t.Parallel()
+		// A root and every path below it are spelled from one base: a
+		// prefix whose base lies strictly inside a supplied root is
+		// dropped; one at or above every root it touches is kept.
+		tok := pathTokenizer{home: "/u/max", checkout: "/opt/g/callsheet"}
+		for _, tc := range []struct {
+			roots       []string
+			path, want  string
+			nestedFound bool
+		}{
+			{[]string{"/opt/g"}, "/opt/g/callsheet", "/opt/g/callsheet", false},
+			{[]string{"/opt/g"}, "/opt/g/callsheet/sub", "/opt/g/callsheet/sub", false},
+			{[]string{"/opt/g/callsheet"}, "/opt/g/callsheet/sub", "$CHECKOUT/sub", false},
+			{[]string{"/u"}, "/u/max/proj", "/u/max/proj", false},
+			{[]string{"/u/max/src"}, "/u/max/src/proj", "$HOME/src/proj", false},
+			{[]string{"/srv"}, "/srv/x", "/srv/x", false},
+			// Nested roots (refused live) become textually visible to the
+			// checker's nesting check.
+			{[]string{"/opt/g", "/opt/g/callsheet"}, "/opt/g/callsheet", "/opt/g/callsheet", true},
+		} {
+			rt := tok.rootFrame(tc.roots)
+			if got := rt.token(tc.path); got != tc.want {
+				t.Errorf("roots %v: token(%s) = %s, want %s", tc.roots, tc.path, got, tc.want)
+			}
+			var toks []string
+			for _, r := range tc.roots {
+				toks = append(toks, rt.token(r))
+			}
+			nested := len(toks) == 2 && tokenStrictlyUnder(toks[1], toks[0])
+			if nested != tc.nestedFound {
+				t.Errorf("roots %v tokens %v: nesting visible %v", tc.roots, toks, nested)
+			}
+			if tok.token(tc.path) == "" || tok.home != "/u/max" {
+				t.Fatal("rootFrame changed its receiver")
+			}
+		}
+	})
 	t.Run("inventory", func(t *testing.T) {
 		t.Parallel()
 		// C6: the checker believes a complete snapshot only with every
@@ -688,6 +788,13 @@ func TestEnvironmentUnits(t *testing.T) {
 			},
 			"unknown root":       func(s *Snapshot) { s.Compact = append(s.Compact, EnvCompact{Kind: RecRoot, Path: "/srv/b"}) },
 			"repo outside roots": func(s *Snapshot) { s.Compact = append(s.Compact, EnvCompact{Kind: RecRepo, Path: "/srv/ab"}) },
+			// Containment stays textual and strict: a record spelled from
+			// a base the roots do not share is never placed inside them.
+			"repo in another frame": func(s *Snapshot) { s.Compact = append(s.Compact, EnvCompact{Kind: RecRepo, Path: "$CHECKOUT"}) },
+			"invalid repo outside roots": func(s *Snapshot) {
+				s.Compact = append(s.Compact, EnvCompact{Kind: RecInvalid, Path: "/elsewhere/x"})
+			},
+			"link outside roots": func(s *Snapshot) { s.Compact = append(s.Compact, EnvCompact{Kind: RecLink, Path: "$HOME/srcx/l"}) },
 			"scoped repo": func(s *Snapshot) {
 				s.Compact = append(s.Compact, EnvCompact{Kind: RecRepo, Scope: "claude", Path: "/srv/a/x"})
 			},

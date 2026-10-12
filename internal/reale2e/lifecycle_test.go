@@ -3,6 +3,7 @@ package reale2e
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -275,9 +276,16 @@ func TestAttemptLifecycle(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(b, "hops", "01", "task.json")); err != nil {
 			t.Fatal("the cancelled hop's snapshot was not kept")
 		}
+		// A3.8: the timeout itself fails (deadlines); the lifecycle and the
+		// hop's outcome it cut short (the watchdog cancelled the task after
+		// the stop, review C1) are not reached and name it, and that
+		// cancellation of the chain's own task is no extra admission.
 		r := f.report()
-		if r.Result != ResultFail || !slices.Contains(failedCodes(r), "attempt_failed") {
-			t.Fatalf("report %v", failedCodes(r))
+		ev, hops := criterion(r, CritEvents), criterion(r, CritHops)
+		if r.Result != ResultFail || ev.Result != ResultCriterionNotReached || ev.Cause != "feature_deadline_exceeded" ||
+			!slices.Equal(criterion(r, CritDeadlines).Codes, []string{"feature_deadline_exceeded"}) || hops.Result != ResultCriterionNotReached ||
+			criterion(r, CritAdmissions).Result == "fail" {
+			t.Fatalf("report %v, events %+v, hops %+v", failedCodes(r), ev, hops)
 		}
 	})
 	t.Run("unverified child", func(t *testing.T) {
@@ -334,6 +342,8 @@ func TestAttemptLifecycle(t *testing.T) {
 		}
 	})
 	t.Run("early stop", earlyStopCases)
+	t.Run("preflight stop", preflightStopCases)
+	t.Run("stop before the wait", stopBeforeWaitCases)
 	t.Run("coordinator phases", func(t *testing.T) {
 		t.Parallel()
 		for name, tc := range map[string]struct {
@@ -819,6 +829,212 @@ func TestUnresolvedCommandGroups(t *testing.T) {
 	})
 }
 
+// preflightStopCases (FP-8, UT-7, A3.8): an attempt that stops in
+// preflight (the fourth pair answers nothing) reports only that cause.
+// Preflight fails with its code; every criterion whose producing step the
+// stop left unreached is not_reached, references the stopping cause and
+// carries no missing-evidence code of its own; those whose step ran and
+// whose evidence holds (deployment, cleanup, environment, deadlines)
+// pass; the overall result stays FAIL, not demonstrated. Evidence missing
+// after its producing step still fails.
+func preflightStopCases(t *testing.T) {
+	t.Parallel()
+	f := newFakeWorld(t)
+	f.plane.preflight = func(j int) (string, *string, bool, bool) {
+		if j == 3 {
+			return contract.TaskSucceeded, ptr(""), false, true
+		}
+		return contract.TaskSucceeded, ptr(AuthToken), false, true
+	}
+	const cause = "preflight_not_authenticated"
+	if code := f.attempt(); code != 1 || f.sup.failCode != cause {
+		t.Fatalf("attempt = %d %q", code, f.sup.failCode)
+	}
+	b := f.bundle()
+	var evs []Event
+	for _, l := range strings.Split(strings.TrimSpace(string(mustRead(t, filepath.Join(b, "events.jsonl")))), "\n") {
+		var e Event
+		json.Unmarshal([]byte(l), &e)
+		evs = append(evs, e)
+	}
+	stopSeq := evs[slices.IndexFunc(evs, func(e Event) bool { return e.Type == EvAttemptFailed })].Seq
+	r := f.report()
+	if r.Result != ResultFail || r.Claim != "not demonstrated" {
+		t.Fatalf("result %s claim %q", r.Result, r.Claim)
+	}
+	passes := []string{CritRoles, CritCleanup, CritOwnerEnv, CritDeadlines}
+	for _, c := range r.Criteria {
+		switch {
+		case c.ID == CritPreflight:
+			if c.Result != "fail" || !slices.Equal(c.Codes, []string{cause}) || c.Cause != "" {
+				t.Errorf("preflight %+v", c)
+			}
+		case slices.Contains(passes, c.ID):
+			if c.Result != "pass" {
+				t.Errorf("%s %+v, want pass", c.ID, c)
+			}
+		case c.Result != ResultCriterionNotReached || len(c.Codes) != 0 || c.Cause != cause || c.CauseSeq != stopSeq:
+			t.Errorf("%s %+v, want not_reached by %s at %d", c.ID, c, cause, stopSeq)
+		}
+	}
+	text := string(mustRead(t, filepath.Join(b, "report.txt")))
+	for _, want := range []string{"result: FAIL", "claim: not demonstrated", "criterion preflight: fail (" + cause + ")\n",
+		fmt.Sprintf("criterion hops: not_reached (not reached: %s, attempt failed at event %d)\n", cause, stopSeq), "preflight-03 token_echoed: true",
+		"preflight-04 token_echoed: false"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("report.txt lacks %q:\n%s", want, text)
+		}
+	}
+	// The audit: preflight incorrect, deployment, cleanup and environment
+	// correct, every other mechanical row unobserved as not reached.
+	var a Audit
+	readDoc(t, filepath.Join(b, "audit.json"), &a)
+	for _, row := range a.Rows {
+		switch {
+		case row.Layer == LayerJudgment:
+		case row.ID == "preflight":
+			if row.Verdict != VerdictIncorrect || !slices.Contains(row.Criteria, "code:"+cause) {
+				t.Errorf("preflight row %+v", row)
+			}
+		case row.ID == "deployment_roles" || row.ID == "cleanup" || row.ID == "owner_environment":
+			if row.Verdict != VerdictCorrect {
+				t.Errorf("%s row %+v", row.ID, row)
+			}
+		case row.Verdict != VerdictUnobserved || !strings.Contains(row.Observed, "not reached: "+cause) || !strings.HasPrefix(row.Correction, "not reached: "+cause) ||
+			strings.Contains(row.Observed, "missing:"):
+			t.Errorf("%s row %+v, want unobserved, not reached", row.ID, row)
+		}
+	}
+	// Evidence missing after its producing step is still missing: the roles
+	// were ready and the first preflights admitted before the stop. With
+	// no setup copy of the flow, a pair other than the configured one (the
+	// manifest's) still fails.
+	for name, tc := range map[string]struct {
+		rm         []string
+		crit, want string
+	}{
+		"roles record removed":       {[]string{"setup/roles.json"}, CritRoles, "roles_missing"},
+		"admitted preflight removed": {[]string{"preflight/02/task.json", "preflight/02/final.txt"}, CritPreflight, "preflight_missing"},
+		"preflight pair differs":     {nil, CritPreflight, "preflight_selection_mismatch"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			c := filepath.Join(t.TempDir(), "b")
+			if err := copyTree(b, c); err != nil {
+				t.Fatal(err)
+			}
+			for _, p := range tc.rm {
+				removeBundleFile(t, c, p)
+			}
+			if tc.rm == nil {
+				editTask(t, c, "preflight/01", func(v *contract.TaskView) { v.Effective.Model += "-other" })
+			}
+			bl, err := LoadBundle(c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, cr := range Check(bl) {
+				if cr.ID == tc.crit && (cr.Result != "fail" || !slices.Contains(cr.Codes, tc.want)) {
+					t.Fatalf("%s = %+v, want fail with %s", tc.crit, cr, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// stopBeforeWaitCases (FP-8, UT-7, A3.8 review C1): a hop admitted and
+// observed is not a wait started. The designer is dispatched and
+// observed, then a denied Bash command ends phase 1 before its wait
+// starts (the second owner-run's shape); the cleanup then cancels the
+// running designer task. The wait, the hop's outcome, its result commit
+// and tree were never produced: not_reached with the denial as the cause,
+// in the report and the audit, while the dispatch and the denial itself
+// are judged. A wait that started and whose task ended before the stop
+// must still have its evidence.
+func stopBeforeWaitCases(t *testing.T) {
+	t.Parallel()
+	f := newFakeWorld(t)
+	f.coord.deniedBeforeWait = true
+	if code := f.attempt(); code != 1 || f.sup.failCode != CodeToolDenied {
+		t.Fatalf("attempt = %d %q", code, f.sup.failCode)
+	}
+	r := f.report()
+	for _, id := range []string{CritWaits, CritHops, CritChain, CritArtifacts, CritSetup, CritOwner, CritGrok, CritFinalTests} {
+		if c := criterion(r, id); c.Result != ResultCriterionNotReached || len(c.Codes) != 0 || c.Cause != CodeToolDenied {
+			t.Errorf("%s %+v, want not_reached by %s", id, c, CodeToolDenied)
+		}
+	}
+	// The denial and what the stream shows of the phase's own early end
+	// are judged; the entries of steps never reached are not missing.
+	if c := criterion(r, CritEventMap); c.Result != "fail" || !slices.Contains(c.Codes, CodeToolDenied) || slices.Contains(c.Codes, "event_map_incomplete") ||
+		slices.Contains(c.Codes, "dispatch_not_observed") {
+		t.Errorf("event_map %+v, want the denial and no unreached entry", c)
+	}
+	for _, id := range []string{CritRoles, CritPreflight, CritCleanup, CritDeadlines} {
+		if c := criterion(r, id); c.Result != "pass" {
+			t.Errorf("%s %+v, want pass", id, c)
+		}
+	}
+	var a Audit
+	readDoc(t, filepath.Join(f.bundle(), "audit.json"), &a)
+	if row := rowByID(t, a, "hop01_dispatch"); row.Verdict != VerdictCorrect {
+		t.Errorf("dispatch row %+v", row)
+	}
+	for _, id := range []string{"hop01_wait", "hop01_result"} {
+		if row := rowByID(t, a, id); row.Verdict != VerdictUnobserved || !strings.HasPrefix(row.Correction, "not reached: "+CodeToolDenied) ||
+			strings.Contains(row.Observed, "missing:") {
+			t.Errorf("%s row %+v, want unobserved, not reached", id, row)
+		}
+	}
+	// The wait started and the designer's task ended before the stop: its
+	// wait files are due, and removing them fails.
+	c := passingBundle(t)
+	editEvents(t, c, true, func(evs []Event) []Event {
+		i := slices.IndexFunc(evs, func(e Event) bool { return e.Type == EvTaskTerminal && e.Hop == HopDesigner })
+		return slices.Insert(evs, i+1, Event{Type: EvAttemptFailed, Time: evs[i].Time, Code: "hop_failed"})
+	})
+	removeBundleFile(t, c, "hops/01/"+waitResultFile)
+	removeBundleFile(t, c, "hops/01/"+waitExitFile)
+	bl, err := LoadBundle(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cr := range Check(bl) {
+		if cr.ID == CritWaits && (cr.Result != "fail" || !slices.Contains(cr.Codes, "wait_files_missing")) {
+			t.Fatalf("waits = %+v, want wait_files_missing", cr)
+		}
+	}
+	// A coder admitted after the receipt that the stop kept from being
+	// observed is no premature coding; observed before the receipt, it is.
+	for name, early := range map[string]bool{"unobserved at the stop": false, "observed before the receipt": true} {
+		b := passingBundle(t)
+		editEvents(t, b, true, func(evs []Event) []Event {
+			var out []Event
+			for _, e := range evs {
+				switch {
+				case e.Type == EvObserved && e.Hop == HopCoder:
+					continue
+				case e.Type == EvReceiptCreated && early:
+					out = append(out, Event{Type: EvObserved, Hop: HopCoder, Time: e.Time}, e)
+					continue
+				}
+				out = append(out, e)
+				if e.Type == EvTaskAdmitted && e.Hop == HopCoder {
+					out = append(out, Event{Type: EvAttemptFailed, Time: e.Time, Code: CodeToolDenied})
+				}
+			}
+			return out
+		})
+		bl, err := LoadBundle(b)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := newChecker(bl).methodCodes((*checker).owner)[CritOwner]; slices.Contains(got, "coding_before_approval") != early {
+			t.Errorf("%s: owner %v", name, got)
+		}
+	}
+}
+
 // earlyStopCases (FP-8, UT-7, A3.6): cleanup accounts for exactly the
 // processes that started. The first-run shape (a first-call denial, then
 // phase 1's result and exit 0) has one coordinator group and eight
@@ -862,10 +1078,13 @@ func earlyStopCases(t *testing.T) {
 	if p := f.coord.procs[0]; len(p.signals) != 0 {
 		t.Fatalf("the reaped phase-1 leader was signalled: %v", p.signals)
 	}
+	// A3.8: phase 2 was never launched because the attempt stopped first:
+	// setup is not reached (never launch_missing or
+	// coordinator_exit_unobserved), the denial itself still fails.
 	r := f.report()
-	if r.Result != ResultFail || criterion(r, CritCleanup).Result != "pass" || !slices.Equal(criterion(r, CritSetup).Codes, []string{"launch_missing"}) ||
-		!slices.Contains(criterion(r, CritEventMap).Codes, CodeToolDenied) {
-		t.Fatalf("report %v", failedCodes(r))
+	if su := criterion(r, CritSetup); r.Result != ResultFail || criterion(r, CritCleanup).Result != "pass" || su.Result != ResultCriterionNotReached ||
+		len(su.Codes) != 0 || su.Cause != f.sup.failCode || !slices.Contains(criterion(r, CritEventMap).Codes, CodeToolDenied) {
+		t.Fatalf("report %v, setup %+v", failedCodes(r), su)
 	}
 	// Mutations of the stored evidence, each on its own copy.
 	for name, tc := range map[string]struct {
@@ -971,10 +1190,12 @@ func earlyStopCases(t *testing.T) {
 		if slices.ContainsFunc(cl.Started, func(s StartedProc) bool { return s.Name == phaseHandle(1) }) || len(ce.Phases) != 0 || len(cl.Started) != len(cl.Processes) {
 			t.Fatalf("started %+v phases %+v", cl.Started, ce.Phases)
 		}
+		// A3.8: the failed start is the stopping cause; phase 1's launch
+		// is not reached rather than missing.
 		r := f.report()
-		if r.Result != ResultFail || criterion(r, CritCleanup).Result != "pass" || slices.Contains(criterion(r, CritSetup).Codes, "coordinator_exit_unobserved") ||
-			!slices.Contains(criterion(r, CritSetup).Codes, "launch_missing") {
-			t.Fatalf("report %v", failedCodes(r))
+		if su := criterion(r, CritSetup); r.Result != ResultFail || criterion(r, CritCleanup).Result != "pass" || su.Result != ResultCriterionNotReached ||
+			su.Cause != f.sup.failCode || f.sup.failCode == "" {
+			t.Fatalf("report %v, setup %+v", failedCodes(r), su)
 		}
 	})
 	// Launch evidence that cannot be written after a successful Start:

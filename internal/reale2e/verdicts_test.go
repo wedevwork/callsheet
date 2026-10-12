@@ -418,7 +418,7 @@ var recordedVerdicts = [][2]string{
 	{"preflight marker", "1 FAIL preflight=preflight_binding_mismatch result_correctness=audit_row_not_correct,derived_report_mismatch"},
 	{"preflight role", "1 FAIL preflight=preflight_binding_mismatch result_correctness=audit_row_not_correct,derived_report_mismatch"},
 	{"preflight pair", "1 FAIL preflight=preflight_selection_mismatch result_correctness=audit_row_not_correct,derived_report_mismatch"},
-	{"preflight answer", "1 FAIL preflight=preflight_not_authenticated result_correctness=audit_row_not_correct,derived_report_mismatch"},
+	{"preflight empty answer", "1 FAIL preflight=preflight_not_authenticated result_correctness=audit_row_not_correct,derived_report_mismatch"},
 	{"preflight truncated", "1 FAIL preflight=preflight_not_authenticated result_correctness=audit_row_not_correct,derived_report_mismatch"},
 	{"preflight final file", "1 FAIL preflight=preflight_not_authenticated result_correctness=audit_row_not_correct,derived_report_mismatch"},
 	{"launch missing", "1 FAIL manifest=launch_hash_mismatch,launch_inventory_mismatch setup=launch_missing event_map=coordinator_user_input,event_map_mismatch result_correctness=audit_row_not_correct,derived_report_mismatch"},

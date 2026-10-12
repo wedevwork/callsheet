@@ -178,7 +178,8 @@ func checkerMutations() []mutation {
 		{"preflight pair", CritPreflight, "preflight_selection_mismatch", func(t *testing.T, b string) {
 			editTask(t, b, "preflight/03", func(v *contract.TaskView) { v.Effective.Effort = "low" })
 		}},
-		{"preflight answer", CritPreflight, "preflight_not_authenticated", func(t *testing.T, b string) { setFinal(t, b, "preflight/04", "NOPE") }},
+		// A3.8: any non-empty answer authenticates; an empty one does not.
+		{"preflight empty answer", CritPreflight, "preflight_not_authenticated", func(t *testing.T, b string) { setFinal(t, b, "preflight/04", " \n") }},
 		{"preflight truncated", CritPreflight, "preflight_not_authenticated", func(t *testing.T, b string) {
 			editTask(t, b, "preflight/04", func(v *contract.TaskView) { v.Result.FinalMessageTruncated = true })
 		}},
@@ -1036,6 +1037,29 @@ func TestEvidenceCommand(t *testing.T) {
 	if len(seen) != len(criteriaOrder) {
 		t.Fatalf("criteria exercised %d of %d", len(seen), len(criteriaOrder))
 	}
+	// A3.8: a complete reviewer-style preflight answer authenticates (only
+	// the stored derived outputs, now stale, differ) and is recorded as
+	// token_echoed false; the empty answer is a mutation above.
+	t.Run("reviewer-style preflight answer", func(t *testing.T) {
+		t.Parallel()
+		b := passingBundle(t)
+		setFinal(t, b, "preflight/04", reviewerStyleAnswer)
+		bl, err := LoadBundle(b)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cs := Check(bl)
+		for _, c := range cs {
+			if want := slices.Equal(c.Codes, []string{CodeDerivedMismatch}); c.Result != "pass" && !(c.ID == CritResult && want) {
+				t.Errorf("criterion %+v", c)
+			}
+		}
+		text := RenderText(BuildReport(bl, cs))
+		if !strings.Contains(text, "preflight-04 token_echoed: false (information only)\n") || !strings.Contains(text, "preflight-01 token_echoed: true") {
+			t.Fatalf("report.txt:\n%s", text)
+		}
+	})
+	t.Run("stop point", testStopPoint)
 	// A3: the live collector's final validation on offline fixture
 	// commits, conforming and missing a requirement, then the check.
 	t.Run("collector", testCollectorValidation)
@@ -1055,6 +1079,55 @@ func TestEvidenceCommand(t *testing.T) {
 		if code, _, errOut := run(t, args...); code != 2 || !strings.Contains(errOut, "usage:") {
 			t.Errorf("%v = %d %q", args, code, errOut)
 		}
+	}
+}
+
+// testStopPoint (FP-7, A3.8): the event log's stopping point. Without a
+// failure every step is reached; otherwise a step is reached only when
+// its own event, or a later lifecycle step's, precedes the failure. A
+// phase's own exit counts only before the failure and implies no earlier
+// step; a cause that is not code-shaped is reported as attempt_failed.
+func testStopPoint(t *testing.T) {
+	t.Parallel()
+	ev := func(typ, hop, handle, code string) Event {
+		return Event{Type: typ, Hop: hop, Handle: handle, Code: code}
+	}
+	base := []Event{ev(EvRunStarted, "", "", ""), ev(EvPreflightStarted, "", "", ""), ev(EvSnapshotTaken, "", "", "before"), ev(EvVersionsChecked, "", "", "")}
+	seqd := func(evs ...Event) []Event {
+		out := append(slices.Clone(base), evs...)
+		for i := range out {
+			out[i].Seq = i + 1
+		}
+		return out
+	}
+	if s := stopPointOf(seqd()); s.stopped() || s.cause != "" {
+		t.Fatalf("no failure: %+v", s)
+	}
+	s := stopPointOf(seqd(ev(EvAttemptFailed, "", "", "runtime_unavailable")))
+	if !s.stopped() || s.cause != "runtime_unavailable" || s.seq != 5 || !s.reached[msVersions] || s.reached[msRuntime] || s.reached[msFinal] {
+		t.Fatalf("stop after versions: %+v", s)
+	}
+	// A later step before the failure implies the earlier ones ran, so
+	// their evidence is missing, never excused.
+	evs := seqd(ev(EvTaskAdmitted, preflightHop(1), "", ""), ev(EvAttemptFailed, "", "", "Not A Code"))
+	evs = slices.DeleteFunc(evs, func(e Event) bool { return e.Type == EvVersionsChecked })
+	s = stopPointOf(evs)
+	if s.cause != EvAttemptFailed || !s.reached[msVersions] || !s.reached[msReady] || !s.reached[msPreflight1] || !s.reached[msPreflight2] || s.reached[msPreflight3] {
+		t.Fatalf("later inference: %+v", s)
+	}
+	// A phase exit the cleanup caused (after the failure) is not the
+	// phase's own; one before the failure implies no hop.
+	s = stopPointOf(seqd(ev(EvPhaseStarted, "", phaseHandle(1), ""), ev(EvAttemptFailed, "", "", "interrupted"), ev(EvPhaseExited, "", phaseHandle(1), "")))
+	if !s.reached[msPhase1] || s.reached[msPhase1Done] || s.reached[msHop1] {
+		t.Fatalf("cleanup exit: %+v", s)
+	}
+	s = stopPointOf(seqd(ev(EvPhaseStarted, "", phaseHandle(1), ""), ev(EvPhaseExited, "", phaseHandle(1), ""), ev(EvAttemptFailed, "", "", CodePhaseEarly)))
+	if !s.reached[msPhase1Done] || s.reached[msHop1] || s.reached[msPhase2Done] || s.reached[msAwaiting] {
+		t.Fatalf("early own exit: %+v", s)
+	}
+	s = stopPointOf(seqd(ev(EvObserved, HopCoder, "", ""), ev(EvAttemptFailed, "", "", "coding_before_approval")))
+	if !s.reached[msHop3] || !s.reached[msReceipt] || s.reached[msHop4] {
+		t.Fatalf("observed coder: %+v", s)
 	}
 }
 
