@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"testing"
 )
 
@@ -54,7 +53,7 @@ func TestBackgroundWaitEvidence(t *testing.T) {
 			c.userBetween = 0
 		}, CodeUserInput, CritWaits, "automatic_wake_unobserved"},
 		"changed wait command": {func(c *coordScript) {
-			c.waitCommand = func(i int, cmd string) string { return strings.Replace(cmd, " --until-done", "", 1) }
+			c.waitCommand = func(i int, cmd string) string { return cmd + "; true" }
 		}, CodeWaitMismatch, CritEventMap, CodeWaitMismatch},
 		"unknown wake envelope": {func(c *coordScript) { c.badWake = true }, CodeWakeUnsupported, CritEventMap, CodeWakeUnsupported},
 		"failed wait":           {func(c *coordScript) { c.waitExit = "7" }, CodePhaseEarly, CritWaits, "wait_unsuccessful"},

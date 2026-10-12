@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -63,6 +64,13 @@ var ClaudeStateExclusions = []string{
 	"not covered: ~/.claude.json",
 	"not covered: ~/.claude/.config.json (Claude state file; holds per-project tool grants, MCP-server lists and trust flags)",
 	"not covered: ~/.claude/backups/.config.json.backup.* (backups of Claude state, including per-project grants)",
+}
+
+// OwnerAcceptedExclusions are A3.7's owner-accepted coverage exclusions,
+// printed in report.txt and docs/real-e2e.md after ClaudeStateExclusions.
+var OwnerAcceptedExclusions = []string{
+	"not covered: ~/.codex/config.toml (Codex records a trust entry per working folder)",
+	"not covered: untracked .claude/ directories inside protected repositories",
 }
 
 // NestedRepoLimitation is the report's statement of the A3.1 discovery
@@ -217,7 +225,7 @@ func RenderText(r Report) string {
 		fmt.Fprintf(&b, "protected root: %s\n", root)
 	}
 	fmt.Fprintf(&b, "protected depth: repositories at most %d directory levels below each protected root; deeper repositories are not protected\n", r.ProtectDepth)
-	for _, l := range ClaudeStateExclusions {
+	for _, l := range append(slices.Clone(ClaudeStateExclusions), OwnerAcceptedExclusions...) {
 		b.WriteString(l + "\n")
 	}
 	b.WriteString("not covered: " + NestedRepoLimitation + "\n")

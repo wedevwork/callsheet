@@ -94,13 +94,21 @@ func shellQuote(s string) string {
 }
 
 // permissionValues are the fixed inputs of the coordinator's session-only
-// allow-list (A3.6): the Callsheet and reale2e executables, the plane URL,
-// the runtime CA and the runtime directory.
-type permissionValues struct{ callsheet, reale2e, url, ca, runtime string }
+// allow-list (A3.6, A3.7): the reale2e executable and the runtime
+// directory. The Callsheet executable, plane URL and CA reach the wait
+// through the run file, never a Bash line.
+type permissionValues struct{ reale2e, runtime string }
 
 // symbolicPermissions renders the allow-list template printed before any
 // vendor executes.
-var symbolicPermissions = permissionValues{callsheet: "C", reale2e: "R", url: "U", ca: "A", runtime: "D"}
+var symbolicPermissions = permissionValues{reale2e: "R", runtime: "D"}
+
+// AllowListSize is the number of session-only rules (A3.7: six MCP tools,
+// four observe, four wait-task and one review-material rule).
+const AllowListSize = 15
+
+// waitRuleOffset is the allow-list position of the first wait-task rule.
+const waitRuleOffset = 10
 
 // coordinatorMCPTools are the only Callsheet MCP tools the prompt uses, in
 // allow-list order.
@@ -113,53 +121,100 @@ const ruleMetacharacters = "*?[](),\r\n\x00"
 // errRuleInput is a fixed allow-rule input holding a rule metacharacter.
 var errRuleInput = errors.New("a fixed allow-rule input contains a permission-rule metacharacter (* ? [ ] ( ) , CR, LF or NUL)")
 
-// validRuleInputs reports whether no fixed input holds a metacharacter.
+// errRuleQuoted is a fixed allow-rule input that only a shell-quoted
+// word could hold: no coordinator Bash line may contain a quote (A3.7).
+var errRuleQuoted = errors.New("a fixed allow-rule input needs shell quoting, and no coordinator Bash line may contain a quote")
+
+// validRuleInputs reports whether every fixed input is a plain shell word
+// without a rule metacharacter.
 func validRuleInputs(vals ...string) error {
 	for _, v := range vals {
 		if strings.ContainsAny(v, ruleMetacharacters) {
 			return errRuleInput
+		}
+		if shellQuote(v) != v {
+			return errRuleQuoted
 		}
 	}
 	return nil
 }
 
 // allowedTools is the single permission renderer shared by the launch and
-// the checker: the 16 session-only rules, in their fixed order. Only the
-// task-ID and exit-code slots hold wildcard text.
+// the checker: the 15 session-only rules, in their fixed order. Only the
+// task-ID slots hold wildcard text.
 func allowedTools(v permissionValues) ([]string, error) {
-	if err := validRuleInputs(v.callsheet, v.reale2e, v.url, v.ca, v.runtime); err != nil {
+	if err := validRuleInputs(v.reale2e, v.runtime); err != nil {
 		return nil, err
 	}
-	q := shellQuote
-	rules := make([]string, 0, 16)
+	rules := make([]string, 0, AllowListSize)
 	for _, t := range coordinatorMCPTools {
 		rules = append(rules, "mcp__"+mcpServerName+"__"+t)
 	}
-	rules = append(rules, "Bash("+q(v.callsheet)+" task wait * --until-done --json --plane "+q(v.url)+" --ca "+q(v.ca)+")")
 	for _, h := range Hops {
-		rules = append(rules, "Bash("+q(v.reale2e)+" observe --run "+q(v.runtime)+" --task * --hop "+h+")")
+		rules = append(rules, "Bash("+v.reale2e+" observe --run "+v.runtime+" --task * --hop "+h+")")
 	}
-	for _, h := range Hops {
-		rules = append(rules, "Bash("+q(v.reale2e)+" capture-wait --run "+q(v.runtime)+" --hop "+h+" --code *)")
+	for i := range Hops {
+		rules = append(rules, "Bash("+strings.Replace(waitCommand(v, i), "TASK_ID", "*", 1)+")")
 	}
-	return append(rules, "Bash("+q(v.reale2e)+" review-material --run "+q(v.runtime)+")"), nil
+	return append(rules, "Bash("+v.reale2e+" review-material --run "+v.runtime+")"), nil
 }
 
-// waitCommand is hop i's background wait command: the plain CLI wait with
-// stdout and stderr redirected to the hop's files, then the capture helper
-// saving and returning its status. TASK_ID is the coordinator's
-// substitution.
+// waitCommand is hop i's background wait command (A3.7): the one simple
+// wait-task helper command, which runs the CLI wait itself. TASK_ID is the
+// coordinator's substitution.
 func waitCommand(v permissionValues, i int) string {
-	dir := waitDir(v.runtime, i)
-	q := shellQuote
-	return q(v.callsheet) + " task wait TASK_ID --until-done --json --plane " + q(v.url) + " --ca " + q(v.ca) +
-		" >" + q(filepath.Join(dir, runtimeWaitResult)) + " 2>" + q(filepath.Join(dir, runtimeWaitStderr)) + "; " +
-		q(v.reale2e) + " capture-wait --run " + q(v.runtime) + " --hop " + Hops[i] + ` --code "$?"`
+	return v.reale2e + " wait-task --run " + v.runtime + " --task TASK_ID --hop " + Hops[i]
+}
+
+// shellOperators may not occur in a coordinator Bash line (A3.7): a
+// permission rule cannot match a redirect, a separator, a pipeline, a
+// quote, an expansion or a continuation.
+const shellOperators = ";&|<>'\"`$\\\r\n\x00"
+
+// simpleBashLine reports whether line is one simple command a permission
+// rule can match: words separated by single spaces, none holding a shell
+// operator.
+func simpleBashLine(line string) bool {
+	return line != "" && !strings.ContainsAny(line, shellOperators) && !strings.Contains(line, "  ") && strings.TrimSpace(line) == line
+}
+
+// bashRuleAllows reports whether the Bash rule allows command: the command
+// must be a simple Bash line, and each * of the rule matches one nonempty
+// word. A compound, redirected or quoted command is never allowed.
+func bashRuleAllows(rule, command string) bool {
+	body, ok := strings.CutPrefix(rule, "Bash(")
+	if body, ok = strings.CutSuffix(body, ")"); !ok || !simpleBashLine(command) || !simpleBashLine(body) {
+		return false
+	}
+	want, got := strings.Split(body, " "), strings.Split(command, " ")
+	if len(want) != len(got) {
+		return false
+	}
+	for i, w := range want {
+		if w != "*" && w != got[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// promptBashLines are the Bash command lines of a rendered coordinator
+// prompt: each line, after an optional "Observe: " label, that starts with
+// the reale2e executable.
+func promptBashLines(system, reale2e string) []string {
+	var out []string
+	for _, l := range strings.Split(system, "\n") {
+		l = strings.TrimPrefix(l, "Observe: ")
+		if strings.HasPrefix(l, reale2e+" ") {
+			out = append(out, l)
+		}
+	}
+	return out
 }
 
 // permissions are this run's fixed allow-list inputs.
 func (s *supervisor) permissions() permissionValues {
-	return permissionValues{callsheet: s.args.callsheet, reale2e: s.w.Executable, url: s.dep.url, ca: s.dep.caPath, runtime: s.runtime}
+	return permissionValues{reale2e: s.w.Executable, runtime: s.runtime}
 }
 
 // waitTemplate is hop i's background wait command for this run.
@@ -168,16 +223,16 @@ func (s *supervisor) waitTemplate(i int) string {
 }
 
 // printPermissionTemplate prints the session prerequisites before any
-// vendor executes, with symbolic run values, after rejecting
-// executables a rule could not hold.
+// vendor executes, with symbolic run values, after rejecting an
+// executable a rule could not hold.
 func (s *supervisor) printPermissionTemplate() error {
-	if err := validRuleInputs(s.args.callsheet, s.w.Executable); err != nil {
+	if err := validRuleInputs(s.w.Executable); err != nil {
 		return failure("permission_rule_invalid", err)
 	}
 	rules, _ := allowedTools(symbolicPermissions)
 	s.say("the coordinator session uses session-only flags; no agent configuration or settings file is written")
 	s.say("  --settings %s", SandboxOffSettings)
-	s.say("  --allowed-tools, exactly these %d rules (C callsheet, R reale2e, U plane URL, A runtime CA, D runtime directory):", len(rules))
+	s.say("  --allowed-tools, exactly these %d rules (R reale2e, D runtime directory):", len(rules))
 	for _, r := range rules {
 		s.say("    %s", r)
 	}
@@ -204,11 +259,9 @@ func (s *supervisor) renderPermissions() error {
 // socket.
 func (s *supervisor) prepareCoordinator() error {
 	rt := s.runtime
-	q := shellQuote
-	vals := map[string]string{"RUN_ID": s.runID, "RUNTIME": q(rt), "PLANE_URL": s.dep.url, "CA_PATH": s.dep.caPath, "CALLSHEET": s.args.callsheet,
-		"REALE2E": q(s.w.Executable), "WORKSPACE": s.workspace.Name, "INSTANCE": s.workspace.Instance, "SEED_PATH": s.seed.Path,
-		"SEED_COMMIT": s.workspace.SeedCommit, "WAITS_DIR": q(filepath.Join(rt, "coord", "waits")), "RECEIPT": filepath.Join(rt, "owner-receipt.json"),
-		"COORD_DIR": filepath.Join(rt, "coord")}
+	vals := map[string]string{"RUN_ID": s.runID, "RUNTIME": rt, "PLANE_URL": s.dep.url, "CA_PATH": s.dep.caPath, "REALE2E": s.w.Executable,
+		"WORKSPACE": s.workspace.Name, "INSTANCE": s.workspace.Instance, "SEED_PATH": s.seed.Path, "SEED_COMMIT": s.workspace.SeedCommit,
+		"RECEIPT": filepath.Join(rt, "owner-receipt.json"), "COORD_DIR": filepath.Join(rt, "coord")}
 	for i := range Hops {
 		vals["WAIT_"+hopDir(i)] = s.waitTemplate(i)
 	}
@@ -247,7 +300,7 @@ func (s *supervisor) prepareCoordinator() error {
 		s.manifest.Rendered = append(s.manifest.Rendered, FileHash{Name: name, SHA256: sha256Hex(setup[name])})
 	}
 	s.manifest.Templates = templateHashes(s.templates)
-	b, _ := encodeJSON(RunFile{Schema: RunFileSchema, RunID: s.runID})
+	b, _ := encodeJSON(RunFile{Schema: RunFileSchema, RunID: s.runID, Callsheet: s.args.callsheet, Plane: s.dep.url, CA: s.dep.caPath})
 	if err := os.WriteFile(filepath.Join(rt, RunFileName), b, 0o600); err != nil {
 		return failure("runtime_unavailable", err)
 	}

@@ -819,16 +819,16 @@ func a3Mutations() []mutation {
 			rewriteEnvironment(t, b, func(e *envEdit) { e.after.Complete, e.after.Code = false, CodeEnvUnobserved })
 		}},
 		{"diff suppressed", CritOwnerEnv, "environment_diff_mismatch", func(t *testing.T, b string) {
-			rewriteEnvironment(t, b, func(e *envEdit) { e.change("codex", "config.toml", func(r *EnvRecord) { r.SHA256 = zeros64 }) })
+			rewriteEnvironment(t, b, func(e *envEdit) { e.change("codex", "AGENTS.md", func(r *EnvRecord) { r.SHA256 = zeros64 }) })
 			editDoc(t, b, "environment/diff.json", func(d *EnvDiff) { d.Protected, d.Codes = []EnvChange{}, []string{} })
 		}},
 		// A3.4: the diff's full-record detail is bound to the compact
 		// snapshots; an altered or dropped detail record is a mismatch.
 		{"diff detail altered", CritOwnerEnv, "environment_diff_mismatch", func(t *testing.T, b string) {
-			rewriteEnvironment(t, b, func(e *envEdit) { e.change("codex", "config.toml", func(r *EnvRecord) { r.Mode = 0o644 }) })
+			rewriteEnvironment(t, b, func(e *envEdit) { e.change("codex", "AGENTS.md", func(r *EnvRecord) { r.Mode = 0o644 }) })
 			editDoc(t, b, "environment/diff.json", func(d *EnvDiff) {
 				for _, dt := range d.Detail {
-					if dt.After != nil && dt.After.Scope == "codex" && dt.After.Path == "config.toml" {
+					if dt.After != nil && dt.After.Scope == "codex" && dt.After.Path == "AGENTS.md" {
 						dt.After.Mode = 0o600
 					}
 				}

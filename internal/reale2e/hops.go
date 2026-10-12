@@ -55,20 +55,18 @@ func (s *supervisor) serveRequest(req ControlRequest) controlResponse {
 	return codeResponse(s.handleRequest(req))
 }
 
-// handleRequest judges one observe or capture-wait request inside the
-// loop.
+// handleRequest judges one observe or wait-task request inside the loop.
 func (s *supervisor) handleRequest(req ControlRequest) string {
-	if req.Op == opCapture {
-		return s.captureWait(req)
+	if req.Op == opWaitTask {
+		return s.waitTask(req)
 	}
 	return s.observe(req)
 }
 
-// captureWait admits a hop's wait capture only for the task the
-// supervisor accepted for that hop; it dispatches, approves and waits for
-// nothing (A3.6).
-func (s *supervisor) captureWait(req ControlRequest) string {
-	if h := s.hops[hopIndex(req.Hop)]; !h.observed || h.task == "" {
+// waitTask admits a hop's wait only for the task the supervisor accepted
+// for that hop; it dispatches, approves and waits for nothing (A3.7).
+func (s *supervisor) waitTask(req ControlRequest) string {
+	if h := s.hops[hopIndex(req.Hop)]; !h.observed || h.task == "" || h.task != req.Task {
 		return CodeTaskMismatch
 	}
 	return CodeAccepted

@@ -120,7 +120,7 @@ Launch with your runbook as the initial prompt:
 codex "$(cat -- '<runbook>')"
 ```
 
-Prerequisites: approve the Callsheet MCP tools and any command execution of your recipe through Codex's own approval and sandbox posture (its prompts or your configuration), with network access to the plane. This guide adds no Codex flag; its background wake stays UNVERIFIED (see the [runbook example](#coordinator-runbook-example)), so the short `task_wait` fallback needs only MCP approval.
+Prerequisites: approve the Callsheet MCP tools and any command execution of your recipe through Codex's own approval and sandbox posture (its prompts or your configuration), with network access to the plane. This guide adds no Codex flag; its background wake stays UNVERIFIED (see the [runbook example](#coordinator-runbook-example)), so the short `task_wait` fallback needs only MCP approval. Codex workers add a `[projects."<dir>"] trust_level` entry to `~/.codex/config.toml` for every directory they work in, so that file grows with normal Codex use; the [real end-to-end exercise](real-e2e.md) therefore treats it as tool-maintained state.
 
 Timeout and configuration status: see the catalog for this vendor's current facts and evidence. A larger call budget requires local qualification with response margin. Historical help-only candidate, never a current status: `mcp_servers.callsheet.tool_timeout_sec`.
 

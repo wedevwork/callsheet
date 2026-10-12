@@ -201,7 +201,7 @@ func deriveAuditRows(c *checker) []AuditRow {
 			requirement: "The coordinator dispatched hop " + Hops[i] + " once through MCP (no wait) on the pinned workspace instance and required base, with the run marker and the role's frozen selection, and the supervisor observed it"},
 			c.dispatchFacts(i))
 		add(rowSpec{id: n + "_wait", layer: LayerMechanical, fps: fpWait, criteria: []string{CritWaits},
-			requirement: "The hop's direct CLI wait ran as one Bash background job from the rendered template, its status captured by the capture-wait helper, its raw output was captured and reparsed, and the coordinator consumed its completion"},
+			requirement: "The hop's CLI wait ran as one Bash background job from the rendered wait-task template, its status captured by that helper, its raw output was captured and reparsed, and the coordinator consumed its completion"},
 			c.waitFacts(i))
 		add(rowSpec{id: n + "_result", layer: LayerMechanical, fps: fpResult, criteria: []string{CritHops, CritChain, CritArtifacts},
 			requirement: "Hop " + Hops[i] + " succeeded with exit 0 on its role's adapter, model and effort, published one commit whose single parent is its base, changed only its allowed paths and ended its complete, untruncated final answer with " + approvedMarkers[Hops[i]]},
@@ -946,7 +946,7 @@ func (c *checker) environmentFacts() rowFacts {
 			f.see("tool-maintained %s %s: %d added, %d changed, %d deleted, %d total", auditText(row.Scope, 40), auditText(row.TopLevel, 200),
 				row.Added, row.Changed, row.Deleted, row.Total)
 		}
-		f.see("%s", strings.Join(ClaudeStateExclusions, "; "))
+		f.see("%s", strings.Join(append(slices.Clone(ClaudeStateExclusions), OwnerAcceptedExclusions...), "; "))
 		f.refFile(c, "environment/diff.json", nil, "", "")
 	}
 	for _, phase := range []string{"before", "after"} {

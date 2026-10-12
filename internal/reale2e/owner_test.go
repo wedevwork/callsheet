@@ -293,19 +293,17 @@ func TestControlProtocol(t *testing.T) {
 	invalid := `{"ok":false,"code":"invalid_request"}` + "\n"
 	task := hexID("t_", 1)
 	observe := `{"run":"` + run + `","op":"observe","task":"` + task + `","hop":"designer"}`
-	capture := func(rest string) string { return `{"run":"` + run + `","op":"capture-wait"` + rest + "}\n" }
+	waitTask := func(rest string) string { return `{"run":"` + run + `","op":"wait-task"` + rest + "}\n" }
 	reviewLine, _ := json.Marshal(review)
 	for name, tc := range map[string]struct{ in, want string }{
 		"observe":               {observe + "\n", ok},
-		"capture":               {capture(`,"hop":"coder","code":7`), ok},
-		"capture bad hop":       {capture(`,"hop":"planner","code":0`), `{"ok":false,"code":"invalid_hop"}` + "\n"},
-		"capture code 256":      {capture(`,"hop":"coder","code":256`), invalid},
-		"capture negative code": {capture(`,"hop":"coder","code":-1`), invalid},
-		"capture fractional":    {capture(`,"hop":"coder","code":1.5`), invalid},
-		"capture string code":   {capture(`,"hop":"coder","code":"0"`), invalid},
-		"capture null code":     {capture(`,"hop":"coder","code":null`), invalid},
-		"capture no code":       {capture(`,"hop":"coder"`), invalid},
-		"capture task key":      {capture(`,"hop":"coder","code":0,"task":"` + task + `"`), invalid},
+		"wait-task":             {waitTask(`,"task":"` + task + `","hop":"coder"`), ok},
+		"wait-task bad hop":     {waitTask(`,"task":"` + task + `","hop":"planner"`), `{"ok":false,"code":"invalid_hop"}` + "\n"},
+		"wait-task no task":     {waitTask(`,"hop":"coder"`), invalid},
+		"wait-task null task":   {waitTask(`,"task":null,"hop":"coder"`), invalid},
+		"wait-task number task": {waitTask(`,"task":7,"hop":"coder"`), invalid},
+		"wait-task code key":    {waitTask(`,"task":"` + task + `","hop":"coder","code":0`), invalid},
+		"capture-wait removed":  {`{"run":"` + run + `","op":"capture-wait","hop":"coder","code":0}` + "\n", invalid},
 		"review":                {`{"run":"` + run + `","op":"review-material"}` + "\n", string(reviewLine) + "\n"},
 		"review extra key":      {`{"run":"` + run + `","op":"review-material","hop":"coder"}` + "\n", invalid},
 		"review stale run":      {`{"run":"20200101T000000Z-00000000","op":"review-material"}` + "\n", `{"ok":false,"code":"run_mismatch"}` + "\n"},
@@ -346,12 +344,12 @@ func TestControlProtocol(t *testing.T) {
 			}
 		})
 	}
-	if len(seen) != 3 || !slices.Contains(seen, ControlRequest{Run: run, Op: opCapture, Hop: HopCoder, Code: 7}) ||
+	if len(seen) != 3 || !slices.Contains(seen, ControlRequest{Run: run, Op: opWaitTask, Task: task, Hop: HopCoder}) ||
 		!slices.Contains(seen, ControlRequest{Run: run, Op: opReview}) {
 		t.Fatalf("the handler saw %d requests: %+v", len(seen), seen)
 	}
 	// The helper and the removed subcommands through MainWith.
-	if err := os.WriteFile(filepath.Join(rt, RunFileName), []byte(`{"schema":"`+RunFileSchema+`","run_id":"`+run+`"}`+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(rt, RunFileName), []byte(runFileJSON(run, "/bin/callsheet")), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	helperRun := func(args ...string) (int, string) {
@@ -380,13 +378,26 @@ func TestControlProtocol(t *testing.T) {
 	if code, _ := helperRun("observe", "--run", other, "--task", task, "--hop", HopDesigner); code != 2 {
 		t.Fatal("an invalid run file passed")
 	}
-	os.WriteFile(filepath.Join(other, RunFileName), []byte(`{"schema":"`+RunFileSchema+`","run_id":"`+run+`"}`), 0o600)
+	os.WriteFile(filepath.Join(other, RunFileName), []byte(`{"schema":"callsheet-real-e2e-run/v1","run_id":"`+run+`"}`), 0o600)
+	if code, _ := helperRun("observe", "--run", other, "--task", task, "--hop", HopDesigner); code != 2 {
+		t.Fatal("a version 1 run file passed")
+	}
+	// A3.7: the wait's executable, plane and CA are required.
+	for name, vals := range map[string][3]string{"relative callsheet": {"rel", "https://127.0.0.1:1", "/rt/ca.crt"},
+		"no plane": {"/bin/callsheet", "", "/rt/ca.crt"}, "relative ca": {"/bin/callsheet", "https://127.0.0.1:1", "rel"}} {
+		doc := `{"schema":"` + RunFileSchema + `","run_id":"` + run + `","callsheet":"` + vals[0] + `","plane":"` + vals[1] + `","ca":"` + vals[2] + `"}`
+		os.WriteFile(filepath.Join(other, RunFileName), []byte(doc), 0o600)
+		if _, err := readRunFile(other); err == nil {
+			t.Errorf("a run file with a %s passed", name)
+		}
+	}
+	os.WriteFile(filepath.Join(other, RunFileName), []byte(runFileJSON(run, "/bin/callsheet")), 0o600)
 	if code, out := helperRun("observe", "--run", other, "--task", task, "--hop", HopDesigner); code != 2 || !strings.Contains(out, "cannot reach the supervisor") {
 		t.Fatalf("no supervisor = %d %q", code, out)
 	}
 	long := filepath.Join(other, strings.Repeat("l", 90))
 	os.Mkdir(long, 0o700)
-	os.WriteFile(filepath.Join(long, RunFileName), []byte(`{"schema":"`+RunFileSchema+`","run_id":"`+run+`"}`), 0o600)
+	os.WriteFile(filepath.Join(long, RunFileName), []byte(runFileJSON(run, "/bin/callsheet")), 0o600)
 	if code, out := helperRun("observe", "--run", long, "--task", task, "--hop", HopDesigner); code != 2 || !strings.Contains(out, "90 bytes") {
 		t.Fatalf("long socket = %d %q", code, out)
 	}
@@ -397,7 +408,7 @@ func TestControlProtocol(t *testing.T) {
 	for name, answer := range map[string]string{"garbage": "nope\n", "unknown code": `{"ok":true,"code":"approved"}` + "\n",
 		"no answer": "", "refusal as ok": `{"ok":true,"code":"closing"}` + "\n"} {
 		dir := shortTemp(t)
-		os.WriteFile(filepath.Join(dir, RunFileName), []byte(`{"schema":"`+RunFileSchema+`","run_id":"`+run+`"}`), 0o600)
+		os.WriteFile(filepath.Join(dir, RunFileName), []byte(runFileJSON(run, "/bin/callsheet")), 0o600)
 		ln, err := net.Listen("unix", filepath.Join(dir, SocketName))
 		if err != nil {
 			t.Fatal(err)
@@ -416,7 +427,7 @@ func TestControlProtocol(t *testing.T) {
 		}
 		ln.Close()
 	}
-	// Responses decode strictly per operation: observe and capture-wait
+	// Responses decode strictly per operation: observe and wait-task
 	// keep exactly ok and code; only a successful review-material adds the
 	// commit and the three files.
 	files := `[{"path":"design.md","sha256":"` + zeros64 + `"},{"path":"main.go","sha256":"` + zeros64 + `"},{"path":"main_test.go","sha256":"` + zeros64 + `"}]`
@@ -426,8 +437,8 @@ func TestControlProtocol(t *testing.T) {
 		ok       bool
 	}{
 		{opObserve, `{"ok":true,"code":"accepted"}`, true},
-		{opCapture, `{"ok":false,"code":"task_mismatch"}`, true},
-		{opCapture, `{"ok":true,"code":"accepted","commit":"` + commit + `"}`, false},
+		{opWaitTask, `{"ok":false,"code":"task_mismatch"}`, true},
+		{opWaitTask, `{"ok":true,"code":"accepted","commit":"` + commit + `"}`, false},
 		{opObserve, `{"ok":true}`, false},
 		{opObserve, `{"ok":true,"code":"accepted","code":"accepted"}`, false},
 		{opReview, `{"ok":true,"code":"accepted","commit":"` + commit + `","files":` + files + `}`, true},

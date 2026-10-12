@@ -325,7 +325,7 @@ var WorkspaceCoverageManifest = []CoverageEntry{
 	{Group: GroupChanged, File: modulePath + "/internal/reale2e/environment.go"},
 	{Group: GroupChanged, File: modulePath + "/internal/reale2e/session.go"},
 	{Group: GroupChanged, File: modulePath + "/internal/reale2e/validate.go"},
-	// Amendment A3.6: the coordinator's restricted capture-wait and
+	// Amendments A3.6 and A3.7: the coordinator's restricted wait-task and
 	// review-material helpers, a new untagged file, whole.
 	{Group: GroupChanged, File: modulePath + "/internal/reale2e/helpers.go"},
 	{Group: GroupChanged, File: modulePath + "/internal/devcheck/platform.go"},

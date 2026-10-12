@@ -250,6 +250,8 @@ func shippedTemplates(t *testing.T, root string) {
 		shipped[n] = b
 	}
 	for name, b := range shipped {
+		// A3.7's wait-task helper is not the retired wait relay.
+		b = bytes.ReplaceAll(b, []byte("reale2e wait-task"), nil)
 		for _, gone := range []string{"reale2e wait", "reale2e finish", "--coordinator-settings", "--setting-sources", "--strict-mcp-config", "--session-id",
 			"setup-attestation", "attested", "python3", "continue after recorded decision", "move CLAUDE.md", "coordinator-exit.json", "event-map.json"} {
 			if bytes.Contains(b, []byte(gone)) {
@@ -273,16 +275,37 @@ func shippedTemplates(t *testing.T, root string) {
 		}
 	}
 	// A3.6: the exact rule recipe as the shared renderer prints it, and
-	// the three adjacent coverage exclusions.
+	// the three adjacent coverage exclusions; A3.7: the one wait-task
+	// command and the two further exclusions.
 	rules, err := allowedTools(symbolicPermissions)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"```\n" + strings.Join(rules, "\n") + "\n```\n", "```\n" + strings.Join(ClaudeStateExclusions, "\n") + "\n```\n",
-		"`reale2e capture-wait --run D --hop H --code N`", "`reale2e review-material --run D`", "`coordinator_tool_denied`", "`permission_rule_invalid`",
-		`--code "$?"`, "tool-maintained", "`environment/diff.json`"} {
+	exclusions := append(slices.Clone(ClaudeStateExclusions), OwnerAcceptedExclusions...)
+	for _, want := range []string{"```\n" + strings.Join(rules, "\n") + "\n```\n", "```\n" + strings.Join(exclusions, "\n") + "\n```\n",
+		"`reale2e wait-task --run D --task ID --hop H`", "`reale2e review-material --run D`", "`coordinator_tool_denied`", "`permission_rule_invalid`",
+		"exactly `R wait-task --run D --task TASK_ID --hop H`", "exactly the 15 rules",
+		"tool-maintained", "`environment/diff.json`", "| `~/.codex` | root `AGENTS*.md`, `instructions.md`, `prompts/` |"} {
 		if !strings.Contains(string(doc), want) {
 			t.Errorf("docs/real-e2e.md lacks %q", want)
+		}
+	}
+	for _, gone := range []string{"capture-wait", `"$?"`, "16 rules", "| `config.toml`, root `AGENTS*.md`"} {
+		if strings.Contains(string(doc), gone) {
+			t.Errorf("docs/real-e2e.md still carries %q", gone)
+		}
+	}
+	coord, err := os.ReadFile(filepath.Join(root, "docs", "coordinator.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	codex, _, _ := strings.Cut(string(coord)[strings.Index(string(coord), "\n## OpenAI Codex\n"):], "\n## Grok Build\n")
+	if !strings.Contains(codex, "`[projects.\"<dir>\"] trust_level` entry to `~/.codex/config.toml` for every directory they work in") {
+		t.Error("the Codex section of docs/coordinator.md does not say that Codex workers add trust entries")
+	}
+	for n, b := range tpl {
+		if bytes.Contains(b, []byte("capture-wait")) || bytes.Contains(b, []byte("{{CALLSHEET}}")) || bytes.Contains(b, []byte("{{WAITS_DIR}}")) {
+			t.Errorf("%s still carries the A3.6 wait", n)
 		}
 	}
 	for _, r := range flow.Roles {

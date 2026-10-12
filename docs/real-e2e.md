@@ -20,9 +20,9 @@ A passing run demonstrates this installation's mechanical workflow and the deter
 The coordinator runs with your user instructions, settings, permissions, skills, agents, plugins, hooks and login exactly as they are. The harness writes no agent configuration or settings file (the runtime MCP configuration and the evidence are its own files). Setting `CALLSHEET_REAL_E2E=1` is your authorization of exactly two session-only flags, identical in both coordinator phases:
 
 - `--settings '{"sandbox":{"enabled":false}}'` merges over your settings for this session only. It is needed only because this exercise's plane listens on host loopback, which a sandboxed Bash command cannot reach (see [coordinator.md](coordinator.md)); it is not a general Callsheet requirement.
-- `--allowed-tools` followed by exactly the 16 rules below lets the headless session run them without a prompt (print mode cannot answer one) for this session only.
+- `--allowed-tools` followed by exactly the 15 rules below lets the headless session run them without a prompt (print mode cannot answer one) for this session only.
 
-In the rules, C and R are the absolute `callsheet` and `reale2e` paths, U the plane URL, A the runtime CA path and D the runtime directory, each shell-quoted; only the task-ID and exit-code slots are wildcards. The six MCP rules name exactly the Callsheet tools the prompt uses, a deliberate narrowing of the server-wide `mcp__callsheet__*`:
+In the rules, R is the absolute `reale2e` path and D the runtime directory; only the task-ID slots are wildcards. The six MCP rules name exactly the Callsheet tools the prompt uses, a deliberate narrowing of the server-wide `mcp__callsheet__*`:
 
 ```
 mcp__callsheet__ws_push
@@ -31,24 +31,23 @@ mcp__callsheet__task_show
 mcp__callsheet__ws_status
 mcp__callsheet__ws_diff
 mcp__callsheet__ws_pull
-Bash(C task wait * --until-done --json --plane U --ca A)
 Bash(R observe --run D --task * --hop designer)
 Bash(R observe --run D --task * --hop design-reviewer)
 Bash(R observe --run D --task * --hop coder)
 Bash(R observe --run D --task * --hop code-reviewer)
-Bash(R capture-wait --run D --hop designer --code *)
-Bash(R capture-wait --run D --hop design-reviewer --code *)
-Bash(R capture-wait --run D --hop coder --code *)
-Bash(R capture-wait --run D --hop code-reviewer --code *)
+Bash(R wait-task --run D --task * --hop designer)
+Bash(R wait-task --run D --task * --hop design-reviewer)
+Bash(R wait-task --run D --task * --hop coder)
+Bash(R wait-task --run D --task * --hop code-reviewer)
 Bash(R review-material --run D)
 ```
 
-The command prints this template before any vendor runs and the run's fully rendered list before the coordinator's first phase. A path containing `*`, `?`, `[`, `]`, `(`, `)`, a comma, CR, LF or NUL is refused before any vendor starts (`permission_rule_invalid`) instead of widening a rule. There is no permission bypass, permission mode, second list or tool filtering, and none of your rules or denies is removed: your inherited permissions stay active. Each hop's background wait is exactly `C task wait TASK_ID --until-done --json --plane U --ca A >D/coord/waits/NN/result.json 2>D/coord/waits/NN/error.txt; R capture-wait --run D --hop H --code "$?"` (NN the hop number, H the hop).
+The command prints this template before any vendor runs and the run's fully rendered list before the coordinator's first phase. A `reale2e` or runtime path containing `*`, `?`, `[`, `]`, `(`, `)`, a comma, CR, LF or NUL, or any character that would need shell quoting (a space or a quote, for example), is refused before any vendor starts (`permission_rule_invalid`) instead of widening a rule. There is no permission bypass, permission mode, second list or tool filtering, and none of your rules or denies is removed: your inherited permissions stay active. Each hop's background wait is exactly `R wait-task --run D --task TASK_ID --hop H` (H the hop): one simple command, because a permission rule cannot match a command with a redirect, a `;` or a quoted expansion. No Bash line of the coordinator prompt contains a redirect, `;`, `&&`, `|` or a quote.
 
 The helpers run in the coordinator's Bash, read and write only fixed files of the live runtime, follow no symlink and make one exchange with the supervisor:
 
 - `reale2e observe --run D --task ID --hop H` reports a task the coordinator admitted for hop H.
-- `reale2e capture-wait --run D --hop H --code N` records the wait's exit status N (0 to 255) once the supervisor confirms hop H's accepted task, prints the captured wait output and exits N (1 on a supervisor refusal, 2 on a usage or file error).
+- `reale2e wait-task --run D --task ID --hop H`, once the supervisor confirms that ID is hop H's accepted task, runs `callsheet task wait ID --until-done --json` itself with the Callsheet executable, plane URL and CA from the runtime's run file, writes its stdout, stderr and exit status to the hop's `result.json`, `error.txt` and `exit-code` under `D/coord/waits/NN`, prints the captured wait output and exits with the wait's status (1 on a supervisor refusal, before any wait runs; 2 on a usage or file error, with no `exit-code` written).
 - `reale2e review-material --run D` prints the coder's `design.md`, `main.go` and `main_test.go` from the coordinator's `ws_pull`, each with its SHA-256, once they match the admitted coder commit; the coordinator appends them to the code reviewer's goal.
 
 A denied tool call, inside or outside this list (for example a rule of yours that denies a redirect or a helper), is never retried or widened: it fails the attempt with `coordinator_tool_denied` and its command, even when Claude exits 0. Resolve it in your own configuration and rerun.
@@ -104,19 +103,21 @@ Only your repositories and this exact owner-configuration list are protected; an
 | Vendor home | Owner configuration |
 |---|---|
 | `~/.claude` | `CLAUDE.md`, root `settings*.json`, `agents/`, `skills/`, `commands/`, `hooks/`, `plugins/installed_plugins.json`, `plugins/known_marketplaces.json`, `plugins/blocklist.json`, `plugins/config.json` |
-| `~/.codex` | `config.toml`, root `AGENTS*.md`, `instructions.md`, `prompts/` |
+| `~/.codex` | root `AGENTS*.md`, `instructions.md`, `prompts/` |
 | `~/.grok` | `config.toml`, `managed_config.toml`, `settings.json`, `user-settings.json` |
 | `~/.cursor` | `cli-config.json`, `mcp.json` |
 
-The vendor homes and the `plugins/` directory must stay the same real directories (a home may be created during the run, not removed or replaced); size and timestamp changes caused by their children are fine. Everything else in a vendor home is tool-maintained, whatever its name or type: session transcripts, history, logs, caches, state databases, token refreshes and every Cursor file. A first normal run is expected to list such changes; they are reported as counts only and never fail the run. Their per-entry metadata (no contents) is detailed in `environment/diff.json` up to its 4 MiB bound, and the report and audit state how many entries were omitted beyond it. These are accepted coverage exclusions, shown together in `report.txt` on passing and failed runs alike:
+An owner-configuration entry changes only when its content, type, mode or link target differs: a tool rewriting a listed file with identical bytes (a new inode and timestamps) is no change, while a same-size content change still fails, because these files are content-hashed. A listed file over 1 MiB is fingerprinted by metadata only, so its size and modification time stand in for its content. The vendor homes must stay the same real directories (a home may be created during the run, not removed or replaced), and the `plugins/` directory must stay a real directory; size and timestamp changes caused by their children are fine. Everything else in a vendor home is tool-maintained, whatever its name or type: session transcripts, history, logs, caches, state databases, token refreshes and every Cursor file. A first normal run is expected to list such changes; they are reported as counts only and never fail the run. Their per-entry metadata (no contents) is detailed in `environment/diff.json` up to its 4 MiB bound, and the report and audit state how many entries were omitted beyond it. These are accepted coverage exclusions, shown together in `report.txt` on passing and failed runs alike:
 
 ```
 not covered: ~/.claude.json
 not covered: ~/.claude/.config.json (Claude state file; holds per-project tool grants, MCP-server lists and trust flags)
 not covered: ~/.claude/backups/.config.json.backup.* (backups of Claude state, including per-project grants)
+not covered: ~/.codex/config.toml (Codex records a trust entry per working folder)
+not covered: untracked .claude/ directories inside protected repositories
 ```
 
-Claude's state files hold per-project tool grants and MCP-server selections, but a change to them does not fail the run. A symlink in a vendor home or in the directories scanned above your repositories is checked as the link itself (where it points, not what it points at) and never followed. The harness never repairs, moves or deletes any of your files.
+Claude's state files hold per-project tool grants and MCP-server selections, but a change to them does not fail the run. Codex appends a `[projects."<dir>"] trust_level` entry to `~/.codex/config.toml` for every directory it works in, so the whole file is tool-maintained like Claude's `.config.json`; your `AGENTS*.md`, `instructions.md` and `prompts/` stay strict. Each protected repository's status digest leaves out its untracked top-level `.claude/` directory, which may hold Claude Code sandbox placeholders; its tracked content and HEAD stay strict. A symlink in a vendor home or in the directories scanned above your repositories is checked as the link itself (where it points, not what it points at) and never followed. The harness never repairs, moves or deletes any of your files.
 
 Right after the run, review `audit.md` with your external dev-flow coordinator: it checks every judgment row and any disputed mechanical verdict and appends corrections to a separate `audit-review.md` (run ID, audit and report SHA-256, row ID, original and revised verdict, who and why, evidence references). Never edit `audit.json`, `audit.md`, the report or the evidence; a correction cannot turn a FAIL into a PASS. `reale2e check --evidence DIR` re-validates a bundle offline (optional).
 
