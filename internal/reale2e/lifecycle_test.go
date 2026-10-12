@@ -333,6 +333,7 @@ func TestAttemptLifecycle(t *testing.T) {
 			t.Fatalf("cleanup took %s, complete %v, unsettled %v", e.Sub(s), c.Complete, c.UnsettledTasks)
 		}
 	})
+	t.Run("early stop", earlyStopCases)
 	t.Run("coordinator phases", func(t *testing.T) {
 		t.Parallel()
 		for name, tc := range map[string]struct {
@@ -341,6 +342,7 @@ func TestAttemptLifecycle(t *testing.T) {
 		}{
 			"leader reaped but group alive":      {func(c *coordScript) { c.lingering[0] = true }, "coordinator_group_alive"},
 			"phase 2 group alive":                {func(c *coordScript) { c.lingering[1] = true }, "coordinator_group_alive"},
+			"group survives cleanup":             {func(c *coordScript) { c.lingering[0], c.stubborn[0] = true, true }, "coordinator_group_alive"},
 			"nonzero exit":                       {func(c *coordScript) { c.phaseExit[0] = 1 }, "coordinator_exit_nonzero"},
 			"exit while background work remains": {func(c *coordScript) { c.earlyResult = true }, CodePhaseEarly},
 			"transcript missing":                 {func(c *coordScript) { c.noTranscript = true }, CodeSessionUnobserved},
@@ -368,11 +370,31 @@ func TestAttemptLifecycle(t *testing.T) {
 				}
 				var c CleanupRecord
 				readDoc(t, filepath.Join(f.bundle(), "cleanup.json"), &c)
-				if strings.Contains(name, "group alive") {
-					// A leader exit without its group's end is not cleanup:
-					// the runtime is kept with recovery instructions.
-					if _, err := os.Stat(f.sup.runtime); err != nil || c.Complete || !strings.Contains(f.stdout.String(), "cleanup is unresolved") {
-						t.Fatalf("runtime %v complete %v", err, c.Complete)
+				var ce CoordinatorExit
+				readDoc(t, filepath.Join(f.bundle(), filepath.FromSlash(coordinatorExitFile)), &ce)
+				switch {
+				case strings.Contains(name, "group alive"):
+					// A3.6: the group cleanup's last stop ended is proved
+					// gone on the same captured handle and the observation
+					// updated; the attempt still fails for the early
+					// survival.
+					if _, err := os.Stat(f.sup.runtime); !os.IsNotExist(err) || !c.Complete || !ce.Phases[len(ce.Phases)-1].GroupGone {
+						t.Fatalf("runtime %v complete %v exit %+v", err, c.Complete, ce.Phases)
+					}
+					if r := f.report(); r.Result != ResultFail || criterion(r, CritCleanup).Result != "pass" {
+						t.Fatalf("report %v", failedCodes(r))
+					}
+					return
+				case name == "group survives cleanup":
+					// A group no signal ends is not cleanup: the runtime is
+					// kept with recovery instructions and the observation
+					// stays unverified.
+					if _, err := os.Stat(f.sup.runtime); err != nil || c.Complete || !strings.Contains(f.stdout.String(), "cleanup is unresolved") ||
+						ce.Phases[0].GroupGone {
+						t.Fatalf("runtime %v complete %v exit %+v", err, c.Complete, ce.Phases)
+					}
+					if !slices.Contains(criterion(f.report(), CritCleanup).Codes, "coordinator_group_unverified") {
+						t.Fatalf("cleanup %v", failedCodes(f.report()))
 					}
 					return
 				}
@@ -793,6 +815,192 @@ func TestUnresolvedCommandGroups(t *testing.T) {
 		}
 		if code := f.attempt(); code != 0 {
 			t.Fatalf("attempt = %d %q", code, f.sup.failCode)
+		}
+	})
+}
+
+// earlyStopCases (FP-8, UT-7, A3.6): cleanup accounts for exactly the
+// processes that started. The first-run shape (a first-call denial, then
+// phase 1's result and exit 0) has one coordinator group and eight
+// verified instances, no invented phase 2, a passing cleanup and a failing
+// run; a missing, duplicated or conflicting started-instance record or
+// observation fails, and so does a phase whose start failed or whose
+// launch evidence could not be written only where evidence is missing.
+func earlyStopCases(t *testing.T) {
+	t.Parallel()
+	f := newFakeWorld(t)
+	f.coord.firstDenied = true
+	if code := f.attempt(); code != 1 {
+		t.Fatalf("attempt = %d %q", code, f.sup.failCode)
+	}
+	b := f.bundle()
+	var cl CleanupRecord
+	readDoc(t, filepath.Join(b, "cleanup.json"), &cl)
+	names := map[string]int{}
+	for _, s := range cl.Started {
+		names[s.Name]++
+		i := slices.IndexFunc(cl.Processes, func(p ProcRecord) bool { return p.StartedSeq == s.StartedSeq })
+		if s.PID <= 0 || i < 0 || cl.Processes[i].Name != s.Name || cl.Processes[i].PID != s.PID || !cl.Processes[i].ExitVerified {
+			t.Fatalf("started %+v has no verified stop in %+v", s, cl.Processes)
+		}
+	}
+	if len(cl.Started) != 8 || len(cl.Processes) != 8 || names[phaseHandle(1)] != 1 || names[phaseHandle(2)] != 0 || names["plane"] != 1 || !cl.Complete {
+		t.Fatalf("started %v (%d), cleanup %+v", names, len(cl.Started), cl)
+	}
+	for name, n := range names {
+		if name != "plane" && name != phaseHandle(1) && n != 2 {
+			t.Errorf("sidecar %s has %d generations", name, n)
+		}
+	}
+	var ce CoordinatorExit
+	readDoc(t, filepath.Join(b, filepath.FromSlash(coordinatorExitFile)), &ce)
+	if len(ce.Phases) != 1 || ce.Phases[0].Phase != 1 || !ce.Phases[0].Reaped || !ce.Phases[0].GroupGone || ce.Phases[0].ExitCode == nil ||
+		*ce.Phases[0].ExitCode != 0 || len(f.launcher.phaseSpecs()) != 1 {
+		t.Fatalf("coordinator exit %+v, %d launches", ce.Phases, len(f.launcher.phaseSpecs()))
+	}
+	// No stale PID: the reaped leader was never signalled afterwards.
+	if p := f.coord.procs[0]; len(p.signals) != 0 {
+		t.Fatalf("the reaped phase-1 leader was signalled: %v", p.signals)
+	}
+	r := f.report()
+	if r.Result != ResultFail || criterion(r, CritCleanup).Result != "pass" || !slices.Equal(criterion(r, CritSetup).Codes, []string{"launch_missing"}) ||
+		!slices.Contains(criterion(r, CritEventMap).Codes, CodeToolDenied) {
+		t.Fatalf("report %v", failedCodes(r))
+	}
+	// Mutations of the stored evidence, each on its own copy.
+	for name, tc := range map[string]struct {
+		edit       func(t *testing.T, b string)
+		crit, want string
+	}{
+		"phase 1 exit observation removed": {func(t *testing.T, b string) {
+			editDoc(t, b, coordinatorExitFile, func(c *CoordinatorExit) { c.Phases = []PhaseProcess{} })
+		}, CritSetup, "coordinator_exit_unobserved"},
+		"observation duplicated": {func(t *testing.T, b string) {
+			editDoc(t, b, coordinatorExitFile, func(c *CoordinatorExit) { c.Phases = append(c.Phases, c.Phases[0]) })
+		}, CritCleanup, "coordinator_group_unverified"},
+		"invented phase 2": {func(t *testing.T, b string) {
+			editDoc(t, b, coordinatorExitFile, func(c *CoordinatorExit) { p := c.Phases[0]; p.Phase = 2; c.Phases = append(c.Phases, p) })
+		}, CritCleanup, "coordinator_group_unverified"},
+		"group alive": {func(t *testing.T, b string) {
+			editDoc(t, b, coordinatorExitFile, func(c *CoordinatorExit) { c.Phases[0].GroupGone = false })
+		}, CritCleanup, "coordinator_group_unverified"},
+		"observed PID differs": {func(t *testing.T, b string) {
+			editDoc(t, b, coordinatorExitFile, func(c *CoordinatorExit) { c.Phases[0].PID++ })
+		}, CritCleanup, "coordinator_group_unverified"},
+		"sidecar generation stop removed": {func(t *testing.T, b string) {
+			editDoc(t, b, "cleanup.json", func(c *CleanupRecord) {
+				i := slices.IndexFunc(c.Processes, func(p ProcRecord) bool { return p.Name != "plane" && p.Name != phaseHandle(1) })
+				c.Processes = slices.Delete(c.Processes, i, i+1)
+			})
+		}, CritCleanup, "process_record_missing"},
+		"phase stop removed": {func(t *testing.T, b string) {
+			editDoc(t, b, "cleanup.json", func(c *CleanupRecord) {
+				c.Processes = slices.DeleteFunc(c.Processes, func(p ProcRecord) bool { return p.Name == phaseHandle(1) })
+			})
+		}, CritCleanup, "process_record_missing"},
+		"stop duplicated": {func(t *testing.T, b string) {
+			editDoc(t, b, "cleanup.json", func(c *CleanupRecord) { c.Processes = append(c.Processes, c.Processes[0]) })
+		}, CritCleanup, "process_record_conflict"},
+		"stop PID conflicts": {func(t *testing.T, b string) {
+			editDoc(t, b, "cleanup.json", func(c *CleanupRecord) { c.Processes[0].PID++ })
+		}, CritCleanup, "process_record_conflict"},
+		"started instance removed": {func(t *testing.T, b string) {
+			editDoc(t, b, "cleanup.json", func(c *CleanupRecord) { c.Started = c.Started[1:] })
+		}, CritCleanup, "process_record_conflict"},
+		"started instance duplicated": {func(t *testing.T, b string) {
+			editDoc(t, b, "cleanup.json", func(c *CleanupRecord) { c.Started = append(c.Started, c.Started[0]) })
+		}, CritCleanup, "process_record_conflict"},
+		"start event removed": {func(t *testing.T, b string) {
+			editEvents(t, b, false, func(e []Event) []Event {
+				return slices.DeleteFunc(e, func(x Event) bool { return x.Type == EvProcessStarted && x.Handle == "plane" })
+			})
+		}, CritCleanup, "process_record_conflict"},
+		"start event without PID": {func(t *testing.T, b string) {
+			editEvents(t, b, false, func(e []Event) []Event {
+				i := slices.IndexFunc(e, func(x Event) bool { return x.Type == EvPhaseStarted })
+				e[i].PID = 0
+				return e
+			})
+		}, CritCleanup, "process_record_conflict"},
+		"unverified stop": {func(t *testing.T, b string) {
+			editDoc(t, b, "cleanup.json", func(c *CleanupRecord) { c.Processes[1].ExitVerified = false })
+		}, CritCleanup, "process_exit_unverified"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			c := filepath.Join(t.TempDir(), "b")
+			if err := copyTree(b, c); err != nil {
+				t.Fatal(err)
+			}
+			tc.edit(t, c)
+			bl, err := LoadBundle(c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ck := newChecker(bl)
+			method := (*checker).cleanup
+			if tc.crit == CritSetup {
+				method = (*checker).setup
+			}
+			if got := ck.methodCodes(method)[tc.crit]; !slices.Contains(got, tc.want) {
+				t.Fatalf("%s = %v", tc.crit, got)
+			}
+			if got := ck.methodCodes((*checker).cleanup)[CritCleanup]; name == "phase 1 exit observation removed" && !slices.Contains(got, "coordinator_group_unverified") {
+				t.Fatalf("cleanup = %v", got)
+			}
+		})
+	}
+	// A failed phase-1 Start invents no started instance: no phase,
+	// no observation, cleanup still passes.
+	t.Run("start failure", func(t *testing.T) {
+		t.Parallel()
+		f := newFakeWorld(t)
+		f.override = func(s ProcSpec) (behavior, bool) {
+			if s.Path == fakeClaude && len(s.Args) > 0 && s.Args[0] == "-p" {
+				return behavior{startErr: errors.New("exec format error")}, true
+			}
+			return behavior{}, false
+		}
+		if code := f.attempt(); code != 1 {
+			t.Fatalf("attempt = %d", code)
+		}
+		var cl CleanupRecord
+		readDoc(t, filepath.Join(f.bundle(), "cleanup.json"), &cl)
+		var ce CoordinatorExit
+		readDoc(t, filepath.Join(f.bundle(), filepath.FromSlash(coordinatorExitFile)), &ce)
+		if slices.ContainsFunc(cl.Started, func(s StartedProc) bool { return s.Name == phaseHandle(1) }) || len(ce.Phases) != 0 || len(cl.Started) != len(cl.Processes) {
+			t.Fatalf("started %+v phases %+v", cl.Started, ce.Phases)
+		}
+		r := f.report()
+		if r.Result != ResultFail || criterion(r, CritCleanup).Result != "pass" || slices.Contains(criterion(r, CritSetup).Codes, "coordinator_exit_unobserved") ||
+			!slices.Contains(criterion(r, CritSetup).Codes, "launch_missing") {
+			t.Fatalf("report %v", failedCodes(r))
+		}
+	})
+	// Launch evidence that cannot be written after a successful Start:
+	// the started group is still stopped, observed and accounted for.
+	t.Run("launch write failure", func(t *testing.T) {
+		t.Parallel()
+		f := newFakeWorld(t)
+		f.override = func(s ProcSpec) (behavior, bool) {
+			if s.Path == fakeClaude && len(s.Args) > 0 && s.Args[0] == "-p" {
+				os.MkdirAll(filepath.Join(f.evidence, filepath.FromSlash(launchFiles[0]), "blocked"), 0o700)
+			}
+			return behavior{}, false
+		}
+		if code := f.attempt(); code == 0 {
+			t.Fatal("PASS without launch evidence")
+		}
+		var cl CleanupRecord
+		readDoc(t, filepath.Join(f.evidence, "cleanup.json"), &cl)
+		i := slices.IndexFunc(cl.Started, func(s StartedProc) bool { return s.Name == phaseHandle(1) })
+		if i < 0 || !slices.ContainsFunc(cl.Processes, func(p ProcRecord) bool { return p.StartedSeq == cl.Started[i].StartedSeq && p.ExitVerified }) {
+			t.Fatalf("the started phase is not accounted for: %+v %+v", cl.Started, cl.Processes)
+		}
+		var ce CoordinatorExit
+		readDoc(t, filepath.Join(f.evidence, filepath.FromSlash(coordinatorExitFile)), &ce)
+		if len(ce.Phases) != 1 || ce.Phases[0].StartedSeq != cl.Started[i].StartedSeq || !ce.Phases[0].GroupGone {
+			t.Fatalf("observation %+v", ce.Phases)
 		}
 	})
 }

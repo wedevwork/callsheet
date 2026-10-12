@@ -129,10 +129,10 @@ func codeOf(err error) string {
 	return CodeInternalError
 }
 
-// ctrlMsg is an observe request forwarded to the loop.
+// ctrlMsg is a control request forwarded to the loop.
 type ctrlMsg struct {
 	req   ControlRequest
-	reply chan string
+	reply chan controlResponse
 }
 
 // hopState is one feature hop's live state.
@@ -196,8 +196,11 @@ type supervisor struct {
 	dep        *deployment
 	mu         sync.Mutex
 	children   []*child
+	started    []StartedProc
 	records    []ProcRecord
 	stoppedSet map[*child]bool
+	// allowed is the coordinator's rendered session allow-list.
+	allowed []string
 
 	seed        *seedRepo
 	collectPath string
@@ -235,17 +238,28 @@ func (s *supervisor) say(format string, args ...any) {
 	fmt.Fprintf(s.stdout, "reale2e: "+format+"\n", args...)
 }
 
-// track records a started child.
-func (s *supervisor) track(c *child) {
+// track records a successfully started child (A3.6): its start event of
+// type typ with the captured PID, and the started-instance inventory
+// entry cleanup accounts for. It returns the event's sequence.
+func (s *supervisor) track(c *child, typ string, code ...string) int {
+	ev := Event{Type: typ, Handle: c.name, PID: c.proc.PID()}
+	if len(code) > 0 {
+		ev.Code = code[0]
+	}
+	ev = s.ev.event(ev)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	c.startedSeq = ev.Seq
 	s.children = append(s.children, c)
+	s.started = append(s.started, StartedProc{Name: c.name, PID: ev.PID, StartedSeq: ev.Seq})
+	return ev.Seq
 }
 
 // stopped records a child's stop.
 func (s *supervisor) stopped(c *child, rec ProcRecord) {
 	s.mu.Lock()
 	s.stoppedSet[c] = true
+	rec.StartedSeq = c.startedSeq
 	s.records = append(s.records, rec)
 	s.mu.Unlock()
 	s.ev.event(Event{Type: EvProcessStopped, Handle: c.name, Code: rec.StoppedBy})
@@ -257,8 +271,7 @@ func (s *supervisor) stopped(c *child, rec ProcRecord) {
 func (s *supervisor) command(spec ProcSpec, timeout time.Duration, limit int) (CommandResult, error) {
 	res, err := runCommand(s.w.Launcher, s.w.Clock, spec, timeout, limit)
 	if errors.Is(err, errUnverifiedStop) {
-		s.track(&child{name: "command " + filepath.Base(spec.Path), spec: spec, proc: res.Proc, logs: newLineLog()})
-		s.ev.event(Event{Type: EvProcessStarted, Handle: "command " + filepath.Base(spec.Path), Code: "unverified_stop"})
+		s.track(&child{name: "command " + filepath.Base(spec.Path), spec: spec, proc: res.Proc, logs: newLineLog()}, EvProcessStarted, "unverified_stop")
 	}
 	return res, err
 }
@@ -487,8 +500,9 @@ func (s *supervisor) fail(code string, err error) {
 // attemptRun runs the phases up to the end of the feature loop: root
 // validation and the baseline fingerprint precede every executable probe.
 func (s *supervisor) attemptRun() error {
-	for _, f := range []func() error{s.protectedRoots, s.baselineSnapshot, s.staticPreflight, s.createRuntime, s.deploy, s.authPreflight,
-		s.prepareSeed, s.prepareCoordinator, func() error { return s.launchPhase(1, s.rendered[PhasePrompt1]) }} {
+	for _, f := range []func() error{s.protectedRoots, s.baselineSnapshot, s.printPermissionTemplate, s.staticPreflight, s.createRuntime,
+		s.deploy, s.renderPermissions, s.authPreflight, s.prepareSeed, s.prepareCoordinator,
+		func() error { return s.launchPhase(1, s.rendered[PhasePrompt1]) }} {
 		if err := s.step(f); err != nil {
 			return err
 		}
@@ -522,13 +536,13 @@ func (s *supervisor) createRuntime() error {
 	if _, err := validateRoots(s.roots, s.evidenceDir, rt); err != nil {
 		return failure(CodeInvalidRoot, err)
 	}
-	for _, d := range []string{"coord", "waits", "collect", "review"} {
+	for _, d := range []string{"coord", filepath.Join("coord", "waits"), "collect", "review"} {
 		if err := os.Mkdir(filepath.Join(rt, d), 0o700); err != nil {
 			return failure("runtime_unavailable", err)
 		}
 	}
 	for i := range Hops {
-		if err := os.Mkdir(filepath.Join(rt, "waits", hopDir(i)), 0o700); err != nil {
+		if err := os.Mkdir(waitDir(rt, i), 0o700); err != nil {
 			return failure("runtime_unavailable", err)
 		}
 	}
@@ -591,7 +605,7 @@ func (s *supervisor) featureLoop() error {
 		select {
 		case m := <-s.reqs:
 			stop()
-			m.reply <- s.handleRequest(m.req)
+			m.reply <- s.serveRequest(m.req)
 		case line, ok := <-s.lines:
 			stop()
 			s.handleLine(line, ok)
@@ -615,23 +629,23 @@ var forwardWait = controlExchange - time.Second
 
 // handleControl forwards a socket request to the loop; while closing
 // every request is refused.
-func (s *supervisor) handleControl(req ControlRequest) string {
+func (s *supervisor) handleControl(req ControlRequest) controlResponse {
 	if s.closing.Load() {
-		return CodeClosing
+		return codeResponse(CodeClosing)
 	}
-	m := ctrlMsg{req: req, reply: make(chan string, 1)}
+	m := ctrlMsg{req: req, reply: make(chan controlResponse, 1)}
 	select {
 	case s.reqs <- m:
 	case <-s.loopDone:
-		return CodeClosing
+		return codeResponse(CodeClosing)
 	case <-time.After(forwardWait):
-		return CodeInternalError
+		return codeResponse(CodeInternalError)
 	}
 	select {
-	case code := <-m.reply:
-		return code
+	case resp := <-m.reply:
+		return resp
 	case <-time.After(forwardWait):
-		return CodeInternalError
+		return codeResponse(CodeInternalError)
 	}
 }
 

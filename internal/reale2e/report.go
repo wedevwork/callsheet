@@ -11,7 +11,8 @@ import (
 // The shareable report (design 12a-real-e2e, Evidence and checker, A3):
 // only allowlisted structured fields (run ID, flow kind, revision,
 // platform, tool versions, fixed criterion IDs and codes, the protected
-// roots, the environment's housekeeping and protected changes, the
+// roots, the environment's protected changes and tool-maintained summary
+// (A3.6: report.txt only), the
 // coordinator's tool findings with their private evidence references, and
 // relative artifact names with their hashes), never raw logs, prompts,
 // transcript or final prose. It is derived from the bundle alone (paths
@@ -34,13 +35,34 @@ type Report struct {
 	ProtectDepth   int             `json:"protect_depth"`
 	Criteria       []Criterion     `json:"criteria"`
 	Protected      []EnvChange     `json:"protected_changes"`
-	Housekeeping   []EnvChange     `json:"housekeeping_changes"`
+	// Housekeeping is always empty since A3.6 (tool-maintained changes
+	// are summarized in report.txt only); the field set is unchanged.
+	Housekeeping []EnvChange `json:"housekeeping_changes"`
 	// OversizedConfig names configuration files fingerprinted by metadata
 	// only because they exceed 1 MiB (A3.3).
 	OversizedConfig []string     `json:"oversized_config"`
 	ToolFindings    []MapFinding `json:"tool_findings"`
 	Artifacts       []FileHash   `json:"artifacts"`
 	Error           string       `json:"error,omitempty"`
+	// tool is the diff's tool-maintained summary for report.txt.
+	tool toolReport
+}
+
+// toolReport is the tool-maintained summary the text report prints: one
+// row per vendor top-level directory and the retained and omitted detail
+// counts.
+type toolReport struct {
+	rows            []ToolSummaryRow
+	detail, omitted int
+	present         bool
+}
+
+// ClaudeStateExclusions are the owner-accepted coverage exclusions
+// (A3.6), printed adjacently in report.txt and docs/real-e2e.md.
+var ClaudeStateExclusions = []string{
+	"not covered: ~/.claude.json",
+	"not covered: ~/.claude/.config.json (Claude state file; holds per-project tool grants, MCP-server lists and trust flags)",
+	"not covered: ~/.claude/backups/.config.json.backup.* (backups of Claude state, including per-project grants)",
 }
 
 // NestedRepoLimitation is the report's statement of the A3.1 discovery
@@ -143,8 +165,10 @@ func BuildReport(b *Bundle, cs []Criterion) Report {
 		for _, c := range d.Protected {
 			r.Protected = append(r.Protected, sanitizeChange(c))
 		}
-		for _, c := range d.Housekeeping {
-			r.Housekeeping = append(r.Housekeeping, sanitizeChange(c))
+		r.tool = toolReport{detail: d.ToolDetailCount, omitted: d.ToolOmittedCount, present: true}
+		for _, row := range d.ToolSummary {
+			row.Scope, row.TopLevel = red.Redact(row.Scope), red.Redact(row.TopLevel)
+			r.tool.rows = append(r.tool.rows, row)
 		}
 		for _, n := range d.OversizedConfig {
 			r.OversizedConfig = append(r.OversizedConfig, red.Redact(n))
@@ -175,14 +199,6 @@ func schemaReport() Report {
 		Artifacts: []FileHash{}, Error: "evidence_schema_error"}
 }
 
-// sizeText renders an optional size.
-func sizeText(p *int64) string {
-	if p == nil {
-		return "absent"
-	}
-	return fmt.Sprint(*p)
-}
-
 // RenderText is the human-readable summary of r.
 func RenderText(r Report) string {
 	var b strings.Builder
@@ -201,7 +217,9 @@ func RenderText(r Report) string {
 		fmt.Fprintf(&b, "protected root: %s\n", root)
 	}
 	fmt.Fprintf(&b, "protected depth: repositories at most %d directory levels below each protected root; deeper repositories are not protected\n", r.ProtectDepth)
-	b.WriteString("not covered: ~/.claude.json\n")
+	for _, l := range ClaudeStateExclusions {
+		b.WriteString(l + "\n")
+	}
 	b.WriteString("not covered: " + NestedRepoLimitation + "\n")
 	for _, c := range r.Criteria {
 		if len(c.Codes) == 0 {
@@ -216,9 +234,12 @@ func RenderText(r Report) string {
 	for _, n := range r.OversizedConfig {
 		fmt.Fprintf(&b, "configuration file over 1 MiB, fingerprinted by metadata only: %s\n", n)
 	}
-	fmt.Fprintf(&b, "housekeeping changes (report-only): %d\n", len(r.Housekeeping))
-	for _, c := range r.Housekeeping {
-		fmt.Fprintf(&b, "  %s %s %s (%s) size %s -> %s\n", c.Scope, c.Path, c.Kind, c.Class, sizeText(c.BeforeSize), sizeText(c.AfterSize))
+	if t := r.tool; t.present {
+		fmt.Fprintf(&b, "tool-maintained changes (report-only): %d (%d detailed in diff.json, %d omitted)\n", t.detail+t.omitted, t.detail, t.omitted)
+		for _, row := range t.rows {
+			fmt.Fprintf(&b, "  tool-maintained %s %s: %d added, %d changed, %d deleted, %d total\n", row.Scope, row.TopLevel, row.Added, row.Changed,
+				row.Deleted, row.Total)
+		}
 	}
 	for _, f := range r.ToolFindings {
 		ref := ""

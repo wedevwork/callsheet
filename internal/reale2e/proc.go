@@ -128,13 +128,22 @@ func (p *execProc) Exit() (int, string) {
 	return p.state.ExitCode(), ""
 }
 
-// ProcRecord is one owned process's cleanup record.
+// ProcRecord is one owned process's cleanup record; StartedSeq names the
+// start event of the instance it stopped (cleanup v3).
 type ProcRecord struct {
 	Name         string `json:"name"`
 	PID          int    `json:"pid"`
+	StartedSeq   int    `json:"started_seq"`
 	StoppedBy    string `json:"stopped_by"`
 	ExitVerified bool   `json:"exit_verified"`
 	Exit         string `json:"exit"`
+}
+
+// StartedProc is one successfully started owned process instance.
+type StartedProc struct {
+	Name       string `json:"name"`
+	PID        int    `json:"pid"`
+	StartedSeq int    `json:"started_seq"`
 }
 
 // Stop methods recorded in ProcRecord.StoppedBy.

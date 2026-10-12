@@ -1,6 +1,7 @@
 package reale2e
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -920,10 +922,12 @@ type coordScript struct {
 	badWake      bool
 	longPoll     bool
 	denied       bool
+	firstDenied  bool
 	toolFailed   bool
 	earlyResult  bool
 	waitCommand  func(i int, cmd string) string
 	lingering    [2]bool
+	stubborn     [2]bool
 	noTranscript bool
 	afterPhase   func(c *coordScript, p int)
 	failResult   [2]bool
@@ -946,7 +950,10 @@ func (c *coordScript) started(spec ProcSpec, p *fakeProc) {
 		k = 1
 	}
 	c.procs[k], c.specs[k] = p, spec
+	p.mu.Lock()
 	p.lingering = c.lingering[k]
+	p.ignoreTerm, p.ignoreKill = c.stubborn[k], c.stubborn[k]
+	p.mu.Unlock()
 	if c.sess == nil {
 		c.sess = &fakeSession{t: c.t, home: c.f.home, sid: testSession, cwd: spec.Dir}
 		if !c.noTranscript {
@@ -970,19 +977,38 @@ func promptOf(spec ProcSpec) string {
 func (c *coordScript) goal(i int) string {
 	g := "Do hop " + Hops[i] + "."
 	if i == 3 {
-		var b strings.Builder
-		b.WriteString("Review the implementation.\n")
-		for _, p := range inlinePaths {
-			b.WriteString(fileBlockBegin(p, sha256Hex(c.files[3][p])))
-			b.Write(c.files[3][p])
-			b.WriteString(fileBlockEnd(p))
-		}
-		g = b.String()
+		g = "Review the implementation.\n" + string(c.reviewMaterial())
 	}
 	if c.goalOf != nil {
 		g = c.goalOf(i, g)
 	}
 	return g
+}
+
+// reviewMaterial is the review-material helper's output as the
+// coordinator appends it: the pulled coder files in coord/coder, admitted
+// and hashed by the supervisor. A refused request falls back to the
+// coordinator's own blocks so a scenario can still reach its check.
+func (c *coordScript) reviewMaterial() []byte {
+	dir := filepath.Join(c.s.runtime, "coord", "coder")
+	os.MkdirAll(dir, 0o700)
+	for _, p := range inlinePaths {
+		os.WriteFile(filepath.Join(dir, p), c.files[3][p], 0o600)
+	}
+	if resp := c.s.serveRequest(ControlRequest{Run: c.s.runID, Op: opReview}); resp.OK {
+		out, err := reviewOutput(c.s.runtime, resp.Files)
+		if err != nil {
+			c.t.Errorf("review-material: %v", err)
+		}
+		return out
+	}
+	var b bytes.Buffer
+	for _, p := range inlinePaths {
+		b.WriteString(fileBlockBegin(p, sha256Hex(c.files[3][p])))
+		b.Write(c.files[3][p])
+		b.WriteString(fileBlockEnd(p))
+	}
+	return b.Bytes()
 }
 
 // phaseOf is the running phase (1 or 2) for hop i.
@@ -1077,11 +1103,19 @@ func (c *coordScript) complete(i int) {
 	if err != nil {
 		c.t.Fatal(err)
 	}
-	dir := filepath.Join(c.s.runtime, "waits", hopDir(i))
+	// The rendered wait: the plain CLI wait's redirections, then the
+	// capture-wait helper's admission and local capture.
+	dir := waitDir(c.s.runtime, i)
 	os.WriteFile(filepath.Join(dir, "result.json"), append(b, '\n'), 0o600)
 	os.WriteFile(filepath.Join(dir, "error.txt"), nil, 0o600)
 	if c.waitExit != "" {
-		os.WriteFile(filepath.Join(dir, "exit-code"), []byte(c.waitExit+"\n"), 0o600)
+		code, _ := strconv.Atoi(c.waitExit)
+		if got := c.s.handleRequest(ControlRequest{Run: c.s.runID, Op: opCapture, Hop: Hops[i], Code: code}); got != CodeAccepted {
+			c.t.Errorf("capture-wait %s = %s", Hops[i], got)
+		}
+		if err := captureFiles(c.s.runtime, i, code, io.Discard, io.Discard); err != nil {
+			c.t.Errorf("capture-wait %s: %v", Hops[i], err)
+		}
 	}
 	p := c.phaseOf(i)
 	switch {
@@ -1148,6 +1182,18 @@ func (c *coordScript) run() {
 			return
 		}
 		c.beginPhase(1)
+		if c.firstDenied {
+			// The first-run shape: the first tool call is denied and
+			// phase 1 ends at once with a result and exit 0.
+			c.sess.use(1, "mcp__callsheet__ws_push", map[string]any{"name": s.workspace.Name, "path": s.seed.Path},
+				"Permission to use mcp__callsheet__ws_push has been denied.", true)
+			denials := []map[string]string{{"tool_name": "mcp__callsheet__ws_push", "tool_use_id": fmt.Sprintf("toolu_%04d", c.sess.n)}}
+			c.sess.say(1, "I cannot continue.")
+			c.sess.result(1, true, denials)
+			c.procs[0].exit(0, "")
+			c.step = 99
+			return
+		}
 		seed, err := git.PlainOpen(s.seed.Path)
 		if err != nil {
 			c.t.Fatal(err)

@@ -72,6 +72,8 @@ type child struct {
 	spec ProcSpec
 	proc Proc
 	logs *lineLog
+	// startedSeq is the sequence of the start event track wrote.
+	startedSeq int
 }
 
 // deployment is the run's plane and sidecars.
@@ -95,8 +97,7 @@ func (d *deployment) start(name string, args ...string) (*child, error) {
 		return nil, fmt.Errorf("start %s: %w", name, err)
 	}
 	c.proc = p
-	d.s.track(c)
-	d.s.ev.event(Event{Type: EvProcessStarted, Handle: name})
+	d.s.track(c, EvProcessStarted)
 	return c, nil
 }
 

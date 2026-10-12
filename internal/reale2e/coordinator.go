@@ -93,15 +93,110 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// waitTemplate is hop i's background wait command: the plain CLI wait
-// with stdout and stderr redirected to the hop's files, its status saved
-// to a third file and returned. TASK_ID is the coordinator's substitution.
-func (s *supervisor) waitTemplate(i int) string {
-	dir := filepath.Join(s.runtime, "waits", hopDir(i))
+// permissionValues are the fixed inputs of the coordinator's session-only
+// allow-list (A3.6): the Callsheet and reale2e executables, the plane URL,
+// the runtime CA and the runtime directory.
+type permissionValues struct{ callsheet, reale2e, url, ca, runtime string }
+
+// symbolicPermissions renders the allow-list template printed before any
+// vendor executes.
+var symbolicPermissions = permissionValues{callsheet: "C", reale2e: "R", url: "U", ca: "A", runtime: "D"}
+
+// coordinatorMCPTools are the only Callsheet MCP tools the prompt uses, in
+// allow-list order.
+var coordinatorMCPTools = []string{"ws_push", "dispatch", "task_show", "ws_status", "ws_diff", "ws_pull"}
+
+// ruleMetacharacters may not occur in a fixed allow-rule input: escaping
+// them could silently broaden a rule.
+const ruleMetacharacters = "*?[](),\r\n\x00"
+
+// errRuleInput is a fixed allow-rule input holding a rule metacharacter.
+var errRuleInput = errors.New("a fixed allow-rule input contains a permission-rule metacharacter (* ? [ ] ( ) , CR, LF or NUL)")
+
+// validRuleInputs reports whether no fixed input holds a metacharacter.
+func validRuleInputs(vals ...string) error {
+	for _, v := range vals {
+		if strings.ContainsAny(v, ruleMetacharacters) {
+			return errRuleInput
+		}
+	}
+	return nil
+}
+
+// allowedTools is the single permission renderer shared by the launch and
+// the checker: the 16 session-only rules, in their fixed order. Only the
+// task-ID and exit-code slots hold wildcard text.
+func allowedTools(v permissionValues) ([]string, error) {
+	if err := validRuleInputs(v.callsheet, v.reale2e, v.url, v.ca, v.runtime); err != nil {
+		return nil, err
+	}
 	q := shellQuote
-	return q(s.args.callsheet) + " task wait TASK_ID --until-done --json --plane " + q(s.dep.url) + " --ca " + q(s.dep.caPath) +
-		" >" + q(filepath.Join(dir, "result.json")) + " 2>" + q(filepath.Join(dir, "error.txt")) + "; rc=$?; echo $rc >" +
-		q(filepath.Join(dir, "exit-code")) + "; exit $rc"
+	rules := make([]string, 0, 16)
+	for _, t := range coordinatorMCPTools {
+		rules = append(rules, "mcp__"+mcpServerName+"__"+t)
+	}
+	rules = append(rules, "Bash("+q(v.callsheet)+" task wait * --until-done --json --plane "+q(v.url)+" --ca "+q(v.ca)+")")
+	for _, h := range Hops {
+		rules = append(rules, "Bash("+q(v.reale2e)+" observe --run "+q(v.runtime)+" --task * --hop "+h+")")
+	}
+	for _, h := range Hops {
+		rules = append(rules, "Bash("+q(v.reale2e)+" capture-wait --run "+q(v.runtime)+" --hop "+h+" --code *)")
+	}
+	return append(rules, "Bash("+q(v.reale2e)+" review-material --run "+q(v.runtime)+")"), nil
+}
+
+// waitCommand is hop i's background wait command: the plain CLI wait with
+// stdout and stderr redirected to the hop's files, then the capture helper
+// saving and returning its status. TASK_ID is the coordinator's
+// substitution.
+func waitCommand(v permissionValues, i int) string {
+	dir := waitDir(v.runtime, i)
+	q := shellQuote
+	return q(v.callsheet) + " task wait TASK_ID --until-done --json --plane " + q(v.url) + " --ca " + q(v.ca) +
+		" >" + q(filepath.Join(dir, runtimeWaitResult)) + " 2>" + q(filepath.Join(dir, runtimeWaitStderr)) + "; " +
+		q(v.reale2e) + " capture-wait --run " + q(v.runtime) + " --hop " + Hops[i] + ` --code "$?"`
+}
+
+// permissions are this run's fixed allow-list inputs.
+func (s *supervisor) permissions() permissionValues {
+	return permissionValues{callsheet: s.args.callsheet, reale2e: s.w.Executable, url: s.dep.url, ca: s.dep.caPath, runtime: s.runtime}
+}
+
+// waitTemplate is hop i's background wait command for this run.
+func (s *supervisor) waitTemplate(i int) string {
+	return waitCommand(s.permissions(), i)
+}
+
+// printPermissionTemplate prints the session prerequisites before any
+// vendor executes, with symbolic run values, after rejecting
+// executables a rule could not hold.
+func (s *supervisor) printPermissionTemplate() error {
+	if err := validRuleInputs(s.args.callsheet, s.w.Executable); err != nil {
+		return failure("permission_rule_invalid", err)
+	}
+	rules, _ := allowedTools(symbolicPermissions)
+	s.say("the coordinator session uses session-only flags; no agent configuration or settings file is written")
+	s.say("  --settings %s", SandboxOffSettings)
+	s.say("  --allowed-tools, exactly these %d rules (C callsheet, R reale2e, U plane URL, A runtime CA, D runtime directory):", len(rules))
+	for _, r := range rules {
+		s.say("    %s", r)
+	}
+	return nil
+}
+
+// renderPermissions renders and prints this run's allow-list once the
+// runtime and plane exist, before any vendor runs a task.
+func (s *supervisor) renderPermissions() error {
+	rules, err := allowedTools(s.permissions())
+	if err != nil {
+		return failure("permission_rule_invalid", err)
+	}
+	s.allowed = rules
+	s.say("coordinator allow-list for this run (both phases):")
+	for _, r := range rules {
+		s.say("    %s", r)
+	}
+	return nil
 }
 
 // prepareCoordinator renders the coordinator's system prompt, phase-1
@@ -112,7 +207,7 @@ func (s *supervisor) prepareCoordinator() error {
 	q := shellQuote
 	vals := map[string]string{"RUN_ID": s.runID, "RUNTIME": q(rt), "PLANE_URL": s.dep.url, "CA_PATH": s.dep.caPath, "CALLSHEET": s.args.callsheet,
 		"REALE2E": q(s.w.Executable), "WORKSPACE": s.workspace.Name, "INSTANCE": s.workspace.Instance, "SEED_PATH": s.seed.Path,
-		"SEED_COMMIT": s.workspace.SeedCommit, "WAITS_DIR": q(filepath.Join(rt, "waits")), "RECEIPT": filepath.Join(rt, "owner-receipt.json"),
+		"SEED_COMMIT": s.workspace.SeedCommit, "WAITS_DIR": q(filepath.Join(rt, "coord", "waits")), "RECEIPT": filepath.Join(rt, "owner-receipt.json"),
 		"COORD_DIR": filepath.Join(rt, "coord")}
 	for i := range Hops {
 		vals["WAIT_"+hopDir(i)] = s.waitTemplate(i)
@@ -163,14 +258,23 @@ func (s *supervisor) prepareCoordinator() error {
 	return nil
 }
 
-// phaseArgv is phase p's exact argument vector (after the executable).
-func (s *supervisor) phaseArgv(p int, prompt []byte) []string {
-	argv := []string{"-p", string(prompt), "--output-format", "stream-json", "--verbose", "--settings", SandboxOffSettings,
-		"--mcp-config", s.mcpPath, "--append-system-prompt", string(s.rendered[CoordinatorPrompt])}
+// launchArgv is phase p's exact argument vector (after the executable),
+// shared by the launch and the checker: the sandbox-off settings, then
+// --allowed-tools with its rules as separate elements, terminated by
+// --mcp-config.
+func launchArgv(p int, prompt string, allowed []string, mcpPath, system, session string) []string {
+	argv := []string{"-p", prompt, "--output-format", "stream-json", "--verbose", "--settings", SandboxOffSettings, "--allowed-tools"}
+	argv = append(argv, allowed...)
+	argv = append(argv, "--mcp-config", mcpPath, "--append-system-prompt", system)
 	if p == 2 {
-		argv = append(argv, "--resume", s.sessionID)
+		argv = append(argv, "--resume", session)
 	}
 	return argv
+}
+
+// phaseArgv is phase p's exact argument vector (after the executable).
+func (s *supervisor) phaseArgv(p int, prompt []byte) []string {
+	return launchArgv(p, string(prompt), s.allowed, s.mcpPath, string(s.rendered[CoordinatorPrompt]), s.sessionID)
 }
 
 // launchPhase starts coordinator phase p (1 or 2) headless, with the
@@ -181,17 +285,15 @@ func (s *supervisor) launchPhase(p int, prompt []byte) error {
 	argv := s.phaseArgv(p, prompt)
 	pr := &phaseRun{phase: p, stdout: newLimitBuffer(maxTextFile), stderr: newLimitBuffer(maxStderr)}
 	spec := ProcSpec{Path: s.args.claude, Args: argv, Env: s.w.Environ, Dir: coord, Stdout: pr.stdout, Stderr: pr.stderr}
-	ev := s.ev.event(Event{Type: EvPhaseStarted, Handle: phaseHandle(p)})
-	pr.startedSeq = ev.Seq
 	proc, err := s.w.Launcher.Start(spec)
 	if err != nil {
 		return failure("coordinator_start_failed", err)
 	}
 	pr.proc = proc
 	s.phases[p-1] = pr
-	s.track(&child{name: phaseHandle(p), spec: spec, proc: proc, logs: newLineLog()})
+	pr.startedSeq = s.track(&child{name: phaseHandle(p), spec: spec, proc: proc, logs: newLineLog()}, EvPhaseStarted)
 	rec := LaunchRecord{Schema: LaunchSchema, Phase: p, Executable: s.args.claude, Argv: argv, Cwd: coord, PromptSHA256: sha256Hex(prompt),
-		SystemSHA256: sha256Hex(s.rendered[CoordinatorPrompt]), StartedSeq: ev.Seq, Display: []string{s.tok(s.args.claude)}, WaitTemplates: []string{}}
+		SystemSHA256: sha256Hex(s.rendered[CoordinatorPrompt]), StartedSeq: pr.startedSeq, Display: []string{s.tok(s.args.claude)}, WaitTemplates: []string{}}
 	for i := range Hops {
 		rec.WaitTemplates = append(rec.WaitTemplates, s.waitTemplate(i))
 	}

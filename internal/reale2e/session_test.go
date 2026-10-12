@@ -67,8 +67,7 @@ func shownTask(t *testing.T, id string) string {
 
 // synthTemplate is hop i's rendered wait template.
 func synthTemplate(i int) string {
-	return "/bin/callsheet task wait TASK_ID --until-done --json --plane https://127.0.0.1:1 --ca /rt/ca.crt >/rt/waits/0" + fmt.Sprint(i+1) +
-		"/result.json 2>/rt/waits/0" + fmt.Sprint(i+1) + "/error.txt; rc=$?; echo $rc >/rt/waits/0" + fmt.Sprint(i+1) + "/exit-code; exit $rc"
+	return waitCommand(permissionValues{callsheet: "/bin/callsheet", reale2e: "/bin/reale2e", url: "https://127.0.0.1:1", ca: "/rt/ca.crt", runtime: "/rt"}, i)
 }
 
 func newSynth(t *testing.T) *synthRun {
@@ -336,7 +335,7 @@ func TestSessionDerivation(t *testing.T) {
 		"changed wait command": {set: func(r *synthRun) {
 			r.waitInput = func(i int, in map[string]any) {
 				if i == 1 {
-					in["command"] = strings.Replace(in["command"].(string), "; exit $rc", "", 1)
+					in["command"] = strings.Replace(in["command"].(string), ` --code "$?"`, " --code 0", 1)
 				}
 			}
 		}, code: CodeWaitMismatch},

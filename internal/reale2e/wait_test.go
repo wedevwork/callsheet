@@ -62,7 +62,7 @@ func TestBackgroundWaitEvidence(t *testing.T) {
 		"unreadable wait": {func(c *coordScript) {
 			c.afterPhase = func(c *coordScript, p int) {
 				if p == 1 {
-					os.WriteFile(filepath.Join(c.s.runtime, "waits", "02", "result.json"), []byte("{"), 0o600)
+					os.WriteFile(filepath.Join(waitDir(c.s.runtime, 1), "result.json"), []byte("{"), 0o600)
 				}
 			}
 		}, CodePhaseEarly, CritWaits, "wait_binding_mismatch"},

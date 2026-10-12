@@ -13,11 +13,14 @@ import (
 // manifest, launch, event-map, cleanup, coordinator-exit and report
 // schemas to v2; the task, dispatch, wait, decision, tree, test-run, log
 // and roles formats are unchanged; the environment, validation and audit
-// records are new (v1). A version 1 manifest is unsupported.
+// records are new (v1). A version 1 manifest is unsupported. A3.6 bumps
+// the manifest, cleanup, snapshot and environment-diff schemas to v3 (the
+// ownership classifier and started-instance accounting); their earlier
+// versions are unsupported, never migrated.
 
 // Schema identifiers.
 const (
-	ManifestSchema     = "callsheet-real-e2e/v2"
+	ManifestSchema     = "callsheet-real-e2e/v3"
 	ManifestSchemaV1   = "callsheet-real-e2e/v1"
 	LaunchSchema       = "callsheet-real-e2e-launch/v2"
 	RolesSchema        = "callsheet-real-e2e-roles/v1"
@@ -26,13 +29,13 @@ const (
 	DecisionSchema     = "callsheet-real-e2e-decision/v1"
 	TreeSchema         = "callsheet-real-e2e-trees/v1"
 	TestRunSchema      = "callsheet-real-e2e-test-run/v1"
-	CleanupSchema      = "callsheet-real-e2e-cleanup/v2"
+	CleanupSchema      = "callsheet-real-e2e-cleanup/v3"
 	EventMapSchema     = "callsheet-real-e2e-event-map/v2"
 	CoordExitSchema    = "callsheet-real-e2e-coordinator-exit/v2"
 	LogMetaSchema      = "callsheet-real-e2e-log/v1"
 	ReportSchema       = "callsheet-real-e2e-report/v2"
-	SnapshotSchema     = "callsheet-real-e2e-snapshot/v2"
-	DiffSchema         = "callsheet-real-e2e-environment-diff/v2"
+	SnapshotSchema     = "callsheet-real-e2e-snapshot/v3"
+	DiffSchema         = "callsheet-real-e2e-environment-diff/v3"
 	ExecSchema         = "callsheet-real-e2e-exec/v1"
 	CasesSchema        = "callsheet-real-e2e-cases/v1"
 	RequirementsSchema = "callsheet-real-e2e-requirements/v1"
@@ -273,14 +276,15 @@ type CoordinatorExit struct {
 
 // CleanupRecord is cleanup.json.
 type CleanupRecord struct {
-	Schema         string       `json:"schema"`
-	Processes      []ProcRecord `json:"processes"`
-	CancelledTasks []string     `json:"cancelled_tasks"`
-	UnsettledTasks []string     `json:"unsettled_tasks"`
-	RuntimeRemoved bool         `json:"runtime_removed"`
-	StartedAt      string       `json:"started_at"`
-	FinishedAt     string       `json:"finished_at"`
-	Complete       bool         `json:"complete"`
+	Schema         string        `json:"schema"`
+	Started        []StartedProc `json:"started"`
+	Processes      []ProcRecord  `json:"processes"`
+	CancelledTasks []string      `json:"cancelled_tasks"`
+	UnsettledTasks []string      `json:"unsettled_tasks"`
+	RuntimeRemoved bool          `json:"runtime_removed"`
+	StartedAt      string        `json:"started_at"`
+	FinishedAt     string        `json:"finished_at"`
+	Complete       bool          `json:"complete"`
 }
 
 // SourceRef points at an inclusive 1-based line span of a fixed bundle

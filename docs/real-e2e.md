@@ -15,7 +15,43 @@ A passing run demonstrates this installation's mechanical workflow and the deter
 - A quiescent owner environment: other Claude, Codex or Grok sessions writing configuration or repositories during the run make the comparison fail.
 - The existing parent of a new evidence directory inside the checkout's ignored `design/` tree, for example `mkdir -p design/real-e2e-runs`. Evidence is bounded (64 MiB of text, 4 MiB of evidence repository) and stays local and private.
 
-The coordinator runs with your user instructions, settings, permissions, skills, agents, plugins, hooks and login exactly as they are. The only additional input is the session-only `--settings '{"sandbox":{"enabled":false}}'` (it merges over your settings and changes no file); there is no permission bypass. A denied or failed tool call fails the run and is reported with its command, as a compatibility finding.
+## Coordinator session
+
+The coordinator runs with your user instructions, settings, permissions, skills, agents, plugins, hooks and login exactly as they are. The harness writes no agent configuration or settings file (the runtime MCP configuration and the evidence are its own files). Setting `CALLSHEET_REAL_E2E=1` is your authorization of exactly two session-only flags, identical in both coordinator phases:
+
+- `--settings '{"sandbox":{"enabled":false}}'` merges over your settings for this session only. It is needed only because this exercise's plane listens on host loopback, which a sandboxed Bash command cannot reach (see [coordinator.md](coordinator.md)); it is not a general Callsheet requirement.
+- `--allowed-tools` followed by exactly the 16 rules below lets the headless session run them without a prompt (print mode cannot answer one) for this session only.
+
+In the rules, C and R are the absolute `callsheet` and `reale2e` paths, U the plane URL, A the runtime CA path and D the runtime directory, each shell-quoted; only the task-ID and exit-code slots are wildcards. The six MCP rules name exactly the Callsheet tools the prompt uses, a deliberate narrowing of the server-wide `mcp__callsheet__*`:
+
+```
+mcp__callsheet__ws_push
+mcp__callsheet__dispatch
+mcp__callsheet__task_show
+mcp__callsheet__ws_status
+mcp__callsheet__ws_diff
+mcp__callsheet__ws_pull
+Bash(C task wait * --until-done --json --plane U --ca A)
+Bash(R observe --run D --task * --hop designer)
+Bash(R observe --run D --task * --hop design-reviewer)
+Bash(R observe --run D --task * --hop coder)
+Bash(R observe --run D --task * --hop code-reviewer)
+Bash(R capture-wait --run D --hop designer --code *)
+Bash(R capture-wait --run D --hop design-reviewer --code *)
+Bash(R capture-wait --run D --hop coder --code *)
+Bash(R capture-wait --run D --hop code-reviewer --code *)
+Bash(R review-material --run D)
+```
+
+The command prints this template before any vendor runs and the run's fully rendered list before the coordinator's first phase. A path containing `*`, `?`, `[`, `]`, `(`, `)`, a comma, CR, LF or NUL is refused before any vendor starts (`permission_rule_invalid`) instead of widening a rule. There is no permission bypass, permission mode, second list or tool filtering, and none of your rules or denies is removed: your inherited permissions stay active. Each hop's background wait is exactly `C task wait TASK_ID --until-done --json --plane U --ca A >D/coord/waits/NN/result.json 2>D/coord/waits/NN/error.txt; R capture-wait --run D --hop H --code "$?"` (NN the hop number, H the hop).
+
+The helpers run in the coordinator's Bash, read and write only fixed files of the live runtime, follow no symlink and make one exchange with the supervisor:
+
+- `reale2e observe --run D --task ID --hop H` reports a task the coordinator admitted for hop H.
+- `reale2e capture-wait --run D --hop H --code N` records the wait's exit status N (0 to 255) once the supervisor confirms hop H's accepted task, prints the captured wait output and exits N (1 on a supervisor refusal, 2 on a usage or file error).
+- `reale2e review-material --run D` prints the coder's `design.md`, `main.go` and `main_test.go` from the coordinator's `ws_pull`, each with its SHA-256, once they match the admitted coder commit; the coordinator appends them to the code reviewer's goal.
+
+A denied tool call, inside or outside this list (for example a rule of yours that denies a redirect or a helper), is never retried or widened: it fails the attempt with `coordinator_tool_denied` and its command, even when Claude exits 0. Resolve it in your own configuration and rerun.
 
 ## Roles, models and efforts
 
@@ -60,10 +96,27 @@ Type `yes` or `no` (surrounding spaces are ignored; anything else asks again). Y
 
 The final output prints PASS or FAIL for the mechanical and deterministic criteria and, separately, `Result judgments: needs owner/coordinator review`, then links `report.txt` and `audit.md` in the evidence directory.
 
-- `report.txt` lists every criterion with its fixed failure codes, the protected roots, the protected changed paths (any one fails the run) and the vendor housekeeping changes (report-only, with their before and after sizes). `~/.claude.json` is not covered by the fingerprint.
+- `report.txt` lists every criterion with its fixed failure codes, the protected roots, the protected changed paths (any one fails the run) and the tool-maintained changes (report-only), counted as added, changed and deleted per vendor and top-level directory (`.` for files directly in the vendor home).
 - `audit.md` (and `audit.json`) walks every step in order: preflight, deployment, both coordinator phases, each hop's dispatch, wait and result, your sign-off, the final tests and CLI cases, cleanup and the environment comparison, each `correct`, `incorrect` or `unobserved` with evidence pointers. Judgment rows (does the design cover each case, is the review meaningful) stay `unobserved` until reviewed.
 
-A first normal run is expected to list housekeeping such as Claude history, the new session transcript, debug logs, shell snapshots, todos and statsig state, a possible token refresh, and Codex or Grok session, history and log updates. Unlisted vendor state (for example Codex's state database or global-state JSON, or Grok caches) fails as configuration until a design revision reclassifies it. Settings, instructions or repository changes always fail. A symlink in a vendor home or in the directories scanned above your repositories is checked as the link itself (where it points, not what it points at) and never followed: a dangling link is fine, but a link that is removed, added or pointed elsewhere during the run fails. The harness never repairs, moves or deletes any of your files.
+Only your repositories and this exact owner-configuration list are protected; any change to them, a removal, a replacement by another file type or link, or an addition fails the run (`owner_environment_modified`), and listed directories cover every descendant:
+
+| Vendor home | Owner configuration |
+|---|---|
+| `~/.claude` | `CLAUDE.md`, root `settings*.json`, `agents/`, `skills/`, `commands/`, `hooks/`, `plugins/installed_plugins.json`, `plugins/known_marketplaces.json`, `plugins/blocklist.json`, `plugins/config.json` |
+| `~/.codex` | `config.toml`, root `AGENTS*.md`, `instructions.md`, `prompts/` |
+| `~/.grok` | `config.toml`, `managed_config.toml`, `settings.json`, `user-settings.json` |
+| `~/.cursor` | `cli-config.json`, `mcp.json` |
+
+The vendor homes and the `plugins/` directory must stay the same real directories (a home may be created during the run, not removed or replaced); size and timestamp changes caused by their children are fine. Everything else in a vendor home is tool-maintained, whatever its name or type: session transcripts, history, logs, caches, state databases, token refreshes and every Cursor file. A first normal run is expected to list such changes; they are reported as counts only and never fail the run. Their per-entry metadata (no contents) is detailed in `environment/diff.json` up to its 4 MiB bound, and the report and audit state how many entries were omitted beyond it. These are accepted coverage exclusions, shown together in `report.txt` on passing and failed runs alike:
+
+```
+not covered: ~/.claude.json
+not covered: ~/.claude/.config.json (Claude state file; holds per-project tool grants, MCP-server lists and trust flags)
+not covered: ~/.claude/backups/.config.json.backup.* (backups of Claude state, including per-project grants)
+```
+
+Claude's state files hold per-project tool grants and MCP-server selections, but a change to them does not fail the run. A symlink in a vendor home or in the directories scanned above your repositories is checked as the link itself (where it points, not what it points at) and never followed. The harness never repairs, moves or deletes any of your files.
 
 Right after the run, review `audit.md` with your external dev-flow coordinator: it checks every judgment row and any disputed mechanical verdict and appends corrections to a separate `audit-review.md` (run ID, audit and report SHA-256, row ID, original and revised verdict, who and why, evidence references). Never edit `audit.json`, `audit.md`, the report or the evidence; a correction cannot turn a FAIL into a PASS. `reale2e check --evidence DIR` re-validates a bundle offline (optional).
 

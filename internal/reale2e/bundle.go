@@ -2,6 +2,7 @@ package reale2e
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -21,8 +22,9 @@ import (
 // directories, only the fixed version 2 file names, each text file valid
 // UTF-8 within 8 MiB, all text within 64 MiB and each A3 category within
 // its budget, before any semantic parsing. Malformed or unsafe evidence,
-// and a version 1 bundle, is a schema error (exit 2); missing evidence is
-// a failed criterion (exit 1).
+// a version 1 bundle and (A3.6) a manifest, cleanup, snapshot or diff of
+// an earlier version is a schema error (exit 2); missing evidence is a
+// failed criterion (exit 1).
 
 // Text bounds.
 const (
@@ -280,6 +282,12 @@ func (b *Bundle) doc(rel string, v any, schema func() string, want string) (bool
 	if !ok {
 		return false, nil
 	}
+	// The schema identifier first: an earlier version (A3.6: manifest,
+	// cleanup and diff v2 included) is unsupported before its shape is
+	// judged.
+	if got := peekSchema(data); got != "" && got != want {
+		return true, schemaErr("%s: unsupported schema %q", rel, contract.SafeText(got, 64))
+	}
 	if err := decodeStrict(data, v); err != nil {
 		return true, schemaErr("%s: %v", rel, err)
 	}
@@ -287,6 +295,49 @@ func (b *Bundle) doc(rel string, v any, schema func() string, want string) (bool
 		return true, schemaErr("%s: unknown schema %q", rel, contract.SafeText(got, 64))
 	}
 	return true, nil
+}
+
+// peekSchema returns a JSON object's first top-level schema identifier,
+// or "" when it has none (its strict decoding judges it then). It reads
+// only up to that key, which the writers emit first.
+func peekSchema(data []byte) string {
+	d := json.NewDecoder(bytes.NewReader(data))
+	if tok, err := d.Token(); err != nil || tok != json.Delim('{') {
+		return ""
+	}
+	for d.More() {
+		key, err := d.Token()
+		if err != nil {
+			return ""
+		}
+		var v json.RawMessage
+		if err := d.Decode(&v); err != nil {
+			return ""
+		}
+		if key == "schema" {
+			var s string
+			json.Unmarshal(v, &s)
+			return s
+		}
+	}
+	return ""
+}
+
+// snapshotSchemas refuses a snapshot whose header names another schema
+// identifier (A3.6: snapshot v2 included).
+func (b *Bundle) snapshotSchemas() error {
+	for _, phase := range []string{"before", "after"} {
+		name := envFiles(phase)[0]
+		data, ok := b.Files[name]
+		if !ok {
+			continue
+		}
+		line, _, _ := bytes.Cut(data, []byte("\n"))
+		if got := peekSchema(line); got != "" && got != SnapshotSchema {
+			return schemaErr("%s: unsupported schema %q", name, contract.SafeText(got, 64))
+		}
+	}
+	return nil
 }
 
 // task strictly decodes a stored task snapshot (the plane's task show
@@ -332,6 +383,7 @@ func (b *Bundle) parse() error {
 	add(b.doc("environment/diff.json", b.Diff, func() string { return b.Diff.Schema }, DiffSchema))
 	add(b.doc("validation/cases.json", b.Cases, func() string { return b.Cases.Schema }, CasesSchema))
 	add(b.doc("validation/requirements.json", b.Requirements, func() string { return b.Requirements.Schema }, RequirementsSchema))
+	errs = append(errs, b.snapshotSchemas())
 	if err := errors.Join(errs...); err != nil {
 		return err
 	}

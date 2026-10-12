@@ -4,7 +4,8 @@
 // deployment, authenticated preflight, the headless two-phase coordinator,
 // observation, the one-terminal owner decision, final validation,
 // evidence, cleanup, the check and the post-run audit), the coordinator's
-// observe helper and the offline evidence checker. The reale2e-tagged
+// observe, capture-wait and review-material helpers and the offline
+// evidence checker. The reale2e-tagged
 // cmd/reale2e only forwards host inputs to Main; every decision lives here
 // and is tested offline with injected processes, clock, plane, terminal
 // and Git. It is never run in CI with real vendors.
@@ -37,6 +38,8 @@ const Usage = `usage:
       (requires ` + EnvOptIn + `=1, no CI and no CLAUDE_CONFIG_DIR variable; linux only; calls paid models)
   reale2e check --evidence ABS
   reale2e observe --run ABS --task ID --hop designer|design-reviewer|coder|code-reviewer
+  reale2e capture-wait --run ABS --hop designer|design-reviewer|coder|code-reviewer --code 0..255
+  reale2e review-material --run ABS
 See docs/real-e2e.md.
 ` + Bounds
 
@@ -61,7 +64,8 @@ type Host struct {
 }
 
 // Main is the reale2e command: 0 success, 1 failure or refusal of a
-// helper's request, 2 usage, gate, schema or transport error.
+// helper's request, 2 usage, gate, schema or transport error;
+// capture-wait returns the captured wait status on success.
 func Main(goos, goarch string, args []string, getenv func(string) string, lookupEnv func(string) (string, bool), stdin io.Reader, stdout, stderr io.Writer) int {
 	return MainWith(Host{GOOS: goos, GOARCH: goarch, Args: args, Getenv: getenv, LookupEnv: lookupEnv, Stdin: stdin, Stdout: stdout, Stderr: stderr,
 		NewWorld: LiveWorld})
@@ -164,6 +168,10 @@ func MainWith(h Host) int {
 			return usageError(h, "observe needs an absolute --run runtime directory, a --task ID and a --hop of designer, design-reviewer, coder or code-reviewer")
 		}
 		return helper(h, v["run"], v["task"], v["hop"])
+	case "capture-wait":
+		return captureHelper(h)
+	case "review-material":
+		return reviewHelper(h)
 	}
 	// finish and wait were removed by A3: unknown subcommands.
 	return usageError(h, "unknown subcommand "+contract.SafeText(h.Args[0], 32))
@@ -171,13 +179,13 @@ func MainWith(h Host) int {
 
 // helper sends one observe request: 0 ok, 1 refusal, 2 local error.
 func helper(h Host, runtime, task, hop string) int {
-	code, ok, err := controlCall(runtime, task, hop)
+	resp, err := controlCall(runtime, ControlRequest{Op: opObserve, Task: task, Hop: hop})
 	if err != nil {
 		fmt.Fprintf(h.Stderr, "reale2e observe: %v\n", err)
 		return 2
 	}
-	fmt.Fprintln(h.Stdout, code)
-	if !ok {
+	fmt.Fprintln(h.Stdout, resp.Code)
+	if !resp.OK {
 		return 1
 	}
 	return 0

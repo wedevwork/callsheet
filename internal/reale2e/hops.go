@@ -47,8 +47,61 @@ func (s *supervisor) expectedBase(i int) (string, bool) {
 	return p.commit.String(), true
 }
 
-// handleRequest judges one control request inside the loop.
+// serveRequest answers one control request inside the loop.
+func (s *supervisor) serveRequest(req ControlRequest) controlResponse {
+	if req.Op == opReview {
+		return s.reviewMaterial()
+	}
+	return codeResponse(s.handleRequest(req))
+}
+
+// handleRequest judges one observe or capture-wait request inside the
+// loop.
 func (s *supervisor) handleRequest(req ControlRequest) string {
+	if req.Op == opCapture {
+		return s.captureWait(req)
+	}
+	return s.observe(req)
+}
+
+// captureWait admits a hop's wait capture only for the task the
+// supervisor accepted for that hop; it dispatches, approves and waits for
+// nothing (A3.6).
+func (s *supervisor) captureWait(req ControlRequest) string {
+	if h := s.hops[hopIndex(req.Hop)]; !h.observed || h.task == "" {
+		return CodeTaskMismatch
+	}
+	return CodeAccepted
+}
+
+// reviewMaterial answers the code reviewer's material request with the
+// admitted coder commit and its three files' hashes, only once the
+// owner's receipt was validated and the coder's result was accepted.
+func (s *supervisor) reviewMaterial() controlResponse {
+	if s.decision == nil {
+		return codeResponse(CodeOwnerGateClosed)
+	}
+	s.refreshHop(2)
+	c := s.hops[2]
+	if s.failed {
+		return codeResponse(CodeClosing)
+	}
+	if !c.terminal || c.commit.IsZero() {
+		return codeResponse(CodeTaskMismatch)
+	}
+	resp := controlResponse{OK: true, Code: CodeAccepted, Commit: c.commit.String()}
+	for _, p := range inlinePaths {
+		b, ok := c.files[p]
+		if !ok {
+			return codeResponse(CodeTaskMismatch)
+		}
+		resp.Files = append(resp.Files, ReviewFile{Path: p, SHA256: sha256Hex(b)})
+	}
+	return resp
+}
+
+// observe judges one observe request inside the loop.
+func (s *supervisor) observe(req ControlRequest) string {
 	// Deadlines first: an observation never admits work past a bound.
 	if s.checkDeadlines() {
 		s.cancelLate(req.Task)

@@ -14,7 +14,6 @@ import (
 	"path"
 	"path/filepath"
 	"reflect"
-	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -28,11 +27,13 @@ import (
 // Callsheet or Go executable runs, and again after cleanup, the
 // supervisor snapshots read-only (1) every Git repository below each
 // supplied --protect-root and (2) every entry below the four vendor homes.
-// Owner configuration (the default for every vendor entry) is
-// content-hashed with its metadata and must not change; the exact vendor
-// housekeeping classes are compared by metadata only and reported, never
-// failed (the two credential files admit "modified" only). Repositories
-// are compared by HEAD, branch, raw status and a tracked-file manifest.
+// A3.6: a vendor entry is owner-configuration only at the exact strict
+// vendor paths (and below listed directories); it is content-hashed (a
+// regular file) with its metadata and must not change, be added or be
+// removed. Every other vendor entry is tool-maintained: compared by
+// metadata only, never content, and summarized per vendor top-level
+// directory, never failed. Repositories are compared by HEAD, branch, raw
+// status and a tracked-file manifest.
 // The only exclusions are this run's exact evidence subtree and runtime.
 // Every bound is enforced while collecting; overflow, read errors and
 // timeouts make the proof incomplete, never sampled. A3.4: a symlink in a
@@ -41,7 +42,8 @@ import (
 // link is valid; the evidence snapshots hold one compact record per entry
 // (path and a SHA-256 of its full record), the supervisor keeps the full
 // records in memory, and diff.json carries the full before and after
-// records of exactly the entries that differ.
+// records of every differing entry except tool-maintained ones beyond its
+// bound (A3.6: a counted, deterministic prefix of those).
 
 // Environment bounds (policy, not performance claims).
 const (
@@ -70,25 +72,14 @@ const (
 // Vendors are the four protected vendor homes, in snapshot order.
 var Vendors = []string{"claude", "codex", "grok", "cursor"}
 
-// Entry classes.
+// Record classes: a vendor entry is owner-configuration or tool-maintained
+// (A3.6); a supplied root and a link under it keep their own classes.
 const (
-	ClassConfig    = "config"
-	ClassDirectory = "directory"
-	ClassRoot      = "root"
+	ClassOwner = "owner-configuration"
+	ClassTool  = "tool-maintained"
+	ClassRoot  = "root"
 	// ClassLink is a symlink under a protected root (A3.4).
 	ClassLink = "symlink"
-)
-
-// modifiedOnlyClasses admit change kind "modified" only: the two
-// credential files (refreshed in place; a new file identity is a
-// replacement) and Codex's app-server control link (A3.5; retargeting
-// creates a new link, so its identity may change).
-var modifiedOnlyClasses = map[string]bool{"claude.credentials": true, "codex.auth": true, classCodexControl: true}
-
-// classCodexControl is the exact Codex app-server control link (A3.5).
-const (
-	classCodexControl = "codex.app_server_control"
-	codexControlPath  = "app-server-control/app-server-control.sock"
 )
 
 // GitRunner runs one read-only git command in dir: its standard output
@@ -186,7 +177,9 @@ type Snapshot struct {
 // EnvCompact is one stored snapshot record (A3.4): the record's key, the
 // SHA-256 of its full record's canonical JSON (every metadata field and,
 // where content is hashed, the content digest), that content digest, and
-// the oversized-configuration mark.
+// the oversized-configuration mark. A3.6: a vendor entry's record also
+// carries its class and type (required for entries, absent otherwise), so
+// a summary needs no full detail.
 type EnvCompact struct {
 	Kind      string `json:"k"`
 	Scope     string `json:"s,omitempty"`
@@ -194,6 +187,8 @@ type EnvCompact struct {
 	Digest    string `json:"h"`
 	Content   string `json:"c,omitempty"`
 	Oversized bool   `json:"o,omitempty"`
+	Class     string `json:"class,omitempty"`
+	Type      string `json:"type,omitempty"`
 }
 
 // snapshotHeader is a snapshot's first stored line.
@@ -209,8 +204,10 @@ type snapshotHeader struct {
 }
 
 // EnvDetail is the full before and after record of one entry that differs
-// between the snapshots (nil for the side where it is absent).
+// between the snapshots (nil for the side where it is absent), with its
+// change kind.
 type EnvDetail struct {
+	Change string     `json:"change"`
 	Before *EnvRecord `json:"before"`
 	After  *EnvRecord `json:"after"`
 }
@@ -222,6 +219,9 @@ func compactOf(r EnvRecord) EnvCompact {
 	c := EnvCompact{Kind: r.Kind, Scope: r.Scope, Path: r.Path, Digest: hex.EncodeToString(sum[:]), Oversized: r.Oversized}
 	if r.Method == MethodContent {
 		c.Content = r.SHA256
+	}
+	if r.Kind == RecEntry {
+		c.Class, c.Type = r.Class, r.Type
 	}
 	return c
 }
@@ -272,14 +272,31 @@ type EnvDiff struct {
 	Complete       bool        `json:"complete"`
 	Codes          []string    `json:"codes"`
 	Protected      []EnvChange `json:"protected"`
-	Housekeeping   []EnvChange `json:"housekeeping"`
+	// ToolSummary counts the differing tool-maintained entries per vendor
+	// top-level directory, from the complete compact inventories (A3.6);
+	// ToolDetailCount of them have full detail, ToolOmittedCount do not.
+	ToolSummary      []ToolSummaryRow `json:"tool_maintained_summary"`
+	ToolDetailCount  int              `json:"tool_maintained_detail_count"`
+	ToolOmittedCount int              `json:"tool_maintained_omitted_count"`
 	// OversizedConfig names the named configuration files over 1 MiB that
 	// either snapshot fingerprinted by metadata only (A3.3), sorted.
 	OversizedConfig []string `json:"oversized_config"`
-	// Detail holds the full before and after records of exactly the
-	// entries whose compact records differ, sorted by kind, scope and path
-	// (A3.4); Protected and Housekeeping are derived from it alone.
+	// Detail holds, sorted by kind, scope and path, the full before and
+	// after records of every differing entry that is not tool-maintained
+	// and of the first ToolDetailCount differing tool-maintained ones
+	// (A3.4, A3.6); Protected is derived from it alone.
 	Detail []EnvDetail `json:"detail"`
+}
+
+// ToolSummaryRow is one vendor top-level directory's tool-maintained
+// differences; "." is the vendor home's immediate non-directory entries.
+type ToolSummaryRow struct {
+	Scope    string `json:"scope"`
+	TopLevel string `json:"top_level"`
+	Added    int    `json:"added"`
+	Changed  int    `json:"changed"`
+	Deleted  int    `json:"deleted"`
+	Total    int    `json:"total"`
 }
 
 // envFiles are a snapshot phase's two fixed shard names.
@@ -444,94 +461,89 @@ func validateRoots(raw []string, evidence, runtime string) ([]string, error) {
 	return out, nil
 }
 
-// ---- Housekeeping classes ----
+// ---- Ownership classes (A3.6) ----
 
-var (
-	idRE   = regexp.MustCompile(`^[A-Za-z0-9-]+$`)
-	uuidRE = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
-	yearRE = regexp.MustCompile(`^[0-9]{4}$`)
-	twoRE  = regexp.MustCompile(`^[0-9]{2}$`)
-)
-
-// component reports a nonempty single filename component (never . or ..).
-func component(s string) bool { return s != "" && s != "." && s != ".." && !strings.Contains(s, "/") }
-
-// glob reports whether name is prefix + a nonempty component + suffix.
-func glob(name, prefix, suffix string) bool {
-	if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, suffix) || len(name) <= len(prefix)+len(suffix) {
-		return false
-	}
-	return component(name[len(prefix) : len(name)-len(suffix)])
+// strictPath is one exact, home-relative owner-configuration path: name
+// itself, or a single basename matching prefix*suffix at the home's top
+// level when glob is set.
+type strictPath struct {
+	name, prefix, suffix string
+	glob                 bool
 }
 
-// housekeepingClass returns the exact housekeeping class of a regular
-// file at rel (slash path) under vendor's home, or "" (owner
-// configuration). debug/latest symlinks are classified by the snapshot.
-func housekeepingClass(vendor, rel string) string {
-	p := strings.Split(rel, "/")
-	n := len(p)
-	switch vendor {
-	case "claude":
-		switch {
-		case rel == "history.jsonl":
-			return "claude.history"
-		case rel == ".credentials.json":
-			return "claude.credentials"
-		case n == 2 && p[0] == "shell-snapshots" && glob(p[1], "snapshot-", ".sh"):
-			return "claude.shell_snapshot"
-		case n == 2 && p[0] == "todos" && glob(p[1], "", ".json"):
-			return "claude.todo"
-		case n == 2 && p[0] == "statsig" && component(p[1]):
-			return "claude.statsig"
-		case n == 3 && p[0] == "projects" && component(p[1]) && strings.HasSuffix(p[2], ".jsonl") && idRE.MatchString(strings.TrimSuffix(p[2], ".jsonl")):
-			return "claude.project_transcript"
-		case n == 5 && p[0] == "projects" && component(p[1]) && idRE.MatchString(p[2]) && p[3] == "subagents" &&
-			strings.HasPrefix(p[4], "agent-") && strings.HasSuffix(p[4], ".jsonl") && idRE.MatchString(strings.TrimSuffix(strings.TrimPrefix(p[4], "agent-"), ".jsonl")):
-			return "claude.subagent_transcript"
-		case n == 2 && p[0] == "debug" && strings.HasSuffix(p[1], ".txt") && idRE.MatchString(strings.TrimSuffix(p[1], ".txt")):
-			return "claude.debug"
-		}
-	case "codex":
-		switch {
-		case rel == "history.jsonl":
-			return "codex.history"
-		case rel == "auth.json":
-			return "codex.auth"
-		case n == 5 && p[0] == "sessions" && yearRE.MatchString(p[1]) && twoRE.MatchString(p[2]) && twoRE.MatchString(p[3]) && rolloutName(p[4]):
-			return "codex.session"
-		case n == 2 && (p[0] == "logs" || p[0] == "log") && glob(p[1], "", ".log"):
-			return "codex.log"
-		}
-	case "grok":
-		switch {
-		case rel == "history.jsonl":
-			return "grok.history"
-		case n == 2 && p[0] == "sessions" && (idSuffixed(p[1], ".json") || idSuffixed(p[1], ".jsonl")):
-			return "grok.session"
-		case n == 3 && p[0] == "sessions" && idRE.MatchString(p[1]) && (glob(p[2], "", ".jsonl") || glob(p[2], "", ".log")):
-			return "grok.session"
-		case n == 2 && (p[0] == "logs" || p[0] == "log") && glob(p[1], "", ".log"), rel == "grok.log":
-			return "grok.log"
-		}
-	}
-	return ""
+// strictPaths are each vendor's owner-authored paths. A path at or below
+// one of them (whatever its type: a directory or link substituted for a
+// named file stays protected, and so does every descendant of a listed
+// directory, even a new name) is owner-configuration.
+var strictPaths = map[string][]strictPath{
+	"claude": {{name: "CLAUDE.md"}, {prefix: "settings", suffix: ".json", glob: true}, {name: "agents"}, {name: "skills"}, {name: "commands"},
+		{name: "hooks"}, {name: "plugins/installed_plugins.json"}, {name: "plugins/known_marketplaces.json"}, {name: "plugins/blocklist.json"},
+		{name: "plugins/config.json"}},
+	"codex":  {{name: "config.toml"}, {prefix: "AGENTS", suffix: ".md", glob: true}, {name: "instructions.md"}, {name: "prompts"}},
+	"grok":   {{name: "config.toml"}, {name: "managed_config.toml"}, {name: "settings.json"}, {name: "user-settings.json"}},
+	"cursor": {{name: "cli-config.json"}, {name: "mcp.json"}},
 }
 
-// idSuffixed reports "<id>" + suffix.
-func idSuffixed(name, suffix string) bool {
-	return strings.HasSuffix(name, suffix) && idRE.MatchString(strings.TrimSuffix(name, suffix))
+// structuralAncestors are the strict paths' non-root ancestor
+// directories: owner-configuration, so a deletion, replacement or mode
+// or identity change fails, while their creation alone does not.
+var structuralAncestors = map[string][]string{"claude": {"plugins"}}
+
+// matches reports whether rel is exactly this strict path.
+func (sp strictPath) matches(rel string) bool {
+	if !sp.glob {
+		return rel == sp.name
+	}
+	return !strings.Contains(rel, "/") && strings.HasPrefix(rel, sp.prefix) && strings.HasSuffix(rel, sp.suffix) && len(rel) >= len(sp.prefix)+len(sp.suffix)
 }
 
-// rolloutName reports "rollout-*-<uuid>.jsonl".
-func rolloutName(name string) bool {
-	if !strings.HasPrefix(name, "rollout-") || !strings.HasSuffix(name, ".jsonl") {
-		return false
+// strictUnder reports whether rel is at or below one of vendor's strict
+// paths.
+func strictUnder(vendor, rel string) bool {
+	for p := rel; ; {
+		for _, sp := range strictPaths[vendor] {
+			if sp.matches(p) {
+				return true
+			}
+		}
+		i := strings.LastIndex(p, "/")
+		if i < 0 {
+			return false
+		}
+		p = p[:i]
 	}
-	mid := strings.TrimSuffix(strings.TrimPrefix(name, "rollout-"), ".jsonl")
-	if len(mid) < 38 || mid[len(mid)-37] != '-' {
-		return false
+}
+
+// structuralAncestor reports whether rel is one of vendor's strict
+// ancestor directories.
+func structuralAncestor(vendor, rel string) bool {
+	return slices.Contains(structuralAncestors[vendor], rel)
+}
+
+// ownerClass is the class of the vendor entry at rel (a slash path below
+// the vendor home): owner-configuration at, below or as a structural
+// ancestor of a strict path, else tool-maintained, regardless of its
+// basename, suffix, type or age.
+func ownerClass(vendor, rel string) string {
+	if strictUnder(vendor, rel) || structuralAncestor(vendor, rel) {
+		return ClassOwner
 	}
-	return uuidRE.MatchString(mid[len(mid)-36:]) && component(mid[:len(mid)-37])
+	return ClassTool
+}
+
+// toolKey reports whether a record key is a tool-maintained vendor entry.
+func toolKey(k envKey) bool {
+	return k.kind == RecEntry && ownerClass(k.scope, decodeToken(k.path)) == ClassTool
+}
+
+// topLevel is a tool-maintained entry's summary group: its first path
+// component, or "." for an immediate entry that is not a directory on
+// either side.
+func topLevel(path string, dir bool) string {
+	if top, _, nested := strings.Cut(path, "/"); nested || dir {
+		return top
+	}
+	return "."
 }
 
 // ---- Collection ----
@@ -845,7 +857,7 @@ func (sc *envScanner) walkVendor(vendor, root string) error {
 		return err
 	}
 	for _, e := range entries {
-		if err := sc.vendorEntry(vendor, root, e.abs, e.rel); err != nil {
+		if err := sc.vendorEntry(vendor, e.abs, e.rel); err != nil {
 			return err
 		}
 	}
@@ -853,21 +865,22 @@ func (sc *envScanner) walkVendor(vendor, root string) error {
 }
 
 // vendorEntry records one vendor-home entry.
-func (sc *envScanner) vendorEntry(vendor, root, p, rel string) error {
+func (sc *envScanner) vendorEntry(vendor, p, rel string) error {
 	st, err := os.Lstat(p)
 	if err != nil {
 		return sc.fail(CodeEnvUnobserved)
 	}
-	rec := EnvRecord{Kind: RecEntry, Scope: vendor, Path: encodePath(rel)}
+	rec := EnvRecord{Kind: RecEntry, Scope: vendor, Path: encodePath(rel), Class: ownerClass(vendor, rel)}
 	statRecord(&rec, st)
 	switch rec.Type {
 	case TypeDir:
-		rec.Class, rec.Method = ClassDirectory, MethodIdentity
+		rec.Method = MethodIdentity
 	case TypeFile:
-		if c := housekeepingClass(vendor, rel); c != "" {
-			rec.Class, rec.Method = c, MethodMetadata
-		} else if err := sc.configFile(&rec, vendor, rel, p); err != nil {
-			return err
+		rec.Method = MethodMetadata
+		if rec.Class == ClassOwner {
+			if err := sc.configFile(&rec, p); err != nil {
+				return err
+			}
 		}
 	case TypeSymlink:
 		// A3.4: the link itself (target text and its own metadata), never
@@ -875,27 +888,17 @@ func (sc *envScanner) vendorEntry(vendor, root, p, rel string) error {
 		if rec.Target, err = os.Readlink(p); err != nil {
 			return sc.fail(CodeEnvUnobserved)
 		}
-		rec.Class, rec.Method = ClassConfig, MethodMetadata
-		switch {
-		case vendor == "claude" && rel == "debug/latest" && sc.validDebugLatest(root, rec.Target):
-			rec.Class = "claude.debug_latest"
-		case vendor == "codex" && rel == codexControlPath:
-			rec.Class = classCodexControl
-		}
+		rec.Method = MethodMetadata
 	default:
-		rec.Class, rec.Method = ClassConfig, MethodIdentity
+		rec.Method = MethodIdentity
 	}
 	return sc.add(rec)
 }
 
-// configFile fingerprints a non-housekeeping regular file (A3.3): by
-// metadata always, by content only when it is a named configuration file
-// of at most 1 MiB; a larger named file is metadata-only and marked.
-func (sc *envScanner) configFile(rec *EnvRecord, vendor, rel, p string) error {
-	rec.Class, rec.Method = ClassConfig, MethodMetadata
-	if !namedConfig(vendor, rel) {
-		return nil
-	}
+// configFile content-hashes an owner-configuration regular file (A3.3):
+// within 1 MiB, else it stays metadata-only and is marked oversized.
+// Tool-maintained state is never read.
+func (sc *envScanner) configFile(rec *EnvRecord, p string) error {
 	if rec.Size > maxConfigFile {
 		rec.Oversized = true
 		return nil
@@ -904,71 +907,6 @@ func (sc *envScanner) configFile(rec *EnvRecord, vendor, rel, p string) error {
 	var err error
 	rec.SHA256, err = sc.hashFile(p, rec.Size)
 	return err
-}
-
-// namedConfig reports a vendor's named small configuration file (A3.3),
-// the only entries whose content is hashed. Each list is exact:
-//
-//   - Claude: CLAUDE.md (the user's instructions), settings*.json at the
-//     home's top level (user and local settings), every file below
-//     agents/, skills/, commands/ and hooks/ (the user's agents, skills,
-//     slash commands and hook scripts), and the plugin configuration
-//     plugins/{installed_plugins,known_marketplaces,blocklist,config}.json
-//     (never the plugin code and marketplace caches beside them).
-//   - Codex: config.toml (its configuration) and its instruction files
-//     AGENTS.md, AGENTS.override.md, instructions.md and every file below
-//     prompts/ (custom prompts).
-//   - Grok: config.toml and managed_config.toml (CLI and managed
-//     configuration), settings.json and user-settings.json.
-//   - Cursor: cli-config.json (CLI configuration) and mcp.json (its MCP
-//     servers).
-//
-// Everything else (binaries, package and download caches, databases,
-// snapshots, other large trees) is fingerprinted by metadata only.
-func namedConfig(vendor, rel string) bool {
-	top, _, nested := strings.Cut(rel, "/")
-	switch vendor {
-	case "claude":
-		switch {
-		case rel == "CLAUDE.md", !nested && strings.HasPrefix(rel, "settings") && strings.HasSuffix(rel, ".json"):
-			return true
-		case nested && (top == "agents" || top == "skills" || top == "commands" || top == "hooks"):
-			return true
-		}
-		return slices.Contains([]string{"plugins/installed_plugins.json", "plugins/known_marketplaces.json", "plugins/blocklist.json", "plugins/config.json"}, rel)
-	case "codex":
-		return slices.Contains([]string{"config.toml", "AGENTS.md", "AGENTS.override.md", "instructions.md"}, rel) || (nested && top == "prompts")
-	case "grok":
-		return slices.Contains([]string{"config.toml", "managed_config.toml", "settings.json", "user-settings.json"}, rel)
-	case "cursor":
-		return slices.Contains([]string{"cli-config.json", "mcp.json"}, rel)
-	}
-	return false
-}
-
-// validDebugLatest reports a debug/latest target that names a regular
-// debug/<id>.txt of the same home: classification only, by an lstat of
-// that exact path; nothing is read through the link (A3.4). root is the
-// canonical directory the walk entered. An absolute target may spell the
-// home through a symlinked ancestor (macOS /var, a linked vendor home), so
-// its directory is compared canonically with root's real debug directory.
-func (sc *envScanner) validDebugLatest(root, target string) bool {
-	debug := filepath.Join(root, "debug")
-	abs := target
-	if !filepath.IsAbs(abs) {
-		abs = filepath.Join(debug, target)
-	}
-	dir, name := filepath.Split(filepath.Clean(abs))
-	if housekeepingClass("claude", "debug/"+name) != "claude.debug" {
-		return false
-	}
-	if d := filepath.Clean(dir); d != debug {
-		if c, err := filepath.EvalSymlinks(d); err != nil || c != debug {
-			return false
-		}
-	}
-	st, err := os.Lstat(filepath.Join(debug, name))
-	return err == nil && st.Mode().IsRegular()
 }
 
 // rootLink records a symlink that discovery read under a protected root by
@@ -1442,7 +1380,7 @@ func parseSnapshot(shards [][]byte) (*Snapshot, error) {
 					return nil, err
 				}
 				if h.Kind != RecHeader || h.Schema != SnapshotSchema || (h.Phase != "before" && h.Phase != "after") {
-					return nil, errors.New("snapshot has no version 2 header")
+					return nil, errors.New("snapshot has no version 3 header")
 				}
 				s = &Snapshot{Phase: h.Phase, Complete: h.Complete, Code: h.Code, Roots: h.Roots, Depth: h.Depth, Compact: []EnvCompact{}}
 				n = h.Records
@@ -1477,25 +1415,32 @@ func parseSnapshot(shards [][]byte) (*Snapshot, error) {
 // $HOME/.<vendor>, exactly one root record per supplied root, entries
 // scoped to a vendor with a clean relative path, and links, repositories
 // and invalid repositories unscoped at or below a supplied root (links
-// strictly below). Any other kind fails.
+// strictly below). Any other kind fails. A3.6: an entry's class is the
+// one the checker derives from its vendor and decoded path (never the
+// stored claim), its type one of file, dir, symlink and other, and a
+// tool-maintained entry carries no content digest; other kinds carry
+// neither class nor type.
 func checkInventory(s *Snapshot, roots []string) error {
 	homes, seenRoots := map[string]bool{}, map[string]bool{}
 	for _, c := range s.Compact {
-		ok := false
+		ok := c.Kind == RecEntry || (c.Class == "" && c.Type == "")
 		switch c.Kind {
 		case RecHome:
-			ok = slices.Contains(Vendors, c.Scope) && c.Path == "$HOME/."+c.Scope && !homes[c.Scope]
+			ok = ok && slices.Contains(Vendors, c.Scope) && c.Path == "$HOME/."+c.Scope && !homes[c.Scope]
 			homes[c.Scope] = true
 		case RecEntry:
-			ok = slices.Contains(Vendors, c.Scope) && cleanRelative(c.Path)
+			ok = slices.Contains(Vendors, c.Scope) && cleanRelative(c.Path) && c.Class == ownerClass(c.Scope, decodeToken(c.Path)) &&
+				slices.Contains([]string{TypeFile, TypeDir, TypeSymlink, TypeOther}, c.Type) && (c.Class == ClassOwner || (c.Content == "" && !c.Oversized))
 		case RecRoot:
-			ok = c.Scope == "" && slices.Contains(roots, c.Path) && !seenRoots[c.Path]
+			ok = ok && c.Scope == "" && slices.Contains(roots, c.Path) && !seenRoots[c.Path]
 			seenRoots[c.Path] = true
 		case RecLink, RecRepo, RecInvalid:
-			ok = c.Scope == "" && slices.ContainsFunc(roots, func(r string) bool {
+			ok = ok && c.Scope == "" && slices.ContainsFunc(roots, func(r string) bool {
 				p, root := decodeToken(c.Path), decodeToken(r)
 				return tokenStrictlyUnder(p, root) || (c.Kind != RecLink && p == root)
 			})
+		default:
+			ok = false
 		}
 		if !ok {
 			return fmt.Errorf("snapshot record %s %q %q is not part of a valid inventory", c.Kind, c.Scope, c.Path)
@@ -1571,18 +1516,13 @@ func changedFields(a, b EnvRecord, metadataOnly bool) []string {
 	return f
 }
 
-// isHousekeeping reports a housekeeping class.
-func isHousekeeping(class string) bool {
-	return class != "" && class != ClassConfig && class != ClassDirectory && class != ClassRoot && class != ClassLink && class != "repository" &&
-		class != "invalid_repository"
-}
-
-// CompareEnvironment returns the sorted protected differences and
-// report-only housekeeping changes of two collected snapshots (full
-// records), with the full before and after records of exactly the entries
-// that differ (A3.4). An incomplete snapshot yields
-// owner_environment_unobserved (never an unchanged claim); every protected
-// difference yields owner_environment_modified, whatever else failed.
+// CompareEnvironment returns the sorted protected differences of two
+// collected snapshots (full records), the tool-maintained summary and the
+// full before and after records of every entry that differs (A3.4, A3.6;
+// encodeDiff then fits the optional tool-maintained detail into its
+// bound). An incomplete snapshot yields owner_environment_unobserved
+// (never an unchanged claim); every protected difference yields
+// owner_environment_modified, whatever else failed.
 func CompareEnvironment(before, after *Snapshot, roots []string) EnvDiff {
 	var detail []EnvDetail
 	if before != nil && after != nil {
@@ -1653,15 +1593,47 @@ func changedDetail(before, after *Snapshot) []EnvDetail {
 	return detail
 }
 
-// verifyDetail checks that a stored diff's detail lists exactly the
-// entries whose stored compact records differ, in order, each full record
-// hashing to its snapshot's compact record (so the checker derives every
-// change from evidence bound to the snapshots).
+// detailKeys are the differing keys a diff's detail must list, in order:
+// every key that is not a tool-maintained entry, and the first tools of
+// the tool-maintained ones.
+func detailKeys(keys []envKey, tools int) []envKey {
+	var out []envKey
+	n := 0
+	for _, k := range keys {
+		if !toolKey(k) {
+			out = append(out, k)
+		} else if n < tools {
+			out = append(out, k)
+			n++
+		}
+	}
+	return out
+}
+
+// verifyDetail checks that a stored diff's detail lists, in order, every
+// entry whose stored compact records differ except tool-maintained ones
+// beyond a prefix of them (A3.6), each full record hashing to its
+// snapshot's compact record and no tool-maintained one holding a content
+// digest (so the checker derives every change from evidence bound to the
+// snapshots).
 func verifyDetail(before, after *Snapshot, detail []EnvDetail) error {
 	bc, ac := before.compactRecords(), after.compactRecords()
-	keys := differingKeys(bc, ac)
+	tools := 0
+	for _, e := range detail {
+		for _, r := range []*EnvRecord{e.Before, e.After} {
+			if r != nil && toolKey(keyOf(*r)) {
+				if r.SHA256 != "" {
+					return errors.New("diff detail holds a content digest of tool-maintained state")
+				}
+			}
+		}
+		if r := detailRecord(e); r != nil && toolKey(keyOf(*r)) {
+			tools++
+		}
+	}
+	keys := detailKeys(differingKeys(bc, ac), tools)
 	if len(keys) != len(detail) {
-		return fmt.Errorf("diff detail lists %d entries, the snapshots differ in %d", len(detail), len(keys))
+		return fmt.Errorf("diff detail lists %d entries, the snapshots require %d", len(detail), len(keys))
 	}
 	index := func(cs []EnvCompact) map[envKey]EnvCompact {
 		m := map[envKey]EnvCompact{}
@@ -1685,22 +1657,37 @@ func verifyDetail(before, after *Snapshot, detail []EnvDetail) error {
 	return nil
 }
 
+// detailRecord is a detail entry's present record (before, else after).
+func detailRecord(e EnvDetail) *EnvRecord {
+	if e.Before != nil {
+		return e.Before
+	}
+	return e.After
+}
+
 // diffFromDetail derives the diff from the two snapshots' headers and
 // compact records and the full records of the entries that differ: the
-// one comparison both the supervisor and the offline checker run.
+// one comparison both the supervisor and the offline checker run. The
+// tool-maintained summary and counts come from the complete compact
+// inventories, the protected changes and change kinds from the detail.
 func diffFromDetail(before, after *Snapshot, roots []string, detail []EnvDetail) EnvDiff {
-	d := EnvDiff{Schema: DiffSchema, ProtectedRoots: slices.Clone(roots), Complete: true, Codes: []string{}, Protected: []EnvChange{}, Housekeeping: []EnvChange{},
-		OversizedConfig: []string{}, Detail: detail}
-	if d.Detail == nil {
-		d.Detail = []EnvDetail{}
+	d := EnvDiff{Schema: DiffSchema, ProtectedRoots: slices.Clone(roots), Complete: true, Codes: []string{}, Protected: []EnvChange{},
+		ToolSummary: []ToolSummaryRow{}, OversizedConfig: []string{}, Detail: []EnvDetail{}}
+	oversized := func(scope, path string, over bool) {
+		if n := scope + "/" + path; over && !slices.Contains(d.OversizedConfig, n) {
+			d.OversizedConfig = append(d.OversizedConfig, n)
+		}
 	}
 	for _, s := range []*Snapshot{before, after} {
-		if s == nil {
-			continue
-		}
-		for _, r := range s.compactRecords() {
-			if n := r.Scope + "/" + r.Path; r.Oversized && !slices.Contains(d.OversizedConfig, n) {
-				d.OversizedConfig = append(d.OversizedConfig, n)
+		switch {
+		case s == nil:
+		case s.Records != nil:
+			for _, r := range s.Records {
+				oversized(r.Scope, r.Path, r.Oversized)
+			}
+		default:
+			for _, r := range s.Compact {
+				oversized(r.Scope, r.Path, r.Oversized)
 			}
 		}
 	}
@@ -1723,20 +1710,22 @@ func diffFromDetail(before, after *Snapshot, roots []string, detail []EnvDetail)
 			codes[CodeEnvUnobserved] = true
 			d.Complete = false
 		}
-		// Unchanged entries cannot differ; between complete snapshots a
-		// deleted (added) directory's descendants are all deleted (added),
-		// so the housekeeping scaffolding of the detail alone equals that of
-		// the full records.
-		var bs, as []EnvRecord
-		for _, e := range d.Detail {
-			if e.Before != nil {
-				bs = append(bs, *e.Before)
-			}
-			if e.After != nil {
-				as = append(as, *e.After)
+		var tools int
+		d.ToolSummary, tools = toolSummary(before.compactRecords(), after.compactRecords())
+		for _, e := range detail {
+			ch, protected := classifyChange(e.Before, e.After)
+			e.Change = ch.Kind
+			d.Detail = append(d.Detail, e)
+			if r := detailRecord(e); r != nil && toolKey(keyOf(*r)) {
+				d.ToolDetailCount++
+			} else if protected {
+				d.Protected = append(d.Protected, ch)
 			}
 		}
-		compareRecords(&d, bs, as)
+		d.ToolOmittedCount = tools - d.ToolDetailCount
+		sortChanges(d.Protected)
+	} else if detail != nil {
+		d.Detail = detail
 	}
 	if len(d.Protected) > 0 {
 		codes[CodeEnvModified] = true
@@ -1748,100 +1737,108 @@ func diffFromDetail(before, after *Snapshot, roots []string, detail []EnvDetail)
 	return d
 }
 
-// compareRecords fills d from two record sets.
-func compareRecords(d *EnvDiff, before, after []EnvRecord) {
-	bm, am := map[envKey]EnvRecord{}, map[envKey]EnvRecord{}
-	var keys []envKey
-	for _, r := range before {
-		if r.Kind == RecHeader {
+// classifyChange describes one differing record (nil on the side where it
+// is absent) and reports whether it is protected: every difference of a
+// record that is not a tool-maintained entry is, except the creation of a
+// vendor home or of a structural ancestor as a real directory (A3.6); a
+// tool-maintained difference of any kind is report-only.
+func classifyChange(bp, ap *EnvRecord) (EnvChange, bool) {
+	r := bp
+	if r == nil {
+		r = ap
+	}
+	if r == nil {
+		return EnvChange{Fields: []string{}}, false
+	}
+	k := keyOf(*r)
+	tool := toolKey(k)
+	ch := EnvChange{Scope: k.scope, Path: k.path, BeforeSize: sizeOf(bp), AfterSize: sizeOf(ap), Fields: []string{}}
+	if bp != nil {
+		ch.BeforeType, ch.BeforeMode, ch.Class = bp.Type, bp.Mode, bp.Class
+	}
+	if ap != nil {
+		ch.AfterType, ch.AfterMode = ap.Type, ap.Mode
+		if ch.Class == "" {
+			ch.Class = ap.Class
+		}
+	}
+	switch {
+	case ap == nil:
+		ch.Kind = ChangeDeleted
+		return ch, !tool && bp.Type != TypeAbsent
+	case bp == nil:
+		ch.Kind = ChangeAdded
+		return ch, !tool && !(k.kind == RecEntry && ap.Type == TypeDir && structuralAncestor(k.scope, decodeToken(k.path)))
+	}
+	fields := changedFields(*bp, *ap, tool)
+	if len(fields) == 0 {
+		ch.Kind = ChangeModified
+		return ch, false
+	}
+	ch.Fields = fields
+	switch {
+	case k.kind == RecHome && bp.Type == TypeAbsent:
+		ch.Kind = ChangeAdded
+		return ch, ap.Type != TypeDir
+	case slices.Contains(fields, "type") || slices.Contains(fields, "class"):
+		ch.Kind = ChangeReplaced
+	case modeOnly(fields):
+		ch.Kind = ChangeMode
+	default:
+		ch.Kind = ChangeModified
+	}
+	return ch, !tool
+}
+
+// toolSummary counts the differing tool-maintained entries of two
+// complete compact inventories per vendor top-level directory (sorted)
+// and returns their total. Each entry counts once, a directory in its own
+// group; an existing entry with a differing digest is changed, whatever
+// its subtype.
+func toolSummary(before, after []EnvCompact) ([]ToolSummaryRow, int) {
+	bm, am := map[envKey]EnvCompact{}, map[envKey]EnvCompact{}
+	for _, c := range before {
+		bm[compactKey(c)] = c
+	}
+	for _, c := range after {
+		am[compactKey(c)] = c
+	}
+	rows := map[[2]string]*ToolSummaryRow{}
+	total := 0
+	for _, k := range differingKeys(before, after) {
+		if !toolKey(k) {
 			continue
 		}
-		if _, ok := bm[keyOf(r)]; !ok {
-			keys = append(keys, keyOf(r))
-		}
-		bm[keyOf(r)] = r
-	}
-	for _, r := range after {
-		if r.Kind == RecHeader {
-			continue
-		}
-		if _, ok := bm[keyOf(r)]; !ok {
-			if _, seen := am[keyOf(r)]; !seen {
-				keys = append(keys, keyOf(r))
-			}
-		}
-		am[keyOf(r)] = r
-	}
-	scaffoldBefore := scaffolding(before)
-	scaffoldAfter := scaffolding(after)
-	for _, k := range keys {
 		b, inB := bm[k]
 		a, inA := am[k]
-		var bp, ap *EnvRecord
-		if inB {
-			bp = &b
-		}
-		if inA {
-			ap = &a
-		}
-		ch := EnvChange{Scope: k.scope, Path: k.path, BeforeSize: sizeOf(bp), AfterSize: sizeOf(ap), Fields: []string{}}
-		if inB {
-			ch.BeforeType, ch.BeforeMode, ch.Class = b.Type, b.Mode, b.Class
-		}
-		if inA {
-			ch.AfterType, ch.AfterMode = a.Type, a.Mode
-			if ch.Class == "" {
-				ch.Class = a.Class
-			}
+		top := encodePath(topLevel(decodeToken(k.path), (inB && b.Type == TypeDir) || (inA && a.Type == TypeDir)))
+		row := rows[[2]string{k.scope, top}]
+		if row == nil {
+			row = &ToolSummaryRow{Scope: k.scope, TopLevel: top}
+			rows[[2]string{k.scope, top}] = row
 		}
 		switch {
-		case !inA:
-			ch.Kind = ChangeDeleted
-			reportOnly := k.kind == RecEntry && ((isHousekeeping(b.Class) && !modifiedOnlyClasses[b.Class]) ||
-				(b.Type == TypeDir && scaffoldBefore[envKey{RecEntry, k.scope, k.path}]))
-			if b.Type == TypeAbsent {
-				continue
-			}
-			appendChange(d, ch, reportOnly)
 		case !inB:
-			ch.Kind = ChangeAdded
-			reportOnly := k.kind == RecEntry && ((isHousekeeping(a.Class) && !modifiedOnlyClasses[a.Class]) ||
-				(a.Type == TypeDir && scaffoldAfter[envKey{RecEntry, k.scope, k.path}]))
-			appendChange(d, ch, reportOnly)
+			row.Added++
+		case !inA:
+			row.Deleted++
 		default:
-			hk := isHousekeeping(b.Class) && b.Class == a.Class
-			fields := changedFields(b, a, hk)
-			if len(fields) == 0 {
-				continue
-			}
-			ch.Fields = fields
-			switch {
-			case slices.Contains(fields, "type") || (slices.Contains(fields, "class") && !hk):
-				ch.Kind = ChangeReplaced
-				appendChange(d, ch, false)
-			case hk && modifiedOnlyClasses[b.Class]:
-				// A credential refresh in place or a control-link retarget is
-				// report-only; a mode change, or a credential file with a new
-				// identity (another file renamed over it), is protected.
-				ch.Kind = ChangeModified
-				switch {
-				case slices.Contains(fields, "mode"):
-					ch.Kind = ChangeMode
-				case b.Type != TypeSymlink && (slices.Contains(fields, "device") || slices.Contains(fields, "inode")):
-					ch.Kind = ChangeReplaced
-				}
-				appendChange(d, ch, ch.Kind == ChangeModified)
-			default:
-				ch.Kind = ChangeModified
-				if modeOnly(fields) {
-					ch.Kind = ChangeMode
-				}
-				appendChange(d, ch, hk)
-			}
+			row.Changed++
 		}
+		row.Total++
+		total++
 	}
-	sortChanges(d.Protected)
-	sortChanges(d.Housekeeping)
+	out := []ToolSummaryRow{}
+	for _, r := range rows {
+		out = append(out, *r)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Scope != out[j].Scope {
+			return out[i].Scope < out[j].Scope
+		}
+		return out[i].TopLevel < out[j].TopLevel
+	})
+	return out, total
 }
 
 // modeOnly reports a change of the mode alone (a chmod also moves the
@@ -1853,15 +1850,6 @@ func modeOnly(fields []string) bool {
 		}
 	}
 	return slices.Contains(fields, "mode")
-}
-
-// appendChange files a change as report-only housekeeping or protected.
-func appendChange(d *EnvDiff, ch EnvChange, reportOnly bool) {
-	if reportOnly {
-		d.Housekeeping = append(d.Housekeeping, ch)
-		return
-	}
-	d.Protected = append(d.Protected, ch)
 }
 
 func sortChanges(cs []EnvChange) {
@@ -1876,66 +1864,70 @@ func sortChanges(cs []EnvChange) {
 	})
 }
 
-// scaffolding returns the directory entries that are only necessary
-// ancestors of housekeeping files: each has at least one housekeeping
-// descendant and every descendant is housekeeping or such a directory.
-func scaffolding(recs []EnvRecord) map[envKey]bool {
-	children := map[envKey][]EnvRecord{}
-	dirs := map[envKey]EnvRecord{}
-	for _, r := range recs {
-		if r.Kind != RecEntry {
-			continue
-		}
-		if r.Type == TypeDir {
-			dirs[keyOf(r)] = r
-		}
-		if i := strings.LastIndex(r.Path, "/"); i > 0 {
-			parent := envKey{RecEntry, r.Scope, r.Path[:i]}
-			children[parent] = append(children[parent], r)
+// encodeDiff renders diff.json within its 4 MiB bound (A3.6): every
+// mandatory detail record, the summary and the counts always; of the
+// tool-maintained detail, the longest key-ordered prefix of whole records
+// that keeps the complete document within the bound, the rest counted as
+// omitted. It returns the fitted diff; a mandatory part over the bound
+// fails.
+func encodeDiff(d EnvDiff) ([]byte, EnvDiff, error) {
+	var tools []int
+	for i, e := range d.Detail {
+		if r := detailRecord(e); r != nil && toolKey(keyOf(*r)) {
+			tools = append(tools, i)
 		}
 	}
-	memo := map[envKey]int{} // 1 scaffolding, 2 not
-	var visit func(k envKey) bool
-	visit = func(k envKey) bool {
-		if v, ok := memo[k]; ok {
-			return v == 1
-		}
-		memo[k] = 2
-		kids := children[k]
-		ok := len(kids) > 0
-		for _, c := range kids {
-			switch {
-			case c.Type == TypeDir:
-				ok = ok && visit(keyOf(c))
-			case isHousekeeping(c.Class) && !modifiedOnlyClasses[c.Class]:
-			default:
-				ok = false
+	all := len(tools) + d.ToolOmittedCount
+	keep := func(n int) EnvDiff {
+		out := d
+		out.Detail = make([]EnvDetail, 0, len(d.Detail)-len(tools)+n)
+		t := 0
+		for i, e := range d.Detail {
+			if t < len(tools) && tools[t] == i {
+				t++
+				if t > n {
+					continue
+				}
 			}
+			out.Detail = append(out.Detail, e)
 		}
-		if ok {
-			memo[k] = 1
+		out.ToolDetailCount, out.ToolOmittedCount = n, all-n
+		return out
+	}
+	fits := func(n int) ([]byte, bool) {
+		b, err := encodeJSON(keep(n))
+		return b, err == nil && len(b) <= maxDiffBytes
+	}
+	b, ok := fits(0)
+	if !ok {
+		return nil, d, errors.New(CodeEnvLimit)
+	}
+	// Each record's encoded size at its place in the detail array (its
+	// own indented lines, the line break and the separator) gives the
+	// estimate; whole-document encodings settle the exact prefix.
+	size, n := len(b), 0
+	for _, i := range tools {
+		e, err := json.MarshalIndent(d.Detail[i], "    ", "  ")
+		if err != nil || size+len(e)+6 > maxDiffBytes {
+			break
 		}
-		return ok
+		size += len(e) + 6
+		n++
 	}
-	out := map[envKey]bool{}
-	for k := range dirs {
-		if visit(k) {
-			out[k] = true
+	for ; n > 0; n-- {
+		if e, ok := fits(n); ok {
+			b = e
+			break
 		}
 	}
-	return out
-}
-
-// encodeDiff renders diff.json within its 4 MiB bound.
-func encodeDiff(d EnvDiff) ([]byte, error) {
-	b, err := encodeJSON(d)
-	if err != nil {
-		return nil, err
+	for n < len(tools) {
+		e, ok := fits(n + 1)
+		if !ok {
+			break
+		}
+		b, n = e, n+1
 	}
-	if len(b) > maxDiffBytes {
-		return nil, errors.New(CodeEnvLimit)
-	}
-	return b, nil
+	return b, keep(n), nil
 }
 
 // ctimeNS returns a stat result's status-change time in nanoseconds
