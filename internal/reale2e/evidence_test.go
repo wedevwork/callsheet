@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -922,10 +923,58 @@ func a3Mutations() []mutation {
 	}
 }
 
+// mutationCheck is the check command's verdict on one mutated copy of the
+// passing bundle, judged once per repeat (-count) for every test asserting
+// on that mutation.
+type mutationCheck struct {
+	once        sync.Once
+	code        int
+	out, errOut string
+	// live records that the check built a live world.
+	live bool
+}
+
+var mutationChecks sync.Map
+
+// resetMutationChecks drops the cached verdicts, so every repeat judges
+// every mutation afresh, the checks running concurrently. Each test using
+// the cache calls it before t.Parallel: no parallel test body of the
+// repeat has started then, and the previous repeat has finished.
+func resetMutationChecks() { mutationChecks.Clear() }
+
+// checkMutation runs "check --evidence" on a copy of the passing bundle
+// mutated by checkerMutations()[i] (once per index) and returns its exit,
+// report and diagnostics.
+func checkMutation(t *testing.T, i int) (int, Report, string) {
+	t.Helper()
+	m := checkerMutations()[i]
+	v, _ := mutationChecks.LoadOrStore(i, &mutationCheck{})
+	c := v.(*mutationCheck)
+	c.once.Do(func() {
+		b := passingBundle(t)
+		m.mutate(t, b)
+		var out, errOut bytes.Buffer
+		c.code = MainWith(Host{GOOS: "linux", GOARCH: "amd64", Args: []string{"check", "--evidence", b}, Getenv: func(string) string { return "" },
+			LookupEnv: func(string) (string, bool) { return "", true }, Stdout: &out, Stderr: &errOut,
+			NewWorld: func(Host) (*World, func(), error) {
+				c.live = true
+				return nil, nil, errors.New("check built a live world")
+			}})
+		c.out, c.errOut = out.String(), errOut.String()
+	})
+	if c.live {
+		t.Fatal("check built a live world")
+	}
+	var r Report
+	json.Unmarshal([]byte(c.out), &r)
+	return c.code, r, c.errOut
+}
+
 // TestCheckerMutations (UT-4, UT-6): the passing synthetic bundle passes
 // and every independent mutation of a predicate fails that predicate with
 // its fixed code (exit 1).
 func TestCheckerMutations(t *testing.T) {
+	resetMutationChecks()
 	t.Parallel()
 	b := passingBundle(t)
 	code, r, errOut := checkBundle(t, b)
@@ -933,13 +982,11 @@ func TestCheckerMutations(t *testing.T) {
 		t.Fatalf("passing bundle = %d %s %v %s", code, r.Result, failedCodes(r), errOut)
 	}
 	covered := map[string]bool{}
-	for _, m := range checkerMutations() {
+	for i, m := range checkerMutations() {
 		covered[m.crit] = true
 		t.Run(m.name, func(t *testing.T) {
 			t.Parallel()
-			b := passingBundle(t)
-			m.mutate(t, b)
-			code, r, errOut := checkBundle(t, b)
+			code, r, errOut := checkMutation(t, i)
 			if code == 2 {
 				t.Fatalf("%s: schema error instead of a failed criterion: %s", m.name, errOut)
 			}
@@ -958,8 +1005,9 @@ func TestCheckerMutations(t *testing.T) {
 // structured report; a corruption of each criterion fails with exit 1;
 // malformed evidence is a schema error (exit 2); usage errors exit 2.
 func TestEvidenceCommand(t *testing.T) {
+	resetMutationChecks()
 	t.Parallel()
-	run := func(args ...string) (int, string, string) {
+	run := func(t *testing.T, args ...string) (int, string, string) {
 		var out, errOut bytes.Buffer
 		code := MainWith(Host{GOOS: "linux", GOARCH: "amd64", Args: args, Getenv: func(string) string { return "" },
 			LookupEnv: func(string) (string, bool) { return "", true }, Stdout: &out, Stderr: &errOut,
@@ -967,24 +1015,23 @@ func TestEvidenceCommand(t *testing.T) {
 		return code, out.String(), errOut.String()
 	}
 	b := passingBundle(t)
-	code, out, errOut := run("check", "--evidence", b)
+	code, out, errOut := run(t, "check", "--evidence", b)
 	var r Report
 	if code != 0 || json.Unmarshal([]byte(out), &r) != nil || r.Result != ResultPass || r.Claim != claimFor(ResultPass, FlowDefault) {
 		t.Fatalf("passing check = %d %q %q", code, out, errOut)
 	}
 	// One corruption per criterion through the command.
 	seen := map[string]bool{}
-	for _, m := range checkerMutations() {
+	for i, m := range checkerMutations() {
 		if seen[m.crit] {
 			continue
 		}
 		seen[m.crit] = true
-		b := passingBundle(t)
-		m.mutate(t, b)
-		code, out, _ := run("check", "--evidence", b)
-		var r Report
-		json.Unmarshal([]byte(out), &r)
-		requireCode(t, m.name, code, r, m.crit, m.code)
+		t.Run("corrupted "+m.crit, func(t *testing.T) {
+			t.Parallel()
+			code, r, _ := checkMutation(t, i)
+			requireCode(t, m.name, code, r, m.crit, m.code)
+		})
 	}
 	if len(seen) != len(criteriaOrder) {
 		t.Fatalf("criteria exercised %d of %d", len(seen), len(criteriaOrder))
@@ -995,17 +1042,17 @@ func TestEvidenceCommand(t *testing.T) {
 	// A version 1 bundle is unsupported, never reinterpreted.
 	v1 := passingBundle(t)
 	editJSON(t, v1, "manifest.json", func(m map[string]any) { m["schema"] = ManifestSchemaV1 })
-	if code, out, _ := run("check", "--evidence", v1); code != 2 || !strings.Contains(out, "evidence_schema_error") {
+	if code, out, _ := run(t, "check", "--evidence", v1); code != 2 || !strings.Contains(out, "evidence_schema_error") {
 		t.Fatalf("version 1 bundle = %d %q", code, out)
 	}
 	// A schema error.
 	bad := passingBundle(t)
 	writeBundleFile(t, bad, "manifest.json", []byte("{"))
-	if code, out, _ := run("check", "--evidence", bad); code != 2 || !strings.Contains(out, "evidence_schema_error") {
+	if code, out, _ := run(t, "check", "--evidence", bad); code != 2 || !strings.Contains(out, "evidence_schema_error") {
 		t.Fatalf("schema error = %d %q", code, out)
 	}
 	for _, args := range [][]string{{"check"}, {"check", "--evidence", "relative"}, {"check", "--evidence", b, "extra"}, {"check", "--bogus", "x"}} {
-		if code, _, errOut := run(args...); code != 2 || !strings.Contains(errOut, "usage:") {
+		if code, _, errOut := run(t, args...); code != 2 || !strings.Contains(errOut, "usage:") {
 			t.Errorf("%v = %d %q", args, code, errOut)
 		}
 	}

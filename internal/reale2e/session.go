@@ -118,6 +118,8 @@ type deriver struct {
 	entries  []MapEntry
 	codes    map[string]bool
 	init     []InitRecord
+	// streamResults is each phase stream's recordsResult.
+	streamResults [2][2]bool
 }
 
 func (d *deriver) find(code, toolUse, tool string, src ...SourceRef) {
@@ -137,18 +139,19 @@ func (d *deriver) find(code, toolUse, tool string, src ...SourceRef) {
 func (d *deriver) decodeLines(file string, data []byte) []sessionRecord {
 	var out []sessionRecord
 	sum := sha256Hex(data)
-	lines := strings.Split(string(data), "\n")
+	lines := bytes.Split(data, []byte("\n"))
 	for i, l := range lines {
-		if l == "" {
+		if len(l) == 0 {
 			continue
 		}
 		src := SourceRef{File: file, SHA256: sum, FirstLine: i + 1, LastLine: i + 1}
-		if len(l) > maxSessionRecordSize || !utf8.ValidString(l) || checkDuplicateKeys([]byte(l)) != nil {
+		if len(l) > maxSessionRecordSize || !utf8.Valid(l) {
 			d.find(CodeSessionMalformed, "", "", src)
 			continue
 		}
+		// Unmarshal proves l one valid value before rawKeysUnique judges it.
 		var raw map[string]json.RawMessage
-		if json.Unmarshal([]byte(l), &raw) != nil || raw == nil {
+		if json.Unmarshal(l, &raw) != nil || raw == nil || !rawKeysUnique(l) && walkDuplicateKeys(l) != nil {
 			d.find(CodeSessionMalformed, "", "", src)
 			continue
 		}
@@ -366,7 +369,22 @@ type timelineItem struct {
 // DeriveSession derives the version 2 event map. It is pure and
 // deterministic: the same inputs give the same map.
 func DeriveSession(in SessionInput) EventMap {
+	em, _ := deriveSession(in)
+	return em
+}
+
+// deriveSession is DeriveSession, also returning each phase stream's
+// result as streamResult reports it (present, ok), from the records the
+// derivation decoded.
+func deriveSession(in SessionInput) (EventMap, [2][2]bool) {
 	d := &deriver{in: in, codes: map[string]bool{}}
+	em := d.derive()
+	return em, d.streamResults
+}
+
+// derive derives the event map of d's input.
+func (d *deriver) derive() EventMap {
+	in := d.in
 	em := EventMap{Schema: EventMapSchema, RunID: in.RunID, Source: MapSourceDerived, Entries: []MapEntry{}, Findings: []MapFinding{}, Init: []InitRecord{}}
 	var streams [2][]sessionRecord
 	results := [2]*sessionRecord{}
@@ -375,6 +393,7 @@ func DeriveSession(in SessionInput) EventMap {
 			continue
 		}
 		streams[p] = d.decodeLines(phaseStreamFiles[p], in.Streams[p])
+		d.streamResults[p][0], d.streamResults[p][1] = recordsResult(streams[p])
 		// The raw chronology: the init record precedes all session work
 		// and the terminal result follows it all.
 		phaseSID, hasInit := "", false

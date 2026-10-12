@@ -133,18 +133,16 @@ func row(spec rowSpec, f rowFacts) AuditRow {
 	return r
 }
 
-// scratch returns a checker sharing c's derived facts with no codes, so a
-// criterion can be evaluated on its own.
+// scratch returns a checker sharing c's derived facts and memo with no
+// codes, so a criterion can be evaluated on its own.
 func (c *checker) scratch() *checker {
-	return &checker{b: c.b, codes: map[string][]string{}, views: c.views, commits: c.commits, files: c.files, seed: c.seed, derived: c.derived}
+	return &checker{b: c.b, codes: map[string][]string{}, views: c.views, commits: c.commits, files: c.files, seed: c.seed, derived: c.derived, memo: c.memo}
 }
 
 // codesOf evaluates one criterion method alone and returns its codes for
 // crit.
 func (c *checker) codesOf(f func(*checker), crit string) []string {
-	s := c.scratch()
-	f(s)
-	return s.codes[crit]
+	return slices.Clone(c.methodCodes(f)[crit])
 }
 
 // fixed FP lists.
@@ -163,8 +161,21 @@ var (
 	fpJudgment  = []string{"FP-12"}
 )
 
-// auditRows derives the ordered rows from a loaded checker (pure).
+// auditRows derives the ordered rows from a loaded checker (pure), once
+// per check (shared: never modify them).
 func auditRows(c *checker) []AuditRow {
+	if c.memo != nil && c.memo.rows != nil {
+		return c.memo.rows
+	}
+	rows := deriveAuditRows(c)
+	if c.memo != nil {
+		c.memo.rows = rows
+	}
+	return rows
+}
+
+// deriveAuditRows computes the ordered rows.
+func deriveAuditRows(c *checker) []AuditRow {
 	var rows []AuditRow
 	add := func(spec rowSpec, f rowFacts) { rows = append(rows, row(spec, f)) }
 	add(rowSpec{id: "preflight", layer: LayerMechanical, fps: fpPreflight, criteria: []string{CritPreflight},
@@ -284,8 +295,13 @@ func (c *checker) rolesFacts() rowFacts {
 // whether it was successful and bound to the stream's init session.
 func streamResult(stream []byte) (present, ok bool) {
 	d := &deriver{codes: map[string]bool{}}
+	return recordsResult(d.decodeLines(phaseStreamFiles[0], stream))
+}
+
+// recordsResult is streamResult over a stream's decoded records.
+func recordsResult(records []sessionRecord) (present, ok bool) {
 	sid, hasInit := "", false
-	for _, r := range d.decodeLines(phaseStreamFiles[0], stream) {
+	for _, r := range records {
 		switch r.kind {
 		case "init":
 			if !hasInit {
@@ -296,6 +312,16 @@ func streamResult(stream []byte) (present, ok bool) {
 		}
 	}
 	return false, false
+}
+
+// phaseStreamResult is streamResult of phase p's stream, which the
+// derivation newChecker ran has already decoded.
+func (c *checker) phaseStreamResult(p int, stream []byte) (present, ok bool) {
+	if c.memo != nil {
+		r := c.memo.streams[p-1]
+		return r[0], r[1]
+	}
+	return streamResult(stream)
 }
 
 // toolCommand is the raw input of tool use id in a phase stream, with the
@@ -376,7 +402,7 @@ func (c *checker) phaseFacts(p int) rowFacts {
 		}
 	}
 	if hasStream {
-		present, ok := streamResult(stream)
+		present, ok := c.phaseStreamResult(p, stream)
 		switch {
 		case !present:
 			f.miss("phase " + fmt.Sprint(p) + " result record")
@@ -588,11 +614,8 @@ func (c *checker) waitFacts(i int) rowFacts {
 		case w.ExitCode == nil || *w.ExitCode != 0 || w.WinnerState != contract.TaskSucceeded:
 			f.bad("wait_unsuccessful")
 		}
-		if okR && okX {
-			re := waitRecordOf(i, w.Task, result, c.b.Files[dir+waitStderrFile], exit, true, true)
-			if string(mustJSON(re)) != string(mustJSON(*w)) {
-				f.bad("wait_record_mismatch")
-			}
+		if okR && okX && !c.waitRecordMatches(i, w, result, c.b.Files[dir+waitStderrFile], exit) {
+			f.bad("wait_record_mismatch")
 		}
 	}
 	f.refFile(c, dir+waitResultFile, nil, "", "")
@@ -941,10 +964,14 @@ func (c *checker) environmentFacts() rowFacts {
 // BuildAudit derives the audit of a loaded bundle and its report (pure:
 // it reads only the bundle and executes nothing).
 func BuildAudit(b *Bundle, r Report) Audit {
-	c := newChecker(b)
+	return buildAudit(newChecker(b), r)
+}
+
+// buildAudit is BuildAudit over a loaded checker of the bundle.
+func buildAudit(c *checker, r Report) Audit {
 	data, _ := encodeJSON(r)
 	a := Audit{Schema: AuditSchema, RunID: r.RunID, ReportSHA256: sha256Hex(data), Scope: AuditScope, Mechanical: r.Result, ResultReview: PendingReview,
-		Sources: slices.Clone(r.Artifacts), Rows: auditRows(c)}
+		Sources: slices.Clone(r.Artifacts), Rows: slices.Clone(auditRows(c))}
 	if a.Sources == nil {
 		a.Sources = []FileHash{}
 	}

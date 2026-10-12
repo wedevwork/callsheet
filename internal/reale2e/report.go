@@ -53,9 +53,12 @@ const (
 	ResultFail = "FAIL"
 )
 
-// Redactor replaces known local prefixes and credential shapes.
+// Redactor replaces known local prefixes and credential shapes. HomeAlias
+// and CheckoutAlias are a second spelling of the same directory (symlinks
+// resolved, or as the owner wrote it), replaced by the same token.
 type Redactor struct {
-	Home, Run, Checkout string
+	Home, Run, Checkout      string
+	HomeAlias, CheckoutAlias string
 }
 
 var (
@@ -70,7 +73,7 @@ func (r Redactor) Redact(s string) string {
 	// Longest prefix first, so a checkout inside the home directory stays
 	// $CHECKOUT.
 	type pre struct{ path, token string }
-	pres := []pre{{r.Checkout, "$CHECKOUT"}, {r.Run, "$RUN"}, {r.Home, "$HOME"}}
+	pres := []pre{{r.Checkout, "$CHECKOUT"}, {r.CheckoutAlias, "$CHECKOUT"}, {r.Run, "$RUN"}, {r.Home, "$HOME"}, {r.HomeAlias, "$HOME"}}
 	sort.SliceStable(pres, func(i, j int) bool { return len(pres[i].path) > len(pres[j].path) })
 	for _, p := range pres {
 		if len(p.path) > 1 {

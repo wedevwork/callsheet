@@ -1672,7 +1672,12 @@ func (f *fakeWorld) bundle() string {
 	if st, err := os.Stat(f.evidence); err != nil || !st.IsDir() {
 		f.t.Fatalf("no evidence bundle at %s: %v", f.evidence, err)
 	}
-	return f.evidence
+	// Canonical, as the supervisor reports it (TMPDIR or macOS /var may be a link).
+	b, err := filepath.EvalSymlinks(f.evidence)
+	if err != nil {
+		f.t.Fatalf("resolve evidence bundle %s: %v", f.evidence, err)
+	}
+	return b
 }
 
 // report reads the attempt's report.json.

@@ -258,10 +258,16 @@ func readBounded(path string, limit int64) ([]byte, error) {
 		return nil, err
 	}
 	defer f.Close()
-	data, err := io.ReadAll(io.LimitReader(f, limit+1))
-	if err != nil {
+	// Sized from the file's current length (still bounded by the limit,
+	// however much the read returns).
+	var buf bytes.Buffer
+	if st, err := f.Stat(); err == nil && st.Size() >= 0 && st.Size() <= limit {
+		buf.Grow(int(st.Size()) + bytes.MinRead)
+	}
+	if _, err := buf.ReadFrom(io.LimitReader(f, limit+1)); err != nil {
 		return nil, err
 	}
+	data := buf.Bytes()
 	if int64(len(data)) > limit {
 		return nil, errors.New("file exceeds its bound")
 	}

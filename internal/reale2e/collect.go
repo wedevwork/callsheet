@@ -399,11 +399,14 @@ func (s *supervisor) judge() int {
 	b, err := LoadBundle(s.ev.root)
 	var r Report
 	var a *Audit
+	var c *checker
 	if err != nil {
 		r = schemaReport()
 		fmt.Fprintf(s.stderr, "reale2e: %v\n", err)
 	} else {
-		r = BuildReport(b, Check(b))
+		var cs []Criterion
+		cs, c = check(b)
+		r = BuildReport(b, cs)
 	}
 	data, _ := encodeJSON(r)
 	text := RenderText(r)
@@ -412,7 +415,7 @@ func (s *supervisor) judge() int {
 		data []byte
 	}{{"report.json", data}, {"report.txt", []byte(text)}}
 	if b != nil {
-		au := BuildAudit(b, r)
+		au := buildAudit(c, r)
 		a = &au
 		aj, _ := encodeJSON(au)
 		writes = append(writes, struct {

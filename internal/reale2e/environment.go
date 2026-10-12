@@ -304,6 +304,40 @@ func under(p, root string) bool {
 	return err == nil && filepath.IsAbs(p) && filepath.IsAbs(root) && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
+// canonical returns t with canonical prefixes, so a canonical path gets its
+// token however the home and checkout were spelled (macOS reaches every
+// temporary directory through /var -> /private/var).
+func (t pathTokenizer) canonical() pathTokenizer {
+	for _, p := range []*string{&t.home, &t.checkout} {
+		if *p == "" {
+			continue
+		}
+		if c, err := canonicalPath(*p); err == nil {
+			*p = c
+		}
+	}
+	return t
+}
+
+// canonicalPath resolves p's symlinks and cleans it; a path that does not
+// exist (yet) resolves through its nearest existing ancestor, the missing
+// elements appended.
+func canonicalPath(p string) (string, error) {
+	p = filepath.Clean(p)
+	c, err := filepath.EvalSymlinks(p)
+	if err == nil {
+		return c, nil
+	}
+	parent := filepath.Dir(p)
+	if !errors.Is(err, fs.ErrNotExist) || parent == p {
+		return "", err
+	}
+	if c, err = canonicalPath(parent); err != nil {
+		return "", err
+	}
+	return filepath.Join(c, filepath.Base(p)), nil
+}
+
 func (t pathTokenizer) token(p string) string {
 	switch {
 	case t.checkout != "" && under(p, t.checkout):
@@ -346,7 +380,8 @@ func (c collectRoots) Set(v string) error {
 // removed, sorted bytewise; no root may be a strict ancestor of another
 // (component-aware) or equal to or inside the evidence destination or the
 // runtime (an ancestor of either is allowed: they are the exact
-// exclusions).
+// exclusions). The evidence and runtime are compared canonically too, the
+// evidence through its existing parent when it does not exist yet.
 func validateRoots(raw []string, evidence, runtime string) ([]string, error) {
 	seen := map[string]bool{}
 	var out []string
@@ -379,15 +414,29 @@ func validateRoots(raw []string, evidence, runtime string) ([]string, error) {
 			out = append(out, canon)
 		}
 	}
+	if len(out) == 0 {
+		return out, nil
+	}
 	sort.Strings(out)
+	var excl []string
+	for _, x := range []string{evidence, runtime} {
+		if x == "" {
+			continue
+		}
+		c, err := canonicalPath(x)
+		if err != nil {
+			return nil, fmt.Errorf("the run's evidence or runtime directory %q cannot be resolved: %v", x, err)
+		}
+		excl = append(excl, c)
+	}
 	for i, a := range out {
 		for _, b := range out[i+1:] {
 			if under(a, b) || under(b, a) {
 				return nil, fmt.Errorf("--protect-root %q and %q are nested", a, b)
 			}
 		}
-		for _, x := range []string{evidence, runtime} {
-			if x != "" && under(a, x) {
+		for _, x := range excl {
+			if under(a, x) {
 				return nil, fmt.Errorf("--protect-root %q is the run's own evidence or runtime directory, or inside it", a)
 			}
 		}
@@ -651,9 +700,20 @@ func takeSnapshot(phase, home string, roots, exclude []string, git GitRunner, to
 }
 
 // takeSnapshotDepth collects a snapshot whose discovery descends at most
-// depth directory levels below each root.
+// depth directory levels below each root. The roots are canonical
+// (validateRoots); the home, the exclusions and the tokenizer's prefixes are
+// made canonical here, as every path discovery reaches below a root is.
 func takeSnapshotDepth(phase, home string, roots, exclude []string, git GitRunner, tok pathTokenizer, clock Clock, deadline time.Time, depth int) *Snapshot {
-	sc := &envScanner{home: home, roots: roots, exclude: exclude, git: git, tok: tok, clock: clock, deadline: deadline, phase: phase, depth: depth,
+	if c, err := canonicalPath(home); home != "" && err == nil {
+		home = c
+	}
+	exclude = slices.Clone(exclude)
+	for i, x := range exclude {
+		if c, err := canonicalPath(x); x != "" && err == nil {
+			exclude[i] = c
+		}
+	}
+	sc := &envScanner{home: home, roots: roots, exclude: exclude, git: git, tok: tok.canonical(), clock: clock, deadline: deadline, phase: phase, depth: depth,
 		repoSeen: map[string]bool{}}
 	sc.snap = Snapshot{Phase: phase, Complete: true, Roots: []string{}, Depth: depth}
 	for _, r := range roots {
@@ -888,18 +948,26 @@ func namedConfig(vendor, rel string) bool {
 
 // validDebugLatest reports a debug/latest target that names a regular
 // debug/<id>.txt of the same home: classification only, by an lstat of
-// that exact path; nothing is read through the link (A3.4).
+// that exact path; nothing is read through the link (A3.4). root is the
+// canonical directory the walk entered. An absolute target may spell the
+// home through a symlinked ancestor (macOS /var, a linked vendor home), so
+// its directory is compared canonically with root's real debug directory.
 func (sc *envScanner) validDebugLatest(root, target string) bool {
+	debug := filepath.Join(root, "debug")
 	abs := target
 	if !filepath.IsAbs(abs) {
-		abs = filepath.Join(root, "debug", target)
+		abs = filepath.Join(debug, target)
 	}
-	abs = filepath.Clean(abs)
-	dir, name := filepath.Split(abs)
-	if filepath.Clean(dir) != filepath.Join(root, "debug") || housekeepingClass("claude", "debug/"+name) != "claude.debug" {
+	dir, name := filepath.Split(filepath.Clean(abs))
+	if housekeepingClass("claude", "debug/"+name) != "claude.debug" {
 		return false
 	}
-	st, err := os.Lstat(abs)
+	if d := filepath.Clean(dir); d != debug {
+		if c, err := filepath.EvalSymlinks(d); err != nil || c != debug {
+			return false
+		}
+	}
+	st, err := os.Lstat(filepath.Join(debug, name))
 	return err == nil && st.Mode().IsRegular()
 }
 

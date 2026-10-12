@@ -76,7 +76,12 @@ func TestFinalValidationRunner(t *testing.T) {
 	}
 	ver := repoGoVersion(t)
 	broken := strings.Replace(brokenMain, "\t\"os\"\n", "\t\"os\"\n\t\"strings\"\n", 1)
-	for name, tc := range map[string]struct {
+	// The first case runs alone on a cold private cache; the others start
+	// from their own copy of the cache it leaves (the standard library
+	// compiled once), every command still executing for each.
+	coldDir := t.TempDir()
+	for i, tc := range []struct {
+		name         string
 		main, test   string
 		failed       []string
 		missingTests []string
@@ -84,19 +89,29 @@ func TestFinalValidationRunner(t *testing.T) {
 		// the throwaway build never consults ancestor VCS state.
 		badAncestor bool
 	}{
-		"conforming":           {fixtureMain, fixtureTest, nil, nil, false},
-		"missing requirement":  {broken, brokenTest, []string{"unicode", "empty_name"}, []string{"TestRun/unicode", "TestRun/empty_name"}, false},
-		"invalid git ancestor": {fixtureMain, fixtureTest, nil, nil, true},
+		{"conforming", fixtureMain, fixtureTest, nil, nil, false},
+		{"missing requirement", broken, brokenTest, []string{"unicode", "empty_name"}, []string{"TestRun/unicode", "TestRun/empty_name"}, false},
+		{"invalid git ancestor", fixtureMain, fixtureTest, nil, nil, true},
 	} {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
+		t.Run(tc.name, func(t *testing.T) {
+			if i > 0 {
+				t.Parallel()
+			}
 			files := fixtureFiles(ver, tc.main, tc.test)
-			dir := t.TempDir()
+			dir := coldDir
+			if i > 0 {
+				dir = t.TempDir()
+			}
 			if tc.badAncestor {
 				if err := os.Mkdir(filepath.Join(dir, ".git"), 0o700); err != nil {
 					t.Fatal(err)
 				}
 				dir = filepath.Join(dir, "export")
+			}
+			if i > 0 {
+				if err := copyTree(filepath.Join(coldDir, "gocache"), filepath.Join(dir, "gocache")); err != nil {
+					t.Fatal(err)
+				}
 			}
 			v := runFinalValidation(realRunner(), realClock{}, goBin, os.Getenv("PATH"), dir, files, strings.Repeat("a", 40), strings.Repeat("b", 40), seqMark())
 			if v.Err != nil || v.Test.ExitCode != 0 || v.Test.Toolchain == "" || !v.Cases.Build.Started || v.Cases.Build.ExitCode != 0 {

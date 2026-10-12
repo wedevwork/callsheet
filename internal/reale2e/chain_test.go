@@ -39,25 +39,29 @@ func TestFourHopChain(t *testing.T) {
 	for i := range Hops {
 		edges := map[string]struct {
 			crit, code string
-			f          func(b string)
+			f          func(t *testing.T, b string)
 		}{
-			"base": {CritChain, "base_binding_mismatch", func(b string) {
+			"base": {CritChain, "base_binding_mismatch", func(t *testing.T, b string) {
 				rebindHop(t, b, i, func(w *contract.WorkspaceBinding) { w.BaseCommit = ptr(zeros40); w.BaseSelector = zeros40 })
 			}},
-			"parent": {CritChain, "parent_mismatch", func(b string) {
+			"parent": {CritChain, "parent_mismatch", func(t *testing.T, b string) {
 				files, _ := hopFilesAt(t, b, i+1)
 				addCommit(t, evidenceRepo(t, b), evidenceRefs[i+1], files)
 			}},
-			"instance": {CritChain, "workspace_instance_mismatch", func(b string) {
+			"instance": {CritChain, "workspace_instance_mismatch", func(t *testing.T, b string) {
 				rebindHop(t, b, i, func(w *contract.WorkspaceBinding) { w.Instance = fmt.Sprintf("%032x", 77) })
 			}},
-			"marker": {CritHops, "final_marker_missing", func(b string) { setFinal(t, b, hopDirOf(i), "no marker\n") }},
+			"marker": {CritHops, "final_marker_missing", func(t *testing.T, b string) { setFinal(t, b, hopDirOf(i), "no marker\n") }},
 		}
 		for name, e := range edges {
-			b := passingBundle(t)
-			e.f(b)
-			code, r, _ := checkBundle(t, b)
-			requireCode(t, fmt.Sprintf("hop %d %s", i+1, name), code, r, e.crit, e.code)
+			name := fmt.Sprintf("hop %d %s", i+1, name)
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				b := passingBundle(t)
+				e.f(t, b)
+				code, r, _ := checkBundle(t, b)
+				requireCode(t, name, code, r, e.crit, e.code)
+			})
 		}
 	}
 }

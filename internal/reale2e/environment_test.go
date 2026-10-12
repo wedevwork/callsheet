@@ -56,6 +56,17 @@ func realGit(t *testing.T) GitRunner {
 	return execGit(ExecLauncher{}, realClock{}, exec.LookPath, []string{"PATH=" + os.Getenv("PATH"), "HOME=" + t.TempDir()})
 }
 
+// linkedParent returns dir reached through a symlink to its parent: the
+// shape of macOS's /var -> /private/var above every t.TempDir.
+func linkedParent(t *testing.T, dir string) string {
+	t.Helper()
+	link := filepath.Join(t.TempDir(), "l")
+	if err := os.Symlink(filepath.Dir(dir), link); err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(link, filepath.Base(dir))
+}
+
 // snap takes one snapshot of home and roots.
 func snap(t *testing.T, phase, home string, roots, exclude []string) *Snapshot {
 	t.Helper()
@@ -207,6 +218,57 @@ func TestOwnerEnvironment(t *testing.T) {
 		readDoc(t, filepath.Join(f.bundle(), "manifest.json"), &m)
 		if !slices.Equal(m.ProtectedRoots, []string{cs, "$HOME"}) {
 			t.Fatalf("manifest roots %v", m.ProtectedRoots)
+		}
+		if code, r, _ := checkBundle(t, f.bundle()); code != 0 || r.Result != ResultPass {
+			t.Fatalf("check = %d %v", code, failedCodes(r))
+		}
+	})
+	t.Run("home, checkout and roots through a symlinked parent", func(t *testing.T) {
+		t.Parallel()
+		// The macOS shape: $HOME, the working directory and the supplied
+		// roots are spelled through a symlinked ancestor; every root and
+		// vendor home is still tokenized from its canonical form.
+		f := newFakeWorld(t)
+		f.git = realGit(t)
+		f.home = linkedParent(t, f.home)
+		f.checkout = linkedParent(t, f.checkout)
+		f.evidence = filepath.Join(f.checkout, "design", "real-e2e-runs", "attempt")
+		sibling := filepath.Join(filepath.Dir(f.home), "000")
+		if err := os.Mkdir(sibling, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		f.roots = []string{f.home, sibling, f.checkout}
+		if code := f.attempt(); code != 0 {
+			t.Fatalf("attempt = %d %v\n%s", code, failedCodes(f.report()), f.stderr.String())
+		}
+		ch, _ := filepath.EvalSymlinks(f.home)
+		cc, _ := filepath.EvalSymlinks(f.checkout)
+		cs, _ := filepath.EvalSymlinks(sibling)
+		// Report redaction knows both spellings of the home and checkout.
+		for in, out := range map[string]string{
+			filepath.Join(ch, ".local", "bin", "claude"): "$HOME/.local/bin/claude", filepath.Join(f.home, ".local", "bin", "claude"): "$HOME/.local/bin/claude",
+			filepath.Join(cc, "bin", "callsheet"): "$CHECKOUT/bin/callsheet", filepath.Join(f.checkout, "bin", "callsheet"): "$CHECKOUT/bin/callsheet",
+		} {
+			if got := f.sup.tok(in); got != out {
+				t.Errorf("tok(%s) = %s, want %s", in, got, out)
+			}
+		}
+		canon := []string{ch, cc, cs}
+		slices.Sort(canon)
+		var want []string
+		for _, c := range canon {
+			want = append(want, map[string]string{ch: "$HOME", cc: "$CHECKOUT", cs: cs}[c])
+		}
+		var m Manifest
+		readDoc(t, filepath.Join(f.bundle(), "manifest.json"), &m)
+		before, after := readSnapshot(t, f.bundle(), "before"), readSnapshot(t, f.bundle(), "after")
+		var d EnvDiff
+		readDoc(t, filepath.Join(f.bundle(), "environment", "diff.json"), &d)
+		if !slices.Equal(m.ProtectedRoots, want) || !slices.Equal(before.Roots, want) || !slices.Equal(after.Roots, want) || !slices.Equal(d.ProtectedRoots, want) {
+			t.Fatalf("roots %v %v %v %v, want %v", m.ProtectedRoots, before.Roots, after.Roots, d.ProtectedRoots, want)
+		}
+		if r := f.report(); r.Result != ResultPass {
+			t.Fatalf("report %v", failedCodes(r))
 		}
 		if code, r, _ := checkBundle(t, f.bundle()); code != 0 || r.Result != ResultPass {
 			t.Fatalf("check = %d %v", code, failedCodes(r))
@@ -439,6 +501,38 @@ func TestEnvironmentUnits(t *testing.T) {
 		}
 		if !under("/x/a/b", "/x/a") || under("/x/ab", "/x/a") || under("/x/a", "") || !tokenStrictlyUnder("$HOME/a/b", "$HOME/a") || tokenStrictlyUnder("$HOME/ab", "$HOME/a") {
 			t.Fatal("component-aware nesting")
+		}
+	})
+	t.Run("roots through a symlinked parent", func(t *testing.T) {
+		t.Parallel()
+		// The macOS shape: the evidence and runtime are spelled through a
+		// symlinked ancestor, the roots compared with them canonically.
+		d := linkedParent(t, t.TempDir())
+		for _, p := range []string{"ev/x/in", "rt/sub"} {
+			os.MkdirAll(filepath.Join(d, p), 0o700)
+		}
+		cd, _ := filepath.EvalSymlinks(d)
+		ev, rt := filepath.Join(d, "ev", "x"), filepath.Join(d, "rt")
+		for name, raw := range map[string][]string{
+			"evidence": {ev}, "inside evidence": {filepath.Join(ev, "in")}, "canonical evidence": {filepath.Join(cd, "ev", "x")},
+			"runtime": {rt}, "inside runtime": {filepath.Join(rt, "sub")}, "canonical runtime": {filepath.Join(cd, "rt", "sub")},
+		} {
+			if _, err := validateRoots(raw, ev, rt); err == nil {
+				t.Errorf("%s accepted", name)
+			}
+		}
+		// A new evidence directory resolves through its existing parent.
+		for _, root := range []string{filepath.Join(d, "ev"), filepath.Join(cd, "ev")} {
+			if got, err := validateRoots([]string{root}, filepath.Join(d, "ev", "new"), rt); err != nil || !slices.Equal(got, []string{filepath.Join(cd, "ev")}) {
+				t.Errorf("an ancestor of a new evidence directory: %v %v", got, err)
+			}
+		}
+		if _, err := validateRoots([]string{filepath.Join(cd, "ev")}, filepath.Join(d, "ev", "new", "deeper"), rt); err != nil {
+			t.Errorf("a new evidence directory below a missing parent: %v", err)
+		}
+		write(t, filepath.Join(d, "file"), "x")
+		if _, err := validateRoots([]string{filepath.Join(d, "ev")}, filepath.Join(d, "file", "x"), rt); err == nil {
+			t.Error("an evidence directory that cannot be resolved accepted")
 		}
 	})
 	t.Run("housekeeping classes", func(t *testing.T) {
@@ -1158,6 +1252,73 @@ func TestEnvironmentUnits(t *testing.T) {
 			t.Fatalf("protected %+v codes %v", d.Protected, d.Codes)
 		}
 	})
+	t.Run("home and exclusion through a symlinked parent", func(t *testing.T) {
+		t.Parallel()
+		// The macOS shape: an absolute debug/latest target may spell the
+		// home through a symlinked ancestor or canonically; either names
+		// the same home's debug/<id>.txt.
+		home := linkedParent(t, t.TempDir())
+		ch, _ := filepath.EvalSymlinks(home)
+		write(t, filepath.Join(home, ".claude", "debug", "s1.txt"), "d")
+		other := t.TempDir()
+		write(t, filepath.Join(other, ".claude", "debug", "s1.txt"), "d")
+		// A Claude home that is itself a link: the target spells it
+		// through that link.
+		lhome, real := t.TempDir(), t.TempDir()
+		write(t, filepath.Join(real, "debug", "s1.txt"), "d")
+		os.Symlink(real, filepath.Join(lhome, ".claude"))
+		for _, c := range []struct {
+			home, target, class string
+		}{
+			{home, "s1.txt", "claude.debug_latest"},
+			{home, filepath.Join(home, ".claude", "debug", "s1.txt"), "claude.debug_latest"},
+			{home, filepath.Join(ch, ".claude", "debug", "s1.txt"), "claude.debug_latest"},
+			{lhome, filepath.Join(lhome, ".claude", "debug", "s1.txt"), "claude.debug_latest"},
+			{lhome, filepath.Join(real, "debug", "s1.txt"), "claude.debug_latest"},
+			{home, filepath.Join(other, ".claude", "debug", "s1.txt"), ClassConfig},
+			{home, filepath.Join(home, ".claude", "debug", "none.txt"), ClassConfig},
+		} {
+			dir := filepath.Join(c.home, ".claude", "debug")
+			os.Remove(filepath.Join(dir, "latest"))
+			if err := os.Symlink(c.target, filepath.Join(dir, "latest")); err != nil {
+				t.Fatal(err)
+			}
+			s := snap(t, "before", c.home, nil, nil)
+			var got EnvRecord
+			for _, r := range s.Records {
+				if r.Kind == RecEntry && r.Scope == "claude" && r.Path == "debug/latest" {
+					got = r
+				}
+				if r.Kind == RecHome && r.Path != "$HOME/."+r.Scope {
+					t.Errorf("vendor home %+v is not tokenized", r)
+				}
+			}
+			if got.Class != c.class {
+				t.Errorf("debug/latest -> %s: class %q, want %q", c.target, got.Class, c.class)
+			}
+		}
+		// The exact exclusion spelled through the link still excludes the
+		// canonical paths discovery and status report below a root.
+		root := linkedParent(t, t.TempDir())
+		croot, _ := filepath.EvalSymlinks(root)
+		newRepo(t, filepath.Join(root, "repo"))
+		ev := filepath.Join(root, "repo", "ev")
+		write(t, filepath.Join(ev, "a.txt"), "a")
+		os.Symlink("a.txt", filepath.Join(ev, "link"))
+		hb := t.TempDir()
+		before := snap(t, "before", hb, []string{croot}, []string{ev})
+		write(t, filepath.Join(ev, "b.txt"), "b")
+		if d := CompareEnvironment(before, snap(t, "after", hb, []string{croot}, []string{ev}), before.Roots); len(d.Protected)+len(d.Detail) != 0 || !d.Complete {
+			t.Errorf("a change inside the exclusion was observed: %+v", d.Protected)
+		}
+		plain := filepath.Join(root, "plain")
+		write(t, filepath.Join(plain, "ev", "a.txt"), "a")
+		before = snap(t, "before", hb, []string{filepath.Join(croot, "plain")}, []string{filepath.Join(plain, "ev")})
+		os.Symlink("a.txt", filepath.Join(plain, "ev", "new"))
+		if d := CompareEnvironment(before, snap(t, "after", hb, []string{filepath.Join(croot, "plain")}, []string{filepath.Join(plain, "ev")}), before.Roots); len(d.Protected)+len(d.Detail) != 0 {
+			t.Fatalf("a link inside the exclusion was observed: %+v", d)
+		}
+	})
 	t.Run("compact records", func(t *testing.T) {
 		t.Parallel()
 		// A3.4: a compact record changes whenever any field of the full
@@ -1424,8 +1585,10 @@ func TestEnvironmentUnits(t *testing.T) {
 	t.Run("shards and diff bounds", func(t *testing.T) {
 		t.Parallel()
 		s := &Snapshot{Phase: "before", Complete: true, Roots: []string{}}
+		// The bounds are bytes, not records: long paths reach them with
+		// few records.
 		entry := func(i int) EnvRecord {
-			return EnvRecord{Kind: RecEntry, Scope: "claude", Path: fmt.Sprintf("%080d", i), Class: ClassConfig, Method: MethodContent, SHA256: zeros64}
+			return EnvRecord{Kind: RecEntry, Scope: "claude", Path: fmt.Sprintf("%04000d", i), Class: ClassConfig, Method: MethodContent, SHA256: zeros64}
 		}
 		line, _ := json.Marshal(compactOf(entry(0)))
 		for i := 0; len(s.Records)*(len(line)+1) < 9<<20; i++ {
@@ -1473,8 +1636,8 @@ func TestEnvironmentUnits(t *testing.T) {
 		}
 		var d EnvDiff
 		d.Schema = DiffSchema
-		for len(d.Protected)*150 < 5<<20 {
-			d.Protected = append(d.Protected, EnvChange{Scope: "claude", Path: strings.Repeat("x", 100), Kind: ChangeAdded, Fields: []string{}})
+		for len(d.Protected)*4000 < 5<<20 {
+			d.Protected = append(d.Protected, EnvChange{Scope: "claude", Path: strings.Repeat("x", 4000), Kind: ChangeAdded, Fields: []string{}})
 		}
 		if _, err := encodeDiff(d); err == nil {
 			t.Fatal("a diff over 4 MiB encoded")

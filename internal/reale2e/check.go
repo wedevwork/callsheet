@@ -3,6 +3,7 @@ package reale2e
 import (
 	"bytes"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -68,7 +69,27 @@ type checker struct {
 	files   [5]map[string][]byte // seed, hop 1..4
 	seed    *object.Commit
 	derived EventMap
+	memo    *checkMemo
 }
+
+// checkMemo holds one check's derivations, shared by its checker and every
+// scratch copy. Each is a pure function of the bundle and the facts
+// newChecker loaded (criteria never write those), so it is computed once:
+// every criterion method's codes, evaluated alone, and the audit rows.
+type checkMemo struct {
+	codes map[uintptr]map[string][]string
+	rows  []AuditRow
+	// waits is each hop's reparsed wait record against its stored one:
+	// 0 unknown, 1 equal, -1 different.
+	waits [4]int
+	// streams is each phase stream's streamResult, from the derivation.
+	streams [2][2]bool
+}
+
+// criterionMethods are the criterion predicates in evaluation order.
+var criterionMethods = []func(*checker){(*checker).manifest, (*checker).events, (*checker).roles, (*checker).preflight, (*checker).setup,
+	(*checker).eventMap, (*checker).waits, (*checker).hops, (*checker).chain, (*checker).artifacts, (*checker).owner, (*checker).admissions,
+	(*checker).grok, (*checker).finalTests, (*checker).resultCorrectness, (*checker).cleanup, (*checker).ownerEnvironment, (*checker).deadlines}
 
 func (c *checker) fail(crit, code string) {
 	if !slices.Contains(c.codes[crit], code) {
@@ -79,6 +100,13 @@ func (c *checker) fail(crit, code string) {
 // Check validates b and returns its criteria (PASS only when every
 // criterion passes).
 func Check(b *Bundle) []Criterion {
+	out, _ := check(b)
+	return out
+}
+
+// check is Check, also returning its checker, whose memoised derivations
+// build b's audit.
+func check(b *Bundle) ([]Criterion, *checker) {
 	c := newChecker(b)
 	c.run()
 	out := c.criteria()
@@ -89,7 +117,7 @@ func Check(b *Bundle) []Criterion {
 		data, _ := encodeJSON(r)
 		mismatch := !bytes.Equal(stored, data) || !bytes.Equal(b.Files["report.txt"], []byte(RenderText(r)))
 		if aj, ok := b.Files["audit.json"]; ok || len(b.Files["audit.md"]) > 0 {
-			au := BuildAudit(b, r)
+			au := buildAudit(c, r)
 			want, _ := encodeJSON(au)
 			mismatch = mismatch || !ok || !bytes.Equal(aj, want) || !bytes.Equal(b.Files["audit.md"], []byte(RenderAudit(au)))
 		} else {
@@ -100,37 +128,44 @@ func Check(b *Bundle) []Criterion {
 			out = c.criteria()
 		}
 	}
-	return out
+	return out, c
 }
 
 // newChecker returns a checker of b with its derived facts loaded.
 func newChecker(b *Bundle) *checker {
-	c := &checker{b: b, codes: map[string][]string{}}
+	c := &checker{b: b, codes: map[string][]string{}, memo: &checkMemo{codes: map[uintptr]map[string][]string{}}}
 	c.loadHops()
-	c.derived = DeriveSession(sessionInputOf(b))
+	c.derived, c.memo.streams = deriveSession(sessionInputOf(b))
 	return c
 }
 
-// run evaluates every criterion.
+// run evaluates every criterion: the union of each method's codes
+// evaluated alone (no method reads another's codes).
 func (c *checker) run() {
-	c.manifest()
-	c.events()
-	c.roles()
-	c.preflight()
-	c.setup()
-	c.eventMap()
-	c.waits()
-	c.hops()
-	c.chain()
-	c.artifacts()
-	c.owner()
-	c.admissions()
-	c.grok()
-	c.finalTests()
-	c.resultCorrectness()
-	c.cleanup()
-	c.ownerEnvironment()
-	c.deadlines()
+	for _, f := range criterionMethods {
+		for crit, codes := range c.methodCodes(f) {
+			for _, code := range codes {
+				c.fail(crit, code)
+			}
+		}
+	}
+}
+
+// methodCodes evaluates criterion method f alone, once per check, and
+// returns its codes by criterion (shared: never modify them).
+func (c *checker) methodCodes(f func(*checker)) map[string][]string {
+	key := reflect.ValueOf(f).Pointer()
+	if c.memo != nil {
+		if codes, ok := c.memo.codes[key]; ok {
+			return codes
+		}
+	}
+	s := c.scratch()
+	f(s)
+	if c.memo != nil {
+		c.memo.codes[key] = s.codes
+	}
+	return s.codes
 }
 
 // criteria returns the criteria in report order.
@@ -620,10 +655,25 @@ func (c *checker) eventMap() {
 		c.fail(CritEventMap, f.Code)
 	}
 	allowed := map[string]bool{phaseStreamFiles[0]: true, phaseStreamFiles[1]: true, transcriptFiles[0]: true, transcriptFiles[1]: true}
+	// Each source file's digest and line count, computed once.
+	type sourceFile struct {
+		sha256 string
+		lines  int
+	}
+	sources := map[string]sourceFile{}
 	for _, e := range d.Entries {
 		for _, s := range e.Sources {
 			data, ok := c.b.Files[s.File]
-			if !allowed[s.File] || !ok || s.SHA256 != sha256Hex(data) || s.FirstLine < 1 || s.LastLine < s.FirstLine || s.LastLine > len(transcriptLines(data)) {
+			if !allowed[s.File] || !ok {
+				c.fail(CritEventMap, "source_span_invalid")
+				continue
+			}
+			f, seen := sources[s.File]
+			if !seen {
+				f = sourceFile{sha256Hex(data), len(transcriptLines(data))}
+				sources[s.File] = f
+			}
+			if s.SHA256 != f.sha256 || s.FirstLine < 1 || s.LastLine < s.FirstLine || s.LastLine > f.lines {
 				c.fail(CritEventMap, "source_span_invalid")
 			}
 		}
@@ -696,13 +746,27 @@ func (c *checker) waits() {
 		case w.ExitCode == nil || *w.ExitCode != 0 || w.WinnerState != contract.TaskSucceeded || !hex64RE.MatchString(w.ResultSHA256):
 			c.fail(CritWaits, "wait_unsuccessful")
 		}
-		if w != nil && okR && okX {
-			re := waitRecordOf(i, w.Task, result, stderr, exit, true, true)
-			if a, b := mustJSON(re), mustJSON(*w); !bytes.Equal(a, b) {
-				c.fail(CritWaits, "wait_record_mismatch")
-			}
+		if w != nil && okR && okX && !c.waitRecordMatches(i, w, result, stderr, exit) {
+			c.fail(CritWaits, "wait_record_mismatch")
 		}
 	}
+}
+
+// waitRecordMatches reports whether hop i's stored wait record w is
+// exactly its reparse from the raw wait files (once per check).
+func (c *checker) waitRecordMatches(i int, w *WaitRecord, result, stderr, exit []byte) bool {
+	if c.memo != nil && c.memo.waits[i] != 0 {
+		return c.memo.waits[i] > 0
+	}
+	re := waitRecordOf(i, w.Task, result, stderr, exit, true, true)
+	ok := bytes.Equal(mustJSON(re), mustJSON(*w))
+	if c.memo != nil {
+		c.memo.waits[i] = -1
+		if ok {
+			c.memo.waits[i] = 1
+		}
+	}
+	return ok
 }
 
 // mustJSON renders v (a value the package itself encodes).

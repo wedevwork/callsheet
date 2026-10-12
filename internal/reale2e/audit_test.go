@@ -159,15 +159,21 @@ func TestPostRunAudit(t *testing.T) {
 			"report digest":  func(a *Audit) { a.ReportSHA256 = zeros64 },
 			"evidence moved": func(a *Audit) { a.Rows[0].Evidence = a.Rows[1].Evidence },
 		} {
-			b := passingBundle(t)
-			editDoc(t, b, "audit.json", f)
-			code, r, _ := checkBundle(t, b)
-			requireCode(t, name, code, r, CritResult, CodeDerivedMismatch)
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				b := passingBundle(t)
+				editDoc(t, b, "audit.json", f)
+				code, r, _ := checkBundle(t, b)
+				requireCode(t, name, code, r, CritResult, CodeDerivedMismatch)
+			})
 		}
-		b := passingBundle(t)
-		removeBundleFile(t, b, "audit.json")
-		code, r, _ := checkBundle(t, b)
-		requireCode(t, "audit missing", code, r, CritResult, CodeDerivedMismatch)
+		t.Run("audit missing", func(t *testing.T) {
+			t.Parallel()
+			b := passingBundle(t)
+			removeBundleFile(t, b, "audit.json")
+			code, r, _ := checkBundle(t, b)
+			requireCode(t, "audit missing", code, r, CritResult, CodeDerivedMismatch)
+		})
 	})
 	t.Run("contradictions", func(t *testing.T) {
 		t.Parallel()

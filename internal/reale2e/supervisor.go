@@ -332,11 +332,11 @@ var errEvidenceIgnored = errors.New("--evidence must be Git-ignored in the check
 // must not exist yet, whose existing parent resolves (symlinks evaluated)
 // inside the checkout's design/ tree. The run creates it exclusively.
 func (s *supervisor) locate() error {
-	co, err := findCheckout(s.w.Cwd)
+	raw, err := findCheckout(s.w.Cwd)
 	if err != nil {
 		return err
 	}
-	co, err = filepath.EvalSymlinks(co)
+	co, err := filepath.EvalSymlinks(raw)
 	if err != nil {
 		return err
 	}
@@ -365,7 +365,10 @@ func (s *supervisor) locate() error {
 		return errEvidenceIgnored
 	}
 	s.evidenceDir = filepath.Join(parent, name)
-	s.red = Redactor{Home: s.w.Home, Checkout: co}
+	s.red = Redactor{Home: s.w.Home, Checkout: co, CheckoutAlias: raw}
+	if home, err := canonicalPath(s.w.Home); err == nil {
+		s.red.HomeAlias = home
+	}
 	return nil
 }
 
@@ -407,9 +410,10 @@ func (s *supervisor) run() int {
 	return s.finishRun()
 }
 
-// envTokenizer renders environment paths ($CHECKOUT, $HOME).
+// envTokenizer renders environment paths ($CHECKOUT, $HOME) from their
+// canonical prefixes, as the roots are canonical.
 func (s *supervisor) envTokenizer() pathTokenizer {
-	return pathTokenizer{home: s.w.Home, checkout: s.checkout}
+	return pathTokenizer{home: s.w.Home, checkout: s.checkout}.canonical()
 }
 
 // protectedRoots validates the supplied roots against the evidence
