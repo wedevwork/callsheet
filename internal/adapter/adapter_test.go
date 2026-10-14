@@ -3,6 +3,7 @@ package adapter
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -432,6 +433,99 @@ func TestAdapterContract(t *testing.T) {
 		real, _ := filepath.EvalSymlinks(dir)
 		if got := strings.TrimSpace(string(pwd)); got != dir && got != real {
 			t.Fatalf("probe cwd %q, want %q", got, dir)
+		}
+	})
+}
+
+// blockedStart is a procRunner whose start reports that it has entered,
+// then blocks until the test releases it, ignoring ctx: exec.Cmd.Start
+// honours its context only before the spawn (a spawn waiting on
+// syscall.ForkLock, or held in the kernel, does not return on cancel). A
+// released start returns a child that lives until the probe context ends
+// (its kill) and then reports that it was waited for.
+type blockedStart struct {
+	entered, release, reaped chan struct{}
+}
+
+func newBlockedStart() *blockedStart {
+	return &blockedStart{entered: make(chan struct{}), release: make(chan struct{}), reaped: make(chan struct{})}
+}
+
+func (b *blockedStart) start(ctx context.Context, exe string, args []string, dir string, env []string, stdout, stderr io.Writer, waitDelay time.Duration) (probeProc, error) {
+	close(b.entered)
+	<-b.release
+	return blockedChild{ctx: ctx, reaped: b.reaped}, nil
+}
+
+type blockedChild struct {
+	ctx    context.Context
+	reaped chan struct{}
+}
+
+func (c blockedChild) pid() int { return 4343 }
+
+func (c blockedChild) wait() (error, *os.ProcessState) {
+	<-c.ctx.Done()
+	close(c.reaped)
+	return errors.New("signal: killed"), nil
+}
+
+// TestProbeDeadlineDuringBlockedStart is the regression for a ready probe
+// stuck in process start (fix.md): the deadline (or the caller's
+// cancellation, which keeps its precedence) ends the probe while start is
+// still blocked, and the child a late start returns is killed and waited
+// for. The deadline runs on the injected clock; nothing sleeps.
+func TestProbeDeadlineDuringBlockedStart(t *testing.T) {
+	probe := func(t *testing.T, ctx context.Context) (*testProber, *blockedStart, chan error) {
+		dir := t.TempDir()
+		tp := newTestProber(t, dir, os.Environ())
+		b := newBlockedStart()
+		tp.runner = b
+		t.Cleanup(func() {
+			close(b.release)
+			select {
+			case <-b.reaped:
+			case <-time.After(testWait):
+				t.Error("the late child was not killed and waited for")
+			}
+		})
+		exe := script(t, dir, "fake-adapter", `echo callsheet-fake-probe-v1`)
+		done := make(chan error, 1)
+		go func() { done <- tp.run(ctx, exe) }()
+		select {
+		case <-b.entered:
+		case <-time.After(testWait):
+			t.Fatal("start was never entered")
+		}
+		return tp, b, done
+	}
+	result := func(t *testing.T, done chan error) error {
+		t.Helper()
+		select {
+		case err := <-done:
+			return err
+		case <-time.After(testWait):
+			t.Fatal("the probe is still waiting for a blocked start")
+			return nil
+		}
+	}
+	t.Run("deadline", func(t *testing.T) {
+		tp, _, done := probe(t, bg)
+		tp.clk.Advance(ProbeTimeout)
+		wantProbeErr(t, result(t, done), "did not answer within 1s")
+		if ws := tp.clk.Waiters(); len(ws) != 0 {
+			t.Fatalf("timer left: %v", ws)
+		}
+	})
+	t.Run("cancel", func(t *testing.T) {
+		// The caller's cancellation keeps its precedence over a deadline
+		// that has also passed.
+		ctx, cancel := context.WithCancel(bg)
+		tp, _, done := probe(t, ctx)
+		cancel()
+		tp.clk.Advance(ProbeTimeout)
+		if err := result(t, done); !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled = %v", err)
 		}
 	})
 }

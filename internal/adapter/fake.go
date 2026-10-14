@@ -189,7 +189,9 @@ func (f *fake) Descriptor() Descriptor {
 // executable mode bit, then actually runs "executable --callsheet-probe"
 // (direct argv, no shell) within ProbeTimeout: it must exit 0 with exactly
 // ProbeOutput on stdout and nothing on stderr. The direct child is killed
-// and waited for on cancellation or timeout.
+// and waited for on cancellation or timeout; a start still blocked then
+// is not waited for, and the child it may still return is killed and
+// waited for after Probe has returned.
 func (f *fake) Probe(ctx context.Context, executable string) error {
 	return f.p.run(ctx, executable)
 }
@@ -245,23 +247,11 @@ func (p *prober) run(ctx context.Context, executable string) error {
 	if !filepath.IsAbs(executable) {
 		return probeErr("path is not absolute")
 	}
-	fi, err := os.Stat(executable)
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-		return probeErr("does not exist (or is a broken symbolic link)")
-	case errors.Is(err, fs.ErrPermission):
-		return probeErr("cannot be accessed: permission denied")
-	case err != nil:
-		return probeErr("cannot be inspected")
-	case !fi.Mode().IsRegular():
-		return probeErr("is not a regular file")
-	case fi.Mode().Perm()&0o111 == 0:
-		return probeErr("has no executable permission bit")
-	}
-	// The deadline starts before the child does; the watcher only kills
-	// the child. Success is decided by the completion instant sampled when
-	// Wait returns (strictly before the deadline), never by which of the
-	// timer and the exit was observed first.
+	// The deadline starts before the executable is inspected and the child
+	// started; the watcher only kills the child. Success is decided by the
+	// completion instant sampled when Wait returns (strictly before the
+	// deadline), never by which of the timer and the exit was observed
+	// first.
 	deadline := p.clock.Now().Add(ProbeTimeout)
 	pctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -288,10 +278,45 @@ func (p *prober) run(ctx context.Context, executable string) error {
 		run = execRunner{}
 	}
 	stdout, stderr := &capture{max: probeCapture}, &capture{max: probeCapture}
-	proc, err := run.start(pctx, executable, append([]string(nil), args...), p.dir, filterEnv(p.environ()), stdout, stderr, probeWaitDelay)
-	if err != nil {
-		return probeErr("cannot be executed")
+	args, env := append([]string(nil), args...), filterEnv(p.environ())
+	// Neither os.Stat nor exec.Cmd.Start observes cancellation (Start
+	// honours its context only before the spawn), so they run on a side
+	// goroutine and the probe ends at the deadline or the caller's
+	// cancellation even while they are blocked. A child that a start
+	// abandoned that way still returns is killed by the probe context,
+	// which has ended by then, and waited for there.
+	started := make(chan startResult)
+	abandoned := make(chan struct{})
+	go func() {
+		r := p.start(pctx, run, executable, args, env, stdout, stderr)
+		select {
+		case started <- r:
+		case <-abandoned:
+			if r.proc != nil {
+				r.proc.wait()
+			}
+		}
+	}()
+	var r startResult
+	select {
+	case r = <-started:
+	case <-pctx.Done():
+		// A start that has also returned is taken: only one that has not
+		// is abandoned.
+		select {
+		case r = <-started:
+		default:
+			close(abandoned)
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			return probeErr("did not answer within " + ProbeTimeout.String())
+		}
 	}
+	if r.reason != "" {
+		return probeErr(r.reason)
+	}
+	proc := r.proc
 	if p.started != nil {
 		p.started(proc.pid())
 	}
@@ -324,6 +349,35 @@ func (p *prober) run(ctx context.Context, executable string) error {
 		return probeErr(reason)
 	}
 	return nil
+}
+
+// startResult is a probe's started child, or the fixed reason none was.
+type startResult struct {
+	proc   probeProc
+	reason string
+}
+
+// start inspects executable (a regular file with an executable mode bit)
+// and starts the probe child.
+func (p *prober) start(ctx context.Context, run procRunner, executable string, args, env []string, stdout, stderr io.Writer) startResult {
+	fi, err := os.Stat(executable)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return startResult{reason: "does not exist (or is a broken symbolic link)"}
+	case errors.Is(err, fs.ErrPermission):
+		return startResult{reason: "cannot be accessed: permission denied"}
+	case err != nil:
+		return startResult{reason: "cannot be inspected"}
+	case !fi.Mode().IsRegular():
+		return startResult{reason: "is not a regular file"}
+	case fi.Mode().Perm()&0o111 == 0:
+		return startResult{reason: "has no executable permission bit"}
+	}
+	proc, err := run.start(ctx, executable, args, p.dir, env, stdout, stderr, probeWaitDelay)
+	if err != nil {
+		return startResult{reason: "cannot be executed"}
+	}
+	return startResult{proc: proc}
 }
 
 // ChildEnv returns env without the fixture file-descriptor variables

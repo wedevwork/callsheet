@@ -10,8 +10,9 @@ import (
 // Probe diagnostics for tests of other packages (the sidecar's real-process
 // qualification): which instants a failed ready probe crossed. Only tests
 // construct a traced fake; no production path does (TestProbeTraceSeam
-// guards it), and a traced probe runs the same prober, on the same wall
-// clock, with the same deadline and outcome as NewFake's.
+// guards it), and a traced probe runs the same prober, with the same
+// deadline and outcome as NewFake's, on the wall clock or on a clock the
+// test injects (the prober's injected-clock seam).
 
 // ProbeTrace records the latest probe of a traced fake. The zero value is
 // ready; it is safe for concurrent use.
@@ -22,8 +23,13 @@ type ProbeTrace struct {
 
 // ProbeTiming is one probe's observed instants.
 type ProbeTiming struct {
-	// Deadline is the probe deadline; it started ProbeTimeout before.
+	// Deadline is the probe deadline on the probe's clock; it started
+	// ProbeTimeout before.
 	Deadline time.Time
+	// Armed is the wall-clock instant the deadline was armed. Armed,
+	// Started and Waited are wall-clock instants whatever the probe's
+	// clock.
+	Armed time.Time
 	// Started is when cmd.Start returned a started child (zero if none).
 	Started time.Time
 	// Waited is when cmd.Wait returned, just after the completion instant
@@ -46,14 +52,14 @@ func (tr *ProbeTrace) update(f func(*ProbeTiming)) {
 	tr.mu.Unlock()
 }
 
-// String reports the elapsed time from the deadline start until
-// cmd.Start returned and until cmd.Wait returned, and whether the child
-// had already exited successfully when the deadline check fired.
+// String reports the elapsed wall-clock time from the deadline start
+// until cmd.Start returned and until cmd.Wait returned, and whether the
+// child had already exited successfully when the deadline check fired.
 func (p ProbeTiming) String() string {
 	if p.Deadline.IsZero() {
 		return "no probe deadline was armed"
 	}
-	start := p.Deadline.Add(-ProbeTimeout)
+	start := p.Armed
 	s := "deadline start to cmd.Start returned: "
 	if p.Started.IsZero() {
 		s += "no child started"
@@ -67,21 +73,32 @@ func (p ProbeTiming) String() string {
 		p.Waited.Sub(start), ProbeTimeout, p.State.Success(), p.State)
 }
 
-// tracingClock is the real probe clock, recording the deadline it arms.
+// tracingClock is a probe clock recording the deadline it arms and the
+// wall-clock instant it armed it.
 type tracingClock struct {
-	realClock
+	clock
 	tr *ProbeTrace
 }
 
 func (c tracingClock) NewTimerAt(at time.Time) (<-chan time.Time, func() bool) {
-	c.tr.update(func(p *ProbeTiming) { *p = ProbeTiming{Deadline: at} })
-	return c.realClock.NewTimerAt(at)
+	now := time.Now()
+	c.tr.update(func(p *ProbeTiming) { *p = ProbeTiming{Deadline: at, Armed: now} })
+	return c.clock.NewTimerAt(at)
 }
 
 // NewFakeTraced is NewFake whose probes record their timing in tr (tests
 // only).
 func NewFakeTraced(dir string, tr *ProbeTrace) Adapter {
-	return &fake{p: &prober{dir: dir, environ: os.Environ, clock: tracingClock{tr: tr},
+	return NewFakeTracedClock(dir, tr, realClock{})
+}
+
+// NewFakeTracedClock is NewFakeTraced whose probe deadline runs on clk, a
+// test's injected clock (tests only): the probe is otherwise NewFake's.
+func NewFakeTracedClock(dir string, tr *ProbeTrace, clk interface {
+	Now() time.Time
+	NewTimerAt(at time.Time) (<-chan time.Time, func() bool)
+}) Adapter {
+	return &fake{p: &prober{dir: dir, environ: os.Environ, clock: tracingClock{clock: clk, tr: tr},
 		started: func(int) {
 			now := time.Now()
 			tr.update(func(p *ProbeTiming) { p.Started = now })
