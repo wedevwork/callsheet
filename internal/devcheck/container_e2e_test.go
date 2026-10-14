@@ -248,20 +248,53 @@ func TestContainerDriverContract(t *testing.T) {
 			}
 		}
 		// Linux test: the four plan commands first, then the container
-		// operation; a failed plan command starts no container and leaves
+		// operation. A failed plain command or a failed whole-module race
+		// command stops before any tagged step or container call and leaves
 		// the report "not started" with its failure phase.
-		f := &fakeRunner{fail: "-race"}
-		cr := newContainerRunnerFixture(t, f).(*containerRunner)
-		code, _, errOut, dir := runContainer(t, context.Background(), "linux", cr, "test")
-		if code != 1 || len(cr.calls) != 0 || !strings.Contains(errOut, "stage test FAILED: test -race failed") {
-			t.Fatalf("race failure = %d %v %s", code, cr.argvs(), errOut)
+		for _, c := range []struct {
+			fail, phase, errSub, log string
+			prefix                   []string
+		}{
+			{
+				fail:   "go test -count=1 -timeout=180s ./...",
+				phase:  "failed before container setup: test",
+				errSub: "stage test FAILED: test failed: go test -count=1 -timeout=180s ./...",
+				prefix: []string{"go test -count=1 -timeout=180s ./..."},
+				log:    "test.log",
+			},
+			{
+				fail:   "-p=1",
+				phase:  "failed before container setup: test -race",
+				errSub: "stage test FAILED: test -race failed: go test -race -p=1 -count=1 -timeout=180s ./...",
+				prefix: []string{
+					"go test -count=1 -timeout=180s ./...",
+					"go test -race -p=1 -count=1 -timeout=180s ./...",
+				},
+				log: "test--race.log",
+			},
+		} {
+			f := &fakeRunner{fail: c.fail}
+			cr := newContainerRunnerFixture(t, f).(*containerRunner)
+			code, out, errOut, dir := runContainer(t, context.Background(), "linux", cr, "test")
+			if code != 1 || strings.Join(f.argvs(), "|") != strings.Join(c.prefix, "|") || len(cr.calls) != 0 ||
+				!strings.Contains(errOut, c.errSub) {
+				t.Fatalf("%s = %d calls=%v container=%v %s", c.phase, code, f.argvs(), cr.argvs(), errOut)
+			}
+			for _, a := range append(append([]string{}, f.argvs()...), cr.all...) {
+				if strings.Contains(a, "realadaptercheck") || strings.HasPrefix(a, "docker") {
+					t.Fatalf("%s continued to %s", c.phase, a)
+				}
+			}
+			report := readEvidence(t, dir, evidenceReportFile)
+			if !strings.Contains(report, "container: not started\n") || !strings.Contains(report, "  - "+c.phase+"\n") ||
+				!strings.Contains(report, "outcome: fail\n") {
+				t.Fatalf("%s report:\n%s", c.phase, report)
+			}
+			if _, err := os.Stat(filepath.Join(scratchFrom(out), c.log)); err != nil {
+				t.Fatalf("%s log: %v", c.log, err)
+			}
 		}
-		report := readEvidence(t, dir, evidenceReportFile)
-		if !strings.Contains(report, "container: not started\n") || !strings.Contains(report, "failed before container setup: test -race") ||
-			!strings.Contains(report, "outcome: fail\n") {
-			t.Fatalf("report:\n%s", report)
-		}
-		cr = newContainerRunnerFixture(t, &fakeRunner{}).(*containerRunner)
+		cr := newContainerRunnerFixture(t, &fakeRunner{}).(*containerRunner)
 		if code, _, errOut, _ := runContainer(t, context.Background(), "linux", cr, "test"); code != 0 ||
 			!cr.ordered("go test -race -tags=realadaptercheck ./internal/sidecar", "docker context inspect") {
 			t.Fatalf("linux test = %d %s %v", code, errOut, cr.all)

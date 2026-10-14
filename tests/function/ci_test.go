@@ -406,36 +406,76 @@ func TestCIWorkflowContract(t *testing.T) {
 
 // FP-2: the Linux job runs devcheck test (then race), coverage, bench and
 // cross; its stress moved to ci-linux-stress (iteration 02b).
+// Design 12a-ci-race-schedule adds the serial whole-module race subtests.
 func TestCILinuxBar(t *testing.T) {
-	stages, err := cicheck.ExtractStages(ciWorkflow(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := strings.Join(stages["linux"], " "); got != "test coverage bench cross" || got != strings.Join(cicheck.Jobs()[0].Stages, " ") {
-		t.Fatalf("linux stages = %q", got)
-	}
-	plan := devcheck.TestSteps("linux")
-	if len(plan) != 4 || strings.Join(plan[0].Argv, " ") != "go test -count=1 -timeout=180s ./..." ||
-		strings.Join(plan[1].Argv, " ") != "go test -race -count=1 -timeout=180s ./..." || strings.Join(plan[1].Env, " ") != "CGO_ENABLED=1" ||
-		strings.Join(plan[2].Argv, " ") != "go test -tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$ -count=1" ||
-		strings.Join(plan[3].Argv, " ") != "go test -race -tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$ -count=1" || strings.Join(plan[3].Env, " ") != "CGO_ENABLED=1" {
-		t.Fatalf("linux test plan = %+v", plan)
-	}
-	// The host's test plan (m3-m4-container-e2e: plan-level; the Linux
-	// stage's added container operation is driven by internal/devcheck's
-	// container driver contract tests, never from here).
-	host := devcheck.TestSteps(runtime.GOOS)
-	if runtime.GOOS == "linux" && (len(host) != 4 || host[1].Argv[2] != "-race" || host[3].Argv[2] != "-race") {
-		t.Fatalf("linux must run test then race: %+v", host)
-	}
-	if runtime.GOOS == "darwin" && (len(host) != 2 || strings.Join(host[1].Argv, " ") != "go test -tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$ -count=1") {
-		t.Fatalf("darwin test plan = %+v", host)
-	}
-	for _, s := range host {
-		if strings.Contains(strings.Join(s.Argv, " "), "docker") || strings.Contains(strings.Join(s.Argv, " "), "containeracceptance") {
-			t.Fatalf("the container operation is a Step of the test plan: %v", s.Argv)
+	t.Run("race-schedule", func(t *testing.T) {
+		stages, err := cicheck.ExtractStages(ciWorkflow(t))
+		if err != nil {
+			t.Fatal(err)
 		}
-	}
+		if got := strings.Join(stages["linux"], " "); got != "test coverage bench cross" || got != strings.Join(cicheck.Jobs()[0].Stages, " ") {
+			t.Fatalf("linux stages = %q", got)
+		}
+		plan := devcheck.TestSteps("linux")
+		const wantRace = "go test -race -p=1 -count=1 -timeout=180s ./..."
+		if len(plan) < 2 || plan[1].Name != "test -race" || strings.Join(plan[1].Argv, " ") != wantRace ||
+			strings.Join(plan[1].Env, " ") != "CGO_ENABLED=1" || strings.Count(wantRace, "./...") != 1 {
+			t.Fatalf("linux race step = %+v", plan)
+		}
+	})
+	t.Run("race-stage-compatibility", func(t *testing.T) {
+		plan := devcheck.TestSteps("linux")
+		if len(plan) != 4 ||
+			plan[0].Name != "test" || strings.Join(plan[0].Argv, " ") != "go test -count=1 -timeout=180s ./..." || len(plan[0].Env) != 0 ||
+			plan[1].Name != "test -race" || strings.Join(plan[1].Argv, " ") != "go test -race -p=1 -count=1 -timeout=180s ./..." || strings.Join(plan[1].Env, " ") != "CGO_ENABLED=1" ||
+			plan[2].Name != "test realadaptercheck" || strings.Join(plan[2].Argv, " ") != "go test -tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$ -count=1" || len(plan[2].Env) != 0 ||
+			plan[3].Name != "test realadaptercheck -race" || strings.Join(plan[3].Argv, " ") != "go test -race -tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$ -count=1" || strings.Join(plan[3].Env, " ") != "CGO_ENABLED=1" {
+			t.Fatalf("linux test plan = %+v", plan)
+		}
+		darwin := devcheck.TestSteps("darwin")
+		if len(darwin) != 2 ||
+			darwin[0].Name != "test" || strings.Join(darwin[0].Argv, " ") != "go test -count=1 -timeout=180s ./..." || len(darwin[0].Env) != 0 ||
+			darwin[1].Name != "test realadaptercheck" || strings.Join(darwin[1].Argv, " ") != "go test -tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$ -count=1" || len(darwin[1].Env) != 0 ||
+			strings.Contains(strings.Join(darwin[1].Argv, " "), "-race") {
+			t.Fatalf("darwin test plan = %+v", darwin)
+		}
+		// The host's test plan (m3-m4-container-e2e: plan-level; the Linux
+		// stage's added container operation is driven by internal/devcheck's
+		// container driver contract tests, never from here).
+		host := devcheck.TestSteps(runtime.GOOS)
+		if runtime.GOOS == "linux" && (len(host) != 4 || host[1].Argv[2] != "-race" || host[1].Argv[3] != "-p=1" || host[3].Argv[2] != "-race") {
+			t.Fatalf("linux must run test then race: %+v", host)
+		}
+		if runtime.GOOS == "darwin" && (len(host) != 2 || strings.Join(host[1].Argv, " ") != "go test -tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$ -count=1") {
+			t.Fatalf("darwin test plan = %+v", host)
+		}
+		for _, s := range host {
+			if strings.Contains(strings.Join(s.Argv, " "), "docker") || strings.Contains(strings.Join(s.Argv, " "), "containeracceptance") {
+				t.Fatalf("the container operation is a Step of the test plan: %v", s.Argv)
+			}
+		}
+		// FP-3 failure assertions live in this subtest with the FP-2 plan
+		// assertions. Linux drives the public entry point; other hosts pass
+		// without a skip (a skip would fail Darwin native qualification).
+		if runtime.GOOS != "linux" {
+			return
+		}
+		r := &ciRunner{failOn: "-p=1"}
+		code, out, errOut := devcheckRun(t, r, "test")
+		want := []string{
+			"go test -count=1 -timeout=180s ./...",
+			"go test -race -p=1 -count=1 -timeout=180s ./...",
+		}
+		var got []string
+		for _, c := range r.calls {
+			got = append(got, strings.Join(c, " "))
+		}
+		if code != 1 || strings.Join(got, "|") != strings.Join(want, "|") ||
+			!strings.Contains(out, "devcheck: test -race: "+want[1]) ||
+			!strings.Contains(errOut, "injected child failure") {
+			t.Fatalf("race failure = %d calls=%v\n%s\n%s", code, got, out, errOut)
+		}
+	})
 	// Coverage: exactly 80.0% fails, anything above passes.
 	code, _, errOut := devcheckRun(t, &ciRunner{coverTotal: "80.0%"}, "coverage")
 	if code != 1 || !strings.Contains(errOut, "coverage 80.0% is not greater than 80.0%") {
