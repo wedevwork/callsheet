@@ -10,10 +10,12 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -711,7 +713,23 @@ type planeProxy struct {
 	inject  map[string]*contract.Error
 	version string
 	counts  map[string]int
+	// waitDo is the latest POST /api/v1/tasks/wait Do return. Printed only
+	// when cancel-wait-only's canceled event is missing.
+	waitDo *waitDoFact
 }
+
+// waitDoFact is one POST /api/v1/tasks/wait Do return: the request
+// context error and elapsed time sampled at that return, the status, and
+// a short body prefix. Elapsed starts before the request event is logged.
+type waitDoFact struct {
+	ctxErr  string
+	status  string
+	body    string
+	elapsed time.Duration
+}
+
+const waitDoKey = "POST /api/v1/tasks/wait"
+const waitBodyPrefix = 160
 
 func startPlaneProxy(t *testing.T, p *mcpPlane) *planeProxy {
 	t.Helper()
@@ -800,8 +818,55 @@ func (x *planeProxy) event(e string) { x.events.add(e) }
 func (x *planeProxy) await(t *testing.T, want string) {
 	t.Helper()
 	if !x.events.take(want, mcpWait) {
-		t.Fatalf("proxy never saw %s (events %v)", want, x.events.snapshot())
+		t.Fatal(x.awaitMiss(want))
 	}
+}
+
+// awaitMiss is the proxy-miss failure text. The cancel-wait-only miss
+// includes the wait Do facts when that return was recorded.
+func (x *planeProxy) awaitMiss(want string) string {
+	msg := fmt.Sprintf("proxy never saw %s (events %v)", want, x.events.snapshot())
+	if want == "canceled "+waitDoKey {
+		msg += x.waitDoNote()
+	}
+	return msg
+}
+
+func (x *planeProxy) clearWaitDo() {
+	x.mu.Lock()
+	x.waitDo = nil
+	x.mu.Unlock()
+}
+
+func (x *planeProxy) noteWaitDo(ctxErr error, resp *http.Response, body []byte, elapsed time.Duration) {
+	fact := waitDoFact{ctxErr: "<nil>", status: "<none>", elapsed: elapsed, body: waitBodyHead(body)}
+	if ctxErr != nil {
+		fact.ctxErr = ctxErr.Error()
+	}
+	if resp != nil {
+		fact.status = strconv.Itoa(resp.StatusCode)
+	}
+	x.mu.Lock()
+	x.waitDo = &fact
+	x.mu.Unlock()
+}
+
+func waitBodyHead(body []byte) string {
+	s := strings.ReplaceAll(string(body), "\n", " ")
+	if len(s) <= waitBodyPrefix {
+		return s
+	}
+	return s[:waitBodyPrefix] + "..."
+}
+
+func (x *planeProxy) waitDoNote() string {
+	x.mu.Lock()
+	f := x.waitDo
+	x.mu.Unlock()
+	if f == nil {
+		return ""
+	}
+	return fmt.Sprintf("\nwait Do: context=%s status=%s since request %s body=%q", f.ctxErr, f.status, f.elapsed, f.body)
 }
 
 func (x *planeProxy) count(key string) int {
@@ -828,6 +893,13 @@ func (x *planeProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	x.mu.Unlock()
+	// Start the wait clock before the request event so the recorded
+	// elapsed time includes scheduling after that event is published.
+	waitAt := time.Time{}
+	if key == waitDoKey {
+		waitAt = time.Now()
+		x.clearWaitDo()
+	}
 	x.event("request " + key)
 	if inj != nil {
 		b, _ := inj.MarshalJSON()
@@ -846,7 +918,19 @@ func (x *planeProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		req.Header[k] = v
 	}
 	resp, err := x.up.Do(req)
+	// Sample the wait diagnostic at Do's return. Reading the body prefix
+	// keeps these values: a cancel during that read must not rewrite them.
+	var doCtxErr error
+	var elapsed time.Duration
+	if key == waitDoKey {
+		doCtxErr = r.Context().Err()
+		elapsed = time.Since(waitAt)
+	}
+	var rb []byte
 	if err != nil {
+		if key == waitDoKey {
+			x.noteWaitDo(doCtxErr, resp, nil, elapsed)
+		}
 		if r.Context().Err() != nil {
 			x.event("canceled " + key) // the MCP client gave the request up
 		} else {
@@ -854,8 +938,11 @@ func (x *planeProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		panic(http.ErrAbortHandler) // the client sees an interrupted transport
 	}
-	rb, err := io.ReadAll(resp.Body)
+	rb, err = io.ReadAll(resp.Body)
 	resp.Body.Close()
+	if key == waitDoKey {
+		x.noteWaitDo(doCtxErr, resp, rb, elapsed)
+	}
 	if err != nil {
 		panic(http.ErrAbortHandler)
 	}
@@ -1260,4 +1347,144 @@ func roleOf(t *testing.T, text string) contract.RoleView {
 		t.Fatalf("role answer %.300s: %v", text, err)
 	}
 	return v
+}
+
+// TestCancelWaitDoFailureReportsFacts checks the cancel-wait-only miss
+// text carries the wait Do's context error, status, body prefix and the
+// time since request was logged.
+func TestCancelWaitDoFailureReportsFacts(t *testing.T) {
+	x := &planeProxy{events: newEvset()}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	body := []byte(`{"version":1,"status":"still_running","effective_wait_ms":8000,"tasks":[]}`)
+	x.noteWaitDo(ctx.Err(), &http.Response{StatusCode: 200}, body, 8123*time.Millisecond)
+	msg := x.awaitMiss("canceled " + waitDoKey)
+	for _, want := range []string{
+		"proxy never saw canceled POST /api/v1/tasks/wait (events [])",
+		"context=context canceled",
+		"status=200",
+		"since request 8.123s",
+		"still_running",
+		"effective_wait_ms",
+		"8000",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("failure text %q lacks %q", msg, want)
+		}
+	}
+	x.noteWaitDo(nil, &http.Response{StatusCode: 200}, []byte(`{"status":"still_running","effective_wait_ms":0}`), 2*time.Millisecond)
+	msg = x.awaitMiss("canceled " + waitDoKey)
+	for _, want := range []string{"context=<nil>", "status=200", "since request 2ms", `effective_wait_ms\":0`} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("active-context failure %q lacks %q", msg, want)
+		}
+	}
+	long := bytes.Repeat([]byte("b"), waitBodyPrefix+40)
+	x.noteWaitDo(context.Canceled, nil, long, time.Millisecond)
+	msg = x.awaitMiss("canceled " + waitDoKey)
+	if !strings.Contains(msg, "status=<none>") || !strings.Contains(msg, "...") || strings.Contains(msg, strings.Repeat("b", waitBodyPrefix+1)) {
+		t.Fatalf("body prefix %q", msg)
+	}
+	if other := x.awaitMiss("request GET /health"); strings.Contains(other, "wait Do:") {
+		t.Fatalf("unrelated miss included wait facts: %q", other)
+	}
+	x.clearWaitDo()
+	if plain := x.awaitMiss("canceled " + waitDoKey); plain != "proxy never saw canceled POST /api/v1/tasks/wait (events [])" {
+		t.Fatalf("empty record changed the miss text: %q", plain)
+	}
+}
+
+// roundTripFunc is an http.RoundTripper for proxy capture tests.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// stallBody signals when Read begins, then waits for release before
+// returning its payload. A test can cancel the request after Do has
+// returned and while the body is still being read.
+type stallBody struct {
+	once    sync.Once
+	entered chan struct{}
+	release <-chan struct{}
+	data    []byte
+	off     int
+}
+
+func (b *stallBody) Read(p []byte) (int, error) {
+	b.once.Do(func() { close(b.entered) })
+	<-b.release
+	if b.off >= len(b.data) {
+		return 0, io.EOF
+	}
+	n := copy(p, b.data[b.off:])
+	b.off += n
+	return n, nil
+}
+
+func (b *stallBody) Close() error { return nil }
+
+// TestCancelWaitDoCapturesContextAtDoReturn checks the wait diagnostic
+// records the request context from Do's return. Canceling while the body
+// is read must not rewrite that recorded state.
+func TestCancelWaitDoCapturesContextAtDoReturn(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	x := &planeProxy{
+		target: "http://plane.example",
+		events: newEvset(),
+		counts: map[string]int{},
+		up: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body: &stallBody{
+					entered: entered,
+					release: release,
+					data:    []byte(`{"status":"still_running"}`),
+				},
+			}, nil
+		})},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := httptest.NewRequest(http.MethodPost, "http://proxy.example/api/v1/tasks/wait", strings.NewReader(`{}`))
+	req = req.WithContext(ctx)
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer func() {
+			if p := recover(); p != nil {
+				t.Errorf("ServeHTTP: %v", p)
+			}
+		}()
+		x.ServeHTTP(rec, req)
+	}()
+	select {
+	case <-entered:
+	case <-time.After(mcpWait):
+		close(release)
+		t.Fatal("response body read did not start")
+	}
+	if ctx.Err() != nil {
+		close(release)
+		t.Fatal("context already canceled at Do return")
+	}
+	cancel()
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(mcpWait):
+		t.Fatal("ServeHTTP did not return")
+	}
+	msg := x.awaitMiss("canceled " + waitDoKey)
+	if !strings.Contains(msg, "context=<nil>") || !strings.Contains(msg, "status=200") || !strings.Contains(msg, "still_running") {
+		t.Fatalf("diagnostic %q, want context active at Do return with the body prefix", msg)
+	}
+	if strings.Contains(msg, "context canceled") {
+		t.Fatalf("context at Do return was active; diagnostic recorded %q after body read", msg)
+	}
+	if rec.Code != http.StatusOK || !bytes.Contains(rec.Body.Bytes(), []byte("still_running")) {
+		t.Fatalf("forwarded response %d %q", rec.Code, rec.Body.Bytes())
+	}
 }

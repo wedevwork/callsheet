@@ -197,6 +197,10 @@ func TestControlRemove(t *testing.T) {
 		st := tp.run(t, w, "a", "held", "p2")
 		res := tp.forceAsync(bg, "a", "")
 		tp.log.awaitOnce(t, "fenced a")
+		// fenced is logged before release returns. The next exact
+		// gate-released is that release; a dispatch in the gap is busy,
+		// and this assertion requires the post-release no_capacity answer.
+		tp.log.await(t, "gate-released")
 		f := tp.fenceOf(t, "a")
 		if f == nil || f.RegistrationOrder != 1 || !contract.ValidOperationID(f.OperationID) {
 			t.Fatalf("fence %+v", f)

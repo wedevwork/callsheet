@@ -3,6 +3,7 @@ package adapter
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -564,7 +565,10 @@ func TestRolePlatformContract(t *testing.T) {
 		wrong := script(t, dir, "wrong", `echo I am not the fake`)
 		deleted := copyExe("deleted", 0o755)
 		// The process environment may lack PATH entirely: no lookup.
-		a := &fake{p: &prober{dir: t.TempDir(), environ: func() []string { return []string{"PATH="} }, clock: realClock{}}}
+		// The trace records this probe's timing and is printed only when a
+		// case fails (ProbeTiming's own formatting).
+		tr := &ProbeTrace{}
+		a := &fake{p: tracedProber(t.TempDir(), func() []string { return []string{"PATH="} }, tr)}
 		for name, c := range map[string]struct{ path, reason string }{
 			"built":          {bin, ""},
 			"spaces":         {spaced, ""},
@@ -579,18 +583,18 @@ func TestRolePlatformContract(t *testing.T) {
 			err := a.Probe(bg, c.path)
 			if c.reason == "" {
 				if err != nil {
-					t.Errorf("%s: %v", name, err)
+					t.Error(executableProbeFailure(name, err, tr.Last()))
 				}
 				continue
 			}
 			var pe *ProbeError
 			if !errors.As(err, &pe) || !strings.Contains(pe.Reason, c.reason) {
-				t.Errorf("%s: %v, want %q", name, err, c.reason)
+				t.Errorf("%s: %v, want %q; %s", name, err, c.reason, tr.Last())
 			}
 		}
 		// Changed or deleted after registration: the next probe fails.
 		if err := a.Probe(bg, deleted); err != nil {
-			t.Fatal(err)
+			t.Fatal(executableProbeFailure("deleted", err, tr.Last()))
 		}
 		os.Remove(deleted)
 		if err := a.Probe(bg, deleted); err == nil {
@@ -601,6 +605,64 @@ func TestRolePlatformContract(t *testing.T) {
 			t.Fatalf("probe wrote %v", entries)
 		}
 	})
+}
+
+// tracedProber records each probe's timing in tr. The probe is otherwise
+// the executable contract's: dir, environ and the real clock.
+func tracedProber(dir string, environ func() []string, tr *ProbeTrace) *prober {
+	return &prober{dir: dir, environ: environ, clock: tracingClock{clock: realClock{}, tr: tr},
+		started: func(int) {
+			now := time.Now()
+			tr.update(func(p *ProbeTiming) { p.Started = now })
+		},
+		waited: func(ps *os.ProcessState) {
+			now := time.Now()
+			tr.update(func(p *ProbeTiming) { p.Waited, p.State = now, ps })
+		}}
+}
+
+// executableProbeFailure is the text the executable contract prints when a
+// probe fails: the case name, the error, and ProbeTiming's formatting of
+// Armed, Started, Waited and ProcessState.
+func executableProbeFailure(name string, err error, p ProbeTiming) string {
+	return fmt.Sprintf("%s: %v; %s", name, err, p)
+}
+
+// TestExecutableProbeFailureReportsTiming checks the failure text carries
+// the probe's Armed, Started and Waited times and its ProcessState.
+func TestExecutableProbeFailureReportsTiming(t *testing.T) {
+	// /bin/sh is on Linux and macOS; /bin/true is not on macOS.
+	cmd := exec.Command("/bin/sh", "-c", "exit 0")
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	armed := time.Unix(1_700_000_000, 0).UTC()
+	p := ProbeTiming{
+		Deadline: armed.Add(ProbeTimeout),
+		Armed:    armed,
+		Started:  armed.Add(12 * time.Millisecond),
+		Waited:   armed.Add(40 * time.Millisecond),
+		State:    cmd.ProcessState,
+	}
+	msg := executableProbeFailure("parent-symlink", errors.New("the adapter executable did not answer within 1s"), p)
+	for _, want := range []string{
+		"parent-symlink: the adapter executable did not answer within 1s; ",
+		p.String(),
+		"deadline start to cmd.Start returned: 12ms",
+		"to cmd.Wait returned: 40ms",
+		"(deadline 1s)",
+		"child exited successfully before the deadline check: true",
+		cmd.ProcessState.String(),
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("failure text %q lacks %q", msg, want)
+		}
+	}
+	none := ProbeTiming{Deadline: armed.Add(ProbeTimeout), Armed: armed}
+	msg = executableProbeFailure("parent-symlink", errors.New("did not answer within 1s"), none)
+	if !strings.Contains(msg, none.String()) || !strings.Contains(msg, "no child started") || !strings.Contains(msg, "no child was waited for") {
+		t.Fatalf("unstarted probe failure %q", msg)
+	}
 }
 
 // BenchmarkFakeProbe measures one probe of the real, once-built fixture
