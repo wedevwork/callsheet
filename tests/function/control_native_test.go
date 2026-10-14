@@ -450,12 +450,44 @@ func startNativeRig(t *testing.T, ledger *nativeLedger, descendantTerm string, t
 }
 
 // awaitOnline waits until the node is online (a fresh attachment's first
-// heartbeat).
+// heartbeat). The wait and the failure line are poll's; the extra text is
+// printed only when that wait is about to fail.
 func (r *nativeRig) awaitOnline(t *testing.T) {
 	t.Helper()
-	poll(t, "node online", func() bool {
-		n, err := r.cl.ShowNode(context.Background(), r.node)
-		return err == nil && n.Liveness == contract.LivenessOnline
+	deadline := time.Now().Add(nodeWait)
+	var n contract.Node
+	var err error
+	for {
+		n, err = r.cl.ShowNode(context.Background(), r.node)
+		if err == nil && n.Liveness == contract.LivenessOnline {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("node online: not observed within %v\n%s", nodeWait, r.onlineFailure(n, err))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// onlineFailure is the fixture and plane state at an awaitOnline miss.
+func (r *nativeRig) onlineFailure(n contract.Node, err error) string {
+	fired, perr := false, error(nil)
+	if r.plane != nil {
+		fired, perr = chanErrorFired(r.plane.done)
+	}
+	fpid := 0
+	if r.fixture != nil && r.fixture.Process != nil {
+		fpid = r.fixture.Process.Pid
+	}
+	logs := ""
+	if r.logs != nil {
+		logs = r.logs.String()
+	}
+	return formatOnlineFailure(onlineFailFacts{
+		logs: logs, showErr: err, liveness: n.Liveness, lastSeen: n.LastSeen,
+		planeDone: fired, planeErr: perr,
+		fixturePID: fpid, fixture: pidAlive(fpid),
+		leaderPID: r.info.LeaderPID, leader: pidAlive(r.info.LeaderPID),
 	})
 }
 
