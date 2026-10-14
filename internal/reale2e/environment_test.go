@@ -923,7 +923,7 @@ func TestEnvironmentUnits(t *testing.T) {
 			{"claude", "settings", tool}, {"claude", "settings.json.tmp", tool}, {"claude", "projects/-x/settings.json", tool},
 			{"claude", "agents", owner}, {"claude", "agents/a.md", owner}, {"claude", "agents/new/deep.md", owner}, {"claude", "agents.bak", tool},
 			{"claude", "skills", owner}, {"claude", "skills/a/SKILL.md", owner}, {"claude", "commands/c.md", owner}, {"claude", "hooks/h.sh", owner},
-			{"claude", "plugins", owner}, {"claude", "plugins/installed_plugins.json", owner}, {"claude", "plugins/known_marketplaces.json", owner},
+			{"claude", "plugins", owner}, {"claude", "plugins/installed_plugins.json", owner}, {"claude", "plugins/known_marketplaces.json", tool},
 			{"claude", "plugins/blocklist.json", owner}, {"claude", "plugins/config.json", owner}, {"claude", "plugins/config.json.bak", tool},
 			{"claude", "plugins/cache/m/p/plugin.json", tool}, {"claude", "plugins/marketplaces/m/.git/HEAD", tool}, {"claude", "plugins/repos", tool},
 			{"claude", ".config.json", tool}, {"claude", "backups/.config.json.backup.1", tool}, {"claude", "projects/-opt-x/memory/MEMORY.md", tool},
@@ -968,7 +968,7 @@ func TestEnvironmentUnits(t *testing.T) {
 		}
 		files := map[string][]string{
 			"claude": {"CLAUDE.md", "settings.json", "settings.local.json", "agents/a.md", "skills/s/SKILL.md", "commands/c.md", "hooks/h.sh",
-				"plugins/installed_plugins.json", "plugins/known_marketplaces.json", "plugins/blocklist.json", "plugins/config.json"},
+				"plugins/installed_plugins.json", "plugins/blocklist.json", "plugins/config.json"},
 			"codex":  {"AGENTS.md", "AGENTS.override.md", "instructions.md", "prompts/p.md"},
 			"grok":   {"config.toml", "managed_config.toml", "settings.json", "user-settings.json"},
 			"cursor": {"cli-config.json", "mcp.json"},
@@ -1100,6 +1100,40 @@ func TestEnvironmentUnits(t *testing.T) {
 					t.Errorf("codex config.toml %s: its content was hashed", name)
 				}
 			}
+		}
+		// A3.9: Claude's plugins/known_marketplaces.json is tool-maintained
+		// (Claude refreshes its lastUpdated timestamps); the plugin files
+		// beside it stay strict.
+		market := func(ts string) string {
+			return `{"m":{"source":{"source":"github","repo":"o/m"},"installLocation":"/x","lastUpdated":"` + ts + `"}}`
+		}
+		plugins := func(h string) {
+			write(t, filepath.Join(h, ".claude", "plugins", "known_marketplaces.json"), market("2026-10-12T10:00:00.000Z"))
+			write(t, filepath.Join(h, ".claude", "plugins", "installed_plugins.json"), "{}")
+		}
+		for name, m := range map[string]func(h string){
+			"timestamp refresh": func(h string) {
+				// Same size: tool state is compared by metadata, so the
+				// refresh shows as its new modification time.
+				p := filepath.Join(h, ".claude", "plugins", "known_marketplaces.json")
+				write(t, p, market("2026-10-12T22:02:00.000Z"))
+				later := time.Now().Add(time.Hour)
+				os.Chtimes(p, later, later)
+			},
+			"mode":    func(h string) { os.Chmod(filepath.Join(h, ".claude", "plugins", "known_marketplaces.json"), 0o644) },
+			"deleted": func(h string) { os.Remove(filepath.Join(h, ".claude", "plugins", "known_marketplaces.json")) },
+		} {
+			d := compare(t, plugins, m)
+			if len(d.Protected) != 0 || slices.Contains(d.Codes, CodeEnvModified) || len(d.ToolSummary) != 1 || d.ToolSummary[0].Scope != "claude" ||
+				d.ToolSummary[0].TopLevel != "plugins" {
+				t.Errorf("known_marketplaces.json %s = %+v %+v", name, d.Protected, d.ToolSummary)
+			}
+		}
+		if d := compare(t, plugins, func(h string) {
+			write(t, filepath.Join(h, ".claude", "plugins", "known_marketplaces.json"), market("2026-10-12T22:02:00.000Z"))
+			write(t, filepath.Join(h, ".claude", "plugins", "installed_plugins.json"), "[]")
+		}); len(d.Protected) != 1 || d.Protected[0].Path != "plugins/installed_plugins.json" || !slices.Contains(d.Codes, CodeEnvModified) {
+			t.Errorf("installed_plugins.json beside a marketplace refresh = %+v", d.Protected)
 		}
 		// A new descendant of each listed directory is a strict addition.
 		for _, dir := range []string{".claude/agents", ".claude/skills", ".claude/commands", ".claude/hooks", ".codex/prompts"} {

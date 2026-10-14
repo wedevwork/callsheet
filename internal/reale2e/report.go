@@ -77,11 +77,13 @@ var ClaudeStateExclusions = []string{
 	"not covered: ~/.claude/backups/.config.json.backup.* (backups of Claude state, including per-project grants)",
 }
 
-// OwnerAcceptedExclusions are A3.7's owner-accepted coverage exclusions,
-// printed in report.txt and docs/real-e2e.md after ClaudeStateExclusions.
+// OwnerAcceptedExclusions are A3.7's and A3.9's owner-accepted coverage
+// exclusions, printed in report.txt and docs/real-e2e.md after
+// ClaudeStateExclusions.
 var OwnerAcceptedExclusions = []string{
 	"not covered: ~/.codex/config.toml (Codex records a trust entry per working folder)",
 	"not covered: untracked .claude/ directories inside protected repositories",
+	"not covered: ~/.claude/plugins/known_marketplaces.json (Claude refreshes marketplace timestamps)",
 }
 
 // NestedRepoLimitation is the report's statement of the A3.1 discovery

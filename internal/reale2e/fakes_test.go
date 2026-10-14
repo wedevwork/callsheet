@@ -808,10 +808,15 @@ func (s *fakeSession) flush() {
 	}
 }
 
-// init emits phase p's init record.
-func (s *fakeSession) init(p int, sid string) {
-	io.WriteString(s.stream[p-1], rec(map[string]any{"type": "system", "subtype": "init", "session_id": sid, "cwd": s.cwd, "model": "claude-opus-5-5",
-		"permissionMode": "default", "tools": []string{"Bash", "Read", toolDispatch, toolTaskShow}, "mcp_servers": []map[string]string{{"name": "callsheet", "status": "connected"}}})+"\n")
+// init emits an init record of phase p (each turn opens with one), with
+// edits applied.
+func (s *fakeSession) init(p int, sid string, edits ...func(v map[string]any)) {
+	v := map[string]any{"type": "system", "subtype": "init", "session_id": sid, "cwd": s.cwd, "model": "claude-opus-5-5",
+		"permissionMode": "default", "tools": []string{"Bash", "Read", toolDispatch, toolTaskShow}, "mcp_servers": []map[string]string{{"name": "callsheet", "status": "connected"}}}
+	for _, e := range edits {
+		e(v)
+	}
+	io.WriteString(s.stream[p-1], rec(v)+"\n")
 }
 
 // prompt logs phase p's user prompt.
@@ -934,6 +939,11 @@ type coordScript struct {
 	noTranscript     bool
 	afterPhase       func(c *coordScript, p int)
 	failResult       [2]bool
+	// perTurn ends the turn after each hop's background wait starts and
+	// opens the wake's turn with a new init, edited by turnInit when set
+	// (headless claude -p, A3.9).
+	perTurn  bool
+	turnInit func(i int, v map[string]any)
 }
 
 func newCoordScript(t *testing.T) *coordScript {
@@ -1121,6 +1131,14 @@ func (c *coordScript) complete(i int) {
 		}
 	}
 	p := c.phaseOf(i)
+	if c.perTurn {
+		c.sess.result(p, true, nil)
+		c.sess.init(p, c.sess.sid, func(v map[string]any) {
+			if c.turnInit != nil {
+				c.turnInit(i, v)
+			}
+		})
+	}
 	switch {
 	case c.badWake && i == 0:
 		c.sess.user("<task-notification><task-id>" + c.handles[i] + "</task-id></task-notification> and more")

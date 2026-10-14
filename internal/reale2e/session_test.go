@@ -41,6 +41,18 @@ type synthRun struct {
 	// task before its completion notification arrives.
 	showOut   func(i int) string
 	showFirst map[int]bool
+	// perTurn ends the running turn of a phase (0-based) after each
+	// background wait starts: its result, then the next turn's init, as
+	// headless claude -p emits one init per turn (A3.9).
+	perTurn [2]bool
+}
+
+// phaseSID is the session ID phase p's init records carry.
+func (r *synthRun) phaseSID(p int) string {
+	if p == 2 && r.phase2SID != "" {
+		return r.phase2SID
+	}
+	return testSession
 }
 
 // shownTask is the strict task_show response of a succeeded task id, as
@@ -126,6 +138,12 @@ func (r *synthRun) hop(p, i int) {
 		s.notify(r.handles[i], r.waitUse[i])
 		return
 	}
+	if r.perTurn[p-1] {
+		// The turn ends while the wait runs; the completion starts the
+		// next turn (the notification is a transcript record only).
+		s.result(p, true, nil)
+		s.init(p, r.phaseSID(p))
+	}
 	s.notify(r.handles[i], r.waitUse[i])
 	if r.afterWake != nil {
 		r.afterWake(r, i)
@@ -167,7 +185,7 @@ func (r *synthRun) build() SessionInput {
 	r.event(EvAwaitingOwner, HopDesignReviewer, r.tasks[1], "")
 	r.event(EvOwnerDecision, HopDesignReviewer, r.tasks[1], "")
 	r.event(EvPhaseStarted, "", "", phaseHandle(2))
-	s.init(2, map[bool]string{false: testSession, true: r.phase2SID}[r.phase2SID != ""])
+	s.init(2, r.phaseSID(2))
 	s.prompt(promptOf(ProcSpec{Args: r.launches[1].Argv}))
 	for _, i := range []int{2, 3} {
 		r.hop(2, i)
@@ -301,7 +319,9 @@ func TestSessionDerivation(t *testing.T) {
 		"stream use not in the transcript": {edit: func(in *SessionInput) {
 			in.Streams[1] = append(in.Streams[1], []byte(`{"type":"assistant","session_id":"`+testSession+`","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_x","name":"Bash","input":{}}]}}`+"\n")...)
 		}, code: CodeSessionUnobserved},
-		"duplicate init": {edit: func(in *SessionInput) {
+		// A3.9: an init opens a turn; one after the final result opens a
+		// turn that never closes.
+		"init after the final result": {edit: func(in *SessionInput) {
 			in.Streams[0] = append(in.Streams[0], bytes.SplitAfter(in.Streams[0], []byte("\n"))[0]...)
 		}, code: CodeSessionMalformed},
 		"two results": {edit: func(in *SessionInput) {
@@ -539,6 +559,257 @@ func TestSessionDerivation(t *testing.T) {
 		if resultText([]byte(`[{"type":"text","text":"a"},{"type":"image"},{"type":"text","text":"b"}]`)) != "ab" || canonicalJSON([]byte("{")) != "{" ||
 			handleOf(map[string]int{}, 0) != "" || len(lineOffsets([]byte("a\nb"))) != 2 || launchPrompt(&LaunchRecord{Argv: []string{"-p"}}) != "" {
 			t.Fatal("helpers")
+		}
+	})
+}
+
+// recordLines returns the indexes of phase p's (0-based) stream lines
+// holding a record of the type/subtype selector ("init" or "result").
+func recordLines(in *SessionInput, p int, kind string) []int {
+	var out []int
+	for i, l := range strings.Split(strings.TrimSuffix(string(in.Streams[p]), "\n"), "\n") {
+		if kind == "init" && strings.Contains(l, `"subtype":"init"`) || kind == "result" && strings.Contains(l, `"type":"result"`) {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+// editRecord rewrites the n-th (0-based) record of kind in phase p's
+// (0-based) stream through f.
+func editRecord(t *testing.T, in *SessionInput, p int, kind string, n int, f func(v map[string]any)) {
+	t.Helper()
+	at := recordLines(in, p, kind)
+	if n >= len(at) {
+		t.Fatalf("phase %d has %d %s records", p+1, len(at), kind)
+	}
+	streamLines(in, p, func(lines []string) []string {
+		var v map[string]any
+		if err := json.Unmarshal([]byte(lines[at[n]]), &v); err != nil {
+			t.Fatal(err)
+		}
+		f(v)
+		lines[at[n]] = rec(v)
+		return lines
+	})
+}
+
+// TestSessionPerTurnInits (UT-3, FP-6, amendment A3.9): headless claude -p
+// emits a system/init record at the start of every turn, the initial one
+// and each started by a background-completion wake, and a result at the
+// end of each. Any number of turns derives the same map as one turn when
+// every later init repeats the phase's first init (session, cwd, model,
+// permission mode, tools, MCP servers); a differing init is
+// session_mismatch, an unparseable one session_evidence_malformed, and
+// work outside a turn (before the first init, between a result and the
+// next init, after the final result) stays malformed.
+func TestSessionPerTurnInits(t *testing.T) {
+	t.Parallel()
+	build := func(t *testing.T) SessionInput {
+		r := newSynth(t)
+		r.perTurn = [2]bool{true, true}
+		return r.build()
+	}
+	t.Run("three turns per phase pass", func(t *testing.T) {
+		t.Parallel()
+		in := build(t)
+		for p := 0; p < 2; p++ {
+			if n := len(recordLines(&in, p, "init")); n != 3 {
+				t.Fatalf("phase %d has %d inits, want 3", p+1, n)
+			}
+		}
+		em := DeriveSession(in)
+		if codes := codesOfMap(em); len(codes) != 0 {
+			t.Fatalf("findings %v", codes)
+		}
+		one := DeriveSession(newSynth(t).build())
+		var kinds, want []string
+		for _, e := range em.Entries {
+			kinds = append(kinds, e.Kind)
+		}
+		for _, e := range one.Entries {
+			want = append(want, e.Kind)
+		}
+		if !slices.Equal(kinds, want) || len(em.Init) != 2 || em.Init[0].Phase != 1 || em.Init[1].Phase != 2 || len(entriesOf(em, MapWake, "")) != 4 {
+			t.Fatalf("entries %v want %v, init %+v", kinds, want, em.Init)
+		}
+		for _, e := range entriesOf(em, MapWake, "") {
+			if !e.Automatic {
+				t.Fatalf("wake %+v not automatic", e)
+			}
+		}
+		// The phase's result is its final one, after every consumption.
+		for _, e := range em.Entries {
+			if e.Kind == MapPause && e.Sources[0].FirstLine != recordLines(&in, 0, "result")[2]+1 {
+				t.Fatalf("pause cites %+v", e.Sources)
+			}
+		}
+		for p := 0; p < 2; p++ {
+			if present, ok := streamResult(in.Streams[p]); !present || !ok {
+				t.Fatalf("phase %d result = %t %t", p+1, present, ok)
+			}
+		}
+	})
+	for name, tc := range map[string]struct {
+		phase int
+		edit  func(v map[string]any)
+		code  string
+	}{
+		"another session id":      {0, func(v map[string]any) { v["session_id"] = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" }, CodeSessionMismatch},
+		"another tool list":       {0, func(v map[string]any) { v["tools"] = []string{"Bash", "Read", toolDispatch, toolTaskShow, "Write"} }, CodeSessionMismatch},
+		"reordered tool list":     {1, func(v map[string]any) { v["tools"] = []string{"Read", "Bash", toolDispatch, toolTaskShow} }, CodeSessionMismatch},
+		"another cwd":             {1, func(v map[string]any) { v["cwd"] = "/elsewhere" }, CodeSessionMismatch},
+		"another model":           {0, func(v map[string]any) { v["model"] = "claude-sonnet" }, CodeSessionMismatch},
+		"another permission mode": {1, func(v map[string]any) { v["permissionMode"] = "bypassPermissions" }, CodeSessionMismatch},
+		"another MCP server list": {0, func(v map[string]any) {
+			v["mcp_servers"] = []map[string]string{{"name": "callsheet", "status": "failed"}}
+		}, CodeSessionMismatch},
+		"tools not a list":         {0, func(v map[string]any) { v["tools"] = "Bash" }, CodeSessionMalformed},
+		"MCP server name a number": {1, func(v map[string]any) { v["mcp_servers"] = []map[string]any{{"name": 1, "status": "connected"}} }, CodeSessionMalformed},
+		"model null":               {0, func(v map[string]any) { v["model"] = nil }, CodeSessionMalformed},
+	} {
+		t.Run("second init: "+name, func(t *testing.T) {
+			t.Parallel()
+			in := build(t)
+			editRecord(t, &in, tc.phase, "init", 1, tc.edit)
+			codes := codesOfMap(DeriveSession(in))
+			other := map[string]string{CodeSessionMismatch: CodeSessionMalformed, CodeSessionMalformed: CodeSessionMismatch}[tc.code]
+			if !slices.Contains(codes, tc.code) || tc.code == CodeSessionMalformed && slices.Contains(codes, other) {
+				t.Fatalf("findings %v, want %s", codes, tc.code)
+			}
+		})
+	}
+	t.Run("an unparseable first init", func(t *testing.T) {
+		t.Parallel()
+		in := build(t)
+		editRecord(t, &in, 1, "init", 0, func(v map[string]any) { v["permissionMode"] = 3 })
+		if codes := codesOfMap(DeriveSession(in)); !slices.Contains(codes, CodeSessionMalformed) {
+			t.Fatalf("findings %v", codes)
+		}
+	})
+	// Review r1 C1: a present null anywhere in a compared field, nested
+	// list elements and MCP entry fields included, is unparseable, in the
+	// first init and in a later one (never a mere mismatch, or nothing).
+	servers := func(entries ...any) func(v map[string]any) {
+		return func(v map[string]any) { v["mcp_servers"] = entries }
+	}
+	for name, edit := range map[string]func(v map[string]any){
+		"a null tool":                 func(v map[string]any) { v["tools"] = []any{"Bash", nil, toolDispatch, toolTaskShow} },
+		"a null MCP entry":            servers(nil),
+		"an MCP entry not an object":  servers("callsheet:connected"),
+		"a null MCP name":             servers(map[string]any{"name": nil, "status": "connected"}),
+		"a null MCP status":           servers(map[string]any{"name": "callsheet", "status": nil}),
+		"an MCP entry without status": servers(map[string]any{"name": "callsheet"}),
+	} {
+		for n, which := range []string{"first", "later"} {
+			t.Run(which+" init: "+name, func(t *testing.T) {
+				t.Parallel()
+				in := build(t)
+				editRecord(t, &in, n, "init", n, edit)
+				codes := codesOfMap(DeriveSession(in))
+				if !slices.Contains(codes, CodeSessionMalformed) || n == 1 && slices.Contains(codes, CodeSessionMismatch) {
+					t.Fatalf("findings %v, want %s only", codes, CodeSessionMalformed)
+				}
+			})
+		}
+	}
+	t.Run("an MCP status from empty to null", func(t *testing.T) {
+		t.Parallel()
+		in := build(t)
+		for n := 0; n < 3; n++ {
+			editRecord(t, &in, 0, "init", n, servers(map[string]any{"name": "callsheet", "status": ""}))
+		}
+		if codes := codesOfMap(DeriveSession(in)); len(codes) != 0 {
+			t.Fatalf("empty statuses: findings %v", codes)
+		}
+		editRecord(t, &in, 0, "init", 2, servers(map[string]any{"name": "callsheet", "status": nil}))
+		if codes := codesOfMap(DeriveSession(in)); !slices.Contains(codes, CodeSessionMalformed) {
+			t.Fatalf("findings %v", codes)
+		}
+	})
+	// Review r1 C3: MCP entries compare as name/status pairs, so no
+	// delimiter can make two different lists equal.
+	t.Run("an MCP delimiter collision", func(t *testing.T) {
+		t.Parallel()
+		in := build(t)
+		editRecord(t, &in, 1, "init", 0, servers(map[string]any{"name": "callsheet:x", "status": "connected"}))
+		editRecord(t, &in, 1, "init", 1, servers(map[string]any{"name": "callsheet", "status": "x:connected"}))
+		editRecord(t, &in, 1, "init", 2, servers(map[string]any{"name": "callsheet:x", "status": "connected"}))
+		codes := codesOfMap(DeriveSession(in))
+		if !slices.Contains(codes, CodeSessionMismatch) || slices.Contains(codes, CodeSessionMalformed) {
+			t.Fatalf("findings %v, want %s", codes, CodeSessionMismatch)
+		}
+	})
+	// Review r1 C2: an init's session is its stream session_id; a
+	// sessionId alias that disagrees with it is malformed and never
+	// substitutes for it.
+	for n, which := range []string{"first", "later"} {
+		t.Run(which+" init: a conflicting session alias", func(t *testing.T) {
+			t.Parallel()
+			in := build(t)
+			editRecord(t, &in, 0, "init", n, func(v map[string]any) {
+				v["session_id"], v["sessionId"] = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", testSession
+			})
+			em := DeriveSession(in)
+			if codes := codesOfMap(em); !slices.Contains(codes, CodeSessionMalformed) || !slices.Contains(codes, CodeSessionMismatch) {
+				t.Fatalf("findings %v", codes)
+			}
+		})
+	}
+	t.Run("an agreeing session alias", func(t *testing.T) {
+		t.Parallel()
+		in := build(t)
+		editRecord(t, &in, 0, "init", 1, func(v map[string]any) { v["sessionId"] = testSession })
+		if codes := codesOfMap(DeriveSession(in)); len(codes) != 0 {
+			t.Fatalf("findings %v", codes)
+		}
+	})
+	assistant := `{"type":"assistant","session_id":"` + testSession + `","message":{"role":"assistant","content":[{"type":"text","text":"x"}]}}`
+	for name, edit := range map[string]func(t *testing.T, in *SessionInput){
+		"work before the first init": func(t *testing.T, in *SessionInput) {
+			streamLines(in, 0, func(l []string) []string { return slices.Insert(l, 0, assistant) })
+		},
+		"work between a result and the next init": func(t *testing.T, in *SessionInput) {
+			at := recordLines(in, 1, "result")[0]
+			streamLines(in, 1, func(l []string) []string { return slices.Insert(l, at+1, assistant) })
+		},
+		"work after the final result": func(t *testing.T, in *SessionInput) {
+			streamLines(in, 0, func(l []string) []string { return append(l, assistant) })
+		},
+		"two results in one turn": func(t *testing.T, in *SessionInput) {
+			at := recordLines(in, 0, "result")[0]
+			streamLines(in, 0, func(l []string) []string { return slices.Insert(l, at+1, l[at]) })
+		},
+		// Review r1 W1: an init while the previous turn is still open.
+		"an intermediate result removed": func(t *testing.T, in *SessionInput) {
+			at := recordLines(in, 0, "result")[0]
+			streamLines(in, 0, func(l []string) []string { return slices.Delete(l, at, at+1) })
+		},
+		"a turn opened after the final result": func(t *testing.T, in *SessionInput) {
+			first := recordLines(in, 1, "init")[0]
+			streamLines(in, 1, func(l []string) []string { return append(l, l[first]) })
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			in := build(t)
+			edit(t, &in)
+			if codes := codesOfMap(DeriveSession(in)); !slices.Contains(codes, CodeSessionMalformed) {
+				t.Fatalf("findings %v, want %s", codes, CodeSessionMalformed)
+			}
+		})
+	}
+	t.Run("a failed turn fails the phase", func(t *testing.T) {
+		t.Parallel()
+		// Every turn's result must succeed, not only the final one.
+		in := build(t)
+		editRecord(t, &in, 0, "result", 1, func(v map[string]any) { v["subtype"], v["is_error"] = "error_during_execution", true })
+		em := DeriveSession(in)
+		if present, ok := streamResult(in.Streams[0]); !present || ok || len(entriesOf(em, MapPause, "")) != 0 {
+			t.Fatalf("result %t %t, pause %v", present, ok, entriesOf(em, MapPause, ""))
+		}
+		if present, ok := streamResult(in.Streams[1]); !present || !ok {
+			t.Fatalf("phase 2 result %t %t", present, ok)
 		}
 	})
 }

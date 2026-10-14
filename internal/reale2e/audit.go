@@ -329,9 +329,12 @@ func streamResult(stream []byte) (present, ok bool) {
 	return recordsResult(d.decodeLines(phaseStreamFiles[0], stream))
 }
 
-// recordsResult is streamResult over a stream's decoded records.
+// recordsResult is streamResult over a stream's decoded records. A phase
+// holds one result per turn (A3.9): it succeeded when every one did,
+// bound to its first init's session.
 func recordsResult(records []sessionRecord) (present, ok bool) {
 	sid, hasInit := "", false
+	ok = true
 	for _, r := range records {
 		switch r.kind {
 		case "init":
@@ -339,10 +342,11 @@ func recordsResult(records []sessionRecord) (present, ok bool) {
 				sid, hasInit = r.sessionID, true
 			}
 		case "result":
-			return true, r.resultOK && hasInit && r.sessionID == sid
+			present = true
+			ok = ok && r.resultOK && hasInit && r.sessionID == sid
 		}
 	}
-	return false, false
+	return present, present && ok
 }
 
 // phaseStreamResult is streamResult of phase p's stream, which the

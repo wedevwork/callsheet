@@ -22,9 +22,15 @@ import (
 // is never evidence. Malformed, duplicated-key, conflicting or dangling
 // records needed for a fact make it unobserved and are findings.
 //
-// Three vendor behaviours are undocumented assumptions, observed per run
-// and failing closed: several background-completion turns within one -p
-// phase (phase_result_early otherwise), the phase-1 transcript being an
+// One vendor behaviour is observed (A3.9, fourth owner-run): a -p phase
+// runs several turns, the initial one and one per background-completion
+// wake, and each turn opens with its own system/init record and closes
+// with its own result. Every later init must repeat the phase's first
+// (session_mismatch otherwise), and a phase ending before its hops'
+// consumption is phase_result_early.
+//
+// Two vendor behaviours are undocumented assumptions, observed per run
+// and failing closed: the phase-1 transcript being an
 // exact prefix of the phase-2 transcript (session_evidence_unobserved
 // otherwise) and the background-completion notification's shape. The
 // accepted notification is a user-role text that is exactly one
@@ -102,9 +108,12 @@ type sessionRecord struct {
 	userText  string
 	hasText   bool
 	init      InitRecord
-	resultOK  bool
+	// mcp is an init's MCP server list as name/status pairs.
+	mcp      [][2]string
+	resultOK bool
 	// malformed: a result's required field has the wrong type or is
-	// absent (is_error, subtype; session_id when present).
+	// absent (is_error, subtype; session_id when present), or an init is
+	// unparseable (see parseInit).
 	malformed bool
 	denials   []string
 	phase     int
@@ -172,6 +181,53 @@ func rawTyped(raw json.RawMessage, v any) bool {
 	return raw != nil && string(raw) != "null" && json.Unmarshal(raw, v) == nil
 }
 
+// optTyped is rawTyped for an optional field: true when it is absent.
+func optTyped(raw json.RawMessage, v any) bool {
+	return raw == nil || rawTyped(raw, v)
+}
+
+// sameInit reports whether init record b repeats a's session, cwd,
+// model, permission mode, tool list and MCP server list (structured
+// name/status pairs, never their formatted text).
+func sameInit(a, b *sessionRecord) bool {
+	return a.sessionID == b.sessionID && a.cwd == b.cwd && a.init.Model == b.init.Model && a.init.PermissionMode == b.init.PermissionMode &&
+		slices.Equal(a.init.Tools, b.init.Tools) && slices.Equal(a.mcp, b.mcp)
+}
+
+// parseInit decodes an init record's compared fields into r (A3.9). Its
+// session is the stream's session_id; a sessionId alias that disagrees
+// with it, or any compared field present with another type or null
+// (list elements and MCP entry fields included, each MCP entry an object
+// with a string name and status), makes the record unparseable. The MCP
+// list is formatted name:status only for reporting.
+func parseInit(raw map[string]json.RawMessage, r *sessionRecord) {
+	var s string
+	ok := optTyped(raw["session_id"], &s) && optTyped(raw["cwd"], &s) && optTyped(raw["model"], &s) && optTyped(raw["permissionMode"], &s)
+	r.sessionID = rawString(raw["session_id"])
+	if alias, has := raw["sessionId"]; has && (!rawTyped(alias, &s) || s != r.sessionID) {
+		ok = false
+	}
+	r.init = InitRecord{SessionID: r.sessionID, Model: rawString(raw["model"]), PermissionMode: rawString(raw["permissionMode"]),
+		Tools: []string{}, MCPServers: []string{}}
+	var tools, servers []json.RawMessage
+	if !optTyped(raw["tools"], &tools) || !optTyped(raw["mcp_servers"], &servers) {
+		ok = false
+	}
+	for _, t := range tools {
+		var name string
+		ok = ok && rawTyped(t, &name)
+		r.init.Tools = append(r.init.Tools, name)
+	}
+	for _, e := range servers {
+		var entry map[string]json.RawMessage
+		var name, status string
+		ok = ok && rawTyped(e, &entry) && rawTyped(entry["name"], &name) && rawTyped(entry["status"], &status)
+		r.mcp = append(r.mcp, [2]string{name, status})
+		r.init.MCPServers = append(r.init.MCPServers, name+":"+status)
+	}
+	r.malformed = !ok
+}
+
 // parseRecord classifies one record (stream or transcript envelope).
 func parseRecord(raw map[string]json.RawMessage, src SourceRef) sessionRecord {
 	r := sessionRecord{src: src, kind: "other"}
@@ -184,21 +240,7 @@ func parseRecord(raw map[string]json.RawMessage, src SourceRef) sessionRecord {
 	switch {
 	case typ == "system" && subtype == "init":
 		r.kind = "init"
-		r.init = InitRecord{SessionID: r.sessionID, Model: rawString(raw["model"]), PermissionMode: rawString(raw["permissionMode"]),
-			Tools: []string{}, MCPServers: []string{}}
-		var tools []string
-		if json.Unmarshal(raw["tools"], &tools) == nil {
-			r.init.Tools = append(r.init.Tools, tools...)
-		}
-		var servers []struct {
-			Name   string `json:"name"`
-			Status string `json:"status"`
-		}
-		if json.Unmarshal(raw["mcp_servers"], &servers) == nil {
-			for _, s := range servers {
-				r.init.MCPServers = append(r.init.MCPServers, s.Name+":"+s.Status)
-			}
-		}
+		parseInit(raw, &r)
 	case typ == "result":
 		r.kind = "result"
 		var isErr bool
@@ -394,25 +436,39 @@ func (d *deriver) derive() EventMap {
 		}
 		streams[p] = d.decodeLines(phaseStreamFiles[p], in.Streams[p])
 		d.streamResults[p][0], d.streamResults[p][1] = recordsResult(streams[p])
-		// The raw chronology: the init record precedes all session work
-		// and the terminal result follows it all.
-		phaseSID, hasInit := "", false
+		// The raw chronology (observed, A3.9): every turn opens with its
+		// own init record and closes with its own result, and all session
+		// work lies inside a turn. Every later init repeats the phase's
+		// first; the phase's result is its final one, successful only
+		// when every turn's was.
+		var first, last *sessionRecord
+		open, allOK := false, true
 		for i := range streams[p] {
 			r := &streams[p][i]
 			r.phase = p + 1
 			work := r.kind == "assistant" || r.kind == "user" || r.kind == "result"
-			if work && (!hasInit || results[p] != nil) {
+			if work && !open {
 				d.find(CodeSessionMalformed, "", "", r.src)
 			}
 			switch r.kind {
 			case "init":
-				if len(d.init) > p {
+				// An init while a turn is open: that turn never closed.
+				if open {
 					d.find(CodeSessionMalformed, "", "", r.src)
+				}
+				open, last = true, r
+				switch {
+				case r.malformed:
+					d.find(CodeSessionMalformed, "", "", r.src)
+				case first != nil && !sameInit(first, r):
+					d.find(CodeSessionMismatch, "", "", r.src)
+				}
+				if first != nil {
 					continue
 				}
+				first = r
 				r.init.Phase = p + 1
 				d.init = append(d.init, r.init)
-				phaseSID, hasInit = r.sessionID, true
 				if p == 0 && d.sid == "" {
 					d.sid = r.sessionID
 				}
@@ -425,18 +481,22 @@ func (d *deriver) derive() EventMap {
 				case r.sessionID == "":
 					d.find(CodeSessionUnobserved, "", "", r.src)
 				}
-				if !hasInit || r.sessionID != phaseSID {
+				if first == nil || r.sessionID != first.sessionID {
 					r.resultOK = false
 				}
-				if results[p] != nil {
-					d.find(CodeSessionMalformed, "", "", r.src)
-				}
-				results[p] = r
+				allOK = allOK && r.resultOK
+				r.resultOK = allOK
+				open, results[p] = false, r
 				for _, den := range r.denials {
 					use, tool, _ := strings.Cut(den, "\x00")
 					d.find(CodeToolDenied, use, tool, r.src)
 				}
 			}
+		}
+		// A turn opened after a result and never closed began after the
+		// phase's final result.
+		if open && results[p] != nil {
+			d.find(CodeSessionMalformed, "", "", last.src)
 		}
 	}
 	if in.Streams[0] == nil || len(d.init) == 0 || !sessionIDRE.MatchString(d.sid) {
