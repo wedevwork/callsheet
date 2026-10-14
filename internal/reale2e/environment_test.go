@@ -27,12 +27,19 @@ func gitEnv(t *testing.T) []string {
 		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@invalid", "GIT_AUTHOR_DATE=2026-01-01T00:00:00Z", "GIT_COMMITTER_DATE=2026-01-01T00:00:00Z"}
 }
 
+// gitCmd is a test Git command in dir, env added to gitEnv. Automatic
+// maintenance is off: it may still be writing in the repository after the
+// command returns (detached since Git 2.47), racing any later snapshot.
+func gitCmd(t *testing.T, dir string, env []string, args ...string) *exec.Cmd {
+	c := exec.Command("git", append([]string{"-c", "init.defaultBranch=main", "-c", "commit.gpgsign=false", "-c", "maintenance.auto=false"}, args...)...)
+	c.Dir, c.Env = dir, append(gitEnv(t), env...)
+	return c
+}
+
 // gitIn runs a test Git command in dir.
 func gitIn(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	c := exec.Command("git", append([]string{"-c", "init.defaultBranch=main", "-c", "commit.gpgsign=false"}, args...)...)
-	c.Dir, c.Env = dir, gitEnv(t)
-	out, err := c.CombinedOutput()
+	out, err := gitCmd(t, dir, nil, args...).CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
@@ -923,7 +930,7 @@ func TestEnvironmentUnits(t *testing.T) {
 			{"claude", "settings", tool}, {"claude", "settings.json.tmp", tool}, {"claude", "projects/-x/settings.json", tool},
 			{"claude", "agents", owner}, {"claude", "agents/a.md", owner}, {"claude", "agents/new/deep.md", owner}, {"claude", "agents.bak", tool},
 			{"claude", "skills", owner}, {"claude", "skills/a/SKILL.md", owner}, {"claude", "commands/c.md", owner}, {"claude", "hooks/h.sh", owner},
-			{"claude", "plugins", owner}, {"claude", "plugins/installed_plugins.json", owner}, {"claude", "plugins/known_marketplaces.json", owner},
+			{"claude", "plugins", owner}, {"claude", "plugins/installed_plugins.json", owner}, {"claude", "plugins/known_marketplaces.json", tool},
 			{"claude", "plugins/blocklist.json", owner}, {"claude", "plugins/config.json", owner}, {"claude", "plugins/config.json.bak", tool},
 			{"claude", "plugins/cache/m/p/plugin.json", tool}, {"claude", "plugins/marketplaces/m/.git/HEAD", tool}, {"claude", "plugins/repos", tool},
 			{"claude", ".config.json", tool}, {"claude", "backups/.config.json.backup.1", tool}, {"claude", "projects/-opt-x/memory/MEMORY.md", tool},
@@ -968,7 +975,7 @@ func TestEnvironmentUnits(t *testing.T) {
 		}
 		files := map[string][]string{
 			"claude": {"CLAUDE.md", "settings.json", "settings.local.json", "agents/a.md", "skills/s/SKILL.md", "commands/c.md", "hooks/h.sh",
-				"plugins/installed_plugins.json", "plugins/known_marketplaces.json", "plugins/blocklist.json", "plugins/config.json"},
+				"plugins/installed_plugins.json", "plugins/blocklist.json", "plugins/config.json"},
 			"codex":  {"AGENTS.md", "AGENTS.override.md", "instructions.md", "prompts/p.md"},
 			"grok":   {"config.toml", "managed_config.toml", "settings.json", "user-settings.json"},
 			"cursor": {"cli-config.json", "mcp.json"},
@@ -1100,6 +1107,40 @@ func TestEnvironmentUnits(t *testing.T) {
 					t.Errorf("codex config.toml %s: its content was hashed", name)
 				}
 			}
+		}
+		// A3.9: Claude's plugins/known_marketplaces.json is tool-maintained
+		// (Claude refreshes its lastUpdated timestamps); the plugin files
+		// beside it stay strict.
+		market := func(ts string) string {
+			return `{"m":{"source":{"source":"github","repo":"o/m"},"installLocation":"/x","lastUpdated":"` + ts + `"}}`
+		}
+		plugins := func(h string) {
+			write(t, filepath.Join(h, ".claude", "plugins", "known_marketplaces.json"), market("2026-10-12T10:00:00.000Z"))
+			write(t, filepath.Join(h, ".claude", "plugins", "installed_plugins.json"), "{}")
+		}
+		for name, m := range map[string]func(h string){
+			"timestamp refresh": func(h string) {
+				// Same size: tool state is compared by metadata, so the
+				// refresh shows as its new modification time.
+				p := filepath.Join(h, ".claude", "plugins", "known_marketplaces.json")
+				write(t, p, market("2026-10-12T22:02:00.000Z"))
+				later := time.Now().Add(time.Hour)
+				os.Chtimes(p, later, later)
+			},
+			"mode":    func(h string) { os.Chmod(filepath.Join(h, ".claude", "plugins", "known_marketplaces.json"), 0o644) },
+			"deleted": func(h string) { os.Remove(filepath.Join(h, ".claude", "plugins", "known_marketplaces.json")) },
+		} {
+			d := compare(t, plugins, m)
+			if len(d.Protected) != 0 || slices.Contains(d.Codes, CodeEnvModified) || len(d.ToolSummary) != 1 || d.ToolSummary[0].Scope != "claude" ||
+				d.ToolSummary[0].TopLevel != "plugins" {
+				t.Errorf("known_marketplaces.json %s = %+v %+v", name, d.Protected, d.ToolSummary)
+			}
+		}
+		if d := compare(t, plugins, func(h string) {
+			write(t, filepath.Join(h, ".claude", "plugins", "known_marketplaces.json"), market("2026-10-12T22:02:00.000Z"))
+			write(t, filepath.Join(h, ".claude", "plugins", "installed_plugins.json"), "[]")
+		}); len(d.Protected) != 1 || d.Protected[0].Path != "plugins/installed_plugins.json" || !slices.Contains(d.Codes, CodeEnvModified) {
+			t.Errorf("installed_plugins.json beside a marketplace refresh = %+v", d.Protected)
 		}
 		// A new descendant of each listed directory is a strict addition.
 		for _, dir := range []string{".claude/agents", ".claude/skills", ".claude/commands", ".claude/hooks", ".codex/prompts"} {
@@ -1260,6 +1301,78 @@ func TestEnvironmentUnits(t *testing.T) {
 		write(t, filepath.Join(repo, "dirty.txt"), "x")
 		if d := CompareEnvironment(before, snap(t, "after", h2, roots, nil), roots); !slices.Contains(d.Codes, CodeEnvModified) {
 			t.Errorf("a repository below a tool path changed silently %+v", d)
+		}
+	})
+	t.Run("test git starts no maintenance", func(t *testing.T) {
+		t.Parallel()
+		// Git's automatic maintenance after a commit (detached since Git
+		// 2.47) can still be writing in the repository when the commit
+		// returns, and a snapshot reading it then is incomplete. The
+		// helpers' commits start no maintenance or gc process.
+		dir := t.TempDir()
+		newRepo(t, dir)
+		write(t, filepath.Join(dir, "b.txt"), "b\n")
+		gitIn(t, dir, "add", "b.txt")
+		trace := filepath.Join(t.TempDir(), "trace.json")
+		if out, err := gitCmd(t, dir, []string{"GIT_TRACE2_EVENT=" + trace}, "commit", "-q", "-m", "b").CombinedOutput(); err != nil {
+			t.Fatalf("commit: %v\n%s", err, out)
+		}
+		data, err := os.ReadFile(trace)
+		if err != nil {
+			t.Fatal(err)
+		}
+		commits := 0
+		for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+			var ev struct {
+				Event string   `json:"event"`
+				Argv  []string `json:"argv"`
+			}
+			if err := json.Unmarshal([]byte(line), &ev); err != nil {
+				t.Fatalf("trace line %q: %v", line, err)
+			}
+			switch {
+			case ev.Event == "start" && slices.Contains(ev.Argv, "commit"):
+				commits++
+			case ev.Event == "child_start" && (slices.Contains(ev.Argv, "maintenance") || slices.Contains(ev.Argv, "gc")):
+				t.Errorf("the commit started %v", ev.Argv)
+			}
+		}
+		if commits != 1 {
+			t.Fatalf("the trace records %d commits:\n%s", commits, data)
+		}
+	})
+	t.Run("an entry gone after its listing", func(t *testing.T) {
+		t.Parallel()
+		// A concurrent writer (such as Git's maintenance removing its lock)
+		// deletes an entry after the vendor walk listed its directory and
+		// before the entry is examined: the snapshot is incomplete, never
+		// a pass without the entry.
+		home, err := filepath.EvalSymlinks(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		repo := filepath.Join(home, ".claude", "plugins", "marketplaces", "m")
+		newRepo(t, repo)
+		objects := filepath.Join(repo, ".git", "objects")
+		lock := filepath.Join(objects, "maintenance.lock")
+		scan := func(vanish bool) *envScanner {
+			write(t, lock, "")
+			sc := &envScanner{clock: &stepClock{}, home: home, tok: pathTokenizer{home: home}, depth: DefaultProtectDepth,
+				snap: Snapshot{Complete: true}, repoSeen: map[string]bool{}, openDir: func(p string) (dirReader, error) {
+					d, err := openDir(p)
+					if err == nil && vanish && p == objects {
+						return &vanishingDir{dirReader: d, gone: lock}, nil
+					}
+					return d, err
+				}}
+			sc.scanHomes()
+			return sc
+		}
+		if sc := scan(false); !sc.snap.Complete {
+			t.Fatalf("an unchanged home: %q", sc.snap.Code)
+		}
+		if sc := scan(true); sc.snap.Complete || sc.snap.Code != CodeEnvUnobserved {
+			t.Fatalf("an entry gone after its listing: complete %v code %q", sc.snap.Complete, sc.snap.Code)
 		}
 	})
 	t.Run("bounded directory reads", func(t *testing.T) {
@@ -2457,6 +2570,21 @@ func TestEnvironmentUnits(t *testing.T) {
 			}
 		}
 	})
+}
+
+// vanishingDir is a directory whose entry gone is removed once a read
+// has listed it.
+type vanishingDir struct {
+	dirReader
+	gone string
+}
+
+func (d *vanishingDir) ReadDir(n int) ([]fs.DirEntry, error) {
+	ents, err := d.dirReader.ReadDir(n)
+	if slices.ContainsFunc(ents, func(e fs.DirEntry) bool { return e.Name() == filepath.Base(d.gone) }) {
+		os.Remove(d.gone)
+	}
+	return ents, err
 }
 
 // endlessDirs opens each directory in big as an endless directory of

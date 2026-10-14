@@ -487,14 +487,15 @@ type strictPath struct {
 	glob                 bool
 }
 
-// strictPaths are each vendor's owner-authored paths. A path at or below
+// strictPaths are each vendor's owner-authored paths (A3.9: Claude's
+// plugins/known_marketplaces.json, whose timestamps Claude refreshes, is
+// tool-maintained). A path at or below
 // one of them (whatever its type: a directory or link substituted for a
 // named file stays protected, and so does every descendant of a listed
 // directory, even a new name) is owner-configuration.
 var strictPaths = map[string][]strictPath{
 	"claude": {{name: "CLAUDE.md"}, {prefix: "settings", suffix: ".json", glob: true}, {name: "agents"}, {name: "skills"}, {name: "commands"},
-		{name: "hooks"}, {name: "plugins/installed_plugins.json"}, {name: "plugins/known_marketplaces.json"}, {name: "plugins/blocklist.json"},
-		{name: "plugins/config.json"}},
+		{name: "hooks"}, {name: "plugins/installed_plugins.json"}, {name: "plugins/blocklist.json"}, {name: "plugins/config.json"}},
 	"codex":  {{prefix: "AGENTS", suffix: ".md", glob: true}, {name: "instructions.md"}, {name: "prompts"}},
 	"grok":   {{name: "config.toml"}, {name: "managed_config.toml"}, {name: "settings.json"}, {name: "user-settings.json"}},
 	"cursor": {{name: "cli-config.json"}, {name: "mcp.json"}},

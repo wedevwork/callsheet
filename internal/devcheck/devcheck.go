@@ -352,7 +352,7 @@ func TestSteps(goos string) []Step {
 	steps := []Step{{Name: "test", Argv: []string{"go", "test", "-count=1", "-timeout=180s", "./..."}}}
 	if goos == "linux" {
 		steps = append(steps, Step{Name: "test -race", Env: []string{"CGO_ENABLED=1"},
-			Argv: []string{"go", "test", "-race", "-count=1", "-timeout=180s", "./..."}})
+			Argv: []string{"go", "test", "-race", "-p=1", "-count=1", "-timeout=180s", "./..."}})
 	}
 	// Iteration 08: the ordinary-only tagged sidecar contract, as its own
 	// step (and its race counterpart where the suite has one), on the task

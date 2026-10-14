@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/wedevwork/callsheet/internal/testkit"
 )
 
 // TestProbeTraceSeam covers the probe diagnostics seam: a traced fake
@@ -59,7 +61,7 @@ func TestProbeTraceSeam(t *testing.T) {
 		}
 		p := tr.Last()
 		start := p.Deadline.Add(-ProbeTimeout)
-		if start.Before(before) || p.Started.Before(start) || p.Waited.Before(p.Started) || p.State == nil || !p.State.Success() {
+		if start.Before(before) || p.Armed.Before(start) || p.Started.Before(p.Armed) || p.Waited.Before(p.Started) || p.State == nil || !p.State.Success() {
 			t.Fatalf("timing %+v", p)
 		}
 		s := p.String()
@@ -67,6 +69,30 @@ func TestProbeTraceSeam(t *testing.T) {
 			if !strings.Contains(s, want) {
 				t.Errorf("%q lacks %q", s, want)
 			}
+		}
+	})
+	t.Run("injected-clock", func(t *testing.T) {
+		// The deadline runs on the test's clock: armed at its instant, it
+		// never fires while that clock stands still, and a probe that
+		// completes before it passes however long it ran in real time. The
+		// reported elapsed times stay wall-clock.
+		dir := t.TempDir()
+		tr := &ProbeTrace{}
+		clk := testkit.NewFakeClock(time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC))
+		before := time.Now()
+		if err := NewFakeTracedClock(dir, tr, clk).Probe(bg, script(t, dir, "fake-adapter", `echo callsheet-fake-probe-v1`)); err != nil {
+			t.Fatal(err)
+		}
+		p := tr.Last()
+		if !p.Deadline.Equal(clk.Now().Add(ProbeTimeout)) || p.Armed.Before(before) || p.Started.Before(p.Armed) || p.Waited.Before(p.Started) ||
+			p.Waited.Sub(p.Armed) > testWait || p.State == nil || !p.State.Success() {
+			t.Fatalf("timing %+v", p)
+		}
+		if ws := clk.Waiters(); len(ws) != 0 {
+			t.Fatalf("timer left: %v", ws)
+		}
+		if s := p.String(); !strings.Contains(s, "child exited successfully before the deadline check: true (exit status 0)") {
+			t.Fatalf("%q", s)
 		}
 	})
 	t.Run("unsuccessful", func(t *testing.T) {

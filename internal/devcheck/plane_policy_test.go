@@ -11,7 +11,7 @@ import (
 // from them.
 const (
 	wantTestNative = "go test -count=1 -timeout=180s ./..."
-	wantTestRace   = "go test -race -count=1 -timeout=180s ./..."
+	wantTestRace   = "go test -race -p=1 -count=1 -timeout=180s ./..."
 	wantNative     = "go test -json -tags=realadaptercheck -count=1 -timeout=300s ./..."
 	wantBenchGit   = "go test ./internal/spikes/gittransport -run ^$ -bench . -benchmem -benchtime=3x -count=1 -timeout=180s"
 	wantBenchPlane = "go test ./internal/plane -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s"

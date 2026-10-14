@@ -1,6 +1,7 @@
 package reale2e
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"slices"
@@ -40,12 +41,57 @@ func TestBackgroundWaitEvidence(t *testing.T) {
 			}
 		}
 	})
+	t.Run("one init per turn passes", func(t *testing.T) {
+		t.Parallel()
+		// A3.9: headless claude -p opens every turn, the initial one and
+		// each wake's, with its own init and closes it with a result.
+		f := newFakeWorld(t)
+		f.coord.perTurn = true
+		if code := f.attempt(); code != 0 {
+			t.Fatalf("attempt = %d %v\n%s", code, failedCodes(f.report()), f.stderr.String())
+		}
+		for p := 1; p <= 2; p++ {
+			stream := mustRead(t, filepath.Join(f.bundle(), phaseStreamFiles[p-1]))
+			if n := bytes.Count(stream, []byte(`"subtype":"init"`)); n != 3 {
+				t.Fatalf("phase %d stream has %d inits, want 3", p, n)
+			}
+		}
+		if code, r, _ := checkBundle(t, f.bundle()); code != 0 || criterion(r, CritEventMap).Result != "pass" || criterion(r, CritWaits).Result != "pass" {
+			t.Fatalf("offline check = %d %v", code, failedCodes(r))
+		}
+	})
 	for name, tc := range map[string]struct {
 		set  func(c *coordScript)
 		fail string
 		crit string
 		code string
 	}{
+		"a wake turn's init with another session": {func(c *coordScript) {
+			c.perTurn = true
+			c.turnInit = func(i int, v map[string]any) {
+				if i == 0 {
+					v["session_id"] = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+				}
+			}
+		}, CodeSessionMismatch, CritEventMap, CodeSessionMismatch},
+		// Review r1 C2: the original session in a sessionId alias never
+		// hides a changed session_id.
+		"a wake turn's init with a conflicting session alias": {func(c *coordScript) {
+			c.perTurn = true
+			c.turnInit = func(i int, v map[string]any) {
+				if i == 2 {
+					v["session_id"], v["sessionId"] = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", v["session_id"]
+				}
+			}
+		}, CodeSessionMismatch, CritEventMap, CodeSessionMalformed},
+		"a wake turn's init with another tool list": {func(c *coordScript) {
+			c.perTurn = true
+			c.turnInit = func(i int, v map[string]any) {
+				if i == 1 {
+					v["tools"] = []string{"Bash", "Read", "Write", toolDispatch, toolTaskShow}
+				}
+			}
+		}, CodeSessionMismatch, CritEventMap, CodeSessionMismatch},
 		"long blocking call": {func(c *coordScript) { c.longPoll = true }, CodeLongPoll, CritWaits, CodeLongPoll},
 		"polling only":       {func(c *coordScript) { c.noWake = [4]bool{true, true, true, true} }, "", CritWaits, "automatic_wake_unobserved"},
 		"user message before consumption": {func(c *coordScript) {

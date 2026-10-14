@@ -102,7 +102,7 @@ Only your repositories and this exact owner-configuration list are protected; an
 
 | Vendor home | Owner configuration |
 |---|---|
-| `~/.claude` | `CLAUDE.md`, root `settings*.json`, `agents/`, `skills/`, `commands/`, `hooks/`, `plugins/installed_plugins.json`, `plugins/known_marketplaces.json`, `plugins/blocklist.json`, `plugins/config.json` |
+| `~/.claude` | `CLAUDE.md`, root `settings*.json`, `agents/`, `skills/`, `commands/`, `hooks/`, `plugins/installed_plugins.json`, `plugins/blocklist.json`, `plugins/config.json` |
 | `~/.codex` | root `AGENTS*.md`, `instructions.md`, `prompts/` |
 | `~/.grok` | `config.toml`, `managed_config.toml`, `settings.json`, `user-settings.json` |
 | `~/.cursor` | `cli-config.json`, `mcp.json` |
@@ -115,9 +115,10 @@ not covered: ~/.claude/.config.json (Claude state file; holds per-project tool g
 not covered: ~/.claude/backups/.config.json.backup.* (backups of Claude state, including per-project grants)
 not covered: ~/.codex/config.toml (Codex records a trust entry per working folder)
 not covered: untracked .claude/ directories inside protected repositories
+not covered: ~/.claude/plugins/known_marketplaces.json (Claude refreshes marketplace timestamps)
 ```
 
-Claude's state files hold per-project tool grants and MCP-server selections, but a change to them does not fail the run. Codex appends a `[projects."<dir>"] trust_level` entry to `~/.codex/config.toml` for every directory it works in, so the whole file is tool-maintained like Claude's `.config.json`; your `AGENTS*.md`, `instructions.md` and `prompts/` stay strict. Each protected repository's status digest leaves out its untracked top-level `.claude/` directory, which may hold Claude Code sandbox placeholders; its tracked content and HEAD stay strict. A symlink in a vendor home or in the directories scanned above your repositories is checked as the link itself (where it points, not what it points at) and never followed. The harness never repairs, moves or deletes any of your files.
+Claude's state files hold per-project tool grants and MCP-server selections, but a change to them does not fail the run. Codex appends a `[projects."<dir>"] trust_level` entry to `~/.codex/config.toml` for every directory it works in, so the whole file is tool-maintained like Claude's `.config.json`; your `AGENTS*.md`, `instructions.md` and `prompts/` stay strict. Each protected repository's status digest leaves out its untracked top-level `.claude/` directory, which may hold Claude Code sandbox placeholders; its tracked content and HEAD stay strict. Claude refreshes the `lastUpdated` timestamps in `~/.claude/plugins/known_marketplaces.json` whenever it uses its plugin marketplaces, so that file is tool-maintained; the other plugin configuration files (`installed_plugins.json`, `blocklist.json`, `config.json`) stay strict. A symlink in a vendor home or in the directories scanned above your repositories is checked as the link itself (where it points, not what it points at) and never followed. The harness never repairs, moves or deletes any of your files.
 
 Right after the run, review `audit.md` with your external dev-flow coordinator: it checks every judgment row and any disputed mechanical verdict and appends corrections to a separate `audit-review.md` (run ID, audit and report SHA-256, row ID, original and revised verdict, who and why, evidence references). Never edit `audit.json`, `audit.md`, the report or the evidence; a correction cannot turn a FAIL into a PASS. `reale2e check --evidence DIR` re-validates a bundle offline (optional).
 

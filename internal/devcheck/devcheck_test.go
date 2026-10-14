@@ -319,17 +319,33 @@ func scratchFrom(out string) string {
 }
 
 func TestStagePlanning(t *testing.T) {
-	// The Linux test stage: the original four commands unchanged and first,
-	// then the container operation (synthetic container fixture).
+	// The Linux test stage: four commands, the whole-module race serialized
+	// with -p=1, then the container operation (synthetic container fixture).
 	f := &fakeRunner{}
 	cr := newContainerRunnerFixture(t, f).(*containerRunner)
 	code, out, errOut := runDriver(t, "linux", cr, "test")
 	if code != 0 {
 		t.Fatalf("linux test = %d %s", code, errOut)
 	}
-	if got := strings.Join(f.argvs(), "|"); got != "go test -count=1 -timeout=180s ./...|go test -race -count=1 -timeout=180s ./..."+
+	if got := strings.Join(f.argvs(), "|"); got != "go test -count=1 -timeout=180s ./...|go test -race -p=1 -count=1 -timeout=180s ./..."+
 		"|go test -tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$ -count=1|go test -race -tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$ -count=1" {
 		t.Fatalf("linux test = %s", got)
+	}
+	if strings.Count(f.argvs()[1], "./...") != 1 {
+		t.Fatalf("race selection = %s", f.argvs()[1])
+	}
+	pos := 0
+	for i, line := range []string{
+		"devcheck: test: go test -count=1 -timeout=180s ./...",
+		"devcheck: test -race: go test -race -p=1 -count=1 -timeout=180s ./...",
+		"devcheck: test realadaptercheck: go test -tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$ -count=1",
+		"devcheck: test realadaptercheck -race: go test -race -tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$ -count=1",
+	} {
+		at := strings.Index(out, line+"\n")
+		if at < pos {
+			t.Fatalf("step %d out of order in %s", i, out)
+		}
+		pos = at + 1
 	}
 	if !strings.Contains(strings.Join(f.calls[1].env, " "), "CGO_ENABLED=1") || !strings.Contains(strings.Join(f.calls[3].env, " "), "CGO_ENABLED=1") {
 		t.Fatal("race runs need CGO_ENABLED=1")

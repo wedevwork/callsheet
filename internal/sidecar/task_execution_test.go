@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/wedevwork/callsheet/internal/adapter"
 	"github.com/wedevwork/callsheet/internal/contract"
@@ -42,6 +43,24 @@ func fakeAdapterBinary(t testing.TB) string {
 		t.Fatalf("building the fake adapter: %v", fakeErr)
 	}
 	return fakePath
+}
+
+// useProcessProbe installs the /process qualification's ready-probe
+// adapter in d and returns it: the product fake (the same prober, deadline
+// and outcome as NewFake's) probing in its own directory, counted, and
+// tracing its probe's instants for a failure's diagnostics. Its 1 s
+// deadline runs on d's injected clock, as the cycle budget does, so the
+// real child's answer is judged on the test's clock, never on how fast a
+// loaded host ran it.
+func useProcessProbe(t *testing.T, d *deps, trace *adapter.ProbeTrace) *countingAdapter {
+	t.Helper()
+	ca := &countingAdapter{Adapter: adapter.NewFakeTracedClock(t.TempDir(), trace, d.clock)}
+	reg, err := adapter.NewRegistry(ca)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.adapters = func(string) adapter.Registry { return reg }
+	return ca
 }
 
 // countingAdapter is the product fake whose probe executions are counted
@@ -395,21 +414,15 @@ func TestTaskExecutionContract(t *testing.T) {
 		// guardians + 2 adapters.
 		bin := fakeAdapterBinary(t)
 		cli := cliBinary(t)
-		probeDir := t.TempDir()
-		// The product fake, tracing its probe's instants for a failure's
-		// diagnostics (same prober, clock, deadline and outcome).
 		trace := &adapter.ProbeTrace{}
-		ca := &countingAdapter{Adapter: adapter.NewFakeTraced(probeDir, trace)}
-		reg, err := adapter.NewRegistry(ca)
-		if err != nil {
-			t.Fatal(err)
-		}
+		var ca *countingAdapter
 		fp := startFakePlane(t)
 		type seen struct{ guardian, gpgid, adapter, apgid int }
 		var mu sync.Mutex
 		var starts []seen
-		tr := startTaskRun(t, fp, taskOpts{exe: bin, adapters: func(string) adapter.Registry { return reg },
+		tr := startTaskRun(t, fp, taskOpts{exe: bin,
 			adjust: func(d *deps) {
+				ca = useProcessProbe(t, d, trace)
 				d.noCadence = true
 				d.taskGroups = nil
 				d.guardianExe = func() (string, error) { return cli, nil }
@@ -534,6 +547,140 @@ func TestTaskExecutionContract(t *testing.T) {
 			t.Fatalf("launch ledger: %d probes, %d guardian and adapter children; want exactly 1 and 4", ca.count(), tr.ledger.starts())
 		}
 	})
+}
+
+// TestTaskExecutionProbeClock is the regression for the /process
+// qualification failing its ready probe when a loaded host runs the real
+// child past one second of real time (fix.md, the 1.05 s and 1.12 s
+// incidents): that qualification's probe deadline runs on the test's
+// injected clock, as its cycle budget does, so a child that is slow in real
+// time but answers within the injected deadline passes. Its child, a real
+// process, is held at a gate the test controls until the probe's deadline
+// is pending on the injected clock and that clock stands one tick before
+// it; nothing sleeps.
+func TestTaskExecutionProbeClock(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	gate := filepath.Join(dir, "gate")
+	if err := syscall.Mkfifo(gate, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Opening the gate completes the test's open of its write end (so the
+	// test knows the child is running); the child answers once the test
+	// closes it.
+	exe := filepath.Join(dir, "gated-adapter")
+	if err := os.WriteFile(exe, []byte("#!/bin/sh\nread -r x < '"+gate+"'\nprintf '"+strings.TrimSuffix(adapter.ProbeOutput, "\n")+"\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	opened := make(chan *os.File, 1)
+	go func() {
+		w, err := os.OpenFile(gate, os.O_WRONLY, 0)
+		if err != nil {
+			w = nil
+		}
+		opened <- w
+	}()
+	var held *os.File
+	received := false
+	t.Cleanup(func() {
+		if !received {
+			// Free an open still waiting for a child that never came.
+			if r, err := os.OpenFile(gate, os.O_RDONLY|syscall.O_NONBLOCK, 0); err == nil {
+				defer r.Close()
+			}
+			held = <-opened
+		}
+		if held != nil {
+			held.Close()
+		}
+	})
+	trace := &adapter.ProbeTrace{}
+	var ca *countingAdapter
+	fp := startFakePlane(t)
+	tr := startTaskRun(t, fp, taskOpts{exe: exe, adjust: func(d *deps) {
+		ca = useProcessProbe(t, d, trace)
+		d.noCadence = true
+	}})
+	ins, run := manuals(t, tr.dir, "a", "instruction body")
+	tr.connect(t, 1, 1, roleConfig("a", ins, run))
+	failed := func(ev event) {
+		t.Helper()
+		t.Fatalf("the ready probe ended while its child was held at the gate (passed %v): probes %d, probe error: %v; %v", ev.passed, ca.count(), ca.lastErr(), trace.Last())
+	}
+	// The child is running and held.
+	select {
+	case held = <-opened:
+		received = true
+		if held == nil {
+			t.Fatal("opening the gate failed")
+		}
+	case ev := <-tr.ev.cycles:
+		failed(ev)
+	case <-time.After(testWait):
+		t.Fatal("the probe child never reached the gate")
+	}
+	// The probe's deadline is pending on the injected clock. The waiter is
+	// cancelled and joined on every path: cleanup closes stopWait, wakes
+	// the waiter (a timer armed and stopped at once changes the waiter
+	// list) and receives its result.
+	pending := make(chan error, 1)
+	stopWait := make(chan struct{})
+	joined := false
+	go func() {
+		pending <- tr.clk.AwaitWaiter(testWait, func(ws []testkit.Waiter) bool {
+			select {
+			case <-stopWait:
+				return true
+			default:
+			}
+			d := trace.Last().Deadline
+			for _, w := range ws {
+				if !w.Ticker && w.Duration == adapter.ProbeTimeout && w.At.Equal(d) {
+					return true
+				}
+			}
+			return false
+		})
+	}()
+	t.Cleanup(func() {
+		if joined {
+			return
+		}
+		close(stopWait)
+		_, stop := tr.clk.NewTimer(time.Hour)
+		stop()
+		<-pending
+	})
+	select {
+	case err := <-pending:
+		joined = true
+		if err != nil {
+			t.Fatalf("the probe deadline is not on the injected clock: %v; %v", err, trace.Last())
+		}
+	case ev := <-tr.ev.cycles:
+		failed(ev)
+	}
+	// One tick before the deadline, still held: the probe has not ended.
+	tr.clk.Advance(adapter.ProbeTimeout - time.Nanosecond)
+	select {
+	case ev := <-tr.ev.cycles:
+		failed(ev)
+	default:
+	}
+	held.Close()
+	held = nil
+	// The released child answers: the real process passed the probe.
+	select {
+	case ev := <-tr.ev.cycles:
+		if !ev.passed[0] {
+			t.Fatalf("the released child did not pass its ready probe: probes %d, probe error: %v; %v", ca.count(), ca.lastErr(), trace.Last())
+		}
+	case <-time.After(testWait):
+		t.Fatal("no cycle-done after the gate opened")
+	}
+	if ca.count() != 1 {
+		t.Fatalf("%d probes, want 1", ca.count())
+	}
 }
 
 func intp(n int) *int { return &n }
