@@ -274,25 +274,23 @@ func shippedTemplates(t *testing.T, root string) {
 			t.Errorf("docs/real-e2e.md lacks %q", want)
 		}
 	}
-	// A3.6: the exact rule recipe as the shared renderer prints it, and
-	// the three adjacent coverage exclusions; A3.7: the one wait-task
-	// command and the two further exclusions; A3.9: the marketplace
-	// exclusion, and that file gone from the strict Claude list.
-	rules, err := allowedTools(symbolicPermissions)
-	if err != nil {
-		t.Fatal(err)
-	}
+	// FP-8: the runbook states the auto-mode flags, the prerequisites and
+	// that a historical allow-list bundle is not this recipe. A3.7's
+	// wait-task command and the coverage exclusions stay.
 	exclusions := append(slices.Clone(ClaudeStateExclusions), OwnerAcceptedExclusions...)
-	for _, want := range []string{"```\n" + strings.Join(rules, "\n") + "\n```\n", "```\n" + strings.Join(exclusions, "\n") + "\n```\n",
+	for _, want := range []string{"```\n" + strings.Join(exclusions, "\n") + "\n```\n",
+		"`--permission-mode auto`", "`--permission-prompts none`", "permissions.disableAutoMode",
+		"3 consecutive or 20 total", "historical bundle with the revision that recorded it", "`launch_shape_invalid`",
 		"`reale2e wait-task --run D --task ID --hop H`", "`reale2e review-material --run D`", "`coordinator_tool_denied`", "`permission_rule_invalid`",
-		"exactly `R wait-task --run D --task TASK_ID --hop H`", "exactly the 15 rules",
+		"exactly `R wait-task --run D --task TASK_ID --hop H`",
 		"tool-maintained", "`environment/diff.json`", "| `~/.codex` | root `AGENTS*.md`, `instructions.md`, `prompts/` |",
 		"| `~/.claude` | `CLAUDE.md`, root `settings*.json`, `agents/`, `skills/`, `commands/`, `hooks/`, `plugins/installed_plugins.json`, `plugins/blocklist.json`, `plugins/config.json` |"} {
 		if !strings.Contains(string(doc), want) {
 			t.Errorf("docs/real-e2e.md lacks %q", want)
 		}
 	}
-	for _, gone := range []string{"capture-wait", `"$?"`, "16 rules", "| `config.toml`, root `AGENTS*.md`", "`plugins/known_marketplaces.json`, `plugins/blocklist.json`"} {
+	for _, gone := range []string{"capture-wait", `"$?"`, "16 rules", "exactly the 15 rules", "exactly two session-only flags",
+		"| `config.toml`, root `AGENTS*.md`", "`plugins/known_marketplaces.json`, `plugins/blocklist.json`"} {
 		if strings.Contains(string(doc), gone) {
 			t.Errorf("docs/real-e2e.md still carries %q", gone)
 		}

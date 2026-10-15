@@ -334,7 +334,9 @@ type EventMap struct {
 }
 
 // InitRecord is one phase's loaded-configuration evidence from its init
-// record, kept as plain evidence and never judged.
+// record. The setup criterion requires PermissionMode auto for this
+// harness recipe, including a repeated init of the same session (a repeat
+// that differs is session_mismatch). The other fields stay plain evidence.
 type InitRecord struct {
 	Phase          int      `json:"phase"`
 	SessionID      string   `json:"session_id"`
