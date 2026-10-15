@@ -19,11 +19,11 @@ func BenchmarkWorkerSelection(b *testing.B) {
 		want              []string
 		stdin             bool
 	}{
-		{ClaudeID, "claude-opus-5-5", "high", []string{"-p", "--model", "claude-opus-5-5", "--effort", "high", "--permission-prompts", "none", "--output-format", "json"}, true},
-		{CodexID, "gpt-6-astra", "ultra", []string{"-a", "never", "exec", "--model", "gpt-6-astra", "-c", `model_reasoning_effort="ultra"`, "--json",
+		{ClaudeID, "claude-opus-5-5", "high", []string{"-p", "--model", "claude-opus-5-5", "--effort", "high", "--permission-mode", "auto", "--permission-prompts", "none", "--output-format", "json"}, true},
+		{CodexID, "gpt-6-astra", "ultra", []string{"exec", "--approve-for-me", "--model", "gpt-6-astra", "-c", `model_reasoning_effort="ultra"`, "--json",
 			"--skip-git-repo-check", "--output-last-message", scratch + "/" + CodexFinalName, "-"}, true},
 		{GrokID, "grok-4.7-build-fast", "xhigh", []string{"--output-format", "json", "--model", "grok-4.7-build-fast", "--reasoning-effort", "xhigh",
-			"--permission-mode", "dontAsk", "-p", string(prompt)}, false},
+			"--permission-mode", "auto", "-p", string(prompt)}, false},
 	}
 	for _, c := range cases {
 		a, _ := Builtin("").Lookup(c.id)
@@ -53,9 +53,9 @@ func BenchmarkWorkerVersion(b *testing.B) {
 	cases := []struct {
 		name, id, baseline, out, want string
 	}{
-		{"minimum", ClaudeID, "2.1.285 (Claude Code)", "2.1.285 (Claude Code)\n", ""},
-		{"newer", CodexID, "codex-cli 0.159.0", "codex-cli 0.160.0\n", ""},
-		{"grok-newer", GrokID, "grok 1.0.46 (2765805b9442) [stable]", "grok 1.0.47 (0123456789ab) [beta]\n", ""},
+		{"minimum", ClaudeID, "2.1.299 (Claude Code)", "2.1.299 (Claude Code)\n", ""},
+		{"newer", CodexID, "codex-cli 0.162.1", "codex-cli 0.163.0\n", ""},
+		{"grok-newer", GrokID, "grok 1.0.52 (0920c8169e27) [stable]", "grok 1.0.53 (0123456789ab) [beta]\n", ""},
 		{"cursor-same-date", CursorID, "2026.10.01-e373342", "2026.10.01-abcdef0\n", ""},
 		{"near-limit-malformed", CodexID, "codex-cli 0.159.0", malformed, "has an invalid codex version; expected an orderable version at or above codex-cli 0.159.0"},
 		{"oversized-wrong-vendor", ClaudeID, "2.1.285 (Claude Code)", strings.Repeat("x", 4096), "is not the claude CLI (unexpected version output)"},

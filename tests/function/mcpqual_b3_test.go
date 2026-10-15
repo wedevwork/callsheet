@@ -615,7 +615,7 @@ func TestMCPCursorQualifyPreparation(t *testing.T) {
 			rep := qualifyCursor(t, q, cursorQualifyPlan(q, nil, []int{1}), goodOut, nil)
 			cases := allCases(rep)
 			if rep.Outcome != mcpqual.StatusConclusive || len(cases) != 3 {
-				t.Fatalf("%s %d cases: %s", rep.Outcome, len(cases), caseReasons(cases))
+				t.Fatalf("%s", qualFailureFacts(rep, cases, goodOut))
 			}
 			for _, cs := range cases {
 				verified(t, cs, mcpqual.ScopeProjectScoped)
@@ -939,7 +939,7 @@ func TestMCPCursorWorkerResidue(t *testing.T) {
 				rep := qualifyCursor(t, q, cursorQualifyPlan(q, map[string]string{"RESIDUE": mode}, []int{1}), out, nil)
 				cases := allCases(rep)
 				if rep.Outcome != mcpqual.StatusConclusive || len(cases) != 3 {
-					t.Fatalf("%s: %s %d: %s", mode, rep.Outcome, len(cases), caseReasons(cases))
+					t.Fatalf("%s: %s", mode, qualFailureFacts(rep, cases, out))
 				}
 				layout := map[string]string{"attributed": mcpqual.ResidueLayoutHashed, "in_place": mcpqual.ResidueLayoutInPlace, "observed": mcpqual.ResidueLayoutInPlace}[mode]
 				for i, cs := range cases {
@@ -972,7 +972,7 @@ func TestMCPCursorWorkerResidue(t *testing.T) {
 			rep := qualifyCursor(t, q, cursorQualifyPlan(q, map[string]string{"RESIDUE": "observed"}, []int{1}), out, nil)
 			if cases := allCases(rep); len(cases) != 2 || !slices.Equal(residueLayouts(cases[0].CursorPreparation.Residue), []string{mcpqual.ResidueLayoutHashed}) ||
 				deref(cases[1].Reason) != mcpqual.ReasonHashedCandidateExists || len(q.launchLog()["enable"]) != 1 {
-				t.Fatalf("long workspace: %s %s", rep.Outcome, caseReasons(cases))
+				t.Fatalf("long workspace: %s", qualFailureFacts(rep, cases, out))
 			}
 		}},
 		{"next-case", func(t *testing.T) {
@@ -998,7 +998,7 @@ func TestMCPCursorWorkerResidue(t *testing.T) {
 				rep := qualifyCursor(t, q, cursorQualifyPlan(q, tc.settings, []int{1}), out, nil)
 				cases := allCases(rep)
 				if rep.Outcome != mcpqual.StatusConclusive || len(cases) != 3 {
-					t.Fatalf("%v: %s", tc.settings, caseReasons(cases))
+					t.Fatalf("%v: %s", tc.settings, qualFailureFacts(rep, cases, out))
 				}
 				if foreignState(t, q.home) != before {
 					t.Fatalf("%v: the foreign trees changed", tc.settings)

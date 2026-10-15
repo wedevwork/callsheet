@@ -1446,9 +1446,9 @@ func TestMCPEnrollmentCIPolicy(t *testing.T) {
 	runInventory(t, 4, []string{"native-and-test", "bench", "stress", "coverage-and-docs"}, []captureCase{
 		{"native-and-test", func(t *testing.T) {
 			req := devcheck.NativeRequiredTests()
-			if len(req) != 429 || !slices.Equal(req[403:412], nine) || !slices.Equal(req[412:416], four) || !slices.Equal(req[416:419], three) || !slices.Equal(req[419:424], five) ||
-				!slices.Equal(req[424:429], b3) ||
-				req[402] != "TestMCPShortConfirmation" {
+			if len(req) != 436 || !slices.Equal(req[410:419], nine) || !slices.Equal(req[419:423], four) || !slices.Equal(req[423:426], three) || !slices.Equal(req[426:431], five) ||
+				!slices.Equal(req[431:436], b3) ||
+				req[409] != "TestMCPShortConfirmation" {
 				t.Fatalf("native inventory %d %v", len(req), req[400:])
 			}
 			for _, goos := range []string{"linux", "darwin"} {

@@ -86,17 +86,17 @@ func TestRealAdapterCLIOptions(t *testing.T) {
 	// Help names every flag, each vendor's minimum version (design
 	// 12a-worker-selection: no exact-only version or pair), the required
 	// free model and the effort sets, the macOS limit and (iteration 11)
-	// Grok's argv/32 KiB/dontAsk limits and Cursor's refusal.
+	// Grok's argv/32 KiB/auto limits and Cursor's refusal.
 	flat := func(s string) string { return strings.Join(strings.Fields(s), " ") }
 	_, help, _ := exec(t, "linux", "sidecar", "run", "--help")
 	for _, w := range []string{"[--claude-adapter PATH] [--codex-adapter PATH] [--grok-adapter PATH] [--cursor-adapter PATH] [--fake-adapter PATH]",
-		"(minimum version 2.1.285 (Claude Code))", "(minimum version codex-cli 0.159.0)", "no PATH lookup", "give it on every start",
+		"(minimum version 2.1.299 (Claude Code))", "(minimum version codex-cli 0.162.1)", "no PATH lookup", "give it on every start",
 		"accepts a complete version line of that vendor at or above its minimum, a newer one without a warning",
 		"an older or malformed version, or another program's output, makes the adapter's roles unready",
 		"Roles name a required free-text model and an effort from the adapter's set", "the vendor decides whether that pair runs",
 		"qualified on Linux only", "test/demo adapter; never calls a model",
-		"--grok-adapter PATH", "(minimum version grok 1.0.46 (2765805b9442) [stable]; Linux only)",
-		"(at most 32 KiB) is passed in argv", "visible to process inspection", "dontAsk cancelled every measured", "On macOS grok roles are refused",
+		"--grok-adapter PATH", "(minimum version grok 1.0.52 (0920c8169e27) [stable]; Linux only)",
+		"(at most 32 KiB) is passed in argv", "visible to process inspection", "Auto is requested", "On macOS grok roles are refused",
 		"--cursor-adapter PATH", "(cursor-agent; minimum version 2026.10.01-e373342) for version probing only", "are refused on every OS",
 		"no qualified unattended recipe preserves the operator posture"} {
 		if !strings.Contains(flat(help), w) {

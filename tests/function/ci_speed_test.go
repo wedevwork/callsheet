@@ -210,12 +210,12 @@ var speedTaskProcess = []string{"TestTaskExecutionContract", "TestTaskExecutionC
 // by its mandatory children.
 var speedRealNative = []string{
 	"TestRealAdapterRegistration", "TestRealAdapterRegistration/registry", "TestRealAdapterRegistration/paths", "TestRealAdapterRegistration/selection",
-	"TestRealAdapterProbe", "TestRealAdapterProbe/claude", "TestRealAdapterProbe/codex", "TestRealAdapterProbe/refusal",
-	"TestRealAdapterInvocation", "TestRealAdapterInvocation/claude", "TestRealAdapterInvocation/codex", "TestRealAdapterInvocation/stdin",
+	"TestRealAdapterProbe", "TestRealAdapterProbe/claude", "TestRealAdapterProbe/codex", "TestRealAdapterProbe/refusal", "TestRealAdapterProbe/auto-minima",
+	"TestRealAdapterInvocation", "TestRealAdapterInvocation/claude", "TestRealAdapterInvocation/codex", "TestRealAdapterInvocation/stdin", "TestRealAdapterInvocation/auto-claude", "TestRealAdapterInvocation/auto-codex",
 	"TestRealAdapterClaudeFinal", "TestRealAdapterClaudeFinal/success", "TestRealAdapterClaudeFinal/failure", "TestRealAdapterClaudeFinal/malformed",
 	"TestRealAdapterCodexFinal", "TestRealAdapterCodexFinal/success", "TestRealAdapterCodexFinal/absent", "TestRealAdapterCodexFinal/unsafe", "TestRealAdapterCodexFinal/cleanup",
-	"TestRealAdapterOutcomes", "TestRealAdapterOutcomes/exits", "TestRealAdapterOutcomes/denials", "TestRealAdapterOutcomes/controls", "TestRealAdapterOutcomes/replay",
-	"TestRealAdapterCatalog", "TestRealAdapterCatalog/recipes", "TestRealAdapterCatalog/evidence", "TestRealAdapterCatalog/ownership",
+	"TestRealAdapterOutcomes", "TestRealAdapterOutcomes/exits", "TestRealAdapterOutcomes/denials", "TestRealAdapterOutcomes/controls", "TestRealAdapterOutcomes/replay", "TestRealAdapterOutcomes/auto-policy", "TestRealAdapterOutcomes/auto-denials",
+	"TestRealAdapterCatalog", "TestRealAdapterCatalog/recipes", "TestRealAdapterCatalog/evidence", "TestRealAdapterCatalog/ownership", "TestRealAdapterCatalog/auto-contract",
 	"TestRealAdapterDispatch", "TestRealAdapterDispatch/claude", "TestRealAdapterDispatch/codex", "TestRealAdapterDispatch/no-vendors",
 	"TestRealAdapterSmokeGate", "TestRealAdapterSmokeGate/default-off", "TestRealAdapterSmokeGate/ci-off", "TestRealAdapterSmokeGate/absent", "TestRealAdapterSmokeGate/enabled",
 }
@@ -259,7 +259,7 @@ var speedWorkspaceDoorNative = []string{
 var speedWave2Native = []string{
 	"TestWave2Registration", "TestWave2Registration/registry", "TestWave2Registration/paths", "TestWave2Registration/selection", "TestWave2Registration/posture",
 	"TestWave2Probe", "TestWave2Probe/grok", "TestWave2Probe/cursor", "TestWave2Probe/refusal",
-	"TestWave2Invocation", "TestWave2Invocation/grok", "TestWave2Invocation/cursor-refused", "TestWave2Invocation/prompt",
+	"TestWave2Invocation", "TestWave2Invocation/grok", "TestWave2Invocation/cursor-refused", "TestWave2Invocation/prompt", "TestWave2Invocation/auto-grok",
 	"TestWave2GrokFinal", "TestWave2GrokFinal/success", "TestWave2GrokFinal/error", "TestWave2GrokFinal/cancelled", "TestWave2GrokFinal/malformed",
 	"TestWave2CursorFinal", "TestWave2CursorFinal/success", "TestWave2CursorFinal/absent", "TestWave2CursorFinal/malformed", "TestWave2CursorFinal/blocked",
 	"TestWave2Outcomes", "TestWave2Outcomes/exits", "TestWave2Outcomes/controls", "TestWave2Outcomes/refusal", "TestWave2Outcomes/retry",
@@ -802,13 +802,13 @@ func qualifyingStream(drop string) string {
 // FP-3: validator, plans, native evidence and documentation agree.
 func TestCISpeedPolicy(t *testing.T) {
 	t.Run("native", func(t *testing.T) {
-		if got := devcheck.NativeRequiredTests(); len(got) != 429 || len(speedQualNative) != 51 || len(speedRealNative) != 39 || len(speedWave2Native) != 42 || !slices.Equal(got[419:424], speedB2Native) ||
-			!slices.Equal(got[424:429], speedB3Native) ||
-			!slices.Equal(got[353:395], speedWave2Native) || !slices.Equal(got[395:403], speedNBWNative) || !slices.Equal(got[403:412], speedDCENative) || !slices.Equal(got[412:416], speedB1Native) ||
-			!slices.Equal(got[416:419], speedB15Native) || !slices.Equal(got[:28], speedNative) || !slices.Equal(got[28:58], speedNodeNative) || !slices.Equal(got[58:87], speedRoleNative) || !slices.Equal(got[87:128], speedTaskNative) ||
-			!slices.Equal(got[128:145], speedControlNative) || !slices.Equal(got[145:222], speedMCPNative) || !slices.Equal(got[222:273], speedQualNative) || !slices.Equal(got[273:312], speedRealNative) ||
-			!slices.Equal(got[312:323], speedWorkspaceNative) || !slices.Equal(got[323:333], speedTransferNative) || !slices.Equal(got[333:335], speedLatencyNative) ||
-			!slices.Equal(got[335:347], speedWorkspaceTaskNative) || !slices.Equal(got[347:353], speedWorkspaceDoorNative) {
+		if got := devcheck.NativeRequiredTests(); len(got) != 436 || len(speedQualNative) != 51 || len(speedRealNative) != 45 || len(speedWave2Native) != 43 || !slices.Equal(got[426:431], speedB2Native) ||
+			!slices.Equal(got[431:436], speedB3Native) ||
+			!slices.Equal(got[359:402], speedWave2Native) || !slices.Equal(got[402:410], speedNBWNative) || !slices.Equal(got[410:419], speedDCENative) || !slices.Equal(got[419:423], speedB1Native) ||
+			!slices.Equal(got[423:426], speedB15Native) || !slices.Equal(got[:28], speedNative) || !slices.Equal(got[28:58], speedNodeNative) || !slices.Equal(got[58:87], speedRoleNative) || !slices.Equal(got[87:128], speedTaskNative) ||
+			!slices.Equal(got[128:145], speedControlNative) || !slices.Equal(got[145:222], speedMCPNative) || !slices.Equal(got[222:273], speedQualNative) || !slices.Equal(got[273:318], speedRealNative) ||
+			!slices.Equal(got[318:329], speedWorkspaceNative) || !slices.Equal(got[329:339], speedTransferNative) || !slices.Equal(got[339:341], speedLatencyNative) ||
+			!slices.Equal(got[341:353], speedWorkspaceTaskNative) || !slices.Equal(got[353:359], speedWorkspaceDoorNative) {
 			t.Fatalf("native required = %v", got)
 		}
 		if err := devcheck.CheckNativeResults("darwin", strings.NewReader(qualifyingStream(""))); err != nil {

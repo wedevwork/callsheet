@@ -252,7 +252,7 @@ func TestPreflightUnits(t *testing.T) {
 		}
 	})
 	// The live eligibility decision is the adapters' own probe and
-	// version policy (minimums 2.1.285, 0.159.0 and 1.0.46; newer is
+	// version policy (minimums 2.1.299, 0.162.1 and 1.0.52; newer is
 	// silent), never a second parser.
 	dir := t.TempDir()
 	script := func(name, out string) string {
@@ -266,13 +266,13 @@ func TestPreflightUnits(t *testing.T) {
 		vendor, out string
 		ok          bool
 	}{
-		{adapter.ClaudeID, "2.1.285 (Claude Code)", true},
+		{adapter.ClaudeID, "2.1.299 (Claude Code)", true},
 		{adapter.ClaudeID, "2.1.300 (Claude Code)", true},
-		{adapter.ClaudeID, "2.1.284 (Claude Code)", false},
-		{adapter.CodexID, "codex-cli 0.159.0", true},
-		{adapter.CodexID, "codex-cli 0.158.9", false},
-		{adapter.GrokID, "grok 1.0.46 (2765805b9442) [stable]", true},
-		{adapter.GrokID, "grok 1.0.45 (2765805b9442) [stable]", false},
+		{adapter.ClaudeID, "2.1.298 (Claude Code)", false},
+		{adapter.CodexID, "codex-cli 0.162.1", true},
+		{adapter.CodexID, "codex-cli 0.162.0", false},
+		{adapter.GrokID, "grok 1.0.52 (0920c8169e27) [stable]", true},
+		{adapter.GrokID, "grok 1.0.51 (2765805b9442) [stable]", false},
 		{adapter.GrokID, "codex-cli 9.9.9", false},
 	} {
 		exe := script(tc.vendor+strings.ReplaceAll(tc.out, " ", "_"), tc.out)

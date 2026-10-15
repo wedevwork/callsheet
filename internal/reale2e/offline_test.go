@@ -47,7 +47,7 @@ func funcBody(t *testing.T, fset *token.FileSet, f *ast.File, name string) []str
 // no vendor access; the reale2e-tagged command only forwards host inputs
 // (the seventh platform wrapper) and builds; every new untagged file is a
 // whole-file coverage entry; the shipped templates satisfy their
-// contracts; the native inventory stays 429 and no stress step selects
+// contracts; the native inventory stays 436 and no stress step selects
 // this package.
 func TestOfflineBoundary(t *testing.T) {
 	t.Parallel()
@@ -130,8 +130,8 @@ func TestOfflineBoundary(t *testing.T) {
 		t.Error("the tagged forwarding entry is listed for coverage")
 	}
 	// Invariants observed through the existing gates.
-	if got := len(devcheck.NativeRequiredTests()); got != 429 {
-		t.Fatalf("native inventory %d, want 429", got)
+	if got := len(devcheck.NativeRequiredTests()); got != 436 {
+		t.Fatalf("native inventory %d, want 436", got)
 	}
 	for _, goos := range []string{"linux", "darwin"} {
 		steps, err := devcheck.StressSteps(goos)

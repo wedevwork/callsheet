@@ -40,17 +40,18 @@ var effortUnions = map[string][]string{
 	"cursor": {"none", "minimal", "low", "medium", "high", "xhigh", "max"},
 }
 
-// newerHostVersions are the newer host versions the coordinator recorded
-// on 2026-10-10 (Claude and Codex update themselves): above the minimums.
-var newerHostVersions = map[string]string{"claude": "2.1.292 (Claude Code)", "codex": "codex-cli 0.160.0"}
+// newerHostVersions are live stubs strictly above the auto-mode minima.
+// The 2026-10-10 recorded host versions (Claude 2.1.292, Codex 0.160.0)
+// are below those minima and are not eligible.
+var newerHostVersions = map[string]string{"claude": "2.1.300 (Claude Code)", "codex": "codex-cli 0.163.0"}
 
 // The literal recipes of a selection ({final} for Codex's final path).
 func claudeRecipe(model, effort string) []string {
-	return []string{"-p", "--model", model, "--effort", effort, "--permission-prompts", "none", "--output-format", "json"}
+	return []string{"-p", "--model", model, "--effort", effort, "--permission-mode", "auto", "--permission-prompts", "none", "--output-format", "json"}
 }
 
 func codexRecipe(model, effort string) []string {
-	return []string{"-a", "never", "exec", "--model", model, "-c", "model_reasoning_effort=\"" + effort + "\"", "--json", "--skip-git-repo-check",
+	return []string{"exec", "--approve-for-me", "--model", model, "-c", "model_reasoning_effort=\"" + effort + "\"", "--json", "--skip-git-repo-check",
 		"--output-last-message", "{final}", "-"}
 }
 
@@ -430,7 +431,7 @@ func explicitSelection(t *testing.T, r *realRig) {
 	grok, _ := adapter.Builtin("").Lookup("grok")
 	inv, err = grok.Invocation(adapter.TaskInput{TaskID: tid, Model: "grok-4.7-build-fast", Effort: "low", Prompt: []byte("P")})
 	if err != nil || !slices.Equal(inv.Argv, []string{"--output-format", "json", "--model", "grok-4.7-build-fast", "--reasoning-effort", "low", "--permission-mode",
-		"dontAsk", "-p", "P"}) || inv.Stdin != nil {
+		"auto", "-p", "P"}) || inv.Stdin != nil {
 		t.Fatalf("grok fast %q %v", inv.Argv, err)
 	}
 	cursor, _ := adapter.Builtin("").Lookup("cursor")
@@ -485,8 +486,8 @@ func minimumVersionPolicy(t *testing.T) {
 		delegateAdapter(t, "^TestWorkerVersionPolicy$/^(minimum-and-newer|ordering|baseline)$", "TestWorkerVersionPolicy",
 			"TestWorkerVersionPolicy/minimum-and-newer", "TestWorkerVersionPolicy/ordering", "TestWorkerVersionPolicy/baseline")
 		for vendor, banners := range map[string][]string{
-			"claude": {"2.1.285 (Claude Code)\n", "2.1.292 (Claude Code)\n", "2.1.292 (Claude Code)\r\n", "3.0.0 (Claude Code)"},
-			"codex":  {"codex-cli 0.159.0\n", "codex-cli 0.160.0\n", "codex-cli 0.160.0-rc.1\n", "codex-cli 0.159.10\n"},
+			"claude": {"2.1.299 (Claude Code)\n", "2.1.300 (Claude Code)\n", "2.1.300 (Claude Code)\r\n", "3.0.0 (Claude Code)"},
+			"codex":  {"codex-cli 0.162.1\n", "codex-cli 0.163.0\n", "codex-cli 0.163.0-rc.1\n", "codex-cli 0.162.10\n"},
 		} {
 			for _, b := range banners {
 				wantBanner(t, vendor, b, "")
@@ -513,17 +514,17 @@ func minimumVersionPolicy(t *testing.T) {
 	})
 	t.Run("older", func(t *testing.T) {
 		delegateAdapter(t, "^TestWorkerVersionPolicy$/^older$", "TestWorkerVersionPolicy", "TestWorkerVersionPolicy/older")
-		wantBanner(t, "claude", "2.1.284 (Claude Code)\n", "has an older claude version; minimum 2.1.285 (Claude Code)")
-		wantBanner(t, "claude", "2.1.285-rc.1 (Claude Code)\n", "has an older claude version; minimum 2.1.285 (Claude Code)")
-		wantBanner(t, "codex", "codex-cli 0.158.9\n", "has an older codex version; minimum codex-cli 0.159.0")
-		wantBanner(t, "codex", "codex-cli 0.159.0-rc.1\n", "has an older codex version; minimum codex-cli 0.159.0")
+		wantBanner(t, "claude", "2.1.298 (Claude Code)\n", "has an older claude version; minimum 2.1.299 (Claude Code)")
+		wantBanner(t, "claude", "2.1.299-rc.1 (Claude Code)\n", "has an older claude version; minimum 2.1.299 (Claude Code)")
+		wantBanner(t, "codex", "codex-cli 0.162.0\n", "has an older codex version; minimum codex-cli 0.162.1")
+		wantBanner(t, "codex", "codex-cli 0.162.1-rc.1\n", "has an older codex version; minimum codex-cli 0.162.1")
 	})
 	t.Run("malformed", func(t *testing.T) {
 		delegateAdapter(t, "^TestWorkerVersionPolicy$/^malformed$", "TestWorkerVersionPolicy", "TestWorkerVersionPolicy/malformed")
-		wantBanner(t, "claude", "2.1.292 (Claude Code)\nupdate available\n", "has an invalid claude version; expected an orderable version at or above 2.1.285 (Claude Code)")
-		wantBanner(t, "claude", "v2.1.292 (Claude Code)\n", "has an invalid claude version; expected an orderable version at or above 2.1.285 (Claude Code)")
-		wantBanner(t, "codex", "codex-cli 0.160\n", "has an invalid codex version; expected an orderable version at or above codex-cli 0.159.0")
-		wantBanner(t, "codex", "codex-cli 0.160.0\n\n", "has an invalid codex version; expected an orderable version at or above codex-cli 0.159.0")
+		wantBanner(t, "claude", "2.1.300 (Claude Code)\nupdate available\n", "has an invalid claude version; expected an orderable version at or above 2.1.299 (Claude Code)")
+		wantBanner(t, "claude", "v2.1.300 (Claude Code)\n", "has an invalid claude version; expected an orderable version at or above 2.1.299 (Claude Code)")
+		wantBanner(t, "codex", "codex-cli 0.163\n", "has an invalid codex version; expected an orderable version at or above codex-cli 0.162.1")
+		wantBanner(t, "codex", "codex-cli 0.163.0\n\n", "has an invalid codex version; expected an orderable version at or above codex-cli 0.162.1")
 	})
 	t.Run("wrong-vendor", func(t *testing.T) {
 		delegateAdapter(t, "^TestWorkerVersionPolicy$/^wrong-vendor$", "TestWorkerVersionPolicy", "TestWorkerVersionPolicy/wrong-vendor")
@@ -647,7 +648,7 @@ func selectionSurfaces(t *testing.T) {
 			t.Fatalf("role add help lacks %q", w)
 		}
 	}
-	for _, w := range []string{"(minimum version 2.1.285 (Claude Code))", "(minimum version codex-cli 0.159.0)", "no PATH lookup", "Linux only",
+	for _, w := range []string{"(minimum version 2.1.299 (Claude Code))", "(minimum version codex-cli 0.162.1)", "no PATH lookup", "Linux only",
 		"at or above its minimum, a newer one without a warning", "are refused on every OS"} {
 		if !strings.Contains(flat(runHelp.stdout), w) {
 			t.Fatalf("sidecar run help lacks %q", w)
@@ -795,7 +796,7 @@ func selectionEvidence(t *testing.T, root string, entries []catalog.Entry) {
 	sc := string(repoFile(t, "docs/support-catalog.md"))
 	ra := string(repoFile(t, "docs/real-adapters.md"))
 	requireTerms(t, "docs/support-catalog.md", sc, "## Worker selection policy", "codex `low`, `medium`, `high`, `xhigh`, `max`, `ultra`",
-		"a same-date version with another hash being equal and accepted", "the worker's minimum version stays 2.1.285", "the worker's minimum version stays 0.159.0")
+		"a same-date version with another hash being equal and accepted", "the runtime minimum version is 2.1.299 (Claude Code)", "the runtime minimum version is codex-cli 0.162.1")
 	requireTerms(t, "docs/real-adapters.md", ra, "## Selection and versions", "## Captured recipes (historical observations)", "out-of-union effort",
 		"Codex `gpt-6-astra` with `low`", "Claude `claude-fable-5-1` with `low`", "Claude `claude-opus-5-5` with `high`", "Grok `grok-4.7-build-fast` with `low`",
 		"requested selections, not observed successful executions or defaults")

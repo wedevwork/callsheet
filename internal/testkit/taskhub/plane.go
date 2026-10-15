@@ -111,12 +111,14 @@ func (p *Plane) Stop() {
 	p.cancel = nil
 }
 
-// Node is a simulated protocol-6 worker: one goroutine reads the stream;
-// sidecar requests go one at a time on the b sequence.
+// Node is a simulated protocol-6 worker: one goroutine reads the stream
+// and a second arms heartbeats; sidecar requests go one at a time on the
+// b sequence.
 type Node struct {
 	ID      string
 	ws      *websocket.Conn
 	mu      sync.Mutex
+	wmu     sync.Mutex // serializes writers; the socket allows one
 	b       int
 	queue   []func(rid string) (string, any)
 	busy    bool
@@ -132,7 +134,21 @@ type Node struct {
 	// hold and held: start replies withheld until ReleaseStartReply.
 	hold bool
 	held []func()
+	// nextDue is one heartbeat interval after the last send; it stays
+	// zero until a heartbeat has been sent. hbLoop waits for that due
+	// time so the read loop never blocks on the interval. stopped is set
+	// by stopHB, which Close and the reader share; only Close joins.
+	nextDue    time.Time
+	stopped    bool
+	hbArmed    bool
+	hbWake     chan struct{}
+	hbStop     chan struct{}
+	hbLoopDone chan struct{}
 }
+
+// hbInterval is the sidecar heartbeat period. The next due time is one
+// interval after the send, and the acknowledgement arms it.
+const hbInterval = contract.HeartbeatIntervalMS * time.Millisecond
 
 // HoldStartReplies makes the node hand each later start to Starts before
 // answering it; the answer is written only by ReleaseStartReply. A test
@@ -171,17 +187,34 @@ func StartNode(t testing.TB, p *Plane, id string) *Node {
 	ws.SetReadLimit(contract.MaxFrameBytes)
 	n := &Node{ID: id, ws: ws, b: 1, Starts: make(chan contract.TaskStartBody, 8), acks: make(chan contract.TaskPreparedAckBody, 8),
 		results: make(chan contract.TaskResultAckBody, 8), Cancels: make(chan contract.TaskCancelBody, 8), Ready: make(chan struct{}, 8),
-		done: make(chan struct{}), errs: make(chan string, 8)}
+		done: make(chan struct{}), errs: make(chan string, 8),
+		hbWake: make(chan struct{}), hbStop: make(chan struct{}), hbLoopDone: make(chan struct{})}
 	n.write(contract.FrameHello, "h1", contract.HelloBody{NodeID: id, SoftwareVersion: "sim-6"})
 	go n.loop()
+	go n.hbLoop()
 	t.Cleanup(n.Close)
 	return n
 }
 
-// Close closes the stream and joins the reader (idempotent).
+// Close closes the stream and joins the reader and the heartbeat goroutine
+// (idempotent). The joins happen only here.
 func (n *Node) Close() {
+	n.stopHB()
 	n.ws.CloseNow()
 	<-n.done
+	<-n.hbLoopDone
+}
+
+// stopHB stops the heartbeat goroutine. Close and the reader's exit both
+// call it; a second call does nothing.
+func (n *Node) stopHB() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.stopped {
+		return
+	}
+	n.stopped = true
+	close(n.hbStop)
 }
 
 func (n *Node) write(typ, rid string, body any) {
@@ -191,6 +224,8 @@ func (n *Node) write(typ, rid string, body any) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), Wait)
 	defer cancel()
+	n.wmu.Lock()
+	defer n.wmu.Unlock()
 	n.ws.Write(ctx, websocket.MessageText, b)
 }
 
@@ -226,19 +261,87 @@ func (n *Node) free() {
 }
 
 func (n *Node) heartbeat() {
+	n.mu.Lock()
+	if n.stopped {
+		n.mu.Unlock()
+		return
+	}
+	n.mu.Unlock()
+	// This send replaces any armed period. Its acknowledgement arms the next.
+	n.signalHB(false)
 	n.request(func(string) (string, any) {
 		n.mu.Lock()
+		defer n.mu.Unlock()
+		n.nextDue = time.Now().Add(hbInterval)
 		hb := contract.HeartbeatBody{RolesRevision: n.rev, Roles: []contract.RoleStatus{}}
 		for _, r := range n.roles {
 			hb.Roles = append(hb.Roles, contract.RoleStatus{RoleID: r.ID, Concurrency: r.Concurrency, CanAccept: true})
 		}
-		n.mu.Unlock()
 		return contract.FrameHeartbeat, hb
 	})
 }
 
+// signalHB wakes the heartbeat goroutine. arm schedules a send at nextDue;
+// otherwise a pending wait is dropped because a heartbeat is being sent now.
+func (n *Node) signalHB(arm bool) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.stopped {
+		return
+	}
+	n.hbArmed = arm
+	close(n.hbWake)
+	n.hbWake = make(chan struct{})
+}
+
+// hbLoop sends the heartbeats armed by acknowledgements and exits when
+// stopHB closes hbStop (the stream ending, or Close). The interval is
+// waited here, not on the read loop, and the send goes through the
+// request pump.
+func (n *Node) hbLoop() {
+	defer close(n.hbLoopDone)
+	for {
+		n.mu.Lock()
+		for !n.stopped && !n.hbArmed {
+			wake := n.hbWake
+			n.mu.Unlock()
+			select {
+			case <-wake:
+			case <-n.hbStop:
+				return
+			}
+			n.mu.Lock()
+		}
+		if n.stopped {
+			n.mu.Unlock()
+			return
+		}
+		due := n.nextDue
+		n.hbArmed = false
+		wake := n.hbWake
+		n.mu.Unlock()
+		delay := time.Until(due)
+		if delay < 0 {
+			delay = 0
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-timer.C:
+			n.heartbeat()
+		case <-wake:
+			timer.Stop()
+		case <-n.hbStop:
+			timer.Stop()
+			return
+		}
+	}
+}
+
 func (n *Node) loop() {
-	defer close(n.done)
+	defer func() {
+		n.stopHB()
+		close(n.done)
+	}()
 	for {
 		_, b, err := n.ws.Read(context.Background())
 		if err != nil {
@@ -270,6 +373,7 @@ func (n *Node) loop() {
 			n.heartbeat()
 		case contract.FrameHeartbeatAck:
 			n.free()
+			n.signalHB(true)
 			select {
 			case n.Ready <- struct{}{}:
 			default:

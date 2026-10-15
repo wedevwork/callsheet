@@ -24,20 +24,22 @@ import (
 // passed through unchanged) and an effort from the adapter's static union
 // (vendorEfforts); whether the vendor can run that pair is the vendor's
 // decision at run time, reported through the existing task-result paths.
-// A worker executable is eligible at or above its observed minimum
-// version (vendor_version.go), without a version-drift warning. The
-// captured recipes and their observed model/effort pairs and versions
-// (Qualifications) remain evidence, not an allowlist or a default.
+// A worker executable is eligible at or above its auto-mode minimum
+// (workerMinimumVersions, vendor_version.go), without a version-drift
+// warning. That baseline is independent of the historical capture identity
+// in Qualifications. The captured recipes and their observed model/effort
+// pairs and versions remain evidence, not an allowlist or a default.
 //
 // Iteration 11 (wave 2) adds Grok Build and Cursor Agent from the
-// coordinator's Linux qualification of 2026-10-04. Grok runs the measured
-// dontAsk recipe with the composed prompt as the one -p argument (stdin
-// stays empty), on Linux only. Cursor is registered and version-probed but
-// its unattended task execution is refused on every OS: the measured
-// force/trust candidate wrote outside its scratch directory, the baseline
-// refused workspace trust and the sandbox-enabled attempts failed
-// authentication. Execution eligibility is ValidateWorkerPosture's
-// decision, separate from selection and version knowledge.
+// coordinator's Linux qualification of 2026-10-04. Grok runs auto mode
+// with the composed prompt as the one -p argument (stdin stays empty), on
+// Linux only. Cursor is registered and version-probed but its unattended
+// task execution is refused on every OS: the measured force/trust
+// candidate wrote outside its scratch directory, the baseline refused
+// workspace trust and the sandbox-enabled attempts failed authentication.
+// Execution eligibility is ValidateWorkerPosture's decision, separate
+// from selection and version knowledge. Cursor's date baseline does not
+// overcome that gate.
 
 // Adapter IDs.
 const (
@@ -104,14 +106,15 @@ const VersionArg = "--version"
 
 // Qualification is one vendor's captured observation, as recorded on Linux
 // on 2026-09-30 (Claude, Codex) and 2026-10-04 (Grok, Cursor): the exact
-// historical version output (after one trailing LF or CRLF is removed),
-// which is also the vendor's minimum version baseline, and the observed
-// model/effort pair of that capture. The observed pair is evidence only:
-// it is not a selection allowlist, the only qualified selection or a
-// default (no registration or dispatch path obtains one from it). It is
-// separate from execution eligibility (ValidateWorkerPosture): Cursor's
-// row is an observation whose execution is refused on every OS, Grok's is
-// eligible on Linux only.
+// historical version output (after one trailing LF or CRLF is removed)
+// and the observed model/effort pair of that capture. The version is
+// historical evidence, not the runtime minimum (that is
+// workerMinimumVersions). The observed pair is evidence only: it is not a
+// selection allowlist, the only qualified selection or a default (no
+// registration or dispatch path obtains one from it). It is separate from
+// execution eligibility (ValidateWorkerPosture): Cursor's row is an
+// observation whose execution is refused on every OS, Grok's is eligible
+// on Linux only.
 type Qualification struct {
 	ID      string
 	Version string
@@ -135,6 +138,26 @@ var qualifications = []Qualification{
 	{ID: CodexID, Version: "codex-cli 0.159.0", Model: "gpt-6.1-sol", Effort: "low"},
 	{ID: CursorID, Version: "2026.10.01-e373342", Model: "grok-4.7", Effort: "low"},
 	{ID: GrokID, Version: "grok 1.0.46 (2765805b9442) [stable]", Model: "grok-4.7", Effort: "low"},
+}
+
+// workerMinimumVersions is the immutable auto-mode eligibility baseline
+// used by versionCheck (design 12a-2c). These are conservative product
+// baselines from the captured help identities, not claims that auto first
+// appeared in those versions, and not the historical Qualification.Version
+// rows. A newer accepted version still has no compatibility guarantee.
+// Cursor's date baseline does not overcome its OS gate.
+var workerMinimumVersions = map[string]string{
+	ClaudeID: "2.1.299 (Claude Code)",
+	CodexID:  "codex-cli 0.162.1",
+	GrokID:   "grok 1.0.52 (0920c8169e27) [stable]",
+	CursorID: "2026.10.01-e373342",
+}
+
+// MinimumVersion returns id's auto-mode eligibility baseline. The second
+// result is false for an adapter that has none (including fake).
+func MinimumVersion(id string) (string, bool) {
+	v, ok := workerMinimumVersions[id]
+	return v, ok
 }
 
 // Qualifications returns an independent copy of the observation table,
@@ -251,20 +274,23 @@ func (v *vendor) Descriptor() Descriptor {
 // bounded captures, cancellation precedence) and runs "executable
 // --version" in the state root: a zero exit whose stdout, after at most
 // one trailing LF or CRLF, is a complete orderable version of this vendor
-// at or above its observed minimum (checkWorkerVersion). Bounded stderr is
-// permitted and never exposed or used as a version. It checks
-// invocability, not authentication, model availability or containment. An
-// eligible Cursor version (iteration 11) is invocability only: the
-// sidecar's posture check then refuses it.
+// at or above its auto-mode minimum (checkWorkerVersion against
+// workerMinimumVersions, not the historical Qualification.Version).
+// Bounded stderr is permitted and never exposed or used as a version. It
+// checks invocability, not authentication, model availability or
+// containment. An eligible Cursor version is invocability only: the
+// sidecar's posture check then refuses it, and the date baseline does not
+// overcome that gate.
 func (v *vendor) Probe(ctx context.Context, executable string) error {
 	return v.p.run(ctx, executable)
 }
 
 // versionCheck is the vendor's probe predicate: the minimum-version policy
-// with the observed version as the baseline. Every vendor has its own
-// grammar; none falls through to another's.
+// with workerMinimumVersions as the baseline, independent of the historical
+// qualification row. Every vendor has its own grammar; none falls through
+// to another's.
 func (v *vendor) versionCheck(out, _ string) string {
-	return checkWorkerVersion(v.q.ID, v.q.Version, out)
+	return checkWorkerVersion(v.q.ID, workerMinimumVersions[v.q.ID], out)
 }
 
 // Invocation validates the task ID, the model grammar and the selection
@@ -272,15 +298,20 @@ func (v *vendor) versionCheck(out, _ string) string {
 // vendor's recipe through an explicit switch (a new ID never falls through
 // to another vendor's) with the selected model and effort passed
 // explicitly, each one argv element whatever its spaces, punctuation or
-// leading hyphens: Claude and Codex the captured recipe with the prompt
-// bound (and, for Codex, the scratch path) and an owned stdin copy, the
-// prompt never in argv or a file; Grok (iteration 11) the measured dontAsk
-// recipe with the complete composed prompt (at most MaxGrokPromptBytes,
-// valid UTF-8, no NUL) as the one -p argument and an empty stdin; Cursor
-// (iteration 11) always a zero Invocation and its fixed posture refusal for
-// every valid selection, never a force/trust or sandbox-enabled argv and
-// no model-name mapping. No shell, default, fallback selection, resume,
-// sandbox or permission-bypass flag is ever added.
+// leading hyphens: Claude print mode with --permission-mode auto and
+// --permission-prompts none, Codex exec --approve-for-me (that flag selects
+// the vendor's workspace-write sandbox; Callsheet writes no vendor
+// configuration and adds no independent sandbox override), each with the
+// prompt bound and an owned stdin copy, the prompt never in argv or a
+// file; Grok auto mode with the complete composed prompt (at most
+// MaxGrokPromptBytes, valid UTF-8, no NUL) as the one -p argument and an
+// empty stdin; Cursor always a zero Invocation and its fixed posture
+// refusal for every valid selection, never a force/trust or
+// sandbox-enabled argv and no model-name mapping. Every role uses the same
+// recipe: Invocation has no role name and infers no exception. No shell,
+// default, fallback selection, resume, allowed-tools list, bypass or
+// configuration-repair flag is ever added. Auto does not imply every
+// requested action succeeds.
 func (v *vendor) Invocation(in TaskInput) (Invocation, error) {
 	switch {
 	case !contract.ValidTaskID(in.TaskID):
@@ -303,21 +334,24 @@ func (v *vendor) Invocation(in TaskInput) (Invocation, error) {
 	switch v.q.ID {
 	case ClaudeID:
 		return Invocation{Argv: []string{"-p", "--model", in.Model, "--effort", in.Effort,
-			"--permission-prompts", "none", "--output-format", "json"}, Stdin: bytes.Clone(in.Prompt)}, nil
+			"--permission-mode", "auto", "--permission-prompts", "none", "--output-format", "json"}, Stdin: bytes.Clone(in.Prompt)}, nil
 	case CodexID:
 		return codexInvocation(in)
 	}
 	return Invocation{}, errUnsupportedPosture
 }
 
-// grokInvocation is Grok's measured recipe (iteration 11): the prompt
-// checks in their fixed order, then exactly the captured arguments with the
-// selected model and effort and the composed prompt as the last one, a new
-// string (no trimming, newline, quoting, splitting or evaluation). Stdin is
-// empty and the final source is stdout, so ScratchDir and FinalDir are
-// ignored. Grok's fast variant is the model grok-4.7-build-fast (listed in
-// the captured grok-models.txt) with a separate union effort, for example
-// low: a requested selection, not a product default or a captured run.
+// grokInvocation is Grok's auto recipe: the prompt checks in their fixed
+// order, then the arguments with the selected model and effort and the
+// composed prompt as the last one, a new string (no trimming, newline,
+// quoting, splitting or evaluation). Permission mode is auto, in the same
+// position the historical dontAsk capture used. Stdin is empty and the
+// final source is stdout, so ScratchDir and FinalDir are ignored. Grok's
+// fast variant is the model grok-4.7-build-fast (listed in the captured
+// grok-models.txt) with a separate union effort, for example low: a
+// requested selection, not a product default or a captured run. Useful
+// headless tool execution under auto is an operator prerequisite, not
+// established by this recipe.
 func grokInvocation(in TaskInput) (Invocation, error) {
 	switch {
 	case len(in.Prompt) == 0:
@@ -330,7 +364,7 @@ func grokInvocation(in TaskInput) (Invocation, error) {
 		return Invocation{}, errInvocation(grokPromptNULReason)
 	}
 	return Invocation{Argv: []string{"--output-format", "json", "--model", in.Model,
-		"--reasoning-effort", in.Effort, "--permission-mode", "dontAsk",
+		"--reasoning-effort", in.Effort, "--permission-mode", "auto",
 		"-p", string(in.Prompt)}}, nil
 }
 
@@ -349,7 +383,7 @@ func codexInvocation(in TaskInput) (Invocation, error) {
 		dir = in.FinalDir
 	}
 	final := filepath.Join(dir, CodexFinalName)
-	return Invocation{Argv: []string{"-a", "never", "exec", "--model", in.Model,
+	return Invocation{Argv: []string{"exec", "--approve-for-me", "--model", in.Model,
 		"-c", `model_reasoning_effort="` + in.Effort + `"`, "--json",
 		"--skip-git-repo-check", "--output-last-message", final, "-"}, Stdin: bytes.Clone(in.Prompt), FinalFile: final}, nil
 }

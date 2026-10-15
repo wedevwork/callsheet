@@ -2,12 +2,13 @@ package adapter
 
 import "strings"
 
-// The worker version policy (design 12a-worker-selection): a vendor's
-// --version output is eligible when it is a complete, orderable version
-// line of that vendor at or above the observed baseline (the
-// Qualification's Version, the exact historical probe output). It is a
-// pure, bounded parser and comparator: no third-party dependency, no
-// command beyond the existing --version probe, no filesystem or network.
+// The worker version policy: a vendor's --version output is eligible when
+// it is a complete, orderable version line of that vendor at or above the
+// auto-mode baseline (workerMinimumVersions). That baseline is independent
+// of Qualification.Version, which stays the historical capture identity.
+// The check is a pure, bounded parser and comparator: no third-party
+// dependency, no command beyond the existing --version probe, no
+// filesystem or network, and no second help or capability probe.
 // It is an eligibility policy, not vendor authentication and not a
 // qualification of every later release; an accepted newer version is
 // silent (no version-drift warning).

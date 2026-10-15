@@ -181,6 +181,13 @@ func startWave2Rig(bin, stub string) (*wave2Rig, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The live stub reports the auto-mode minimum. The historical host
+	// capture stays below it and is not what this worker probes.
+	gmin, ok := adapter.MinimumVersion(adapter.GrokID)
+	if !ok {
+		return nil, errors.New("missing grok minimum")
+	}
+	versions["grok"] = gmin
 	if r.kit, err = newWave2Kit(root, stub, versions); err != nil {
 		return nil, err
 	}
@@ -210,15 +217,22 @@ func startWave2Rig(bin, stub string) (*wave2Rig, error) {
 	if err != nil {
 		return nil, err
 	}
-	for _, rc := range []contract.RoleConfig{
+	roles := []contract.RoleConfig{
 		{ID: "wbig", Name: "wbig", Node: r.a.NodeID, Adapter: "grok", Instruction: bigIns, Runbook: bigRun, Model: "grok-4.7", Effort: "low", Concurrency: 2},
 		{ID: "wg", Name: "wg", Node: r.a.NodeID, Adapter: "grok", Instruction: r.ins, Runbook: r.run, Model: "grok-4.7", Effort: "low", Concurrency: 8},
-	} {
+	}
+	for _, name := range policyRoleNames {
+		roles = append(roles, contract.RoleConfig{ID: policyRoleID("grok", name), Name: name, Node: r.a.NodeID, Adapter: "grok", Instruction: r.ins, Runbook: r.run,
+			Model: "grok-4.7", Effort: "low", Concurrency: 1})
+	}
+	var ids []string
+	for _, rc := range roles {
 		if _, err := r.dep.Client.AddRole(ctx, rc); err != nil {
 			return nil, err
 		}
+		ids = append(ids, rc.ID)
 	}
-	return r, r.ready(ctx, "wg", "wbig")
+	return r, r.ready(ctx, ids...)
 }
 
 // grokPrompt is the exact composed prompt the worker passes for req on
@@ -506,7 +520,7 @@ func TestWave2Probe(t *testing.T) {
 		}
 		t.Cleanup(func() { c.Stop() })
 		for vendor, want := range map[string]string{
-			"grok":   "has an older grok version; minimum grok 1.0.46 (2765805b9442) [stable]",
+			"grok":   "has an older grok version; minimum grok 1.0.52 (0920c8169e27) [stable]",
 			"cursor": "is not the cursor CLI (unexpected version output)",
 		} {
 			rc := r.role("wrong-"+vendor, vendor)
@@ -614,6 +628,41 @@ func TestWave2Invocation(t *testing.T) {
 			}
 		}
 	})
+	t.Run("auto-grok", func(t *testing.T) { autoGrok(t, r) })
+}
+
+// autoGrok is TestWave2Invocation/auto-grok (FP-3).
+func autoGrok(t *testing.T, r *wave2Rig) {
+	t.Helper()
+	if !wave2Linux() {
+		before := launches(t, r.kit.replayKit, func(l launch) bool { return l.Mode == "task" })
+		r.refuse(t, r.role("auto-grok-refused", "grok"), wave2GrokRefusal)
+		if after := launches(t, r.kit.replayKit, func(l launch) bool { return l.Mode == "task" }); len(after) != len(before) {
+			t.Fatalf("non-linux grok launched %+v", after)
+		}
+		return
+	}
+	goal := r.goal("auto grok")
+	req := requestFor("wg", goal)
+	prompt := r.grokPrompt(t, req)
+	sc := grokScenario(t, goal, "grok-stdin-success")
+	sc.ExpectedPrompt = &prompt
+	writeScenario(t, r.kit.replayKit, sc)
+	f := r.dispatch(t, req)
+	if f.view.State != contract.TaskSucceeded || exitOf(f) != 0 || finalOf(f) != "pong" {
+		t.Fatalf("auto grok %s", f)
+	}
+	l := taskLaunch(t, r.kit.replayKit, f.view.TaskID)
+	want := grokArgv(strings.ReplaceAll(prompt, "{task_id}", f.view.TaskID))
+	mode := ""
+	for i, a := range l.Argv {
+		if a == "--permission-mode" && i+1 < len(l.Argv) {
+			mode = l.Argv[i+1]
+		}
+	}
+	if !slices.Equal(l.Argv, want) || mode != "auto" || slices.Contains(l.Argv, "dontAsk") || len(l.Stdin) != 0 || len(l.Prompt) == 0 || len(l.Prompt) > adapter.MaxGrokPromptBytes || !bytes.Contains(l.Prompt, []byte(goal)) {
+		t.Fatalf("grok argv %q prompt %d", l.Argv, len(l.Prompt))
+	}
 }
 
 // grokReplay dispatches run's capture to wg (on Linux).
@@ -828,11 +877,15 @@ func TestWave2Catalog(t *testing.T) {
 		start := strings.Index(value, "`grok ")
 		end := strings.Index(value[start+1:], "`")
 		recipe := strings.Fields(value[start+1 : start+1+end])
-		if want := append([]string{"grok"}, grokArgv("<composed-prompt>")...); !slices.Equal(recipe, want) {
-			t.Fatalf("grok catalog recipe %q, want %q", recipe, want)
+		hist := []string{"grok", "--output-format", "json", "--model", "grok-4.7", "--reasoning-effort", "low", "--permission-mode", "dontAsk", "-p", "<composed-prompt>"}
+		if !slices.Equal(recipe, hist) {
+			t.Fatalf("grok historical catalog recipe %q", recipe)
+		}
+		if slices.Equal(recipe, append([]string{"grok"}, grokArgv("<composed-prompt>")...)) {
+			t.Fatal("grok historical catalog was relabeled as the current auto recipe")
 		}
 		captured := strings.Split(strings.TrimSuffix(string(wave2File(t, "runs/grok-stdin-success/argv.txt")), "\n"), "\n")
-		if len(captured) != 11 || !slices.Equal(captured[1:10], grokArgv("")[:9]) || captured[10] != strings.TrimSpace(string(wave2File(t, "runs/grok-stdin-missing/stdin.txt"))) {
+		if len(captured) != 11 || !slices.Equal(captured[1:10], hist[1:10]) || captured[10] != strings.TrimSpace(string(wave2File(t, "runs/grok-stdin-missing/stdin.txt"))) {
 			t.Fatalf("grok captured argv %q", captured)
 		}
 		cvalue := byID["cursor"].Facts["headless"].Value
@@ -848,9 +901,10 @@ func TestWave2Catalog(t *testing.T) {
 			t.Fatal("cursor became callable")
 		}
 		for _, s := range []string{
-			"Qualified worker recipe (Linux only): `grok --output-format json --model grok-4.7 --reasoning-effort low --permission-mode dontAsk -p <composed-prompt>`",
+			"Current Callsheet policy (not a vendor capture): `grok --output-format json --model MODEL --reasoning-effort EFFORT --permission-mode auto -p <composed-prompt>`",
+			"Historical captured recipe (iteration 11, not current argv): `grok --output-format json --model grok-4.7 --reasoning-effort low --permission-mode dontAsk -p <composed-prompt>`",
 			"Rejected candidate, recorded for comparison only: `cursor-agent -p --output-format json --model grok-4.7-low --force --trust`",
-			"Qualified worker recipe (Linux): `claude -p --model sonnet --effort low --permission-prompts none --output-format json`",
+			"Current Callsheet policy (not a vendor capture): `claude -p --model MODEL --effort EFFORT --permission-mode auto --permission-prompts none --output-format json`",
 		} {
 			if !strings.Contains(doc, s) {
 				t.Fatalf("docs/support-catalog.md lacks %q", s)
@@ -1144,6 +1198,13 @@ func TestWave2SmokeGate(t *testing.T) {
 		stub := replayBinary(t)
 		root := t.TempDir()
 		versions, _ := wave2Versions(testkit.MustRepoRoot(t))
+		// The live stub reports the auto-mode minimum. The historical
+		// host capture stays below it and is not what this worker probes.
+		gmin, ok := adapter.MinimumVersion(adapter.GrokID)
+		if !ok {
+			t.Fatal("missing grok minimum")
+		}
+		versions["grok"] = gmin
 		k, err := newWave2Kit(root, stub, versions)
 		if err != nil {
 			t.Fatal(err)

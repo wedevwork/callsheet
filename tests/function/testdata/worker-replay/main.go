@@ -17,9 +17,12 @@
 //
 // In task mode it reads stdin to EOF, selects the scenario whose goal is
 // the task envelope's goal, validates the complete argv (one final-path
-// placeholder), the working directory (the task's private non-git scratch
-// directory) and, when the scenario names it, the exact stdin bytes (one
-// task-ID placeholder), records the launch, copies the capture's stdout and
+// placeholder), the working directory (the task's private scratch
+// directory: non-git for a scratch task, or that task's git checkout when
+// the final file is callsheet-final.txt inside its owned
+// .callsheet-runtime-* directory) and, when the scenario names it, the
+// exact stdin bytes (one task-ID placeholder), records the launch, copies
+// the capture's stdout and
 // stderr unchanged, writes the captured final bytes to the requested final
 // path only when the capture says the file was present (or applies the
 // scenario's file fault), and exits with the captured exit status. A failed
@@ -105,6 +108,9 @@ type Launch struct {
 	OK       bool     `json:"ok"`
 	Error    string   `json:"error"`
 	PID      int      `json:"pid"`
+	// Git is whether cwd contained .git at launch. The sidecar removes the
+	// work directory after the result, so a later stat is not this fact.
+	Git bool `json:"git"`
 }
 
 func main() { os.Exit(run()) }
@@ -191,10 +197,12 @@ func run() int {
 		return fail("cwd %s (mode %s) is not the task's private scratch directory", l.Cwd, l.CwdMode)
 	}
 	if _, err := os.Lstat(filepath.Join(l.Cwd, ".git")); err == nil {
-		return fail("cwd is a git checkout")
+		l.Git = true
 	}
 	// The complete argv: exactly the expected elements, the final path
-	// the only variable, inside this cwd.
+	// the only variable. A scratch task's file is callsheet-final.txt in
+	// the non-git cwd. A workspace task's cwd is that checkout, and the
+	// file is callsheet-final.txt in its owned .callsheet-runtime-* directory.
 	final := ""
 	if len(l.Argv) != len(sc.ExpectedArgv) {
 		return fail("argv %q, want %q", l.Argv, sc.ExpectedArgv)
@@ -208,14 +216,19 @@ func run() int {
 		}
 		if want == "{final}" {
 			final = l.Argv[i]
-			if final != filepath.Join(l.Cwd, "callsheet-final.txt") {
-				return fail("final path %s is not the cwd's callsheet-final.txt", final)
-			}
 			continue
 		}
 		if l.Argv[i] != want {
 			return fail("argv %q, want %q", l.Argv, sc.ExpectedArgv)
 		}
+	}
+	switch {
+	case l.Git && !workspaceFinal(l.Cwd, final):
+		return fail("cwd is a git checkout and final path %s is not its owned runtime callsheet-final.txt", final)
+	case !l.Git && final != "" && final != filepath.Join(l.Cwd, "callsheet-final.txt"):
+		return fail("final path %s is not the cwd's callsheet-final.txt", final)
+	case !l.Git && final == "" && l.Vendor == "codex":
+		return fail("codex argv has no final path")
 	}
 	l.Final = final
 	if l.Vendor == "grok" {
@@ -341,6 +354,25 @@ func writeFinal(mode, path string, present bool, captured []byte, custom string)
 		return os.WriteFile(path, []byte("po\xffng"), 0o600)
 	}
 	return fmt.Errorf("unknown final mode %q", mode)
+}
+
+// workspaceFinal reports whether final is callsheet-final.txt inside cwd's
+// owned .callsheet-runtime- directory (32 lowercase hex).
+func workspaceFinal(cwd, final string) bool {
+	if final == "" || filepath.Base(final) != "callsheet-final.txt" || filepath.Dir(filepath.Dir(final)) != cwd {
+		return false
+	}
+	rest, ok := strings.CutPrefix(filepath.Base(filepath.Dir(final)), ".callsheet-runtime-")
+	if !ok || len(rest) != 32 {
+		return false
+	}
+	for i := 0; i < len(rest); i++ {
+		c := rest[i]
+		if c < '0' || (c > '9' && c < 'a') || c > 'f' {
+			return false
+		}
+	}
+	return true
 }
 
 // record writes one launch record (a file per launch: concurrent tasks

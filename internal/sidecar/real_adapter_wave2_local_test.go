@@ -211,7 +211,7 @@ func wave2Posture(t *testing.T) {
 		}
 	}
 	if CursorVendorWarning != "cursor adapter enabled for version probing only: unattended worker execution is refused because no qualified recipe preserves the operator posture; consult the support catalog" ||
-		GrokVendorWarning != "grok adapter enabled: prompts are passed in argv and may be visible to process inspection; the composed prompt limit is 32 KiB; dontAsk cancelled all measured writes, including permitted writes; exit 0 does not prove requested work completed" ||
+		GrokVendorWarning != "grok adapter enabled: auto is requested; prompts are passed in argv and may be visible to process inspection; the composed prompt limit is 32 KiB; exit 0 does not prove requested work completed" ||
 		GrokDarwinWarningSuffix != "grok worker execution on macOS is refused pending qualification; consult the support catalog" {
 		t.Fatal("a wave-2 warning text changed")
 	}
@@ -383,7 +383,7 @@ func wave2Invocation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantArgv := []string{"--output-format", "json", "--model", "grok-4.7", "--reasoning-effort", "low", "--permission-mode", "dontAsk", "-p", string(want)}
+	wantArgv := []string{"--output-format", "json", "--model", "grok-4.7", "--reasoning-effort", "low", "--permission-mode", "auto", "-p", string(want)}
 	if !slices.Equal(ch.spec.argv, wantArgv) || ch.spec.path != vr.super(t).env.executables[adapter.GrokID] || ch.spec.path == "" {
 		t.Fatalf("grok child argv %q (path %s)", ch.spec.argv, ch.spec.path)
 	}

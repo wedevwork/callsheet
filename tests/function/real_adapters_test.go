@@ -179,6 +179,14 @@ func adapterFor(vendor string) adapter.Adapter {
 	return a
 }
 
+// policyRoleNames are the roles that share one auto recipe (design 12a-2c).
+var policyRoleNames = []string{"designer", "design-reviewer", "coder", "code-reviewer"}
+
+func policyRoleID(vendor, name string) string {
+	short := map[string]string{"claude": "c", "codex": "x", "grok": "g"}[vendor]
+	return "pol-" + short + "-" + name
+}
+
 func qualification(vendor string) adapter.Qualification {
 	for _, q := range adapter.Qualifications() {
 		if q.ID == vendor {
@@ -272,11 +280,12 @@ func startRealRig(bin, stub, fakeAdapterPath string) (*realRig, error) {
 	fixtureMu.Lock()
 	afterSuite = append(afterSuite, r.close)
 	fixtureMu.Unlock()
-	versions, err := hostVersions(repoRootOrEmpty())
-	if err != nil {
-		return nil, err
+	claudeMin, ok := adapter.MinimumVersion(adapter.ClaudeID)
+	codexMin, ok2 := adapter.MinimumVersion(adapter.CodexID)
+	if !ok || !ok2 {
+		return nil, errors.New("missing auto-mode minimum")
 	}
-	if r.kit, err = newReplayKit(root, stub, versions); err != nil {
+	if r.kit, err = newReplayKit(root, stub, map[string]string{"claude": claudeMin, "codex": codexMin}); err != nil {
 		return nil, err
 	}
 	home := filepath.Join(root, "home")
@@ -320,19 +329,26 @@ func startRealRig(bin, stub, fakeAdapterPath string) (*realRig, error) {
 	for _, id := range []string{"rc", "rx"} {
 		roles = append(roles, contract.RoleConfig{ID: id, Name: id, Node: r.a.NodeID, Adapter: map[string]string{"rc": "claude", "rx": "codex"}[id], Concurrency: 8})
 	}
+	for _, vendor := range []string{"claude", "codex"} {
+		for _, name := range policyRoleNames {
+			roles = append(roles, contract.RoleConfig{ID: policyRoleID(vendor, name), Name: name, Node: r.a.NodeID, Adapter: vendor, Concurrency: 1})
+		}
+	}
+	var ids []string
 	for _, rc := range roles {
 		q := qualification(rc.Adapter)
 		rc.Instruction, rc.Runbook, rc.Model, rc.Effort = r.ins, r.run, q.Model, q.Effort
 		if _, err := r.dep.Client.AddRole(ctx, rc); err != nil {
 			return nil, err
 		}
+		ids = append(ids, rc.ID)
 	}
 	// Worker A had the last role mutation; worker H's reattachment installs
 	// the current complete snapshot, so starts reach both.
 	if err := r.dep.Restart(ctx, r.h); err != nil {
 		return nil, err
 	}
-	return r, r.ready(ctx, "rc", "rx", "rh")
+	return r, r.ready(ctx, ids...)
 }
 
 // repoRootOrEmpty is the repository root (rig setup has no testing.T).
@@ -467,6 +483,7 @@ type launch struct {
 	Final    string   `json:"final"`
 	OK       bool     `json:"ok"`
 	Error    string   `json:"error"`
+	Git      bool     `json:"git"`
 }
 
 // launches returns kit's launch records matching keep.
@@ -851,7 +868,7 @@ func TestRealAdapterProbe(t *testing.T) {
 		}
 		t.Cleanup(func() { c.Stop() })
 		for vendor, want := range map[string]string{
-			"claude": "has an older claude version; minimum 2.1.285 (Claude Code)",
+			"claude": "has an older claude version; minimum 2.1.299 (Claude Code)",
 			"codex":  "is not the codex CLI (unexpected version output)",
 		} {
 			q := qualification(vendor)
@@ -880,6 +897,7 @@ func TestRealAdapterProbe(t *testing.T) {
 		}
 		t.Run("minimum-version-policy", minimumVersionPolicy)
 	})
+	t.Run("auto-minima", func(t *testing.T) { autoMinima(t) })
 }
 
 // FP-3: the stub records the exact argv, the complete composed stdin, a
@@ -889,7 +907,7 @@ func TestRealAdapterInvocation(t *testing.T) {
 	t.Parallel()
 	r := sharedRig(t)
 	forbidden := []string{"--dangerously-skip-permissions", "--dangerously-bypass-approvals-and-sandbox", "--sandbox", "--ignore-user-config", "--resume",
-		"--continue", "--permission-mode", "--approve-for-me", "--full-auto", "--yolo"}
+		"--continue", "--full-auto", "--yolo", "--allowed-tools", "bypassPermissions", "dontAsk", "never"}
 	check := func(t *testing.T, vendor, roleID, goal string) {
 		t.Helper()
 		sc := captureScenario(t, vendor, goal, map[string]string{"claude": "runs-scratch/claude-stdin-success", "codex": "runs-scratch/codex-skip-success"}[vendor])
@@ -943,6 +961,8 @@ func TestRealAdapterInvocation(t *testing.T) {
 		check(t, "claude", "rc", r.goal("stdin: \"quoted\" 'single' $(echo no) `tick` \\ back\nline two\ttab <html>&amp; é 😀  "))
 		check(t, "codex", "rx", r.goal("stdin codex: -- --model other; rm -rf / \x7f"))
 	})
+	t.Run("auto-claude", func(t *testing.T) { autoClaude(t, r) })
+	t.Run("auto-codex", func(t *testing.T) { autoCodex(t, r) })
 }
 
 // FP-4: Claude's captured success and failure results and exits survive
@@ -1120,6 +1140,8 @@ func TestRealAdapterOutcomes(t *testing.T) {
 		}
 		delegate(t, taggedSidecarBinary(t), "./internal/sidecar", "^TestRealAdapterLocal$/^diagnostic$", "TestRealAdapterLocal", "TestRealAdapterLocal/diagnostic")
 	})
+	t.Run("auto-policy", func(t *testing.T) { autoPolicy(t, r) })
+	t.Run("auto-denials", func(t *testing.T) { autoDenials(t, r) })
 }
 
 // timeoutFactsSHA256 pins the six Claude/Codex coordinator timeout facts
@@ -1155,7 +1177,6 @@ func TestRealAdapterCatalog(t *testing.T) {
 					recipe[i] = strings.Trim(tok, "'")
 				}
 			}
-			want := append([]string{vendor}, productionArgv(vendor)...)
 			norm := func(argv []string) []string {
 				out := slices.Clone(argv)
 				for i := range out {
@@ -1165,20 +1186,28 @@ func TestRealAdapterCatalog(t *testing.T) {
 				}
 				return out
 			}
-			if got := norm(recipe); !slices.Equal(got, want) {
-				t.Fatalf("%s catalog recipe %q, want %q", vendor, got, want)
+			// The machine catalog and the capture stay the historical recipe.
+			// Current production argv is a separate policy.
+			captured := norm(tokens(string(captureFile(t, capture+"/argv.txt"))))
+			if got := norm(recipe); !slices.Equal(got, captured) {
+				t.Fatalf("%s catalog recipe %q, capture %q", vendor, got, captured)
 			}
-			if got := norm(tokens(string(captureFile(t, capture+"/argv.txt")))); !slices.Equal(got, want) {
-				t.Fatalf("%s captured argv %q, want %q", vendor, got, want)
+			prod := append([]string{vendor}, productionArgv(vendor)...)
+			if slices.Equal(norm(recipe), prod) {
+				t.Fatalf("%s historical catalog was relabeled as the current recipe", vendor)
 			}
 			if strings.TrimSpace(byID[vendor].Version) != qualification(vendor).Version {
 				t.Fatalf("%s catalog version %q", vendor, byID[vendor].Version)
 			}
 		}
-		// The human-readable recipes (shell-quoted for Codex).
+		// Current policy prose, plus the historical recipes kept as history.
 		for _, recipe := range []string{
-			"Qualified worker recipe (Linux): `claude -p --model sonnet --effort low --permission-prompts none --output-format json`",
-			"Qualified worker recipe (Linux): `codex -a never exec --model gpt-6.1-sol -c 'model_reasoning_effort=\"low\"' --json --skip-git-repo-check --output-last-message <scratch>/callsheet-final.txt -`",
+			"Current Callsheet policy (not a vendor capture): `claude -p --model MODEL --effort EFFORT --permission-mode auto --permission-prompts none --output-format json`",
+			"Current Callsheet policy (not a vendor capture): `codex exec --approve-for-me --model MODEL -c model_reasoning_effort=\"EFFORT\" --json --skip-git-repo-check --output-last-message <scratch>/callsheet-final.txt -`",
+			"Historical captured recipe (iteration 08, not current argv): `claude -p --model sonnet --effort low --permission-prompts none --output-format json`",
+			"Historical captured recipe (iteration 08, not current argv): `codex -a never exec --model gpt-6.1-sol -c 'model_reasoning_effort=\"low\"' --json --skip-git-repo-check --output-last-message <scratch>/callsheet-final.txt -`",
+			"the runtime minimum version is 2.1.299 (Claude Code)",
+			"the runtime minimum version is codex-cli 0.162.1",
 		} {
 			if !strings.Contains(doc, recipe) {
 				t.Fatalf("docs/support-catalog.md lacks %q", recipe)
@@ -1304,6 +1333,510 @@ func TestRealAdapterCatalog(t *testing.T) {
 		}
 		t.Run("selection-evidence", func(t *testing.T) { selectionEvidence(t, root, entries) })
 	})
+	t.Run("auto-contract", func(t *testing.T) { autoContract(t, root, byID, doc) })
+}
+
+func envValue(env []string, key string) string {
+	p := key + "="
+	for _, e := range env {
+		if strings.HasPrefix(e, p) {
+			return strings.TrimPrefix(e, p)
+		}
+	}
+	return ""
+}
+
+func fileSum(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+func permissionArgs(argv []string) []string {
+	var out []string
+	for i := 0; i < len(argv); i++ {
+		switch argv[i] {
+		case "--permission-mode", "--permission-prompts":
+			out = append(out, argv[i])
+			if i+1 < len(argv) {
+				i++
+				out = append(out, argv[i])
+			}
+		case "--approve-for-me":
+			out = append(out, argv[i])
+		}
+	}
+	return out
+}
+
+// autoClaude is TestRealAdapterInvocation/auto-claude (FP-1).
+func autoClaude(t *testing.T, r *realRig) {
+	t.Helper()
+	goal := r.goal("auto claude")
+	req := requestFor("rc", goal)
+	sc := captureScenario(t, "claude", goal, "runs-scratch/claude-stdin-success")
+	stdin := r.composed(t, req, "rc", "claude")
+	sc.ExpectedStdin = &stdin
+	writeScenario(t, r.kit, sc)
+	f := r.dispatch(t, req)
+	if f.view.State != contract.TaskSucceeded || exitOf(f) != 0 || finalOf(f) != "pong" {
+		t.Fatalf("auto claude %s", f)
+	}
+	l := taskLaunch(t, r.kit, f.view.TaskID)
+	q := qualification("claude")
+	want := []string{"-p", "--model", q.Model, "--effort", q.Effort, "--permission-mode", "auto", "--permission-prompts", "none", "--output-format", "json"}
+	if !slices.Equal(l.Argv, want) || l.Argv0 != r.kit.claude {
+		t.Fatalf("argv %q", l.Argv)
+	}
+	if got := string(l.Stdin); got != strings.ReplaceAll(stdin, "{task_id}", f.view.TaskID) {
+		t.Fatalf("stdin %q", got)
+	}
+	if !bytes.Contains(f.logs, []byte(`"type":"result"`)) || !bytes.Contains(f.logs, []byte(`"is_error"`)) || !bytes.Contains(f.logs, []byte(`"result":"pong"`)) {
+		t.Fatalf("captured-shape logs %s", f)
+	}
+}
+
+// autoCodex is TestRealAdapterInvocation/auto-codex (FP-2): scratch and workspace.
+func autoCodex(t *testing.T, r *realRig) {
+	t.Helper()
+	goal := r.goal("auto codex scratch")
+	req := requestFor("rx", goal)
+	sc := captureScenario(t, "codex", goal, "runs-scratch/codex-skip-success")
+	stdin := r.composed(t, req, "rx", "codex")
+	sc.ExpectedStdin = &stdin
+	writeScenario(t, r.kit, sc)
+	f := r.dispatch(t, req)
+	l := taskLaunch(t, r.kit, f.view.TaskID)
+	scratchFinal := filepath.Join(l.Cwd, adapter.CodexFinalName)
+	assertCodexAuto(t, r, f, l, scratchFinal, stdin)
+	if l.Git {
+		t.Fatal("scratch cwd was a git checkout")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), rigWait)
+	defer cancel()
+	name := r.unique("acx")
+	view, err := r.dep.Client.CreateWorkspace(ctx, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := mkFolder(t, map[string]tfile{"README": tr("auto\n")})
+	push := runBin(t, r.dep.Bin, r.root, []string{"PATH=" + os.Getenv("PATH"), "HOME=" + envValue(r.env, "HOME")},
+		"ws", "push", "--json", "--instance", view.Instance, "--plane", r.dep.URL, "--ca", r.dep.CA, name, dir)
+	if push.code != 0 {
+		t.Fatalf("ws push: %+v", push)
+	}
+	wgoal := r.goal("auto codex workspace")
+	wreq := requestFor("rx", wgoal)
+	wreq.Workspace = &name
+	wsc := captureScenario(t, "codex", wgoal, "runs-scratch/codex-skip-success")
+	wstdin := r.composed(t, wreq, "rx", "codex")
+	wsc.ExpectedStdin = &wstdin
+	writeScenario(t, r.kit, wsc)
+	wf := r.dispatch(t, wreq)
+	wl := taskLaunch(t, r.kit, wf.view.TaskID)
+	if !strings.Contains(wl.Final, string(os.PathSeparator)+".callsheet-runtime-") || filepath.Base(wl.Final) != adapter.CodexFinalName || filepath.Dir(filepath.Dir(wl.Final)) != wl.Cwd {
+		t.Fatalf("workspace final %s (cwd %s)", wl.Final, wl.Cwd)
+	}
+	if !wl.Git {
+		t.Fatal("workspace cwd was not a checkout at launch")
+	}
+	assertCodexAuto(t, r, wf, wl, wl.Final, wstdin)
+}
+
+func assertCodexAuto(t *testing.T, r *realRig, f finished, l launch, final, stdin string) {
+	t.Helper()
+	if f.view.State != contract.TaskSucceeded || exitOf(f) != 0 || finalOf(f) != "pong" {
+		t.Fatalf("auto codex %s", f)
+	}
+	want := productionArgv("codex")
+	for i, a := range want {
+		if a == "{final}" {
+			want[i] = final
+		}
+	}
+	if !slices.Equal(l.Argv, want) || l.Final != final || l.Argv0 != r.kit.codex {
+		t.Fatalf("argv %q final %s", l.Argv, l.Final)
+	}
+	if !slices.Contains(l.Argv, "--approve-for-me") || slices.Contains(l.Argv, "never") || slices.Contains(l.Argv, "-a") {
+		t.Fatalf("codex permission argv %q", l.Argv)
+	}
+	if got := string(l.Stdin); got != strings.ReplaceAll(stdin, "{task_id}", f.view.TaskID) {
+		t.Fatalf("stdin %q", got)
+	}
+}
+
+// autoPolicy is TestRealAdapterOutcomes/auto-policy (FP-6a).
+func autoPolicy(t *testing.T, r *realRig) {
+	t.Helper()
+	for _, vendor := range []string{"claude", "codex"} {
+		var got [][]string
+		for _, name := range policyRoleNames {
+			id := policyRoleID(vendor, name)
+			goal := r.goal("auto policy " + id)
+			rel := map[string]string{"claude": "runs-scratch/claude-stdin-success", "codex": "runs-scratch/codex-skip-success"}[vendor]
+			writeScenario(t, r.kit, captureScenario(t, vendor, goal, rel))
+			f := r.dispatch(t, requestFor(id, goal))
+			if f.view.State != contract.TaskSucceeded {
+				t.Fatalf("%s %s %s", vendor, name, f)
+			}
+			l := taskLaunch(t, r.kit, f.view.TaskID)
+			want := productionArgv(vendor)
+			for i, a := range want {
+				if a == "{final}" {
+					want[i] = l.Final
+				}
+			}
+			if !slices.Equal(l.Argv, want) || slices.Contains(l.Argv, name) || slices.Contains(l.Argv, id) {
+				t.Fatalf("%s %s argv %q", vendor, name, l.Argv)
+			}
+			got = append(got, permissionArgs(l.Argv))
+		}
+		for _, p := range got[1:] {
+			if !slices.Equal(p, got[0]) {
+				t.Fatalf("%s permission args %q and %q", vendor, got[0], p)
+			}
+		}
+	}
+	if inv, err := adapterFor("cursor").Invocation(adapter.TaskInput{TaskID: "t_" + strings.Repeat("0", 32), Model: "grok-4.7", Effort: "low", Prompt: []byte("p")}); err == nil || inv.Argv != nil {
+		t.Fatalf("cursor invocation %+v %v", inv, err)
+	}
+	if !wave2Linux() {
+		return
+	}
+	w := sharedWave2Rig(t)
+	var got [][]string
+	for _, name := range policyRoleNames {
+		id := policyRoleID("grok", name)
+		goal := w.goal("auto policy " + id)
+		writeScenario(t, w.kit.replayKit, grokScenario(t, goal, "grok-stdin-success"))
+		f := w.dispatch(t, requestFor(id, goal))
+		if f.view.State != contract.TaskSucceeded || finalOf(f) != "pong" {
+			t.Fatalf("grok %s %s", name, f)
+		}
+		l := taskLaunch(t, w.kit.replayKit, f.view.TaskID)
+		prefix := grokArgv("{prompt}")
+		if !slices.Equal(l.Argv[:len(l.Argv)-1], prefix[:len(prefix)-1]) || slices.Contains(l.Argv, name) || slices.Contains(l.Argv, "dontAsk") || len(l.Stdin) != 0 {
+			t.Fatalf("grok %s argv %q", name, l.Argv)
+		}
+		got = append(got, permissionArgs(l.Argv[:len(l.Argv)-1]))
+	}
+	for _, p := range got[1:] {
+		if !slices.Equal(p, got[0]) || !slices.Equal(p, []string{"--permission-mode", "auto"}) {
+			t.Fatalf("grok permission args %q", p)
+		}
+	}
+}
+
+// autoDenials is TestRealAdapterOutcomes/auto-denials (FP-6b).
+func autoDenials(t *testing.T, r *realRig) {
+	t.Helper()
+	home := envValue(r.env, "HOME")
+	seeded := map[string]string{
+		filepath.Join(home, ".claude", "settings.json"): "{\n  \"permissions\": {\"disableAutoMode\": true}\n}\n",
+		filepath.Join(home, ".codex", "config.toml"):    "sandbox_mode = \"read-only\"\n",
+		filepath.Join(home, ".grok", "config"):          "permission_mode = dontAsk\n",
+	}
+	before := map[string]string{}
+	for path, body := range seeded {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		before[path] = fileSum(t, path)
+	}
+	denial := `{"type":"result","subtype":"error_during_execution","is_error":true,"result":"permission denied: Write"}`
+	zero, one := 0, 1
+	ok := r.replay(t, "rc", scenario{Goal: r.goal("auto denial exit 0"), Vendor: "claude", ExpectedArgv: productionArgv("claude"), Synthetic: true,
+		Stdout: &denial, Exit: &zero, Normalization: "synthetic classifier denial at exit 0 (not an observed pause transcript)"})
+	if ok.view.State != contract.TaskSucceeded || exitOf(ok) != 0 || finalOf(ok) != "permission denied: Write" {
+		t.Fatalf("exit 0 denial %s", ok)
+	}
+	taskLaunch(t, r.kit, ok.view.TaskID)
+	bad := r.replay(t, "rc", scenario{Goal: r.goal("auto denial exit 1"), Vendor: "claude", ExpectedArgv: productionArgv("claude"), Synthetic: true,
+		Stdout: &denial, Exit: &one, Normalization: "synthetic classifier denial at exit 1 (not an observed pause transcript)"})
+	if bad.view.State != contract.TaskFailed || exitOf(bad) != 1 || finalOf(bad) != "permission denied: Write" {
+		t.Fatalf("exit 1 denial %s", bad)
+	}
+	taskLaunch(t, r.kit, bad.view.TaskID)
+	prose := "permission denied: Write"
+	cx := r.replay(t, "rx", scenario{Goal: r.goal("auto denial codex exit 0"), Vendor: "codex", ExpectedArgv: productionArgv("codex"), Synthetic: true,
+		FinalMode: "custom", Final: prose, Exit: &zero, Normalization: "synthetic codex denial prose at exit 0"})
+	if cx.view.State != contract.TaskSucceeded || exitOf(cx) != 0 || finalOf(cx) != prose {
+		t.Fatalf("codex exit 0 denial %s", cx)
+	}
+	taskLaunch(t, r.kit, cx.view.TaskID)
+	cerr := "permission denied: Write\n"
+	cf := r.replay(t, "rx", scenario{Goal: r.goal("auto denial codex exit 1"), Vendor: "codex", ExpectedArgv: productionArgv("codex"), Synthetic: true,
+		Stdout: &cerr, Exit: &one, Normalization: "synthetic codex denial prose at exit 1"})
+	if cf.view.State != contract.TaskFailed || exitOf(cf) != 1 {
+		t.Fatalf("codex exit 1 denial %s", cf)
+	}
+	taskLaunch(t, r.kit, cf.view.TaskID)
+
+	hold := captureScenario(t, "codex", r.goal("auto denial stall"), "runs-scratch/codex-skip-success")
+	hold.Hold = true
+	hold.Normalization = "synthetic hold until the task timeout (no extra sleep)"
+	writeScenario(t, r.kit, hold)
+	d := resistantTimeout
+	stallReq := requestFor("rx", hold.Goal)
+	stallReq.Override = &contract.TaskOverride{Timeout: &d}
+	stall := r.dispatch(t, stallReq)
+	if stall.view.State != contract.TaskTimedOut {
+		t.Fatalf("stall %s", stall)
+	}
+	taskLaunch(t, r.kit, stall.view.TaskID)
+
+	cancelSC := captureScenario(t, "codex", r.goal("auto denial cancel"), "runs-scratch/codex-skip-success")
+	cancelSC.FinalMode, cancelSC.Final, cancelSC.Hold = "custom", "partial answer", true
+	cancelSC.Normalization = "synthetic hold until cancelled"
+	writeScenario(t, r.kit, cancelSC)
+	ctx, cancel := context.WithTimeout(context.Background(), rigWait)
+	defer cancel()
+	v, err := r.send(ctx, requestFor("rh", cancelSC.Goal))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for len(launches(t, r.kit, func(l launch) bool { return l.TaskID == v.TaskID })) == 0 {
+		if ctx.Err() != nil {
+			t.Fatal("the held task never launched")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := r.dep.Client.CancelTask(ctx, v.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	stopped := r.await(t, ctx, v.TaskID)
+	if stopped.view.State != contract.TaskCancelled || stopped.view.Result == nil || stopped.view.Result.Signal == nil || *stopped.view.Result.Signal != "SIGTERM" {
+		t.Fatalf("cancelled %s", stopped)
+	}
+	taskLaunch(t, r.kit, v.TaskID)
+	for path, sum := range before {
+		if got := fileSum(t, path); got != sum {
+			t.Fatalf("vendor config %s changed", path)
+		}
+	}
+}
+
+type minimaNode struct {
+	rig          *realRig
+	kit          *replayKit
+	grok, cursor string
+	side         *workersmoke.Sidecar
+}
+
+func startMinimaPlane(t *testing.T) *realRig {
+	t.Helper()
+	root := t.TempDir()
+	r := &realRig{root: root, env: []string{"PATH=" + os.Getenv("PATH"), "HOME=" + filepath.Join(root, "home")}}
+	if err := os.MkdirAll(envValue(r.env, "HOME"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), rigWait)
+	defer cancel()
+	var err error
+	if r.dep, err = workersmoke.Start(ctx, nodeBinary(t), root, r.env); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { r.dep.Close() })
+	r.insTxt, r.runTxt = "Minima probe instruction.\n", "Minima probe runbook.\n"
+	if r.ins, r.run, err = r.dep.Manuals("minima", r.insTxt, r.runTxt); err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+func attachMinima(t *testing.T, r *realRig, name string, versions map[string]string) *minimaNode {
+	t.Helper()
+	dir := filepath.Join(r.root, name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	kit, err := newReplayKit(dir, replayBinary(t), versions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Dir(kit.claude)
+	n := &minimaNode{rig: r, kit: kit, grok: filepath.Join(bin, "grok"), cursor: filepath.Join(bin, "cursor-agent")}
+	for id, path := range map[string]string{"grok": n.grok, "cursor": n.cursor} {
+		if err := os.Symlink(replayBinary(t), path); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(kit.dir, id+".version"), []byte(versions[id]+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), rigWait)
+	defer cancel()
+	env := []string{"PATH=" + kit.traps, "HOME=" + envValue(r.env, "HOME"), replayDirEnv + "=" + kit.dir}
+	if n.side, err = r.dep.StartSidecar(ctx, "worker-"+name, env, "--claude-adapter", kit.claude, "--codex-adapter", kit.codex, "--grok-adapter", n.grok, "--cursor-adapter", n.cursor); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func expectUnready(t *testing.T, n *minimaNode, id, vendor, snippet string) {
+	t.Helper()
+	q := qualification(vendor)
+	ctx, cancel := context.WithTimeout(context.Background(), rigWait)
+	defer cancel()
+	_, err := n.rig.addRole(ctx, contract.RoleConfig{ID: id, Name: id, Node: n.side.NodeID, Adapter: vendor, Instruction: n.rig.ins, Runbook: n.rig.run,
+		Model: q.Model, Effort: q.Effort, Concurrency: 1})
+	var ce *contract.Error
+	if !errors.As(err, &ce) || ce.Details["reason"] != contract.ReasonProbeFailed || !strings.Contains(ce.Message, snippet) {
+		t.Fatalf("%s: %v", vendor, err)
+	}
+	if _, err := n.rig.dep.Client.ShowRole(ctx, id); contract.CodeOf(err) != contract.CodeNotFound {
+		t.Fatalf("unready role %s recorded: %v", id, err)
+	}
+}
+
+func expectReady(t *testing.T, n *minimaNode, id, vendor string) {
+	t.Helper()
+	q := qualification(vendor)
+	ctx, cancel := context.WithTimeout(context.Background(), rigWait)
+	defer cancel()
+	if _, err := n.rig.addRole(ctx, contract.RoleConfig{ID: id, Name: id, Node: n.side.NodeID, Adapter: vendor, Instruction: n.rig.ins, Runbook: n.rig.run,
+		Model: q.Model, Effort: q.Effort, Concurrency: 1}); err != nil {
+		t.Fatalf("%s: %v", vendor, err)
+	}
+	if err := n.rig.ready(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// autoMinima is TestRealAdapterProbe/auto-minima (FP-5).
+func autoMinima(t *testing.T) {
+	t.Helper()
+	hist := map[string]string{
+		"claude": "2.1.285 (Claude Code)",
+		"codex":  "codex-cli 0.159.0",
+		"grok":   "grok 1.0.46 (2765805b9442) [stable]",
+		"cursor": "2026.10.01-e373342",
+	}
+	root := testkit.MustRepoRoot(t)
+	host, err := hostVersions(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wave, err := wave2Versions(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	minima := map[string]string{}
+	for id, want := range hist {
+		if qualification(id).Version != want {
+			t.Fatalf("qualification %s changed to %q", id, qualification(id).Version)
+		}
+		got := host[id]
+		if id == "grok" || id == "cursor" {
+			got = wave[id]
+		}
+		if got != want {
+			t.Fatalf("historical host %s is %q", id, got)
+		}
+		min, ok := adapter.MinimumVersion(id)
+		if !ok || (id == "cursor" && min != want) || (id != "cursor" && min == want) {
+			t.Fatalf("runtime minimum %s = %q (ok %v)", id, min, ok)
+		}
+		minima[id] = min
+	}
+	below := map[string]string{
+		"claude": "2.1.298 (Claude Code)",
+		"codex":  "codex-cli 0.162.0",
+		"grok":   "grok 1.0.51 (aaaaaaaaaaaa) [stable]",
+		"cursor": "2026.09.01-aaaaaaaa",
+	}
+	plane := startMinimaPlane(t)
+	low := attachMinima(t, plane, "low", below)
+	for _, vendor := range []string{"claude", "codex", "grok", "cursor"} {
+		expectUnready(t, low, "low-"+vendor, vendor, "has an older "+vendor+" version; minimum "+minima[vendor])
+	}
+	at := attachMinima(t, plane, "min", minima)
+	expectReady(t, at, "min-claude", "claude")
+	expectReady(t, at, "min-codex", "codex")
+	if wave2Linux() {
+		expectReady(t, at, "min-grok", "grok")
+	} else {
+		expectUnready(t, at, "min-grok", "grok", wave2GrokRefusal)
+	}
+	expectUnready(t, at, "min-cursor", "cursor", wave2CursorRefusal)
+	for _, n := range []*minimaNode{low, at} {
+		if ls := launches(t, n.kit, func(l launch) bool { return l.Mode == "task" }); len(ls) != 0 {
+			t.Fatalf("a version probe launched a task: %+v", ls)
+		}
+	}
+}
+
+// autoContract is TestRealAdapterCatalog/auto-contract (FP-7).
+func autoContract(t *testing.T, root string, byID map[string]catalog.Entry, doc string) {
+	t.Helper()
+	ra := string(repoFile(t, "docs/real-adapters.md"))
+	coord := string(repoFile(t, "docs/coordinator.md"))
+	e2e := string(repoFile(t, "docs/real-e2e.md"))
+	for _, vendor := range []string{"claude", "codex", "grok", "cursor"} {
+		min, ok := adapter.MinimumVersion(vendor)
+		if !ok || byID[vendor].Version != qualification(vendor).Version || byID[vendor].Version == min && vendor != "cursor" {
+			t.Fatalf("%s catalog %q minimum %q", vendor, byID[vendor].Version, min)
+		}
+		if !strings.Contains(ra, min) {
+			t.Fatalf("docs/real-adapters.md lacks minimum %s", min)
+		}
+	}
+	for _, s := range []string{
+		"## Current worker recipes",
+		"-p --model MODEL --effort EFFORT --permission-mode auto --permission-prompts none --output-format json",
+		"exec --approve-for-me --model MODEL -c model_reasoning_effort=\"EFFORT\"",
+		"--permission-mode auto -p <composed-prompt>",
+		"permissions.disableAutoMode",
+		"3 consecutive or 20 total",
+		"workspace-write",
+		"useful headless tool execution under auto is",
+		"permission policies, not evidence of containment",
+		"edits vendor settings or trust entries",
+	} {
+		if !strings.Contains(ra, s) {
+			t.Fatalf("docs/real-adapters.md lacks %q", s)
+		}
+	}
+	for _, s := range []string{
+		"the runtime minimum version is 2.1.299 (Claude Code)",
+		"the runtime minimum version is codex-cli 0.162.1",
+		"The runtime minimum version is grok 1.0.52 (0920c8169e27) [stable]",
+		"Historical captured recipe (iteration 08, not current argv): `claude -p --model sonnet --effort low --permission-prompts none --output-format json`",
+		"Historical captured recipe (iteration 11, not current argv): `grok --output-format json --model grok-4.7 --reasoning-effort low --permission-mode dontAsk -p <composed-prompt>`",
+		"not a current-mode assertion",
+	} {
+		if !strings.Contains(doc, s) {
+			t.Fatalf("docs/support-catalog.md lacks %q", s)
+		}
+	}
+	if !strings.Contains(coord, "not the runtime minimum version") || !strings.Contains(e2e, "Claude Code `2.1.299`") || !strings.Contains(e2e, "Codex `0.162.1`") || !strings.Contains(e2e, "Grok `1.0.52`") {
+		t.Fatal("coordinator or real-e2e docs do not separate the runtime minima")
+	}
+	if strings.Contains(byID["claude"].Facts["headless"].Value, "--permission-mode auto") || !strings.Contains(byID["codex"].Facts["headless"].Value, "-a never") ||
+		!strings.Contains(byID["grok"].Facts["headless"].Value, "dontAsk") {
+		t.Fatal("the machine catalog no longer records the historical recipes")
+	}
+	prod := productionArgv("claude")
+	if !slices.Contains(prod, "auto") || slices.Contains(prod, "dontAsk") {
+		t.Fatalf("production claude argv %q", prod)
+	}
+	// The checked-in capture argv is still the historical recipe.
+	if !strings.Contains(string(captureFile(t, "runs-scratch/claude-stdin-success/argv.txt")), "--permission-prompts none") ||
+		strings.Contains(string(captureFile(t, "runs-scratch/claude-stdin-success/argv.txt")), "--permission-mode") {
+		t.Fatal("the claude capture argv was rewritten")
+	}
+	if !strings.Contains(string(repoFile(t, "tests/testdata/real-adapters/linux-2026-10-04/runs/grok-stdin-success/argv.txt")), "dontAsk") {
+		t.Fatal("the grok capture argv was rewritten")
+	}
+	_ = root
 }
 
 // FP-8: real stdio MCP dispatch through a real plane to an enrolled

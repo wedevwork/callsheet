@@ -46,13 +46,12 @@ const (
 	receiptOwner    = "callsheet-owner"
 )
 
-// Frozen at the immutable pre-change commit 1038b09 (read-only git
-// inspection, never regenerated from a modified tree): the enrollment
-// index's bytes, the 429 native parents in their order, the stress plan's
-// argv on both hosts and the CI workflow's bytes.
+// Frozen handles: the enrollment index's bytes, the native parents in
+// their order (436 after the seven 12a-2c slice A names), the stress
+// plan's argv on both hosts and the CI workflow's bytes.
 const (
 	enrollmentIndexSHA256 = "c0f28d31dc24401977037c9e0b27a44810ea19984518a8bc46ab62c8b6ea7e61"
-	nativeInventorySHA256 = "f1ff8d0ac67dee91651b844f2ed26f17304dbc1e305817bbff0c299d1a77468d"
+	nativeInventorySHA256 = "6c992e4ee7e364cee22f43e90562743fbaf1e5d755a329a8b30cf8c467d435d9"
 	stressArgvSHA256      = "04ed36ef45fddaa0c036be114d8a5ce89e8a86dc0675997341dd89e89805e61a"
 	ciWorkflowSHA256      = "a4cbc826d9e75459d4e72b075167cb8513b602fbe6f74e3c11aa901afc9ab452"
 )
@@ -2170,13 +2169,13 @@ func publicationRunbook(t *testing.T) {
 	q.groupsGone()
 }
 
-// FP-8 (TestMCPEnrollmentCIPolicy/catalog-version-policy): the 429 native
-// parents in their prior order, the unchanged stress plan and workflow,
+// FP-8 (TestMCPEnrollmentCIPolicy/catalog-version-policy): the 436 native
+// parents in their order, the unchanged stress plan and workflow,
 // the pinned enrollment index and the production enrollment validation of
 // the fixture bytes it references.
 func catalogVersionPolicy(t *testing.T) {
 	sum := func(s string) string { h := sha256.Sum256([]byte(s)); return hex.EncodeToString(h[:]) }
-	if req := devcheck.NativeRequiredTests(); len(req) != 429 || sum(strings.Join(req, "\n")) != nativeInventorySHA256 {
+	if req := devcheck.NativeRequiredTests(); len(req) != 436 || sum(strings.Join(req, "\n")) != nativeInventorySHA256 {
 		t.Fatalf("native inventory %d %s", len(req), sum(strings.Join(req, "\n")))
 	}
 	for _, goos := range []string{"linux", "darwin"} {

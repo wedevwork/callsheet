@@ -41,7 +41,7 @@ const CursorVendorWarning = "cursor adapter enabled for version probing only: un
 // GrokVendorWarning is the fixed warning logged once when a sidecar starts
 // with the Grok adapter enabled (iteration 11); on macOS the same single
 // warning carries " " + GrokDarwinWarningSuffix.
-const GrokVendorWarning = "grok adapter enabled: prompts are passed in argv and may be visible to process inspection; the composed prompt limit is 32 KiB; dontAsk cancelled all measured writes, including permitted writes; exit 0 does not prove requested work completed"
+const GrokVendorWarning = "grok adapter enabled: auto is requested; prompts are passed in argv and may be visible to process inspection; the composed prompt limit is 32 KiB; exit 0 does not prove requested work completed"
 
 // GrokDarwinWarningSuffix completes GrokVendorWarning on macOS.
 const GrokDarwinWarningSuffix = "grok worker execution on macOS is refused pending qualification; consult the support catalog"

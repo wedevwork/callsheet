@@ -22,12 +22,13 @@ import (
 // recorded and fails. Since design 12a-worker-selection the Grok and
 // Cursor stand-ins print versions newer than their minimum (eligible, so
 // Cursor still reaches its posture refusal) and wrongCursor an older one.
+// Grok's stand-in is strictly above the auto-mode runtime minimum.
 const (
 	fakeGrok = `#!/bin/sh
 here=$(dirname "$0")
-if [ "$#" = 1 ] && [ "$1" = --version ]; then echo version >> "$here/launches.log"; echo 'grok 1.0.47 (0123456789ab) [stable]'; exit 0; fi
+if [ "$#" = 1 ] && [ "$1" = --version ]; then echo version >> "$here/launches.log"; echo 'grok 1.0.53 (0123456789ab) [stable]'; exit 0; fi
 stdin=$(cat)
-if [ "$#" != 10 ] || [ "$1 $2 $3 $4 $5 $6 $7 $8 $9" != "--output-format json --model grok-4.7 --reasoning-effort low --permission-mode dontAsk -p" ] || [ -n "$stdin" ]; then
+if [ "$#" != 10 ] || [ "$1 $2 $3 $4 $5 $6 $7 $8 $9" != "--output-format json --model grok-4.7 --reasoning-effort low --permission-mode auto -p" ] || [ -n "$stdin" ]; then
   echo "task bad" >> "$here/launches.log"; exit 97
 fi
 shift 9
