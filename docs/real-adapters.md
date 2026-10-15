@@ -57,19 +57,24 @@ the task's effective model and effort are shown with the task. Operator
 defaults such as Claude's `opus[1m]`/`medium` or Codex's `medium` are never
 substituted, and no paid call is made to discover compatibility.
 
-Each worker executable is eligible at or above its **minimum version**,
-the version its capture recorded, with no warning for a newer version:
+Each worker executable is eligible at or above its **runtime minimum
+version**, which is independent of the historical capture identity in the
+support catalog, with no warning for a newer version and no claim that a
+newer version is compatible. These baselines are conservative product
+floors from the captured help identities, not claims that auto first
+appeared there. Cursor's date baseline does not overcome its execution
+refusal.
 
-| Adapter | `--version` line (literal spaces) | Minimum | Ordering |
+| Adapter | `--version` line (literal spaces) | Runtime minimum | Ordering |
 |---|---|---|---|
-| `claude` | `SEMVER (Claude Code)` | `2.1.285 (Claude Code)` | SemVer precedence |
-| `codex` | `codex-cli SEMVER` | `codex-cli 0.159.0` | SemVer precedence |
-| `grok` | `grok SEMVER (HASH) [CHANNEL]` | `grok 1.0.46 (2765805b9442) [stable]` | SemVer precedence; the hash and channel never order |
+| `claude` | `SEMVER (Claude Code)` | `2.1.299 (Claude Code)` | SemVer precedence |
+| `codex` | `codex-cli SEMVER` | `codex-cli 0.162.1` | SemVer precedence |
+| `grok` | `grok SEMVER (HASH) [CHANNEL]` | `grok 1.0.52 (0920c8169e27) [stable]` | SemVer precedence; the hash and channel never order |
 | `cursor` | `YYYY.MM.DD-HASH` | `2026.10.01-e373342` | the calendar date; a same-date version with another hash is equal and accepted |
 
 `SEMVER` is `major.minor.patch` with an optional `-prerelease` and `+build`:
 the core compares numerically, a release sorts above its prereleases (so
-`codex-cli 0.159.0-rc.1` is below the minimum and `0.160.0-rc.1` above it),
+`codex-cli 0.162.1-rc.1` is below the minimum and `0.163.0-rc.1` above it),
 and build metadata never orders. After at most one trailing newline, the
 whole line must be at most 256 bytes of printable ASCII in exactly that
 grammar; Cursor's date must be a real Gregorian date. An older version,
@@ -105,12 +110,39 @@ selections remain valid and no role is rewritten.
 The recipes were captured on Linux x86_64 on 2026-09-30
 ([host](../tests/testdata/real-adapters/linux-2026-09-30/host.txt),
 [captures](../tests/testdata/real-adapters/linux-2026-09-30/)). They are
-historical observations: the recorded versions are the minimum baselines,
-not the installed versions (the coordinator's host has since run Claude
-`2.1.292 (Claude Code)` and Codex `codex-cli 0.160.0`), and the observed
-pairs are evidence, not the only selections. Every task passes its own
-selected model and effort in the same argument positions of the same
-recipe.
+historical observations, not the current argv and not the runtime minima
+(the coordinator's host has since run Claude `2.1.292 (Claude Code)` and
+Codex `codex-cli 0.160.0`, both now below the runtime minima). The observed
+pairs are evidence, not the only selections.
+
+## Current worker recipes
+
+Every role — designer, design-reviewer, coder and code-reviewer — receives
+the same adapter recipe. Role instructions still constrain review work;
+they are not enforcement, and the adapter infers nothing from the role
+name. Callsheet does not edit vendor configuration, predict allowed tools,
+reset a classifier or retry a denial with broader permissions. Classifier
+modes are permission policies, not evidence of containment. An untouched
+sentinel is a limited observation. Readiness checks invocability and
+version, not authentication, account access, a tool-supported model or an
+operator-approved working directory.
+
+| Adapter | Current arguments after the executable |
+|---|---|
+| `claude` | `-p --model MODEL --effort EFFORT --permission-mode auto --permission-prompts none --output-format json` (prompt on stdin) |
+| `codex` | `exec --approve-for-me --model MODEL -c model_reasoning_effort="EFFORT" --json --skip-git-repo-check --output-last-message <final>/callsheet-final.txt -` (prompt on stdin; `<final>` is the scratch directory, or the workspace task's owned final-output directory) |
+| `grok` | Linux only: `--output-format json --model MODEL --reasoning-effort EFFORT --permission-mode auto -p <composed-prompt>`, stdin empty |
+
+Claude auto is available on all plans unless an administrator sets
+`permissions.disableAutoMode`. Supported models include Opus 4.6+ and
+Fable, and the classifier pauses after 3 consecutive or 20 total blocks.
+Those three facts are the owner's recorded source, not a fresh upstream
+verification. Operators resolve a policy or model incompatibility
+themselves. `--approve-for-me` selects Codex's workspace-write sandbox.
+Callsheet still writes no Codex configuration and adds no independent
+sandbox override. Grok's useful headless tool execution under auto is
+UNVERIFIED until an owner-run Linux scratch-file probe of this exact
+recipe. Auto does not imply that every requested action succeeds.
 
 macOS is **not** qualified. The same adapters may be enabled there
 explicitly; the sidecar then logs, once at start, that the recipe is
@@ -147,12 +179,14 @@ callsheet role add coder-claude --name coder --node <node-id> --adapter claude \
 ```
 
 Run sidecars as a dedicated OS user. Containment is whatever the vendor's
-configured sandbox provides (on the recorded host, host reads and `/tmp`
-writes were allowed); Callsheet creates no sandbox, never selects or relaxes
-a sandbox profile, never edits vendor settings or trust entries, and never
-retries a denied task with broader permissions. Inspect the effective
-configuration with the vendor's own tools, for example `claude sandbox
-status` and your Claude `settings.json`, or Codex's `config.toml`.
+configured sandbox and classifier provide (on the recorded host, host reads
+and `/tmp` writes were allowed). Callsheet creates no sandbox of its own.
+Codex's `--approve-for-me` selects that vendor's workspace-write sandbox;
+Callsheet adds no further sandbox override and never relaxes one. It never
+edits vendor settings or trust entries, and never retries a denied task
+with broader permissions. Inspect the effective configuration with the
+vendor's own tools, for example `claude sandbox status` and your Claude
+`settings.json`, or Codex's `config.toml`.
 
 ## How a task runs
 
@@ -202,12 +236,13 @@ evidence that a tool ran or failed.
 The coordinator's Linux captures of 2026-10-04 ([host](../tests/testdata/real-adapters/linux-2026-10-04/host.txt),
 [captures](../tests/testdata/real-adapters/linux-2026-10-04/)) decide two
 explicit support limits. The table records those historical observations
-(the versions are the minimum baselines and the pairs evidence; selection
-and versions follow [Selection and versions](#selection-and-versions)):
+(the versions are historical capture identities, not the runtime minima,
+and the pairs are evidence; selection and versions follow
+[Selection and versions](#selection-and-versions)):
 
 | Adapter | Observed version (`--version` output) | Observed model | Observed effort | Worker execution |
 |---|---|---|---|---|
-| `grok` | `grok 1.0.46 (2765805b9442) [stable]` | `grok-4.7` | `low` | Linux only: `--output-format json --model grok-4.7 --reasoning-effort low --permission-mode dontAsk -p <composed-prompt>`, stdin empty |
+| `grok` | `grok 1.0.46 (2765805b9442) [stable]` | `grok-4.7` | `low` | Historical Linux capture, not current argv: `--output-format json --model grok-4.7 --reasoning-effort low --permission-mode dontAsk -p <composed-prompt>`, stdin empty |
 | `cursor` | `2026.10.01-e373342` | `grok-4.7` | `low` | Refused on every OS |
 
 Enable them like the others, with absolute paths on every start (the
@@ -234,22 +269,23 @@ examples, not a model allowlist, and Callsheet has no executable Cursor
 mapping: every valid Cursor selection is refused before any argument is
 built.
 
-**Grok** answers, but under `dontAsk` every measured write was cancelled,
-including permitted in-directory writes (`stopReason` `cancelled`, exit 0).
-Every measured write was cancelled; useful tool execution remains
-unqualified. Exit 0 does not prove the requested work completed. Grok requires the prompt in its `-p` argument, so
-the complete composed prompt (manuals and task envelope) is visible to
-process inspection by the OS and same-user tools; Callsheet never logs or
-journals it. The composed prompt is limited to 32 KiB (a product argv
-policy, not a measured vendor limit): a larger, empty, non-UTF-8 or
-NUL-containing prompt is refused before launch as `start_failed`. The final
-message is the decoded `text` of Grok's one JSON object, or its `message`
-when `type` is `error`; `stopReason` is kept in the log and never decides
-the task's state. On macOS Grok roles are refused pending qualification.
-At start the sidecar logs once:
+**Grok** requests auto. The historical `dontAsk` capture cancelled every
+measured write, including permitted in-directory writes (`stopReason`
+`cancelled`, exit 0); that cancellation is evidence of that capture, not a
+current-mode assertion. Useful tool execution under auto is UNVERIFIED.
+Exit 0 does not prove the requested work completed. Grok requires the
+prompt in its `-p` argument, so the complete composed prompt (manuals and
+task envelope) is visible to process inspection by the OS and same-user
+tools; Callsheet never logs or journals it. The composed prompt is limited
+to 32 KiB (a product argv policy, not a measured vendor limit): a larger,
+empty, non-UTF-8 or NUL-containing prompt is refused before launch as
+`start_failed`. The final message is the decoded `text` of Grok's one JSON
+object, or its `message` when `type` is `error`; `stopReason` is kept in
+the log and never decides the task's state. On macOS Grok roles are refused
+pending qualification. At start the sidecar logs once:
 
 ```text
-grok adapter enabled: prompts are passed in argv and may be visible to process inspection; the composed prompt limit is 32 KiB; dontAsk cancelled all measured writes, including permitted writes; exit 0 does not prove requested work completed
+grok adapter enabled: auto is requested; prompts are passed in argv and may be visible to process inspection; the composed prompt limit is 32 KiB; exit 0 does not prove requested work completed
 ```
 
 with ` grok worker execution on macOS is refused pending qualification; consult the support catalog` appended on macOS.

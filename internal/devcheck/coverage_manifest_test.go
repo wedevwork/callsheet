@@ -512,8 +512,8 @@ func TestWorkerSelectionBudgets(t *testing.T) {
 		t.Fatal("the 12a budgets entry is not a Budgets allocation before the measurements")
 	case !strings.Contains(s[:at], "- Iteration 12a worker-selection allocation (design 12a-worker-selection\n  r0.3, Coverage and budget allocation; planning allowances, not\n  measurements or pass/fail timing gates"):
 		t.Fatal("the 12a budgets entry is not labelled as planning allowances")
-	case len(NativeRequiredTests()) != 429:
-		t.Fatalf("native inventory %d, want 429", len(NativeRequiredTests()))
+	case len(NativeRequiredTests()) != 436:
+		t.Fatalf("native inventory %d, want 436", len(NativeRequiredTests()))
 	}
 }
 
@@ -595,7 +595,7 @@ func TestWave2NativeDocs(t *testing.T) {
 			t.Fatalf("docs/ci.md does not name %s", n)
 		}
 	}
-	if len(NativeRequiredTests()) != 429 || len(NativeTaskProcessTests()) != 12 {
+	if len(NativeRequiredTests()) != 436 || len(NativeTaskProcessTests()) != 12 {
 		t.Fatalf("%d native names, %d sidecar names", len(NativeRequiredTests()), len(NativeTaskProcessTests()))
 	}
 }

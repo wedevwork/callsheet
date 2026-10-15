@@ -226,7 +226,13 @@ func exeFile(t *testing.T, mode os.FileMode) string {
 func TestVendorProbe(t *testing.T) {
 	exe := exeFile(t, 0o755)
 	for _, q := range Qualifications() {
-		for _, out := range []string{q.Version + "\n", q.Version + "\r\n", q.Version} {
+		min, ok := MinimumVersion(q.ID)
+		if !ok || (q.ID != CursorID && min == q.Version) || (q.ID == CursorID && min != q.Version) {
+			t.Fatalf("%s minimum %q historical %q", q.ID, min, q.Version)
+		}
+		// The runtime minimum is eligible. The historical identity is not,
+		// except Cursor where the captured version is also the baseline.
+		for _, out := range []string{min + "\n", min + "\r\n", min} {
 			r := &fakeRunner{out: out, errOut: "warning: SECRET-STDERR environment note\n"}
 			v, _ := vendorProber(t, q.ID, r, []string{"PATH=/nowhere", "CALLSHEET_FAKE_READY_FD=3", "KEEP=1"})
 			if err := v.Probe(bg, exe); err != nil {
@@ -248,13 +254,15 @@ func TestVendorProbe(t *testing.T) {
 	}{
 		// Design 12a-worker-selection: an older Claude is refused and the
 		// newer Codex host version is eligible (reason "": success).
-		"claude older version":  {"claude", "2.1.284 (Claude Code)\n", "", nil, "has an older claude version; minimum 2.1.285 (Claude Code)"},
-		"codex newer version":   {"codex", "codex-cli 0.160.0\n", "", nil, ""},
+		"claude older version":  {"claude", "2.1.284 (Claude Code)\n", "", nil, "has an older claude version; minimum 2.1.299 (Claude Code)"},
+		"claude historical":     {"claude", "2.1.285 (Claude Code)\n", "", nil, "has an older claude version; minimum 2.1.299 (Claude Code)"},
+		"codex newer version":   {"codex", "codex-cli 0.163.0\n", "", nil, ""},
+		"codex historical":      {"codex", "codex-cli 0.159.0\n", "", nil, "has an older codex version; minimum codex-cli 0.162.1"},
 		"claude wrong vendor":   {"claude", codexV + "\n", "", nil, "is not the claude CLI (unexpected version output)"},
 		"codex wrong vendor":    {"codex", claudeV + "\n", "", nil, "is not the codex CLI (unexpected version output)"},
 		"banner":                {"claude", "Welcome!\n" + claudeV + "\n", "", nil, "is not the claude CLI"},
-		"extra line":            {"codex", codexV + "\nupdate available\n", "", nil, "has an invalid codex version; expected an orderable version at or above codex-cli 0.159.0"},
-		"two newlines":          {"claude", claudeV + "\n\n", "", nil, "has an invalid claude version; expected an orderable version at or above 2.1.285 (Claude Code)"},
+		"extra line":            {"codex", codexV + "\nupdate available\n", "", nil, "has an invalid codex version; expected an orderable version at or above codex-cli 0.162.1"},
+		"two newlines":          {"claude", claudeV + "\n\n", "", nil, "has an invalid claude version; expected an orderable version at or above 2.1.299 (Claude Code)"},
 		"leading space":         {"codex", " " + codexV + "\n", "", nil, "is not the codex CLI"},
 		"empty":                 {"claude", "", "", nil, "is not the claude CLI"},
 		"nonzero exit":          {"claude", claudeV + "\n", "", errors.New("exit status 1"), "exited unsuccessfully"},
@@ -326,7 +334,8 @@ func TestVendorProbe(t *testing.T) {
 	r.clk.Advance(ProbeTimeout)
 	wantProbeErr(t, <-done, "did not answer within 1s")
 	for advance, reason := range map[time.Duration]string{ProbeTimeout: "did not answer within 1s", ProbeTimeout - time.Nanosecond: ""} {
-		r = &fakeRunner{out: claudeV, advance: advance}
+		min, _ := MinimumVersion(ClaudeID)
+		r = &fakeRunner{out: min, advance: advance}
 		v, _ = vendorProber(t, "claude", r, nil)
 		err := v.Probe(bg, exe)
 		if reason == "" && err != nil {
@@ -359,7 +368,8 @@ func (r *fakeRunner) clkAwait() error {
 // forbidden are flags no worker argv may carry (sandbox, permission and
 // session overrides).
 var forbidden = []string{"--dangerously-skip-permissions", "--dangerously-bypass-approvals-and-sandbox", "--sandbox", "-s", "--ignore-user-config",
-	"--resume", "--continue", "--worktree", "--permission-mode", "--approve-for-me", "--full-auto", "--yolo", "--cloud", "--mcp-server", "--auto-review", "-m"}
+	"--resume", "--continue", "--worktree", "--full-auto", "--yolo", "--cloud", "--mcp-server", "--auto-review", "-m",
+	"--allowed-tools", "bypassPermissions", "dontAsk", "never"}
 
 // TestVendorInvocation is UT FP-3: the exact captured argv arrays, owned
 // stdin, the prompt bound and the refusals (invalid model grammar and an
@@ -373,7 +383,7 @@ func TestVendorInvocation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"-p", "--model", "sonnet", "--effort", "low", "--permission-prompts", "none", "--output-format", "json"}; !slices.Equal(inv.Argv, want) ||
+	if want := []string{"-p", "--model", "sonnet", "--effort", "low", "--permission-mode", "auto", "--permission-prompts", "none", "--output-format", "json"}; !slices.Equal(inv.Argv, want) ||
 		!bytes.Equal(inv.Stdin, prompt) || inv.FinalFile != "" {
 		t.Fatalf("claude invocation = %q %q %q", inv.Argv, inv.Stdin, inv.FinalFile)
 	}
@@ -383,13 +393,13 @@ func TestVendorInvocation(t *testing.T) {
 		t.Fatal(err)
 	}
 	final := scratch + "/callsheet-final.txt"
-	if want := []string{"-a", "never", "exec", "--model", "gpt-6.1-sol", "-c", `model_reasoning_effort="low"`, "--json", "--skip-git-repo-check",
+	if want := []string{"exec", "--approve-for-me", "--model", "gpt-6.1-sol", "-c", `model_reasoning_effort="low"`, "--json", "--skip-git-repo-check",
 		"--output-last-message", final, "-"}; !slices.Equal(cinv.Argv, want) || !bytes.Equal(cinv.Stdin, prompt) || cinv.FinalFile != final {
 		t.Fatalf("codex invocation = %q %q", cinv.Argv, cinv.FinalFile)
 	}
 	// The effort value is one argv element with literal quote bytes.
-	if cinv.Argv[6] != "model_reasoning_effort=\x22low\x22" || len(cinv.Argv[6]) != len("model_reasoning_effort=")+5 {
-		t.Fatalf("effort element %q", cinv.Argv[6])
+	if cinv.Argv[5] != "model_reasoning_effort=\x22low\x22" || len(cinv.Argv[5]) != len("model_reasoning_effort=")+5 {
+		t.Fatalf("effort element %q", cinv.Argv[5])
 	}
 	for _, in := range []Invocation{inv, cinv} {
 		for _, a := range in.Argv {
@@ -403,10 +413,10 @@ func TestVendorInvocation(t *testing.T) {
 	if inv.Stdin[0] != '{' || cinv.Stdin[0] != '{' {
 		t.Fatal("stdin aliases the prompt")
 	}
-	inv.Argv[2], cinv.Argv[4] = "mutated", "mutated"
+	inv.Argv[2], cinv.Argv[3] = "mutated", "mutated"
 	again, _ := claude.Invocation(TaskInput{TaskID: taskID, Model: "sonnet", Effort: "low"})
 	cagain, _ := codex.Invocation(TaskInput{TaskID: taskID, Model: "gpt-6.1-sol", Effort: "low", ScratchDir: scratch})
-	if again.Argv[2] != "sonnet" || cagain.Argv[4] != "gpt-6.1-sol" || len(again.Stdin) != 0 {
+	if again.Argv[2] != "sonnet" || cagain.Argv[3] != "gpt-6.1-sol" || len(again.Stdin) != 0 {
 		t.Fatalf("second invocations %q %q", again.Argv, cagain.Argv)
 	}
 	// The 16 MiB bound: at the limit accepted, one byte over refused.

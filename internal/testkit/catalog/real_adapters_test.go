@@ -18,10 +18,25 @@ import (
 // realCaptures is iteration 08's checked-in evidence root.
 const realCaptures = "tests/testdata/real-adapters/linux-2026-09-30"
 
+// historicalHeadless is the catalog's captured recipe. currentHeadless is
+// the adapter's production argv (the final path normalized). They differ:
+// the catalog stays the historical observation.
+var (
+	historicalHeadless = map[string]string{
+		"claude": "claude -p --model sonnet --effort low --permission-prompts none --output-format json",
+		"codex":  `codex -a never exec --model gpt-6.1-sol -c model_reasoning_effort="low" --json --skip-git-repo-check --output-last-message <final-file> -`,
+	}
+	currentHeadless = map[string]string{
+		"claude": "claude -p --model sonnet --effort low --permission-mode auto --permission-prompts none --output-format json",
+		"codex":  `codex exec --approve-for-me --model gpt-6.1-sol -c model_reasoning_effort="low" --json --skip-git-repo-check --output-last-message <final-file> -`,
+	}
+)
+
 // TestRealAdapterEvidence is UT FP-7 for the catalog (iteration 08): the
 // byte-identical evidence copies against their provenance manifest, the
 // Claude/Codex facts' owners and wording rules, and the catalog recipes'
-// agreement with the adapters' invocations.
+// agreement with the historical captures. Current production argv is a
+// separate policy and is not written back into the catalog.
 func TestRealAdapterEvidence(t *testing.T) {
 	root, entries := realCatalog(t)
 	b, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(realCaptures), "manifest.json"))
@@ -89,17 +104,23 @@ func TestRealAdapterEvidence(t *testing.T) {
 				t.Fatalf("%s.%s UNVERIFIED value does not say iteration 08 did not measure it: %s", e.ID, key, f.Value)
 			}
 		}
-		// The recipe in the headless value is the adapter's argv (the final
-		// path the only variable).
+		// The catalog headless recipe stays the historical capture. Current
+		// production argv is checked separately and must not replace it.
 		a, _ := adapter.Builtin("").Lookup(e.ID)
 		inv, err := a.Invocation(adapter.TaskInput{TaskID: "t_" + strings.Repeat("a", 32), Model: q.Model, Effort: q.Effort, ScratchDir: "/s"})
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := strings.Join(append([]string{e.ID}, inv.Argv...), " ")
-		want = strings.Replace(want, "/s/"+adapter.CodexFinalName, "<final-file>", 1)
-		if !strings.Contains(e.Facts["headless"].Value, "`"+want+"`") {
-			t.Fatalf("%s headless recipe does not match the invocation %q", e.ID, want)
+		prod := strings.Join(append([]string{e.ID}, inv.Argv...), " ")
+		prod = strings.Replace(prod, "/s/"+adapter.CodexFinalName, "<final-file>", 1)
+		if prod != currentHeadless[e.ID] {
+			t.Fatalf("%s production argv %q", e.ID, prod)
+		}
+		if !strings.Contains(e.Facts["headless"].Value, "`"+historicalHeadless[e.ID]+"`") {
+			t.Fatalf("%s catalog recipe is not the historical capture", e.ID)
+		}
+		if strings.Contains(e.Facts["headless"].Value, "`"+prod+"`") {
+			t.Fatalf("%s historical catalog was relabeled as the current recipe", e.ID)
 		}
 		for _, key := range []string{"sandbox_macos", "exit_codes"} {
 			if e.Facts[key].Status != Unverified {
@@ -356,10 +377,16 @@ func wave2Evidence(t *testing.T, root string, entries []Entry) {
 	if byID["grok"].Facts["approval"].Status != Verified || byID["cursor"].Facts["approval"].Status != Unverified {
 		t.Fatal("approval statuses")
 	}
-	// Production Grok: the backticked recipe, tokenized, is the executable
-	// and the adapter's argv with one composed-prompt placeholder, and the
-	// capture's argv (one line per argument) with its prompt substituted.
+	// The catalog recipe and the capture stay the historical dontAsk
+	// observation. Current production argv requests auto and is not
+	// written back into the catalog.
 	recipe := backticked(t, byID["grok"].Facts["headless"].Value, "grok ")
+	captured := argvLines(t, root, "runs/grok-stdin-success/argv.txt")
+	captured[0] = "grok"
+	captured[len(captured)-1] = wave2ProductionPlaceholder
+	if !slices.Equal(recipe, captured) {
+		t.Fatalf("grok catalog recipe %q, capture %q", recipe, captured)
+	}
 	grok, _ := adapter.Builtin("").Lookup("grok")
 	inv, err := grok.Invocation(adapter.TaskInput{TaskID: "t_" + strings.Repeat("a", 32), Model: "grok-4.7", Effort: "low", Prompt: []byte("P")})
 	if err != nil || inv.Stdin != nil {
@@ -367,14 +394,11 @@ func wave2Evidence(t *testing.T, root string, entries []Entry) {
 	}
 	want := append([]string{"grok"}, inv.Argv...)
 	want[len(want)-1] = wave2ProductionPlaceholder
-	if !slices.Equal(recipe, want) {
-		t.Fatalf("grok catalog recipe %q, want %q", recipe, want)
+	if slices.Equal(recipe, want) {
+		t.Fatal("grok historical catalog was relabeled as the current auto recipe")
 	}
-	captured := argvLines(t, root, "runs/grok-stdin-success/argv.txt")
-	captured[0] = "grok"
-	captured[len(captured)-1] = wave2ProductionPlaceholder
-	if !slices.Equal(captured, want) {
-		t.Fatalf("grok captured argv %q, want %q", captured, want)
+	if !slices.Equal(want, []string{"grok", "--output-format", "json", "--model", "grok-4.7", "--reasoning-effort", "low", "--permission-mode", "auto", "-p", wave2ProductionPlaceholder}) {
+		t.Fatalf("grok production argv %q", want)
 	}
 	// Cursor: Invocation is always a zero refusal; the catalog's candidate
 	// is the capture's argv, labelled rejected, never production argv.

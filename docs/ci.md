@@ -487,7 +487,15 @@ with the 353 earlier names unchanged and first:
 `TestWave2Dispatch/no-vendors`) and `TestWave2SmokeGate`
 (`TestWave2SmokeGate/default-off`, `TestWave2SmokeGate/ci-off`,
 `TestWave2SmokeGate/absent`, `TestWave2SmokeGate/enabled`,
-`TestWave2SmokeGate/posture`). The sidecar tuple appends the four tagged
+`TestWave2SmokeGate/posture`).
+Iteration 12a-2c slice A (auto mode) appends seven function subtests under
+those existing parents, 7 more names, 436 in all:
+`TestRealAdapterProbe/auto-minima`, `TestRealAdapterInvocation/auto-claude`,
+`TestRealAdapterInvocation/auto-codex`, `TestRealAdapterOutcomes/auto-policy`,
+`TestRealAdapterOutcomes/auto-denials`, `TestRealAdapterCatalog/auto-contract`
+and `TestWave2Invocation/auto-grok`. Cursor execution stays the refused
+`TestWave2Dispatch/cursor-refused` and `TestWave2Invocation/cursor-refused`
+cases. The sidecar tuple appends the four tagged
 direct subtests `TestRealAdapterLocal/wave2-posture`,
 `TestRealAdapterLocal/wave2-invocation`, `TestRealAdapterLocal/wave2-outcomes`
 and `TestRealAdapterLocal/wave2-retry` after the iteration 08 names (12

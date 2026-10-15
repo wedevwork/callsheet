@@ -47,18 +47,18 @@ const (
 	sidecarRunDetails = "Flags:\n" + sidecarStateHelp +
 		"  --claude-adapter PATH\n" +
 		"                     enable the claude worker adapter with this absolute path to the\n" +
-		"                     Claude Code executable (minimum version 2.1.285 (Claude Code))\n" +
+		"                     Claude Code executable (minimum version 2.1.299 (Claude Code))\n" +
 		"  --codex-adapter PATH\n" +
 		"                     enable the codex worker adapter with this absolute path to the\n" +
-		"                     Codex CLI executable (minimum version codex-cli 0.159.0)\n" +
+		"                     Codex CLI executable (minimum version codex-cli 0.162.1)\n" +
 		"  --grok-adapter PATH\n" +
 		"                     enable the grok worker adapter with this absolute path to the\n" +
-		"                     Grok Build executable (minimum version grok 1.0.46\n" +
-		"                     (2765805b9442) [stable]; Linux only). The composed prompt (at\n" +
-		"                     most 32 KiB) is passed in argv and may be visible to process\n" +
-		"                     inspection; dontAsk cancelled every measured write, so exit 0\n" +
-		"                     does not prove requested work completed. On macOS grok roles are\n" +
-		"                     refused pending qualification\n" +
+		"                     Grok Build executable (minimum version grok 1.0.52\n" +
+		"                     (0920c8169e27) [stable]; Linux only). Auto is requested. The\n" +
+		"                     composed prompt (at most 32 KiB) is passed in argv and may be\n" +
+		"                     visible to process inspection; exit 0 does not prove requested\n" +
+		"                     work completed. On macOS grok roles are refused pending\n" +
+		"                     qualification\n" +
 		"  --cursor-adapter PATH\n" +
 		"                     enable the cursor adapter with this absolute path to the Cursor\n" +
 		"                     Agent executable (cursor-agent; minimum version\n" +

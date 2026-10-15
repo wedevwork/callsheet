@@ -214,7 +214,7 @@ func overrideStarts(t *testing.T) {
 		}
 		ch := vr.child(t)
 		vr.ev.awaitMatch(t, evStartReplied, func(ev event) bool { return ev.id == b.TaskID })
-		want := []string{"-a", "never", "exec", "--model", model, "-c", "model_reasoning_effort=\"" + effort + "\"", "--json", "--skip-git-repo-check",
+		want := []string{"exec", "--approve-for-me", "--model", model, "-c", "model_reasoning_effort=\"" + effort + "\"", "--json", "--skip-git-repo-check",
 			"--output-last-message", finalPathOf(t, ch), "-"}
 		if !slices.Equal(ch.spec.argv, want) {
 			t.Fatalf("task %d argv %q, want %q", n, ch.spec.argv, want)

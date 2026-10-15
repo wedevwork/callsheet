@@ -172,9 +172,23 @@ func TestWorkerSelectionPolicy(t *testing.T) {
 					t.Fatalf("%s %s: %v", q.ID, e, err)
 				}
 			}
-			// The observed version is the minimum: itself is eligible.
-			if r := checkWorkerVersion(q.ID, q.Version, q.Version+"\n"); r != "" {
-				t.Fatalf("%s baseline %q: %s", q.ID, q.Version, r)
+			// The historical identity and the runtime minimum are independent.
+			// The historical line is eligible only when it is also the minimum
+			// (Cursor). A version at the runtime minimum is always eligible.
+			min, ok := MinimumVersion(q.ID)
+			if !ok {
+				t.Fatalf("%s has no minimum", q.ID)
+			}
+			if r := checkWorkerVersion(q.ID, min, min+"\n"); r != "" {
+				t.Fatalf("%s minimum %q: %s", q.ID, min, r)
+			}
+			hist := checkWorkerVersion(q.ID, min, q.Version+"\n")
+			if q.ID == CursorID {
+				if min != q.Version || hist != "" {
+					t.Fatalf("cursor historical %q minimum %q: %s", q.Version, min, hist)
+				}
+			} else if min == q.Version || hist == "" {
+				t.Fatalf("%s historical %q was treated as minimum %q (%s)", q.ID, q.Version, min, hist)
 			}
 		}
 	})
@@ -194,7 +208,7 @@ func TestWorkerSelectionInvocation(t *testing.T) {
 		for _, e := range claudeUnion {
 			for _, m := range models {
 				inv, err := a.Invocation(TaskInput{TaskID: taskID, Model: m, Effort: e, Prompt: prompt, ScratchDir: "ignored"})
-				want := []string{"-p", "--model", m, "--effort", e, "--permission-prompts", "none", "--output-format", "json"}
+				want := []string{"-p", "--model", m, "--effort", e, "--permission-mode", "auto", "--permission-prompts", "none", "--output-format", "json"}
 				if err != nil || !slices.Equal(inv.Argv, want) || !bytes.Equal(inv.Stdin, prompt) || &inv.Stdin[0] == &prompt[0] || inv.FinalFile != "" {
 					t.Fatalf("claude %q/%q: %q %v", m, e, inv.Argv, err)
 				}
@@ -207,7 +221,7 @@ func TestWorkerSelectionInvocation(t *testing.T) {
 			for _, m := range models {
 				inv, err := a.Invocation(TaskInput{TaskID: taskID, Model: m, Effort: e, Prompt: prompt, ScratchDir: scratch})
 				final := scratch + "/callsheet-final.txt"
-				want := []string{"-a", "never", "exec", "--model", m, "-c", "model_reasoning_effort=\x22" + e + "\x22", "--json", "--skip-git-repo-check",
+				want := []string{"exec", "--approve-for-me", "--model", m, "-c", "model_reasoning_effort=\x22" + e + "\x22", "--json", "--skip-git-repo-check",
 					"--output-last-message", final, "-"}
 				if err != nil || !slices.Equal(inv.Argv, want) || !bytes.Equal(inv.Stdin, prompt) || inv.FinalFile != final {
 					t.Fatalf("codex %q/%q: %q %v", m, e, inv.Argv, err)
@@ -220,7 +234,7 @@ func TestWorkerSelectionInvocation(t *testing.T) {
 		for _, e := range grokUnion {
 			for _, m := range models {
 				inv, err := a.Invocation(TaskInput{TaskID: taskID, Model: m, Effort: e, Prompt: prompt, ScratchDir: scratch, FinalDir: scratch + "/f"})
-				want := []string{"--output-format", "json", "--model", m, "--reasoning-effort", e, "--permission-mode", "dontAsk", "-p", string(prompt)}
+				want := []string{"--output-format", "json", "--model", m, "--reasoning-effort", e, "--permission-mode", "auto", "-p", string(prompt)}
 				if err != nil || !slices.Equal(inv.Argv, want) || inv.Stdin != nil || inv.FinalFile != "" {
 					t.Fatalf("grok %q/%q: %q %v", m, e, inv.Argv, err)
 				}
@@ -230,12 +244,12 @@ func TestWorkerSelectionInvocation(t *testing.T) {
 		// model with high effort (formerly a refused slot) is valid too.
 		inv, err := a.Invocation(TaskInput{TaskID: taskID, Model: "grok-4.7-build-fast", Effort: "low", Prompt: []byte("p")})
 		if err != nil || !slices.Equal(inv.Argv, []string{"--output-format", "json", "--model", "grok-4.7-build-fast", "--reasoning-effort", "low",
-			"--permission-mode", "dontAsk", "-p", "p"}) {
+			"--permission-mode", "auto", "-p", "p"}) {
 			t.Fatalf("grok fast %q %v", inv.Argv, err)
 		}
 		inv, err = a.Invocation(TaskInput{TaskID: taskID, Model: "grok-4.7-build", Effort: "high", Prompt: []byte("p")})
 		if err != nil || !slices.Equal(inv.Argv, []string{"--output-format", "json", "--model", "grok-4.7-build", "--reasoning-effort", "high",
-			"--permission-mode", "dontAsk", "-p", "p"}) || inv.Stdin != nil {
+			"--permission-mode", "auto", "-p", "p"}) || inv.Stdin != nil {
 			t.Fatalf("grok build high %q %v", inv.Argv, err)
 		}
 	})
@@ -293,8 +307,10 @@ func paddedVersion(prefix, suffix string, n int) string {
 // TestWorkerVersionPolicy is UT-3 (FP-3): the bounded parser and
 // comparator for all four vendors.
 func TestWorkerVersionPolicy(t *testing.T) {
-	baseline := map[string]string{ClaudeID: "2.1.285 (Claude Code)", CodexID: "codex-cli 0.159.0", GrokID: "grok 1.0.46 (2765805b9442) [stable]",
-		CursorID: "2026.10.01-e373342"}
+	baseline := map[string]string{}
+	for id, v := range workerMinimumVersions {
+		baseline[id] = v
+	}
 	check := func(id, out string) string { return checkWorkerVersion(id, baseline[id], out) }
 	older := func(id string) string { return "has an older " + id + " version; minimum " + baseline[id] }
 	invalid := func(id string) string {
@@ -303,13 +319,13 @@ func TestWorkerVersionPolicy(t *testing.T) {
 	wrong := func(id string) string { return "is not the " + id + " CLI (unexpected version output)" }
 	t.Run("minimum-and-newer", func(t *testing.T) {
 		for id, outs := range map[string][]string{
-			ClaudeID: {"2.1.285 (Claude Code)", "2.1.292 (Claude Code)", "2.1.286 (Claude Code)", "2.2.0 (Claude Code)", "3.0.0 (Claude Code)",
-				"2.1.1000 (Claude Code)", "2.10.0 (Claude Code)", "2.1.285+build.7 (Claude Code)", "2.1.285+other (Claude Code)", "2.1.286-rc.1 (Claude Code)",
+			ClaudeID: {"2.1.299 (Claude Code)", "2.1.300 (Claude Code)", "2.2.0 (Claude Code)", "3.0.0 (Claude Code)",
+				"2.1.1000 (Claude Code)", "2.10.0 (Claude Code)", "2.1.299+build.7 (Claude Code)", "2.1.299+other (Claude Code)", "2.1.300-rc.1 (Claude Code)",
 				"4294967295.4294967295.4294967295 (Claude Code)"},
-			CodexID: {"codex-cli 0.159.0", "codex-cli 0.160.0", "codex-cli 0.159.1", "codex-cli 0.160.0-rc.1", "codex-cli 1.0.0", "codex-cli 0.159.10",
-				"codex-cli 0.160.0-alpha.beta+exp.sha.5114f85"},
-			GrokID: {"grok 1.0.46 (2765805b9442) [stable]", "grok 1.0.46 (0000000000ff) [beta]", "grok 1.0.46 (a) [nightly-2]", "grok 1.0.47 (2765805b9442) [stable]",
-				"grok 2.0.0 (" + strings.Repeat("f", 64) + ") [" + strings.Repeat("c", 32) + "]", "grok 1.0.46+meta (2765805b9442) [stable]"},
+			CodexID: {"codex-cli 0.162.1", "codex-cli 0.163.0", "codex-cli 0.162.2", "codex-cli 0.163.0-rc.1", "codex-cli 1.0.0", "codex-cli 0.162.10",
+				"codex-cli 0.163.0-alpha.beta+exp.sha.5114f85"},
+			GrokID: {"grok 1.0.52 (0920c8169e27) [stable]", "grok 1.0.52 (0000000000ff) [beta]", "grok 1.0.52 (a) [nightly-2]", "grok 1.0.53 (0920c8169e27) [stable]",
+				"grok 2.0.0 (" + strings.Repeat("f", 64) + ") [" + strings.Repeat("c", 32) + "]", "grok 1.0.52+meta (0920c8169e27) [stable]"},
 			// Same date with another hash is equal and accepted; later dates
 			// and a valid leap day pass.
 			CursorID: {"2026.10.01-e373342", "2026.10.01-abcdef0", "2026.10.01-0", "2026.10.02-abcdef0", "2026.11.01-e373342", "2027.01.01-1",
@@ -332,10 +348,10 @@ func TestWorkerVersionPolicy(t *testing.T) {
 	})
 	t.Run("older", func(t *testing.T) {
 		for id, outs := range map[string][]string{
-			ClaudeID: {"2.1.284 (Claude Code)", "2.0.999 (Claude Code)", "1.99.999 (Claude Code)", "0.0.0 (Claude Code)", "2.1.285-rc.1 (Claude Code)",
-				"2.1.285-0 (Claude Code)", "2.1.284+2.1.292 (Claude Code)"},
-			CodexID:  {"codex-cli 0.158.99", "codex-cli 0.159.0-rc.1", "codex-cli 0.9.0", "codex-cli 0.159.0-alpha"},
-			GrokID:   {"grok 1.0.45 (1111111aaaaa) [stable]", "grok 1.0.46-rc.1 (2765805b9442) [stable]", "grok 0.99.99 (2765805b9442) [stable]"},
+			ClaudeID: {"2.1.298 (Claude Code)", "2.1.285 (Claude Code)", "2.1.292 (Claude Code)", "2.0.999 (Claude Code)", "1.99.999 (Claude Code)", "0.0.0 (Claude Code)", "2.1.299-rc.1 (Claude Code)",
+				"2.1.299-0 (Claude Code)", "2.1.284+2.1.292 (Claude Code)"},
+			CodexID:  {"codex-cli 0.162.0", "codex-cli 0.162.1-rc.1", "codex-cli 0.159.0", "codex-cli 0.160.0", "codex-cli 0.158.99", "codex-cli 0.159.0-rc.1", "codex-cli 0.9.0", "codex-cli 0.159.0-alpha"},
+			GrokID:   {"grok 1.0.51 (1111111aaaaa) [stable]", "grok 1.0.46 (2765805b9442) [stable]", "grok 1.0.52-rc.1 (0920c8169e27) [stable]", "grok 1.0.47 (2765805b9442) [stable]", "grok 0.99.99 (2765805b9442) [stable]"},
 			CursorID: {"2026.09.30-abcdef0", "2026.09.30-e373342", "2025.12.31-e373342", "2026.01.31-ffffff", "0001.01.01-0"},
 		} {
 			for _, out := range outs {
@@ -407,8 +423,20 @@ func TestWorkerVersionPolicy(t *testing.T) {
 		// Every configured baseline parses; an invalid or unknown baseline
 		// refuses every output with the fixed configuration text.
 		for _, q := range Qualifications() {
-			if _, ok := parseWorkerVersion(q.ID, q.Version); !ok || baseline[q.ID] != q.Version {
-				t.Fatalf("%s baseline %q does not parse", q.ID, q.Version)
+			if _, ok := parseWorkerVersion(q.ID, q.Version); !ok {
+				t.Fatalf("%s historical %q does not parse", q.ID, q.Version)
+			}
+			if _, ok := parseWorkerVersion(q.ID, baseline[q.ID]); !ok || workerMinimumVersions[q.ID] != baseline[q.ID] {
+				t.Fatalf("%s minimum %q does not parse", q.ID, baseline[q.ID])
+			}
+			v := newVendor(q.ID, t.TempDir())
+			if got := v.versionCheck(baseline[q.ID]+"\n", ""); got != "" {
+				t.Fatalf("%s versionCheck refused the minimum: %s", q.ID, got)
+			}
+			if q.Version != baseline[q.ID] {
+				if got := v.versionCheck(q.Version+"\n", ""); got == "" {
+					t.Fatalf("%s versionCheck accepted the historical identity %q", q.ID, q.Version)
+				}
 			}
 		}
 		for id, bad := range map[string]string{ClaudeID: "2.1.285", CodexID: "0.159.0", GrokID: "grok 1.0.46", CursorID: "2026.02.30-e373342"} {

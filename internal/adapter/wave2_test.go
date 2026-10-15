@@ -197,7 +197,7 @@ func TestWave2Posture(t *testing.T) {
 // explicit-path version probes on the injected runner and fake clock.
 func TestWave2VendorProbe(t *testing.T) {
 	exe := exeFile(t, 0o755)
-	grokV, cursorV := "grok 1.0.46 (2765805b9442) [stable]", "2026.10.01-e373342"
+	grokV, cursorV := "grok 1.0.52 (0920c8169e27) [stable]", "2026.10.01-e373342"
 	for id, v := range map[string]string{GrokID: grokV, CursorID: cursorV} {
 		for _, out := range []string{v + "\n", v + "\r\n", v} {
 			r := &fakeRunner{out: out, errOut: "warning: SECRET-STDERR environment note\n"}
@@ -227,8 +227,9 @@ func TestWave2VendorProbe(t *testing.T) {
 		// Design 12a-worker-selection: an older Grok is refused, the same
 		// version on another channel and a newer Cursor date are eligible,
 		// and an impossible date is an invalid version of the vendor.
-		"grok older version":     {GrokID, "grok 1.0.45 (1111111aaaaa) [stable]\n", "", nil, "has an older grok version; minimum grok 1.0.46 (2765805b9442) [stable]"},
-		"grok other channel":     {GrokID, "grok 1.0.46 (2765805b9442) [beta]\n", "", nil, ""},
+		"grok older version":     {GrokID, "grok 1.0.51 (1111111aaaaa) [stable]\n", "", nil, "has an older grok version; minimum grok 1.0.52 (0920c8169e27) [stable]"},
+		"grok historical":        {GrokID, "grok 1.0.46 (2765805b9442) [stable]\n", "", nil, "has an older grok version; minimum grok 1.0.52 (0920c8169e27) [stable]"},
+		"grok other channel":     {GrokID, "grok 1.0.52 (0920c8169e27) [beta]\n", "", nil, ""},
 		"cursor newer date":      {CursorID, "2026.10.02-abcdef0\n", "", nil, ""},
 		"cursor invalid date":    {CursorID, "2026.13.45-e373342\n", "", nil, "has an invalid cursor version; expected an orderable version at or above 2026.10.01-e373342"},
 		"grok given cursor":      {GrokID, cursorV + "\n", "", nil, "is not the grok CLI (unexpected version output)"},
@@ -352,7 +353,7 @@ func TestWave2VendorInvocation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"--output-format", "json", "--model", "grok-4.7", "--reasoning-effort", "low", "--permission-mode", "dontAsk", "-p", string(prompt)}
+	want := []string{"--output-format", "json", "--model", "grok-4.7", "--reasoning-effort", "low", "--permission-mode", "auto", "-p", string(prompt)}
 	if !slices.Equal(inv.Argv, want) || len(inv.Stdin) != 0 || inv.Stdin != nil || inv.FinalFile != "" {
 		t.Fatalf("grok invocation %q stdin %q final %q", inv.Argv, inv.Stdin, inv.FinalFile)
 	}
@@ -459,7 +460,7 @@ func TestWave2VendorInvocation(t *testing.T) {
 	codex := NewCodex("")
 	scratch, finalDir := "/state/tasks/"+taskID+"/work", "/state/tasks/"+taskID+"/work/.callsheet-runtime"
 	cinv, err := codex.Invocation(TaskInput{TaskID: taskID, Model: "gpt-6.1-sol", Effort: "low", Prompt: []byte("p"), ScratchDir: scratch, FinalDir: finalDir})
-	if err != nil || cinv.FinalFile != finalDir+"/"+CodexFinalName || cinv.Argv[10] != cinv.FinalFile {
+	if err != nil || cinv.FinalFile != finalDir+"/"+CodexFinalName || cinv.Argv[9] != cinv.FinalFile {
 		t.Fatalf("codex final-output directory %+v %v", cinv, err)
 	}
 	for _, bad := range []string{"relative/final", finalDir + "/", finalDir + "/../x"} {
