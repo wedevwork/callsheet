@@ -47,11 +47,12 @@ const (
 )
 
 // Frozen handles: the enrollment index's bytes, the native parents in
-// their order (436 after the seven 12a-2c slice A names), the stress
-// plan's argv on both hosts and the CI workflow's bytes.
+// their order (436 after the seven 12a-2c slice A names; slice B renamed
+// TestWave2Invocation/cursor-boundaries and TestWave2Dispatch/auto-cursor
+// in place), the stress plan's argv on both hosts and the CI workflow's bytes.
 const (
 	enrollmentIndexSHA256 = "c0f28d31dc24401977037c9e0b27a44810ea19984518a8bc46ab62c8b6ea7e61"
-	nativeInventorySHA256 = "6c992e4ee7e364cee22f43e90562743fbaf1e5d755a329a8b30cf8c467d435d9"
+	nativeInventorySHA256 = "60a8fb205c088e7e255527234f4bd5edac0cd0cb9d0951caacd7b4564f235172"
 	stressArgvSHA256      = "04ed36ef45fddaa0c036be114d8a5ce89e8a86dc0675997341dd89e89805e61a"
 	ciWorkflowSHA256      = "a4cbc826d9e75459d4e72b075167cb8513b602fbe6f74e3c11aa901afc9ab452"
 )

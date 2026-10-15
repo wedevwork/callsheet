@@ -139,7 +139,11 @@ func (d *deps) run(ctx context.Context, o RunOptions) error {
 		logger.Warn(w)
 	}
 	if o.CursorAdapterPath != "" {
-		logger.Warn(CursorVendorWarning)
+		w := CursorVendorWarning
+		if o.GOOS != "linux" {
+			w += " " + CursorNonLinuxWarningSuffix
+		}
+		logger.Warn(w)
 	}
 	d.emit(event{kind: evStarted})
 	w := newWorkers()

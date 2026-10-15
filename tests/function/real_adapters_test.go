@@ -1502,7 +1502,8 @@ func autoPolicy(t *testing.T, r *realRig) {
 			}
 		}
 	}
-	if inv, err := adapterFor("cursor").Invocation(adapter.TaskInput{TaskID: "t_" + strings.Repeat("0", 32), Model: "grok-4.7", Effort: "low", Prompt: []byte("p")}); err == nil || inv.Argv != nil {
+	inv, err := adapterFor("cursor").Invocation(adapter.TaskInput{TaskID: "t_" + strings.Repeat("0", 32), Model: "grok-4.7", Effort: "low", Prompt: []byte("p")})
+	if err != nil || !slices.Equal(inv.Argv, []string{"-p", "--trust", "--auto-review", "--output-format", "json", "--model", "grok-4.7-low", "p"}) || inv.Stdin != nil {
 		t.Fatalf("cursor invocation %+v %v", inv, err)
 	}
 	if !wave2Linux() {
@@ -1766,7 +1767,11 @@ func autoMinima(t *testing.T) {
 	} else {
 		expectUnready(t, at, "min-grok", "grok", wave2GrokRefusal)
 	}
-	expectUnready(t, at, "min-cursor", "cursor", wave2CursorRefusal)
+	if wave2Linux() {
+		expectReady(t, at, "min-cursor", "cursor")
+	} else {
+		expectUnready(t, at, "min-cursor", "cursor", wave2CursorRefusal)
+	}
 	for _, n := range []*minimaNode{low, at} {
 		if ls := launches(t, n.kit, func(l launch) bool { return l.Mode == "task" }); len(ls) != 0 {
 			t.Fatalf("a version probe launched a task: %+v", ls)

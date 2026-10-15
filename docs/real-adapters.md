@@ -6,9 +6,10 @@ it is explicitly given, with the prompt on stdin, and returns the vendor's
 final message; no workspace, checkout or pushed result is involved. The
 qualification evidence and every per-fact status are in the
 [support catalog](support-catalog.md); this page is the operator procedure.
-Iteration 11 adds `grok`, which runs on Linux only with narrow limits, and
-`cursor`, which is registered and version-probed but refused for task
-execution; see [Wave 2: Grok and Cursor](#wave-2-grok-and-cursor).
+Iteration 11 adds `grok` and `cursor`. Both run on Linux only. Cursor's
+Linux recipe is `--trust --auto-review` with a positional prompt; every
+other OS refuses Cursor task execution. See
+[Wave 2: Grok and Cursor](#wave-2-grok-and-cursor).
 
 ## Selection and versions
 
@@ -62,7 +63,7 @@ version**, which is independent of the historical capture identity in the
 support catalog, with no warning for a newer version and no claim that a
 newer version is compatible. These baselines are conservative product
 floors from the captured help identities, not claims that auto first
-appeared there. Cursor's date baseline does not overcome its execution
+appeared there. Cursor's date baseline does not overcome its non-Linux
 refusal.
 
 | Adapter | `--version` line (literal spaces) | Runtime minimum | Ordering |
@@ -132,6 +133,7 @@ operator-approved working directory.
 | `claude` | `-p --model MODEL --effort EFFORT --permission-mode auto --permission-prompts none --output-format json` (prompt on stdin) |
 | `codex` | `exec --approve-for-me --model MODEL -c model_reasoning_effort="EFFORT" --json --skip-git-repo-check --output-last-message <final>/callsheet-final.txt -` (prompt on stdin; `<final>` is the scratch directory, or the workspace task's owned final-output directory) |
 | `grok` | Linux only: `--output-format json --model MODEL --reasoning-effort EFFORT --permission-mode auto -p <composed-prompt>`, stdin empty |
+| `cursor` | Linux only: `-p --trust --auto-review --output-format json --model MODEL-EFFORT <composed-prompt>`, stdin empty |
 
 Claude auto is available on all plans unless an administrator sets
 `permissions.disableAutoMode`. Supported models include Opus 4.6+ and
@@ -193,9 +195,10 @@ vendor's own tools, for example `claude sandbox status` and your Claude
 Each task gets a fresh private scratch directory (mode 0700, not a git
 checkout) as its working directory, in its own process group led by the
 task guardian. For Claude and Codex, the composed prompt is the only stdin;
-it is never an argument or a prompt file. Grok differs: it receives the
-complete composed prompt as its `-p` argument, with stdin empty, so the
-prompt is visible to process inspection; see the argv exposure warning in
+it is never an argument or a prompt file. Grok and Cursor differ: each
+receives the complete composed prompt as one argument (Grok's `-p` value,
+Cursor's final positional argument), with stdin empty, so the prompt is
+visible to process inspection; see the argv exposure warnings in
 [Wave 2: Grok and Cursor](#wave-2-grok-and-cursor).
 
 - **Claude**: the final message is the `result` string of the single JSON
@@ -243,7 +246,7 @@ and the pairs are evidence; selection and versions follow
 | Adapter | Observed version (`--version` output) | Observed model | Observed effort | Worker execution |
 |---|---|---|---|---|
 | `grok` | `grok 1.0.46 (2765805b9442) [stable]` | `grok-4.7` | `low` | Historical Linux capture, not current argv: `--output-format json --model grok-4.7 --reasoning-effort low --permission-mode dontAsk -p <composed-prompt>`, stdin empty |
-| `cursor` | `2026.10.01-e373342` | `grok-4.7` | `low` | Refused on every OS |
+| `cursor` | `2026.10.01-e373342` | `grok-4.7` | `low` | Historical rejected candidate, not current argv: `-p --output-format json --model grok-4.7-low --force --trust`, prompt on stdin |
 
 Enable them like the others, with absolute paths on every start (the
 captured Cursor executable is `cursor-agent`; its `agent` alias was not
@@ -261,13 +264,17 @@ accepts the version above or a later one (for Cursor the same or a later
 date, whatever its hash); an eligible version is invocability, not
 permission to execute tasks.
 
-Cursor encodes effort in a vendor model name, with no standalone effort
-flag: the observed pair (`grok-4.7`, `low`) ran as the vendor model
-`grok-4.7-low`, and requirement Q12 lists (`grok-4.7`, `xhigh`) as
-`grok-4.7-xhigh` (likewise `medium` and `high`). These are evidence and
-examples, not a model allowlist, and Callsheet has no executable Cursor
-mapping: every valid Cursor selection is refused before any argument is
-built.
+Cursor encodes effort in the model argument as `MODEL-EFFORT`, with no
+trimming, alias lookup, fast-suffix relocation or fallback: the role pair
+(`grok-4.7`, `low`) is the argument `grok-4.7-low`, and (`grok-4.7`,
+`high`) is `grok-4.7-high`. A name that already contains an effort is not
+rewritten, so `grok-4.7-high-fast` with effort `low` is
+`grok-4.7-high-fast-low`. This is a Callsheet transformation, not a vendor
+fact: the owner probe of `(grok-4.7, high)` is a deployment prerequisite,
+and a pair the vendor does not support fails as that vendor's result.
+The iteration-11 observation that only the literal `grok-4.7-low` was
+measured, and that Callsheet then applied no general concatenation, is
+historical.
 
 **Grok** requests auto. The historical `dontAsk` capture cancelled every
 measured write, including permitted in-directory writes (`stopReason`
@@ -290,25 +297,47 @@ grok adapter enabled: auto is requested; prompts are passed in argv and may be v
 
 with ` grok worker execution on macOS is refused pending qualification; consult the support catalog` appended on macOS.
 
-**Cursor** is refused: its measured `--force --trust` candidate wrote
-outside its scratch directory (home and `/tmp`), the baseline without those
-flags refused workspace trust, and adding `--sandbox enabled` failed
-authentication before any containment could be observed. Registering a
-`cursor` role after a matching version probe returns `invalid_argument`,
-field `adapter`, reason `probe_failed` and the message `cursor worker
-execution is refused: no qualified unattended recipe preserves the operator
-posture; consult the support catalog`; a role can never become ready, and a
-stale role's task is refused `start_failed` before any launch (sidecar log
-`task worker posture not qualified`, `reason=worker_posture_not_qualified`).
-At start the sidecar logs once `cursor adapter enabled for version probing
-only: unattended worker execution is refused because no qualified recipe
-preserves the operator posture; consult the support catalog`. Its JSON
-result parser exists for offline fixtures only. This fail-closed boundary
-is the delivered Cursor outcome.
+**Cursor** on Linux runs
+`-p --trust --auto-review --output-format json --model MODEL-EFFORT <composed-prompt>`
+with empty stdin. The prompt is one positional argument, limited to 32 KiB
+(a product argv policy, not a measured vendor limit): a larger, empty,
+non-UTF-8 or NUL-containing prompt is refused before launch as
+`start_failed`. The final message is the `result` string of the one JSON
+object on stdout (`type` `result`, boolean `is_error`); that extraction is
+live, and the observed result need not be the single word DONE. Passing
+`--trust` may cause Cursor to record trust and other state outside the
+task directory. Callsheet does not create, patch, restore or delete that
+state. `--trust --auto-review` is the owner-authorized recipe; it is a
+permission policy, not evidence of OS confinement, and an untouched
+sentinel is a limited observation. No jail and no non-Linux qualification
+has shipped. On every other OS, role registration, every ready check and
+task preparation (including a stale role) refuse with `invalid_argument`,
+field `adapter` or `start_failed`, and the message `cursor worker
+execution is not qualified on this OS; consult the support catalog`;
+nothing is launched (sidecar log `task worker posture not qualified`,
+`reason=worker_posture_not_qualified`). This non-Linux fail-closed boundary
+is the delivered refusal.
 
-Neither adapter passes a sandbox override, approval bypass, trust or force
-flag, edits operator configuration, selects a profile or retries with
-broader permissions. Run sidecars under a dedicated OS user. No
+Iteration 11's `--force --trust` candidate wrote outside its scratch
+directory (home and `/tmp`), the baseline without those flags refused
+workspace trust, and adding `--sandbox enabled` failed authentication
+before any containment could be observed. Those captures stay historical.
+Callsheet never passes `--force`, `--yolo`, `--approve-mcps` or
+`--sandbox`. The model-argument encoding above is unverified against a
+live CLI until the owner probe of `(grok-4.7, high)`.
+
+At start the sidecar logs once:
+
+```text
+cursor adapter enabled: on Linux, tasks run with --trust --auto-review; prompts are passed in argv and may be visible to process inspection; the prompt limit is 32 KiB; Cursor records trust and maintains state outside the task directory
+```
+
+with ` cursor worker execution is not qualified on this OS; consult the support catalog` appended when the OS is not Linux.
+
+Neither adapter passes `--sandbox`, `--force`, `--yolo` or `--approve-mcps`,
+edits operator configuration, selects a profile or retries with broader
+permissions. Cursor's recipe does pass `--trust` and `--auto-review`, which
+is not a confinement claim. Run sidecars under a dedicated OS user. No
 configuration profile, key or enforcement mechanism can be prescribed as
 verified from these captures: they hold no sanitized effective
 configuration and no proof of all-tool containment. What a later
@@ -322,9 +351,11 @@ checked-in captures byte for byte through a stub enabled with the real
 `--claude-adapter`, `--codex-adapter`, `--grok-adapter` and
 `--cursor-adapter` flags, against a real plane, sidecar and `callsheet
 mcp`, with an isolated HOME and a PATH of launch-recording traps. They
-prove Callsheet's argv, stdin, extraction and exit handling of the captured
-contract, and Cursor's refusal with zero task launches, not that vendor
-behavior is stable. Alternate selections replay recorded bytes under
+prove Callsheet's argv, stdin, extraction and exit handling. On Linux the
+Cursor parents use a synthetic current-recipe result, not a vendor
+capture and not a claim that confinement or non-Linux execution has
+shipped. On macOS they assert Cursor's OS refusal with zero task launches.
+Alternate selections replay recorded bytes under
 explicitly synthetic normalization: they prove Callsheet's routing of the
 selected model and effort, never a real execution of that pair.
 
@@ -373,11 +404,15 @@ go test -tags=realadaptersmoke ./tests/smoke -run '^TestRealWorkerSmoke$' -count
 On Linux the Grok subtest dispatches the no-tools goal and expects exit 0
 and the final bytes `pong`: answer-path operability, not useful tool work
 or containment. On macOS it is an expected-refusal smoke: the role is
-refused with Grok's posture message and nothing is launched. The Cursor
-subtest, on either system, is a non-model refusal smoke: after a matching
-version probe the role registration returns Cursor's posture refusal and
-the role never becomes ready or dispatches. Neither refusal is vendor
-qualification. Unset Claude/Codex paths skip those subtests as before.
+refused with Grok's posture message and nothing is launched. On Linux the
+Cursor subtest dispatches a synthetic goal under the current recipe and
+expects exit 0 and the final bytes `pong`: answer-path operability of
+`--trust --auto-review`, not containment, not a jail, and not a non-Linux
+qualification.
+On macOS it is an expected-refusal smoke: the role is refused with
+Cursor's OS-posture message and nothing is launched. Neither a Linux pass
+nor a macOS refusal is vendor qualification. Unset Claude/Codex paths
+skip those subtests as before.
 
 ## Remote acceptance (M3)
 

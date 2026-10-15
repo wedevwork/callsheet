@@ -472,7 +472,7 @@ with the 353 earlier names unchanged and first:
 `TestWave2Registration/posture`), `TestWave2Probe`
 (`TestWave2Probe/grok`, `TestWave2Probe/cursor`, `TestWave2Probe/refusal`),
 `TestWave2Invocation` (`TestWave2Invocation/grok`,
-`TestWave2Invocation/cursor-refused`, `TestWave2Invocation/prompt`),
+`TestWave2Invocation/cursor-boundaries`, `TestWave2Invocation/prompt`),
 `TestWave2GrokFinal` (`TestWave2GrokFinal/success`,
 `TestWave2GrokFinal/error`, `TestWave2GrokFinal/cancelled`,
 `TestWave2GrokFinal/malformed`), `TestWave2CursorFinal`
@@ -483,7 +483,7 @@ with the 353 earlier names unchanged and first:
 `TestWave2Outcomes/retry`), `TestWave2Catalog`
 (`TestWave2Catalog/recipes`, `TestWave2Catalog/evidence`,
 `TestWave2Catalog/ownership`), `TestWave2Dispatch`
-(`TestWave2Dispatch/grok`, `TestWave2Dispatch/cursor-refused`,
+(`TestWave2Dispatch/grok`, `TestWave2Dispatch/auto-cursor`,
 `TestWave2Dispatch/no-vendors`) and `TestWave2SmokeGate`
 (`TestWave2SmokeGate/default-off`, `TestWave2SmokeGate/ci-off`,
 `TestWave2SmokeGate/absent`, `TestWave2SmokeGate/enabled`,
@@ -493,9 +493,11 @@ those existing parents, 7 more names, 436 in all:
 `TestRealAdapterProbe/auto-minima`, `TestRealAdapterInvocation/auto-claude`,
 `TestRealAdapterInvocation/auto-codex`, `TestRealAdapterOutcomes/auto-policy`,
 `TestRealAdapterOutcomes/auto-denials`, `TestRealAdapterCatalog/auto-contract`
-and `TestWave2Invocation/auto-grok`. Cursor execution stays the refused
-`TestWave2Dispatch/cursor-refused` and `TestWave2Invocation/cursor-refused`
-cases. The sidecar tuple appends the four tagged
+and `TestWave2Invocation/auto-grok`. Slice B renames the Cursor cases in
+place: `TestWave2Dispatch/auto-cursor` is the Linux trust/auto-review
+dispatch, and `TestWave2Invocation/cursor-boundaries` is the non-Linux
+refusal plus the prompt bounds. The name count is unchanged. The sidecar
+tuple appends the four tagged
 direct subtests `TestRealAdapterLocal/wave2-posture`,
 `TestRealAdapterLocal/wave2-invocation`, `TestRealAdapterLocal/wave2-outcomes`
 and `TestRealAdapterLocal/wave2-retry` after the iteration 08 names (12
@@ -510,8 +512,12 @@ now also impersonating `grok` and `cursor-agent` and enabled only through
 `cursor-agent`, `agent`, `claude` and `codex` traps asserted unused; on
 macOS they assert the native Grok refusal and the tagged local contract
 exercises the identical Linux task logic through its role environment's OS
-value, never by faking a vendor run's OS. Cursor is refused on both, with
-zero task launches; no job runs a vendor CLI, calls a model or needs
+value, never by faking a vendor run's OS. On Linux, Cursor task parents
+replay a synthetic current recipe; on macOS they assert the OS refusal
+with zero task launches. The tagged local contract exercises the Linux
+Cursor argv and the macOS refusal through its role environment's OS
+value. No jail and no non-Linux Cursor qualification is claimed. No job
+runs a vendor CLI, calls a model or needs
 credentials, and `TestWave2SmokeGate` proves the wave-2 smoke's gate and
 refusal paths without calling `t.Skip`. The new adapter unit tests are pure
 or injected and run in the packages shard with the rest of

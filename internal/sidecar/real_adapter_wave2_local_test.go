@@ -35,7 +35,7 @@ import (
 // Exact wave-2 posture refusals (adapter.ValidateWorkerPosture).
 const (
 	wave2GrokPosture   = "grok worker execution is not qualified on this OS; consult the support catalog"
-	wave2CursorPosture = "cursor worker execution is refused: no qualified unattended recipe preserves the operator posture; consult the support catalog"
+	wave2CursorPosture = "cursor worker execution is not qualified on this OS; consult the support catalog"
 )
 
 // wave2Capture reads one of iteration 11's checked-in captures.
@@ -177,17 +177,18 @@ func wave2Posture(t *testing.T) {
 	// Grok's single warning (with the macOS suffix on darwin), Cursor's,
 	// and the unchanged Claude/Codex macOS warning only for those vendors.
 	grokDarwin := GrokVendorWarning + " " + GrokDarwinWarningSuffix
+	cursorOff := CursorVendorWarning + " " + CursorNonLinuxWarningSuffix
 	for _, c := range []struct {
-		goos                         string
-		claude, grok, cursor         bool
-		wantGrok, wantSuffixed, wCur int
-		wantDarwin                   int
+		goos                                  string
+		claude, grok, cursor                  bool
+		wantGrok, wantSuffixed, wCur, wCurOff int
+		wantDarwin                            int
 	}{
-		{"linux", false, true, true, 1, 0, 1, 0},
-		{"darwin", false, true, true, 0, 1, 1, 0},
-		{"darwin", false, false, true, 0, 0, 1, 0},
-		{"darwin", true, true, false, 0, 1, 0, 1},
-		{"linux", true, false, false, 0, 0, 0, 0},
+		{"linux", false, true, true, 1, 0, 1, 0, 0},
+		{"darwin", false, true, true, 0, 1, 0, 1, 0},
+		{"darwin", false, false, true, 0, 0, 0, 1, 0},
+		{"darwin", true, true, false, 0, 1, 0, 0, 1},
+		{"linux", true, false, false, 0, 0, 0, 0, 0},
 	} {
 		fp := startFakePlane(t)
 		n := &atomic.Int32{}
@@ -206,20 +207,21 @@ func wave2Posture(t *testing.T) {
 		tr.ev.await(t, evStarted)
 		logs := tr.logs.String()
 		if warnings(logs, GrokVendorWarning) != c.wantGrok || warnings(logs, grokDarwin) != c.wantSuffixed || warnings(logs, CursorVendorWarning) != c.wCur ||
-			warnings(logs, DarwinVendorWarning) != c.wantDarwin || warnings(logs, FakeAdapterWarning) != 1 {
+			warnings(logs, cursorOff) != c.wCurOff || warnings(logs, DarwinVendorWarning) != c.wantDarwin || warnings(logs, FakeAdapterWarning) != 1 {
 			t.Fatalf("%+v: warnings\n%s", c, logs)
 		}
 	}
-	if CursorVendorWarning != "cursor adapter enabled for version probing only: unattended worker execution is refused because no qualified recipe preserves the operator posture; consult the support catalog" ||
+	if CursorVendorWarning != "cursor adapter enabled: on Linux, tasks run with --trust --auto-review; prompts are passed in argv and may be visible to process inspection; the prompt limit is 32 KiB; Cursor records trust and maintains state outside the task directory" ||
+		CursorNonLinuxWarningSuffix != wave2CursorPosture ||
 		GrokVendorWarning != "grok adapter enabled: auto is requested; prompts are passed in argv and may be visible to process inspection; the composed prompt limit is 32 KiB; exit 0 does not prove requested work completed" ||
 		GrokDarwinWarningSuffix != "grok worker execution on macOS is refused pending qualification; consult the support catalog" {
 		t.Fatal("a wave-2 warning text changed")
 	}
 
 	// Candidate validation through the native session: Cursor's matching
-	// probe runs, then its posture refuses with the fixed text; Grok passes
-	// only on a Linux host. Selection precedes the probe; a disabled
-	// adapter names its own flag.
+	// probe runs, then Linux accepts it and every other OS refuses with
+	// the fixed text; Grok passes only on a Linux host. Selection precedes
+	// the probe; a disabled adapter names its own flag.
 	fp := startFakePlane(t)
 	vr := startWave2Run(t, fp, "", func(o *RunOptions) { o.ClaudeAdapterPath = "" }, nil)
 	ins, run := manuals(t, vr.dir, "a", "m")
@@ -227,25 +229,37 @@ func wave2Posture(t *testing.T) {
 	c.connect()
 	c.validate("p1", vendorRole(adapter.CursorID, "cur", ins, run))
 	e := c.result("p1")
-	wantResult(t, e, contract.CodeInvalidArgument, "adapter", contract.ReasonProbeFailed)
-	if e.Message != wave2CursorPosture || vr.probes.Load() != 1 {
-		t.Fatalf("cursor candidate %q after %d probes", e.Message, vr.probes.Load())
+	if runtime.GOOS == "linux" {
+		if e != nil || vr.probes.Load() != 1 {
+			t.Fatalf("cursor candidate %v after %d probes", e, vr.probes.Load())
+		}
+	} else {
+		wantResult(t, e, contract.CodeInvalidArgument, "adapter", contract.ReasonProbeFailed)
+		if e.Message != wave2CursorPosture || vr.probes.Load() != 1 {
+			t.Fatalf("cursor candidate %q after %d probes", e.Message, vr.probes.Load())
+		}
 	}
 	c.validate("p2", vendorRole(adapter.GrokID, "grk", ins, run))
 	if e := c.result("p2"); runtime.GOOS == "linux" && e != nil || runtime.GOOS == "darwin" && (e == nil || e.Message != wave2GrokPosture) {
 		t.Fatalf("native grok candidate on %s: %v", runtime.GOOS, e)
 	}
 	// Cursor's vendor model name is valid free model text (design
-	// 12a-worker-selection): it passes the selection, is probed once more
-	// and is then refused by the posture.
+	// 12a-worker-selection): it passes the selection and is probed once
+	// more. Linux then accepts it; every other OS refuses the posture.
 	vendorName := vendorRole(adapter.CursorID, "cur", ins, run)
 	vendorName.Model = "grok-4.7-low"
 	before := vr.probes.Load()
 	c.validate("p3", vendorName)
 	e = c.result("p3")
-	wantResult(t, e, contract.CodeInvalidArgument, "adapter", contract.ReasonProbeFailed)
-	if e.Message != wave2CursorPosture || vr.probes.Load()-before != 1 {
-		t.Fatalf("cursor vendor model name %q (%d probes)", e.Message, vr.probes.Load()-before)
+	if runtime.GOOS == "linux" {
+		if e != nil || vr.probes.Load()-before != 1 {
+			t.Fatalf("cursor vendor model name %v (%d probes)", e, vr.probes.Load()-before)
+		}
+	} else {
+		wantResult(t, e, contract.CodeInvalidArgument, "adapter", contract.ReasonProbeFailed)
+		if e.Message != wave2CursorPosture || vr.probes.Load()-before != 1 {
+			t.Fatalf("cursor vendor model name %q (%d probes)", e.Message, vr.probes.Load()-before)
+		}
 	}
 	c.validate("p4", vendorRole(adapter.ClaudeID, "cl", ins, run))
 	e = c.result("p4")
@@ -263,7 +277,7 @@ func wave2Posture(t *testing.T) {
 		cfg  contract.RoleConfig
 		want string
 	}{
-		{linuxEnv, grokCfg, ""}, {darwinEnv, grokCfg, wave2GrokPosture}, {linuxEnv, cursorCfg, wave2CursorPosture}, {darwinEnv, cursorCfg, wave2CursorPosture},
+		{linuxEnv, grokCfg, ""}, {darwinEnv, grokCfg, wave2GrokPosture}, {linuxEnv, cursorCfg, ""}, {darwinEnv, cursorCfg, wave2CursorPosture},
 		{darwinEnv, fakeCfg, ""}, {roleEnv{adapters: env.adapters, executables: env.executables}, grokCfg, wave2GrokPosture},
 	} {
 		err := vr.d.checkCandidate(bg, ce.env, ce.cfg)
@@ -279,7 +293,7 @@ func wave2Posture(t *testing.T) {
 	// Every ready-check cycle shares one probe per adapter and refuses the
 	// posture per OS.
 	roles := []contract.RoleRecord{{RoleConfig: grokCfg, RegistrationOrder: 1}, {RoleConfig: cursorCfg, RegistrationOrder: 2}, {RoleConfig: fakeCfg, RegistrationOrder: 3}}
-	for goos, want := range map[string][]bool{"linux": {true, false, true}, "darwin": {false, false, true}} {
+	for goos, want := range map[string][]bool{"linux": {true, true, true}, "darwin": {false, false, true}} {
 		ev := env
 		ev.goos = goos
 		before := vr.probes.Load()
@@ -308,8 +322,8 @@ func wave2Posture(t *testing.T) {
 	// Task preparation refuses independently (a stale or persisted role):
 	// start_failed, the fixed local diagnostic, no journal, scratch,
 	// workspace fetch, guardian or child, and the slot released. The
-	// Darwin decision runs on either host; on the Linux decision Grok
-	// launches while Cursor is still refused.
+	// Darwin decision runs on either host and launches nothing; on the
+	// Linux decision Grok and Cursor both launch.
 	for _, posture := range []string{"darwin", "linux"} {
 		ws := newFakeWS(t)
 		fp := startFakePlane(t)
@@ -333,15 +347,15 @@ func wave2Posture(t *testing.T) {
 				t.Fatalf("%s %s diagnostic:\n%s", posture, s.cfgs[role].Adapter, vr.logs.String())
 			}
 		}
-		refused(1, startBody(1, s.cfgs[1], 2, 1, "cursor goal"))
-		// A workspace start is refused before any checkout preparation.
-		wb := wsStart(2, s.cfgs[1], 1, ws)
-		wb.Role.RegistrationOrder = 2
-		refused(1, wb)
-		if len(ws.entered) != 0 {
-			t.Fatalf("%s: a refused workspace start fetched its base", posture)
-		}
 		if posture == "darwin" {
+			refused(1, startBody(1, s.cfgs[1], 2, 1, "cursor goal"))
+			// A workspace start is refused before any checkout preparation.
+			wb := wsStart(2, s.cfgs[1], 1, ws)
+			wb.Role.RegistrationOrder = 2
+			refused(1, wb)
+			if len(ws.entered) != 0 {
+				t.Fatalf("%s: a refused workspace start fetched its base", posture)
+			}
 			refused(0, startBody(3, s.cfgs[0], 1, 1, "grok goal"))
 			if vr.ledger.starts() != 0 {
 				t.Fatal("a refused start reached a guardian")
@@ -354,9 +368,20 @@ func wave2Posture(t *testing.T) {
 		if res, _ := s.drain(t, st); strOf(res.FinalMessage) != "pong" || res.ExitCode == nil || *res.ExitCode != 0 {
 			t.Fatalf("grok on the linux posture %+v", res)
 		}
-		// The slot the refusals released is reused.
-		if _, r := s.start(t, 4, 1, "cursor again"); r.Err == nil || r.Err.Details["reason"] != contract.ReasonStartFailed {
-			t.Fatalf("cursor after a launch %+v", r)
+		cst, cch := s.run(t, 5, 1, "cursor goal")
+		argv := cch.spec.argv
+		if len(argv) != 8 || !slices.Equal(argv[:7], []string{"-p", "--trust", "--auto-review", "--output-format", "json", "--model", "grok-4.7-low"}) ||
+			!strings.Contains(argv[7], "cursor goal") || slices.Contains(argv, "--force") || slices.Contains(argv, "--yolo") ||
+			slices.Contains(argv, "--approve-mcps") || slices.Contains(argv, "--sandbox") {
+			t.Fatalf("cursor child argv %q", argv)
+		}
+		if stdin := cch.prompt(t); len(stdin) != 0 {
+			t.Fatalf("cursor stdin %q", stdin)
+		}
+		cch.out([]byte("{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"pong\"}\n"))
+		cch.exitCode(0)
+		if res, _ := s.drain(t, cst); strOf(res.FinalMessage) != "pong" || res.ExitCode == nil || *res.ExitCode != 0 {
+			t.Fatalf("cursor on the linux posture %+v", res)
 		}
 	}
 }
@@ -460,6 +485,60 @@ func wave2Invocation(t *testing.T) {
 	}
 	vr.ev.awaitMatch(t, evTaskRefused, func(ev event) bool { return ev.id == taskID(20) })
 	noTaskLeft(t, vr, taskID(20))
+
+	// Cursor's 32 KiB positional-prompt boundary on the injected Linux
+	// posture (FP-4b): exactly 32 KiB launches; one byte more is
+	// start_failed before any guardian.
+	fp = startFakePlane(t)
+	vr = startWave2Run(t, fp, "linux", nil, nil)
+	cdir := filepath.Join(vr.dir, "mc")
+	os.MkdirAll(cdir, 0o755)
+	cins, crun := filepath.Join(cdir, "instruction.md"), filepath.Join(cdir, "runbook.md")
+	os.WriteFile(crun, []byte(runText), 0o644)
+	ccfg := vendorRole(adapter.CursorID, "c", cins, crun)
+	cs := vr.connect(t, 1, 1, ccfg)
+	for i, extra := range []int{0, 1} {
+		n := 30 + i
+		b := startBody(n, ccfg, 1, 1, "cursor boundary")
+		base, err := composePrompt(nil, []byte(runText), b, contract.MaxPromptBytes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pad := bytes.Repeat([]byte("a"), adapter.MaxCursorPromptBytes-len(base)+extra)
+		if p, _ := composePrompt(pad, []byte(runText), b, contract.MaxPromptBytes); len(p) != adapter.MaxCursorPromptBytes+extra {
+			t.Fatalf("padded cursor prompt %d bytes", len(p))
+		}
+		os.WriteFile(cins, pad, 0o644)
+		starts := vr.ledger.starts()
+		rid := cs.nextP()
+		cs.c.sendStart(rid, b)
+		r := cs.c.startResult(rid)
+		if extra == 0 {
+			if r.Err != nil {
+				t.Fatalf("a 32 KiB cursor prompt was refused: %+v", r.Err)
+			}
+			ch := vr.child(t)
+			if len(ch.spec.argv) != 8 || !slices.Equal(ch.spec.argv[:7], []string{"-p", "--trust", "--auto-review", "--output-format", "json", "--model", "grok-4.7-low"}) ||
+				len(ch.spec.argv[7]) != adapter.MaxCursorPromptBytes || slices.Contains(ch.spec.argv, "--force") {
+				t.Fatalf("cursor boundary argv %q", ch.spec.argv)
+			}
+			if stdin := ch.prompt(t); len(stdin) != 0 {
+				t.Fatalf("cursor boundary stdin %q", stdin)
+			}
+			ch.exitCode(0)
+			cs.drain(t, b)
+			continue
+		}
+		if r.Err == nil || r.Err.Details["reason"] != contract.ReasonStartFailed {
+			t.Fatalf("an over-32-KiB cursor prompt = %+v", r)
+		}
+		vr.ev.awaitMatch(t, evTaskRefused, func(ev event) bool { return ev.id == b.TaskID })
+		vr.noChild(t)
+		noTaskLeft(t, vr, b.TaskID)
+		if vr.ledger.starts() != starts {
+			t.Fatal("an oversized cursor prompt reached a guardian")
+		}
+	}
 }
 
 // wave2Outcomes is TestRealAdapterLocal/wave2-outcomes (FP-4, FP-6): the

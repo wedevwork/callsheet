@@ -36,7 +36,7 @@ func wave2Capture(t testing.TB, rel string) []byte {
 // Exact posture refusals (workers.md, Registration and enablement).
 const (
 	grokPostureText   = "grok worker execution is not qualified on this OS; consult the support catalog"
-	cursorPostureText = "cursor worker execution is refused: no qualified unattended recipe preserves the operator posture; consult the support catalog"
+	cursorPostureText = "cursor worker execution is not qualified on this OS; consult the support catalog"
 )
 
 // TestWave2RegistrySelection is UT FP-1 (iteration 11, design
@@ -146,18 +146,19 @@ func TestWave2RegistrySelection(t *testing.T) {
 		se.Error() != "adapter: unknown adapter; registered adapters: claude, codex, cursor, fake, grok" {
 		t.Fatalf("unknown adapter = %v", err)
 	}
-	// Cursor's observed pair does not make it runnable: its selection
-	// passes, its posture is refused on every OS and its invocation always
-	// errors.
+	// Cursor's observed pair is a valid selection. Linux may execute it;
+	// every other OS is the OS-posture refusal. Invocation itself builds
+	// the recipe (the sidecar applies the OS gate before launch).
 	cursor, _ := r.Lookup(CursorID)
 	inv, err := cursor.Invocation(TaskInput{TaskID: taskID, Model: "grok-4.7", Effort: "low", Prompt: []byte("prompt")})
-	if err == nil || err.Error() != cursorPostureText || inv.Argv != nil || inv.Stdin != nil || inv.FinalFile != "" {
+	if err != nil || !slices.Equal(inv.Argv, []string{"-p", "--trust", "--auto-review", "--output-format", "json", "--model", "grok-4.7-low", "prompt"}) || inv.Stdin != nil {
 		t.Fatalf("cursor invocation %+v %v", inv, err)
 	}
-	for _, goos := range []string{"linux", "darwin"} {
-		if err := ValidateWorkerPosture(CursorID, goos); err == nil {
-			t.Fatalf("cursor eligible on %s", goos)
-		}
+	if err := ValidateWorkerPosture(CursorID, "linux"); err != nil {
+		t.Fatalf("cursor on linux: %v", err)
+	}
+	if err := ValidateWorkerPosture(CursorID, "darwin"); err == nil || err.Error() != cursorPostureText {
+		t.Fatalf("cursor on darwin: %v", err)
 	}
 }
 
@@ -172,7 +173,10 @@ func TestWave2Posture(t *testing.T) {
 			t.Fatalf("grok on %q: %v", goos, err)
 		}
 	}
-	for _, goos := range []string{"linux", "darwin", "", "windows"} {
+	if err := ValidateWorkerPosture(CursorID, "linux"); err != nil {
+		t.Fatalf("cursor on linux: %v", err)
+	}
+	for _, goos := range []string{"darwin", "", "windows", "freebsd", "Linux", "linux "} {
 		if err := ValidateWorkerPosture(CursorID, goos); err == nil || err.Error() != cursorPostureText {
 			t.Fatalf("cursor on %q: %v", goos, err)
 		}
@@ -182,6 +186,11 @@ func TestWave2Posture(t *testing.T) {
 			if err := ValidateWorkerPosture(id, goos); err != nil {
 				t.Fatalf("%s on %q: %v", id, goos, err)
 			}
+		}
+	}
+	for _, id := range []string{ClaudeID, CodexID, FakeID} {
+		if err := ValidateWorkerPosture(id, "linux"); err != nil {
+			t.Fatalf("%s on linux: %v", id, err)
 		}
 	}
 	const secret = "SECRET-ADAPTER"
@@ -214,10 +223,10 @@ func TestWave2VendorProbe(t *testing.T) {
 			}
 		}
 	}
-	// A matching Cursor version is invocability only: Probe succeeds, the
-	// posture still refuses.
-	if ValidateWorkerPosture(CursorID, "linux") == nil {
-		t.Fatal("a probed cursor became eligible")
+	// A matching Cursor version is invocability only: Probe succeeds, and
+	// the date baseline does not overcome the non-Linux gate.
+	if ValidateWorkerPosture(CursorID, "linux") != nil || ValidateWorkerPosture(CursorID, "darwin") == nil {
+		t.Fatal("a probed cursor's posture ignored the OS gate")
 	}
 	for name, c := range map[string]struct {
 		id, out, errOut string
@@ -345,7 +354,7 @@ var grokForbidden = []string{"--sandbox", "--always-approve", "--force", "-f", "
 // TestWave2VendorInvocation is UT FP-3 (iteration 11): Grok's exact argv
 // with the composed prompt as its last element and an empty stdin, the
 // 32 KiB policy and its ordered refusals, ownership and forbidden flags;
-// Cursor always errors with a zero Invocation.
+// Cursor's Linux recipe, model-effort mapping and the same prompt bounds.
 func TestWave2VendorInvocation(t *testing.T) {
 	grok := NewGrok("")
 	prompt := []byte("{\"format\":\"callsheet-task-v1\"}\n'quoted' \"double\" $(not a shell) \\n `tick` -- --model other\té 😀\n")
@@ -473,17 +482,64 @@ func TestWave2VendorInvocation(t *testing.T) {
 		ginv.FinalFile != "" || slices.Contains(ginv.Argv, "--output-last-message") {
 		t.Fatalf("grok with directories %+v %v", ginv, err)
 	}
-	// Cursor: a valid selection always errors with the fixed posture
-	// refusal and a zero Invocation, whatever the prompt or directories; it
-	// never builds a force/trust or sandbox-enabled argv.
+	// Cursor (UT-2, FP-4a/FP-4b): exact argv, MODEL-EFFORT with no trimming
+	// or rewrite, one positional prompt, empty stdin, ordered prompt
+	// refusals, and none of the rejected permission flags.
 	cursor := NewCursor("")
-	for _, p := range [][]byte{nil, []byte("Reply with exactly the single word pong."), over, []byte("\xff\x00"), make([]byte, contract.MaxPromptBytes+1)} {
-		inv, err := cursor.Invocation(TaskInput{TaskID: taskID, Model: "grok-4.7", Effort: "low", Prompt: p, ScratchDir: "/s", FinalDir: "/s/f"})
-		if err == nil || err.Error() != cursorPostureText || inv.Argv != nil || inv.Stdin != nil || inv.FinalFile != "" {
-			t.Fatalf("cursor %d-byte prompt: %+v %v", len(p), inv, err)
+	cur, err := cursor.Invocation(TaskInput{TaskID: taskID, Model: "grok-4.7", Effort: "high", Prompt: prompt, ScratchDir: "relative/ignored", FinalDir: "also ignored"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cwant := []string{"-p", "--trust", "--auto-review", "--output-format", "json", "--model", "grok-4.7-high", string(prompt)}
+	if !slices.Equal(cur.Argv, cwant) || cur.Stdin != nil || cur.FinalFile != "" {
+		t.Fatalf("cursor invocation %q stdin %q final %q", cur.Argv, cur.Stdin, cur.FinalFile)
+	}
+	if last := cur.Argv[len(cur.Argv)-1]; last != string(prompt) {
+		t.Fatalf("cursor prompt element %q", last)
+	}
+	// A fully encoded name is not detected or rewritten: the effort is
+	// still appended.
+	encoded, err := cursor.Invocation(TaskInput{TaskID: taskID, Model: "grok-4.7-high-fast", Effort: "low", Prompt: []byte("p")})
+	if err != nil || encoded.Argv[6] != "grok-4.7-high-fast-low" {
+		t.Fatalf("cursor encoded name %q %v", encoded.Argv, err)
+	}
+	for _, a := range []string{"--force", "--yolo", "--approve-mcps", "--sandbox", "-f"} {
+		if slices.Contains(cur.Argv, a) {
+			t.Fatalf("cursor argv carries %q", a)
 		}
 	}
-	for _, in := range []TaskInput{{TaskID: "t_x", Model: "grok-4.7", Effort: "low"}, {TaskID: taskID, Model: "grok-4.7-low\n", Effort: "low"}} {
+	for _, p := range [][]byte{bytes.Repeat([]byte("p"), MaxCursorPromptBytes), bytes.Repeat([]byte("é"), MaxCursorPromptBytes/2), []byte("x")} {
+		if inv, err := cursor.Invocation(TaskInput{TaskID: taskID, Model: "grok-4.7", Effort: "low", Prompt: p}); err != nil || inv.Argv[7] != string(p) || inv.Argv[6] != "grok-4.7-low" {
+			t.Fatalf("cursor %d-byte prompt: %v", len(p), err)
+		}
+	}
+	cover := bytes.Repeat([]byte("p"), MaxCursorPromptBytes+1)
+	for name, c := range map[string]struct {
+		prompt []byte
+		reason string
+	}{
+		"empty":           {nil, cursorPromptEmptyReason},
+		"empty non-nil":   {[]byte{}, cursorPromptEmptyReason},
+		"one over":        {cover, cursorPromptTooLargeReason},
+		"16 MiB":          {make([]byte, contract.MaxPromptBytes), cursorPromptTooLargeReason},
+		"over and bad":    {append(slices.Clone(cover), 0xff), cursorPromptTooLargeReason},
+		"invalid utf8":    {[]byte("po\xffng"), cursorPromptUTF8Reason},
+		"cut rune":        {[]byte("pong\xe2\x82"), cursorPromptUTF8Reason},
+		"surrogate bytes": {[]byte("\xed\xa0\x80"), cursorPromptUTF8Reason},
+		"bad and nul":     {[]byte("\xff\x00"), cursorPromptUTF8Reason},
+		"nul":             {[]byte("po\x00ng"), cursorPromptNULReason},
+		"only nul":        {[]byte{0}, cursorPromptNULReason},
+	} {
+		inv, err := cursor.Invocation(TaskInput{TaskID: taskID, Model: "grok-4.7", Effort: "low", Prompt: c.prompt, ScratchDir: "/s", FinalDir: "/s/f"})
+		if err == nil || err.Error() != "adapter: "+c.reason || inv.Argv != nil || inv.Stdin != nil {
+			t.Fatalf("cursor %s: %q %v", name, inv.Argv, err)
+		}
+	}
+	if cursorPromptEmptyReason != "the cursor prompt must not be empty" || cursorPromptTooLargeReason != "the cursor prompt exceeds 32 KiB" ||
+		cursorPromptUTF8Reason != "the cursor prompt must be valid UTF-8" || cursorPromptNULReason != "the cursor prompt must not contain NUL" || MaxCursorPromptBytes != 32768 {
+		t.Fatal("the cursor prompt policy changed")
+	}
+	for _, in := range []TaskInput{{TaskID: "t_x", Model: "grok-4.7", Effort: "low", Prompt: []byte("p")}, {TaskID: taskID, Model: "grok-4.7-low\n", Effort: "low", Prompt: []byte("p")}} {
 		if inv, err := cursor.Invocation(in); err == nil || err.Error() == cursorPostureText || inv.Argv != nil {
 			t.Fatalf("cursor invalid input %+v: %v", in, err)
 		}

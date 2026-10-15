@@ -18,10 +18,11 @@ import (
 // Iteration 11's shell stand-ins: each records every launch (version or
 // task) in launches.log beside itself. Grok's task mode validates the exact
 // recipe argv with the observed smoke pair and an empty stdin, keeps the -p
-// value and answers pong; Cursor's has no task mode: any task launch is
-// recorded and fails. Since design 12a-worker-selection the Grok and
-// Cursor stand-ins print versions newer than their minimum (eligible, so
-// Cursor still reaches its posture refusal) and wrongCursor an older one.
+// value and answers pong; Cursor's task mode validates the Linux
+// auto/trust argv with the observed pair as MODEL-EFFORT, an empty stdin
+// and the positional prompt, and answers pong. Since design
+// 12a-worker-selection the Grok and Cursor stand-ins print versions newer
+// than their minimum (eligible) and wrongCursor an older one.
 // Grok's stand-in is strictly above the auto-mode runtime minimum.
 const (
 	fakeGrok = `#!/bin/sh
@@ -39,8 +40,14 @@ printf '{"text":"pong","stopReason":"end_turn","sessionId":"s"}\n'
 	fakeCursor = `#!/bin/sh
 here=$(dirname "$0")
 if [ "$#" = 1 ] && [ "$1" = --version ]; then echo version >> "$here/launches.log"; echo '2026.10.02-abcdef0'; exit 0; fi
-echo task >> "$here/launches.log"
-exit 97
+stdin=$(cat)
+if [ "$#" != 8 ] || [ "$1 $2 $3 $4 $5 $6 $7" != "-p --trust --auto-review --output-format json --model grok-4.7-low" ] || [ -n "$stdin" ]; then
+  echo "task bad" >> "$here/launches.log"; exit 97
+fi
+shift 7
+printf '%s' "$1" > "$here/prompt.txt"
+echo "task ok" >> "$here/launches.log"
+printf '{"type":"result","subtype":"success","is_error":false,"result":"pong"}\n'
 `
 	wrongCursor = `#!/bin/sh
 here=$(dirname "$0")
@@ -70,10 +77,9 @@ func launchLog(exe string) []string {
 
 // TestWave2Replay (iteration 11) runs the harness end to end with Grok and
 // Cursor stand-ins found only through explicit paths: on Linux the Grok
-// smoke completes through its exact recipe, on macOS it is the refusal
-// smoke; Cursor is refused on both after a matching version probe, with
-// zero task launches; the refusal helper never mistakes a wrong version or
-// a successful registration for the posture refusal.
+// and Cursor smokes complete through their exact recipes, and off Linux
+// each is the refusal smoke; the refusal helper never mistakes a wrong
+// version or a successful registration for the posture refusal.
 func TestWave2Replay(t *testing.T) {
 	dir := t.TempDir()
 	bin, err := testkit.BuildBinaryAt(dir, "./cmd/callsheet", "callsheet")
@@ -96,7 +102,7 @@ func TestWave2Replay(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	var wg sync.WaitGroup
-	var grokRes Result
+	var grokRes, cursorRes Result
 	var grokRef, cursorRef Refusal
 	var grokErr, cursorErr, wrongErr error
 	wg.Go(func() {
@@ -107,9 +113,36 @@ func TestWave2Replay(t *testing.T) {
 		grokRes, grokErr = Run(ctx, bin, filepath.Join(dir, "grok"), env, env, "grok", grok, "reply pong")
 	})
 	wg.Go(func() {
-		cursorRef, cursorErr = Refuse(ctx, bin, filepath.Join(dir, "cursor"), env, env, "cursor", cursor, runtime.GOOS)
+		if Refused("cursor", runtime.GOOS) {
+			cursorRef, cursorErr = Refuse(ctx, bin, filepath.Join(dir, "cursor"), env, env, "cursor", cursor, runtime.GOOS)
+			return
+		}
+		cursorRes, cursorErr = Run(ctx, bin, filepath.Join(dir, "cursor"), env, env, "cursor", cursor, "reply pong")
 	})
 	wg.Go(func() {
+		// Off Linux the posture check runs after the probe, so an older
+		// version is ErrNotRefused rather than the OS refusal. On Linux
+		// the OS is eligible, so the same probe failure is the role-add error.
+		if !Refused("cursor", runtime.GOOS) {
+			d, err := Start(ctx, bin, filepath.Join(dir, "wrong"), env)
+			if err != nil {
+				wrongErr = err
+				return
+			}
+			defer d.Close()
+			s, err := d.StartSidecar(ctx, "worker", env, "--cursor-adapter", wrong)
+			if err != nil {
+				wrongErr = err
+				return
+			}
+			ins, run, err := d.Manuals("wrong", SmokeInstruction, SmokeRunbook)
+			if err != nil {
+				wrongErr = err
+				return
+			}
+			wrongErr = d.AddVendorRole(ctx, "wrong-cursor", "cursor", s.NodeID, ins, run, 1)
+			return
+		}
 		_, wrongErr = Refuse(ctx, bin, filepath.Join(dir, "wrong"), env, env, "cursor", wrong, runtime.GOOS)
 	})
 	wg.Wait()
@@ -135,15 +168,31 @@ func TestWave2Replay(t *testing.T) {
 			t.Fatalf("grok launches %q", l)
 		}
 	}
-	if cursorErr != nil || cursorRef.Message != "cursor worker execution is refused: no qualified unattended recipe preserves the operator posture; consult the support catalog" ||
-		!strings.Contains(cursorRef.Logs, "cursor adapter enabled for version probing only") {
-		t.Fatalf("cursor refusal %+v %v", cursorRef, cursorErr)
-	}
-	if l := launchLog(cursor); len(l) == 0 || strings.Contains(strings.Join(l, " "), "task") {
-		t.Fatalf("cursor launches %q (a refused vendor must only be version-probed)", l)
+	switch runtime.GOOS {
+	case "linux":
+		if cursorErr != nil || cursorRes.View.State != contract.TaskSucceeded || cursorRes.View.Result == nil || cursorRes.View.Result.FinalMessage == nil ||
+			*cursorRes.View.Result.FinalMessage != "pong" {
+			t.Fatalf("cursor smoke %+v %v", cursorRes.View, cursorErr)
+		}
+		prompt, err := os.ReadFile(filepath.Join(filepath.Dir(cursor), "prompt.txt"))
+		if err != nil || !strings.Contains(string(prompt), `"goal":"reply pong"`) || len(prompt) > 32<<10 || len(prompt) == 0 {
+			t.Fatalf("cursor prompt %q %v", prompt, err)
+		}
+		if l := launchLog(cursor); len(l) < 2 || strings.Count(strings.Join(l, " "), "task-ok") != 1 || strings.Contains(strings.Join(l, " "), "bad") {
+			t.Fatalf("cursor launches %q", l)
+		}
+	default:
+		if cursorErr != nil || cursorRef.Message != "cursor worker execution is not qualified on this OS; consult the support catalog" ||
+			!strings.Contains(cursorRef.Logs, "cursor worker execution is not qualified on this OS; consult the support catalog") {
+			t.Fatalf("cursor refusal %+v %v", cursorRef, cursorErr)
+		}
+		if l := launchLog(cursor); len(l) == 0 || strings.Contains(strings.Join(l, " "), "task") {
+			t.Fatalf("cursor launches %q (a refused vendor must only be version-probed)", l)
+		}
 	}
 	// An older version is a probe failure, never the posture refusal.
-	if !errors.Is(wrongErr, ErrNotRefused) || !strings.Contains(wrongErr.Error(), "has an older cursor version; minimum 2026.10.01-e373342") {
+	if wrongErr == nil || !strings.Contains(wrongErr.Error(), "has an older cursor version; minimum 2026.10.01-e373342") ||
+		strings.Contains(wrongErr.Error(), "not qualified on this OS") || (Refused("cursor", runtime.GOOS) && !errors.Is(wrongErr, ErrNotRefused)) {
 		t.Fatalf("wrong cursor version: %v", wrongErr)
 	}
 	// The refusal helper on a shared deployment: an eligible pair is not a
@@ -169,11 +218,20 @@ func TestWave2Replay(t *testing.T) {
 	if err := d.RefuseVendorRole(ctx, "u0", "unknown-vendor", s.NodeID, ins, run, runtime.GOOS); err == nil || err.Error() != "unknown-vendor is not a qualified vendor" {
 		t.Fatalf("unknown vendor: %v", err)
 	}
-	if err := d.RefuseVendorRole(ctx, "u1", "cursor", s.NodeID, ins, run, runtime.GOOS); err != nil {
-		t.Fatalf("cursor posture refusal: %v", err)
-	}
-	if err := d.AddVendorRole(ctx, "u2", "cursor", s.NodeID, ins, run, 1); err == nil || !strings.Contains(err.Error(), "cursor worker execution is refused") {
-		t.Fatalf("cursor AddVendorRole: %v", err)
+	if runtime.GOOS == "linux" {
+		if err := d.RefuseVendorRole(ctx, "u1", "cursor", s.NodeID, ins, run, runtime.GOOS); !errors.Is(err, ErrNotRefused) || !strings.Contains(err.Error(), "eligible") {
+			t.Fatalf("eligible cursor: %v", err)
+		}
+		if err := d.AddVendorRole(ctx, "u2", "cursor", s.NodeID, ins, run, 1); err != nil {
+			t.Fatalf("cursor AddVendorRole: %v", err)
+		}
+	} else {
+		if err := d.RefuseVendorRole(ctx, "u1", "cursor", s.NodeID, ins, run, runtime.GOOS); err != nil {
+			t.Fatalf("cursor posture refusal: %v", err)
+		}
+		if err := d.AddVendorRole(ctx, "u2", "cursor", s.NodeID, ins, run, 1); err == nil || !strings.Contains(err.Error(), "cursor worker execution is not qualified on this OS") {
+			t.Fatalf("cursor AddVendorRole: %v", err)
+		}
 	}
 	if err := d.AddVendorRole(ctx, "c2", "claude", s.NodeID, ins, run, 1); err != nil {
 		t.Fatalf("claude beside cursor: %v", err)
@@ -181,7 +239,22 @@ func TestWave2Replay(t *testing.T) {
 	if _, err := d.Client.ShowRole(ctx, "u1"); contract.CodeOf(err) != contract.CodeNotFound {
 		t.Fatalf("the refused cursor role is visible: %v", err)
 	}
-	if l := launchLog(cursor); strings.Contains(strings.Join(l, " "), "task") {
+	// On Linux the host accepts Cursor, so the refusal helper's registration
+	// path (the path a non-Linux host uses for a real refusal) is exercised
+	// by asking for the darwin posture: a current binary is registered, and
+	// an older binary fails the version probe instead of the OS refusal.
+	if runtime.GOOS == "linux" {
+		ref, err := Refuse(ctx, bin, filepath.Join(dir, "cursor-other-os"), env, env, "cursor", cursor, "darwin")
+		if !errors.Is(err, ErrNotRefused) || !strings.Contains(err.Error(), "was registered") {
+			t.Fatalf("darwin posture on linux: %+v %v", ref, err)
+		}
+		ref, err = Refuse(ctx, bin, filepath.Join(dir, "cursor-other-os-old"), env, env, "cursor", wrong, "darwin")
+		if !errors.Is(err, ErrNotRefused) || !strings.Contains(err.Error(), "older cursor version") || strings.Contains(err.Error(), "not qualified on this OS") {
+			t.Fatalf("old cursor with a darwin posture: %+v %v", ref, err)
+		}
+	}
+	if l := launchLog(cursor); runtime.GOOS == "linux" && (strings.Count(strings.Join(l, " "), "task-ok") != 1 || strings.Contains(strings.Join(l, " "), "bad")) ||
+		runtime.GOOS != "linux" && strings.Contains(strings.Join(l, " "), "task") {
 		t.Fatalf("cursor launches %q", l)
 	}
 }

@@ -62,9 +62,13 @@ const (
 		"  --cursor-adapter PATH\n" +
 		"                     enable the cursor adapter with this absolute path to the Cursor\n" +
 		"                     Agent executable (cursor-agent; minimum version\n" +
-		"                     2026.10.01-e373342) for version probing only: its roles are\n" +
-		"                     refused on every OS because no qualified unattended recipe\n" +
-		"                     preserves the operator posture\n" +
+		"                     2026.10.01-e373342; Linux only). On Linux, tasks run with\n" +
+		"                     --trust --auto-review; the model argument is MODEL-EFFORT and the\n" +
+		"                     prompt (at most 32 KiB) is one positional argv element, visible\n" +
+		"                     to process inspection. Cursor records trust and maintains state\n" +
+		"                     outside the task directory. On every other OS its roles are\n" +
+		"                     refused: cursor worker execution is not qualified on this OS;\n" +
+		"                     consult the support catalog\n" +
 		"  --fake-adapter PATH\n" +
 		"                     enable the fake adapter with this absolute executable path:\n" +
 		"                     test/demo adapter; never calls a model. Without it roles using\n" +

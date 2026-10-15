@@ -496,9 +496,12 @@ type strictPath struct {
 var strictPaths = map[string][]strictPath{
 	"claude": {{name: "CLAUDE.md"}, {prefix: "settings", suffix: ".json", glob: true}, {name: "agents"}, {name: "skills"}, {name: "commands"},
 		{name: "hooks"}, {name: "plugins/installed_plugins.json"}, {name: "plugins/blocklist.json"}, {name: "plugins/config.json"}},
-	"codex":  {{prefix: "AGENTS", suffix: ".md", glob: true}, {name: "instructions.md"}, {name: "prompts"}},
-	"grok":   {{name: "config.toml"}, {name: "managed_config.toml"}, {name: "settings.json"}, {name: "user-settings.json"}},
-	"cursor": {{name: "cli-config.json"}, {name: "mcp.json"}},
+	"codex": {{prefix: "AGENTS", suffix: ".md", glob: true}, {name: "instructions.md"}, {name: "prompts"}},
+	"grok":  {{name: "config.toml"}, {name: "managed_config.toml"}, {name: "settings.json"}, {name: "user-settings.json"}},
+	// cli-config.json is tool-maintained report-only state (owner decision,
+	// design 12a-2c Slice B): Cursor writes it. mcp.json stays owner
+	// configuration.
+	"cursor": {{name: "mcp.json"}},
 }
 
 // structuralAncestors are the strict paths' non-root ancestor

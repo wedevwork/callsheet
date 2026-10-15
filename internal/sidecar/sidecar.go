@@ -65,9 +65,8 @@ type RunOptions struct {
 	CodexAdapterPath  string
 	// GrokAdapterPath and CursorAdapterPath (iteration 11) enable the Grok
 	// and Cursor adapters likewise (absolute paths, validated here as for
-	// the CLI). Enablement is not eligibility: Grok executes on Linux only
-	// and Cursor is version-probed but refused on every OS
-	// (adapter.ValidateWorkerPosture, decided from GOOS).
+	// the CLI). Enablement is not eligibility: Grok and Cursor execute on
+	// Linux only (adapter.ValidateWorkerPosture, decided from GOOS).
 	GrokAdapterPath   string
 	CursorAdapterPath string
 	// GOOS is the host OS the CLI's runtime entrypoint supplies

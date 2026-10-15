@@ -281,12 +281,12 @@ var wave2Required = []struct {
 }{
 	{"TestWave2Registration", []string{"registry", "paths", "selection", "posture"}},
 	{"TestWave2Probe", []string{"grok", "cursor", "refusal"}},
-	{"TestWave2Invocation", []string{"grok", "cursor-refused", "prompt", "auto-grok"}},
+	{"TestWave2Invocation", []string{"grok", "cursor-boundaries", "prompt", "auto-grok"}},
 	{"TestWave2GrokFinal", []string{"success", "error", "cancelled", "malformed"}},
 	{"TestWave2CursorFinal", []string{"success", "absent", "malformed", "blocked"}},
 	{"TestWave2Outcomes", []string{"exits", "controls", "refusal", "retry"}},
 	{"TestWave2Catalog", []string{"recipes", "evidence", "ownership"}},
-	{"TestWave2Dispatch", []string{"grok", "cursor-refused", "no-vendors"}},
+	{"TestWave2Dispatch", []string{"grok", "auto-cursor", "no-vendors"}},
 	{"TestWave2SmokeGate", []string{"default-off", "ci-off", "absent", "enabled", "posture"}},
 }
 

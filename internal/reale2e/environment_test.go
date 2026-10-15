@@ -381,6 +381,7 @@ func TestOwnerEnvironment(t *testing.T) {
 				// repository while the attempt runs, and the designer fails.
 				write(t, filepath.Join(f.home, ".claude", "settings.json"), `{"permissions":{"allow":["Bash(*)"]}}`+"\n")
 				write(t, filepath.Join(repo, "a.txt"), "changed\n")
+				write(t, filepath.Join(f.home, ".cursor", "mcp.json"), "{}")
 				write(t, filepath.Join(f.home, ".cursor", "cli-config.json"), "{}")
 			}
 			return false
@@ -392,10 +393,13 @@ func TestOwnerEnvironment(t *testing.T) {
 		if c := criterion(r, CritOwnerEnv); c.Result != "fail" || !slices.Contains(c.Codes, CodeEnvModified) {
 			t.Fatalf("owner environment %+v", c)
 		}
-		for _, p := range []string{"settings.json", "cli-config.json"} {
+		for _, p := range []string{"settings.json", "mcp.json"} {
 			if _, ok := changeOf(r.Protected, p); !ok {
 				t.Fatalf("%s not reported: %+v", p, r.Protected)
 			}
+		}
+		if _, ok := changeOf(r.Protected, "cli-config.json"); ok {
+			t.Fatalf("cli-config.json is owner configuration: %+v", r.Protected)
 		}
 		crepo, _ := filepath.EvalSymlinks(repo)
 		if c, ok := changeOf(r.Protected, crepo); !ok || !slices.Contains(c.Fields, "status") {
@@ -941,7 +945,7 @@ func TestEnvironmentUnits(t *testing.T) {
 			{"codex", "auth.json", tool}, {"codex", "state_5.sqlite", tool}, {"codex", ".tmp/plugins/cache", tool}, {"codex", "plugins/cache/x", tool},
 			{"grok", "config.toml", owner}, {"grok", "managed_config.toml", owner}, {"grok", "settings.json", owner}, {"grok", "user-settings.json", owner},
 			{"grok", "settings_cache.json", tool}, {"grok", "cache/config.toml", tool}, {"grok", "bundled/skills/x.md", tool}, {"grok", "auth.json", tool},
-			{"cursor", "cli-config.json", owner}, {"cursor", "mcp.json", owner}, {"cursor", "cli-config.json.bad", tool}, {"cursor", "projects/x/mcp.json", tool},
+			{"cursor", "cli-config.json", tool}, {"cursor", "mcp.json", owner}, {"cursor", "cli-config.json.bad", tool}, {"cursor", "projects/x/mcp.json", tool},
 			{"cursor", "chats/x/store.db", tool}, {"cursor", "settings.json", tool}, {"cursor", "agents/a.md", tool},
 			{"grok", "CLAUDE.md", tool}, {"codex", "skills/a", tool}, {"cursor", "config.toml", tool},
 		} {
@@ -978,10 +982,10 @@ func TestEnvironmentUnits(t *testing.T) {
 				"plugins/installed_plugins.json", "plugins/blocklist.json", "plugins/config.json"},
 			"codex":  {"AGENTS.md", "AGENTS.override.md", "instructions.md", "prompts/p.md"},
 			"grok":   {"config.toml", "managed_config.toml", "settings.json", "user-settings.json"},
-			"cursor": {"cli-config.json", "mcp.json"},
+			"cursor": {"mcp.json"},
 		}
 		neighbors := map[string]string{"claude": "plugins/cache/m/plugin.json", "codex": "plugins/cache/x.json", "grok": "settings_cache.json",
-			"cursor": "chats/store.db"}
+			"cursor": "cli-config.json"}
 		mutations := []struct {
 			name, kind string
 			f          func(p string) error
@@ -1867,6 +1871,7 @@ func TestEnvironmentUnits(t *testing.T) {
 		write(t, filepath.Join(home, ".claude", "history.jsonl"), "1\n")
 		write(t, filepath.Join(home, ".codex", "prompts", "review.md"), "p")
 		write(t, filepath.Join(home, ".cursor", "cli-config.json"), "{}")
+		write(t, filepath.Join(home, ".cursor", "mcp.json"), "{}")
 		sc := &envScanner{clock: realClock{}, snap: Snapshot{Complete: true}, repoSeen: map[string]bool{}, home: home, tok: pathTokenizer{home: home}}
 		if err := sc.scanHomes(); err != nil || sc.hashed > 64 {
 			t.Fatalf("scan %v, %d content bytes read", err, sc.hashed)
@@ -1880,7 +1885,7 @@ func TestEnvironmentUnits(t *testing.T) {
 		}
 		for path, want := range map[string]string{"codex/packages/standalone/codex.bin": MethodMetadata, "grok/downloads/big.tar": MethodMetadata,
 			"claude/settings.json": MethodContent, "claude/flow-snapshots/s.json": MethodMetadata, "claude/CLAUDE.md": MethodMetadata,
-			"codex/prompts/review.md": MethodContent, "cursor/cli-config.json": MethodContent} {
+			"codex/prompts/review.md": MethodContent, "cursor/cli-config.json": MethodMetadata, "cursor/mcp.json": MethodContent} {
 			if r := method[path]; r.Method != want || (want == MethodContent) != (r.SHA256 != "") || r.CtimeNS == 0 {
 				t.Errorf("%s = %+v, want %s", path, r, want)
 			}

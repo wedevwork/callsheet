@@ -53,7 +53,7 @@ const (
 	wave2ExeEnv   = "CALLSHEET_WAVE2_DIRECT_EXE"
 	// The exact posture refusals and the Grok failure message.
 	wave2GrokRefusal   = "grok worker execution is not qualified on this OS; consult the support catalog"
-	wave2CursorRefusal = "cursor worker execution is refused: no qualified unattended recipe preserves the operator posture; consult the support catalog"
+	wave2CursorRefusal = "cursor worker execution is not qualified on this OS; consult the support catalog"
 	wave2GrokFailure   = `Couldn't set model 'does-not-exist': Invalid params: "unknown model id". Run 'grok models' to see available models.`
 )
 
@@ -130,6 +130,28 @@ func grokArgv(placeholder string) []string {
 	out := slices.Clone(inv.Argv)
 	out[len(out)-1] = placeholder
 	return out
+}
+
+// cursorArgv is Cursor's production argv with the positional prompt
+// replaced by placeholder. The model argument is MODEL-EFFORT.
+func cursorArgv(placeholder string) []string {
+	inv, err := adapterFor("cursor").Invocation(adapter.TaskInput{TaskID: "t_" + strings.Repeat("0", 32), Model: "grok-4.7", Effort: "low", Prompt: []byte("P")})
+	if err != nil {
+		panic(err)
+	}
+	out := slices.Clone(inv.Argv)
+	out[len(out)-1] = placeholder
+	return out
+}
+
+// cursorScenario is a synthetic P3-shaped result for goal under the Linux
+// Cursor recipe. It is not a vendor capture.
+func cursorScenario(goal, result string) scenario {
+	out := `{"type":"result","subtype":"success","is_error":false,"result":"` + result + `"}` + "\n"
+	zero := 0
+	return scenario{Goal: goal, Vendor: "cursor", ExpectedArgv: cursorArgv("{prompt}"), ExpectedStdin: strPtr(""),
+		Synthetic: true, Stdout: &out, Exit: &zero,
+		Normalization: "synthetic current-recipe stdout (P3-shaped result JSON, not a vendor capture)"}
 }
 
 func strPtr(s string) *string { return &s }
@@ -220,6 +242,8 @@ func startWave2Rig(bin, stub string) (*wave2Rig, error) {
 	roles := []contract.RoleConfig{
 		{ID: "wbig", Name: "wbig", Node: r.a.NodeID, Adapter: "grok", Instruction: bigIns, Runbook: bigRun, Model: "grok-4.7", Effort: "low", Concurrency: 2},
 		{ID: "wg", Name: "wg", Node: r.a.NodeID, Adapter: "grok", Instruction: r.ins, Runbook: r.run, Model: "grok-4.7", Effort: "low", Concurrency: 8},
+		{ID: "wc", Name: "wc", Node: r.a.NodeID, Adapter: "cursor", Instruction: r.ins, Runbook: r.run, Model: "grok-4.7", Effort: "low", Concurrency: 4},
+		{ID: "wcbig", Name: "wcbig", Node: r.a.NodeID, Adapter: "cursor", Instruction: bigIns, Runbook: bigRun, Model: "grok-4.7", Effort: "low", Concurrency: 1},
 	}
 	for _, name := range policyRoleNames {
 		roles = append(roles, contract.RoleConfig{ID: policyRoleID("grok", name), Name: name, Node: r.a.NodeID, Adapter: "grok", Instruction: r.ins, Runbook: r.run,
@@ -302,8 +326,8 @@ func noCursorTask(t *testing.T, kits ...*replayKit) {
 }
 
 // FP-1: the grok and cursor flags, metadata and effort unions (design
-// 12a-worker-selection), and the posture refusals of Cursor everywhere and
-// Grok on macOS.
+// 12a-worker-selection). Cursor and Grok execute on Linux; off Linux both
+// are posture refusals.
 func TestWave2Registration(t *testing.T) {
 	t.Parallel()
 	r := sharedWave2Rig(t)
@@ -337,7 +361,11 @@ func TestWave2Registration(t *testing.T) {
 		if runtime.GOOS == "darwin" {
 			grokWarning += " " + sidecar.GrokDarwinWarningSuffix
 		}
-		if logRecords(r.a.Logs.String(), grokWarning) != 1 || logRecords(r.a.Logs.String(), sidecar.CursorVendorWarning) != 1 ||
+		cursorWarning := sidecar.CursorVendorWarning
+		if runtime.GOOS != "linux" {
+			cursorWarning += " " + sidecar.CursorNonLinuxWarningSuffix
+		}
+		if logRecords(r.a.Logs.String(), grokWarning) != 1 || logRecords(r.a.Logs.String(), cursorWarning) != 1 ||
 			logRecords(r.a.Logs.String(), sidecar.DarwinVendorWarning) != 0 {
 			t.Fatalf("worker G warnings:\n%s", r.a.Logs.String())
 		}
@@ -393,11 +421,18 @@ func TestWave2Registration(t *testing.T) {
 				t.Fatalf("refused role %s recorded: %v", rc.ID, err)
 			}
 		}
-		// Cursor's vendor model name is valid free model text: it passes the
-		// selection and the probe, then the posture refuses it.
+		// Cursor's vendor model name is valid free model text. Off Linux the
+		// posture then refuses it; on Linux the selection passes and the
+		// role is not added here (startup already registered wc).
 		vendorName := r.role("sel-cursor-name", "cursor")
 		vendorName.Model = "grok-4.7-low"
-		r.refuse(t, vendorName, wave2CursorRefusal)
+		if wave2Linux() {
+			if err := adapter.ValidateSelection("cursor", vendorName.Model, vendorName.Effort); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			r.refuse(t, vendorName, wave2CursorRefusal)
+		}
 		if !wave2Linux() {
 			return
 		}
@@ -418,13 +453,13 @@ func TestWave2Registration(t *testing.T) {
 		}
 	})
 	t.Run("posture", func(t *testing.T) {
-		r.refuse(t, r.role("posture-cursor", "cursor"), wave2CursorRefusal)
 		if !wave2Linux() {
+			r.refuse(t, r.role("posture-cursor", "cursor"), wave2CursorRefusal)
 			r.refuse(t, r.role("posture-grok", "grok"), wave2GrokRefusal)
+			noCursorTask(t, r.kit.replayKit)
 		}
 		delegate(t, contractBinary(t, "./internal/adapter"), "./internal/adapter", "^TestWave2Posture$", "TestWave2Posture")
 		delegate(t, taggedSidecarBinary(t), "./internal/sidecar", "^TestRealAdapterLocal$/^wave2-posture$", "TestRealAdapterLocal", "TestRealAdapterLocal/wave2-posture")
-		noCursorTask(t, r.kit.replayKit)
 	})
 }
 
@@ -461,7 +496,8 @@ func directProbe(t *testing.T, k *replayKit, vendor, exe string) {
 }
 
 // FP-2: bounded --version probes of the explicit replay executables; a
-// matching version never enables Cursor; wrong versions and paths fail.
+// matching Cursor version is eligible on Linux and refused elsewhere;
+// wrong versions and paths fail.
 func TestWave2Probe(t *testing.T) {
 	if os.Getenv(wave2ProbeEnv) != "" {
 		wave2DirectProbe(t)
@@ -483,9 +519,10 @@ func TestWave2Probe(t *testing.T) {
 		if ls := launches(t, r.kit.replayKit, func(l launch) bool { return l.Argv0 == exe && (l.Cwd == state || l.Cwd == real) && l.Mode == "version" }); len(ls) == 0 {
 			t.Fatalf("no %s version probe in worker G's state root", vendor)
 		}
-		// Every probe of the path is exactly a version call (Grok's task
-		// launches are the other parents' replays; Cursor has none).
-		for _, l := range launches(t, r.kit.replayKit, func(l launch) bool { return l.Argv0 == exe && (l.Mode == "version" || vendor == "cursor") }) {
+		// Every version probe of the path is exactly a version call.
+		// Grok's and, on Linux, Cursor's task launches are the other
+		// parents' replays.
+		for _, l := range launches(t, r.kit.replayKit, func(l launch) bool { return l.Argv0 == exe && l.Mode == "version" }) {
 			if l.Mode != "version" || !l.OK || !slices.Equal(l.Argv, []string{"--version"}) || l.Vendor != vendor || l.TaskID != "" {
 				t.Fatalf("%s launch %+v", vendor, l)
 			}
@@ -500,11 +537,13 @@ func TestWave2Probe(t *testing.T) {
 		check(t, "grok", r.kit.grok)
 	})
 	t.Run("cursor", func(t *testing.T) {
-		// A matching version alone never enables Cursor: the probe runs,
-		// then the posture refuses.
-		r.refuse(t, r.role("probe-cursor", "cursor"), wave2CursorRefusal)
+		// A matching version is invocability. Off Linux the posture then
+		// refuses; on Linux the startup role wc is already ready.
+		if !wave2Linux() {
+			r.refuse(t, r.role("probe-cursor", "cursor"), wave2CursorRefusal)
+			noCursorTask(t, r.kit.replayKit)
+		}
 		check(t, "cursor", r.kit.cursor)
-		noCursorTask(t, r.kit.replayKit)
 	})
 	t.Run("refusal", func(t *testing.T) {
 		delegate(t, contractBinary(t, "./internal/adapter"), "./internal/adapter", "^TestWave2VendorProbe$", "TestWave2VendorProbe")
@@ -551,9 +590,9 @@ func TestWave2Probe(t *testing.T) {
 	})
 }
 
-// FP-3: Grok's exact recorded argv with the composed prompt as its -p
-// value and empty stdin, the size/encoding bounds, and zero Cursor task
-// launches.
+// FP-3 and FP-4b: Grok's exact argv with the composed prompt as its -p
+// value and empty stdin, Grok's size/encoding bounds, and Cursor's
+// OS-posture refusal plus prompt bounds.
 func TestWave2Invocation(t *testing.T) {
 	t.Parallel()
 	r := sharedWave2Rig(t)
@@ -595,13 +634,47 @@ func TestWave2Invocation(t *testing.T) {
 		}
 		check(t, r.goal("invocation grok"))
 	})
-	t.Run("cursor-refused", func(t *testing.T) {
-		delegate(t, contractBinary(t, "./internal/adapter"), "./internal/adapter", "^TestWave2VendorInvocation$", "TestWave2VendorInvocation")
-		r.refuse(t, r.role("inv-cursor", "cursor"), wave2CursorRefusal)
-		if inv, err := adapterFor("cursor").Invocation(adapter.TaskInput{TaskID: "t_" + strings.Repeat("0", 32), Model: "grok-4.7", Effort: "low", Prompt: []byte("p")}); err == nil || inv.Argv != nil {
-			t.Fatalf("cursor invocation %+v %v", inv, err)
+	t.Run("cursor-boundaries", func(t *testing.T) {
+		// macOS registration and a stale-task start (injected GOOS), and
+		// the Linux 32 KiB positional-prompt boundary, live in the tagged
+		// sidecar contract. Empty, invalid UTF-8 and NUL prompts cannot be
+		// composed, so those refusals are the adapter boundary.
+		delegate(t, taggedSidecarBinary(t), "./internal/sidecar", "^TestRealAdapterLocal$/^wave2-posture$", "TestRealAdapterLocal", "TestRealAdapterLocal/wave2-posture")
+		delegate(t, taggedSidecarBinary(t), "./internal/sidecar", "^TestRealAdapterLocal$/^wave2-invocation$", "TestRealAdapterLocal", "TestRealAdapterLocal/wave2-invocation")
+		in := adapter.TaskInput{TaskID: "t_" + strings.Repeat("0", 32), Model: "grok-4.7", Effort: "low"}
+		cur := adapterFor("cursor")
+		for _, c := range []struct {
+			prompt []byte
+			want   string
+		}{
+			{nil, "adapter: the cursor prompt must not be empty"},
+			{bytes.Repeat([]byte("a"), adapter.MaxCursorPromptBytes+1), "adapter: the cursor prompt exceeds 32 KiB"},
+			{[]byte{0xff}, "adapter: the cursor prompt must be valid UTF-8"},
+			{[]byte("a\x00b"), "adapter: the cursor prompt must not contain NUL"},
+		} {
+			in.Prompt = c.prompt
+			if inv, err := cur.Invocation(in); err == nil || err.Error() != c.want || inv.Argv != nil {
+				t.Fatalf("prompt %q: %+v %v", c.prompt, inv, err)
+			}
 		}
-		noCursorTask(t, r.kit.replayKit)
+		ok, err := cur.Invocation(adapter.TaskInput{TaskID: in.TaskID, Model: "grok-4.7", Effort: "low", Prompt: bytes.Repeat([]byte("a"), adapter.MaxCursorPromptBytes)})
+		if err != nil || len(ok.Argv) != 8 || ok.Argv[6] != "grok-4.7-low" || len(ok.Argv[7]) != adapter.MaxCursorPromptBytes || ok.Stdin != nil {
+			t.Fatalf("32 KiB cursor invocation %+v %v", ok, err)
+		}
+		if !wave2Linux() {
+			r.refuse(t, r.role("inv-cursor", "cursor"), wave2CursorRefusal)
+			noCursorTask(t, r.kit.replayKit)
+			return
+		}
+		goal := r.goal("cursor prompt over 32 KiB")
+		writeScenario(t, r.kit.replayKit, cursorScenario(goal, "pong"))
+		f := r.dispatch(t, requestFor("wcbig", goal))
+		if f.view.State == contract.TaskSucceeded || f.view.Reason == nil || f.view.Reason.Code != contract.ReasonStartFailed {
+			t.Fatalf("over-32-KiB cursor prompt %s", f)
+		}
+		if ls := launches(t, r.kit.replayKit, func(l launch) bool { return l.TaskID == f.view.TaskID }); len(ls) != 0 {
+			t.Fatalf("an oversized cursor prompt launched %+v", ls)
+		}
 	})
 	t.Run("prompt", func(t *testing.T) {
 		if !wave2Linux() {
@@ -797,11 +870,17 @@ func TestWave2CursorFinal(t *testing.T) {
 		}
 	})
 	t.Run("blocked", func(t *testing.T) {
-		r.refuse(t, r.role("final-cursor", "cursor"), wave2CursorRefusal)
-		if _, err := adapterFor("cursor").Invocation(adapter.TaskInput{TaskID: "t_" + strings.Repeat("0", 32), Model: "grok-4.7", Effort: "low", Prompt: []byte("p")}); err == nil ||
-			err.Error() != wave2CursorRefusal {
-			t.Fatalf("cursor invocation %v", err)
+		// Off Linux a cursor role is still refused and launches nothing.
+		// On Linux the invocation is the current recipe; the OS gate is
+		// the posture, not the invocation.
+		if wave2Linux() {
+			inv, err := adapterFor("cursor").Invocation(adapter.TaskInput{TaskID: "t_" + strings.Repeat("0", 32), Model: "grok-4.7", Effort: "low", Prompt: []byte("p")})
+			if err != nil || !slices.Equal(inv.Argv[:7], []string{"-p", "--trust", "--auto-review", "--output-format", "json", "--model", "grok-4.7-low"}) || inv.Argv[7] != "p" {
+				t.Fatalf("cursor invocation %+v %v", inv, err)
+			}
+			return
 		}
+		r.refuse(t, r.role("final-cursor", "cursor"), wave2CursorRefusal)
 		noCursorTask(t, r.kit.replayKit)
 	})
 }
@@ -832,8 +911,11 @@ func TestWave2Outcomes(t *testing.T) {
 		delegate(t, taggedSidecarBinary(t), "./internal/sidecar", "^TestRealAdapterLocal$/^wave2-outcomes$", "TestRealAdapterLocal", "TestRealAdapterLocal/wave2-outcomes")
 	})
 	t.Run("refusal", func(t *testing.T) {
-		r.refuse(t, r.role("outcome-cursor", "cursor"), wave2CursorRefusal)
 		delegate(t, taggedSidecarBinary(t), "./internal/sidecar", "^TestRealAdapterLocal$/^wave2-posture$", "TestRealAdapterLocal", "TestRealAdapterLocal/wave2-posture")
+		if wave2Linux() {
+			return
+		}
+		r.refuse(t, r.role("outcome-cursor", "cursor"), wave2CursorRefusal)
 		noCursorTask(t, r.kit.replayKit)
 	})
 	t.Run("retry", func(t *testing.T) {
@@ -897,13 +979,15 @@ func TestWave2Catalog(t *testing.T) {
 		if !slices.Equal(candidate, ccaptured) || !strings.Contains(cvalue, "rejected candidate, not production argv") {
 			t.Fatalf("cursor candidate %q (capture %q)", candidate, ccaptured)
 		}
-		if _, err := adapterFor("cursor").Invocation(adapter.TaskInput{TaskID: "t_" + strings.Repeat("0", 32), Model: "grok-4.7", Effort: "low", Prompt: []byte("p")}); err == nil {
-			t.Fatal("cursor became callable")
+		inv, err := adapterFor("cursor").Invocation(adapter.TaskInput{TaskID: "t_" + strings.Repeat("0", 32), Model: "grok-4.7", Effort: "low", Prompt: []byte("p")})
+		if err != nil || !slices.Equal(inv.Argv, []string{"-p", "--trust", "--auto-review", "--output-format", "json", "--model", "grok-4.7-low", "p"}) {
+			t.Fatalf("cursor current argv %+v %v", inv, err)
 		}
 		for _, s := range []string{
 			"Current Callsheet policy (not a vendor capture): `grok --output-format json --model MODEL --reasoning-effort EFFORT --permission-mode auto -p <composed-prompt>`",
 			"Historical captured recipe (iteration 11, not current argv): `grok --output-format json --model grok-4.7 --reasoning-effort low --permission-mode dontAsk -p <composed-prompt>`",
 			"Rejected candidate, recorded for comparison only: `cursor-agent -p --output-format json --model grok-4.7-low --force --trust`",
+			"Current Callsheet policy (not a vendor capture): Linux workers execute with `-p --trust --auto-review --output-format json --model MODEL-EFFORT <composed-prompt>`",
 			"Current Callsheet policy (not a vendor capture): `claude -p --model MODEL --effort EFFORT --permission-mode auto --permission-prompts none --output-format json`",
 		} {
 			if !strings.Contains(doc, s) {
@@ -1028,9 +1112,10 @@ func delegateCatalog(t *testing.T) {
 	delegate(t, contractBinary(t, "./internal/testkit/catalog"), "./internal/testkit/catalog", "^TestRealAdapterEvidence$", "TestRealAdapterEvidence")
 }
 
-// FP-8: real stdio MCP dispatch through a real plane to the enrolled
-// worker running the Grok replay; Cursor refused with no launch; the PATH
-// traps prove no installed vendor was used.
+// FP-8 and FP-4a: real stdio MCP dispatch through a real plane to the
+// enrolled worker. On Linux, Cursor launches once under the current
+// recipe; elsewhere registration is refused and nothing launches. The
+// PATH traps prove no installed vendor was used.
 func TestWave2Dispatch(t *testing.T) {
 	t.Parallel()
 	r := sharedWave2Rig(t)
@@ -1099,14 +1184,53 @@ func TestWave2Dispatch(t *testing.T) {
 			t.Fatalf("scratch %s kept: %v", l.Cwd, err)
 		}
 	})
-	t.Run("cursor-refused", func(t *testing.T) {
-		if res := cliAdd(t, "mcp-cursor", "cursor"); res.code == 0 || !strings.Contains(res.stderr, wave2CursorRefusal) {
-			t.Fatalf("cursor role add: %+v", res)
+	t.Run("auto-cursor", func(t *testing.T) {
+		if !wave2Linux() {
+			if res := cliAdd(t, "mcp-cursor", "cursor"); res.code == 0 || !strings.Contains(res.stderr, wave2CursorRefusal) {
+				t.Fatalf("cursor role add on %s: %+v", runtime.GOOS, res)
+			}
+			delegate(t, taggedSidecarBinary(t), "./internal/sidecar", "^TestRealAdapterLocal$/^wave2-posture$", "TestRealAdapterLocal", "TestRealAdapterLocal/wave2-posture")
+			return
 		}
-		if res := m.call("dispatch", dispatchArgs("id", "mcp-cursor", "never", nil)); !res.isError {
-			t.Fatalf("a dispatch to the refused cursor role: %s", res.text)
+		goal := r.goal("mcp cursor")
+		sc := cursorScenario(goal, "wrote hello")
+		writeScenario(t, r.kit.replayKit, sc)
+		var id string
+		deadline := time.Now().Add(rigWait)
+		for {
+			res := m.call("dispatch", dispatchArgs("id", "wc", sc.Goal, nil))
+			if !res.isError {
+				id = taskIDOf(t, res.text)
+				break
+			}
+			if e, err := contract.ParseErrorBody([]byte(res.text)); err != nil || !retryable(e) || time.Now().After(deadline) {
+				t.Fatalf("dispatch: %s", res.text)
+			}
+			time.Sleep(10 * time.Millisecond)
 		}
-		noCursorTask(t, r.kit.replayKit)
+		for {
+			text := m.ok("task_wait", map[string]any{"task_ids": []string{id}, "wait": "5s"})
+			if strings.Contains(text, `"status":"terminal"`) {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("task_wait never terminal: %s", text)
+			}
+		}
+		v, err := contract.ParseTaskShowResponse([]byte(m.ok("task_show", map[string]any{"id": id})))
+		if err != nil || v.State != contract.TaskSucceeded || v.Result == nil || v.Result.FinalMessage == nil || *v.Result.FinalMessage != "wrote hello" {
+			t.Fatalf("task_show %+v %v", v, err)
+		}
+		l := taskLaunch(t, r.kit.replayKit, id)
+		prefix := cursorArgv("{prompt}")
+		if l.Argv0 != r.kit.cursor || !slices.Equal(l.Argv[:len(l.Argv)-1], prefix[:len(prefix)-1]) || l.Argv[6] != "grok-4.7-low" ||
+			!strings.Contains(string(l.Prompt), `"goal":"`+sc.Goal+`"`) || len(l.Stdin) != 0 ||
+			slices.Contains(l.Argv, "--force") || slices.Contains(l.Argv, "--yolo") || slices.Contains(l.Argv, "--approve-mcps") || slices.Contains(l.Argv, "--sandbox") {
+			t.Fatalf("cursor launch %+v", l)
+		}
+		if ls := launches(t, r.kit.replayKit, func(x launch) bool { return x.TaskID == id && x.Mode == "task" }); len(ls) != 1 {
+			t.Fatalf("cursor launched %d times: %+v", len(ls), ls)
+		}
 	})
 	t.Run("no-vendors", func(t *testing.T) {
 		for _, l := range launches(t, r.kit.replayKit, func(launch) bool { return true }) {
@@ -1139,8 +1263,9 @@ func TestWave2Dispatch(t *testing.T) {
 }
 
 // FP-9: the smoke gate's decisions with injected environment, stat and OS
-// values (no skip), the stub-backed Grok smoke or macOS refusal and the
-// Cursor refusal through the full deployment, and the build-tag exclusion.
+// values (no skip), the stub-backed Linux execution or non-Linux refusal
+// for Grok and Cursor through the full deployment, and the build-tag
+// exclusion.
 func TestWave2SmokeGate(t *testing.T) {
 	t.Parallel()
 	statted := 0
@@ -1238,16 +1363,27 @@ func TestWave2SmokeGate(t *testing.T) {
 				t.Errorf("grok smoke %+v %v", res.View, err)
 			}
 		})
+		cgoal := goal + " cursor"
+		writeScenario(t, k.replayKit, cursorScenario(cgoal, "pong"))
 		wg.Go(func() {
 			ctx, cancel := context.WithTimeout(context.Background(), workersmoke.OuterBound)
 			defer cancel()
-			ref, err := workersmoke.Refuse(ctx, bin, filepath.Join(root, "smoke-cursor"), base, sidecarEnv, "cursor", g.Vendor("cursor").Path, runtime.GOOS)
-			if err != nil || ref.Message != wave2CursorRefusal {
-				t.Errorf("cursor refusal smoke %+v %v", ref, err)
+			if workersmoke.Refused("cursor", runtime.GOOS) {
+				ref, err := workersmoke.Refuse(ctx, bin, filepath.Join(root, "smoke-cursor"), base, sidecarEnv, "cursor", g.Vendor("cursor").Path, runtime.GOOS)
+				if err != nil || ref.Message != wave2CursorRefusal {
+					t.Errorf("cursor refusal smoke %+v %v", ref, err)
+				}
+				return
+			}
+			res, err := workersmoke.Run(ctx, bin, filepath.Join(root, "smoke-cursor"), base, sidecarEnv, "cursor", g.Vendor("cursor").Path, cgoal)
+			if err != nil || res.View.State != contract.TaskSucceeded || res.View.Result == nil || res.View.Result.FinalMessage == nil || *res.View.Result.FinalMessage != "pong" {
+				t.Errorf("cursor smoke %+v %v", res.View, err)
 			}
 		})
 		wg.Wait()
-		noCursorTask(t, k.replayKit)
+		if !wave2Linux() {
+			noCursorTask(t, k.replayKit)
+		}
 		if b, err := os.ReadFile(k.trapLog); err == nil && len(b) > 0 {
 			t.Fatalf("PATH traps were called: %s", b)
 		}
@@ -1281,7 +1417,7 @@ func TestWave2SmokeGate(t *testing.T) {
 		for _, c := range []struct {
 			vendor, goos string
 			refused      bool
-		}{{"grok", "linux", false}, {"grok", "darwin", true}, {"cursor", "linux", true}, {"cursor", "darwin", true}} {
+		}{{"grok", "linux", false}, {"grok", "darwin", true}, {"cursor", "linux", false}, {"cursor", "darwin", true}} {
 			if workersmoke.Refused(c.vendor, c.goos) != c.refused {
 				t.Fatalf("Refused(%s, %s) = %v", c.vendor, c.goos, !c.refused)
 			}
@@ -1289,7 +1425,11 @@ func TestWave2SmokeGate(t *testing.T) {
 		// The refusal helper accepts only the exact posture refusal.
 		r := sharedWave2Rig(t)
 		ctx := context.Background()
-		if err := r.dep.RefuseVendorRole(ctx, "smoke-cursor-posture", "cursor", r.a.NodeID, r.ins, r.run, runtime.GOOS); err != nil {
+		if wave2Linux() {
+			if err := r.dep.RefuseVendorRole(ctx, "smoke-cursor-posture", "cursor", r.a.NodeID, r.ins, r.run, runtime.GOOS); !errors.Is(err, workersmoke.ErrNotRefused) || !strings.Contains(err.Error(), "eligible") {
+				t.Fatalf("eligible cursor: %v", err)
+			}
+		} else if err := r.dep.RefuseVendorRole(ctx, "smoke-cursor-posture", "cursor", r.a.NodeID, r.ins, r.run, runtime.GOOS); err != nil {
 			t.Fatalf("cursor refusal helper: %v", err)
 		}
 		if err := r.dep.RefuseVendorRole(ctx, "smoke-grok-linux", "grok", r.a.NodeID, r.ins, r.run, "linux"); !errors.Is(err, workersmoke.ErrNotRefused) {
@@ -1299,7 +1439,7 @@ func TestWave2SmokeGate(t *testing.T) {
 			if err := r.dep.RefuseVendorRole(ctx, "smoke-grok-posture", "grok", r.a.NodeID, r.ins, r.run, runtime.GOOS); err != nil {
 				t.Fatalf("grok refusal helper on %s: %v", runtime.GOOS, err)
 			}
+			noCursorTask(t, r.kit.replayKit)
 		}
-		noCursorTask(t, r.kit.replayKit)
 	})
 }

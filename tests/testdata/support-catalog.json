@@ -427,7 +427,7 @@
       },
       "model": {
         "status": "VERIFIED",
-        "value": "The measured vendor model argument is `grok-4.7-low` (listed by the CLI; it ran with exit 0 under the rejected candidate). Callsheet's role pair model `grok-4.7`, effort `low` maps to that literal argument; Cursor execution itself is refused. The observed pair is not a selection allowlist.",
+        "value": "The measured vendor model argument is `grok-4.7-low` (listed by the CLI; it ran with exit 0 under the rejected candidate). Callsheet's role pair model `grok-4.7`, effort `low` maps to that literal argument; Cursor execution itself is refused. The observed pair is not a selection allowlist. Current Callsheet policy (not a vendor capture): Linux workers execute with --trust --auto-review, the model argument is MODEL-EFFORT with no trimming or alias lookup, and stdout result extraction is live; non-Linux execution is not qualified. The iteration-11 refusal, the absence of a general model-plus-effort concatenation and fixture-only extraction are historical observations.",
         "evidence": [
           "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-stdin-success/argv.txt",
           "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-stdin-success/stdout.bin",
@@ -437,7 +437,7 @@
       },
       "effort": {
         "status": "VERIFIED",
-        "value": "Only the literal mapping of (`grok-4.7`, `low`) to `grok-4.7-low` is recorded; the CLI has no standalone effort flag and Callsheet applies no general model-plus-effort concatenation. The other listed variants and bracket syntax are listing/help evidence, not additional measured executions. All Cursor task execution remains refused.",
+        "value": "Only the literal mapping of (`grok-4.7`, `low`) to `grok-4.7-low` is recorded; the CLI has no standalone effort flag and Callsheet applies no general model-plus-effort concatenation. The other listed variants and bracket syntax are listing/help evidence, not additional measured executions. All Cursor task execution remains refused. Current Callsheet policy (not a vendor capture): Linux workers execute with --trust --auto-review, the model argument is MODEL-EFFORT with no trimming or alias lookup, and stdout result extraction is live; non-Linux execution is not qualified. The iteration-11 refusal, the absence of a general model-plus-effort concatenation and fixture-only extraction are historical observations.",
         "evidence": [
           "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-stdin-success/argv.txt",
           "tests/testdata/real-adapters/linux-2026-10-04/cursor-models.txt",
@@ -472,7 +472,7 @@
       },
       "sandbox_macos": {
         "status": "UNVERIFIED",
-        "value": "UNVERIFIED; iteration 11 did not measure it: no Darwin capture exists, and product execution of cursor is refused on every OS.",
+        "value": "UNVERIFIED; iteration 11 did not measure it: no Darwin capture exists, and product execution of cursor is refused on every OS. Current Callsheet policy (not a vendor capture): Linux workers execute with --trust --auto-review, the model argument is MODEL-EFFORT with no trimming or alias lookup, and stdout result extraction is live; non-Linux execution is not qualified. The iteration-11 refusal, the absence of a general model-plus-effort concatenation and fixture-only extraction are historical observations.",
         "evidence": [
           "tests/testdata/real-adapters/linux-2026-10-04/NOTES.md"
         ],
@@ -480,7 +480,7 @@
       },
       "final_message": {
         "status": "VERIFIED",
-        "value": "With `--output-format json` the successful runs printed one JSON object with `type` `result`, a boolean `is_error` and a string `result` (`pong` on success); the failed model, workspace-trust and authentication runs printed no stdout. Callsheet's offline parser extracts `result` exactly (input bounded to 8 MiB, answer to 64 KiB) and leaves absent output null with a diagnostic; it is fixture handling only until a safe recipe is qualified.",
+        "value": "With `--output-format json` the successful runs printed one JSON object with `type` `result`, a boolean `is_error` and a string `result` (`pong` on success); the failed model, workspace-trust and authentication runs printed no stdout. Callsheet's offline parser extracts `result` exactly (input bounded to 8 MiB, answer to 64 KiB) and leaves absent output null with a diagnostic; it is fixture handling only until a safe recipe is qualified. Current Callsheet policy (not a vendor capture): Linux workers execute with --trust --auto-review, the model argument is MODEL-EFFORT with no trimming or alias lookup, and stdout result extraction is live; non-Linux execution is not qualified. The iteration-11 refusal, the absence of a general model-plus-effort concatenation and fixture-only extraction are historical observations.",
         "evidence": [
           "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-stdin-success/stdout.bin",
           "tests/testdata/real-adapters/linux-2026-10-04/runs/cursor-shell-home/stdout.bin",

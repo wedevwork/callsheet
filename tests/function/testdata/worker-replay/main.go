@@ -30,12 +30,12 @@
 // 97.
 //
 // Iteration 11 adds the grok and cursor impersonations (a link named grok,
-// or cursor-agent or cursor, selects them) for version calls. In Grok's task
-// mode the task envelope is the final -p argument and stdin must be empty
-// (zero bytes); the scenario's ExpectedPrompt (one task-ID placeholder) is
-// compared with that argument and its ExpectedStdin must be the explicit
-// empty string. Cursor has no task mode: any attempted Cursor task launch
-// is recorded and fails as a fixture failure.
+// or cursor-agent or cursor, selects them). In Grok's task mode the task
+// envelope is the final -p argument and stdin must be empty (zero bytes).
+// In Cursor's task mode the envelope is the final positional argument and
+// stdin must be empty. The scenario's ExpectedPrompt (one task-ID
+// placeholder) is compared with that argument and its ExpectedStdin must
+// be the explicit empty string.
 package main
 
 import (
@@ -72,9 +72,9 @@ type Scenario struct {
 	// ExpectedStdin, when set, is the exact stdin with "{task_id}" (for
 	// Grok it must be set, to the empty string).
 	ExpectedStdin *string `json:"expected_stdin"`
-	// ExpectedPrompt (iteration 11), when set, is Grok's exact -p value
-	// (the composed prompt) with "{task_id}"; ExpectedArgv names that
-	// element "{prompt}".
+	// ExpectedPrompt (iteration 11), when set, is Grok's exact -p value or
+	// Cursor's positional prompt (the composed prompt) with "{task_id}";
+	// ExpectedArgv names that element "{prompt}".
 	ExpectedPrompt *string `json:"expected_prompt"`
 	// Capture is the capture directory (absolute); Stdout, Stderr and Exit
 	// override it for synthetic robustness cases (Synthetic true).
@@ -154,13 +154,19 @@ func run() int {
 	if err != nil || len(stdin) > 16<<20 {
 		return fail("stdin unreadable or over 16 MiB")
 	}
-	if l.Vendor == "cursor" {
-		// The refused adapter: no production path may launch a task.
-		return fail("cursor has no task mode: a task launch of the refused adapter")
-	}
-	// The envelope: stdin for claude and codex; Grok's final -p argument,
-	// with zero stdin bytes.
+	// The envelope: stdin for claude and codex; Grok's final -p argument
+	// or Cursor's final positional argument, each with zero stdin bytes.
 	envelope := stdin
+	if l.Vendor == "cursor" {
+		if len(l.Argv) < 1 {
+			return fail("cursor argv %q has no positional prompt", l.Argv)
+		}
+		if len(stdin) != 0 {
+			return fail("cursor stdin carries %d bytes, want none", len(stdin))
+		}
+		envelope = []byte(l.Argv[len(l.Argv)-1])
+		l.Prompt = envelope
+	}
 	if l.Vendor == "grok" {
 		if len(l.Argv) < 2 || l.Argv[len(l.Argv)-2] != "-p" {
 			return fail("grok argv %q does not end with -p and the prompt", l.Argv)
@@ -209,8 +215,8 @@ func run() int {
 	}
 	for i, want := range sc.ExpectedArgv {
 		if want == "{prompt}" {
-			if l.Vendor != "grok" || i != len(sc.ExpectedArgv)-1 {
-				return fail("a prompt placeholder outside grok's last argument")
+			if (l.Vendor != "grok" && l.Vendor != "cursor") || i != len(sc.ExpectedArgv)-1 {
+				return fail("a prompt placeholder outside the last argument")
 			}
 			continue
 		}
@@ -231,9 +237,9 @@ func run() int {
 		return fail("codex argv has no final path")
 	}
 	l.Final = final
-	if l.Vendor == "grok" {
+	if l.Vendor == "grok" || l.Vendor == "cursor" {
 		if sc.ExpectedStdin == nil || *sc.ExpectedStdin != "" {
-			return fail("a grok scenario must expect the explicit empty stdin")
+			return fail("a %s scenario must expect the explicit empty stdin", l.Vendor)
 		}
 		if sc.ExpectedPrompt != nil {
 			if want := strings.ReplaceAll(*sc.ExpectedPrompt, "{task_id}", l.TaskID); !bytes.Equal(l.Prompt, []byte(want)) {
