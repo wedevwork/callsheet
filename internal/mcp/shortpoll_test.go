@@ -13,9 +13,11 @@ import (
 // tools/list order (design nonblocking-coordinator-waits: the 23 schemas
 // as main a09b711 lists them, only the two waiting descriptions changing;
 // design 12a-worker-selection then changed only the role_add, role_set and
-// dispatch override model and effort descriptions, every type, bound and
-// required list unchanged).
-const schemaDigest = "9b3bf9bd301fe34ea090cb73a9d229039184d122646084f32ad467ab4d9070f1"
+// dispatch override model and effort descriptions; design 12a-2c slice B
+// changed only the cursor clause of the adapter description from an
+// every-OS refusal to "Linux workers only". Every type, bound and
+// required list is unchanged).
+const schemaDigest = "334c24dc9b8f201828e423774dddb2fc53554f1eb2c4e5ff30486a70c2a81e3e"
 
 // TestShortPollGuidance is UT-6 (FP-6): for every budget the two waiting
 // tools carry B, the unchanged deferral note and then the exact short-poll

@@ -139,7 +139,7 @@ func (g Gate) Vendor(id string) VendorDecision {
 func OSGate() Gate { return Gate{Getenv: os.Getenv, Stat: os.Stat} }
 
 // Refused reports whether vendor's smoke on goos is an expected posture
-// refusal rather than a paid run (iteration 11): Cursor on every OS and
-// Grok outside Linux, as adapter.ValidateWorkerPosture decides from the
+// refusal rather than a paid run (iteration 11): Cursor and Grok outside
+// Linux, as adapter.ValidateWorkerPosture decides from the
 // explicit OS value. It needs no filesystem or process activity.
 func Refused(vendor, goos string) bool { return adapter.ValidateWorkerPosture(vendor, goos) != nil }

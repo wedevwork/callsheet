@@ -35,8 +35,13 @@ const FakeAdapterWarning = "fake adapter enabled: test/demo adapter; never calls
 const DarwinVendorWarning = "claude/codex adapter enabled on macOS: the worker recipe is Linux-qualified and macOS vendor sandbox and exit behavior are UNVERIFIED; consult the support catalog before production use"
 
 // CursorVendorWarning is the fixed warning logged once when a sidecar
-// starts with the Cursor adapter enabled (iteration 11).
-const CursorVendorWarning = "cursor adapter enabled for version probing only: unattended worker execution is refused because no qualified recipe preserves the operator posture; consult the support catalog"
+// starts with the Cursor adapter enabled. Off Linux the same single
+// warning carries " " + CursorNonLinuxWarningSuffix.
+const CursorVendorWarning = "cursor adapter enabled: on Linux, tasks run with --trust --auto-review; prompts are passed in argv and may be visible to process inspection; the prompt limit is 32 KiB; Cursor records trust and maintains state outside the task directory"
+
+// CursorNonLinuxWarningSuffix completes CursorVendorWarning when GOOS is
+// not linux. It is the same sentence as adapter's OS-posture refusal.
+const CursorNonLinuxWarningSuffix = "cursor worker execution is not qualified on this OS; consult the support catalog"
 
 // GrokVendorWarning is the fixed warning logged once when a sidecar starts
 // with the Grok adapter enabled (iteration 11); on macOS the same single
@@ -129,8 +134,8 @@ func openManual(p string) (*os.File, error) {
 
 // probe runs the adapter's probe of its enabled executable, then
 // (iteration 11) checks the worker posture for env.goos: a probe error
-// keeps its precedence, and a refused posture (Cursor everywhere, Grok
-// outside Linux) is invalid_argument, field adapter, reason probe_failed
+// keeps its precedence, and a refused posture (Cursor and Grok outside
+// Linux) is invalid_argument, field adapter, reason probe_failed
 // with the fixed posture text, so candidate validation and every
 // ready-check cycle refuse it however the version matches.
 func (d *deps) probe(ctx context.Context, env roleEnv, adapterID string) error {

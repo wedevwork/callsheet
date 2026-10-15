@@ -26,10 +26,8 @@ const (
 	roleNameHelp = "  --name NAME        logical role name (a slug; several roles may share it)\n"
 	roleNodeHelp = "  --node NODE        the worker node ID (n_ + 32 hex digits; see callsheet node ls)\n"
 	roleRestHelp = "  --adapter ID       the adapter: claude (Claude Code), codex (Codex CLI), grok (Grok\n" +
-		"                     Build; Linux workers only), cursor (Cursor Agent; registered and\n" +
-		"                     version-probed, but its roles are refused on every OS: no\n" +
-		"                     qualified unattended recipe preserves the operator posture) or\n" +
-		"                     fake (test/demo adapter; never calls a model)\n" +
+		"                     Build; Linux workers only), cursor (Cursor Agent; Linux workers\n" +
+		"                     only) or fake (test/demo adapter; never calls a model)\n" +
 		"  --instruction PATH absolute path of the instruction manual on the worker node\n" +
 		"  --runbook PATH     absolute path of the runbook manual on the worker node\n" +
 		"  --model MODEL      required model name, free text passed unchanged to the adapter\n" +

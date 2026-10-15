@@ -48,7 +48,7 @@ func TestSelectionSchemas(t *testing.T) {
 		t.Fatalf("role_add model description %q", d)
 	}
 	if d := add["adapter"].(schema)["description"].(string); !strings.Contains(d, "grok (Grok Build; Linux workers only)") ||
-		!strings.Contains(d, "cursor (Cursor Agent; registered but its roles are refused on every OS)") {
+		!strings.Contains(d, "cursor (Cursor Agent; Linux workers only)") {
 		t.Fatalf("role_add adapter description %q", d)
 	}
 	for _, d := range []string{override["properties"].(schema)["model"].(schema)["description"].(string), override["properties"].(schema)["effort"].(schema)["description"].(string)} {

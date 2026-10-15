@@ -23,8 +23,8 @@ import (
 // decide the task's status. Overflow discards the input and reports
 // FinalTooLarge; anything else malformed (empty stdout included)
 // FinalInvalid. It is the common result schema of Claude's stdout and
-// (iteration 11) Cursor's captured json output: Cursor's extractor is this
-// one, with no Grok shape, plain text or stream event accepted.
+// Cursor's stdout json output: Cursor's extractor is this one, with no
+// Grok shape, plain text or stream event accepted.
 type claudeExtractor struct {
 	buf    []byte
 	over   bool

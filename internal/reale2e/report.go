@@ -84,6 +84,7 @@ var OwnerAcceptedExclusions = []string{
 	"not covered: ~/.codex/config.toml (Codex records a trust entry per working folder)",
 	"not covered: untracked .claude/ directories inside protected repositories",
 	"not covered: ~/.claude/plugins/known_marketplaces.json (Claude refreshes marketplace timestamps)",
+	"not covered: ~/.cursor/cli-config.json (Cursor maintains this file; report-only)",
 }
 
 // NestedRepoLimitation is the report's statement of the A3.1 discovery

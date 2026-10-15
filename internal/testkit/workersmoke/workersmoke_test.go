@@ -108,7 +108,7 @@ func TestGate(t *testing.T) {
 	for _, c := range []struct {
 		vendor, goos string
 		refused      bool
-	}{{"grok", "linux", false}, {"grok", "darwin", true}, {"cursor", "linux", true}, {"cursor", "darwin", true}, {"claude", "darwin", false}, {"codex", "linux", false}} {
+	}{{"grok", "linux", false}, {"grok", "darwin", true}, {"cursor", "linux", false}, {"cursor", "darwin", true}, {"claude", "darwin", false}, {"codex", "linux", false}} {
 		if Refused(c.vendor, c.goos) != c.refused {
 			t.Fatalf("Refused(%s, %s) = %v", c.vendor, c.goos, !c.refused)
 		}

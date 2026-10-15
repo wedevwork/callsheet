@@ -259,12 +259,12 @@ var speedWorkspaceDoorNative = []string{
 var speedWave2Native = []string{
 	"TestWave2Registration", "TestWave2Registration/registry", "TestWave2Registration/paths", "TestWave2Registration/selection", "TestWave2Registration/posture",
 	"TestWave2Probe", "TestWave2Probe/grok", "TestWave2Probe/cursor", "TestWave2Probe/refusal",
-	"TestWave2Invocation", "TestWave2Invocation/grok", "TestWave2Invocation/cursor-refused", "TestWave2Invocation/prompt", "TestWave2Invocation/auto-grok",
+	"TestWave2Invocation", "TestWave2Invocation/grok", "TestWave2Invocation/cursor-boundaries", "TestWave2Invocation/prompt", "TestWave2Invocation/auto-grok",
 	"TestWave2GrokFinal", "TestWave2GrokFinal/success", "TestWave2GrokFinal/error", "TestWave2GrokFinal/cancelled", "TestWave2GrokFinal/malformed",
 	"TestWave2CursorFinal", "TestWave2CursorFinal/success", "TestWave2CursorFinal/absent", "TestWave2CursorFinal/malformed", "TestWave2CursorFinal/blocked",
 	"TestWave2Outcomes", "TestWave2Outcomes/exits", "TestWave2Outcomes/controls", "TestWave2Outcomes/refusal", "TestWave2Outcomes/retry",
 	"TestWave2Catalog", "TestWave2Catalog/recipes", "TestWave2Catalog/evidence", "TestWave2Catalog/ownership",
-	"TestWave2Dispatch", "TestWave2Dispatch/grok", "TestWave2Dispatch/cursor-refused", "TestWave2Dispatch/no-vendors",
+	"TestWave2Dispatch", "TestWave2Dispatch/grok", "TestWave2Dispatch/auto-cursor", "TestWave2Dispatch/no-vendors",
 	"TestWave2SmokeGate", "TestWave2SmokeGate/default-off", "TestWave2SmokeGate/ci-off", "TestWave2SmokeGate/absent", "TestWave2SmokeGate/enabled", "TestWave2SmokeGate/posture",
 }
 

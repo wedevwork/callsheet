@@ -198,7 +198,7 @@ func TestWorkerSelectionPolicy(t *testing.T) {
 // callable adapter for every union effort with alternate model text
 // (spaces, punctuation and leading hyphens one argv element), Codex's
 // literal quotes, each prompt transport, Grok's fast model, and Cursor's
-// zero invocation for every valid selection.
+// MODEL-EFFORT argv for every valid selection.
 func TestWorkerSelectionInvocation(t *testing.T) {
 	models := []string{"claude-opus-5-5", "gpt-6-astra", "grok-4.7-build-fast", "model with spaces", "-leading", "--effort max", "\"q\" é $(no)"}
 	prompt := []byte("{\"format\":\"callsheet-task-v1\"} -- --model other\n")
@@ -255,13 +255,15 @@ func TestWorkerSelectionInvocation(t *testing.T) {
 	})
 	t.Run("cursor", func(t *testing.T) {
 		// Every valid selection, the observed vendor names and newly
-		// admitted efforts included, is refused before any argv: there is
-		// no executable Cursor mapping.
+		// admitted efforts included, builds MODEL-EFFORT with no trimming
+		// or rewrite. A name that already contains an effort is not detected.
 		a := NewCursor("")
 		for _, e := range cursorUnion {
 			for _, m := range append(slices.Clone(models), "grok-4.7", "grok-4.7-low", "grok-4.7-xhigh", "gpt-5.6-sol-none", "auto") {
 				inv, err := a.Invocation(TaskInput{TaskID: taskID, Model: m, Effort: e, Prompt: prompt, ScratchDir: scratch})
-				if err == nil || err.Error() != cursorPostureText || inv.Argv != nil || inv.Stdin != nil || inv.FinalFile != "" {
+				want := []string{"-p", "--trust", "--auto-review", "--output-format", "json", "--model", m + "-" + e, string(prompt)}
+				if err != nil || !slices.Equal(inv.Argv, want) || inv.Stdin != nil || inv.FinalFile != "" ||
+					slices.Contains(inv.Argv, "--force") || slices.Contains(inv.Argv, "--yolo") || slices.Contains(inv.Argv, "--sandbox") || slices.Contains(inv.Argv, "--approve-mcps") {
 					t.Fatalf("cursor %q/%q: %+v %v", m, e, inv, err)
 				}
 			}
@@ -269,7 +271,7 @@ func TestWorkerSelectionInvocation(t *testing.T) {
 	})
 	t.Run("refused", func(t *testing.T) {
 		// Out-of-union efforts and invalid grammar never build an argv, on
-		// Cursor too (input validation precedes its posture refusal).
+		// Cursor too (input validation precedes the prompt checks).
 		for _, id := range realIDs {
 			a, _ := Builtin("").Lookup(id)
 			for _, in := range []TaskInput{{TaskID: taskID, Model: "m", Effort: "turbo", Prompt: prompt, ScratchDir: scratch},

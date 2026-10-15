@@ -293,11 +293,13 @@ func unionPolicy(t *testing.T) {
 			}
 		}
 		// Cursor's selection is validated independently of its posture: a
-		// valid selection is still never eligible on any OS.
-		for _, goos := range []string{"linux", "darwin"} {
-			if adapter.ValidateSelection("cursor", "grok-4.7", "max") != nil || adapter.ValidateWorkerPosture("cursor", goos) == nil {
-				t.Fatalf("cursor selection or posture on %s", goos)
-			}
+		// valid selection is eligible on Linux and refused elsewhere.
+		if adapter.ValidateSelection("cursor", "grok-4.7", "max") != nil || adapter.ValidateWorkerPosture("cursor", "linux") != nil {
+			t.Fatal("cursor selection or linux posture")
+		}
+		if adapter.ValidateWorkerPosture("cursor", "darwin") == nil ||
+			adapter.ValidateWorkerPosture("cursor", "darwin").Error() != "cursor worker execution is not qualified on this OS; consult the support catalog" {
+			t.Fatal("cursor darwin posture")
 		}
 	})
 	t.Run("descriptor-copies", func(t *testing.T) {
@@ -401,8 +403,9 @@ func roleLifecycle(t *testing.T) {
 
 // explicitSelection is TestRealAdapterInvocation/claude/explicit-selection
 // (FP-2): a per-task override reaches Claude's recipe exactly; the other
-// callable recipes and Cursor's refusal for the same kind of alternate
-// selections; the tagged invocation matrix.
+// callable recipes and Cursor's Linux argv for the same kind of alternate
+// selections (non-Linux refusal is the posture gate, not this invocation);
+// the tagged invocation matrix.
 func explicitSelection(t *testing.T, r *realRig) {
 	goal := r.goal("explicit selection claude")
 	req := requestFor("rc", goal)
@@ -420,8 +423,9 @@ func explicitSelection(t *testing.T, r *realRig) {
 	if !slices.Equal(l.Argv, claudeRecipe(m, e)) || l.Argv0 != r.kit.claude || string(l.Stdin) != strings.ReplaceAll(stdin, "{task_id}", f.view.TaskID) {
 		t.Fatalf("claude launch %q", l.Argv)
 	}
-	// The other callable recipes with alternate selections, and Cursor's
-	// zero invocation for valid ones (no process).
+	// The other callable recipes with alternate selections. Cursor builds
+	// the Linux recipe for valid ones; non-Linux refusal is the posture
+	// gate, not this invocation.
 	tid := "t_" + strings.Repeat("0", 32)
 	codex, _ := adapter.Builtin("").Lookup("codex")
 	inv, err := codex.Invocation(adapter.TaskInput{TaskID: tid, Model: "gpt-6-astra", Effort: "ultra", Prompt: []byte("p"), ScratchDir: "/scratch"})
@@ -436,8 +440,9 @@ func explicitSelection(t *testing.T, r *realRig) {
 	}
 	cursor, _ := adapter.Builtin("").Lookup("cursor")
 	for _, sel := range [][2]string{{"grok-4.7", "xhigh"}, {"grok-4.7-low", "low"}, {"gpt-5.6-sol", "none"}} {
-		if inv, err := cursor.Invocation(adapter.TaskInput{TaskID: tid, Model: sel[0], Effort: sel[1], Prompt: []byte("p")}); err == nil ||
-			err.Error() != adapter.ValidateWorkerPosture("cursor", "linux").Error() || inv.Argv != nil {
+		inv, err := cursor.Invocation(adapter.TaskInput{TaskID: tid, Model: sel[0], Effort: sel[1], Prompt: []byte("p")})
+		want := []string{"-p", "--trust", "--auto-review", "--output-format", "json", "--model", sel[0] + "-" + sel[1], "p"}
+		if err != nil || !slices.Equal(inv.Argv, want) || len(inv.Stdin) != 0 {
 			t.Fatalf("cursor %v: %+v %v", sel, inv, err)
 		}
 	}
@@ -643,13 +648,14 @@ func selectionSurfaces(t *testing.T) {
 	runHelp := cli.run(t, "sidecar", "run", "--help")
 	for _, w := range []string{"required model name, free text passed unchanged to the adapter", "no model list is kept", "a vendor refusal is the task's result",
 		"claude low, medium, high, xhigh, max; codex low, medium, high, xhigh, max, ultra; grok low, medium, high, xhigh; cursor none, minimal, low, medium, high, xhigh, max",
-		"grok (Grok Build; Linux workers only)", "its roles are refused on every OS"} {
+		"grok (Grok Build; Linux workers only)", "cursor (Cursor Agent; Linux workers only)"} {
 		if !strings.Contains(flat(addHelp.stdout), w) {
 			t.Fatalf("role add help lacks %q", w)
 		}
 	}
 	for _, w := range []string{"(minimum version 2.1.299 (Claude Code))", "(minimum version codex-cli 0.162.1)", "no PATH lookup", "Linux only",
-		"at or above its minimum, a newer one without a warning", "are refused on every OS"} {
+		"at or above its minimum, a newer one without a warning",
+		"cursor worker execution is not qualified on this OS; consult the support catalog"} {
 		if !strings.Contains(flat(runHelp.stdout), w) {
 			t.Fatalf("sidecar run help lacks %q", w)
 		}

@@ -7,10 +7,10 @@
 // names a failed task reports. The fake adapter is a test/demo adapter
 // that never calls a model. Iteration 08 adds the production Claude and
 // Codex adapters with their captured recipes. Iteration 11 adds Grok
-// (prompt in its -p argument, Linux execution only) and Cursor (registered
-// and version-probed, execution refused on every OS), with
-// ValidateWorkerPosture deciding execution eligibility separately from
-// selection and version. Design 12a-worker-selection makes selection
+// (prompt in its -p argument, Linux execution only) and Cursor (positional
+// argv prompt, Linux execution with --trust --auto-review, refused on
+// every other OS), with ValidateWorkerPosture deciding execution
+// eligibility separately from selection and version. Design 12a-worker-selection makes selection
 // requirement Q12's: an explicit free-text model and an effort from the
 // adapter's union, the vendor deciding whether the pair runs, and worker
 // versions eligible at or above their observed minimum; the captured

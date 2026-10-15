@@ -22,8 +22,9 @@
 //	go test -tags=realadaptersmoke ./tests/smoke -run '^TestRealWorkerSmoke$' -count=1 -timeout=5m
 //
 // Grok on Linux is a paid no-tools answer (pong); on macOS it is an
-// expected posture refusal. Cursor on every OS is a non-model refusal
-// smoke: neither refusal is vendor qualification.
+// expected posture refusal. On Linux the opted-in Cursor smoke executes
+// and can call a paid model; on every other OS it is a non-model posture
+// refusal. Neither refusal is vendor qualification.
 package smoke
 
 import (
@@ -89,9 +90,10 @@ func TestRealWorkerSmoke(t *testing.T) {
 			}
 		})
 	}
-	// Iteration 11 (wave 2): Grok's paid no-tools answer on Linux, and the
-	// expected posture refusals (Grok on macOS, Cursor everywhere) after a
-	// matching version probe, labelled as refusals, never as qualification.
+	// Wave 2: Grok's paid no-tools answer on Linux, and the opted-in Linux
+	// Cursor smoke, which executes and can call a paid model. Off Linux
+	// both are expected posture refusals after a matching version probe,
+	// labelled as refusals, never as qualification.
 	prompt, err := os.ReadFile(filepath.Join(root, "tests", "testdata", "real-adapters", "linux-2026-10-04", "runs", "cursor-stdin-success", "stdin.txt"))
 	if err != nil {
 		t.Fatal(err)

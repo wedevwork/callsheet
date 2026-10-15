@@ -874,11 +874,11 @@ type preparation struct {
 // plane of another policy could send, is refused start_failed with the
 // safe local diagnostic selection_invalid, never logging the values;
 // whether the vendor accepts a valid pair is decided by its run), then
-// checks the worker posture independently of the role checks (iteration
-// 11: Cursor everywhere and Grok outside Linux, for the role environment's
-// OS, are refused start_failed with the fixed diagnostic
+// checks the worker posture independently of the role checks: Grok and
+// Cursor execute on Linux; on every other OS, for the role environment's
+// OS, both are refused start_failed with the fixed diagnostic
 // worker_posture_not_qualified, before any journal, scratch, workspace or
-// guardian). A nonempty reason is a refusal.
+// guardian. A nonempty reason is a refusal.
 func (s *taskSupervisor) prepare(w *taskWorker) (preparation, string) {
 	if s.platErr != nil {
 		return preparation{}, contract.ReasonStartFailed

@@ -33,13 +33,16 @@ import (
 // Iteration 11 (wave 2) adds Grok Build and Cursor Agent from the
 // coordinator's Linux qualification of 2026-10-04. Grok runs auto mode
 // with the composed prompt as the one -p argument (stdin stays empty), on
-// Linux only. Cursor is registered and version-probed but its unattended
-// task execution is refused on every OS: the measured force/trust
-// candidate wrote outside its scratch directory, the baseline refused
-// workspace trust and the sandbox-enabled attempts failed authentication.
-// Execution eligibility is ValidateWorkerPosture's decision, separate
-// from selection and version knowledge. Cursor's date baseline does not
-// overcome that gate.
+// Linux only. Cursor runs on Linux with --trust --auto-review, the model
+// argument MODEL-EFFORT and the composed prompt as one positional argv
+// element (stdin stays empty). That recipe is the owner-authorized
+// measured transport; it is not a claim of OS confinement. Iteration 11
+// (2026-10-04) refused the force/trust candidate after outside-scratch
+// writes, the trust-less candidate after a trust refusal and the
+// sandbox-enabled candidates after authentication failures; those
+// observations stay historical. Execution eligibility is
+// ValidateWorkerPosture's decision, separate from selection and version
+// knowledge. Cursor's date baseline does not overcome its non-Linux gate.
 
 // Adapter IDs.
 const (
@@ -53,9 +56,14 @@ const (
 
 // MaxGrokPromptBytes (iteration 11) bounds Grok's complete composed prompt
 // (manuals and envelope included), passed as one argv element: a
-// conservative product argv policy, not a measured vendor limit. Other
-// vendors keep contract.MaxPromptBytes on stdin.
+// conservative product argv policy, not a measured vendor limit. Claude
+// and Codex keep contract.MaxPromptBytes on stdin.
 const MaxGrokPromptBytes = 32 << 10
+
+// MaxCursorPromptBytes bounds Cursor's complete composed prompt, passed as
+// one positional argv element: a product argv bound, not a claimed vendor
+// maximum.
+const MaxCursorPromptBytes = 32 << 10
 
 // Grok prompt refusals (iteration 11), checked in this order after the
 // task ID, model and selection; each is passed to errInvocation.
@@ -66,21 +74,31 @@ const (
 	grokPromptNULReason      = "the grok prompt must not contain NUL"
 )
 
+// Cursor prompt refusals, checked in this order after the task ID, model
+// and selection; each is passed to errInvocation.
+const (
+	cursorPromptEmptyReason    = "the cursor prompt must not be empty"
+	cursorPromptTooLargeReason = "the cursor prompt exceeds 32 KiB"
+	cursorPromptUTF8Reason     = "the cursor prompt must be valid UTF-8"
+	cursorPromptNULReason      = "the cursor prompt must not contain NUL"
+)
+
 // Worker posture refusals (iteration 11): fixed text, never configuration
 // or environment details.
 var (
 	errGrokPosture        = errors.New("grok worker execution is not qualified on this OS; consult the support catalog")
-	errCursorPosture      = errors.New("cursor worker execution is refused: no qualified unattended recipe preserves the operator posture; consult the support catalog")
+	errCursorOSPosture    = errors.New("cursor worker execution is not qualified on this OS; consult the support catalog")
 	errUnsupportedPosture = errors.New("adapter: unknown adapter; registered adapters: " + registeredAdapters)
 )
 
 // ValidateWorkerPosture reports whether adapter id may execute tasks on
 // goos (the explicit OS seam the sidecar supplies, never a runtime
-// lookup), with no I/O: Grok only on linux; Cursor never; claude, codex
-// and fake nil here (their existing platform checks still apply); any
-// other ID a fixed unsupported-adapter error. It never probes
-// configuration and grants no override: a valid selection or an eligible
-// version does not make a worker eligible.
+// lookup), with no I/O: Grok and Cursor only on linux; claude, codex and
+// fake nil here (their existing platform checks still apply); any other
+// ID a fixed unsupported-adapter error. It never probes configuration and
+// grants no override: a valid selection or an eligible version does not
+// make a worker eligible. Cursor's date baseline does not overcome the
+// OS gate.
 func ValidateWorkerPosture(id, goos string) error {
 	switch id {
 	case ClaudeID, CodexID, FakeID:
@@ -91,7 +109,10 @@ func ValidateWorkerPosture(id, goos string) error {
 		}
 		return errGrokPosture
 	case CursorID:
-		return errCursorPosture
+		if goos == "linux" {
+			return nil
+		}
+		return errCursorOSPosture
 	}
 	return errUnsupportedPosture
 }
@@ -113,8 +134,8 @@ const VersionArg = "--version"
 // selection allowlist, the only qualified selection or a default (no
 // registration or dispatch path obtains one from it). It is separate from
 // execution eligibility (ValidateWorkerPosture): Cursor's row is an
-// observation whose execution is refused on every OS, Grok's is eligible
-// on Linux only.
+// observation whose execution is eligible on Linux only, like Grok's.
+// Non-Linux Cursor execution stays refused (errCursorOSPosture).
 type Qualification struct {
 	ID      string
 	Version string
@@ -126,13 +147,17 @@ type Qualification struct {
 // historical evidence and never change to follow current selection policy.
 //
 // Cursor's observed pair (grok-4.7, low) was run as the literal vendor
-// model argument grok-4.7-low; Q12's listed (grok-4.7, xhigh) maps to
-// grok-4.7-xhigh likewise (and medium/high). These are evidence and
-// examples, not a model allowlist and not an executable mapper: Cursor's
-// Invocation refuses every valid selection. The observed but rejected
-// Cursor candidate was -p --output-format json --model grok-4.7-low
-// --force --trust with the prompt on stdin: it is recorded in the fixtures
-// and catalog for comparison, never emitted.
+// model argument grok-4.7-low. Current policy constructs the vendor model
+// argument as MODEL + "-" + EFFORT with no trimming, alias lookup,
+// fast-suffix relocation or fallback, so (grok-4.7, high) is
+// grok-4.7-high and a name that already ends in an effort is not
+// rewritten. That rule is a Callsheet transformation, not a vendor
+// allowlist: other syntactically valid pairs keep the vendor's own
+// compatibility failure. The observed but rejected iteration-11 candidate
+// (2026-10-04) was -p --output-format json --model grok-4.7-low --force
+// --trust with the prompt on stdin: it is recorded in the fixtures and
+// catalog for comparison, never emitted. The current Linux recipe does
+// not pass --force, --yolo, --approve-mcps or --sandbox.
 var qualifications = []Qualification{
 	{ID: ClaudeID, Version: "2.1.285 (Claude Code)", Model: "sonnet", Effort: "low"},
 	{ID: CodexID, Version: "codex-cli 0.159.0", Model: "gpt-6.1-sol", Effort: "low"},
@@ -253,7 +278,7 @@ func NewCodex(dir string) Adapter { return newVendor(CodexID, dir) }
 func NewGrok(dir string) Adapter { return newVendor(GrokID, dir) }
 
 // NewCursor returns the Cursor adapter (iteration 11), likewise: its probe
-// and extractor work, but its Invocation always refuses.
+// and extractor work, and its Invocation builds the Linux auto/trust recipe.
 func NewCursor(dir string) Adapter { return newVendor(CursorID, dir) }
 
 func newVendor(id, dir string) *vendor {
@@ -279,8 +304,8 @@ func (v *vendor) Descriptor() Descriptor {
 // Bounded stderr is permitted and never exposed or used as a version. It
 // checks invocability, not authentication, model availability or
 // containment. An eligible Cursor version is invocability only: the
-// sidecar's posture check then refuses it, and the date baseline does not
-// overcome that gate.
+// sidecar's posture check still refuses it off Linux, and the date
+// baseline does not overcome that gate.
 func (v *vendor) Probe(ctx context.Context, executable string) error {
 	return v.p.run(ctx, executable)
 }
@@ -305,13 +330,15 @@ func (v *vendor) versionCheck(out, _ string) string {
 // prompt bound and an owned stdin copy, the prompt never in argv or a
 // file; Grok auto mode with the complete composed prompt (at most
 // MaxGrokPromptBytes, valid UTF-8, no NUL) as the one -p argument and an
-// empty stdin; Cursor always a zero Invocation and its fixed posture
-// refusal for every valid selection, never a force/trust or
-// sandbox-enabled argv and no model-name mapping. Every role uses the same
-// recipe: Invocation has no role name and infers no exception. No shell,
-// default, fallback selection, resume, allowed-tools list, bypass or
-// configuration-repair flag is ever added. Auto does not imply every
-// requested action succeeds.
+// empty stdin; Cursor on the same prompt bounds (MaxCursorPromptBytes) as
+// one positional argument after -p --trust --auto-review --output-format
+// json --model MODEL-EFFORT, stdin empty, never --force, --yolo,
+// --approve-mcps or --sandbox. Every role uses the same recipe: Invocation
+// has no role name and infers no exception. No shell, default, fallback
+// selection, resume, allowed-tools list, bypass or configuration-repair
+// flag is ever added. Auto does not imply every requested action succeeds.
+// The OS gate is ValidateWorkerPosture, applied by the sidecar before
+// this recipe is launched.
 func (v *vendor) Invocation(in TaskInput) (Invocation, error) {
 	switch {
 	case !contract.ValidTaskID(in.TaskID):
@@ -324,7 +351,7 @@ func (v *vendor) Invocation(in TaskInput) (Invocation, error) {
 	}
 	switch v.q.ID {
 	case CursorID:
-		return Invocation{}, errCursorPosture
+		return cursorInvocation(in)
 	case GrokID:
 		return grokInvocation(in)
 	}
@@ -368,6 +395,30 @@ func grokInvocation(in TaskInput) (Invocation, error) {
 		"-p", string(in.Prompt)}}, nil
 }
 
+// cursorInvocation is Cursor's Linux recipe: the prompt checks in their
+// fixed order, then -p --trust --auto-review --output-format json --model
+// MODEL-EFFORT and the composed prompt as the last argument. MODEL-EFFORT
+// is the selected model, a hyphen and the selected effort, with no
+// trimming, alias lookup, fast-suffix relocation or fallback. Stdin is
+// empty and the final source is stdout, so ScratchDir and FinalDir are
+// ignored. The recipe never passes --force, --yolo, --approve-mcps or
+// --sandbox. Passing --trust may cause Cursor to persist trust; Callsheet
+// does not create, patch, restore or delete that state.
+func cursorInvocation(in TaskInput) (Invocation, error) {
+	switch {
+	case len(in.Prompt) == 0:
+		return Invocation{}, errInvocation(cursorPromptEmptyReason)
+	case len(in.Prompt) > MaxCursorPromptBytes:
+		return Invocation{}, errInvocation(cursorPromptTooLargeReason)
+	case !utf8.Valid(in.Prompt):
+		return Invocation{}, errInvocation(cursorPromptUTF8Reason)
+	case bytes.IndexByte(in.Prompt, 0) >= 0:
+		return Invocation{}, errInvocation(cursorPromptNULReason)
+	}
+	return Invocation{Argv: []string{"-p", "--trust", "--auto-review", "--output-format", "json",
+		"--model", in.Model + "-" + in.Effort, string(in.Prompt)}}, nil
+}
+
 // codexInvocation is Codex's recipe (iteration 08): the final-message file
 // in the task's scratch (or owned final-output) directory.
 func codexInvocation(in TaskInput) (Invocation, error) {
@@ -391,8 +442,7 @@ func codexInvocation(in TaskInput) (Invocation, error) {
 // NewFinalExtractor returns fresh task-local extraction state: Claude's
 // stdout JSON result, Codex's raw UTF-8 final file, Grok's stdout JSON text
 // or error message (iteration 11) and Cursor's stdout JSON result
-// (iteration 11: the same strict result schema as Claude's, callable for
-// fixture handling although Cursor's execution is refused).
+// (the same strict result schema as Claude's, used for live stdout).
 func (v *vendor) NewFinalExtractor() FinalExtractor {
 	switch v.q.ID {
 	case ClaudeID, CursorID:

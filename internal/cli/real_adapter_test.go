@@ -85,8 +85,9 @@ func TestRealAdapterCLIOptions(t *testing.T) {
 	}
 	// Help names every flag, each vendor's minimum version (design
 	// 12a-worker-selection: no exact-only version or pair), the required
-	// free model and the effort sets, the macOS limit and (iteration 11)
-	// Grok's argv/32 KiB/auto limits and Cursor's refusal.
+	// free model and the effort sets, the macOS limit and Grok's and
+	// Cursor's argv/32 KiB limits, Cursor's Linux auto/trust recipe and
+	// the exact non-Linux OS-posture refusal.
 	flat := func(s string) string { return strings.Join(strings.Fields(s), " ") }
 	_, help, _ := exec(t, "linux", "sidecar", "run", "--help")
 	for _, w := range []string{"[--claude-adapter PATH] [--codex-adapter PATH] [--grok-adapter PATH] [--cursor-adapter PATH] [--fake-adapter PATH]",
@@ -97,8 +98,11 @@ func TestRealAdapterCLIOptions(t *testing.T) {
 		"qualified on Linux only", "test/demo adapter; never calls a model",
 		"--grok-adapter PATH", "(minimum version grok 1.0.52 (0920c8169e27) [stable]; Linux only)",
 		"(at most 32 KiB) is passed in argv", "visible to process inspection", "Auto is requested", "On macOS grok roles are refused",
-		"--cursor-adapter PATH", "(cursor-agent; minimum version 2026.10.01-e373342) for version probing only", "are refused on every OS",
-		"no qualified unattended recipe preserves the operator posture"} {
+		"--cursor-adapter PATH", "(cursor-agent; minimum version 2026.10.01-e373342; Linux only)",
+		"--trust --auto-review", "the model argument is MODEL-EFFORT",
+		"the prompt (at most 32 KiB) is one positional argv element", "visible to process inspection",
+		"Cursor records trust and maintains state outside the task directory",
+		"cursor worker execution is not qualified on this OS; consult the support catalog"} {
 		if !strings.Contains(flat(help), w) {
 			t.Fatalf("sidecar run help lacks %q:\n%s", w, help)
 		}
@@ -111,7 +115,7 @@ func TestRealAdapterCLIOptions(t *testing.T) {
 	for _, leaf := range []string{"add", "set"} {
 		_, h, _ := exec(t, "linux", "role", leaf, "--help")
 		for _, w := range []string{"claude (Claude Code), codex (Codex CLI), grok (Grok Build; Linux workers only), cursor (Cursor Agent",
-			"or fake (test/demo adapter; never calls a model)", "its roles are refused on every OS",
+			"Linux workers only", "or fake (test/demo adapter; never calls a model)",
 			"required model name, free text passed unchanged to the adapter (never inferred or defaulted; no model list is kept)",
 			"the vendor decides whether it runs the model with the effort, and a vendor refusal is the task's result",
 			"effort, one of the adapter's efforts: claude low, medium, high, xhigh, max; codex low, medium, high, xhigh, max, ultra; grok low, medium, high, xhigh; " +

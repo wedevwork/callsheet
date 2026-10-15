@@ -376,7 +376,7 @@ func BenchmarkVendorFinal(b *testing.B) {
 // invocations with a small and the maximum legal prompt, checking the
 // literal argv and that stdin is an owned copy; iteration 11 adds Grok's
 // with a small and the 32 KiB prompt (the prompt the last, owned argv
-// element, stdin empty) and Cursor's refusal (a zero Invocation).
+// element, stdin empty) and Cursor's bounded positional prompt.
 func BenchmarkVendorInvocation(b *testing.B) {
 	scratch := "/tmp/callsheet-task-" + taskID + "-1"
 	for _, size := range []int{64, MaxGrokPromptBytes} {
@@ -393,17 +393,21 @@ func BenchmarkVendorInvocation(b *testing.B) {
 			}
 		})
 	}
-	b.Run("cursor/refused", func(b *testing.B) {
-		cursor := NewCursor("")
-		prompt := []byte("Reply with exactly the single word pong.")
-		b.ReportAllocs()
-		for b.Loop() {
-			inv, err := cursor.Invocation(TaskInput{TaskID: taskID, Model: "grok-4.7", Effort: "low", Prompt: prompt, ScratchDir: scratch})
-			if err == nil || inv.Argv != nil || inv.Stdin != nil {
-				b.Fatalf("cursor invocation %+v %v", inv, err)
+	for _, size := range []int{64, MaxCursorPromptBytes} {
+		prompt := bytes.Repeat([]byte("p"), size)
+		b.Run("cursor/prompt="+itoa(size), func(b *testing.B) {
+			cursor := NewCursor("")
+			b.SetBytes(int64(size))
+			b.ReportAllocs()
+			for b.Loop() {
+				inv, err := cursor.Invocation(TaskInput{TaskID: taskID, Model: "grok-4.7", Effort: "high", Prompt: prompt, ScratchDir: scratch})
+				if err != nil || len(inv.Argv) != 8 || inv.Argv[7] != string(prompt) || inv.Stdin != nil || inv.Argv[6] != "grok-4.7-high" ||
+					inv.Argv[1] != "--trust" || inv.Argv[2] != "--auto-review" || slices.Contains(inv.Argv, "--force") {
+					b.Fatalf("cursor invocation %v", err)
+				}
 			}
-		}
-	})
+		})
+	}
 	for _, size := range []int{64, contract.MaxPromptBytes} {
 		prompt := bytes.Repeat([]byte("p"), size)
 		for _, q := range Qualifications()[:2] {

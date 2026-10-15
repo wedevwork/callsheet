@@ -214,6 +214,10 @@ func workerCatalogProjection(entries []Entry) ([]workerCatalogEntry, error) {
 			if !ok {
 				return nil, fmt.Errorf("projection: %s lacks fact %s", id, k)
 			}
+			// Slice B's current-policy sentence is operator prose on top of
+			// the historical fact. The frozen digest is the historical
+			// projection, so only that sentence is removed here.
+			f.Value = strings.TrimSuffix(f.Value, cursorCurrentPolicySuffix)
 			p.Facts[k] = f
 		}
 		out = append(out, p)
@@ -400,10 +404,11 @@ func wave2Evidence(t *testing.T, root string, entries []Entry) {
 	if !slices.Equal(want, []string{"grok", "--output-format", "json", "--model", "grok-4.7", "--reasoning-effort", "low", "--permission-mode", "auto", "-p", wave2ProductionPlaceholder}) {
 		t.Fatalf("grok production argv %q", want)
 	}
-	// Cursor: Invocation is always a zero refusal; the catalog's candidate
-	// is the capture's argv, labelled rejected, never production argv.
+	// Cursor's catalog candidate stays the rejected capture. Current
+	// production argv is a separate Linux policy, not a relabeling of it.
 	cursor, _ := adapter.Builtin("").Lookup("cursor")
-	if inv, err := cursor.Invocation(adapter.TaskInput{TaskID: "t_" + strings.Repeat("a", 32), Model: "grok-4.7", Effort: "low", Prompt: []byte("P")}); err == nil || inv.Argv != nil {
+	if inv, err := cursor.Invocation(adapter.TaskInput{TaskID: "t_" + strings.Repeat("a", 32), Model: "grok-4.7", Effort: "low", Prompt: []byte("P")}); err != nil ||
+		!slices.Equal(inv.Argv, []string{"-p", "--trust", "--auto-review", "--output-format", "json", "--model", "grok-4.7-low", "P"}) || slices.Contains(inv.Argv, "--force") {
 		t.Fatalf("cursor invocation %+v %v", inv, err)
 	}
 	value := byID["cursor"].Facts["headless"].Value
@@ -542,6 +547,13 @@ func TestWorkerCatalogProjection(t *testing.T) {
 	}
 }
 
+// cursorCurrentPolicySuffix is Slice B's current-policy sentence, appended
+// to catalog facts whose iteration-11 wording stated refusal or fixture-only
+// extraction as current policy. workerCatalogProjection removes only this
+// sentence so the historical digest stays the pre-Slice-B projection.
+// preWorkerSelectionProse below stays the immutable pre-12a text.
+const cursorCurrentPolicySuffix = " Current Callsheet policy (not a vendor capture): Linux workers execute with --trust --auto-review, the model argument is MODEL-EFFORT with no trimming or alias lookup, and stdout result extraction is live; non-Linux execution is not qualified. The iteration-11 refusal, the absence of a general model-plus-effort concatenation and fixture-only extraction are historical observations."
+
 // preWorkerSelectionProse are the eight model and effort values as
 // 1038b09 recorded them, before design 12a-worker-selection's approved
 // prose edits (historical text, kept only to prove the refresh's scope).
@@ -587,8 +599,8 @@ func TestWorkerCatalogSelectionProse(t *testing.T) {
 			"effort": "`--reasoning-effort low` with `--model grok-4.7` ran with grok 1.0.46 on the recorded Linux recipe (exit 0). This is an observed effort, not the adapter's complete allowed effort set.",
 		},
 		"cursor": {
-			"model":  "The measured vendor model argument is `grok-4.7-low` (listed by the CLI; it ran with exit 0 under the rejected candidate). Callsheet's role pair model `grok-4.7`, effort `low` maps to that literal argument; Cursor execution itself is refused. The observed pair is not a selection allowlist.",
-			"effort": "Only the literal mapping of (`grok-4.7`, `low`) to `grok-4.7-low` is recorded; the CLI has no standalone effort flag and Callsheet applies no general model-plus-effort concatenation. The other listed variants and bracket syntax are listing/help evidence, not additional measured executions. All Cursor task execution remains refused.",
+			"model":  "The measured vendor model argument is `grok-4.7-low` (listed by the CLI; it ran with exit 0 under the rejected candidate). Callsheet's role pair model `grok-4.7`, effort `low` maps to that literal argument; Cursor execution itself is refused. The observed pair is not a selection allowlist." + cursorCurrentPolicySuffix,
+			"effort": "Only the literal mapping of (`grok-4.7`, `low`) to `grok-4.7-low` is recorded; the CLI has no standalone effort flag and Callsheet applies no general model-plus-effort concatenation. The other listed variants and bracket syntax are listing/help evidence, not additional measured executions. All Cursor task execution remains refused." + cursorCurrentPolicySuffix,
 		},
 	}
 	byID := map[string]Entry{}

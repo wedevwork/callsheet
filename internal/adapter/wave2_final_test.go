@@ -325,8 +325,9 @@ func TestCursorFinal(t *testing.T) {
 	if second := e.Finish(); msgOf(first) != "pong" || msgOf(second) != "pong" || e.buf != nil {
 		t.Fatalf("finish %q then %q", msgOf(first), msgOf(second))
 	}
-	// Parser availability does not enable execution.
-	if _, err := cursor.Invocation(TaskInput{TaskID: taskID, Model: "grok-4.7", Effort: "low", Prompt: []byte("p")}); err == nil || err.Error() != cursorPostureText {
-		t.Fatalf("cursor invocation after parsing: %v", err)
+	// Parsing does not change the recipe: a valid prompt still builds the
+	// Linux argv, and the OS gate stays outside Invocation.
+	if inv, err := cursor.Invocation(TaskInput{TaskID: taskID, Model: "grok-4.7", Effort: "low", Prompt: []byte("p")}); err != nil || inv.Argv[6] != "grok-4.7-low" || ValidateWorkerPosture(CursorID, "darwin") == nil {
+		t.Fatalf("cursor invocation after parsing: %+v %v", inv, err)
 	}
 }
