@@ -926,12 +926,17 @@ func (ts *taskService) detached(node string, gen uint64) {
 // attachment at this instant (a frame queued before a detach or lease
 // eviction is refused), the stable execution identity matches the stored
 // task's node and token, and this attachment is authorized to report on it
-// (its start reply, or reconciliation). The caller holds the task lock, so
-// acceptance and the attachment check are one decision.
+// (its start reply, or reconciliation). A closed registry is unavailable
+// (the plane is shutting down); a stale attachment on an open registry
+// stays invalid_argument. The caller holds the task lock, so acceptance
+// and the attachment check are one decision.
 func (ts *taskService) authorizedLocked(node string, gen uint64, id string, tok contract.ExecutionToken) (*taskEntry, error) {
 	e := ts.tasks[id]
 	switch {
 	case !ts.reg.currentAttachment(node, gen):
+		if ts.reg.shuttingDown() {
+			return nil, errf(contract.CodeUnavailable, "the plane is shutting down")
+		}
 		return nil, errf(contract.CodeInvalidArgument, "attachment %d is no longer node %s's live attachment", gen, node)
 	case e == nil:
 		return nil, errf(contract.CodeInvalidArgument, "task %s is not known to this plane", id)
