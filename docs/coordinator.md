@@ -1,5 +1,7 @@
 # Coordinator setup and MCP timeout qualification
 
+The reusable development-flow example is [examples/dev-flow/README.md](examples/dev-flow/README.md): five role manual pairs and a coordinator playbook. The owner's coordinator loads the playbook. Callsheet does not read it as a role or a daemon.
+
 This guide connects the four first-wave coordinator CLIs to Callsheet's MCP server (`callsheet mcp`, iteration 07a) and explains how an owner measures their MCP tool-call timeouts locally (iteration 07b). Every fact below is qualified by the [support catalog](support-catalog.md) and its machine-readable snapshot [`tests/testdata/support-catalog.json`](../tests/testdata/support-catalog.json). This document does not claim that any vendor runtime configuration was tested: `VERIFIED` means backed by the named captured help/version evidence, and `UNVERIFIED` means not established. Callsheet's own side of every configuration is tested natively on Linux and macOS; each vendor's side needs local qualification.
 
 ## What every configuration shares
