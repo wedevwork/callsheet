@@ -50,6 +50,8 @@ Every role has concurrency 1 and timeout 10m. To override a model or effort, cop
 
 Shipped manuals and prompts: [designer instruction](examples/real-e2e/designer-instruction.md) and [runbook](examples/real-e2e/designer-runbook.md); [design-reviewer instruction](examples/real-e2e/design-reviewer-instruction.md) and [runbook](examples/real-e2e/design-reviewer-runbook.md); [coder instruction](examples/real-e2e/coder-instruction.md) and [runbook](examples/real-e2e/coder-runbook.md); [code-reviewer instruction](examples/real-e2e/code-reviewer-instruction.md) and [runbook](examples/real-e2e/code-reviewer-runbook.md); the coordinator's [instructions](examples/real-e2e/coordinator-prompt.md), [phase 1 prompt](examples/real-e2e/coordinator-phase-1.md) and [phase 2 prompt](examples/real-e2e/coordinator-phase-2.md).
 
+A reusable development-flow example is available at [examples/dev-flow/README.md](examples/dev-flow/README.md). The current automated exercise still uses its old manuals until the migration slices ship. The role manuals linked above are legacy four-hop exercise content and remain what this exercise loads.
+
 The feature asks the designer, coder and reviewers for an optional `--name NAME` flag on a tiny greeting CLI, with ten fixed cases (`no_args`, `name`, `spaces`, `unicode`, `whitespace`, `empty_name`, `unknown_flag`, `missing_value`, `positional`, `help`), each a `TestRun/<case-id>` subtest.
 
 ## Run

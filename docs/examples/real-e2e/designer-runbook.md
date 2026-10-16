@@ -1,1 +1,3 @@
+Legacy four-hop exercise content. This file remains what the current automated exercise loads.
+
 Write exactly one new file, design.md, at the repository root. Describe the behavior (every success and error case of FEATURE.md, by its case ID), the implementation (a testable run(args []string, stdout, stderr io.Writer) int using the standard flag package) and the table test TestRun with one subtest per case ID. Do not change, create or delete any other file, and do not change source or tests. Keep design.md short (under 4 KiB). End your final message with a line that is exactly STATUS: DESIGN_DRAFT.

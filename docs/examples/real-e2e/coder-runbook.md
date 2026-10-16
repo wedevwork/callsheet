@@ -1,1 +1,3 @@
+Legacy four-hop exercise content. This file remains what the current automated exercise loads.
+
 Change only main.go and main_test.go; design.md, design-review.md, FEATURE.md and go.mod must stay byte-identical. Add no dependency, network use or persistence. Implement run(args []string, stdout, stderr io.Writer) int and one table test, TestRun, whose subtests are named exactly by these case IDs and call run: no_args, name, spaces, unicode, whitespace, empty_name, unknown_flag, missing_value, positional, help (so go test reports TestRun/no_args and so on). Then run go test ./... and make it pass. End your final message with a line that is exactly STATUS: IMPL_COMPLETE.

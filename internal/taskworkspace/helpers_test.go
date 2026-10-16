@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -384,6 +385,92 @@ func writeFile(t *testing.T, p, content string, mode os.FileMode) {
 }
 
 func isCode(err error, code string) bool { return PublicationCode(err) == code }
+
+// errorChainLimit is how many unwrap steps errorChain records before it
+// appends errorChainTruncated and stops, so a cycle cannot grow without end.
+const (
+	errorChainLimit     = 32
+	errorChainTruncated = "... truncated"
+)
+
+// errorChain is the type and Error() text of err and of each errors.Unwrap
+// step, one per line, at most errorChainLimit steps. A longer or cyclic
+// chain ends with errorChainTruncated. TestCache/eviction prints it only
+// when Fetch fails, so a redacted contract.Error still shows the pack
+// parser, indexer, or errno underneath. Passing runs do not call it, and
+// Error()'s own text is left as the production form.
+func errorChain(err error) string {
+	var b strings.Builder
+	for n := 0; n < errorChainLimit && err != nil; n++ {
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		fmt.Fprintf(&b, "%T: %s", err, err.Error())
+		err = errors.Unwrap(err)
+	}
+	if err != nil {
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(errorChainTruncated)
+	}
+	return b.String()
+}
+
+// unwrapStep is a fake wrapped error for TestErrorChain.
+type unwrapStep struct {
+	text string
+	next error
+}
+
+func (e unwrapStep) Error() string { return e.text }
+
+func (e unwrapStep) Unwrap() error { return e.next }
+
+// cycleStep's Unwrap returns itself.
+type cycleStep struct{ text string }
+
+func (e *cycleStep) Error() string { return e.text }
+
+func (e *cycleStep) Unwrap() error { return e }
+
+// TestErrorChain prints each step of a fake wrapped chain. The contract
+// error's Error() stays the redacted sentence; the cause is only in the chain.
+func TestErrorChain(t *testing.T) {
+	leaf := unwrapStep{text: "indexer rejected the pack"}
+	mid := unwrapStep{text: "pack parser", next: leaf}
+	err := contract.Wrap(contract.CodeInternal, "cannot store the fetched objects", mid)
+	if err.Error() != "internal: cannot store the fetched objects" {
+		t.Fatalf("Error() = %q", err.Error())
+	}
+	got := errorChain(err)
+	want := "*contract.Error: internal: cannot store the fetched objects\n" +
+		"taskworkspace.unwrapStep: pack parser\n" +
+		"taskworkspace.unwrapStep: indexer rejected the pack"
+	if got != want {
+		t.Fatalf("errorChain =\n%s\nwant\n%s", got, want)
+	}
+	if errorChain(nil) != "" {
+		t.Fatal("a nil error produced a chain")
+	}
+	// A cycle must end with the truncation marker. The call is bounded so
+	// a missing guard fails this test instead of hanging it.
+	cyc := &cycleStep{text: "unwrap returns itself"}
+	done := make(chan string, 1)
+	go func() { done <- errorChain(cyc) }()
+	got = testkit.WithinBy(t, done, time.After(2*time.Second), "errorChain on a cycle")
+	lines := strings.Split(got, "\n")
+	if len(lines) != errorChainLimit+1 || lines[errorChainLimit] != errorChainTruncated {
+		t.Fatalf("cyclic errorChain =\n%s\nwant %d steps and %q",
+			got, errorChainLimit, errorChainTruncated)
+	}
+	step := "*taskworkspace.cycleStep: unwrap returns itself"
+	for i, line := range lines[:errorChainLimit] {
+		if line != step {
+			t.Fatalf("cyclic line %d = %q", i, line)
+		}
+	}
+}
 
 // noise is n deterministic incompressible bytes (seed varies them).
 func noise(n int, seed uint64) string {
