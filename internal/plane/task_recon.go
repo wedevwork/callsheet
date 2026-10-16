@@ -410,6 +410,9 @@ func (ts *taskService) inventory(node string, gen uint64, b contract.TaskInvento
 	defer ts.mu.Unlock()
 	ts.applyLossesLocked()
 	if !ts.reg.currentAttachment(node, gen) {
+		if ts.reg.shuttingDown() {
+			return errf(contract.CodeUnavailable, "the plane is shutting down")
+		}
 		return errf(contract.CodeInvalidArgument, "attachment %d is no longer node %s's live attachment", gen, node)
 	}
 	for _, in := range b.Entries {

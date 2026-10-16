@@ -865,6 +865,15 @@ func (r *nodeRegistry) currentAttachment(node string, gen uint64) bool {
 	return ok
 }
 
+// shuttingDown reports whether Close has stopped admission. Callers that
+// already observed a non-current attachment read it under mu after
+// currentAttachment has released the lock.
+func (r *nodeRegistry) shuttingDown() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.closed
+}
+
 // enqueueStart queues a committed task's start on node's attachment gen
 // when it is still current with a live stream; false proves the start was
 // never sent.

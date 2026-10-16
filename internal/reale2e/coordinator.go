@@ -19,13 +19,22 @@ import (
 // designer and the design reviewer and ends with a pause result; after the
 // owner's yes, phase 2 resumes the same session (--resume with the
 // session ID phase 1 reported) for the coder and the code reviewer. The
-// owner's configuration stays active: the only additional settings input
-// is the inline, session-only {"sandbox":{"enabled":false}}; no permission
-// bypass, session pinning, settings-source filter or MCP isolation. The
-// real argv is recorded privately with a sanitized rendering.
+// owner's configuration stays active. The session-only additions are the
+// inline {"sandbox":{"enabled":false}}, --permission-mode auto and
+// --permission-prompts none. There is no allow-list, permission bypass,
+// session pinning, settings-source filter or MCP isolation, and no agent
+// configuration is written. The real argv is recorded privately with a
+// sanitized rendering.
 
 // SandboxOffSettings is the only additional settings input.
 const SandboxOffSettings = `{"sandbox":{"enabled":false}}`
+
+// autoModeFlag is the coordinator's session permission mode. autoPrompts
+// denies anything that would prompt; the mode still decides the rest.
+const (
+	autoModeFlag = "auto"
+	autoPrompts  = "none"
+)
 
 // Phase prompt template names.
 const (
@@ -93,40 +102,26 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// permissionValues are the fixed inputs of the coordinator's session-only
-// allow-list (A3.6, A3.7): the reale2e executable and the runtime
-// directory. The Callsheet executable, plane URL and CA reach the wait
-// through the run file, never a Bash line.
+// permissionValues are the fixed inputs of the coordinator's rendered
+// wait, observe and review-material commands (A3.7): the reale2e
+// executable and the runtime directory. The Callsheet executable, plane
+// URL and CA reach the wait through the run file, never a Bash line.
 type permissionValues struct{ reale2e, runtime string }
 
-// symbolicPermissions renders the allow-list template printed before any
-// vendor executes.
-var symbolicPermissions = permissionValues{reale2e: "R", runtime: "D"}
-
-// AllowListSize is the number of session-only rules (A3.7: six MCP tools,
-// four observe, four wait-task and one review-material rule).
-const AllowListSize = 15
-
-// waitRuleOffset is the allow-list position of the first wait-task rule.
-const waitRuleOffset = 10
-
-// coordinatorMCPTools are the only Callsheet MCP tools the prompt uses, in
-// allow-list order.
-var coordinatorMCPTools = []string{"ws_push", "dispatch", "task_show", "ws_status", "ws_diff", "ws_pull"}
-
-// ruleMetacharacters may not occur in a fixed allow-rule input: escaping
-// them could silently broaden a rule.
+// ruleMetacharacters may not occur in a fixed command input: a Bash line
+// that contained one would no longer be the simple command the prompt
+// renders. Dropping the allow-list is not permission to accept them.
 const ruleMetacharacters = "*?[](),\r\n\x00"
 
-// errRuleInput is a fixed allow-rule input holding a rule metacharacter.
-var errRuleInput = errors.New("a fixed allow-rule input contains a permission-rule metacharacter (* ? [ ] ( ) , CR, LF or NUL)")
+// errRuleInput is a fixed command input holding a shell metacharacter.
+var errRuleInput = errors.New("a fixed command input contains a shell metacharacter (* ? [ ] ( ) , CR, LF or NUL)")
 
-// errRuleQuoted is a fixed allow-rule input that only a shell-quoted
-// word could hold: no coordinator Bash line may contain a quote (A3.7).
-var errRuleQuoted = errors.New("a fixed allow-rule input needs shell quoting, and no coordinator Bash line may contain a quote")
+// errRuleQuoted is a fixed command input that only a shell-quoted word
+// could hold: no coordinator Bash line may contain a quote (A3.7).
+var errRuleQuoted = errors.New("a fixed command input needs shell quoting, and no coordinator Bash line may contain a quote")
 
 // validRuleInputs reports whether every fixed input is a plain shell word
-// without a rule metacharacter.
+// without a shell metacharacter.
 func validRuleInputs(vals ...string) error {
 	for _, v := range vals {
 		if strings.ContainsAny(v, ruleMetacharacters) {
@@ -139,26 +134,6 @@ func validRuleInputs(vals ...string) error {
 	return nil
 }
 
-// allowedTools is the single permission renderer shared by the launch and
-// the checker: the 15 session-only rules, in their fixed order. Only the
-// task-ID slots hold wildcard text.
-func allowedTools(v permissionValues) ([]string, error) {
-	if err := validRuleInputs(v.reale2e, v.runtime); err != nil {
-		return nil, err
-	}
-	rules := make([]string, 0, AllowListSize)
-	for _, t := range coordinatorMCPTools {
-		rules = append(rules, "mcp__"+mcpServerName+"__"+t)
-	}
-	for _, h := range Hops {
-		rules = append(rules, "Bash("+v.reale2e+" observe --run "+v.runtime+" --task * --hop "+h+")")
-	}
-	for i := range Hops {
-		rules = append(rules, "Bash("+strings.Replace(waitCommand(v, i), "TASK_ID", "*", 1)+")")
-	}
-	return append(rules, "Bash("+v.reale2e+" review-material --run "+v.runtime+")"), nil
-}
-
 // waitCommand is hop i's background wait command (A3.7): the one simple
 // wait-task helper command, which runs the CLI wait itself. TASK_ID is the
 // coordinator's substitution.
@@ -167,35 +142,14 @@ func waitCommand(v permissionValues, i int) string {
 }
 
 // shellOperators may not occur in a coordinator Bash line (A3.7): a
-// permission rule cannot match a redirect, a separator, a pipeline, a
-// quote, an expansion or a continuation.
+// redirect, a separator, a pipeline, a quote, an expansion or a
+// continuation. Dropping approval rules does not accept them.
 const shellOperators = ";&|<>'\"`$\\\r\n\x00"
 
-// simpleBashLine reports whether line is one simple command a permission
-// rule can match: words separated by single spaces, none holding a shell
-// operator.
+// simpleBashLine reports whether line is one simple command: words
+// separated by single spaces, none holding a shell operator.
 func simpleBashLine(line string) bool {
 	return line != "" && !strings.ContainsAny(line, shellOperators) && !strings.Contains(line, "  ") && strings.TrimSpace(line) == line
-}
-
-// bashRuleAllows reports whether the Bash rule allows command: the command
-// must be a simple Bash line, and each * of the rule matches one nonempty
-// word. A compound, redirected or quoted command is never allowed.
-func bashRuleAllows(rule, command string) bool {
-	body, ok := strings.CutPrefix(rule, "Bash(")
-	if body, ok = strings.CutSuffix(body, ")"); !ok || !simpleBashLine(command) || !simpleBashLine(body) {
-		return false
-	}
-	want, got := strings.Split(body, " "), strings.Split(command, " ")
-	if len(want) != len(got) {
-		return false
-	}
-	for i, w := range want {
-		if w != "*" && w != got[i] {
-			return false
-		}
-	}
-	return true
 }
 
 // promptBashLines are the Bash command lines of a rendered coordinator
@@ -212,7 +166,7 @@ func promptBashLines(system, reale2e string) []string {
 	return out
 }
 
-// permissions are this run's fixed allow-list inputs.
+// permissions are this run's fixed command inputs.
 func (s *supervisor) permissions() permissionValues {
 	return permissionValues{reale2e: s.w.Executable, runtime: s.runtime}
 }
@@ -222,35 +176,29 @@ func (s *supervisor) waitTemplate(i int) string {
 	return waitCommand(s.permissions(), i)
 }
 
-// printPermissionTemplate prints the session prerequisites before any
-// vendor executes, with symbolic run values, after rejecting an
-// executable a rule could not hold.
+// printPermissionTemplate prints the session-only auto-mode flags and
+// their prerequisites before any vendor executes, after rejecting an
+// executable the rendered commands could not hold as a plain word.
 func (s *supervisor) printPermissionTemplate() error {
 	if err := validRuleInputs(s.w.Executable); err != nil {
 		return failure("permission_rule_invalid", err)
 	}
-	rules, _ := allowedTools(symbolicPermissions)
 	s.say("the coordinator session uses session-only flags; no agent configuration or settings file is written")
 	s.say("  --settings %s", SandboxOffSettings)
-	s.say("  --allowed-tools, exactly these %d rules (R reale2e, D runtime directory):", len(rules))
-	for _, r := range rules {
-		s.say("    %s", r)
-	}
+	s.say("  --permission-mode %s", autoModeFlag)
+	s.say("  --permission-prompts %s", autoPrompts)
+	s.say("prerequisites: Claude auto mode for this session (available unless an administrator sets permissions.disableAutoMode; supported models include Opus 4.6+ and Fable; the classifier pauses after 3 consecutive or 20 total blocks). Callsheet never edits that setting, never resets the classifier and never retries a denial. A historical allow-list bundle is not this recipe; check it with the revision that recorded it")
 	return nil
 }
 
-// renderPermissions renders and prints this run's allow-list once the
-// runtime and plane exist, before any vendor runs a task.
+// renderPermissions checks this run's fixed command inputs once the
+// runtime and plane exist, and prints the auto-mode flags both phases
+// use, before any vendor runs a task.
 func (s *supervisor) renderPermissions() error {
-	rules, err := allowedTools(s.permissions())
-	if err != nil {
+	if err := validRuleInputs(s.w.Executable, s.runtime); err != nil {
 		return failure("permission_rule_invalid", err)
 	}
-	s.allowed = rules
-	s.say("coordinator allow-list for this run (both phases):")
-	for _, r := range rules {
-		s.say("    %s", r)
-	}
+	s.say("coordinator auto mode for this run (both phases): --permission-mode %s --permission-prompts %s", autoModeFlag, autoPrompts)
 	return nil
 }
 
@@ -312,13 +260,14 @@ func (s *supervisor) prepareCoordinator() error {
 }
 
 // launchArgv is phase p's exact argument vector (after the executable),
-// shared by the launch and the checker: the sandbox-off settings, then
-// --allowed-tools with its rules as separate elements, terminated by
-// --mcp-config.
-func launchArgv(p int, prompt string, allowed []string, mcpPath, system, session string) []string {
-	argv := []string{"-p", prompt, "--output-format", "stream-json", "--verbose", "--settings", SandboxOffSettings, "--allowed-tools"}
-	argv = append(argv, allowed...)
-	argv = append(argv, "--mcp-config", mcpPath, "--append-system-prompt", system)
+// shared by the launch and the checker: stream-json and verbose, the
+// sandbox-off settings, auto mode with prompts denied, then the MCP
+// configuration and the system prompt. Phase 2 resumes the phase-1
+// session. There is no allow-list.
+func launchArgv(p int, prompt, mcpPath, system, session string) []string {
+	argv := []string{"-p", prompt, "--output-format", "stream-json", "--verbose", "--settings", SandboxOffSettings,
+		"--permission-mode", autoModeFlag, "--permission-prompts", autoPrompts,
+		"--mcp-config", mcpPath, "--append-system-prompt", system}
 	if p == 2 {
 		argv = append(argv, "--resume", session)
 	}
@@ -327,7 +276,7 @@ func launchArgv(p int, prompt string, allowed []string, mcpPath, system, session
 
 // phaseArgv is phase p's exact argument vector (after the executable).
 func (s *supervisor) phaseArgv(p int, prompt []byte) []string {
-	return launchArgv(p, string(prompt), s.allowed, s.mcpPath, string(s.rendered[CoordinatorPrompt]), s.sessionID)
+	return launchArgv(p, string(prompt), s.mcpPath, string(s.rendered[CoordinatorPrompt]), s.sessionID)
 }
 
 // launchPhase starts coordinator phase p (1 or 2) headless, with the

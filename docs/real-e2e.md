@@ -17,32 +17,15 @@ A passing run demonstrates this installation's mechanical workflow and the deter
 
 ## Coordinator session
 
-The coordinator runs with your user instructions, settings, permissions, skills, agents, plugins, hooks and login exactly as they are. The harness writes no agent configuration or settings file (the runtime MCP configuration and the evidence are its own files). Setting `CALLSHEET_REAL_E2E=1` is your authorization of exactly two session-only flags, identical in both coordinator phases:
+The coordinator runs with your user instructions, settings, permissions, skills, agents, plugins, hooks and login exactly as they are. The harness writes no agent configuration or settings file (the runtime MCP configuration and the evidence are its own files). Setting `CALLSHEET_REAL_E2E=1` is your authorization of session-only flags, identical in both coordinator phases:
 
 - `--settings '{"sandbox":{"enabled":false}}'` merges over your settings for this session only. It is needed only because this exercise's plane listens on host loopback, which a sandboxed Bash command cannot reach (see [coordinator.md](coordinator.md)); it is not a general Callsheet requirement.
-- `--allowed-tools` followed by exactly the 15 rules below lets the headless session run them without a prompt (print mode cannot answer one) for this session only.
+- `--permission-mode auto` requests Claude's automatic permission mode for this session only. Auto is available unless an administrator sets `permissions.disableAutoMode`. Supported models include Opus 4.6+ and Fable. The classifier pauses after 3 consecutive or 20 total blocks (owner-recorded, not a fresh upstream verification). The harness never edits that setting, never resets the classifier and never retries a denial. Exit 0 does not prove every requested action succeeded. That the installed CLI reports `permissionMode` `auto` for this exact recipe is unverified until a coordinator-run two-phase probe; a missing or different value fails the check, and the check does not infer it from the launch flags.
+- `--permission-prompts none` denies anything that would prompt. The permission mode still decides everything else. Print mode cannot answer a prompt.
 
-In the rules, R is the absolute `reale2e` path and D the runtime directory; only the task-ID slots are wildcards. The six MCP rules name exactly the Callsheet tools the prompt uses, a deliberate narrowing of the server-wide `mcp__callsheet__*`:
+There is no `--allowed-tools` list, no permission bypass, no second list and no tool filtering, and none of your rules or denies is removed: your inherited permissions stay active. Auto is a permission policy, not a containment claim. A bundle recorded with the earlier 15-rule `--allowed-tools` recipe is not evidence of this recipe. The checker rejects that launch shape under setup (`launch_shape_invalid`). Check a historical bundle with the revision that recorded it.
 
-```
-mcp__callsheet__ws_push
-mcp__callsheet__dispatch
-mcp__callsheet__task_show
-mcp__callsheet__ws_status
-mcp__callsheet__ws_diff
-mcp__callsheet__ws_pull
-Bash(R observe --run D --task * --hop designer)
-Bash(R observe --run D --task * --hop design-reviewer)
-Bash(R observe --run D --task * --hop coder)
-Bash(R observe --run D --task * --hop code-reviewer)
-Bash(R wait-task --run D --task * --hop designer)
-Bash(R wait-task --run D --task * --hop design-reviewer)
-Bash(R wait-task --run D --task * --hop coder)
-Bash(R wait-task --run D --task * --hop code-reviewer)
-Bash(R review-material --run D)
-```
-
-The command prints this template before any vendor runs and the run's fully rendered list before the coordinator's first phase. A `reale2e` or runtime path containing `*`, `?`, `[`, `]`, `(`, `)`, a comma, CR, LF or NUL, or any character that would need shell quoting (a space or a quote, for example), is refused before any vendor starts (`permission_rule_invalid`) instead of widening a rule. There is no permission bypass, permission mode, second list or tool filtering, and none of your rules or denies is removed: your inherited permissions stay active. Each hop's background wait is exactly `R wait-task --run D --task TASK_ID --hop H` (H the hop): one simple command, because a permission rule cannot match a command with a redirect, a `;` or a quoted expansion. No Bash line of the coordinator prompt contains a redirect, `;`, `&&`, `|` or a quote.
+The command prints these flags and prerequisites before any vendor runs, and the same auto-mode line again before the coordinator's first phase. A `reale2e` or runtime path containing `*`, `?`, `[`, `]`, `(`, `)`, a comma, CR, LF or NUL, or any character that would need shell quoting (a space or a quote, for example), is refused before any vendor starts (`permission_rule_invalid`). Each hop's background wait is exactly `R wait-task --run D --task TASK_ID --hop H` (H the hop): one simple command. Dropping the allow-list does not accept a redirect, a `;`, a `|` or a quote. No Bash line of the coordinator prompt contains a redirect, `;`, `&&`, `|` or a quote.
 
 The helpers run in the coordinator's Bash, read and write only fixed files of the live runtime, follow no symlink and make one exchange with the supervisor:
 
@@ -50,7 +33,7 @@ The helpers run in the coordinator's Bash, read and write only fixed files of th
 - `reale2e wait-task --run D --task ID --hop H`, once the supervisor confirms that ID is hop H's accepted task, runs `callsheet task wait ID --until-done --json` itself with the Callsheet executable, plane URL and CA from the runtime's run file, writes its stdout, stderr and exit status to the hop's `result.json`, `error.txt` and `exit-code` under `D/coord/waits/NN`, prints the captured wait output and exits with the wait's status (1 on a supervisor refusal, before any wait runs; 2 on a usage or file error, with no `exit-code` written).
 - `reale2e review-material --run D` prints the coder's `design.md`, `main.go` and `main_test.go` from the coordinator's `ws_pull`, each with its SHA-256, once they match the admitted coder commit; the coordinator appends them to the code reviewer's goal.
 
-A denied tool call, inside or outside this list (for example a rule of yours that denies a redirect or a helper), is never retried or widened: it fails the attempt with `coordinator_tool_denied` and its command, even when Claude exits 0. Resolve it in your own configuration and rerun.
+A denied tool call (for example a rule of yours that denies a redirect or a helper) is never retried or widened: it fails the attempt with `coordinator_tool_denied` and its command, even when Claude exits 0. Resolve it in your own configuration and rerun.
 
 ## Roles, models and efforts
 

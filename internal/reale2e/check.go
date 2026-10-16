@@ -868,9 +868,9 @@ func shellWord(s string) (word, rest string, ok bool) {
 	return word, rest, word != "" && shellQuote(word)+rest == s
 }
 
-// permissionInputs reconstructs the allow-list's fixed values (A3.6,
-// A3.7) from independently bound inputs, never from a recorded rule list:
-// the runtime from the launch's working directory and the reale2e
+// permissionInputs reconstructs the rendered commands' fixed values
+// (A3.7) from independently bound inputs, never from a recorded argument
+// list: the runtime from the launch's working directory and the reale2e
 // executable from the first rendered wait template (itself bound to the
 // hashed system prompt). The sanitized MCP configuration must be exactly
 // the renderer's, its CA inside the runtime.
@@ -906,21 +906,17 @@ func (c *checker) permissionInputs(l *LaunchRecord) (permissionValues, bool) {
 	return v, true
 }
 
-// waitLinesMatch reports whether the system prompt's wait lines and the
-// allow-list match exactly (A3.7): each hop's wait template is a whole
-// line of the prompt, its hop's wait-task rule is that line with the task
-// slot as the one wildcard and allows it, and every Bash line of the
-// prompt is one simple command without a redirect, separator, pipe or
-// quote.
-func waitLinesMatch(system string, v permissionValues, allowed, waits []string) bool {
+// waitLinesMatch reports whether each reconstructed wait template is a
+// whole line of the hashed system prompt (A3.7) and every Bash line of
+// the prompt is one simple command, without a redirect, separator, pipe
+// or quote. It does not compare generated Bash approval rules.
+func waitLinesMatch(system string, v permissionValues, waits []string) bool {
 	lines := strings.Split(system, "\n")
-	if len(allowed) != AllowListSize || len(waits) != len(Hops) || slices.ContainsFunc(lines, func(l string) bool { return strings.Contains(l, "capture-wait") }) {
+	if len(waits) != len(Hops) || slices.ContainsFunc(lines, func(l string) bool { return strings.Contains(l, "capture-wait") }) {
 		return false
 	}
-	for i, w := range waits {
-		rule := allowed[waitRuleOffset+i]
-		if !slices.Contains(lines, w) || strings.Count(w, "TASK_ID") != 1 || rule != "Bash("+strings.Replace(w, "TASK_ID", "*", 1)+")" ||
-			!bashRuleAllows(rule, w) {
+	for _, w := range waits {
+		if !slices.Contains(lines, w) || strings.Count(w, "TASK_ID") != 1 || !simpleBashLine(w) {
 			return false
 		}
 	}
@@ -928,18 +924,18 @@ func waitLinesMatch(system string, v permissionValues, allowed, waits []string) 
 	return len(bash) >= 2*len(Hops)+1 && !slices.ContainsFunc(bash, func(l string) bool { return !simpleBashLine(l) })
 }
 
-// expectedLaunch is phase p's only permitted launch: the shared argv with
-// the allow-list and wait templates rendered from the reconstructed
-// fixed values, the MCP configuration at <runtime>/mcp.json and the
-// rendered prompts (phase 2 resumes the phase-1 session). ok is false
-// when the fixed values are unrecoverable or hold a rule metacharacter.
+// expectedLaunch is phase p's only permitted launch: the shared auto-mode
+// argv and wait templates rendered from the reconstructed fixed values,
+// the MCP configuration at <runtime>/mcp.json and the rendered prompts
+// (phase 2 resumes the phase-1 session). ok is false when the fixed
+// values are unrecoverable or are not plain command words. An older
+// allow-list launch is not this argv and is not treated as auto evidence.
 func (c *checker) expectedLaunch(p int) (argv, waits []string, ok bool) {
 	v, ok := c.permissionInputs(c.refLaunch())
 	if !ok {
 		return nil, nil, false
 	}
-	allowed, err := allowedTools(v)
-	if err != nil {
+	if err := validRuleInputs(v.reale2e, v.runtime); err != nil {
 		return nil, nil, false
 	}
 	for i := range Hops {
@@ -947,8 +943,8 @@ func (c *checker) expectedLaunch(p int) (argv, waits []string, ok bool) {
 	}
 	prompt := string(c.b.Files["setup/coordinator-phase-"+fmt.Sprint(p)+".md"])
 	system := string(c.b.Files["setup/coordinator-prompt.md"])
-	argv = launchArgv(p, prompt, allowed, filepath.Join(v.runtime, "mcp.json"), system, c.derived.SessionID)
-	if !strings.Contains(system, v.reale2e+" observe --run "+v.runtime+" ") || !waitLinesMatch(system, v, allowed, waits) {
+	argv = launchArgv(p, prompt, filepath.Join(v.runtime, "mcp.json"), system, c.derived.SessionID)
+	if !strings.Contains(system, v.reale2e+" observe --run "+v.runtime+" ") || !waitLinesMatch(system, v, waits) {
 		return nil, nil, false
 	}
 	return argv, waits, true
@@ -974,14 +970,19 @@ func (c *checker) launchValid(p int) bool {
 		l.Cwd == ref.Cwd && l.PromptSHA256 == sha256Hex(prompt) && l.SystemSHA256 == sha256Hex(system)
 }
 
-// setup (A3, A3.6): each recorded launch has the permitted shape with the
-// exact 16-rule allow-list, the rendered prompt bytes and one MCP
-// configuration, the same executable, cwd and wait templates; phase 2
-// resumes the session phase 1 reported, observed again in phase 2's init;
-// each launched phase's supervisor-observed exit is 0 with its group
-// gone. Each phase is validated on its own: an unlaunched phase is only
-// launch_missing (A3.8: not reached when the attempt stopped before its
-// launch), and an exit is unobserved only for a launched phase.
+// setup (A3, FP-8): each recorded launch has the permitted auto-mode
+// shape (sandbox-off settings, --permission-mode auto,
+// --permission-prompts none, no allow-list and no bypass), the rendered
+// prompt bytes and one MCP configuration, the same executable, cwd and
+// wait templates; phase 2 resumes the session phase 1 reported, observed
+// again in phase 2's init; every coordinator init the checker uses
+// reports auto, and a repeated init of that session that differs is
+// session_mismatch. Each launched phase's supervisor-observed exit is 0
+// with its group gone. Each phase is validated on its own: an unlaunched
+// phase is only launch_missing (A3.8: not reached when the attempt
+// stopped before its launch), and an exit is unobserved only for a
+// launched phase. A historical allow-list launch fails launch_shape_invalid
+// here; it is not read as auto-mode evidence.
 func (c *checker) setup() {
 	for _, f := range []string{"setup/coordinator-prompt.md", "setup/mcp-config.json", "setup/" + PhasePrompt1} {
 		if len(c.b.Files[f]) == 0 && !c.unreached(CritSetup, msCoordinator) {
@@ -1007,6 +1008,13 @@ func (c *checker) setup() {
 			if !strings.Contains(system, w) {
 				c.fail(CritSetup, "launch_shape_invalid")
 			}
+		}
+	}
+	// Do not infer auto from the launch flags. Every recorded init,
+	// including one a same-session repeat had to match, must say auto.
+	for _, init := range c.derived.Init {
+		if init.PermissionMode != autoModeFlag {
+			c.fail(CritSetup, "launch_shape_invalid")
 		}
 	}
 	if l1 != nil && (!sessionIDRE.MatchString(sid) || l1.ResumeSession != "") {

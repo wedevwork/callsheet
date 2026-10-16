@@ -812,7 +812,7 @@ func (s *fakeSession) flush() {
 // edits applied.
 func (s *fakeSession) init(p int, sid string, edits ...func(v map[string]any)) {
 	v := map[string]any{"type": "system", "subtype": "init", "session_id": sid, "cwd": s.cwd, "model": "claude-opus-5-5",
-		"permissionMode": "default", "tools": []string{"Bash", "Read", toolDispatch, toolTaskShow}, "mcp_servers": []map[string]string{{"name": "callsheet", "status": "connected"}}}
+		"permissionMode": autoModeFlag, "tools": []string{"Bash", "Read", toolDispatch, toolTaskShow}, "mcp_servers": []map[string]string{{"name": "callsheet", "status": "connected"}}}
 	for _, e := range edits {
 		e(v)
 	}

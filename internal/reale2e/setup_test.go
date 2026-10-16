@@ -18,15 +18,16 @@ import (
 
 // TestRunbookSetup (FP-3, amendment A3): one MainWith run launches the
 // headless coordinator itself in two print-mode phases of one session:
-// phase 1 with the exact configuration-preserving argv (stream-json, the
-// one session-only sandbox-off settings argument, the generated MCP
-// configuration, the rendered instructions; no bypass, permission mode,
-// tool or setting-source override, session pinning or MCP isolation),
-// the owner's inherited environment and no token; phase 2 resumes the
-// session phase 1 reported, automatically after the yes, with the same
-// configuration; the run completes, collects, checks and audits with no
-// owner file and no finish command. A CLAUDE_CONFIG_DIR, even empty, is
-// refused before any capability or fingerprint exists.
+// phase 1 with the exact auto-mode argv (stream-json, the one
+// session-only sandbox-off settings argument, --permission-mode auto,
+// --permission-prompts none, the generated MCP configuration, the
+// rendered instructions; no allow-list, bypass, tool or setting-source
+// override, session pinning or MCP isolation), the owner's inherited
+// environment and no token; phase 2 resumes the session phase 1
+// reported, automatically after the yes, with the same configuration;
+// the run completes, collects, checks and audits with no owner file and
+// no finish command. A CLAUDE_CONFIG_DIR, even empty, is refused before
+// any capability or fingerprint exists.
 func TestRunbookSetup(t *testing.T) {
 	t.Parallel()
 	f := newFakeWorld(t)
@@ -46,8 +47,8 @@ func TestRunbookSetup(t *testing.T) {
 		}
 		return false
 	}
-	// A3.6: the session prerequisites are printed before any vendor
-	// executes, the rendered list before phase 1 starts.
+	// FP-8: the session-only auto-mode flags are printed before any vendor
+	// executes, and again before phase 1 starts.
 	var atFirstVendor, atPhase1 *string
 	f.override = func(s ProcSpec) (behavior, bool) {
 		out := f.stdout.String()
@@ -72,23 +73,10 @@ func TestRunbookSetup(t *testing.T) {
 	rt := f.sup.runtime
 	coord := filepath.Join(rt, "coord")
 	mcpPath := filepath.Join(rt, "mcp.json")
-	// The 15 rules (A3.7), enumerated independently of the renderer.
-	rules := []string{"mcp__callsheet__ws_push", "mcp__callsheet__dispatch", "mcp__callsheet__task_show", "mcp__callsheet__ws_status",
-		"mcp__callsheet__ws_diff", "mcp__callsheet__ws_pull"}
-	for _, h := range []string{"designer", "design-reviewer", "coder", "code-reviewer"} {
-		rules = append(rules, "Bash("+fakeReale2e+" observe --run "+rt+" --task * --hop "+h+")")
-	}
-	for _, h := range []string{"designer", "design-reviewer", "coder", "code-reviewer"} {
-		rules = append(rules, "Bash("+fakeReale2e+" wait-task --run "+rt+" --task * --hop "+h+")")
-	}
-	rules = append(rules, "Bash("+fakeReale2e+" review-material --run "+rt+")")
-	if len(rules) != 15 || AllowListSize != 15 {
-		t.Fatalf("%d rules", len(rules))
-	}
 	for i, s := range specs {
-		want := append([]string{"-p", prompts[i], "--output-format", "stream-json", "--verbose", "--settings", `{"sandbox":{"enabled":false}}`, "--allowed-tools"},
-			rules...)
-		want = append(want, "--mcp-config", mcpPath, "--append-system-prompt", system)
+		want := []string{"-p", prompts[i], "--output-format", "stream-json", "--verbose", "--settings", SandboxOffSettings,
+			"--permission-mode", autoModeFlag, "--permission-prompts", autoPrompts,
+			"--mcp-config", mcpPath, "--append-system-prompt", system}
 		if i == 1 {
 			want = append(want, "--resume", testSession)
 		}
@@ -96,7 +84,7 @@ func TestRunbookSetup(t *testing.T) {
 			t.Fatalf("phase %d launch %q in %s env %v", i+1, s.Args, s.Dir, s.Env)
 		}
 		joined := strings.Join(s.Args, "\x00")
-		for _, banned := range []string{"--dangerously-skip-permissions", "--allow-dangerously-skip-permissions", "--permission-mode", "bypassPermissions",
+		for _, banned := range []string{"--dangerously-skip-permissions", "--allow-dangerously-skip-permissions", "--allowed-tools", "bypassPermissions",
 			"--strict-mcp-config", "--setting-sources", "--session-id", "--continue", "--fork-session", "--bare", "--allowedTools", "--disallowedTools",
 			"--tools", "--input-format", "\x00Bash\x00", "Bash(*)", "mcp__callsheet__*", "\x00Read", "CLAUDE_CONFIG_DIR", "TOKEN"} {
 			if strings.Contains(joined, banned) {
@@ -104,18 +92,21 @@ func TestRunbookSetup(t *testing.T) {
 			}
 		}
 		if n := strings.Count(joined, "--settings"); n != 1 || s.Args[slices.Index(s.Args, "--settings")+1] != SandboxOffSettings ||
-			strings.Count(joined, "--allowed-tools") != 1 {
-			t.Fatalf("phase %d settings arguments %d", i+1, n)
+			strings.Count(joined, "--permission-mode") != 1 || strings.Count(joined, "--permission-prompts") != 1 ||
+			s.Args[slices.Index(s.Args, "--permission-mode")+1] != autoModeFlag ||
+			s.Args[slices.Index(s.Args, "--permission-prompts")+1] != autoPrompts {
+			t.Fatalf("phase %d permission arguments %q", i+1, s.Args)
 		}
 	}
 	if atFirstVendor == nil || atPhase1 == nil || !strings.Contains(*atFirstVendor, "--settings "+SandboxOffSettings) ||
-		!strings.Contains(*atFirstVendor, "Bash(R observe --run D --task * --hop designer)") || strings.Contains(*atFirstVendor, rt) {
+		!strings.Contains(*atFirstVendor, "--permission-mode "+autoModeFlag) || !strings.Contains(*atFirstVendor, "--permission-prompts "+autoPrompts) ||
+		!strings.Contains(*atFirstVendor, "permissions.disableAutoMode") || !strings.Contains(*atFirstVendor, "historical allow-list bundle") ||
+		strings.Contains(*atFirstVendor, "--allowed-tools") || strings.Contains(*atFirstVendor, rt) {
 		t.Fatalf("output before the first vendor execution:\n%v", atFirstVendor)
 	}
-	for _, r := range rules {
-		if !strings.Contains(*atPhase1, "    "+r+"\n") {
-			t.Fatalf("rule %q not printed before phase 1:\n%s", r, *atPhase1)
-		}
+	if !strings.Contains(*atPhase1, "coordinator auto mode for this run (both phases): --permission-mode "+autoModeFlag) ||
+		strings.Contains(*atPhase1, "--allowed-tools") {
+		t.Fatalf("auto mode not printed before phase 1:\n%s", *atPhase1)
 	}
 	if strings.Contains(*atPhase1, prompts[0]) || strings.Contains(*atPhase1, "TOKEN") {
 		t.Fatal("prompt contents printed")
@@ -140,12 +131,12 @@ func TestRunbookSetup(t *testing.T) {
 	readDoc(t, filepath.Join(b, filepath.FromSlash(launchFiles[0])), &l1)
 	readDoc(t, filepath.Join(b, filepath.FromSlash(launchFiles[1])), &l2)
 	// A3.7: each wait is the one simple wait-task command, a whole prompt
-	// line its hop's rule allows; no Bash line of the prompt holds a
-	// redirect, separator, pipe or quote.
+	// line; no Bash line of the prompt holds a redirect, separator, pipe
+	// or quote.
 	for i, h := range []string{"designer", "design-reviewer", "coder", "code-reviewer"} {
 		want := fakeReale2e + " wait-task --run " + rt + " --task TASK_ID --hop " + h
 		if w := l1.WaitTemplates[i]; w != want || !strings.Contains(system, "\n"+w+"\n") || !slices.Equal(l2.WaitTemplates, l1.WaitTemplates) ||
-			!bashRuleAllows(rules[10+i], strings.Replace(w, "TASK_ID", hexID("t_", 9), 1)) {
+			!simpleBashLine(w) || !simpleBashLine(strings.Replace(w, "TASK_ID", hexID("t_", 9), 1)) {
 			t.Fatalf("wait template %d %q", i, w)
 		}
 	}
@@ -154,8 +145,7 @@ func TestRunbookSetup(t *testing.T) {
 		t.Fatalf("prompt Bash lines %q", bash)
 	}
 	for _, l := range bash {
-		if strings.ContainsAny(l, `;|<>'"`) || strings.Contains(l, "&&") || !slices.ContainsFunc(rules, func(r string) bool { return bashRuleAllows(r, l) }) &&
-			!slices.ContainsFunc(rules, func(r string) bool { return bashRuleAllows(r, strings.Replace(l, "TASK_ID", hexID("t_", 9), 1)) }) {
+		if !simpleBashLine(l) || strings.ContainsAny(l, `;|<>'"`) || strings.Contains(l, "&&") {
 			t.Errorf("prompt Bash line %q", l)
 		}
 	}
@@ -200,7 +190,8 @@ func TestRunbookSetup(t *testing.T) {
 	}
 	var em EventMap
 	readDoc(t, filepath.Join(b, filepath.FromSlash(eventMapFile)), &em)
-	if em.Source != MapSourceDerived || em.SessionID != testSession || len(em.Findings) != 0 || len(em.Init) != 2 {
+	if em.Source != MapSourceDerived || em.SessionID != testSession || len(em.Findings) != 0 || len(em.Init) != 2 ||
+		em.Init[0].PermissionMode != autoModeFlag || em.Init[1].PermissionMode != autoModeFlag {
 		t.Fatalf("event map %+v", em)
 	}
 	if r := f.report(); r.Result != ResultPass || r.Judgments != PendingReview {
@@ -210,9 +201,11 @@ func TestRunbookSetup(t *testing.T) {
 	if !strings.Contains(out, JudgmentReportLine) || !strings.Contains(out, filepath.Join(b, "audit.md")) || !strings.Contains(out, filepath.Join(b, "report.txt")) {
 		t.Fatalf("final output:\n%s", out)
 	}
-	// A3.6: the checker rebuilds both phases' allow-lists from the bundle
-	// and refuses any other, the launch records' own hashes rebound.
-	t.Run("allow-list mutations", func(t *testing.T) {
+	// FP-8: the checker rebuilds both phases' auto-mode argv from the
+	// bundle and refuses any other shape, including an old allow-list.
+	// A few mutations go through the whole check with the launch hashes
+	// rebound, so the hash binding never hides one.
+	t.Run("argv mutations", func(t *testing.T) {
 		t.Parallel()
 		loaded, err := LoadBundle(passingBundle(t))
 		if err != nil {
@@ -224,86 +217,43 @@ func TestRunbookSetup(t *testing.T) {
 		}
 		for name, tc := range map[string]struct {
 			phase int
-			edit  func(a []string, s int) []string
+			edit  func(a []string) []string
+			full  bool
 		}{
-			"rule removed": {1, func(a []string, s int) []string { return slices.Delete(a, s+9, s+10) }},
-			"wait widened": {1, func(a []string, s int) []string {
-				a[s+10] = strings.Replace(a[s+10], " --hop designer", "", 1)
-				return a
-			}},
-			"observe widened": {1, func(a []string, s int) []string {
-				a[s+6] = strings.Replace(a[s+6], "--hop designer", "--hop *", 1)
-				return a
-			}},
-			"wait task slot widened": {1, func(a []string, s int) []string {
-				a[s+11] = strings.Replace(a[s+11], " --task * --hop design-reviewer", " *", 1)
-				return a
-			}},
-			"rule duplicated": {1, func(a []string, s int) []string { return slices.Insert(a, s+1, a[s]) }},
-			"rules reordered": {1, func(a []string, s int) []string { a[s], a[s+1] = a[s+1], a[s]; return a }},
-			"wait rules reordered": {1, func(a []string, s int) []string {
-				a[s+10], a[s+11] = a[s+11], a[s+10]
-				return a
-			}},
-			"fixed path changed": {1, func(a []string, s int) []string {
-				a[s+14] = strings.Replace(a[s+14], "--run /", "--run /tmp/other/", 1)
-				return a
-			}},
-			"fixed option changed": {1, func(a []string, s int) []string {
-				a[s+12] = strings.Replace(a[s+12], "wait-task --run ", "wait-task --x --run ", 1)
-				return a
-			}},
-			// A3.7: the removed compound wait and capture-wait rules.
-			"compound wait rule": {1, func(a []string, s int) []string {
-				r := strings.TrimSuffix(strings.TrimPrefix(a[s+10], "Bash("), ")")
-				a[s+10] = "Bash(" + r + " >/tmp/r.json; " + r + ")"
-				return a
-			}},
-			"capture-wait rule": {1, func(a []string, s int) []string {
-				return slices.Insert(a, s+14, strings.Replace(a[s+10], " wait-task ", " capture-wait ", 1))
-			}},
-			"general Bash":     {1, func(a []string, s int) []string { return slices.Insert(a, s+15, "Bash") }},
-			"Read":             {1, func(a []string, s int) []string { return slices.Insert(a, s+15, "Read") }},
-			"MCP wildcard":     {1, func(a []string, s int) []string { a[s] = "mcp__callsheet__*"; return a }},
-			"skip permissions": {1, func(a []string, s int) []string { return append(a, "--dangerously-skip-permissions") }},
-			"allow skip":       {1, func(a []string, s int) []string { return append(a, "--allow-dangerously-skip-permissions") }},
-			"bypass mode":      {1, func(a []string, s int) []string { return append(a, "--permission-mode", "bypassPermissions") }},
-			"settings widened": {1, func(a []string, s int) []string {
-				a[s-2] = `{"sandbox":{"enabled":false},"permissions":{"defaultMode":"bypassPermissions"}}`
-				return a
-			}},
-			"allow-list removed":   {1, func(a []string, s int) []string { return slices.Delete(a, s-1, s+15) }},
-			"phase 2 rule removed": {2, func(a []string, s int) []string { return slices.Delete(a, s+14, s+15) }},
-			"phase 2 bypass":       {2, func(a []string, s int) []string { return append(a, "--dangerously-skip-permissions") }},
+			"missing auto":    {1, func(a []string) []string { return withoutFlag(a, "--permission-mode") }, true},
+			"missing prompts": {2, func(a []string) []string { return withoutFlag(a, "--permission-prompts") }, false},
+			"duplicate mode":  {1, func(a []string) []string { return append(a, "--permission-mode", autoModeFlag) }, false},
+			"wrong mode":      {2, func(a []string) []string { return setFlagValue(a, "--permission-mode", "bypassPermissions") }, false},
+			"allowed-tools": {1, func(a []string) []string {
+				return slices.Insert(a, slices.Index(a, "--mcp-config"), "--allowed-tools", "mcp__callsheet__ws_push")
+			}, true},
+			"old allow-list":   {1, func(a []string) []string { return oldAllowListArgv(a) }, true},
+			"skip permissions": {1, func(a []string) []string { return append(a, "--dangerously-skip-permissions") }, false},
+			"allow skip":       {2, func(a []string) []string { return append(a, "--allow-dangerously-skip-permissions") }, false},
+			"phase 2 bypass":   {2, func(a []string) []string { return append(a, "--dangerously-skip-permissions") }, true},
+			"settings widened": {1, func(a []string) []string {
+				return setFlagValue(a, "--settings", `{"sandbox":{"enabled":false},"permissions":{"defaultMode":"bypassPermissions"}}`)
+			}, false},
+			"phase 1 resumed": {1, func(a []string) []string { return append(a, "--resume", testSession) }, false},
+			"Read inserted":   {1, func(a []string) []string { return slices.Insert(a, slices.Index(a, "--mcp-config"), "Read") }, false},
 		} {
-			// Every mutation against the loaded passing bundle's launch
-			// predicate; a few through the whole check with the manifest
-			// rebound, so the hash binding never hides one.
 			c := *ref
 			nb := *loaded
 			l := *nb.Launches[tc.phase-1]
-			s := slices.Index(l.Argv, "--allowed-tools") + 1
-			l.Argv = tc.edit(slices.Clone(l.Argv), s)
+			l.Argv = tc.edit(slices.Clone(l.Argv))
 			nb.Launches[tc.phase-1] = &l
 			c.b = &nb
 			if c.launchValid(tc.phase) {
 				t.Errorf("%s: the launch shape is valid", name)
 			}
-			if name != "rule removed" && name != "skip permissions" && name != "phase 2 rule removed" {
+			if !tc.full {
 				continue
 			}
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
 				b := passingBundle(t)
-				editDoc(t, b, launchFiles[tc.phase-1], func(l *LaunchRecord) {
-					s := slices.Index(l.Argv, "--allowed-tools") + 1
-					l.Argv = tc.edit(l.Argv, s)
-				})
-				editDoc(t, b, "manifest.json", func(m *Manifest) {
-					for i := range m.Launches {
-						m.Launches[i].SHA256 = sha256Hex(mustRead(t, filepath.Join(b, filepath.FromSlash(m.Launches[i].Name))))
-					}
-				})
+				editDoc(t, b, launchFiles[tc.phase-1], func(l *LaunchRecord) { l.Argv = tc.edit(l.Argv) })
+				rebindLaunchHashes(t, b)
 				_, r, _ := checkBundle(t, b)
 				if c := criterion(r, CritSetup); !slices.Contains(c.Codes, "launch_shape_invalid") || criterion(r, CritManifest).Result != "pass" {
 					t.Fatalf("setup %+v (all %v)", c, failedCodes(r))
@@ -426,40 +376,31 @@ func TestSetupUnits(t *testing.T) {
 	t.Run("review-material helper", reviewHelperCases)
 	t.Run("rule inputs", func(t *testing.T) {
 		t.Parallel()
-		// A3.6: a value a rule cannot hold literally is refused before
-		// any rule is rendered; A3.7: so is one only a quoted word holds.
+		// A fixed command input a Bash line cannot hold as a plain word
+		// is refused before any vendor starts. Compound, redirected and
+		// quoted forms are not simple commands.
 		v := permissionValues{reale2e: "/bin/reale2e", runtime: "/rt"}
-		rules, err := allowedTools(v)
-		if err != nil || len(rules) != AllowListSize || rules[waitRuleOffset] != "Bash(/bin/reale2e wait-task --run /rt --task * --hop designer)" {
-			t.Fatalf("rules %q %v", rules, err)
+		if err := validRuleInputs(v.reale2e, v.runtime); err != nil || waitCommand(v, 0) != "/bin/reale2e wait-task --run /rt --task TASK_ID --hop designer" {
+			t.Fatalf("inputs %v", err)
 		}
 		for _, bad := range []string{"/bin/call*sheet", "/bin/a(b)", "/bin/a?", "/bin/[x]", "/bin/a,b", "/bin/a\nb", "/bin/a\x00"} {
-			w := v
-			w.reale2e = bad
-			if _, err := allowedTools(w); !errors.Is(err, errRuleInput) {
-				t.Errorf("%q rendered: %v", bad, err)
+			if err := validRuleInputs(bad, v.runtime); !errors.Is(err, errRuleInput) {
+				t.Errorf("%q accepted: %v", bad, err)
 			}
 		}
 		for _, bad := range []string{"/tmp/run dir", "/tmp/o'brien", `/tmp/a"b`, "/tmp/a;b", "/tmp/a|b", "/tmp/a>b", "/tmp/a&b", "/tmp/$x", ""} {
-			w := v
-			w.runtime = bad
-			if _, err := allowedTools(w); !errors.Is(err, errRuleQuoted) {
-				t.Errorf("runtime %q rendered: %v", bad, err)
+			if err := validRuleInputs(v.reale2e, bad); !errors.Is(err, errRuleQuoted) {
+				t.Errorf("runtime %q accepted: %v", bad, err)
 			}
 		}
-		// The rendered command matches its rule; compound, redirected,
-		// quoted or otherwise altered forms are refused.
 		task := hexID("t_", 3)
 		for i := range Hops {
 			cmd := strings.Replace(waitCommand(v, i), "TASK_ID", task, 1)
-			if !bashRuleAllows(rules[waitRuleOffset+i], cmd) || !simpleBashLine(cmd) {
-				t.Errorf("hop %d wait %q is not allowed by %q", i, cmd, rules[waitRuleOffset+i])
-			}
-			if i > 0 && bashRuleAllows(rules[waitRuleOffset], cmd) {
-				t.Errorf("hop %d wait allowed by the designer's rule", i)
+			if !simpleBashLine(cmd) || strings.Count(waitCommand(v, i), "TASK_ID") != 1 {
+				t.Errorf("hop %d wait %q", i, cmd)
 			}
 		}
-		rule, cmd := rules[waitRuleOffset+2], strings.Replace(waitCommand(v, 2), "TASK_ID", task, 1)
+		cmd := strings.Replace(waitCommand(v, 2), "TASK_ID", task, 1)
 		for _, refused := range []string{
 			cmd + " >/rt/coord/waits/03/result.json",
 			cmd + " 2>/rt/coord/waits/03/error.txt",
@@ -471,17 +412,16 @@ func TestSetupUnits(t *testing.T) {
 			"/bin/reale2e wait-task --run /rt --task `cat id` --hop coder",
 			"/bin/reale2e wait-task --run /rt --task " + task + " --hop coder\n/bin/rm -rf /",
 			"/bin/reale2e wait-task --run /rt --task " + task + "  --hop coder",
-			" " + cmd, cmd + " --extra", "/bin/reale2e wait-task --run /rt --task  --hop coder",
-			"/bin/reale2e wait-task --run /other --task " + task + " --hop coder",
+			" " + cmd,
 		} {
-			if bashRuleAllows(rule, refused) {
-				t.Errorf("%q was allowed", refused)
+			if simpleBashLine(refused) {
+				t.Errorf("%q was a simple command", refused)
 			}
 		}
-		for _, bad := range []string{"mcp__callsheet__ws_push", "Bash(/bin/reale2e x", "Bash(/bin/reale2e x; y)"} {
-			if bashRuleAllows(bad, "/bin/reale2e x") {
-				t.Errorf("rule %q allowed a command", bad)
-			}
+		var out bytes.Buffer
+		bad := &supervisor{stdout: &out, w: &World{Executable: "/bin/reale2e"}, runtime: "/tmp/bad dir"}
+		if err := bad.renderPermissions(); codeOf(err) != "permission_rule_invalid" {
+			t.Fatalf("a runtime needing quotes: %v", err)
 		}
 		f := newFakeWorld(t)
 		f.executable = "/fake/bin/re*ale2e"

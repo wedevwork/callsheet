@@ -199,8 +199,6 @@ type supervisor struct {
 	started    []StartedProc
 	records    []ProcRecord
 	stoppedSet map[*child]bool
-	// allowed is the coordinator's rendered session allow-list.
-	allowed []string
 
 	seed        *seedRepo
 	collectPath string

@@ -213,7 +213,7 @@ func deriveAuditRows(c *checker) []AuditRow {
 		requirement: "The four roles registered with the frozen flow's adapter, model and effort (concurrency 1, timeout 10m), all sidecars reconnected and every role ready"},
 		c.rolesFacts())
 	add(rowSpec{id: "coordinator_phase1", layer: LayerMechanical, fps: fpPhase, criteria: []string{CritSetup, CritEventMap},
-		requirement: "The supervisor launched the fresh headless phase-1 session with the exact configuration-preserving argv (the session-only sandbox-off settings and the exact 16-rule allow-list, no bypass), observed its init and successful pause result, exit 0 and its whole process group gone"},
+		requirement: "The supervisor launched the fresh headless phase-1 session with the exact argv (stream-json, the session-only sandbox-off settings, --permission-mode auto and --permission-prompts none, no allow-list and no bypass), observed its init reporting auto and a successful pause result, exit 0 and its whole process group gone"},
 		c.phaseFacts(1))
 	for i := range Hops {
 		if i == 2 {
@@ -221,7 +221,7 @@ func deriveAuditRows(c *checker) []AuditRow {
 				requirement: "After the approved design review and phase 1's exit, the terminal prompt took the owner's explicit yes within 20m, bound to the reviewed task, commit and both artifact digests, before any coding admission"},
 				c.signoffFacts())
 			add(rowSpec{id: "coordinator_phase2", layer: LayerMechanical, fps: fpPhase, criteria: []string{CritSetup, CritEventMap},
-				requirement: "After the yes only, the supervisor resumed the same session (--resume with phase 1's session ID) with the same configuration, observed its init and successful final result, exit 0 and its whole process group gone"},
+				requirement: "After the yes only, the supervisor resumed the same session (--resume with phase 1's session ID) with the same auto-mode configuration, observed its init reporting auto and a successful final result, exit 0 and its whole process group gone"},
 				c.phaseFacts(2))
 		}
 		n := "hop" + hopDir(i)
@@ -432,6 +432,14 @@ func (c *checker) phaseFacts(p int) rowFacts {
 	} else {
 		f.see("session %s, model %s, permission mode %s, %d tools, MCP servers [%s]", auditText(init.SessionID, 40), auditText(init.Model, 64),
 			auditText(init.PermissionMode, 32), len(init.Tools), auditText(strings.Join(init.MCPServers, ","), 400))
+		// Require the init's own permission mode. An omitted field is
+		// missing proof; any other value but auto contradicts the row.
+		// The launch argv is not evidence of either.
+		if init.PermissionMode == "" {
+			f.miss("phase " + fmt.Sprint(p) + " permission mode")
+		} else if init.PermissionMode != autoModeFlag {
+			f.bad("launch_shape_invalid")
+		}
 		if p == 2 && init.SessionID != c.derived.SessionID {
 			f.bad("session_resume_mismatch")
 		}
