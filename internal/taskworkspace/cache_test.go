@@ -218,10 +218,10 @@ func TestCache(t *testing.T) {
 		l := hookOf(m)
 		f := &fetcher{src: src}
 		if _, err := m.Fetch(context.Background(), "proj", instA, ca, f, newTaskDB(t)); err != nil {
-			t.Fatal(err)
+			t.Fatal(errorChain(err))
 		}
 		if _, err := m.Fetch(context.Background(), "proj", instB, cb, f, newTaskDB(t)); err != nil {
-			t.Fatal(err)
+			t.Fatal(errorChain(err))
 		}
 		// The least recently used idle entry goes.
 		l.await(t, "evicted "+instA)
@@ -233,7 +233,7 @@ func TestCache(t *testing.T) {
 		eb.lock <- struct{}{}
 		instC := strings.Repeat("c", 32)
 		if _, err := m.Fetch(context.Background(), "proj", instC, cc, f, newTaskDB(t)); err != nil {
-			t.Fatal(err)
+			t.Fatal(errorChain(err))
 		}
 		if l.has("evicted " + instB) {
 			t.Fatal("a busy entry was evicted")
@@ -244,7 +244,11 @@ func TestCache(t *testing.T) {
 		db := newTaskDB(t)
 		st, err := m2.Fetch(context.Background(), "proj", instA, ca, f, db)
 		if err != nil || !st.Bypassed {
-			t.Fatalf("oversize %+v %v", st, err)
+			suffix := ""
+			if err != nil {
+				suffix = "\n" + errorChain(err)
+			}
+			t.Fatalf("oversize %+v %v%s", st, err, suffix)
 		}
 		hasClosure(t, db, ca)
 		if _, err := os.Stat(filepath.Join(root2, CacheDirName, instA, currentName)); !os.IsNotExist(err) {
