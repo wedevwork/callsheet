@@ -93,6 +93,7 @@ func TestPlaneVerificationPolicyContract(t *testing.T) {
 			"stress-plane":        wantStageGroups["stress-plane"],
 			"stress-sidecar-cpu1": wantStageGroups["stress-sidecar-cpu1"],
 			"stress-sidecar":      wantStageGroups["stress-sidecar"],
+			"stress-sidecar-cpu4": wantStageGroups["stress-sidecar-cpu4"],
 			"stress-processgroup": wantStageGroups["stress-processgroup"],
 			"stress-functions":    wantStageGroups["stress-functions"],
 			// "test" is checked as the exact wantTestPlanLinux plan above:

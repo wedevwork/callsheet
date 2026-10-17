@@ -319,10 +319,11 @@ func taskProcessEvents(drop string) []map[string]any {
 }
 
 // speedJobs is the table of ordinary jobs: the two main jobs (design 02b,
-// Workflow topology) and the sixteen stress workers that replaced its two
+// Workflow topology) and the eighteen stress workers that replaced its two
 // stress jobs (design 02c, with design 05b's plane workers, its sidecar
 // follow-up's sidecar workers, design 06a-perf's plane and sidecar CPU1
-// workers and the stress worker rebalance's packages-cpu workers). The two
+// workers, the stress worker rebalance's packages-cpu workers and design
+// 12a-stress-sidecar-margin's sidecar CPU4 workers). The two
 // summaries that keep the stress contexts are checked by
 // TestStressShardSummaries.
 var speedJobs = []struct {
@@ -337,6 +338,7 @@ var speedJobs = []struct {
 	{"linux-stress-plane", "ci-linux-stress-plane", "ubuntu-24.04", "20", []string{"go run ./cmd/devcheck stress-plane"}},
 	{"linux-stress-sidecar-cpu1", "ci-linux-stress-sidecar-cpu1", "ubuntu-24.04", "20", []string{"go run ./cmd/devcheck stress-sidecar-cpu1"}},
 	{"linux-stress-sidecar", "ci-linux-stress-sidecar", "ubuntu-24.04", "20", []string{"go run ./cmd/devcheck stress-sidecar"}},
+	{"linux-stress-sidecar-cpu4", "ci-linux-stress-sidecar-cpu4", "ubuntu-24.04", "20", []string{"go run ./cmd/devcheck stress-sidecar-cpu4"}},
 	{"linux-stress-processgroup", "ci-linux-stress-processgroup", "ubuntu-24.04", "20", []string{"go run ./cmd/devcheck stress-processgroup"}},
 	{"linux-stress-functions", "ci-linux-stress-functions", "ubuntu-24.04", "20", []string{"go run ./cmd/devcheck stress-functions"}},
 	{"macos-stress-packages", "ci-macos-stress-packages", "macos-15", "20", []string{"go run ./cmd/devcheck stress-packages"}},
@@ -345,6 +347,7 @@ var speedJobs = []struct {
 	{"macos-stress-plane", "ci-macos-stress-plane", "macos-15", "20", []string{"go run ./cmd/devcheck stress-plane"}},
 	{"macos-stress-sidecar-cpu1", "ci-macos-stress-sidecar-cpu1", "macos-15", "20", []string{"go run ./cmd/devcheck stress-sidecar-cpu1"}},
 	{"macos-stress-sidecar", "ci-macos-stress-sidecar", "macos-15", "20", []string{"go run ./cmd/devcheck stress-sidecar"}},
+	{"macos-stress-sidecar-cpu4", "ci-macos-stress-sidecar-cpu4", "macos-15", "20", []string{"go run ./cmd/devcheck stress-sidecar-cpu4"}},
 	{"macos-stress-processgroup", "ci-macos-stress-processgroup", "macos-15", "20", []string{"go run ./cmd/devcheck stress-processgroup"}},
 	{"macos-stress-functions", "ci-macos-stress-functions", "macos-15", "20", []string{"go run ./cmd/devcheck stress-functions"}},
 }
@@ -676,8 +679,9 @@ func runSelectorFixture(t *testing.T, selector string) (passed, logged []string)
 }
 
 // FP-2: the actual workflow's main jobs and, since iteration 02c, its
-// stress workers (ten since iteration 05b's sidecar follow-up, fourteen
-// since design 06a-perf, sixteen since the stress worker rebalance) are
+// eighteen stress workers (ten since iteration 05b's sidecar follow-up,
+// fourteen since design 06a-perf, sixteen since the stress worker
+// rebalance, eighteen since iteration 12a-stress-sidecar-margin) are
 // independent, with
 // identical pinned setup and exact check commands; the two summaries
 // follow them.
@@ -696,8 +700,8 @@ func TestCISpeedJobs(t *testing.T) {
 		ids = append(ids, jobs.Content[i].Value)
 	}
 	if strings.Join(ids, " ") != "linux macos linux-stress-packages linux-stress-packages-cpu linux-stress-plane-cpu1 linux-stress-plane linux-stress-sidecar-cpu1 linux-stress-sidecar "+
-		"linux-stress-processgroup linux-stress-functions macos-stress-packages macos-stress-packages-cpu macos-stress-plane-cpu1 macos-stress-plane macos-stress-sidecar-cpu1 "+
-		"macos-stress-sidecar macos-stress-processgroup macos-stress-functions linux-stress macos-stress" || len(ids) != 20 {
+		"linux-stress-sidecar-cpu4 linux-stress-processgroup linux-stress-functions macos-stress-packages macos-stress-packages-cpu macos-stress-plane-cpu1 macos-stress-plane macos-stress-sidecar-cpu1 "+
+		"macos-stress-sidecar macos-stress-sidecar-cpu4 macos-stress-processgroup macos-stress-functions linux-stress macos-stress" || len(ids) != 22 {
 		t.Fatalf("job ids = %v", ids)
 	}
 	var names []string
@@ -756,7 +760,7 @@ func TestCISpeedJobs(t *testing.T) {
 			}
 		}
 	}
-	if strings.Join(names[:2], ",") != strings.Join(cicheck.RequiredChecks()[:2], ",") || len(names) != 18 {
+	if strings.Join(names[:2], ",") != strings.Join(cicheck.RequiredChecks()[:2], ",") || len(names) != 20 {
 		t.Fatalf("contexts %v, contract %v", names, cicheck.RequiredChecks())
 	}
 	for _, top := range []string{"concurrency", "env", "defaults"} {
@@ -864,14 +868,16 @@ func TestCISpeedPolicy(t *testing.T) {
 			}
 		}
 		// The complete local stress stage dispatches the whole plan, with the
-		// plane and sidecar CPU1 singletons alone, their CPU2/CPU4 pairs and
-		// processgroup's three invocations concurrent (each compared as a
-		// set; design 06a-perf), the packages-cpu groups right after the
-		// combined packages command (the stress worker rebalance).
+		// plane CPU1 singleton and the sidecar CPU1, CPU2 and CPU4
+		// singletons alone, the plane CPU2/CPU4 pair and processgroup's
+		// three invocations concurrent (each compared as a set; design
+		// 06a-perf, sidecar CPU4 since design 12a-stress-sidecar-margin),
+		// the packages-cpu groups right after the combined packages command
+		// (the stress worker rebalance).
 		r := &ciRunner{}
 		if code, out, errOut := devcheckRun(t, r, "stress"); code != 0 || !strings.Contains(out, "stage stress ok") ||
 			!sameGroups(r.calls, [][]string{{speedPackages}, {speedContract1, speedContract2, speedContract4},
-				{speedMcpqual1, speedMcpqual2, speedMcpqual4}, {speedWorkspace1, speedWorkspace2, speedWorkspace4}, {speedPlane1}, {speedPlane2, speedPlane4}, {speedSidecar1}, {speedSidecar2, speedSidecar4},
+				{speedMcpqual1, speedMcpqual2, speedMcpqual4}, {speedWorkspace1, speedWorkspace2, speedWorkspace4}, {speedPlane1}, {speedPlane2, speedPlane4}, {speedSidecar1}, {speedSidecar2}, {speedSidecar4},
 				{speedPG1, speedPG2, speedPG4}, {speedFunction}, {speedPlaneFunction}, {speedNodeFunction}}) {
 			t.Fatalf("stress dispatch = %d %v %s", code, r.calls, errOut)
 		}

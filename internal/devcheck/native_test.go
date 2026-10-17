@@ -795,7 +795,7 @@ func TestTailBuffer(t *testing.T) {
 // --- driver (UT-2 stage dispatch, UT-4 native execution) ---
 
 func TestStagesMatchDispatch(t *testing.T) {
-	want := "test coverage bench cross all native stress stress-packages stress-packages-cpu stress-plane-cpu1 stress-plane stress-sidecar-cpu1 stress-sidecar stress-processgroup stress-functions container-e2e"
+	want := "test coverage bench cross all native stress stress-packages stress-packages-cpu stress-plane-cpu1 stress-plane stress-sidecar-cpu1 stress-sidecar stress-sidecar-cpu4 stress-processgroup stress-functions container-e2e"
 	got := Stages()
 	if strings.Join(got, " ") != want {
 		t.Fatalf("Stages = %v", got)
@@ -846,16 +846,17 @@ func TestStagesMatchDispatch(t *testing.T) {
 // usageLiteral is design 06a-perf's exact usage line, with the stress
 // worker rebalance's stress-packages-cpu after stress-packages, final
 // newline included, written independently of devcheck.go.
-const usageLiteral = "usage: devcheck test | coverage [-o profile] | bench | cross | all | native | stress | stress-packages | stress-packages-cpu | stress-plane-cpu1 | stress-plane | stress-sidecar-cpu1 | stress-sidecar | stress-processgroup | stress-functions | container-e2e [--count=N]\n"
+const usageLiteral = "usage: devcheck test | coverage [-o profile] | bench | cross | all | native | stress | stress-packages | stress-packages-cpu | stress-plane-cpu1 | stress-plane | stress-sidecar-cpu1 | stress-sidecar | stress-sidecar-cpu4 | stress-processgroup | stress-functions | container-e2e [--count=N]\n"
 
 // TestUsageLiteral pins the usage constant and its stage order to the
-// sixteen advertised stages (container-e2e since m3-m4-container-e2e,
-// stress-packages-cpu since the stress worker rebalance).
+// seventeen advertised stages (container-e2e since m3-m4-container-e2e,
+// stress-packages-cpu since the stress worker rebalance,
+// stress-sidecar-cpu4 since design 12a-stress-sidecar-margin).
 func TestUsageLiteral(t *testing.T) {
 	if usage != usageLiteral {
 		t.Fatalf("usage = %q", usage)
 	}
-	if len(stageNames) != 16 {
+	if len(stageNames) != 17 {
 		t.Fatalf("%d stages advertised", len(stageNames))
 	}
 	var out, errOut bytes.Buffer

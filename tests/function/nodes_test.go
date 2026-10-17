@@ -1056,11 +1056,11 @@ func TestNodePlatform(t *testing.T) {
 			// rebalance; the plane's node contracts repeat in the plane shards
 			// (iteration 05b) and the sidecar's reconnect contracts in the
 			// sidecar shards (its sidecar follow-up): CPU 1 in plane-cpu1
-			// and sidecar-cpu1, CPU 2 and 4 in plane and sidecar (design
-			// 06a-perf). The functions shard, index 7, keeps its three
-			// steps and the node selector.
+			// and sidecar-cpu1, CPU 2 and 4 in plane, and sidecar CPU 2 and
+			// CPU 4 each alone (design 12a-stress-sidecar-margin). The
+			// functions shard, index 8, keeps its three steps and the node selector.
 			shards, err := devcheck.StressShards(goos)
-			if err != nil || len(shards) != 8 || shards[7].Name != "functions" || len(shards[7].Steps) != 3 || strings.Join(shards[7].Steps[2].Argv, " ") != nodeFn ||
+			if err != nil || len(shards) != 9 || shards[8].Name != "functions" || len(shards[8].Steps) != 3 || strings.Join(shards[8].Steps[2].Argv, " ") != nodeFn ||
 				slices.Contains(shards[0].Steps[0].Argv, "./internal/sidecar") || !slices.Contains(shards[0].Steps[0].Argv, "./internal/client") ||
 				slices.Contains(shards[0].Steps[0].Argv, "./internal/contract") || shards[0].CPUGroups != nil ||
 				shards[1].Name != "packages-cpu" || len(shards[1].CPUGroups) != 3 || len(shards[1].CPUGroups[0]) != 3 ||
@@ -1080,7 +1080,8 @@ func TestNodePlatform(t *testing.T) {
 				name, pkg string
 				cpus      []string
 			}{{2, "plane-cpu1", "./internal/plane", []string{"-cpu=1"}}, {3, "plane", "./internal/plane", []string{"-cpu=2", "-cpu=4"}},
-				{4, "sidecar-cpu1", "./internal/sidecar", []string{"-cpu=1"}}, {5, "sidecar", "./internal/sidecar", []string{"-cpu=2", "-cpu=4"}}} {
+				{4, "sidecar-cpu1", "./internal/sidecar", []string{"-cpu=1"}}, {5, "sidecar", "./internal/sidecar", []string{"-cpu=2"}},
+				{6, "sidecar-cpu4", "./internal/sidecar", []string{"-cpu=4"}}} {
 				sh := shards[c.i]
 				if sh.Name != c.name || !sh.Parallel || len(sh.Steps) != len(c.cpus) {
 					t.Fatalf("%s shard %d = %+v, want %s with %d steps", goos, c.i, sh, c.name, len(c.cpus))

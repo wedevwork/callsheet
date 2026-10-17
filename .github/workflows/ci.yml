@@ -1,14 +1,16 @@
-# CI for callsheet. Twenty fixed jobs (see docs/ci.md). The four required
+# CI for callsheet. Twenty-two fixed jobs (see docs/ci.md). The four required
 # status check contexts on main are ci-linux, ci-macos, ci-linux-stress and
-# ci-macos-stress. The main jobs and the sixteen stress workers (eight
+# ci-macos-stress. The main jobs and the eighteen stress workers (nine
 # shards per platform: iteration 02c, plus the plane shard of iteration 05b,
 # the sidecar shard of its sidecar follow-up, the plane and sidecar CPU1
 # shards of iteration 06a-perf, which run each CPU 1 invocation alone on its
-# own worker while CPU 2 and 4 stay concurrent on the plane and sidecar
-# workers, and the packages-cpu shard of the stress worker rebalance, which
-# runs the contract, mcpqual and workspace per-CPU groups apart from the
-# combined packages invocation) are independent; the two stress summaries
-# keep the required stress contexts and pass only if all eight of their
+# own worker while CPU 2 and 4 stay concurrent on the plane worker, the
+# packages-cpu shard of the stress worker rebalance, which runs the
+# contract, mcpqual and workspace per-CPU groups apart from the combined
+# packages invocation, and the sidecar CPU4 shard of design
+# 12a-stress-sidecar-margin, which runs sidecar CPU 4 alone so the sidecar
+# worker runs CPU 2 only) are independent; the two stress summaries
+# keep the required stress contexts and pass only if all nine of their
 # platform's workers concluded success. All verification policy lives in ./cmd/devcheck; the
 # contract is checked offline by internal/cicheck and tests/function. The
 # Linux job's devcheck test also runs the M3/M4 container acceptance; its
@@ -283,6 +285,36 @@ jobs:
           GOPROXY: "off"
           GOSUMDB: "off"
 
+  linux-stress-sidecar-cpu4:
+    name: ci-linux-stress-sidecar-cpu4
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    env:
+      GOTOOLCHAIN: local
+      GOFLAGS: -mod=readonly
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Set up Go from go.mod
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+          check-latest: false
+      - name: Download modules
+        run: go mod download
+      - name: devcheck stress-sidecar-cpu4
+        run: go run ./cmd/devcheck stress-sidecar-cpu4
+        env:
+          GOPROXY: "off"
+          GOSUMDB: "off"
+
   linux-stress-processgroup:
     name: ci-linux-stress-processgroup
     runs-on: ubuntu-24.04
@@ -523,6 +555,36 @@ jobs:
           GOPROXY: "off"
           GOSUMDB: "off"
 
+  macos-stress-sidecar-cpu4:
+    name: ci-macos-stress-sidecar-cpu4
+    runs-on: macos-15
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    env:
+      GOTOOLCHAIN: local
+      GOFLAGS: -mod=readonly
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Set up Go from go.mod
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+          check-latest: false
+      - name: Download modules
+        run: go mod download
+      - name: devcheck stress-sidecar-cpu4
+        run: go run ./cmd/devcheck stress-sidecar-cpu4
+        env:
+          GOPROXY: "off"
+          GOSUMDB: "off"
+
   macos-stress-processgroup:
     name: ci-macos-stress-processgroup
     runs-on: macos-15
@@ -587,7 +649,7 @@ jobs:
     name: ci-linux-stress
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    needs: [linux-stress-packages, linux-stress-packages-cpu, linux-stress-plane-cpu1, linux-stress-plane, linux-stress-sidecar-cpu1, linux-stress-sidecar, linux-stress-processgroup, linux-stress-functions]
+    needs: [linux-stress-packages, linux-stress-packages-cpu, linux-stress-plane-cpu1, linux-stress-plane, linux-stress-sidecar-cpu1, linux-stress-sidecar, linux-stress-sidecar-cpu4, linux-stress-processgroup, linux-stress-functions]
     if: ${{ always() }}
     defaults:
       run:
@@ -601,15 +663,16 @@ jobs:
           PLANE_RESULT: ${{ needs['linux-stress-plane'].result }}
           SIDECAR_CPU1_RESULT: ${{ needs['linux-stress-sidecar-cpu1'].result }}
           SIDECAR_RESULT: ${{ needs['linux-stress-sidecar'].result }}
+          SIDECAR_CPU4_RESULT: ${{ needs['linux-stress-sidecar-cpu4'].result }}
           PROCESSGROUP_RESULT: ${{ needs['linux-stress-processgroup'].result }}
           FUNCTIONS_RESULT: ${{ needs['linux-stress-functions'].result }}
-        run: test "$PACKAGES_RESULT" = success && test "$PACKAGES_CPU_RESULT" = success && test "$PLANE_CPU1_RESULT" = success && test "$PLANE_RESULT" = success && test "$SIDECAR_CPU1_RESULT" = success && test "$SIDECAR_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success
+        run: test "$PACKAGES_RESULT" = success && test "$PACKAGES_CPU_RESULT" = success && test "$PLANE_CPU1_RESULT" = success && test "$PLANE_RESULT" = success && test "$SIDECAR_CPU1_RESULT" = success && test "$SIDECAR_RESULT" = success && test "$SIDECAR_CPU4_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success
 
   macos-stress:
     name: ci-macos-stress
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    needs: [macos-stress-packages, macos-stress-packages-cpu, macos-stress-plane-cpu1, macos-stress-plane, macos-stress-sidecar-cpu1, macos-stress-sidecar, macos-stress-processgroup, macos-stress-functions]
+    needs: [macos-stress-packages, macos-stress-packages-cpu, macos-stress-plane-cpu1, macos-stress-plane, macos-stress-sidecar-cpu1, macos-stress-sidecar, macos-stress-sidecar-cpu4, macos-stress-processgroup, macos-stress-functions]
     if: ${{ always() }}
     defaults:
       run:
@@ -623,6 +686,7 @@ jobs:
           PLANE_RESULT: ${{ needs['macos-stress-plane'].result }}
           SIDECAR_CPU1_RESULT: ${{ needs['macos-stress-sidecar-cpu1'].result }}
           SIDECAR_RESULT: ${{ needs['macos-stress-sidecar'].result }}
+          SIDECAR_CPU4_RESULT: ${{ needs['macos-stress-sidecar-cpu4'].result }}
           PROCESSGROUP_RESULT: ${{ needs['macos-stress-processgroup'].result }}
           FUNCTIONS_RESULT: ${{ needs['macos-stress-functions'].result }}
-        run: test "$PACKAGES_RESULT" = success && test "$PACKAGES_CPU_RESULT" = success && test "$PLANE_CPU1_RESULT" = success && test "$PLANE_RESULT" = success && test "$SIDECAR_CPU1_RESULT" = success && test "$SIDECAR_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success
+        run: test "$PACKAGES_RESULT" = success && test "$PACKAGES_CPU_RESULT" = success && test "$PLANE_CPU1_RESULT" = success && test "$PLANE_RESULT" = success && test "$SIDECAR_CPU1_RESULT" = success && test "$SIDECAR_RESULT" = success && test "$SIDECAR_CPU4_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success

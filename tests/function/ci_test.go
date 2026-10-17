@@ -736,10 +736,11 @@ const ownerAddContexts = "gh api --method POST \\\n" +
 // FP-7: the owner-applied branch protection handoff.
 func TestCIProtectionHandoff(t *testing.T) {
 	// Checks names the four required contexts first, then only the
-	// sixteen stress workers (iteration 02c, plane since 05b, sidecar since
+	// eighteen stress workers (iteration 02c, plane since 05b, sidecar since
 	// its sidecar follow-up, the plane and sidecar CPU1 workers since
 	// 06a-perf, the packages-cpu workers since the stress worker
-	// rebalance): no other check name.
+	// rebalance, and the sidecar CPU4 workers since iteration
+	// 12a-stress-sidecar-margin): no other check name.
 	checks := docSection(t, "Checks")
 	contexts := regexp.MustCompile("`(ci-[a-z0-9-]+)`").FindAllStringSubmatch(checks, -1)
 	var listed []string
@@ -757,7 +758,7 @@ func TestCIProtectionHandoff(t *testing.T) {
 	sortedListed, sortedAll := slices.Clone(listed), slices.Clone(all)
 	slices.Sort(sortedListed)
 	slices.Sort(sortedAll)
-	if len(listed) < 4 || strings.Join(listed[:4], ",") != strings.Join(cicheck.RequiredChecks(), ",") || !slices.Equal(sortedListed, sortedAll) || len(all) != 20 {
+	if len(listed) < 4 || strings.Join(listed[:4], ",") != strings.Join(cicheck.RequiredChecks(), ",") || !slices.Equal(sortedListed, sortedAll) || len(all) != 22 {
 		t.Fatalf("Checks lists %v, want the required %v first and then only the other jobs of %v", listed, cicheck.RequiredChecks(), all)
 	}
 	bp := docSection(t, "Branch protection")
@@ -823,16 +824,16 @@ func TestCIPRProcedure(t *testing.T) {
 	requireTerms(t, "green step", steps[green], "skipped, canceled, pending or unobserved check is not acceptable")
 	first := docSection(t, "First remote run")
 	requireTerms(t, "First remote run", first, "pending until observed", "run URL", "commit",
-		"conclusions of all twenty jobs: all four checks, `ci-linux`, `ci-macos`, `ci-linux-stress` and `ci-macos-stress`, and the sixteen stress workers",
+		"conclusions of all twenty-two jobs: all four checks, `ci-linux`, `ci-macos`, `ci-linux-stress` and `ci-macos-stress`, and the eighteen stress workers",
 		"native evidence", "native qualification passed on darwin",
 		"branch protection verification",
 		"git ls-remote https://github.com/actions/checkout.git 'refs/tags/v6.0.2' 'refs/tags/v6.0.2^{}'",
 		"git ls-remote https://github.com/actions/setup-go.git 'refs/tags/v6.3.0' 'refs/tags/v6.3.0^{}'",
 		"peeled commit", "handoff blocker")
-	requireTerms(t, "First remote run", first, "stress evidence from the sixteen worker logs", "`devcheck: stage stress-packages ok`",
+	requireTerms(t, "First remote run", first, "stress evidence from the eighteen worker logs", "`devcheck: stage stress-packages ok`",
 		"`devcheck: stage stress-packages-cpu ok`", "`devcheck: stage stress-plane-cpu1 ok`", "`devcheck: stage stress-plane ok`", "`devcheck: stage stress-sidecar-cpu1 ok`",
-		"`devcheck: stage stress-sidecar ok`", "`devcheck: stage stress-functions ok`", "elapsed time of each stress command",
-		"the actual job and step times of all twenty jobs")
+		"`devcheck: stage stress-sidecar ok`", "`devcheck: stage stress-sidecar-cpu4 ok`", "`devcheck: stage stress-functions ok`", "elapsed time of each stress command",
+		"the actual job and step times of all twenty-two jobs")
 	for _, stale := range []string{"conclusions of all fourteen jobs", "stress evidence from the ten worker logs", "the actual job and step times of all fourteen jobs",
 		"conclusions of all eighteen jobs", "stress evidence from the fourteen worker logs", "the actual job and step times of all eighteen jobs"} {
 		if strings.Contains(strings.Join(strings.Fields(first), " "), stale) {

@@ -1,7 +1,7 @@
 // Command devcheck is the development-only check driver (test, coverage,
 // bench, cross, all, native, stress, stress-packages, stress-packages-cpu,
 // stress-plane-cpu1, stress-plane, stress-sidecar-cpu1, stress-sidecar,
-// stress-processgroup, stress-functions). It is not distributed. Run it
+// stress-sidecar-cpu4, stress-processgroup, stress-functions). It is not distributed. Run it
 // from the repository
 // root:
 //
@@ -12,14 +12,16 @@
 // evidence for the process-group qualification tests; other hosts reject it.
 // stress repeats the timing- and concurrency-sensitive tests under the race
 // detector (StressCount times at each of -cpu=1,2,4) on Linux and macOS; it is
-// deliberately not part of all. It runs eight shards in order, each also a
+// deliberately not part of all. It runs nine shards in order, each also a
 // stage of its own (one CI worker job per platform each): stress-packages
 // (the combined invocation), stress-packages-cpu (the contract, mcpqual and
 // workspace groups at CPU 1, 2 and 4, one concurrent group per package),
 // stress-plane-cpu1 (plane at CPU 1 alone), stress-plane (plane at CPU 2
-// and 4 as concurrent invocations), stress-sidecar-cpu1 and
-// stress-sidecar (likewise for sidecar), stress-processgroup (its three
-// CPU settings as concurrent invocations) and stress-functions. None takes
+// and 4 as concurrent invocations), stress-sidecar-cpu1, stress-sidecar
+// (sidecar at CPU 2 alone) and stress-sidecar-cpu4 (sidecar at CPU 4
+// alone), stress-processgroup (its three CPU settings as concurrent
+// invocations) and stress-functions. stress-sidecar is CPU 2 only; it is
+// not an alias for the former CPU 2 and CPU 4 pair. None takes
 // arguments. container-e2e (Linux only) runs the M3/M4 container
 // acceptance in fresh isolated Docker containers (--count=N, 1 to 20; the
 // Linux test stage also runs it once) and retains its evidence in
