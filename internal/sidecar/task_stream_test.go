@@ -19,6 +19,87 @@ import (
 	"github.com/wedevwork/callsheet/internal/contract"
 )
 
+// sessionHold pauses the emitting goroutine inside the test observe tap.
+// emit calls that tap synchronously, so a hold lands inside the session
+// function that emitted — inside a reply write, or inside onOutputAck
+// while its worker local is still live.
+type sessionHold struct {
+	mu      sync.Mutex
+	want    eventKind
+	id      string
+	waiting eventKind
+	hit     chan struct{}
+	rel     chan struct{}
+	got     event
+}
+
+func newSessionHold() *sessionHold {
+	return &sessionHold{hit: make(chan struct{}), rel: make(chan struct{})}
+}
+
+// arm holds the next event of kind (and id, when set) and releases whatever
+// hold is in progress. The previous emit returns only after arm has
+// published the new hold, so the wanted event cannot pass unnoticed.
+func (g *sessionHold) arm(kind eventKind, id string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.unblock()
+	g.want, g.id, g.waiting = kind, id, kind
+	g.hit = make(chan struct{})
+	g.rel = make(chan struct{})
+	g.got = event{}
+}
+
+// release lets the emitting goroutine leave the hold in progress.
+func (g *sessionHold) release() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.unblock()
+}
+
+// unblock closes the current hold's release channel. The caller holds mu.
+func (g *sessionHold) unblock() {
+	if g.rel == nil {
+		return
+	}
+	select {
+	case <-g.rel:
+	default:
+		close(g.rel)
+	}
+}
+
+// wait blocks until the hold in progress is entered.
+func (g *sessionHold) wait(t *testing.T) event {
+	t.Helper()
+	g.mu.Lock()
+	hit, kind := g.hit, g.waiting
+	g.mu.Unlock()
+	select {
+	case <-hit:
+	case <-time.After(testWait):
+		t.Fatalf("the session never reached %s", kind)
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.got
+}
+
+// observe is the deps tap. It runs on the emitting goroutine.
+func (g *sessionHold) observe(ev event) {
+	g.mu.Lock()
+	if g.want == "" || ev.kind != g.want || (g.id != "" && ev.id != g.id) {
+		g.mu.Unlock()
+		return
+	}
+	g.want = ""
+	g.got = ev
+	hit, rel := g.hit, g.rel
+	g.mu.Unlock()
+	close(hit)
+	<-rel
+}
+
 // blockingOpen makes the task-start manual reads of path wait for
 // release (the probe and validation checks are unaffected).
 type blockingOpen struct {
@@ -413,9 +494,13 @@ func TestTaskStream(t *testing.T) {
 			// Two collectors overlap: the worker's own completion collector
 			// is paused right after its snapshot (it still holds the
 			// worker) while the session applies the acknowledgement and
-			// its collector deletes the worker. Collection is reported only
-			// once no snapshot that could hold the worker is outstanding,
-			// so acknowledgement plus collection always means unreachable.
+			// its collector deletes the worker. Collection means no
+			// collector snapshot remains. The weak-pointer check runs
+			// only after a later plane request's reply, which this session
+			// writes once onOutputAck has returned. An already-armed
+			// periodic timer is not that signal: an acknowledgement taken
+			// before the loop parks leaves the timer in place and emits
+			// nothing.
 			fp := startFakePlane(t)
 			var armed atomic.Bool
 			paused, release := make(chan struct{}), make(chan struct{})
@@ -477,6 +562,105 @@ func TestTaskStream(t *testing.T) {
 					t.Fatalf("acknowledged %v, collected %v", acked, collected)
 				}
 			}
+			s.syncAckHandled(t, st)
+			runtime.GC()
+			if wp.Value() != nil {
+				t.Fatal("the acknowledged, collected worker is still retained")
+			}
+		})
+		t.Run("live-ack-reference", func(t *testing.T) {
+			t.Parallel()
+			// The freed slot's heartbeat can be acknowledged and its
+			// periodic timer armed before the result exists. The result's
+			// acknowledgement can then be queued before writeOutput
+			// returns, so the loop takes it at the top and never clears
+			// that timer: set of the same instant emits no
+			// evHeartbeatArmed. onOutputAck's worker local is still live at
+			// the evResultAcked emit; GC after collection sees the worker
+			// until a later request's reply shows that emit has returned.
+			fp := startFakePlane(t)
+			g := newSessionHold()
+			tr := startTaskRun(t, fp, taskOpts{adjust: func(d *deps) { d.observe = g.observe }})
+			ins, run := manuals(t, tr.dir, "a", "i")
+			s := tr.connect(t, 1, 1, roleConfig("a", ins, run))
+			t.Cleanup(g.release)
+			st, ch := s.run(t, 1, 0, "live")
+			w := tr.super(t).find(st.TaskID)
+			if w == nil {
+				t.Fatal("the running worker is missing")
+			}
+			wp := weak.Make(w)
+			w = nil
+			// The slot report is acknowledged and the periodic timer armed
+			// while the child is still running, so the result is not
+			// available yet. prompted stays set, so the result — once it
+			// exists — is written before any further report can clear the
+			// timer.
+			s.report(t, 1, func(r contract.RoleStatus) bool { return r.Inflight == 1 })
+			at := tr.clk.Now().Add(heartbeatInterval)
+			tr.ev.awaitHeartbeatArmed(t, s.c.minSession, s.b-1, at)
+			tr.ev.armMu.Lock()
+			var armEv event
+			for _, ev := range tr.ev.armed {
+				if ev.session >= s.c.minSession && ev.acks == s.b-1 && ev.at.Equal(at) {
+					armEv = ev
+				}
+			}
+			tr.ev.armMu.Unlock()
+			if armEv.at.IsZero() {
+				t.Fatal("the armed heartbeat was not recorded")
+			}
+			// A duplicate of the answered start is handled without clearing
+			// the armed timer. Holding its reply keeps the session there
+			// while the child exits, so the result is written with that
+			// timer still armed.
+			dup := s.nextP()
+			g.arm(evStartReplied, st.TaskID)
+			s.c.sendStart(dup, st)
+			g.wait(t)
+			if r := s.c.startResult(dup); r.Err != nil || r.TaskID != st.TaskID {
+				t.Fatalf("duplicate before the result = %+v", r)
+			}
+			ch.exitCode(0)
+			tr.ev.awaitMatch(t, evTaskExited, func(ev event) bool { return ev.id == st.TaskID })
+			g.arm(evOutputWritten, "")
+			g.wait(t)
+			rid, res := s.nextResult(t)
+			if res.TaskID != st.TaskID {
+				t.Fatalf("result %s for %s", rid, res.TaskID)
+			}
+			s.c.ackResult(rid, st.TaskID, res.Digest, true)
+			// Hold inside the evResultAcked emit, where onOutputAck's
+			// worker local is still live and markCommitted has not run.
+			g.arm(evResultAcked, st.TaskID)
+			g.wait(t)
+			k, err := strconv.Atoi(strings.TrimPrefix(rid, "b"))
+			if err != nil || !strings.HasPrefix(rid, "b") || k <= armEv.acks {
+				t.Fatalf("result %s does not follow the armed heartbeat b%d", rid, armEv.acks)
+			}
+			tr.ev.armMu.Lock()
+			latest := tr.ev.armed[armEv.session]
+			tr.ev.armMu.Unlock()
+			if latest.acks != armEv.acks || !latest.at.Equal(armEv.at) {
+				t.Fatalf("the fast result acknowledgement armed a new heartbeat %+v; the timer was already armed for %v after b%d", latest, armEv.at, armEv.acks)
+			}
+			// Commit and collect from this goroutine. onOutputAck has not
+			// reached markCommitted; its local is the remaining reference
+			// once the supervisor drops the worker. The closure returns
+			// before GC so this stack does not keep that pointer.
+			func() {
+				held := tr.super(t).find(st.TaskID)
+				if held == nil {
+					t.Fatal("the worker was collected before the acknowledgement returned")
+				}
+				held.markCommitted()
+				tr.super(t).kickJanitor()
+			}()
+			tr.ev.awaitCollected(t, st.TaskID)
+			// The hold is still inside onOutputAck. Releasing it and reading
+			// the probe reply is what moves GC past that live local.
+			g.release()
+			s.syncAckHandled(t, st)
 			runtime.GC()
 			if wp.Value() != nil {
 				t.Fatal("the acknowledged, collected worker is still retained")
@@ -499,10 +683,12 @@ func TestTaskStream(t *testing.T) {
 		rid, r1 := s.nextResult(t)
 		s.c.ackResult(rid, st1.TaskID, r1.Digest, true)
 		// The acknowledgement and the worker's own completion are
-		// independent: GC is forced only after both the session applied
-		// the ack and the supervisor collected the finished worker.
+		// independent: GC is forced only after the supervisor collected
+		// the finished worker and a later request's reply has shown that
+		// onOutputAck returned.
 		tr.ev.awaitAll(t, func(ev event) bool { return ev.kind == evResultAcked && ev.id == st1.TaskID },
 			func(ev event) bool { return ev.kind == evTaskCollected && ev.id == st1.TaskID })
+		s.syncAckHandled(t, st1)
 		runtime.GC()
 		if wp.Value() != nil || rp.Value() != nil {
 			t.Fatal("the acknowledged worker (or its output ring) is still retained")
@@ -516,8 +702,9 @@ func TestTaskStream(t *testing.T) {
 		if sup.find(st1.TaskID) != nil || sup.find(st2.TaskID) == nil {
 			t.Fatal("the acknowledged result was retained, or the running task dropped")
 		}
-		s.c.sendStart(s.nextP(), st1)
-		if r := s.c.startResult("p4"); r.Err != nil {
+		dup := s.nextP()
+		s.c.sendStart(dup, st1)
+		if r := s.c.startResult(dup); r.Err != nil {
 			t.Fatalf("duplicate after receipt = %+v", r)
 		}
 		tr.noChild(t)
