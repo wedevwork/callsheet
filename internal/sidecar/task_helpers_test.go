@@ -1103,6 +1103,23 @@ func (s *taskSession) result(t *testing.T, st contract.TaskStartBody) contract.T
 	return s.resultAck(t, st, true)
 }
 
+// syncAckHandled waits until this session has finished the result
+// acknowledgement it is in (or has already finished). It sends a duplicate
+// of st — an already-answered start — and reads the reply. One goroutine
+// handles the inbox, so that reply is written only after onOutputAck has
+// returned. A new periodic-timer arming is not that proof: an
+// acknowledgement taken at the top of the loop leaves an already-armed
+// timer in place and emits no evHeartbeatArmed.
+func (s *taskSession) syncAckHandled(t *testing.T, st contract.TaskStartBody) {
+	t.Helper()
+	rid := s.nextP()
+	s.c.sendStart(rid, st)
+	r := s.c.startResult(rid)
+	if r.Err != nil || r.TaskID != st.TaskID {
+		t.Fatalf("acknowledgement probe %s = %+v", rid, r)
+	}
+}
+
 // resultAck reads st's task_result and acknowledges it (committed or
 // received only).
 func (s *taskSession) resultAck(t *testing.T, st contract.TaskStartBody, committed bool) contract.TaskResultBody {
