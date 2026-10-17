@@ -12,7 +12,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// validYAML satisfies the twenty-job contract (iteration 02c, plane
+// validYAML satisfies the twenty-two-job contract (iteration 02c, plane
 // workers since 05b, sidecar workers since its sidecar follow-up, the plane
 // and sidecar CPU1 workers since design 06a-perf, the packages-cpu workers
 // since the stress worker rebalance) with job order, formatting, key order,
@@ -98,6 +98,7 @@ jobs:
       - macos-stress-plane
       - macos-stress-sidecar-cpu1
       - macos-stress-sidecar
+      - macos-stress-sidecar-cpu4
       - macos-stress-processgroup
       - macos-stress-functions
     if: ${{ always() }}
@@ -106,6 +107,7 @@ jobs:
       - env:
           FUNCTIONS_RESULT: ${{ needs['macos-stress-functions'].result }}
           SIDECAR_RESULT: ${{ needs['macos-stress-sidecar'].result }}
+          SIDECAR_CPU4_RESULT: ${{ needs['macos-stress-sidecar-cpu4'].result }}
           PLANE_CPU1_RESULT: ${{ needs['macos-stress-plane-cpu1'].result }}
           PACKAGES_CPU_RESULT: ${{ needs['macos-stress-packages-cpu'].result }}
           PLANE_RESULT: ${{ needs['macos-stress-plane'].result }}
@@ -113,7 +115,7 @@ jobs:
           SIDECAR_CPU1_RESULT: ${{ needs['macos-stress-sidecar-cpu1'].result }}
           PROCESSGROUP_RESULT: ${{ needs['macos-stress-processgroup'].result }}
         run: |
-          test "$PACKAGES_RESULT" = success && test "$PACKAGES_CPU_RESULT" = success && test "$PLANE_CPU1_RESULT" = success && test "$PLANE_RESULT" = success && test "$SIDECAR_CPU1_RESULT" = success && test "$SIDECAR_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success
+          test "$PACKAGES_RESULT" = success && test "$PACKAGES_CPU_RESULT" = success && test "$PLANE_CPU1_RESULT" = success && test "$PLANE_RESULT" = success && test "$SIDECAR_CPU1_RESULT" = success && test "$SIDECAR_RESULT" = success && test "$SIDECAR_CPU4_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success
   macos-stress-functions:
     name: ci-macos-stress-functions
     runs-on: macos-15
@@ -161,6 +163,22 @@ jobs:
         run: go mod download
       - name: devcheck stress-sidecar (macos)
         run: go run ./cmd/devcheck stress-sidecar
+        env: {GOSUMDB: "off", GOPROXY: "off"}
+  macos-stress-sidecar-cpu4:
+    name: ci-macos-stress-sidecar-cpu4
+    runs-on: macos-15
+    timeout-minutes: 20
+    defaults: {run: {shell: bash}}
+    env: {GOTOOLCHAIN: local, GOFLAGS: -mod=readonly}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with: {persist-credentials: false}
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417
+        with: {cache-dependency-path: go.sum, go-version-file: go.mod, check-latest: false, cache: true}
+      - name: Download (macos-stress-sidecar-cpu4)
+        run: go mod download
+      - name: devcheck stress-sidecar-cpu4 (macos)
+        run: go run ./cmd/devcheck stress-sidecar-cpu4
         env: {GOSUMDB: "off", GOPROXY: "off"}
   macos-stress-sidecar-cpu1:
     timeout-minutes: 20
@@ -391,6 +409,35 @@ jobs:
           GOPROXY: "off"
           GOSUMDB: "off"
         run: go run ./cmd/devcheck stress-sidecar
+  linux-stress-sidecar-cpu4:
+    name: ci-linux-stress-sidecar-cpu4
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GOFLAGS: -mod=readonly
+      GOTOOLCHAIN: local
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Setup
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+          check-latest: false
+      - name: Download (linux-stress-sidecar-cpu4)
+        run: go mod download
+      - name: devcheck stress-sidecar-cpu4 (linux)
+        env:
+          GOPROXY: "off"
+          GOSUMDB: "off"
+        run: go run ./cmd/devcheck stress-sidecar-cpu4
   linux-stress-processgroup:
     name: ci-linux-stress-processgroup
     runs-on: ubuntu-24.04
@@ -481,7 +528,7 @@ jobs:
   linux-stress:
     steps:
       - name: All linux shards succeeded
-        run: test "$PACKAGES_RESULT" = success && test "$PACKAGES_CPU_RESULT" = success && test "$PLANE_CPU1_RESULT" = success && test "$PLANE_RESULT" = success && test "$SIDECAR_CPU1_RESULT" = success && test "$SIDECAR_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success
+        run: test "$PACKAGES_RESULT" = success && test "$PACKAGES_CPU_RESULT" = success && test "$PLANE_CPU1_RESULT" = success && test "$PLANE_RESULT" = success && test "$SIDECAR_CPU1_RESULT" = success && test "$SIDECAR_RESULT" = success && test "$SIDECAR_CPU4_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success
         env:
           PACKAGES_RESULT: ${{ needs['linux-stress-packages'].result }}
           PACKAGES_CPU_RESULT: ${{ needs['linux-stress-packages-cpu'].result }}
@@ -489,13 +536,14 @@ jobs:
           PLANE_RESULT: ${{ needs['linux-stress-plane'].result }}
           SIDECAR_CPU1_RESULT: ${{ needs['linux-stress-sidecar-cpu1'].result }}
           SIDECAR_RESULT: ${{ needs['linux-stress-sidecar'].result }}
+          SIDECAR_CPU4_RESULT: ${{ needs['linux-stress-sidecar-cpu4'].result }}
           PROCESSGROUP_RESULT: ${{ needs['linux-stress-processgroup'].result }}
           FUNCTIONS_RESULT: ${{ needs['linux-stress-functions'].result }}
     defaults:
       run:
         shell: bash
     if: ${{ always() }}
-    needs: [linux-stress-packages, linux-stress-packages-cpu, linux-stress-plane-cpu1, linux-stress-plane, linux-stress-sidecar-cpu1, linux-stress-sidecar, linux-stress-processgroup, linux-stress-functions]
+    needs: [linux-stress-packages, linux-stress-packages-cpu, linux-stress-plane-cpu1, linux-stress-plane, linux-stress-sidecar-cpu1, linux-stress-sidecar, linux-stress-sidecar-cpu4, linux-stress-processgroup, linux-stress-functions]
     timeout-minutes: 5
     runs-on: ubuntu-24.04
     name: ci-linux-stress
@@ -604,6 +652,22 @@ const (
           GOPROXY: "off"
           GOSUMDB: "off"
         run: go run ./cmd/devcheck stress-sidecar
+`
+	linuxSidecar4Download = `      - name: Download (linux-stress-sidecar-cpu4)
+        run: go mod download
+`
+	linuxSidecar4Step = `      - name: devcheck stress-sidecar-cpu4 (linux)
+        env:
+          GOPROXY: "off"
+          GOSUMDB: "off"
+        run: go run ./cmd/devcheck stress-sidecar-cpu4
+`
+	macosSidecar4Download = `      - name: Download (macos-stress-sidecar-cpu4)
+        run: go mod download
+`
+	macosSidecar4Step = `      - name: devcheck stress-sidecar-cpu4 (macos)
+        run: go run ./cmd/devcheck stress-sidecar-cpu4
+        env: {GOSUMDB: "off", GOPROXY: "off"}
 `
 	macosSidecarDownload = `      - name: Download (macos-stress-sidecar)
         run: go mod download
@@ -862,7 +926,7 @@ func TestDocumentLevelRejections(t *testing.T) {
 	}
 }
 
-// contractTable is the independent literal twenty-job table (design 02c,
+// contractTable is the independent literal twenty-two-job table (design 02c,
 // Workflow topology, with design 05b's plane workers, its sidecar
 // follow-up's sidecar workers, design 06a-perf's plane and sidecar CPU1
 // workers and the stress worker rebalance's packages-cpu workers in CI-plan
@@ -876,6 +940,7 @@ var contractTable = []string{
 	"linux-stress-plane|ci-linux-stress-plane|ubuntu-24.04|20|stress-plane||false",
 	"linux-stress-sidecar-cpu1|ci-linux-stress-sidecar-cpu1|ubuntu-24.04|20|stress-sidecar-cpu1||false",
 	"linux-stress-sidecar|ci-linux-stress-sidecar|ubuntu-24.04|20|stress-sidecar||false",
+	"linux-stress-sidecar-cpu4|ci-linux-stress-sidecar-cpu4|ubuntu-24.04|20|stress-sidecar-cpu4||false",
 	"linux-stress-processgroup|ci-linux-stress-processgroup|ubuntu-24.04|20|stress-processgroup||false",
 	"linux-stress-functions|ci-linux-stress-functions|ubuntu-24.04|20|stress-functions||false",
 	"macos-stress-packages|ci-macos-stress-packages|macos-15|20|stress-packages||false",
@@ -884,10 +949,11 @@ var contractTable = []string{
 	"macos-stress-plane|ci-macos-stress-plane|macos-15|20|stress-plane||false",
 	"macos-stress-sidecar-cpu1|ci-macos-stress-sidecar-cpu1|macos-15|20|stress-sidecar-cpu1||false",
 	"macos-stress-sidecar|ci-macos-stress-sidecar|macos-15|20|stress-sidecar||false",
+	"macos-stress-sidecar-cpu4|ci-macos-stress-sidecar-cpu4|macos-15|20|stress-sidecar-cpu4||false",
 	"macos-stress-processgroup|ci-macos-stress-processgroup|macos-15|20|stress-processgroup||false",
 	"macos-stress-functions|ci-macos-stress-functions|macos-15|20|stress-functions||false",
-	"linux-stress|ci-linux-stress|ubuntu-24.04|5||linux-stress-packages linux-stress-packages-cpu linux-stress-plane-cpu1 linux-stress-plane linux-stress-sidecar-cpu1 linux-stress-sidecar linux-stress-processgroup linux-stress-functions|true",
-	"macos-stress|ci-macos-stress|ubuntu-24.04|5||macos-stress-packages macos-stress-packages-cpu macos-stress-plane-cpu1 macos-stress-plane macos-stress-sidecar-cpu1 macos-stress-sidecar macos-stress-processgroup macos-stress-functions|true",
+	"linux-stress|ci-linux-stress|ubuntu-24.04|5||linux-stress-packages linux-stress-packages-cpu linux-stress-plane-cpu1 linux-stress-plane linux-stress-sidecar-cpu1 linux-stress-sidecar linux-stress-sidecar-cpu4 linux-stress-processgroup linux-stress-functions|true",
+	"macos-stress|ci-macos-stress|ubuntu-24.04|5||macos-stress-packages macos-stress-packages-cpu macos-stress-plane-cpu1 macos-stress-plane macos-stress-sidecar-cpu1 macos-stress-sidecar macos-stress-sidecar-cpu4 macos-stress-processgroup macos-stress-functions|true",
 }
 
 func TestContractAccessors(t *testing.T) {
@@ -905,14 +971,14 @@ func TestContractAccessors(t *testing.T) {
 	if strings.Join(got, "\n") != strings.Join(contractTable, "\n") {
 		t.Fatalf("jobs = %q", got)
 	}
-	// Twenty jobs, sixteen of them workers with one stage each, two
-	// summaries of eight needs each: jobs are not child invocations.
+	// Twenty-two jobs, eighteen of them workers with one stage each, two
+	// summaries of nine needs each: jobs are not child invocations.
 	workers, summaries := 0, 0
 	for _, j := range js {
 		switch {
 		case len(j.Needs) > 0:
 			summaries++
-			if len(j.Needs) != 8 {
+			if len(j.Needs) != 9 {
 				t.Fatalf("%s needs %d workers", j.ID, len(j.Needs))
 			}
 		case strings.Contains(j.ID, "-stress-"):
@@ -922,7 +988,7 @@ func TestContractAccessors(t *testing.T) {
 			}
 		}
 	}
-	if len(js) != 20 || workers != 16 || summaries != 2 {
+	if len(js) != 22 || workers != 18 || summaries != 2 {
 		t.Fatalf("%d jobs, %d workers, %d summaries", len(js), workers, summaries)
 	}
 	js[0].Stages[0] = "mutated"
@@ -932,24 +998,30 @@ func TestContractAccessors(t *testing.T) {
 	js[5].Stages[0] = "mutated"
 	js[6].Stages[0] = "mutated"
 	js[7].Stages[0] = "mutated"
-	js[9].Stages[0] = "mutated"
-	js[11].Stages[0] = "mutated"
-	js[14].Stages[0] = "mutated"
-	js[18].Needs[1] = "mutated"
-	js[18].Needs[2] = "mutated"
-	js[18].Needs[4] = "mutated"
-	js[19].Needs = js[19].Needs[:1]
+	js[8].Stages[0] = "mutated"
+	js[10].Stages[0] = "mutated"
+	js[12].Stages[0] = "mutated"
+	js[15].Stages[0] = "mutated"
+	js[17].Stages[0] = "mutated"
+	js[20].Needs[1] = "mutated"
+	js[20].Needs[2] = "mutated"
+	js[20].Needs[4] = "mutated"
+	js[20].Needs[6] = "mutated"
+	js[21].Needs = js[21].Needs[:1]
 	js[1].Name = "mutated"
-	js[11].Name = "mutated"
 	js[12].Name = "mutated"
-	js[18].Required = false
+	js[13].Name = "mutated"
+	js[20].Required = false
 	fresh := Jobs()
 	if fresh[0].Stages[0] != "test" || fresh[1].Stages[0] != "native" || fresh[3].Stages[0] != "stress-packages-cpu" || fresh[4].Stages[0] != "stress-plane-cpu1" ||
 		fresh[5].Stages[0] != "stress-plane" || fresh[6].Stages[0] != "stress-sidecar-cpu1" || fresh[7].Stages[0] != "stress-sidecar" ||
-		fresh[9].Stages[0] != "stress-functions" || fresh[11].Stages[0] != "stress-packages-cpu" || fresh[14].Stages[0] != "stress-sidecar-cpu1" ||
-		fresh[11].Name != "ci-macos-stress-packages-cpu" || fresh[12].Name != "ci-macos-stress-plane-cpu1" ||
-		fresh[18].Needs[1] != "linux-stress-packages-cpu" || fresh[18].Needs[2] != "linux-stress-plane-cpu1" || fresh[18].Needs[4] != "linux-stress-sidecar-cpu1" ||
-		len(fresh[19].Needs) != 8 || fresh[19].Needs[1] != "macos-stress-packages-cpu" || !fresh[18].Required ||
+		fresh[8].Stages[0] != "stress-sidecar-cpu4" || fresh[8].Name != "ci-linux-stress-sidecar-cpu4" ||
+		fresh[10].Stages[0] != "stress-functions" || fresh[12].Stages[0] != "stress-packages-cpu" || fresh[15].Stages[0] != "stress-sidecar-cpu1" ||
+		fresh[17].Stages[0] != "stress-sidecar-cpu4" || fresh[17].Name != "ci-macos-stress-sidecar-cpu4" ||
+		fresh[12].Name != "ci-macos-stress-packages-cpu" || fresh[13].Name != "ci-macos-stress-plane-cpu1" ||
+		fresh[20].Needs[1] != "linux-stress-packages-cpu" || fresh[20].Needs[2] != "linux-stress-plane-cpu1" || fresh[20].Needs[4] != "linux-stress-sidecar-cpu1" ||
+		fresh[20].Needs[6] != "linux-stress-sidecar-cpu4" ||
+		len(fresh[21].Needs) != 9 || fresh[21].Needs[1] != "macos-stress-packages-cpu" || fresh[21].Needs[6] != "macos-stress-sidecar-cpu4" || !fresh[20].Required ||
 		RequiredChecks()[1] != "ci-macos" || RequiredChecks()[2] != "ci-linux-stress" {
 		t.Fatal("Jobs exposes contract state")
 	}
@@ -966,7 +1038,7 @@ func TestExtractStages(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(got) != 20 {
+		if len(got) != 22 {
 			t.Fatalf("%s: %d jobs: %v", name, len(got), got)
 		}
 		for _, j := range Jobs() {
@@ -1068,6 +1140,10 @@ func TestStressWorkerStepMutations(t *testing.T) {
 		{"macos-stress-plane", "stress-plane", "stress-processgroup", macosPlaneStep, macosPlaneDownload},
 		{"linux-stress-sidecar", "stress-sidecar", "stress-plane", linuxSidecarStep, linuxSidecarDownload},
 		{"macos-stress-sidecar", "stress-sidecar", "stress-packages", macosSidecarStep, macosSidecarDownload},
+		{"linux-stress-sidecar-cpu4", "stress-sidecar-cpu4", "stress-sidecar", linuxSidecar4Step, linuxSidecar4Download},
+		{"macos-stress-sidecar-cpu4", "stress-sidecar-cpu4", "stress-sidecar", macosSidecar4Step, macosSidecar4Download},
+		{"linux-stress-sidecar", "stress-sidecar", "stress-sidecar-cpu4", linuxSidecarStep, linuxSidecarDownload},
+		{"macos-stress-sidecar", "stress-sidecar", "stress-sidecar-cpu4", macosSidecarStep, macosSidecarDownload},
 		// Design 06a-perf: a CPU1 worker running its pair's stage, or the
 		// pair's worker running the CPU1 stage, is rejected.
 		{"linux-stress-plane-cpu1", "stress-plane-cpu1", "stress-plane", linuxPlane1Step, linuxPlane1Download},
@@ -1346,6 +1422,7 @@ func TestOrdinaryJobContract(t *testing.T) {
 		{"linux-stress-plane", "ci-linux-stress-plane", "ubuntu-24.04", 20, 3, []string{"stress-plane"}},
 		{"linux-stress-sidecar-cpu1", "ci-linux-stress-sidecar-cpu1", "ubuntu-24.04", 20, 3, []string{"stress-sidecar-cpu1"}},
 		{"linux-stress-sidecar", "ci-linux-stress-sidecar", "ubuntu-24.04", 20, 3, []string{"stress-sidecar"}},
+		{"linux-stress-sidecar-cpu4", "ci-linux-stress-sidecar-cpu4", "ubuntu-24.04", 20, 3, []string{"stress-sidecar-cpu4"}},
 		{"linux-stress-processgroup", "ci-linux-stress-processgroup", "ubuntu-24.04", 20, 3, []string{"stress-processgroup"}},
 		{"linux-stress-functions", "ci-linux-stress-functions", "ubuntu-24.04", 20, 3, []string{"stress-functions"}},
 		{"macos-stress-packages", "ci-macos-stress-packages", "macos-15", 20, 3, []string{"stress-packages"}},
@@ -1354,6 +1431,7 @@ func TestOrdinaryJobContract(t *testing.T) {
 		{"macos-stress-plane", "ci-macos-stress-plane", "macos-15", 20, 3, []string{"stress-plane"}},
 		{"macos-stress-sidecar-cpu1", "ci-macos-stress-sidecar-cpu1", "macos-15", 20, 3, []string{"stress-sidecar-cpu1"}},
 		{"macos-stress-sidecar", "ci-macos-stress-sidecar", "macos-15", 20, 3, []string{"stress-sidecar"}},
+		{"macos-stress-sidecar-cpu4", "ci-macos-stress-sidecar-cpu4", "macos-15", 20, 3, []string{"stress-sidecar-cpu4"}},
 		{"macos-stress-processgroup", "ci-macos-stress-processgroup", "macos-15", 20, 3, []string{"stress-processgroup"}},
 		{"macos-stress-functions", "ci-macos-stress-functions", "macos-15", 20, 3, []string{"stress-functions"}},
 	} {
@@ -1440,7 +1518,7 @@ func TestOrdinaryJobContract(t *testing.T) {
 	}
 }
 
-// TestJobRemovedOrRenamed: each of the twenty jobs removed or renamed is
+// TestJobRemovedOrRenamed: each of the twenty-two jobs removed or renamed is
 // named at the jobs level.
 func TestJobRemovedOrRenamed(t *testing.T) {
 	for _, j := range Jobs() {
@@ -1479,12 +1557,12 @@ func TestSummaryContract(t *testing.T) {
 		step := p + ".steps[0]"
 		w := func(shard string) string { return s.plat + "-stress-" + shard }
 		res := func(id, field string) string { return "${{ needs['" + id + "']." + field + " }}" }
-		exact := `test "$PACKAGES_RESULT" = success && test "$PACKAGES_CPU_RESULT" = success && test "$PLANE_CPU1_RESULT" = success && test "$PLANE_RESULT" = success && test "$SIDECAR_CPU1_RESULT" = success && test "$SIDECAR_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success`
+		exact := `test "$PACKAGES_RESULT" = success && test "$PACKAGES_CPU_RESULT" = success && test "$PLANE_CPU1_RESULT" = success && test "$PLANE_RESULT" = success && test "$SIDECAR_CPU1_RESULT" = success && test "$SIDECAR_RESULT" = success && test "$SIDECAR_CPU4_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success`
 		if exact != summaryRun {
 			t.Fatalf("summaryRun = %q", summaryRun)
 		}
 		needsExactly := p + ".needs: must be exactly [" + w("packages") + ", " + w("packages-cpu") + ", " + w("plane-cpu1") + ", " + w("plane") + ", " + w("sidecar-cpu1") + ", " +
-			w("sidecar") + ", " + w("processgroup") + ", " + w("functions") + "]"
+			w("sidecar") + ", " + w("sidecar-cpu4") + ", " + w("processgroup") + ", " + w("functions") + "]"
 		// sevenResults is design 06a-perf's predicate, before the stress
 		// worker rebalance's packages-cpu result.
 		sevenResults := `test "$PACKAGES_RESULT" = success && test "$PLANE_CPU1_RESULT" = success && test "$PLANE_RESULT" = success && test "$SIDECAR_CPU1_RESULT" = success && test "$SIDECAR_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success`
@@ -1519,12 +1597,12 @@ func TestSummaryContract(t *testing.T) {
 			},
 				[]string{needsExactly}},
 			{"needs short", func(js map[string]*yaml.Node) { n := at(t, js[s.id], "needs"); n.Content = n.Content[:2] }, []string{p + ".needs: must be exactly"}},
-			{"needs duplicate", func(js map[string]*yaml.Node) { at(t, js[s.id], "needs", 7).Value = w("packages") },
-				[]string{fmt.Sprintf(`%s.needs[7]: must be %q, got %q`, p, w("functions"), w("packages"))}},
+			{"needs duplicate", func(js map[string]*yaml.Node) { at(t, js[s.id], "needs", 8).Value = w("packages") },
+				[]string{fmt.Sprintf(`%s.needs[8]: must be %q, got %q`, p, w("functions"), w("packages"))}},
 			{"needs cross-platform", func(js map[string]*yaml.Node) { at(t, js[s.id], "needs", 0).Value = s.other + "-stress-packages" },
 				[]string{fmt.Sprintf(`%s.needs[0]: must be %q, got %q`, p, w("packages"), s.other+"-stress-packages")}},
-			{"needs main job", func(js map[string]*yaml.Node) { at(t, js[s.id], "needs", 6).Value = s.plat },
-				[]string{fmt.Sprintf(`%s.needs[6]: must be %q, got %q`, p, w("processgroup"), s.plat)}},
+			{"needs main job", func(js map[string]*yaml.Node) { at(t, js[s.id], "needs", 7).Value = s.plat },
+				[]string{fmt.Sprintf(`%s.needs[7]: must be %q, got %q`, p, w("processgroup"), s.plat)}},
 			// The stress worker rebalance: the packages-cpu worker is
 			// required in its own position, index 1, right after packages.
 			{"packages-cpu worker dropped", func(js map[string]*yaml.Node) {
@@ -1547,7 +1625,7 @@ func TestSummaryContract(t *testing.T) {
 				n := at(t, js[s.id], "needs")
 				n.Content = append(append(n.Content[:1:1], n.Content[2:]...), n.Content[1])
 			}, []string{fmt.Sprintf(`%s.needs[1]: must be %q, got %q`, p, w("packages-cpu"), w("plane-cpu1")),
-				fmt.Sprintf(`%s.needs[7]: must be %q, got %q`, p, w("functions"), w("packages-cpu"))}},
+				fmt.Sprintf(`%s.needs[8]: must be %q, got %q`, p, w("functions"), w("packages-cpu"))}},
 			// Design 05b: the plane worker is required in its own position
 			// (index 3 since the stress worker rebalance).
 			{"plane worker dropped", func(js map[string]*yaml.Node) {
@@ -1583,6 +1661,22 @@ func TestSummaryContract(t *testing.T) {
 				n := at(t, js[s.id], "needs")
 				n.Content = append(n.Content, str(w("sidecar")))
 			}, []string{p + ".needs: must be exactly"}},
+			{"sidecar CPU4 worker dropped", func(js map[string]*yaml.Node) {
+				n := at(t, js[s.id], "needs")
+				n.Content = append(n.Content[:6:6], n.Content[7:]...)
+			}, []string{needsExactly}},
+			{"sidecar CPU4 worker before sidecar", func(js map[string]*yaml.Node) {
+				n := at(t, js[s.id], "needs")
+				n.Content[5], n.Content[6] = n.Content[6], n.Content[5]
+			}, []string{fmt.Sprintf(`%s.needs[5]: must be %q, got %q`, p, w("sidecar"), w("sidecar-cpu4")), fmt.Sprintf(`%s.needs[6]: must be %q, got %q`, p, w("sidecar-cpu4"), w("sidecar"))}},
+			{"sidecar CPU4 worker cross-platform", func(js map[string]*yaml.Node) { at(t, js[s.id], "needs", 6).Value = s.other + "-stress-sidecar-cpu4" },
+				[]string{fmt.Sprintf(`%s.needs[6]: must be %q, got %q`, p, w("sidecar-cpu4"), s.other+"-stress-sidecar-cpu4")}},
+			{"sidecar CPU4 result from sidecar", func(js map[string]*yaml.Node) {
+				at(t, js[s.id], "steps", 0, "env", "SIDECAR_CPU4_RESULT").Value = res(w("sidecar"), "result")
+			}, []string{step + ".env.SIDECAR_CPU4_RESULT: expressions are not allowed", step + `.env.SIDECAR_CPU4_RESULT: must be "` + res(w("sidecar-cpu4"), "result") + `"`}},
+			{"sidecar CPU4 result env missing", func(js map[string]*yaml.Node) {
+				removeKey(t, at(t, js[s.id], "steps", 0, "env"), "SIDECAR_CPU4_RESULT")
+			}, []string{step + ".env.SIDECAR_CPU4_RESULT: missing required field"}},
 			// Design 06a-perf: the plane CPU1 worker at index 2 and the
 			// sidecar CPU1 worker at index 4 (since the stress worker
 			// rebalance), each in its own position.
@@ -1783,7 +1877,7 @@ func TestSummaryContract(t *testing.T) {
 			{"sidecar comparison bypassed", setRun(withTerm("SIDECAR_RESULT", `{ test "$SIDECAR_RESULT" = success || true; }`)), []string{runErr}},
 			{"sidecar compared twice for plane", setRun(withTerm("PLANE_RESULT", `test "$SIDECAR_RESULT" = success`)), []string{runErr}},
 			{"reordered comparisons", setRun(strings.Replace(withTerm("PACKAGES_RESULT", `test "$PLANE_RESULT" = success`), `&& test "$PLANE_RESULT" = success && test "$SIDECAR_CPU1`, `&& test "$PACKAGES_RESULT" = success && test "$SIDECAR_CPU1`, 1)), []string{runErr}},
-			{"sidecar comparison reordered", setRun(strings.Replace(withTerm("PLANE_RESULT", `test "$SIDECAR_RESULT" = success`), `&& test "$SIDECAR_RESULT" = success && test "$PROCESSGROUP`, `&& test "$PLANE_RESULT" = success && test "$PROCESSGROUP`, 1)), []string{runErr}},
+			{"sidecar comparison reordered", setRun(strings.Replace(withTerm("PLANE_RESULT", `test "$SIDECAR_RESULT" = success`), `&& test "$SIDECAR_RESULT" = success && test "$SIDECAR_CPU4`, `&& test "$PLANE_RESULT" = success && test "$SIDECAR_CPU4`, 1)), []string{runErr}},
 			{"altered operator", setRun(strings.ReplaceAll(exact, " && ", " || ")), []string{runErr}},
 			// Design 06a-perf: each CPU1 comparison in its own position.
 			{"omitted plane CPU1 comparison", setRun(withTerm("PLANE_CPU1_RESULT", "")), []string{runErr}},
@@ -1807,6 +1901,11 @@ func TestSummaryContract(t *testing.T) {
 			{"packages-cpu compared as packages", setRun(withTerm("PACKAGES_CPU_RESULT", `test "$PACKAGES_RESULT" = success`)), []string{runErr}},
 			{"packages-cpu comparison before packages", setRun(strings.Replace(exact, `test "$PACKAGES_RESULT" = success && test "$PACKAGES_CPU_RESULT" = success`, `test "$PACKAGES_CPU_RESULT" = success && test "$PACKAGES_RESULT" = success`, 1)), []string{runErr}},
 			{"packages-cpu conjunction altered", setRun(strings.Replace(exact, ` && test "$PACKAGES_CPU_RESULT"`, ` || test "$PACKAGES_CPU_RESULT"`, 1)), []string{runErr}},
+			{"eight-result predicate", setRun(strings.Replace(exact, ` && test "$SIDECAR_CPU4_RESULT" = success`, "", 1)), []string{runErr}},
+			{"omitted sidecar CPU4 comparison", setRun(withTerm("SIDECAR_CPU4_RESULT", "")), []string{runErr}},
+			{"weakened sidecar CPU4 comparison", setRun(withTerm("SIDECAR_CPU4_RESULT", `test "$SIDECAR_CPU4_RESULT" != failure`)), []string{runErr}},
+			{"sidecar CPU4 compared as sidecar", setRun(withTerm("SIDECAR_CPU4_RESULT", `test "$SIDECAR_RESULT" = success`)), []string{runErr}},
+			{"sidecar CPU4 comparison before sidecar", setRun(strings.Replace(exact, `test "$SIDECAR_RESULT" = success && test "$SIDECAR_CPU4_RESULT" = success`, `test "$SIDECAR_CPU4_RESULT" = success && test "$SIDECAR_RESULT" = success`, 1)), []string{runErr}},
 			{"true", setRun("true"), []string{runErr}},
 			{"extra line", setRun(exact + "\nexit 0\n"), []string{runErr}},
 			{"two trailing newlines", setRun(exact + "\n\n"), []string{runErr}},
@@ -1902,15 +2001,18 @@ func TestPreviousTopologyRejected(t *testing.T) {
 		needs   []string
 		run     string
 	}{
-		{"eighteen-job (design 06a-perf)", 18, []string{"packages-cpu"},
+		{"twenty-job (stress worker rebalance)", 20, []string{"sidecar-cpu4"},
+			[]string{"packages", "packages-cpu", "plane-cpu1", "plane", "sidecar-cpu1", "sidecar", "processgroup", "functions"},
+			`test "$PACKAGES_RESULT" = success && test "$PACKAGES_CPU_RESULT" = success && test "$PLANE_CPU1_RESULT" = success && test "$PLANE_RESULT" = success && test "$SIDECAR_CPU1_RESULT" = success && test "$SIDECAR_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success`},
+		{"eighteen-job (design 06a-perf)", 18, []string{"packages-cpu", "sidecar-cpu4"},
 			[]string{"packages", "plane-cpu1", "plane", "sidecar-cpu1", "sidecar", "processgroup", "functions"},
 			`test "$PACKAGES_RESULT" = success && test "$PLANE_CPU1_RESULT" = success && test "$PLANE_RESULT" = success && test "$SIDECAR_CPU1_RESULT" = success && test "$SIDECAR_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success`},
-		{"fourteen-job (sidecar follow-up)", 14, []string{"packages-cpu", "plane-cpu1", "sidecar-cpu1"},
+		{"fourteen-job (sidecar follow-up)", 14, []string{"packages-cpu", "plane-cpu1", "sidecar-cpu1", "sidecar-cpu4"},
 			[]string{"packages", "plane", "sidecar", "processgroup", "functions"},
 			`test "$PACKAGES_RESULT" = success && test "$PLANE_RESULT" = success && test "$SIDECAR_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success`},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			envKey := map[string]string{"packages-cpu": "PACKAGES_CPU_RESULT", "plane-cpu1": "PLANE_CPU1_RESULT", "sidecar-cpu1": "SIDECAR_CPU1_RESULT"}
+			envKey := map[string]string{"packages-cpu": "PACKAGES_CPU_RESULT", "plane-cpu1": "PLANE_CPU1_RESULT", "sidecar-cpu1": "SIDECAR_CPU1_RESULT", "sidecar-cpu4": "SIDECAR_CPU4_RESULT"}
 			old := fixtureJobs(t, func(js map[string]*yaml.Node) {
 				for _, id := range []string{"linux-stress", "macos-stress"} {
 					plat := strings.TrimSuffix(id, "-stress")
@@ -1948,8 +2050,8 @@ func TestPreviousTopologyRejected(t *testing.T) {
 				t.Fatalf("%s workflow accepted:\n%s", c.name, data)
 			}
 			want := []string{
-				"jobs.linux-stress.needs: must be exactly [linux-stress-packages, linux-stress-packages-cpu, linux-stress-plane-cpu1, linux-stress-plane, linux-stress-sidecar-cpu1, linux-stress-sidecar, linux-stress-processgroup, linux-stress-functions]",
-				"jobs.macos-stress.needs: must be exactly [macos-stress-packages, macos-stress-packages-cpu, macos-stress-plane-cpu1, macos-stress-plane, macos-stress-sidecar-cpu1, macos-stress-sidecar, macos-stress-processgroup, macos-stress-functions]",
+				"jobs.linux-stress.needs: must be exactly [linux-stress-packages, linux-stress-packages-cpu, linux-stress-plane-cpu1, linux-stress-plane, linux-stress-sidecar-cpu1, linux-stress-sidecar, linux-stress-sidecar-cpu4, linux-stress-processgroup, linux-stress-functions]",
+				"jobs.macos-stress.needs: must be exactly [macos-stress-packages, macos-stress-packages-cpu, macos-stress-plane-cpu1, macos-stress-plane, macos-stress-sidecar-cpu1, macos-stress-sidecar, macos-stress-sidecar-cpu4, macos-stress-processgroup, macos-stress-functions]",
 				"jobs.linux-stress.steps[0].run: must be exactly", "jobs.macos-stress.steps[0].run: must be exactly",
 			}
 			for _, plat := range []string{"linux", "macos"} {

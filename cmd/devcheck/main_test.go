@@ -62,21 +62,24 @@ func TestRunWrapper(t *testing.T) {
 	// the stress worker rebalance) take no operands or flags, and --count
 	// belongs to container-e2e alone: rejected with exit 2 before any child
 	// runs, and the usage names every stage.
-	const usage = "usage: devcheck test | coverage [-o profile] | bench | cross | all | native | stress | stress-packages | stress-packages-cpu | stress-plane-cpu1 | stress-plane | stress-sidecar-cpu1 | stress-sidecar | stress-processgroup | stress-functions | container-e2e [--count=N]\n"
+	const usage = "usage: devcheck test | coverage [-o profile] | bench | cross | all | native | stress | stress-packages | stress-packages-cpu | stress-plane-cpu1 | stress-plane | stress-sidecar-cpu1 | stress-sidecar | stress-sidecar-cpu4 | stress-processgroup | stress-functions | container-e2e [--count=N]\n"
 	calls = nil
 	for _, args := range [][]string{{"stress-packages", "x"}, {"stress-packages-cpu", "x"}, {"stress-packages-cpu", "-cpu=1"}, {"stress-plane-cpu1", "-cpu=1"}, {"stress-plane-cpu1", "extra"}, {"stress-plane-cpu1", "-count=1"},
 		{"stress-plane", "-cpu=1"}, {"stress-plane", "extra"}, {"stress-sidecar-cpu1", "-cpu=2"}, {"stress-sidecar-cpu1", "extra"}, {"stress-sidecar-cpu1", "-o", "p"},
-		{"stress-sidecar", "-cpu=1"}, {"stress-sidecar", "extra"}, {"stress-processgroup", "-cpu=1"}, {"stress-functions", "-count=1"}, {"stress", "-o", "p"},
+		{"stress-sidecar", "-cpu=1"}, {"stress-sidecar", "extra"}, {"stress-sidecar-cpu4", "-cpu=2"}, {"stress-sidecar-cpu4", "-count=1"}, {"stress-sidecar-cpu4", "extra"}, {"stress-processgroup", "-cpu=1"}, {"stress-functions", "-count=1"}, {"stress", "-o", "p"},
 		{"test", "--count=1"}, {"container-e2e", "--count=21"}, {"container-e2e", "--count=x"}} {
 		errOut.Reset()
 		if code := run(args, &out, &errOut, fake, opts); code != 2 || len(calls) != 0 || errOut.String() != "devcheck: invalid arguments for "+args[0]+"\n"+usage {
 			t.Fatalf("%v = %d, %d calls, %q", args, code, len(calls), errOut.String())
 		}
 	}
-	// The new stages dispatch exactly their one CPU1 invocation.
+	// The singleton stages dispatch exactly their one invocation: plane and
+	// sidecar CPU1, and sidecar CPU2 and CPU4 (design 12a-stress-sidecar-margin).
 	for stage, want := range map[string]string{
 		"stress-plane-cpu1":   "go test -race -count=20 -cpu=1 -timeout=6m ./internal/plane",
 		"stress-sidecar-cpu1": "go test -race -count=20 -cpu=1 -timeout=6m ./internal/sidecar",
+		"stress-sidecar":      "go test -race -count=20 -cpu=2 -timeout=6m ./internal/sidecar",
+		"stress-sidecar-cpu4": "go test -race -count=20 -cpu=4 -timeout=6m ./internal/sidecar",
 	} {
 		calls = nil
 		out.Reset()

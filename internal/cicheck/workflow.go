@@ -31,24 +31,25 @@ type Job struct {
 	Required       bool     // Name is a required status check context
 }
 
-// jobs is the fixed twenty-job contract (iteration 02c, with the plane
+// jobs is the fixed twenty-two-job contract (iteration 02c, with the plane
 // workers of iteration 05b, the sidecar workers of its sidecar follow-up,
-// the plane and sidecar CPU1 workers of design 06a-perf and the
-// packages-cpu workers of the stress worker rebalance); order is the
-// documentation (CI-plan) order. The main jobs keep their verification
-// stages. Stress runs in sixteen independent worker jobs, eight shards per
-// platform at the same count: a Linux-only stress pass cannot qualify
-// Darwin. Every worker runs exactly one devcheck stage: the packages
-// combined invocation alone, its contract, mcpqual and workspace per-CPU
-// groups on a packages-cpu worker of their own, the plane and sidecar CPU1
-// invocations each alone on a worker of their own, their CPU2/CPU4 pairs
-// concurrently on the plane and sidecar workers. Each worker's 20 minutes
-// allow five minutes of setup beyond its own 15-minute stress watchdog.
-// Main and worker jobs never depend on each other: the strict field
-// grammar rejects needs, conditions, matrices and continue-on-error. Only
-// the two summaries, which keep the required stress contexts, need their
-// own platform's eight workers and pass only if all eight concluded
-// success; both evaluate on Ubuntu.
+// the plane and sidecar CPU1 workers of design 06a-perf, the packages-cpu
+// workers of the stress worker rebalance and the sidecar CPU4 workers of
+// design 12a-stress-sidecar-margin); order is the documentation (CI-plan)
+// order. The main jobs keep their verification stages. Stress runs in
+// eighteen independent worker jobs, nine shards per platform at the same
+// count: a Linux-only stress pass cannot qualify Darwin. Every worker runs
+// exactly one devcheck stage: the packages combined invocation alone, its
+// contract, mcpqual and workspace per-CPU groups on a packages-cpu worker
+// of their own, the plane and sidecar CPU1 invocations each alone on a
+// worker of their own, the plane CPU2/CPU4 pair concurrently on the plane
+// worker, and sidecar CPU2 and CPU4 each alone on their own workers. Each
+// worker's 20 minutes allow five minutes of setup beyond its own
+// 15-minute stress watchdog. Main and worker jobs never depend on each
+// other: the strict field grammar rejects needs, conditions, matrices and
+// continue-on-error. Only the two summaries, which keep the required
+// stress contexts, need their own platform's nine workers and pass only
+// if all nine concluded success; both evaluate on Ubuntu.
 var jobs = []Job{
 	{ID: "linux", Name: "ci-linux", RunsOn: "ubuntu-24.04", TimeoutMinutes: 45, Stages: []string{"test", "coverage", "bench", "cross"}, Required: true},
 	{ID: "macos", Name: "ci-macos", RunsOn: "macos-15", TimeoutMinutes: 30, Stages: []string{"native"}, Required: true},
@@ -58,6 +59,7 @@ var jobs = []Job{
 	{ID: "linux-stress-plane", Name: "ci-linux-stress-plane", RunsOn: "ubuntu-24.04", TimeoutMinutes: 20, Stages: []string{"stress-plane"}},
 	{ID: "linux-stress-sidecar-cpu1", Name: "ci-linux-stress-sidecar-cpu1", RunsOn: "ubuntu-24.04", TimeoutMinutes: 20, Stages: []string{"stress-sidecar-cpu1"}},
 	{ID: "linux-stress-sidecar", Name: "ci-linux-stress-sidecar", RunsOn: "ubuntu-24.04", TimeoutMinutes: 20, Stages: []string{"stress-sidecar"}},
+	{ID: "linux-stress-sidecar-cpu4", Name: "ci-linux-stress-sidecar-cpu4", RunsOn: "ubuntu-24.04", TimeoutMinutes: 20, Stages: []string{"stress-sidecar-cpu4"}},
 	{ID: "linux-stress-processgroup", Name: "ci-linux-stress-processgroup", RunsOn: "ubuntu-24.04", TimeoutMinutes: 20, Stages: []string{"stress-processgroup"}},
 	{ID: "linux-stress-functions", Name: "ci-linux-stress-functions", RunsOn: "ubuntu-24.04", TimeoutMinutes: 20, Stages: []string{"stress-functions"}},
 	{ID: "macos-stress-packages", Name: "ci-macos-stress-packages", RunsOn: "macos-15", TimeoutMinutes: 20, Stages: []string{"stress-packages"}},
@@ -66,14 +68,15 @@ var jobs = []Job{
 	{ID: "macos-stress-plane", Name: "ci-macos-stress-plane", RunsOn: "macos-15", TimeoutMinutes: 20, Stages: []string{"stress-plane"}},
 	{ID: "macos-stress-sidecar-cpu1", Name: "ci-macos-stress-sidecar-cpu1", RunsOn: "macos-15", TimeoutMinutes: 20, Stages: []string{"stress-sidecar-cpu1"}},
 	{ID: "macos-stress-sidecar", Name: "ci-macos-stress-sidecar", RunsOn: "macos-15", TimeoutMinutes: 20, Stages: []string{"stress-sidecar"}},
+	{ID: "macos-stress-sidecar-cpu4", Name: "ci-macos-stress-sidecar-cpu4", RunsOn: "macos-15", TimeoutMinutes: 20, Stages: []string{"stress-sidecar-cpu4"}},
 	{ID: "macos-stress-processgroup", Name: "ci-macos-stress-processgroup", RunsOn: "macos-15", TimeoutMinutes: 20, Stages: []string{"stress-processgroup"}},
 	{ID: "macos-stress-functions", Name: "ci-macos-stress-functions", RunsOn: "macos-15", TimeoutMinutes: 20, Stages: []string{"stress-functions"}},
 	{ID: "linux-stress", Name: "ci-linux-stress", RunsOn: "ubuntu-24.04", TimeoutMinutes: 5,
 		Needs: []string{"linux-stress-packages", "linux-stress-packages-cpu", "linux-stress-plane-cpu1", "linux-stress-plane", "linux-stress-sidecar-cpu1", "linux-stress-sidecar",
-			"linux-stress-processgroup", "linux-stress-functions"}, Required: true},
+			"linux-stress-sidecar-cpu4", "linux-stress-processgroup", "linux-stress-functions"}, Required: true},
 	{ID: "macos-stress", Name: "ci-macos-stress", RunsOn: "ubuntu-24.04", TimeoutMinutes: 5,
 		Needs: []string{"macos-stress-packages", "macos-stress-packages-cpu", "macos-stress-plane-cpu1", "macos-stress-plane", "macos-stress-sidecar-cpu1", "macos-stress-sidecar",
-			"macos-stress-processgroup", "macos-stress-functions"}, Required: true},
+			"macos-stress-sidecar-cpu4", "macos-stress-processgroup", "macos-stress-functions"}, Required: true},
 }
 
 // Jobs returns a fresh copy of the job contract, nested slices included.
@@ -100,18 +103,19 @@ func RequiredChecks() []string {
 
 // The summary job template (iteration 02c, four results since 05b, five
 // since its sidecar follow-up, seven since design 06a-perf's CPU1 workers,
-// eight since the stress worker rebalance's packages-cpu workers): the
+// eight since the stress worker rebalance's packages-cpu workers, nine
+// since design 12a-stress-sidecar-margin's sidecar CPU4 workers): the
 // exact job condition, the step environment keys and result expressions,
 // and the one command line, byte-identical on both platforms. Only these
 // expressions, at exactly these paths, pass the hygiene check.
 const (
 	summaryIf  = "${{ always() }}"
-	summaryRun = `test "$PACKAGES_RESULT" = success && test "$PACKAGES_CPU_RESULT" = success && test "$PLANE_CPU1_RESULT" = success && test "$PLANE_RESULT" = success && test "$SIDECAR_CPU1_RESULT" = success && test "$SIDECAR_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success`
+	summaryRun = `test "$PACKAGES_RESULT" = success && test "$PACKAGES_CPU_RESULT" = success && test "$PLANE_CPU1_RESULT" = success && test "$PLANE_RESULT" = success && test "$SIDECAR_CPU1_RESULT" = success && test "$SIDECAR_RESULT" = success && test "$SIDECAR_CPU4_RESULT" = success && test "$PROCESSGROUP_RESULT" = success && test "$FUNCTIONS_RESULT" = success`
 )
 
 // summaryEnvKeys are the summary step's environment keys, one per needed
 // worker, in Needs order.
-var summaryEnvKeys = []string{"PACKAGES_RESULT", "PACKAGES_CPU_RESULT", "PLANE_CPU1_RESULT", "PLANE_RESULT", "SIDECAR_CPU1_RESULT", "SIDECAR_RESULT", "PROCESSGROUP_RESULT", "FUNCTIONS_RESULT"}
+var summaryEnvKeys = []string{"PACKAGES_RESULT", "PACKAGES_CPU_RESULT", "PLANE_CPU1_RESULT", "PLANE_RESULT", "SIDECAR_CPU1_RESULT", "SIDECAR_RESULT", "SIDECAR_CPU4_RESULT", "PROCESSGROUP_RESULT", "FUNCTIONS_RESULT"}
 
 // summaryEnv returns the exact step environment of summary j.
 func summaryEnv(j Job) map[string]string {
@@ -452,9 +456,9 @@ func (v *validator) job(n *yaml.Node, path string, j Job) {
 }
 
 // summary checks a summary job against the exact template: its identity
-// and budget, needs exactly its own platform's eight workers in order, the
+// and budget, needs exactly its own platform's nine workers in order, the
 // unconditional always() condition, the bash default and one step running
-// the literal all-success command with the eight exact result expressions.
+// the literal all-success command with the nine exact result expressions.
 // Its command is compared literally, never parsed as shell.
 func (v *validator) summary(n *yaml.Node, path string, j Job) {
 	f := v.fields(n, path, []string{"name", "runs-on", "timeout-minutes", "needs", "if", "defaults", "steps"}, nil)

@@ -227,20 +227,21 @@ func TestTaskPolicy(t *testing.T) {
 		// guards. The task children of TestTaskExecutionContract/process
 		// stay in the sidecar package, hence since the follow-up in the
 		// sidecar shards (single-CPU invocations: CPU1 alone in sidecar-cpu1
-		// since design 06a-perf, CPU2 and CPU4 concurrent in sidecar; the
-		// same 60 repetitions), and none remain in the packages shard.
+		// since design 06a-perf, CPU2 alone in sidecar and CPU4 alone in
+		// sidecar-cpu4 since design 12a-stress-sidecar-margin; the same 60
+		// repetitions), and none remain in the packages shard.
 		for _, goos := range []string{"linux", "darwin"} {
 			shards, err := StressShards(goos)
-			if err != nil || len(shards) != 8 || strings.Join(shards[0].Steps[0].Argv, " ") != wantRoleStressPackages ||
+			if err != nil || len(shards) != 9 || strings.Join(shards[0].Steps[0].Argv, " ") != wantRoleStressPackages ||
 				strings.Contains(strings.Join(shards[0].Steps[0].Argv, " "), "./internal/sidecar") || shards[0].CPUGroups != nil || shards[1].Name != "packages-cpu" ||
 				strings.Join(argvOf(slices.Concat(shards[1].CPUGroups...)), "|") != strings.Join(slices.Concat(groupContract, groupMcpqual, groupWorkspace), "|") ||
 				joinedArgv(shards, 2, 3) != wantStressPlane1+"|"+wantStressPlane2+"|"+wantStressPlane4 ||
 				joinedArgv(shards, 2) != wantStressPlane1 || joinedArgv(shards, 3) != wantStressPlane2+"|"+wantStressPlane4 ||
-				shards[4].Name != "sidecar-cpu1" || shards[5].Name != "sidecar" ||
-				joinedArgv(shards, 4, 5) != wantStressSidecar1+"|"+wantStressSidecar2+"|"+wantStressSidecar4 ||
-				joinedArgv(shards, 4) != wantStressSidecar1 || joinedArgv(shards, 5) != wantStressSidecar2+"|"+wantStressSidecar4 ||
-				joinedArgv(shards, 6) != wantStressPG1+"|"+wantStressPG2+"|"+wantStressPG4 ||
-				joinedArgv(shards, 7) != wantStressFunction+"|"+wantStressPlaneFunction+"|"+wantNodeStressFunction {
+				shards[4].Name != "sidecar-cpu1" || shards[5].Name != "sidecar" || shards[6].Name != "sidecar-cpu4" ||
+				joinedArgv(shards, 4, 5, 6) != wantStressSidecar1+"|"+wantStressSidecar2+"|"+wantStressSidecar4 ||
+				joinedArgv(shards, 4) != wantStressSidecar1 || joinedArgv(shards, 5) != wantStressSidecar2 || joinedArgv(shards, 6) != wantStressSidecar4 ||
+				joinedArgv(shards, 7) != wantStressPG1+"|"+wantStressPG2+"|"+wantStressPG4 ||
+				joinedArgv(shards, 8) != wantStressFunction+"|"+wantStressPlaneFunction+"|"+wantNodeStressFunction {
 				t.Fatalf("%s stress plan changed: %+v %v", goos, shards, err)
 			}
 		}
