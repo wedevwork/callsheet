@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -49,6 +50,13 @@ type autoClock struct {
 	// held, when set, supplies the timer for a duration it accepts (ok):
 	// the test fires it explicitly and the time does not move.
 	held func(d time.Duration) (<-chan time.Time, func() bool, bool)
+	// gate, when set, holds every timer of duration gateFor: it fires
+	// without advancing the time, and only once gate or closing is closed
+	// (an in-flight exchange answered, or the supervisor is closing). A
+	// loop selecting on its own events then waits for them instead of
+	// spinning through timers that fire at once.
+	gate, closing <-chan struct{}
+	gateFor       time.Duration
 }
 
 // holdNext makes the next timer fire without advancing the time.
@@ -56,6 +64,48 @@ func (c *autoClock) holdNext() {
 	c.mu.Lock()
 	c.skip = 1
 	c.mu.Unlock()
+}
+
+// holdUntil gates every timer of duration d until done or closing is
+// closed; release ends the gate.
+func (c *autoClock) holdUntil(d time.Duration, done, closing <-chan struct{}) {
+	c.mu.Lock()
+	c.gate, c.closing, c.gateFor = done, closing, d
+	c.mu.Unlock()
+}
+
+// release ends a holdUntil gate.
+func (c *autoClock) release() {
+	c.mu.Lock()
+	c.gate, c.closing, c.gateFor = nil, nil, 0
+	c.mu.Unlock()
+}
+
+// gated is a timer that fires at the time it fires, unmoved, once done or
+// closing is closed; its stop reports whether it stopped it first.
+func (c *autoClock) gated(done, closing <-chan struct{}) (<-chan time.Time, func() bool) {
+	ch := make(chan time.Time, 1)
+	stopped := make(chan struct{})
+	// state: 0 pending, 1 fired, 2 stopped; the first transition wins.
+	var state atomic.Int32
+	go func() {
+		select {
+		case <-done:
+		case <-closing:
+		case <-stopped:
+			return
+		}
+		if state.CompareAndSwap(0, 1) {
+			ch <- c.Now()
+		}
+	}()
+	return ch, func() bool {
+		if !state.CompareAndSwap(0, 2) {
+			return false
+		}
+		close(stopped)
+		return true
+	}
 }
 
 func newAutoClock() *autoClock {
@@ -74,6 +124,17 @@ func (c *autoClock) NewTimer(d time.Duration) (<-chan time.Time, func() bool) {
 		if ch, stop, ok := c.held(d); ok {
 			c.mu.Unlock()
 			return ch, stop
+		}
+	}
+	if c.gate != nil && d == c.gateFor {
+		select {
+		case <-c.closing:
+			// The supervisor is closing: its cleanup timers run unheld.
+			c.gate, c.closing, c.gateFor = nil, nil, 0
+		default:
+			done, closing := c.gate, c.closing
+			c.mu.Unlock()
+			return c.gated(done, closing)
 		}
 	}
 	switch {
@@ -293,10 +354,15 @@ type fakePlane struct {
 	logs    map[string][]byte
 	cancels []string
 	// Fault and behavior injection.
-	addRoleErrs   []error
-	notReadyCalls int
-	dispatchErr   func(req contract.DispatchRequest) error
-	dispatchLost  bool
+	addRoleErrs    []error
+	notReadyCalls  int
+	dispatchErr    func(req contract.DispatchRequest) error
+	dispatchLost   bool
+	effectiveModel string
+	// wsRefs are the workspace's branch refs (a seed push sets main);
+	// statusErr fails workspace status reads.
+	wsRefs        map[string]string
+	statusErr     error
 	listErr       error
 	showErr       func(id string) error
 	createWSErr   error
@@ -414,6 +480,9 @@ func (p *fakePlane) Dispatch(_ context.Context, req contract.DispatchRequest) (c
 	p.order = append(p.order, id)
 	lost := p.dispatchLost
 	p.dispatchLost = false
+	if p.effectiveModel != "" {
+		v.Effective.Model = p.effectiveModel
+	}
 	preflight := p.preflight
 	p.mu.Unlock()
 	if len(req.Payload) > 0 && strings.Contains(req.Payload[0], " hop=preflight-") {
@@ -556,6 +625,12 @@ func (p *fakePlane) CreateWorkspace(_ context.Context, name string) (contract.Wo
 }
 
 // showCount is the number of task fetches so far.
+func (p *fakePlane) ids() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string{}, p.order...)
+}
+
 func (p *fakePlane) showCount() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()

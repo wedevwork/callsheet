@@ -19,6 +19,7 @@ import (
 	git "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 
+	"github.com/wedevwork/callsheet/internal/client"
 	"github.com/wedevwork/callsheet/internal/contract"
 )
 
@@ -41,6 +42,9 @@ type Plane interface {
 	CancelTask(ctx context.Context, id string) (contract.CancelResponse, error)
 	TaskLogs(ctx context.Context, id string) (contract.TaskLogsResponse, error)
 	CreateWorkspace(ctx context.Context, name string) (contract.WorkspaceView, error)
+	// WorkspaceStatus reads a workspace's refs (the development path
+	// verifies the coordinator's seed push with it).
+	WorkspaceStatus(ctx context.Context, name string, p client.StatusPage) (contract.WorkspaceStatusResponse, error)
 }
 
 // Puller installs a task's published result commit, with its ancestry,
@@ -77,11 +81,17 @@ type Terminal interface {
 	Activate() <-chan string
 }
 
-// readerTerminal is a Terminal over a reader (the live stdin).
+// readerTerminal is a Terminal over a reader (the live stdin). The
+// development path activates it windowed instead (devfull_owner.go): a
+// terminal is activated one way, never both.
 type readerTerminal struct {
 	r    io.Reader
 	once sync.Once
 	ch   chan string
+	// epoch, wonce and wch are the windowed activation's.
+	epoch atomic.Uint64
+	wonce sync.Once
+	wch   chan ownerInput
 }
 
 func (t *readerTerminal) Activate() <-chan string {

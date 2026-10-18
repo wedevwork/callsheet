@@ -772,10 +772,11 @@ func TestStressStageDispatch(t *testing.T) {
 	// all stays test, coverage, bench, cross: stress is explicit.
 	f := &fakeRunner{coverTotal: "81%", cmdList: cmdList, profile: goodProfile}
 	cr := newContainerRunnerFixture(t, f).(*containerRunner)
-	// Ordinary calls: test(4, iteration 08) + coverage(3) + bench(13,
-	// non-blocking coordinator waits) + cross(12); the container
-	// operation's calls (one iteration) run between test and coverage.
-	if code, _, errOut := runDriver(t, "linux", cr, "all"); code != 0 || len(f.calls) != 32 {
+	// Ordinary calls: test(4, iteration 08) + coverage(3) + bench(14,
+	// the dev-full step after the client wait step) + cross(12); the
+	// container operation's calls (one iteration) run between test and
+	// coverage.
+	if code, _, errOut := runDriver(t, "linux", cr, "all"); code != 0 || len(f.calls) != 33 {
 		t.Fatalf("all = %d with %d calls %s", code, len(f.calls), errOut)
 	}
 	if got := strings.Join(cr.containerKinds(), "|"); got != strings.Join(oneIterationKinds, "|") {

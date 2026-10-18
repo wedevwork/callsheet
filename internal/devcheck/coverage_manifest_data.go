@@ -328,6 +328,20 @@ var WorkspaceCoverageManifest = []CoverageEntry{
 	// Amendments A3.6 and A3.7: the coordinator's restricted wait-task and
 	// review-material helpers, a new untagged file, whole.
 	{Group: GroupChanged, File: modulePath + "/internal/reale2e/helpers.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devfull_admit.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devfull_budget.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devfull_control.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devfull_envelope.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devfull_evidence.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devfull_flow.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devfull_loop.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devfull_owner.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devfull_parse.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devfull_session.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devfull_state.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devfull_supervisor.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devfull_templates.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devfull_workspace.go"},
 	{Group: GroupChanged, File: modulePath + "/internal/devcheck/platform.go"},
 }
 

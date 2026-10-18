@@ -6,6 +6,8 @@ Keep a local ledger. Record updates before the dispatch that depends on them. Re
 
 No worker persists a session between tasks by assumption. "Same coder" means the same frozen Callsheet role, adapter, model, and effort, with the artifacts and finding dispositions supplied in the new task. It is not an undocumented vendor conversation resume. On a later review round, classify each old finding as fixed, persisting, or reopened, with evidence, and distinguish new findings.
 
+Design-audit classification is a different method. On every design audit after the first, assemble the prior audit and revision-delta envelope: previous audit task, commit and report digest, previous design digest, prior finding IDs and text, the designer's dispositions, and the changed specification paths with old and new hashes. Retain each historical report by its immutable task commit. A new worker session does not make the audit round one. Active design findings are tagged `persisting`, `regression`, or `new-on-unchanged` (a Critical only, with a missed-before reason). Those tags are not the code-review dispositions `fixed`, `persisting`, `reopened`, and distinct new findings. Later code reviews receive the previous report and dispositions through the same pinned-input mechanism. Do not put both methods on one shared enum.
+
 Never run the designer and the coder concurrently. A design change invalidates prior approval even when source is unchanged.
 
 ## Normal paths
@@ -30,8 +32,8 @@ Light path: triage, then coder in defect mode, then code reviewer in light mode,
 | coder DESIGN_QUESTIONS in implement or fix-full | Route the questions to the designer; re-audit and obtain a new owner sign-off if the governing design changes |
 | coder DESIGN_QUESTIONS in defect or fix-light | Route the unsupported cause to triage; do not invent design work |
 | coder NEEDS_TRIAGE | Hold dependent work and triage the unresolved finding IDs; resume the same coder in fix mode only after an established cause |
-| coder or reviewer NEEDS_DESIGN | Stop the light work or the full fix loop; the designer receives the reason, then audit and renewed sign-off before implementation |
-| triage TRIAGE_CONFIRMED or TRIAGE_PROBABLE | Validate the current brief, then dispatch the defect coder or resume the fix, unless the brief says DESIGN REQUIRED |
+| coder or reviewer NEEDS_DESIGN | Stop the light work or the full fix loop; the designer receives the reason, then audit and renewed sign-off before implementation. An implement-mode coder NEEDS_DESIGN is a design blocker: preserve its reason and partial work and route it like DESIGN_QUESTIONS to the designer, then audit and renewed sign-off before the same coder resumes |
+| triage TRIAGE_CONFIRMED or TRIAGE_PROBABLE | Validate the current brief, then dispatch the defect coder or resume the fix, unless the brief has the standalone line Design required: yes, which routes the whole brief to the designer; Design required: no permits the defect coder or the fix |
 | triage TRIAGE_UNCONFIRMED | Pause for additional evidence; no implementation |
 | triage TRIAGE_BLOCKED or worker BLOCKED | Report the obstacle to the owner; no automatic retry and no model substitution |
 | missing, duplicate, unknown or role/mode-invalid marker | Invalid result; stop and preserve the evidence |
@@ -44,7 +46,7 @@ Caps are two additional designer revision/audit cycles after the initial draft a
 
 Full happy path: `DESIGN_DRAFT`, then `DESIGN_REVIEW_APPROVED`, then owner yes, then `IMPL_COMPLETE`, then `REVIEW_APPROVED`, then delivery.
 
-Light happy path: `TRIAGE_CONFIRMED` or `TRIAGE_PROBABLE`, then defect `IMPL_COMPLETE`, then light `REVIEW_APPROVED`, then delivery. `DESIGN REQUIRED` on the brief leaves the light path and enters the full owner gate.
+Light happy path: `TRIAGE_CONFIRMED` or `TRIAGE_PROBABLE`, then defect `IMPL_COMPLETE`, then light `REVIEW_APPROVED`, then delivery. A standalone line `Design required: yes` on the brief leaves the light path and enters the full owner gate. `Design required: no` permits the qualified fix continuation.
 
 Design revision loop: `DESIGN_CHANGES_REQUESTED` returns to the designer, then a new audit. Each such pair after the initial draft and audit consumes one designer cycle. The third additional cycle stops.
 
@@ -59,6 +61,10 @@ Unsupported cause: coder `DESIGN_QUESTIONS` in defect or fix-light goes to triag
 Failed publication: task success is not method approval. A failed or unauthorized publication is inspected and kept for diagnosis. Continue only from the last accepted base after the owner resolves it. Do not count that failure as a changes-requested round.
 
 Environmental blocker: worker `BLOCKED`, triage `TRIAGE_BLOCKED`, or an environment-only review blocker pauses for the owner. Do not retry it as a fix round and do not substitute a model.
+
+When a development envelope requests it, both the code reviewer's final text and `review.md` contain exactly one plain unindented line `CALLSHEET_REVIEW_BLOCKER: environment` or `CALLSHEET_REVIEW_BLOCKER: none`, immediately before the terminal STATUS line, with no intervening blank line. The key is uppercase, the value is lowercase, with exactly one ASCII space after the colon and no trailing spaces. The two artifacts' values match. `environment` is valid only with `REVIEW_CHANGES_REQUESTED` and stops for the owner without spending a fix round. A heading, table cell, list item, quotation, code fence, different case, or extra space is not the field. Missing, repeated, or conflicting fields fail closed. This field is conditional on that envelope. It is not mandatory for callers that do not request it.
+
+A newly published confidence-qualified `fix.md` contains exactly one standalone line `Design required: yes` or `Design required: no`, anywhere outside a code fence. The key has precisely that capitalization, no question mark, exactly one ASCII space after the colon, a lowercase value, and no trailing spaces. `yes` routes the whole brief to the designer. `no` permits the qualified fix. Neither value makes an inherited brief current after `TRIAGE_UNCONFIRMED`.
 
 ## Task envelope
 

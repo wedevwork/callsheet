@@ -36,10 +36,15 @@ import (
 const Usage = `usage:
   reale2e run --callsheet ABS --claude ABS --codex ABS --grok ABS --evidence ABS [--flow ABS] [--protect-root ABS ...] [--protect-depth N]
       (requires ` + EnvOptIn + `=1, no CI and no CLAUDE_CONFIG_DIR variable; linux only; calls paid models)
+  reale2e run-dev-full --callsheet ABS --claude ABS --codex ABS --grok ABS --evidence ABS [--flow ABS] [--protect-root ABS ...] [--protect-depth N]
+      (same gate as run; development full flow; exit 3 means executed but unverified, never a PASS)
   reale2e check --evidence ABS
   reale2e observe --run ABS --task ID --hop designer|design-reviewer|coder|code-reviewer
   reale2e wait-task --run ABS --task ID --hop designer|design-reviewer|coder|code-reviewer
   reale2e review-material --run ABS
+  reale2e dev-next --run ABS
+  reale2e dev-observe --run ABS --ordinal N --task ID
+  reale2e dev-wait-task --run ABS --ordinal N --task ID
 See docs/real-e2e.md.
 ` + Bounds
 
@@ -61,11 +66,15 @@ type Host struct {
 	// observe, when set, sees the new supervisor before its attempt runs
 	// (offline tests drive their scripted coordinator through it).
 	observe func(*supervisor)
+	// observeDev is the development attempt's equivalent of observe.
+	observeDev func(*devSupervisor)
 }
 
 // Main is the reale2e command: 0 success, 1 failure or refusal of a
 // helper's request, 2 usage, gate, schema or transport error;
-// wait-task returns the wait's status on success.
+// wait-task returns the wait's status on success. 3 is development
+// execution completed but unverified: run-dev-full never returns 0 and
+// never reports a verified PASS.
 func Main(goos, goarch string, args []string, getenv func(string) string, lookupEnv func(string) (string, bool), stdin io.Reader, stdout, stderr io.Writer) int {
 	return MainWith(Host{GOOS: goos, GOARCH: goarch, Args: args, Getenv: getenv, LookupEnv: lookupEnv, Stdin: stdin, Stdout: stdout, Stderr: stderr,
 		NewWorld: LiveWorld})
@@ -128,7 +137,8 @@ func MainWith(h Host) int {
 		return m
 	}
 	switch h.Args[0] {
-	case "run":
+	case "run", "run-dev-full":
+		dev := h.Args[0] == "run-dev-full"
 		// The gate comes first: a refused live startup touches nothing.
 		if err := Gate(h.GOOS, h.Getenv, h.LookupEnv); err != nil {
 			fmt.Fprintf(h.Stderr, "%v\n%s", err, Bounds)
@@ -154,8 +164,12 @@ func MainWith(h Host) int {
 			return usageError(h, "run needs absolute --callsheet, --claude, --codex, --grok and --evidence paths, an optional absolute --flow, "+
 				"optional absolute --protect-root directories and an optional --protect-depth from 0 to 64 (default 3)")
 		}
-		return runLive(h, runArgs{callsheet: v["callsheet"], claude: v["claude"], codex: v["codex"], grok: v["grok"], evidence: v["evidence"], flow: v["flow"],
-			protectRoots: roots, protectDepth: depth})
+		args := runArgs{callsheet: v["callsheet"], claude: v["claude"], codex: v["codex"], grok: v["grok"], evidence: v["evidence"], flow: v["flow"],
+			protectRoots: roots, protectDepth: depth}
+		if dev {
+			return runDevLive(h, args)
+		}
+		return runLive(h, args)
 	case "check":
 		v, ok := flags(h, "check", []string{"evidence"}, nil, all("evidence"), nil)
 		if !ok {
@@ -172,6 +186,12 @@ func MainWith(h Host) int {
 		return waitTaskHelper(h)
 	case "review-material":
 		return reviewHelper(h)
+	case "dev-next":
+		return devNextHelper(h)
+	case "dev-observe":
+		return devObserveHelper(h, opDevObserve)
+	case "dev-wait-task":
+		return devObserveHelper(h, opDevWait)
 	}
 	// finish and wait were removed by A3: unknown subcommands.
 	return usageError(h, "unknown subcommand "+contract.SafeText(h.Args[0], 32))
@@ -292,7 +312,8 @@ func connectFor(goos string, environ []string) func(url string, caPEM []byte) (P
 		if err != nil {
 			return nil, nil, nil, err
 		}
-		return c, livePuller{c: c, goos: goos, env: workspacetransfer.ProcessEnv(isolatedGitEnv(environ))}, c.Close, nil
+		return c, transferPuller{resolve: c.ResolveTaskResult, plane: workspacetransfer.ClientPlane(c), goos: goos,
+			env: workspacetransfer.ProcessEnv(isolatedGitEnv(environ))}, c.Close, nil
 	}
 }
 
@@ -302,19 +323,23 @@ func isolatedGitEnv(environ []string) []string {
 	return []string{"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "PATH=" + envValue(environ, "PATH")}
 }
 
-// livePuller pulls a task's published result by task ID.
-type livePuller struct {
-	c    *client.Client
-	goos string
-	env  workspacetransfer.Env
+// transferPuller pulls a task's published result by task ID with the
+// product's own workspace transfer: the live puller, and offline tests
+// over a fake transfer plane (the same destination rules, an ordinary
+// non-bare repository root among them).
+type transferPuller struct {
+	resolve func(ctx context.Context, taskID string) (client.TaskResultSelection, error)
+	plane   workspacetransfer.Plane
+	goos    string
+	env     workspacetransfer.Env
 }
 
-func (p livePuller) PullResult(ctx context.Context, taskID, repo string) error {
-	sel, err := p.c.ResolveTaskResult(ctx, taskID)
+func (p transferPuller) PullResult(ctx context.Context, taskID, repo string) error {
+	sel, err := p.resolve(ctx, taskID)
 	if err != nil {
 		return err
 	}
-	_, err = workspacetransfer.Pull(ctx, workspacetransfer.Options{GOOS: p.goos, Env: p.env, Cwd: repo, Plane: workspacetransfer.ClientPlane(p.c)},
+	_, err = workspacetransfer.Pull(ctx, workspacetransfer.Options{GOOS: p.goos, Env: p.env, Cwd: repo, Plane: p.plane},
 		workspacetransfer.PullRequest{Name: sel.Name, Ref: sel.Ref, Path: repo, PathSet: true, ExpectedInstance: sel.Instance, ExpectedCommit: sel.Commit})
 	return err
 }

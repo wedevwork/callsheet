@@ -486,6 +486,137 @@ func checkReceipt(md string) error {
 	})
 }
 
+// sentenceRE splits prose into sentences and clauses.
+var sentenceRE = regexp.MustCompile(`[.;]\s+|\n+`)
+
+// sentencesWith returns doc's sentences that contain every part.
+func sentencesWith(doc string, parts ...string) []string {
+	var out []string
+	for _, s := range sentenceRE.Split(doc, -1) {
+		ok := true
+		for _, p := range parts {
+			ok = ok && strings.Contains(s, p)
+		}
+		if ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// checkDeltaPolicy validates one document's design-audit delta policy
+// (kind instruction, runbook or playbook): its own required clauses, the
+// three tags, new-on-unchanged restricted to a Critical with a
+// missed-before reason, and no sentence permitting a noncritical
+// new-on-unchanged finding.
+func checkDeltaPolicy(doc, kind string) error {
+	required := map[string][]string{
+		"instruction": {"Every later audit receives the previous audit task, commit and report digest", "the previous design digest",
+			"the prior finding IDs and text", "the designer's dispositions", "names each changed specification path with its old and new hashes",
+			"is not authoritative evidence that other paths stayed unchanged", "Missing prior artifacts or an unreadable delta is a named changes-requested finding",
+			"Resolved IDs are listed separately", "Preserve IDs for persisting and reintroduced issues", "do not reuse closed ones",
+			"Do not introduce a new noncritical issue on unchanged material"},
+		"runbook": {"verify the designer's dispositions of the prior findings", "The supervisor derives the changed-path and hash list from the two admitted trees",
+			"is not proof that an unlisted path stayed unchanged", "List resolved IDs separately", "Keep IDs for persisting and reintroduced issues",
+			"New IDs do not reuse closed ones", "report `DESIGN_CHANGES_REQUESTED` with that named finding",
+			"Do not open an unbound first audit because a new worker session started", "Do not file a new Warning or Suggestion against unchanged material"},
+		"playbook": {"assemble the prior audit and revision-delta envelope", "Retain each historical report by its immutable task commit",
+			"A new worker session does not make the audit round one", "Do not put both methods on one shared enum", "`fixed`, `persisting`, `reopened`"},
+	}
+	if err := requirePhrases(doc, required[kind]); err != nil {
+		return err
+	}
+	tags := map[string][]string{
+		"instruction": {"`persisting` for an unresolved prior issue", "`regression` for an issue introduced or reintroduced by the delta",
+			"`new-on-unchanged` for an issue newly noticed in unaffected material"},
+		"runbook":  {"Tag each active finding `persisting`, `regression`, or `new-on-unchanged`."},
+		"playbook": {"Active design findings are tagged `persisting`, `regression`, or `new-on-unchanged`"},
+	}
+	if err := requirePhrases(doc, tags[kind]); err != nil {
+		return fmt.Errorf("the delta tags are not all defined: %w", err)
+	}
+	critical := false
+	for _, s := range sentencesWith(doc, "new-on-unchanged", "Critical", "only", "missed") {
+		critical = critical || s != ""
+	}
+	if !critical {
+		return fmt.Errorf("new-on-unchanged is not restricted to a Critical with a missed-before reason")
+	}
+	for _, s := range sentencesWith(doc, "new-on-unchanged") {
+		if (strings.Contains(s, "Warning") || strings.Contains(s, "Suggestion") || strings.Contains(s, "any severity")) && !strings.Contains(s, "not") {
+			return fmt.Errorf("a noncritical new-on-unchanged finding is permitted: %q", s)
+		}
+	}
+	return nil
+}
+
+// paragraphWith returns the paragraph of doc that contains marker.
+func paragraphWith(doc, marker string) string {
+	for _, p := range strings.Split(doc, "\n\n") {
+		if strings.Contains(p, marker) {
+			return p
+		}
+	}
+	return ""
+}
+
+// checkBlockerContract validates one document's conditional review
+// blocker field contract (kind runbook or playbook) in the paragraph that
+// defines it.
+func checkBlockerContract(doc, kind string) error {
+	p := paragraphWith(doc, "`CALLSHEET_REVIEW_BLOCKER: environment`")
+	if p == "" {
+		return fmt.Errorf("no paragraph defines `CALLSHEET_REVIEW_BLOCKER: environment`")
+	}
+	both := map[string]string{"runbook": "both the final answer and `review.md`", "playbook": "both the code reviewer's final text and `review.md`"}[kind]
+	match := map[string]string{"runbook": "The values in the two artifacts match.", "playbook": "The two artifacts' values match."}[kind]
+	conditional := map[string]string{"runbook": "This contract is conditional on the development envelope.", "playbook": "This field is conditional on that envelope."}[kind]
+	return requirePhrases(p, []string{
+		"`CALLSHEET_REVIEW_BLOCKER: none`", both, "exactly one plain unindented line", "immediately before the terminal STATUS line",
+		"with no intervening blank line", "The key is uppercase, the value is lowercase,", "exactly one ASCII space after the colon and no trailing spaces",
+		match, "`environment` is valid only with `REVIEW_CHANGES_REQUESTED`", "Missing, repeated, or conflicting fields fail closed.", conditional,
+		"A heading, table cell, list item, quotation, code fence, different case, or extra space is not the field.",
+	})
+}
+
+// checkDesignRequiredContract validates one document's Design required
+// field contract (kind runbook or playbook).
+func checkDesignRequiredContract(doc, kind string) error {
+	if strings.Contains(doc, "DESIGN REQUIRED") || strings.Contains(doc, "Design required?:") {
+		return fmt.Errorf("an ambiguous Design required spelling")
+	}
+	fence := map[string]string{"runbook": "The line sits outside a code fence.", "playbook": "anywhere outside a code fence"}[kind]
+	phrases := []string{"`Design required: yes`", "`Design required: no`", "exactly one standalone line", fence,
+		"The key has precisely that capitalization, no question mark, exactly one ASCII space after the colon, a lowercase value, and no trailing spaces.",
+		"`yes` routes the whole brief to the designer.", "`no` permits the qualified fix"}
+	if kind == "playbook" {
+		phrases = append(phrases, "unless the brief has the standalone line Design required: yes, which routes the whole brief to the designer; Design required: no permits the defect coder or the fix")
+	}
+	return requirePhrases(doc, phrases)
+}
+
+// checkNeedsDesignModes requires the playbook's NEEDS_DESIGN next action
+// to route an implement-mode coder NEEDS_DESIGN to the designer, an audit
+// and renewed sign-off in its own clause.
+func checkNeedsDesignModes(md string) error {
+	rows, err := parseMarkdownTable(md, "Origin and marker", "Next action")
+	if err != nil {
+		return err
+	}
+	for _, r := range rows {
+		if r[0] != "coder or reviewer NEEDS_DESIGN" {
+			continue
+		}
+		for _, s := range sentencesWith(r[1], "implement-mode") {
+			if strings.Contains(s, "designer") && strings.Contains(s, "audit") && strings.Contains(s, "renewed sign-off") {
+				return nil
+			}
+		}
+		return fmt.Errorf("the NEEDS_DESIGN next action does not route an implement-mode design blocker to the designer, audit and renewed sign-off")
+	}
+	return fmt.Errorf("no NEEDS_DESIGN route")
+}
+
 func checkHandoffs(md string) error {
 	if err := requirePhrases(md, []string{
 		"attempt ID",
@@ -849,6 +980,57 @@ func TestDevFlowDesignReviewer(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+	t.Run("delta_audit", func(t *testing.T) {
+		docs := map[string]string{"instruction": string(files["design-reviewer-instruction.md"]), "runbook": string(files["design-reviewer-runbook.md"]),
+			"playbook": string(files["coordinator-playbook.md"])}
+		for kind, doc := range docs {
+			if err := checkDeltaPolicy(doc, kind); err != nil {
+				t.Fatalf("%s: %v", kind, err)
+			}
+		}
+		// Each negative mutation weakens one document only; the validator
+		// rejects that document and still accepts the others.
+		mutations := map[string][][2]string{
+			"instruction": {
+				{"`persisting` for", "`open` for"}, {"`regression` for", "`changed` for"}, {"`new-on-unchanged` for", "`fresh` for"},
+				{"`new-on-unchanged` is permitted only for a Critical", "`new-on-unchanged` is permitted for any severity"},
+				{" and must include a specific missed-before reason", ""},
+				{"Do not introduce a new noncritical issue on unchanged material, including as a suggestion. ", ""},
+				{"A Critical always blocks approval.", "A Critical always blocks approval. A Warning may also be tagged `new-on-unchanged`."},
+				{"the previous design digest, ", ""}, {"the prior finding IDs and text, ", ""}, {"the designer's dispositions, ", ""},
+				{"Missing prior artifacts or an unreadable delta is a named changes-requested finding. ", ""},
+				{"Resolved IDs are listed separately with evidence and are not active findings. ", ""},
+			},
+			"runbook": {
+				{"Tag each active finding `persisting`, `regression`, or `new-on-unchanged`.", "Tag each active finding `persisting` or `regression`."},
+				{"`new-on-unchanged` is only a Critical", "`new-on-unchanged` may be any severity"},
+				{", with a specific reason it was missed earlier", ""},
+				{"Do not file a new Warning or Suggestion against unchanged material. ", ""},
+				{"Do not file a new Warning or Suggestion against unchanged material.", "A Suggestion may be tagged `new-on-unchanged`."},
+				{"The supervisor derives the changed-path and hash list from the two admitted trees. ", ""},
+				{"verify the designer's dispositions of the prior findings and ", ""},
+				{"report `DESIGN_CHANGES_REQUESTED` with that named finding", "start a fresh audit"},
+				{" Do not open an unbound first audit because a new worker session started.", ""},
+			},
+			"playbook": {
+				{"(a Critical only, with a missed-before reason)", "(any severity)"},
+				{"A new worker session does not make the audit round one. ", ""},
+				{"assemble the prior audit and revision-delta envelope", "start a new audit"},
+				{"Do not put both methods on one shared enum.", "Use one shared enum for both methods."},
+			},
+		}
+		for kind, list := range mutations {
+			for _, m := range list {
+				doc := docs[kind]
+				if !strings.Contains(doc, m[0]) {
+					t.Fatalf("%s: the mutation target %q is not in the shipped document", kind, m[0])
+				}
+				if err := checkDeltaPolicy(strings.Replace(doc, m[0], m[1], 1), kind); err == nil {
+					t.Errorf("%s: the weakened policy was accepted after %q -> %q", kind, m[0], m[1])
+				}
+			}
+		}
+	})
 	t.Run("malformed_terminals", func(t *testing.T) {
 		conflicting := "STATUS: DESIGN_REVIEW_APPROVED\nSTATUS: DESIGN_CHANGES_REQUESTED\n"
 		if _, err := lastTerminal(conflicting, allowed); err == nil {
@@ -895,6 +1077,43 @@ func TestDevFlowCodeReviewer(t *testing.T) {
 			t.Fatal("scratch clause removal was accepted")
 		}
 	})
+	t.Run("review_blocker", func(t *testing.T) {
+		docs := map[string]string{"runbook": string(files["code-reviewer-runbook.md"]), "playbook": string(files["coordinator-playbook.md"])}
+		for kind, doc := range docs {
+			if err := checkBlockerContract(doc, kind); err != nil {
+				t.Fatalf("%s: %v", kind, err)
+			}
+		}
+		common := [][2]string{
+			{"CALLSHEET_REVIEW_BLOCKER:", "CALLSHEET_REVIEW_BLOKER:"},
+			{"The key is uppercase, the value is lowercase, ", ""},
+			{"with exactly one ASCII space after the colon and no trailing spaces", "with a space after the colon"},
+			{"immediately before the terminal STATUS line", "near the end"},
+			{", with no intervening blank line", ""},
+			{"exactly one plain unindented line", "a line"},
+			{"`environment` is valid only with `REVIEW_CHANGES_REQUESTED`", "`environment` is valid with any marker"},
+			{"Missing, repeated, or conflicting fields fail closed. ", ""},
+		}
+		own := map[string][][2]string{
+			"runbook":  {{"both the final answer and `review.md`", "`review.md`"}, {" The values in the two artifacts match.", ""}, {" This contract is conditional on the development envelope.", ""}},
+			"playbook": {{"both the code reviewer's final text and `review.md`", "`review.md`"}, {" The two artifacts' values match.", ""}, {" This field is conditional on that envelope.", ""}},
+		}
+		for kind, doc := range docs {
+			for _, m := range append(append([][2]string{}, common...), own[kind]...) {
+				if !strings.Contains(doc, m[0]) {
+					t.Fatalf("%s: the mutation target %q is not in the shipped document", kind, m[0])
+				}
+				broken := strings.ReplaceAll(doc, m[0], m[1])
+				if err := checkBlockerContract(broken, kind); err == nil {
+					t.Errorf("%s: the weakened contract was accepted after %q -> %q", kind, m[0], m[1])
+				}
+				other := map[string]string{"runbook": "playbook", "playbook": "runbook"}[kind]
+				if err := checkBlockerContract(docs[other], other); err != nil {
+					t.Fatalf("the unchanged %s was rejected: %v", other, err)
+				}
+			}
+		}
+	})
 	t.Run("missing_disposition", func(t *testing.T) {
 		broken := strings.ReplaceAll(pair, "classify each old finding as fixed, persisting, or reopened, with evidence, and distinguish new findings", "summarize the previous comments")
 		if err := checkCodeReviewer(broken); err == nil {
@@ -909,6 +1128,41 @@ func TestDevFlowTriage(t *testing.T) {
 	if err := checkTriage(pair); err != nil {
 		t.Fatal(err)
 	}
+	t.Run("design_required", func(t *testing.T) {
+		docs := map[string]string{"runbook": string(files["triage-runbook.md"]), "playbook": string(files["coordinator-playbook.md"])}
+		for kind, doc := range docs {
+			if err := checkDesignRequiredContract(doc, kind); err != nil {
+				t.Fatalf("%s: %v", kind, err)
+			}
+		}
+		common := [][2]string{
+			{"Design required:", "Design required?:"},
+			{"precisely that capitalization, ", ""},
+			{"exactly one ASCII space after the colon, ", ""},
+			{", and no trailing spaces", ""},
+			{"a lowercase value", "any value"},
+			{"exactly one standalone line", "a line"},
+			{"`yes` routes the whole brief to the designer.", "`yes` is advisory."},
+			{"`no` permits the qualified fix", "`no` is advisory"},
+		}
+		own := map[string][][2]string{
+			"runbook":  {{"The line sits outside a code fence. ", ""}},
+			"playbook": {{"anywhere outside a code fence", "anywhere"}, {"which routes the whole brief to the designer", "which is noted"}},
+		}
+		for kind, doc := range docs {
+			for _, m := range append(append([][2]string{}, common...), own[kind]...) {
+				if !strings.Contains(doc, m[0]) {
+					t.Fatalf("%s: the mutation target %q is not in the shipped document", kind, m[0])
+				}
+				if err := checkDesignRequiredContract(strings.ReplaceAll(doc, m[0], m[1]), kind); err == nil {
+					t.Errorf("%s: the weakened contract was accepted after %q -> %q", kind, m[0], m[1])
+				}
+			}
+		}
+		if err := checkRoutes(docs["playbook"]); err != nil {
+			t.Fatal(err)
+		}
+	})
 	t.Run("missing_confirmed", func(t *testing.T) {
 		broken := strings.ReplaceAll(pair, "| CONFIRMED |", "| guessed |")
 		if err := checkTriage(broken); err == nil {
@@ -920,6 +1174,32 @@ func TestDevFlowTriage(t *testing.T) {
 func TestDevFlowRouting(t *testing.T) {
 	_, files := loadDevFlow(t)
 	playbook := string(files["coordinator-playbook.md"])
+	t.Run("needs_design_modes", func(t *testing.T) {
+		if err := checkRoutes(playbook); err != nil {
+			t.Fatal(err)
+		}
+		if err := checkNeedsDesignModes(playbook); err != nil {
+			t.Fatal(err)
+		}
+		// Remove only the implement-mode clarification: the existing route
+		// pins still hold, and only the new check rejects it.
+		const clause = " An implement-mode coder NEEDS_DESIGN is a design blocker: preserve its reason and partial work and route it like DESIGN_QUESTIONS to the designer, then audit and renewed sign-off before the same coder resumes"
+		if !strings.Contains(playbook, clause) {
+			t.Fatal("the implement-mode clarification is not in the shipped playbook")
+		}
+		broken := strings.Replace(playbook, clause, "", 1)
+		if err := checkRoutes(broken); err != nil {
+			t.Fatalf("the route pins no longer hold without the clarification: %v", err)
+		}
+		if err := checkNeedsDesignModes(broken); err == nil {
+			t.Fatal("removing the implement-mode clarification was accepted")
+		}
+		for _, weak := range [][2]string{{"to the designer, then audit", "to the coder, then"}, {"renewed sign-off before the same coder", "the same coder"}} {
+			if err := checkNeedsDesignModes(strings.Replace(playbook, weak[0], weak[1], 1)); err == nil {
+				t.Errorf("a weakened clarification was accepted: %q", weak[1])
+			}
+		}
+	})
 	t.Run("routing_table", func(t *testing.T) {
 		if err := checkRoutes(playbook); err != nil {
 			t.Fatal(err)

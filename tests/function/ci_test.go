@@ -622,17 +622,19 @@ func TestCINativeEvidence(t *testing.T) {
 	// the workspace benchmark, (iteration 09b) the transfer benchmark,
 	// (iteration 10b) the task workspace benchmark, (non-blocking
 	// coordinator waits) the client wait benchmark and (decoder enrollment)
-	// the qualification harness's benchmark: nine calls. An empty cover
-	// total is parsed as the literal "(statements)" and fails the stage.
+	// the qualification harness's benchmark, then the development
+	// full-flow benchmark: ten calls. An empty cover total is parsed as
+	// the literal "(statements)" and fails the stage.
 	r := &ciRunner{stdout: valid, coverTotal: "91.7%"}
 	code, out, errOut := devcheckRun(t, r, "native")
-	if code != 0 || len(r.calls) != 9 ||
+	if code != 0 || len(r.calls) != 10 ||
 		strings.Join(r.calls[0], " ") != "go test -json -tags=realadaptercheck -count=1 -timeout=300s ./..." ||
 		strings.Join(r.calls[4], " ") != strings.Join(devcheck.WorkspaceBenchStep().Argv, " ") ||
 		strings.Join(r.calls[5], " ") != strings.Join(devcheck.TransferBenchStep().Argv, " ") ||
 		strings.Join(r.calls[6], " ") != strings.Join(devcheck.TaskWorkspaceBenchStep().Argv, " ") ||
 		strings.Join(r.calls[7], " ") != strings.Join(devcheck.ClientWaitBenchStep().Argv, " ") ||
 		strings.Join(r.calls[8], " ") != strings.Join(devcheck.MCPQualBenchStep().Argv, " ") ||
+		strings.Join(r.calls[9], " ") != strings.Join(devcheck.RealE2EDevBenchStep().Argv, " ") ||
 		!strings.Contains(out, "native qualification passed on darwin/"+runtime.GOARCH) {
 		t.Fatalf("darwin native = %d calls=%d %s", code, len(r.calls), errOut)
 	}

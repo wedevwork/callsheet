@@ -890,12 +890,13 @@ func TestNativeStageRunFor(t *testing.T) {
 	// coordinator waits: then the client wait benchmark; decoder
 	// enrollment: then the qualification harness's benchmark (9 ordinary
 	// calls).
-	if len(f.calls) != 9 || strings.Join(f.calls[0].argv, " ") != "go test -json -tags=realadaptercheck -count=1 -timeout=300s ./..." || f.calls[0].dir != "" ||
+	if len(f.calls) != 10 || strings.Join(f.calls[0].argv, " ") != "go test -json -tags=realadaptercheck -count=1 -timeout=300s ./..." || f.calls[0].dir != "" ||
 		strings.Join(f.calls[4].argv, " ") != strings.Join(WorkspaceBenchStep().Argv, " ") ||
 		strings.Join(f.calls[5].argv, " ") != strings.Join(TransferBenchStep().Argv, " ") ||
 		strings.Join(f.calls[6].argv, " ") != strings.Join(TaskWorkspaceBenchStep().Argv, " ") ||
 		strings.Join(f.calls[7].argv, " ") != "go test ./internal/client -run=^$ -bench=^BenchmarkWaitUntilDone$ -benchmem -benchtime=3x -count=1 -timeout=180s" ||
-		strings.Join(f.calls[8].argv, " ") != "go test ./internal/mcpqual -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s" {
+		strings.Join(f.calls[8].argv, " ") != "go test ./internal/mcpqual -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s" ||
+		strings.Join(f.calls[9].argv, " ") != strings.Join(RealE2EDevBenchStep().Argv, " ") {
 		t.Fatalf("calls = %+v", f.argvs())
 	}
 	if !strings.Contains(strings.Join(f.calls[0].env, "\n"), "PATH=") {
@@ -1230,7 +1231,8 @@ func TestNativeDecoderEnrollmentEvidence(t *testing.T) {
 	mustFail(t, "moved", stream(moved...), "TestMCPCaptureInvocation has no run event")
 	// The native benchmark tail ends with the shared mcpqual step.
 	tail := NativeBenchSteps()
-	if len(tail) != 5 || strings.Join(tail[4].Argv, " ") != strings.Join(MCPQualBenchStep().Argv, " ") || tail[4].Name != "bench mcpqual" {
+	if len(tail) != 6 || strings.Join(tail[4].Argv, " ") != strings.Join(MCPQualBenchStep().Argv, " ") || tail[4].Name != "bench mcpqual" ||
+		strings.Join(tail[5].Argv, " ") != strings.Join(RealE2EDevBenchStep().Argv, " ") {
 		t.Fatalf("native tail %+v", tail)
 	}
 }
@@ -1265,7 +1267,7 @@ func TestNativeDecoderEnrollmentB1Evidence(t *testing.T) {
 	moved := append(without(without(q, "run", "TestMCPCaptureGrokRecipe"), "pass", "TestMCPCaptureGrokRecipe"),
 		ev("start", other, ""), ev("run", other, "TestMCPCaptureGrokRecipe"), ev("pass", other, "TestMCPCaptureGrokRecipe"), ev("pass", other, ""))
 	mustFail(t, "moved", stream(moved...), "TestMCPCaptureGrokRecipe has no run event")
-	if _, err := NativeSteps("darwin"); err != nil || len(BenchSteps()) != 13 || len(NativeBenchSteps()) != 5 {
+	if _, err := NativeSteps("darwin"); err != nil || len(BenchSteps()) != 14 || len(NativeBenchSteps()) != 6 {
 		t.Fatalf("native steps %v, %d bench steps", err, len(BenchSteps()))
 	}
 }
@@ -1301,7 +1303,7 @@ func TestNativeDecoderEnrollmentB15Evidence(t *testing.T) {
 	moved := append(without(without(q, "run", "TestMCPProbeTerminalObservation"), "pass", "TestMCPProbeTerminalObservation"),
 		ev("start", other, ""), ev("run", other, "TestMCPProbeTerminalObservation"), ev("pass", other, "TestMCPProbeTerminalObservation"), ev("pass", other, ""))
 	mustFail(t, "moved", stream(moved...), "TestMCPProbeTerminalObservation has no run event")
-	if _, err := NativeSteps("darwin"); err != nil || len(BenchSteps()) != 13 || len(NativeBenchSteps()) != 5 {
+	if _, err := NativeSteps("darwin"); err != nil || len(BenchSteps()) != 14 || len(NativeBenchSteps()) != 6 {
 		t.Fatalf("native steps %v, %d bench steps", err, len(BenchSteps()))
 	}
 }
@@ -1340,7 +1342,7 @@ func TestNativeDecoderEnrollmentB2Evidence(t *testing.T) {
 	moved := append(without(without(q, "run", "TestMCPRealDecoderMappings"), "pass", "TestMCPRealDecoderMappings"),
 		ev("start", other, ""), ev("run", other, "TestMCPRealDecoderMappings"), ev("pass", other, "TestMCPRealDecoderMappings"), ev("pass", other, ""))
 	mustFail(t, "moved", stream(moved...), "TestMCPRealDecoderMappings has no run event")
-	if _, err := NativeSteps("darwin"); err != nil || len(BenchSteps()) != 13 || len(NativeBenchSteps()) != 5 {
+	if _, err := NativeSteps("darwin"); err != nil || len(BenchSteps()) != 14 || len(NativeBenchSteps()) != 6 {
 		t.Fatalf("native steps %v, %d bench steps", err, len(BenchSteps()))
 	}
 }
@@ -1378,7 +1380,7 @@ func TestNativeDecoderEnrollmentB3Evidence(t *testing.T) {
 	moved := append(without(without(q, "run", "TestMCPCursorRealDecoder"), "pass", "TestMCPCursorRealDecoder"),
 		ev("start", other, ""), ev("run", other, "TestMCPCursorRealDecoder"), ev("pass", other, "TestMCPCursorRealDecoder"), ev("pass", other, ""))
 	mustFail(t, "moved", stream(moved...), "TestMCPCursorRealDecoder has no run event")
-	if _, err := NativeSteps("darwin"); err != nil || len(BenchSteps()) != 13 || len(NativeBenchSteps()) != 5 {
+	if _, err := NativeSteps("darwin"); err != nil || len(BenchSteps()) != 14 || len(NativeBenchSteps()) != 6 {
 		t.Fatalf("native steps %v, %d bench steps", err, len(BenchSteps()))
 	}
 }

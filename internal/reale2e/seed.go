@@ -96,6 +96,35 @@ func seedFiles(goVersion string) map[string][]byte {
 	}
 }
 
+// legacySizeSentence is the single FeatureRequest sentence the development
+// request replaces (design 12a-dev-flow-harness, Shared method loading).
+const legacySizeSentence = "Keep the whole project under\n  16 KiB."
+
+// devFullSizeSentence is the owner-approved replacement.
+const devFullSizeSentence = "Keep FEATURE.md, go.mod, main.go and main_test.go together strictly below 16 KiB. Each planning/report artifact is at most 32 KiB; all planning/report artifacts together are at most 128 KiB."
+
+// devFullFeatureRequest derives the development full scenario's FEATURE.md
+// from FeatureRequest: exactly one occurrence of the legacy size sentence
+// is required and only it is replaced. The legacy request is unchanged.
+func devFullFeatureRequest() (string, error) {
+	if n := strings.Count(FeatureRequest, legacySizeSentence); n != 1 {
+		return "", fmt.Errorf("feature request: the size sentence occurs %d times", n)
+	}
+	return strings.Replace(FeatureRequest, legacySizeSentence, devFullSizeSentence, 1), nil
+}
+
+// devSeedFiles is the development seed: the legacy seed files with the
+// derived FEATURE.md.
+func devSeedFiles(goVersion string) (map[string][]byte, error) {
+	feature, err := devFullFeatureRequest()
+	if err != nil {
+		return nil, err
+	}
+	files := seedFiles(goVersion)
+	files["FEATURE.md"] = []byte(feature)
+	return files, nil
+}
+
 // goDirective returns the go directive of a go.mod file.
 func goDirective(gomod []byte) (string, error) {
 	sc := bufio.NewScanner(bytes.NewReader(gomod))

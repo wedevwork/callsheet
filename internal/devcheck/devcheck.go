@@ -414,6 +414,9 @@ func BenchSteps() []Step {
 		// Non-blocking coordinator waits: the renewable wait's loop on a
 		// fake connection and clock (no real hour, process or network).
 		ClientWaitBenchStep(),
+		// Development full flow (12a slice 2d.2): offline templates,
+		// admission and transition benchmarks. Reported, never a live run.
+		RealE2EDevBenchStep(),
 	}
 }
 
@@ -430,7 +433,13 @@ func MCPQualBenchStep() Step {
 // (09b), task workspace (10b) and client wait (non-blocking coordinator
 // waits) benchmarks, then the qualification harness's (decoder-enrollment).
 func NativeBenchSteps() []Step {
-	return []Step{WorkspaceBenchStep(), TransferBenchStep(), TaskWorkspaceBenchStep(), ClientWaitBenchStep(), MCPQualBenchStep()}
+	return []Step{WorkspaceBenchStep(), TransferBenchStep(), TaskWorkspaceBenchStep(), ClientWaitBenchStep(), MCPQualBenchStep(), RealE2EDevBenchStep()}
+}
+
+// RealE2EDevBenchStep is the development full-flow benchmark. It is
+// offline and shared by the bench stage and the native driver.
+func RealE2EDevBenchStep() Step {
+	return Step{Name: "bench reale2e dev-full", Argv: []string{"go", "test", "./internal/reale2e", "-run=^$", "-bench=^BenchmarkDevFull", "-benchmem", "-benchtime=3x", "-count=1", "-timeout=180s"}}
 }
 
 // ClientWaitBenchStep is the renewable wait's benchmark step (design

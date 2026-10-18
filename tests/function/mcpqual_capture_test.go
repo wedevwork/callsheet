@@ -1465,8 +1465,8 @@ func TestMCPEnrollmentCIPolicy(t *testing.T) {
 			want := "go test ./internal/mcpqual -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s"
 			bench := devcheck.BenchSteps()
 			tail := devcheck.NativeBenchSteps()
-			if len(bench) != 13 || strings.Join(devcheck.MCPQualBenchStep().Argv, " ") != want || !slices.ContainsFunc(bench, func(s devcheck.Step) bool { return strings.Join(s.Argv, " ") == want }) ||
-				len(tail) != 5 || strings.Join(tail[4].Argv, " ") != want || live(bench) != "" {
+			if len(bench) != 14 || strings.Join(devcheck.MCPQualBenchStep().Argv, " ") != want || !slices.ContainsFunc(bench, func(s devcheck.Step) bool { return strings.Join(s.Argv, " ") == want }) ||
+				len(tail) != 6 || strings.Join(tail[4].Argv, " ") != want || strings.Join(tail[5].Argv, " ") != strings.Join(devcheck.RealE2EDevBenchStep().Argv, " ") || live(bench) != "" {
 				t.Fatalf("bench %d tail %v", len(bench), tail)
 			}
 		}},

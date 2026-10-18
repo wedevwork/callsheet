@@ -32,13 +32,16 @@ const (
 	// wantBenchPlan is the complete bench plan in order.
 	wantBenchPlan = wantBenchGit + "|" + wantBenchPlane + "|" + wantBenchContract + "|" + wantBenchSidecar + "|" + wantBenchAdapter + "|" + wantBenchMCP + "|" +
 		wantBenchMCPQual + "|" + wantBenchWorkspace + "|" + wantBenchTransfer + "|" + wantBenchTaskWorkspace + "|" + wantBenchRealAdapter + "|" + wantBenchContainer + "|" +
-		wantBenchClientWait
+		wantBenchClientWait + "|" + wantBenchDevFull
 	// wantBenchContainer is m3-m4-container-e2e's appended evidence parser
 	// benchmark command.
 	wantBenchContainer = "go test ./internal/devcheck -run=^$ -bench=^BenchmarkContainerEvidence$ -benchmem -benchtime=3x -count=1 -timeout=180s"
 	// wantBenchClientWait is the non-blocking coordinator waits design's
 	// appended renewable-wait benchmark command, exactly.
 	wantBenchClientWait = "go test ./internal/client -run=^$ -bench=^BenchmarkWaitUntilDone$ -benchmem -benchtime=3x -count=1 -timeout=180s"
+	// wantBenchDevFull is the development full-flow benchmark, appended
+	// after the client wait step.
+	wantBenchDevFull = "go test ./internal/reale2e -run=^$ -bench=^BenchmarkDevFull -benchmem -benchtime=3x -count=1 -timeout=180s"
 	// wantBenchTaskWorkspace is iteration 10b's task workspace benchmark
 	// command, immediately after the transfer one.
 	wantBenchTaskWorkspace = "go test ./internal/taskworkspace -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s"
@@ -85,7 +88,7 @@ func TestPlaneVerificationPolicyContract(t *testing.T) {
 			t.Fatal("linux native plan accepted")
 		}
 		for stage, want := range map[string][][]string{
-			"bench":               {{wantBenchGit}, {wantBenchPlane}, {wantBenchContract}, {wantBenchSidecar}, {wantBenchAdapter}, {wantBenchMCP}, {wantBenchMCPQual}, {wantBenchWorkspace}, {wantBenchTransfer}, {wantBenchTaskWorkspace}, {wantBenchRealAdapter}, {wantBenchContainer}, {wantBenchClientWait}},
+			"bench":               {{wantBenchGit}, {wantBenchPlane}, {wantBenchContract}, {wantBenchSidecar}, {wantBenchAdapter}, {wantBenchMCP}, {wantBenchMCPQual}, {wantBenchWorkspace}, {wantBenchTransfer}, {wantBenchTaskWorkspace}, {wantBenchRealAdapter}, {wantBenchContainer}, {wantBenchClientWait}, {wantBenchDevFull}},
 			"stress":              wantStageGroups["stress"],
 			"stress-packages":     wantStageGroups["stress-packages"],
 			"stress-packages-cpu": wantStageGroups["stress-packages-cpu"],
@@ -138,11 +141,12 @@ func TestPlaneVerificationPolicyContract(t *testing.T) {
 		// iteration 09b: then the transfer benchmarks; iteration 10b: then
 		// the task workspace benchmarks; non-blocking coordinator waits:
 		// then the client wait benchmark; decoder enrollment: then the
-		// qualification harness's benchmark (nine invocations).
+		// qualification harness's benchmark; development full flow: then
+		// its benchmark (ten invocations).
 		a := f.argvs()
-		if code != 0 || len(a) != 9 || a[0] != wantNative || !strings.Contains(a[1], "-coverprofile=") || !strings.HasPrefix(a[2], "go tool cover") ||
+		if code != 0 || len(a) != 10 || a[0] != wantNative || !strings.Contains(a[1], "-coverprofile=") || !strings.HasPrefix(a[2], "go tool cover") ||
 			!strings.HasPrefix(a[3], "go list") || a[4] != wantBenchWorkspace || a[5] != wantBenchTransfer || a[6] != wantBenchTaskWorkspace || a[7] != wantBenchClientWait ||
-			a[8] != wantBenchMCPQual ||
+			a[8] != wantBenchMCPQual || a[9] != wantBenchDevFull ||
 			!strings.Contains(out, "TestPlaneStatus/expiry-warnings, TestPlanePlatform") {
 			t.Fatalf("darwin native = %d %v %s", code, a, errOut)
 		}

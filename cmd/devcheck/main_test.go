@@ -48,12 +48,13 @@ func TestRunWrapper(t *testing.T) {
 	// tagged real-adapter final-file helper (iteration 08), then the
 	// container evidence parser (m3-m4-container-e2e), then the renewable
 	// wait (non-blocking coordinator waits): thirteen.
-	if len(calls) != 13 || calls[0][0] != "go" || calls[0][1] != "test" || calls[1][2] != "./internal/plane" || calls[2][2] != "./internal/contract" ||
+	if len(calls) != 14 || calls[0][0] != "go" || calls[0][1] != "test" || calls[1][2] != "./internal/plane" || calls[2][2] != "./internal/contract" ||
 		calls[3][2] != "./internal/sidecar" || calls[4][2] != "./internal/adapter" || calls[5][2] != "./internal/mcp" || calls[6][2] != "./internal/mcpqual" ||
 		calls[7][2] != "./internal/workspace" || calls[8][2] != "./internal/workspacetransfer" || calls[9][2] != "./internal/taskworkspace" ||
 		calls[10][2] != "./internal/sidecar" || calls[10][3] != "-tags=realadaptercheck" ||
 		strings.Join(calls[11], " ") != "go test ./internal/devcheck -run=^$ -bench=^BenchmarkContainerEvidence$ -benchmem -benchtime=3x -count=1 -timeout=180s" ||
-		strings.Join(calls[12], " ") != "go test ./internal/client -run=^$ -bench=^BenchmarkWaitUntilDone$ -benchmem -benchtime=3x -count=1 -timeout=180s" {
+		strings.Join(calls[12], " ") != "go test ./internal/client -run=^$ -bench=^BenchmarkWaitUntilDone$ -benchmem -benchtime=3x -count=1 -timeout=180s" ||
+		strings.Join(calls[13], " ") != "go test ./internal/reale2e -run=^$ -bench=^BenchmarkDevFull -benchmem -benchtime=3x -count=1 -timeout=180s" {
 		t.Fatalf("calls = %v", calls)
 	}
 	// The stress shard stages (iteration 02c, stress-plane since 05b,

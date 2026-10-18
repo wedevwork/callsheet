@@ -157,6 +157,13 @@ func LoadBundle(root string) (*Bundle, error) {
 	if data, err := readBounded(filepath.Join(resolved, "manifest.json"), maxTextFile); err == nil && bytes.Contains(data, []byte(`"`+ManifestSchemaV1+`"`)) {
 		return nil, &SchemaError{Err: errV1Bundle}
 	}
+	// A development execution record is an unsupported manifest. Reject it
+	// before any task file is interpreted.
+	if data, err := readBounded(filepath.Join(resolved, DevExecutionFile), maxTextFile); err == nil {
+		if got := peekSchema(data); got == DevExecutionSchema {
+			return nil, schemaErr("%s: unsupported schema %q", DevExecutionFile, contract.SafeText(got, 80))
+		}
+	}
 	b := &Bundle{Root: resolved, Files: map[string][]byte{}}
 	if err := b.readFiles(); err != nil {
 		return nil, err
