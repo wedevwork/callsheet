@@ -384,12 +384,14 @@ func TestStagePlanning(t *testing.T) {
 		"go test ./internal/taskworkspace -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s|"+
 		"go test ./internal/sidecar -tags=realadaptercheck -run=^$ -bench=^BenchmarkRealAdapterFile$ -benchmem -benchtime=3x -count=1 -timeout=180s|"+
 		"go test ./internal/devcheck -run=^$ -bench=^BenchmarkContainerEvidence$ -benchmem -benchtime=3x -count=1 -timeout=180s|"+
-		"go test ./internal/client -run=^$ -bench=^BenchmarkWaitUntilDone$ -benchmem -benchtime=3x -count=1 -timeout=180s" {
+		"go test ./internal/client -run=^$ -bench=^BenchmarkWaitUntilDone$ -benchmem -benchtime=3x -count=1 -timeout=180s|"+
+		"go test ./internal/reale2e -run=^$ -bench=^BenchmarkDevFull -benchmem -benchtime=3x -count=1 -timeout=180s" {
 		t.Fatalf("bench = %s", got)
 	}
-	// Non-blocking coordinator waits: 13 bench steps, the client wait step
-	// last and named exactly; cross stays 12 artifacts.
-	if b := BenchSteps(); len(b) != 13 || b[12].Name != "bench client wait" || strings.Join(b[12].Argv, " ") != strings.Join(ClientWaitBenchStep().Argv, " ") {
+	// Development full flow: 14 bench steps. The client wait step stays
+	// at index 12; the dev-full step is last. Cross stays 12 artifacts.
+	if b := BenchSteps(); len(b) != 14 || b[12].Name != "bench client wait" || strings.Join(b[12].Argv, " ") != strings.Join(ClientWaitBenchStep().Argv, " ") ||
+		b[13].Name != "bench reale2e dev-full" || strings.Join(b[13].Argv, " ") != strings.Join(RealE2EDevBenchStep().Argv, " ") {
 		t.Fatalf("bench steps %+v", b)
 	}
 	f = &fakeRunner{}
@@ -475,15 +477,15 @@ func TestAllStopsAtFirstFailure(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("all = %d %s", code, errOut)
 	}
-	// Ordinary calls: test(4) + coverage(3) + bench(13, the client wait
-	// step since non-blocking coordinator waits) + cross(12), in that
-	// order; the container operation's own calls run inside the test stage
+	// Ordinary calls: test(4) + coverage(3) + bench(14, the dev-full step
+	// after the client wait step) + cross(12), in that order; the
+	// container operation's own calls run inside the test stage
 	// (asserted separately: one iteration).
 	a := f.argvs()
 	if got := strings.Join(cr.containerKinds(), "|"); got != strings.Join(oneIterationKinds, "|") {
 		t.Fatalf("all container calls = %s", got)
 	}
-	if len(a) != 32 || !strings.Contains(a[0], "go test -count=1") || !strings.Contains(a[2], "-tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$") ||
+	if len(a) != 33 || !strings.Contains(a[0], "go test -count=1") || !strings.Contains(a[2], "-tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$") ||
 		!strings.Contains(a[4], "-coverprofile") || !strings.Contains(a[7], "-bench") ||
 		!strings.Contains(a[8], "./internal/plane -run=^$ -bench=.") || !strings.Contains(a[9], "./internal/contract -run=^$ -bench=.") ||
 		!strings.Contains(a[10], "./internal/sidecar -run=^$ -bench=.") || !strings.Contains(a[11], "./internal/adapter -run=^$ -bench=.") ||
@@ -491,7 +493,8 @@ func TestAllStopsAtFirstFailure(t *testing.T) {
 		!strings.Contains(a[14], "./internal/workspace -run=^$ -bench=.") || !strings.Contains(a[15], "./internal/workspacetransfer -run=^$ -bench=.") ||
 		!strings.Contains(a[16], "./internal/taskworkspace -run=^$ -bench=.") ||
 		!strings.Contains(a[17], "-bench=^BenchmarkRealAdapterFile$") || !strings.Contains(a[18], "-bench=^BenchmarkContainerEvidence$") ||
-		!strings.Contains(a[19], "./internal/client -run=^$ -bench=^BenchmarkWaitUntilDone$") || !strings.Contains(a[20], "go build") {
+		!strings.Contains(a[19], "./internal/client -run=^$ -bench=^BenchmarkWaitUntilDone$") ||
+		!strings.Contains(a[20], "./internal/reale2e -run=^$ -bench=^BenchmarkDevFull") || !strings.Contains(a[21], "go build") {
 		t.Fatalf("all order = %v", a)
 	}
 	// A later bench failure is reached only past successful synthetic

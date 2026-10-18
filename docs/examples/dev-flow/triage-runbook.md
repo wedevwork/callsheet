@@ -19,11 +19,11 @@ Use a working and broken range when one is available. Enumerate hypotheses and t
 
 Only CONFIRMED and PROBABLE produce `fix.md`. An inherited `fix.md` must not be overwritten at `TRIAGE_UNCONFIRMED`, and it must not be reused. The coordinator accepts a brief only from the current successful triage publication whose confidence matches the cause. A stale brief does not authorize a fix.
 
-If any item requires design, the whole brief is held for the full design flow. Do not split it into simultaneous designer and coder tasks. Say so in `fix.md` with Design required set to yes.
+If any item requires design, the whole brief is held for the full design flow. Do not split it into simultaneous designer and coder tasks. Say so with exactly one standalone line `Design required: yes`. `Design required: no` permits the qualified fix continuation.
 
 ## fix.md
 
-When you publish it, include Symptom, Root cause at file:line, Evidence with decisive quotations, Confidence, Design required, Fix, Blast radius, CI impact, Regression test, and Investigation links. `rca.md` holds the hypothesis trail, evidence references, and missing evidence. Quote decisive evidence so a later worker does not need a vanished scratch path.
+When you publish it, include Symptom, Root cause at file:line, Evidence with decisive quotations, Confidence, exactly one standalone line `Design required: yes` or `Design required: no`, Fix, Blast radius, CI impact, Regression test, and Investigation links. The key has precisely that capitalization, no question mark, exactly one ASCII space after the colon, a lowercase value, and no trailing spaces. The line sits outside a code fence. It is not a heading, table cell, list item, or quotation. The key has no question mark. `yes` routes the whole brief to the designer. `no` permits the qualified fix. `rca.md` holds the hypothesis trail, evidence references, and missing evidence. Quote decisive evidence so a later worker does not need a vanished scratch path.
 
 ## Evidence directory
 

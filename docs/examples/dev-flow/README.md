@@ -51,6 +51,10 @@ Each pair stands alone with the task envelope. Links are reading aids.
 - [Code reviewer instruction](code-reviewer-instruction.md) and [runbook](code-reviewer-runbook.md)
 - [Triage instruction](triage-instruction.md) and [runbook](triage-runbook.md)
 
+## Design-review delta audits
+
+The first design audit uses the complete checklist. Every later audit receives the previous audit's task, commit and report digest, the previous design digest, prior finding IDs and text, the designer's dispositions, and a revision delta of changed specification paths with their old and new hashes. The coordinator's bounded change summary, with pinned commits, is not proof that other paths stayed unchanged. Each active finding is tagged `persisting`, `regression`, or `new-on-unchanged`. The last tag is only for a Critical and must say why it was missed earlier. A new worker session does not restart the audit at round one. Historical reports stay bound to their immutable task commits. Code-review dispositions stay `fixed`, `persisting`, `reopened`, and distinct new findings. They are not the design-audit tags.
+
 ## Artifact map
 
 | Artifact | Producer | When it is published |
@@ -79,7 +83,7 @@ Workspace handoffs use the existing dispatch fields `target`, `goal`, `acceptanc
 The owner authorizes the investigation and the defect work at intake. There is no design sign-off unless the work escalates.
 
 1. Dispatch triage on the pinned buggy commit.
-2. On `TRIAGE_CONFIRMED` or `TRIAGE_PROBABLE`, validate that brief and dispatch the coder in defect mode. A brief that says design is required enters the full flow instead.
+2. On `TRIAGE_CONFIRMED` or `TRIAGE_PROBABLE`, validate that brief and dispatch the coder in defect mode. A standalone line `Design required: yes` enters the full flow instead. `Design required: no` stays on the qualified fix.
 3. On `IMPL_COMPLETE`, dispatch the code reviewer in light mode. Keep the original source base for the red-before check through every report-only publication and fix round.
 4. On `REVIEW_APPROVED`, deliver under the same publication gates.
 

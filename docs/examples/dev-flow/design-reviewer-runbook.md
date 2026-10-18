@@ -37,3 +37,9 @@ End the report and the final answer with the same marker. The last nonempty line
 - `STATUS: DESIGN_CHANGES_REQUESTED`
 
 The two endings match. A report that carries both markers, or a final answer that disagrees with the report, is not a verdict. Missing input is `DESIGN_CHANGES_REQUESTED` with the finding named. Approval routes to the owner, not directly to the coder.
+
+## Delta audit
+
+On every audit after the first, verify the designer's dispositions of the prior findings and verify the changed design plus affected dependencies against the original checklist. The supervisor derives the changed-path and hash list from the two admitted trees. Use that list. The coordinator's change summary is not proof that an unlisted path stayed unchanged.
+
+Tag each active finding `persisting`, `regression`, or `new-on-unchanged`. `regression` names the changed dependency when the affected text itself did not change. `new-on-unchanged` is only a Critical, with a specific reason it was missed earlier. Do not file a new Warning or Suggestion against unchanged material. List resolved IDs separately with evidence; they are not active findings and do not take one of these tags. Keep IDs for persisting and reintroduced issues. New IDs do not reuse closed ones. If the prior report, the prior design digest, or the revision delta is missing or unreadable, report `DESIGN_CHANGES_REQUESTED` with that named finding. Do not open an unbound first audit because a new worker session started.

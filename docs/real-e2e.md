@@ -111,3 +111,25 @@ Right after the run, review `audit.md` with your external dev-flow coordinator: 
 ## Rerun
 
 Resolve the reported cause (login, model access, a permission or configuration incompatibility, a protected change), then run the same command with a new evidence directory. Every attempt has its own run ID, runtime, workspace and coordinator session; nothing is resumed or retried, and earlier bundles keep their result. If cleanup could not prove every process stopped, the runtime is kept and the supervisor prints the process IDs to check and stop before rerunning.
+
+## Development full-flow command (incomplete, unverified)
+
+`reale2e run-dev-full` is a separate development-only entry point. It is not a PASS, and `reale2e check` does not accept its evidence. The default `reale2e run` command, its flow file, the legacy manuals, and `reale2e check` are unchanged.
+
+```sh
+CALLSHEET_REAL_E2E=1 /abs/path/reale2e run-dev-full \
+  --callsheet /abs/path/callsheet \
+  --claude /abs/path/claude --codex /abs/path/codex --grok /abs/path/grok \
+  --protect-root /opt/gitspace \
+  --evidence /abs/callsheet/design/real-e2e-runs/NEW-DEV-ATTEMPT
+```
+
+The same absolute `--flow` override may change only model or effort and is labeled `override-flow` unless every selection matches the default five-role table. Live startup uses the same gate as `run` (explicit opt-in, Linux, no `CI`, no `CLAUDE_CONFIG_DIR`). Adding the command does not authorize a live invocation during this slice.
+
+On an unverified completion the command prints `EXECUTED — UNVERIFIED: slice 2d.3 verification required` and exits 3. A stop or a failure exits 1. Usage, startup, and schema errors exit 2. Exit 0 is never returned. The evidence file `dev-execution.json` uses schema `callsheet-dev-full-execution/v1` with outcome `executed-unverified`, `stopped`, or `failed`. It is not a report and it does not contain a PASS. `reale2e check` rejects that manifest as an unsupported schema (exit 2) before it interprets any task.
+
+The exercise loads the shared manuals in [examples/dev-flow/](examples/dev-flow/README.md) plus the scenario files in [examples/real-e2e/dev-full/](examples/real-e2e/dev-full/). Role methods are not copied into the exercise prompts. Five authentication preflights replace the four-hop set. The happy path is four workflow calls. Loops allow up to twelve ordinary-pair calls and two recovery calls, so at most 19 worker calls including the five preflights, plus vendor-dependent coordinator calls in up to four phases. There is no extra paid coordinator preflight and no token ceiling. Bounds stay 2m/preflight, 10m/task, 90m/attempt, 20m/owner window, 60s reserved for later final validation, and 2m/cleanup. The 90-minute attempt deadline stops first if the task-time sum would exceed it.
+
+Owner answers are `yes <generation>` or `no <generation>`, and a clarification is `answer <generation> <text>` (one line, at most 8192 bytes). A plain `yes` does not approve a later design. Before each decision the supervisor prints the approved `design.md`, `revision-history.md` and `design-review.md` with their SHA-256 values. Input typed while no decision window is open is discarded, including a line the supervisor's reader had begun or finished reading before the window opened, and a line naming another generation decides nothing and does not extend the window. Bytes the operating system still buffers when a window opens, unread by the reader (a canonical terminal can hold a whole line until Enter), cannot be told apart from bytes typed after it opened.
+
+The coordinator pushes the seed itself; `dev-next` exposes no plan until the workspace's main branch holds the seed commit. Once a plan's task is admitted, `dev-next` never names that plan again: it admits the consumed result and names the successor, or answers `pending` until it can. Every control request (`dev-next`, `dev-observe`, `dev-wait-task`) is served by the supervisor's single loop. Each workflow task's wait counts only with its exact background command, its own completion notification and a following `task_show` of that task, and the captured wait exit 0. Results are pulled with the product's transfer code into a new ordinary inspection repository and admitted against each role's allowlist and artifact contract. A coordinator phase ends at an owner or clarification gate with the exact line `gate=<owner|answer> generation=<N>`. The bundle keeps every plan, dispatch document, task observation, wait, admission, transition, decision, receipt, phase stream and launch record, the cleanup record and an evidence repository with `refs/heads/seed` and `refs/heads/task-NN`.

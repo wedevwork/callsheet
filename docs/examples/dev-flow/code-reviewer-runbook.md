@@ -61,3 +61,7 @@ Otherwise partial counts fail. `UNOBSERVED` still emits `REVIEW_CHANGES_REQUESTE
 ## Marker
 
 `REVIEW_APPROVED` requires the mode's bar, a clean publication of only `review.md`, and scratch verified absent. Anything short of that is `REVIEW_CHANGES_REQUESTED` or, when the specification itself cannot be satisfied, `NEEDS_DESIGN`.
+
+## Development envelope blocker
+
+When the task envelope requires it, both the final answer and `review.md` contain exactly one plain unindented line `CALLSHEET_REVIEW_BLOCKER: environment` or `CALLSHEET_REVIEW_BLOCKER: none`, immediately before the terminal STATUS line, with no intervening blank line. The key is uppercase, the value is lowercase, with exactly one ASCII space after the colon and no trailing spaces. The values in the two artifacts match. `environment` is valid only with `REVIEW_CHANGES_REQUESTED` and stops for the owner without a fix round. A heading, table cell, list item, quotation, code fence, different case, or extra space is not the field. Missing, repeated, or conflicting fields fail closed. This contract is conditional on the development envelope. It is not mandatory for callers that do not request it.

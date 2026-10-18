@@ -397,8 +397,14 @@ func (s *supervisor) cleanup(start time.Time) CleanupRecord {
 // (when a baseline was taken): every protected difference is recorded,
 // whatever else failed.
 func (s *supervisor) compareEnvironment() {
+	s.environmentDiff()
+}
+
+// environmentDiff is compareEnvironment returning the written diff (nil
+// without a baseline). It takes the final fingerprint exactly once.
+func (s *supervisor) environmentDiff() *EnvDiff {
 	if s.before == nil {
-		return
+		return nil
 	}
 	after := s.snapshot("after", s.cleanupBy)
 	diff := CompareEnvironment(s.before, after, s.manifest.ProtectedRoots)
@@ -430,6 +436,7 @@ func (s *supervisor) compareEnvironment() {
 	if n := diff.ToolDetailCount + diff.ToolOmittedCount; n > 0 {
 		s.say("%d tool-maintained vendor changes (report-only), summarized in report.txt", n)
 	}
+	return &diff
 }
 
 // judge runs the offline checker on the bundle, writes report.json and

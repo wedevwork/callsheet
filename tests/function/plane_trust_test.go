@@ -1013,7 +1013,7 @@ func TestPlanePlatform(t *testing.T) {
 		}
 	}
 	bench := devcheck.BenchSteps()
-	if len(bench) != 13 || strings.Join(bench[1].Argv, " ") != benchPlane {
+	if len(bench) != 14 || strings.Join(bench[1].Argv, " ") != benchPlane {
 		t.Fatalf("bench plan = %+v", bench)
 	}
 	if _, err := devcheck.NativeSteps("linux"); err == nil {

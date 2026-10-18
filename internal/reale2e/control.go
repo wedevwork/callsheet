@@ -52,13 +52,19 @@ const (
 	opObserve            = "observe"
 	opWaitTask           = "wait-task"
 	opReview             = "review-material"
+	opDevNext            = "dev-next"
+	opDevObserve         = "dev-observe"
+	opDevWait            = "dev-wait-task"
 )
 
 // requestKeys are each operation's exact request keys.
 var requestKeys = map[string][]string{
-	opObserve:  {"run", "op", "task", "hop"},
-	opWaitTask: {"run", "op", "task", "hop"},
-	opReview:   {"run", "op"},
+	opObserve:    {"run", "op", "task", "hop"},
+	opWaitTask:   {"run", "op", "task", "hop"},
+	opReview:     {"run", "op"},
+	opDevNext:    {"run", "op"},
+	opDevObserve: {"run", "op", "task", "ordinal"},
+	opDevWait:    {"run", "op", "task", "ordinal"},
 }
 
 // okCodes are the success codes.
@@ -70,7 +76,7 @@ var errorCodes = []string{CodeInvalidRequest, CodeRunMismatch, CodeInvalidHop, C
 
 // ControlRequest is one decoded request.
 type ControlRequest struct {
-	Run, Op, Task, Hop string
+	Run, Op, Task, Hop, Ordinal string
 }
 
 // ReviewFile is one review-material file with its expected SHA-256.
@@ -82,10 +88,16 @@ type ReviewFile struct {
 // controlResponse is the response line; Commit and Files are set only by
 // a successful review-material.
 type controlResponse struct {
-	OK     bool         `json:"ok"`
-	Code   string       `json:"code"`
-	Commit string       `json:"commit,omitempty"`
-	Files  []ReviewFile `json:"files,omitempty"`
+	OK      bool         `json:"ok"`
+	Code    string       `json:"code"`
+	Commit  string       `json:"commit,omitempty"`
+	Files   []ReviewFile `json:"files,omitempty"`
+	Path    string       `json:"path,omitempty"`
+	Digest  string       `json:"digest,omitempty"`
+	Summary string       `json:"summary,omitempty"`
+	Ordinal int          `json:"ordinal,omitempty"`
+	Role    string       `json:"role,omitempty"`
+	Mode    string       `json:"mode,omitempty"`
 }
 
 // codeResponse is a response carrying only code.
@@ -154,6 +166,8 @@ func parseControlRequest(line []byte) (ControlRequest, bool) {
 			r.Task = s
 		case "hop":
 			r.Hop = s
+		case "ordinal":
+			r.Ordinal = s
 		}
 	}
 	return r, true
@@ -163,6 +177,7 @@ func parseControlRequest(line []byte) (ControlRequest, bool) {
 type controlServer struct {
 	ln     net.Listener
 	runID  string
+	dev    bool
 	handle func(ControlRequest) controlResponse
 	wg     sync.WaitGroup
 }
@@ -170,6 +185,16 @@ type controlServer struct {
 // listenControl creates the socket mode 0600 and serves it; handle is
 // called for requests whose run ID matches.
 func listenControl(runtime, runID string, handle func(ControlRequest) controlResponse) (*controlServer, error) {
+	return listenSocket(runtime, runID, false, handle)
+}
+
+// listenDevControl is the development supervisor's socket. It accepts only
+// dev-next, dev-observe and dev-wait-task.
+func listenDevControl(runtime, runID string, handle func(ControlRequest) controlResponse) (*controlServer, error) {
+	return listenSocket(runtime, runID, true, handle)
+}
+
+func listenSocket(runtime, runID string, dev bool, handle func(ControlRequest) controlResponse) (*controlServer, error) {
 	p, err := socketPath(runtime)
 	if err != nil {
 		return nil, err
@@ -182,10 +207,14 @@ func listenControl(runtime, runID string, handle func(ControlRequest) controlRes
 		ln.Close()
 		return nil, err
 	}
-	s := &controlServer{ln: ln, runID: runID, handle: handle}
+	s := &controlServer{ln: ln, runID: runID, dev: dev, handle: handle}
 	s.wg.Add(1)
 	go s.serve()
 	return s, nil
+}
+
+func devOp(op string) bool {
+	return op == opDevNext || op == opDevObserve || op == opDevWait
 }
 
 func (s *controlServer) serve() {
@@ -208,9 +237,13 @@ func (s *controlServer) exchange(conn net.Conn) {
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(controlExchange))
 	resp := s.request(conn)
-	resp.OK = slices.Contains(okCodes, resp.Code)
+	ok := okCodes
+	if s.dev {
+		ok = devOKCodes
+	}
+	resp.OK = slices.Contains(ok, resp.Code)
 	if !resp.OK {
-		resp = codeResponse(resp.Code)
+		resp = controlResponse{Code: resp.Code}
 	}
 	b, _ := json.Marshal(resp)
 	if len(b) >= maxControlLine {
@@ -232,6 +265,10 @@ func (s *controlServer) request(conn net.Conn) controlResponse {
 		return codeResponse(CodeInvalidRequest)
 	case req.Run != s.runID:
 		return codeResponse(CodeRunMismatch)
+	case devOp(req.Op) != s.dev:
+		return codeResponse(CodeInvalidRequest)
+	case devOp(req.Op):
+		return s.handle(req)
 	case req.Op != opReview && hopIndex(req.Hop) < 0:
 		return codeResponse(CodeInvalidHop)
 	}
