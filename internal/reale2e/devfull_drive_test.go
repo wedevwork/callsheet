@@ -1376,7 +1376,7 @@ type reviewRun struct {
 // the receipt's exits, coverage and digest. The returned tree is the
 // checkout's visible files after the processes ended.
 func (r *devRig) review(act devAct, doc devDispatchDoc, base map[string][]byte, task string) map[string][]byte {
-	co := r.t.TempDir()
+	co := physicalTempDir(r.t)
 	pinReviewCheckout(r.t, co, r.f.plane.hub, plumbing.NewHash(doc.Base), base)
 	candidate := strings.Fields(goalField(doc.Goal, "candidate_commit") + " x")[0]
 	initial := goalField(doc.Goal, "initial_source_commit")

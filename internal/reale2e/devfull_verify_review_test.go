@@ -48,12 +48,25 @@ func newReviewFix(t testing.TB) *reviewFix {
 	candFiles := withFiles(seedFiles, map[string][]byte{"main.go": []byte(fixtureMain), "main_test.go": []byte(fixtureTest),
 		"design.md": []byte("# Design\n"), "design-review.md": []byte("# Review\n\nSTATUS: DESIGN_REVIEW_APPROVED\n")})
 	cand, _ := writeCommitMode(t, hub, candFiles, nil, seed)
-	co := t.TempDir()
+	co := physicalTempDir(t)
 	pinReviewCheckout(t, co, hub, cand, candFiles)
 	f := &reviewFix{t: t, hub: hub, seed: seed, cand: cand, seedFiles: seedFiles, candFiles: candFiles, co: co, task: hexID("t_", 11),
 		clock: newAutoClock()}
 	f.spec = reviewHelperSpec{Reale2e: "/opt/reale2e/reale2e", Go: stubFile(t, t.TempDir(), "go"), Deadline: "2026-10-10T13:00:00Z"}
 	return f
+}
+
+// physicalTempDir is a new test directory by its resolved path: a
+// reviewer checkout is a canonical directory, as a real task workspace's
+// (the helper refuses a symlinked path, and a test's temporary parent may
+// be one, e.g. macOS's /var -> /private/var).
+func physicalTempDir(t testing.TB) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }
 
 // argv is the helper's exact invocation for the fixture.
@@ -366,7 +379,7 @@ func TestDevFullReviewEvidence(t *testing.T) {
 	bash := "/bin/bash -lc '" + plain + "'"
 	failF := newReviewFix(t)
 	failF.task, failF.spec, failF.cand, failF.seed = f.task, f.spec, f.cand, f.seed
-	failF.co = t.TempDir()
+	failF.co = physicalTempDir(t)
 	pinReviewCheckout(t, failF.co, f.hub, f.cand, f.candFiles)
 	failF.hub, failF.candFiles, failF.seedFiles = f.hub, f.candFiles, f.seedFiles
 	failF.script = reviewScript{testExit: 1}

@@ -436,6 +436,24 @@ func TestDevFullVerifyFP5(t *testing.T) {
 		r := newDevRig(t, devLoopSteps())
 		r.owner = []string{"yes 1"}
 		r.f.goPath = goBin
+		// The scripted startup and baseline report the live toolchain's
+		// version, which the real final validation records (the pinned
+		// toolchain binding; CI's Go is the go.mod version, not the
+		// script's).
+		live, err := exec.Command(goBin, "version").Output()
+		if err != nil {
+			t.Fatalf("go version: %v", err)
+		}
+		scripted := r.f.override
+		r.f.override = func(s ProcSpec) (behavior, bool) {
+			if s.Path == goBin && len(s.Args) == 1 && s.Args[0] == "version" {
+				return behavior{stdout: string(live)}, true
+			}
+			if scripted != nil {
+				return scripted(s)
+			}
+			return behavior{}, false
+		}
 		// The final validation runs for real; everything else stays scripted.
 		r.f.launcher.real = func(s ProcSpec) bool {
 			return strings.Contains(s.Dir, string(filepath.Separator)+"final"+string(filepath.Separator)) || filepath.Base(s.Path) == "greeting"
@@ -444,6 +462,10 @@ func TestDevFullVerifyFP5(t *testing.T) {
 		m := r.manifest()
 		if m.FinalCandidate != r.d.state.Tasks[4].Commit || m.FinalCandidate == r.d.state.Tasks[2].Commit {
 			t.Fatalf("the candidate is not the fix loop's: %s", m.FinalCandidate)
+		}
+		var final TestRun
+		if err := json.Unmarshal(r.evidence("validation/final-test.json"), &final); err != nil || final.Toolchain != strings.TrimSpace(string(live)) {
+			t.Fatalf("final toolchain %q, live %q (%v)", final.Toolchain, live, err)
 		}
 		var cov DevCoverageRecord
 		if err := json.Unmarshal(r.evidence(devCoverageFile), &cov); err != nil || cov.Coverage == nil || !cov.Coverage.Pass ||
