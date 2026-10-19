@@ -1,7 +1,6 @@
 package mcp
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"strconv"
@@ -203,25 +202,16 @@ func workspaceTools() []*tool {
 // wsGuidance is appended to a workspace mutation's lost answer.
 const wsGuidance = "the change may have taken effect: inspect with ws_show or ws_status before repeating it (never retried)"
 
-func invalidWsName() error { return contract.InvalidWorkspaceName() }
-
-type wsNameArgs struct {
-	Name string `json:"name"`
-}
-
 func runWsCreate(c *call, raw json.RawMessage) (toolResult, error) {
-	var a wsNameArgs
-	if err := decodeArgs(raw, &a); err != nil {
+	name, err := contract.ParseWsNameArgs(raw)
+	if err != nil {
 		return toolResult{}, err
-	}
-	if !contract.ValidWorkspaceName(a.Name) {
-		return toolResult{}, invalidWsName()
 	}
 	cl, err := c.client()
 	if err != nil {
 		return toolResult{}, err
 	}
-	v, err := cl.CreateWorkspace(c.opCtx, a.Name)
+	v, err := cl.CreateWorkspace(c.opCtx, name)
 	if err != nil {
 		return toolResult{}, withGuidance(err, wsGuidance)
 	}
@@ -229,25 +219,9 @@ func runWsCreate(c *call, raw json.RawMessage) (toolResult, error) {
 }
 
 func runWsLs(c *call, raw json.RawMessage) (toolResult, error) {
-	var a struct {
-		After *string `json:"after,omitempty"`
-		Limit *int    `json:"limit,omitempty"`
-	}
-	if err := decodeArgs(raw, &a); err != nil {
+	after, limit, err := contract.ParseWsListArgs(raw)
+	if err != nil {
 		return toolResult{}, err
-	}
-	after, limit := "", contract.DefaultWorkspaceLimit
-	if a.After != nil {
-		if *a.After == "" || len(*a.After) > 63 {
-			return toolResult{}, invalid("after", "after must be a workspace name of 1-63 bytes (the previous page's next_after)")
-		}
-		after = *a.After
-	}
-	if a.Limit != nil {
-		if *a.Limit < 1 || *a.Limit > contract.MaxWorkspaceLimit {
-			return toolResult{}, invalid("limit", "limit must be an integer from 1 to %d", contract.MaxWorkspaceLimit)
-		}
-		limit = *a.Limit
 	}
 	cl, err := c.client()
 	if err != nil {
@@ -261,18 +235,15 @@ func runWsLs(c *call, raw json.RawMessage) (toolResult, error) {
 }
 
 func runWsShow(c *call, raw json.RawMessage) (toolResult, error) {
-	var a wsNameArgs
-	if err := decodeArgs(raw, &a); err != nil {
+	name, err := contract.ParseWsNameArgs(raw)
+	if err != nil {
 		return toolResult{}, err
-	}
-	if !contract.ValidWorkspaceName(a.Name) {
-		return toolResult{}, invalidWsName()
 	}
 	cl, err := c.client()
 	if err != nil {
 		return toolResult{}, err
 	}
-	v, err := cl.ShowWorkspace(c.opCtx, a.Name)
+	v, err := cl.ShowWorkspace(c.opCtx, name)
 	if err != nil {
 		return toolResult{}, err
 	}
@@ -280,24 +251,15 @@ func runWsShow(c *call, raw json.RawMessage) (toolResult, error) {
 }
 
 func runWsRm(c *call, raw json.RawMessage) (toolResult, error) {
-	var a struct {
-		Name     string `json:"name"`
-		Instance string `json:"instance"`
-	}
-	if err := decodeArgs(raw, &a); err != nil {
-		return toolResult{}, err
-	}
-	if !contract.ValidWorkspaceName(a.Name) {
-		return toolResult{}, invalidWsName()
-	}
-	if err := contract.ValidateInstance(a.Instance); err != nil {
+	name, instance, err := contract.ParseWsRemoveArgs(raw)
+	if err != nil {
 		return toolResult{}, err
 	}
 	cl, err := c.client()
 	if err != nil {
 		return toolResult{}, err
 	}
-	r, err := cl.RemoveWorkspace(c.opCtx, a.Name, a.Instance)
+	r, err := cl.RemoveWorkspace(c.opCtx, name, instance)
 	if err != nil {
 		return toolResult{}, withGuidance(err, wsGuidance)
 	}
@@ -305,28 +267,15 @@ func runWsRm(c *call, raw json.RawMessage) (toolResult, error) {
 }
 
 func runWsPrune(c *call, raw json.RawMessage) (toolResult, error) {
-	var a struct {
-		Name     string `json:"name"`
-		Instance string `json:"instance"`
-		Before   string `json:"before"`
-	}
-	if err := decodeArgs(raw, &a); err != nil {
-		return toolResult{}, err
-	}
-	if !contract.ValidWorkspaceName(a.Name) {
-		return toolResult{}, invalidWsName()
-	}
-	if err := contract.ValidateInstance(a.Instance); err != nil {
-		return toolResult{}, err
-	}
-	if _, err := contract.ParseCutoff(a.Before); err != nil {
+	name, instance, before, err := contract.ParseWsPruneArgs(raw)
+	if err != nil {
 		return toolResult{}, err
 	}
 	cl, err := c.client()
 	if err != nil {
 		return toolResult{}, err
 	}
-	r, err := cl.PruneWorkspace(c.opCtx, a.Name, a.Instance, a.Before)
+	r, err := cl.PruneWorkspace(c.opCtx, name, instance, before)
 	if err != nil {
 		return toolResult{}, withGuidance(err, wsGuidance)
 	}
@@ -334,150 +283,39 @@ func runWsPrune(c *call, raw json.RawMessage) (toolResult, error) {
 }
 
 func runWsRefSet(c *call, raw json.RawMessage) (toolResult, error) {
-	var a struct {
-		Name     string  `json:"name"`
-		Instance string  `json:"instance"`
-		Branch   string  `json:"branch"`
-		Expected string  `json:"expected"`
-		Target   *string `json:"target,omitempty"`
-		Delete   *bool   `json:"delete,omitempty"`
-	}
-	if err := decodeArgs(raw, &a); err != nil {
-		return toolResult{}, err
-	}
-	if !contract.ValidWorkspaceName(a.Name) {
-		return toolResult{}, invalidWsName()
-	}
-	req := contract.WorkspaceRefSetRequest{Instance: a.Instance, Branch: a.Branch, Expected: a.Expected, Target: a.Target, Delete: a.Delete}
-	if _, err := contract.ValidateRefSet(req); err != nil {
+	name, req, err := contract.ParseWsRefSetArgs(raw)
+	if err != nil {
 		return toolResult{}, err
 	}
 	cl, err := c.client()
 	if err != nil {
 		return toolResult{}, err
 	}
-	r, err := cl.SetWorkspaceRef(c.opCtx, a.Name, req)
+	r, err := cl.SetWorkspaceRef(c.opCtx, name, req)
 	if err != nil {
 		return toolResult{}, withGuidance(err, wsGuidance)
 	}
 	return encodeJSON(r)
 }
 
-type wsPageArgs struct {
-	After      *string `json:"after,omitempty"`
-	Instance   *string `json:"instance,omitempty"`
-	Generation *string `json:"generation,omitempty"`
-	Limit      *int    `json:"limit,omitempty"`
-}
-
-// page returns the continuation and limit of paged workspace reads.
-func (a wsPageArgs) page() (after, instance, generation string, limit int, err error) {
-	str := func(p *string) string {
-		if p == nil {
-			return ""
-		}
-		return *p
-	}
-	after, instance, generation = str(a.After), str(a.Instance), str(a.Generation)
-	if (a.After == nil) != (a.Instance == nil) || (a.After == nil) != (a.Generation == nil) {
-		return "", "", "", 0, invalid("after", "a continuation needs after, instance and generation together; the first page omits all three")
-	}
-	if a.After != nil && (!contract.ValidWorkspaceToken(instance) || !contract.ValidWorkspaceToken(generation) || after == "") {
-		return "", "", "", 0, invalid("after", "after, instance and generation must come from the previous page")
-	}
-	limit = contract.DefaultWorkspaceLimit
-	if a.Limit != nil {
-		if *a.Limit < 1 || *a.Limit > contract.MaxWorkspaceLimit {
-			return "", "", "", 0, invalid("limit", "limit must be an integer from 1 to %d", contract.MaxWorkspaceLimit)
-		}
-		limit = *a.Limit
-	}
-	return after, instance, generation, limit, nil
-}
-
-// wsFormArgs are ws_status's and ws_diff's flat arguments (iteration 10c):
-// the union of the explicit form's keys and the task form's task_id.
-// Exactly one form, its required keys and no mixed key are runtime rules
-// (the flat schema does not express them).
-type wsFormArgs struct {
-	TaskID     *string `json:"task_id,omitempty"`
-	Name       *string `json:"name,omitempty"`
-	Base       *string `json:"base,omitempty"`
-	Target     *string `json:"target,omitempty"`
-	After      *string `json:"after,omitempty"`
-	Instance   *string `json:"instance,omitempty"`
-	Generation *string `json:"generation,omitempty"`
-	Limit      *int    `json:"limit,omitempty"`
-}
-
-func (a wsFormArgs) paging() wsPageArgs {
-	return wsPageArgs{After: a.After, Instance: a.Instance, Generation: a.Generation, Limit: a.Limit}
-}
-
-// form selects the accepted form: task (task_id, with paging only when
-// paged) or explicit (name, and with diff base and target); a mixed or
-// incomplete set is invalid_argument.
-func (a wsFormArgs) form(tool string, diff bool) (bool, error) {
-	if a.TaskID != nil {
-		switch {
-		case a.Name != nil || a.Base != nil || a.Target != nil:
-			return false, invalid("task_id", "%s takes either task_id or the explicit workspace arguments, never both", tool)
-		case !diff && (a.After != nil || a.Instance != nil || a.Generation != nil || a.Limit != nil):
-			return false, invalid("task_id", "%s with task_id takes no paging arguments", tool)
-		case !contract.ValidTaskID(*a.TaskID):
-			return false, invalidTaskID("task_id")
-		}
-		return true, nil
-	}
-	switch {
-	case a.Name == nil && diff:
-		return false, invalid("name", "%s needs task_id, or name with base and target", tool)
-	case a.Name == nil:
-		return false, invalid("name", "%s needs task_id or name", tool)
-	case diff && (a.Base == nil || a.Target == nil):
-		return false, invalid("base", "%s's explicit form needs name, base and target together", tool)
-	case !diff && (a.Base != nil || a.Target != nil):
-		return false, invalid("base", "%s takes no base or target", tool)
-	}
-	return false, nil
-}
-
 func runWsStatus(c *call, raw json.RawMessage) (toolResult, error) {
-	var a wsFormArgs
-	if err := decodeArgs(raw, &a); err != nil {
-		return toolResult{}, err
-	}
-	task, err := a.form(toolWsStatus, false)
+	a, err := contract.ParseWsStatusArgs(raw)
 	if err != nil {
 		return toolResult{}, err
-	}
-	if task {
-		cl, err := c.client()
-		if err != nil {
-			return toolResult{}, err
-		}
-		r, err := cl.TaskWorkspaceStatus(c.opCtx, *a.TaskID)
-		if err != nil {
-			return toolResult{}, err
-		}
-		return encodeJSON(r)
-	}
-	name, p := *a.Name, a.paging()
-	if !contract.ValidWorkspaceName(name) {
-		return toolResult{}, invalidWsName()
-	}
-	after, instance, generation, limit, err := p.page()
-	if err != nil {
-		return toolResult{}, err
-	}
-	if after != "" && !contract.ValidStatusCursor(after) {
-		return toolResult{}, invalid("after", "after must be a complete portable branch ref (refs/heads/...) or task ref (refs/callsheet/tasks/...) from the previous page")
 	}
 	cl, err := c.client()
 	if err != nil {
 		return toolResult{}, err
 	}
-	r, err := cl.WorkspaceStatus(c.opCtx, name, client.StatusPage{After: after, Instance: instance, Generation: generation, Limit: limit})
+	if a.TaskID != "" {
+		r, err := cl.TaskWorkspaceStatus(c.opCtx, a.TaskID)
+		if err != nil {
+			return toolResult{}, err
+		}
+		return encodeJSON(r)
+	}
+	r, err := cl.WorkspaceStatus(c.opCtx, a.Name, client.StatusPage{After: a.Page.After, Instance: a.Page.Instance, Generation: a.Page.Generation,
+		Limit: a.Page.Limit})
 	if err != nil {
 		return toolResult{}, err
 	}
@@ -485,43 +323,7 @@ func runWsStatus(c *call, raw json.RawMessage) (toolResult, error) {
 }
 
 func runWsDiff(c *call, raw json.RawMessage) (toolResult, error) {
-	var a wsFormArgs
-	if err := decodeArgs(raw, &a); err != nil {
-		return toolResult{}, err
-	}
-	task, err := a.form(toolWsDiff, true)
-	if err != nil {
-		return toolResult{}, err
-	}
-	if !task && !contract.ValidWorkspaceName(*a.Name) {
-		return toolResult{}, invalidWsName()
-	}
-	after, instance, generation, limit, err := a.paging().page()
-	if err != nil {
-		return toolResult{}, err
-	}
-	if after != "" {
-		if _, err := contract.ParsePathCursor(after); err != nil {
-			return toolResult{}, err
-		}
-	}
-	if task {
-		cl, err := c.client()
-		if err != nil {
-			return toolResult{}, err
-		}
-		r, err := cl.TaskWorkspaceDiff(c.opCtx, *a.TaskID, client.TaskDiffPage{After: after, Instance: instance, Generation: generation, Limit: limit})
-		if err != nil {
-			return toolResult{}, err
-		}
-		return encodeJSON(r)
-	}
-	// A bare task ID as base or target means its full task ref.
-	base, err := contract.ParseTaskSelector(*a.Base, "base", true)
-	if err != nil {
-		return toolResult{}, err
-	}
-	target, err := contract.ParseTaskSelector(*a.Target, "target", false)
+	a, err := contract.ParseWsDiffArgs(raw)
 	if err != nil {
 		return toolResult{}, err
 	}
@@ -529,8 +331,16 @@ func runWsDiff(c *call, raw json.RawMessage) (toolResult, error) {
 	if err != nil {
 		return toolResult{}, err
 	}
-	r, err := cl.WorkspaceDiff(c.opCtx, *a.Name, client.DiffPage{Base: contract.SelectorString(base), Target: contract.SelectorString(target), After: after,
-		Instance: instance, Generation: generation, Limit: limit})
+	p := a.Page
+	if a.TaskID != "" {
+		r, err := cl.TaskWorkspaceDiff(c.opCtx, a.TaskID, client.TaskDiffPage{After: p.After, Instance: p.Instance, Generation: p.Generation, Limit: p.Limit})
+		if err != nil {
+			return toolResult{}, err
+		}
+		return encodeJSON(r)
+	}
+	r, err := cl.WorkspaceDiff(c.opCtx, a.Name, client.DiffPage{Base: a.Base, Target: a.Target, After: p.After, Instance: p.Instance,
+		Generation: p.Generation, Limit: p.Limit})
 	if err != nil {
 		return toolResult{}, err
 	}
@@ -543,29 +353,12 @@ func runWsDiff(c *call, raw json.RawMessage) (toolResult, error) {
 // null anywhere (optional means absent), no unknown or duplicate member,
 // exact integer, boolean, string and array types.
 func decodeArgs(raw json.RawMessage, dto any) error {
-	if len(bytes.TrimSpace(raw)) == 0 {
-		raw = json.RawMessage("{}")
-	}
-	if containsNull(raw) {
-		return contract.New(contract.CodeInvalidArgument, "tool arguments must not contain null: omit an optional argument instead")
-	}
-	return contract.DecodeStrict(raw, dto, "tool arguments")
+	return contract.DecodeToolArgs(raw, dto)
 }
 
 func invalid(field, format string, args ...any) error {
 	return contract.TaskError(contract.CodeInvalidArgument, field, "", format, args...)
 }
-
-func invalidTaskID(field string) error {
-	return invalid(field, "invalid task ID; want t_ followed by 32 lowercase hex digits")
-}
-
-func invalidRoleID() error {
-	return invalid("id", "invalid role ID; want a 1-63 character slug of lowercase letters, digits and internal hyphens")
-}
-
-// parseTimeout parses a role or task timeout argument.
-func parseTimeout(s string) (time.Duration, error) { return contract.ParseRoleTimeout(s) }
 
 // encodeJSON renders v compactly with the contract encoder.
 func encodeJSON(v any) (toolResult, error) {
@@ -579,8 +372,7 @@ func encodeJSON(v any) (toolResult, error) {
 // ---- Node tools (FP-3) ----
 
 func runNodeLs(c *call, raw json.RawMessage) (toolResult, error) {
-	var a struct{}
-	if err := decodeArgs(raw, &a); err != nil {
+	if err := contract.ParseNoArgs(raw); err != nil {
 		return toolResult{}, err
 	}
 	cl, err := c.client()
@@ -595,20 +387,15 @@ func runNodeLs(c *call, raw json.RawMessage) (toolResult, error) {
 }
 
 func runNodeShow(c *call, raw json.RawMessage) (toolResult, error) {
-	var a struct {
-		ID string `json:"id"`
-	}
-	if err := decodeArgs(raw, &a); err != nil {
+	id, err := contract.ParseNodeShowArgs(raw)
+	if err != nil {
 		return toolResult{}, err
-	}
-	if !contract.ValidNodeID(a.ID) {
-		return toolResult{}, invalid("id", "invalid node ID; want n_ followed by 32 lowercase hex digits")
 	}
 	cl, err := c.client()
 	if err != nil {
 		return toolResult{}, err
 	}
-	n, err := cl.ShowNode(c.opCtx, a.ID)
+	n, err := cl.ShowNode(c.opCtx, id)
 	if err != nil {
 		return toolResult{}, err
 	}
@@ -617,40 +404,8 @@ func runNodeShow(c *call, raw json.RawMessage) (toolResult, error) {
 
 // ---- Role tools (FP-4) ----
 
-type roleAddArgs struct {
-	ID          string  `json:"id"`
-	Name        string  `json:"name"`
-	Node        string  `json:"node"`
-	Adapter     string  `json:"adapter"`
-	Instruction string  `json:"instruction"`
-	Runbook     string  `json:"runbook"`
-	Model       string  `json:"model"`
-	Effort      string  `json:"effort"`
-	Concurrency int     `json:"concurrency"`
-	Timeout     *string `json:"timeout,omitempty"`
-}
-
-// roleConfig maps role_add arguments directly to a RoleConfig; an omitted
-// timeout keeps HasTimeout false so the established default applies.
-func (a roleAddArgs) roleConfig() (contract.RoleConfig, error) {
-	rc := contract.RoleConfig{ID: a.ID, Name: a.Name, Node: a.Node, Adapter: a.Adapter, Instruction: a.Instruction, Runbook: a.Runbook,
-		Model: a.Model, Effort: a.Effort, Concurrency: a.Concurrency}
-	if a.Timeout != nil {
-		d, err := parseTimeout(*a.Timeout)
-		if err != nil {
-			return rc, err
-		}
-		rc.Timeout, rc.HasTimeout = d, true
-	}
-	return rc, contract.ValidateRoleConfig(rc, adapter.Lookup())
-}
-
 func runRoleAdd(c *call, raw json.RawMessage) (toolResult, error) {
-	var a roleAddArgs
-	if err := decodeArgs(raw, &a); err != nil {
-		return toolResult{}, err
-	}
-	rc, err := a.roleConfig()
+	rc, err := contract.ParseRoleAddArgs(raw, adapter.Lookup())
 	if err != nil {
 		return toolResult{}, err
 	}
@@ -665,53 +420,8 @@ func runRoleAdd(c *call, raw json.RawMessage) (toolResult, error) {
 	return encodeJSON(contract.RoleResponse{Version: contract.ProtocolVersion, Role: v})
 }
 
-type roleSetArgs struct {
-	ID          string  `json:"id"`
-	Name        *string `json:"name,omitempty"`
-	Adapter     *string `json:"adapter,omitempty"`
-	Instruction *string `json:"instruction,omitempty"`
-	Runbook     *string `json:"runbook,omitempty"`
-	Model       *string `json:"model,omitempty"`
-	Effort      *string `json:"effort,omitempty"`
-	Concurrency *int    `json:"concurrency,omitempty"`
-	Timeout     *string `json:"timeout,omitempty"`
-}
-
-// patch builds the RolePatch of the present fields only; an explicit
-// timeout 0 (unlimited) is kept, and an empty patch is refused.
-func (a roleSetArgs) patch() (contract.RolePatch, error) {
-	if !contract.ValidSlug(a.ID) {
-		return contract.RolePatch{}, invalidRoleID()
-	}
-	p := contract.RolePatch{Name: a.Name, Adapter: a.Adapter, Instruction: a.Instruction, Runbook: a.Runbook, Model: a.Model, Effort: a.Effort,
-		Concurrency: a.Concurrency}
-	if a.Timeout != nil {
-		d, err := parseTimeout(*a.Timeout)
-		if err != nil {
-			return p, err
-		}
-		p.Timeout = &d
-	}
-	if p.Empty() {
-		return p, invalid("", "role_set needs at least one field to change (name, adapter, instruction, runbook, model, effort, concurrency or timeout)")
-	}
-	if err := contract.ValidatePatch(p); err != nil {
-		return p, err
-	}
-	if p.Adapter != nil {
-		if _, known := adapter.Lookup()(*p.Adapter); !known {
-			return p, contract.RoleError(contract.CodeInvalidArgument, a.ID, "", "adapter", "", "unknown adapter; registered adapters: claude, codex, cursor, fake, grok")
-		}
-	}
-	return p, nil
-}
-
 func runRoleSet(c *call, raw json.RawMessage) (toolResult, error) {
-	var a roleSetArgs
-	if err := decodeArgs(raw, &a); err != nil {
-		return toolResult{}, err
-	}
-	p, err := a.patch()
+	id, p, err := contract.ParseRoleSetArgs(raw, adapter.Lookup())
 	if err != nil {
 		return toolResult{}, err
 	}
@@ -719,7 +429,7 @@ func runRoleSet(c *call, raw json.RawMessage) (toolResult, error) {
 	if err != nil {
 		return toolResult{}, err
 	}
-	v, err := cl.SetRole(c.opCtx, a.ID, p)
+	v, err := cl.SetRole(c.opCtx, id, p)
 	if err != nil {
 		return toolResult{}, err
 	}
@@ -727,8 +437,7 @@ func runRoleSet(c *call, raw json.RawMessage) (toolResult, error) {
 }
 
 func runRoleLs(c *call, raw json.RawMessage) (toolResult, error) {
-	var a struct{}
-	if err := decodeArgs(raw, &a); err != nil {
+	if err := contract.ParseNoArgs(raw); err != nil {
 		return toolResult{}, err
 	}
 	cl, err := c.client()
@@ -743,53 +452,31 @@ func runRoleLs(c *call, raw json.RawMessage) (toolResult, error) {
 }
 
 func runRoleShow(c *call, raw json.RawMessage) (toolResult, error) {
-	var a struct {
-		ID string `json:"id"`
-	}
-	if err := decodeArgs(raw, &a); err != nil {
+	id, err := contract.ParseRoleShowArgs(raw)
+	if err != nil {
 		return toolResult{}, err
-	}
-	if !contract.ValidSlug(a.ID) {
-		return toolResult{}, invalidRoleID()
 	}
 	cl, err := c.client()
 	if err != nil {
 		return toolResult{}, err
 	}
-	v, err := cl.ShowRole(c.opCtx, a.ID)
+	v, err := cl.ShowRole(c.opCtx, id)
 	if err != nil {
 		return toolResult{}, err
 	}
 	return encodeJSON(contract.RoleResponse{Version: contract.ProtocolVersion, Role: v})
 }
 
-type roleRmArgs struct {
-	ID        string  `json:"id"`
-	Force     *bool   `json:"force,omitempty"`
-	Operation *string `json:"operation,omitempty"`
-}
-
 func runRoleRm(c *call, raw json.RawMessage) (toolResult, error) {
-	var a roleRmArgs
-	if err := decodeArgs(raw, &a); err != nil {
+	id, force, op, err := contract.ParseRoleRemoveArgs(raw)
+	if err != nil {
 		return toolResult{}, err
-	}
-	if !contract.ValidSlug(a.ID) {
-		return toolResult{}, invalidRoleID()
-	}
-	force := a.Force != nil && *a.Force
-	op := ""
-	if a.Operation != nil {
-		op = *a.Operation
-		if err := contract.ValidateRemovalOperation(force, op); err != nil {
-			return toolResult{}, err
-		}
 	}
 	cl, err := c.client()
 	if err != nil {
 		return toolResult{}, err
 	}
-	res, err := cl.RemoveRole(c.opCtx, a.ID, force, op)
+	res, err := cl.RemoveRole(c.opCtx, id, force, op)
 	if err != nil {
 		if force {
 			return toolResult{}, withGuidance(err, removeGuidance)
@@ -807,73 +494,27 @@ func runRoleRm(c *call, raw json.RawMessage) (toolResult, error) {
 
 // ---- Dispatch (FP-5) ----
 
-type dispatchArgs struct {
-	Target struct {
-		Kind  string `json:"kind"`
-		Value string `json:"value"`
-	} `json:"target"`
-	Goal       string   `json:"goal"`
-	Acceptance string   `json:"acceptance"`
-	Payload    []string `json:"payload,omitempty"`
-	Override   *struct {
-		Model   *string `json:"model,omitempty"`
-		Effort  *string `json:"effort,omitempty"`
-		Timeout *string `json:"timeout,omitempty"`
-	} `json:"override,omitempty"`
-	Wait *string `json:"wait,omitempty"`
-	// Iteration 10c: the optional workspace selection, forwarded unchanged
-	// to the shared contract validator (null and duplicates are refused by
-	// the strict decoder).
-	Workspace         *string `json:"workspace,omitempty"`
-	Base              *string `json:"base,omitempty"`
-	WorkspaceInstance *string `json:"workspace_instance,omitempty"`
-}
-
-// request builds the plane request with the session's attribution and
-// validates it (attribution first) before anything is sent.
-func (a dispatchArgs) request(rb contract.RequestedBy) (contract.DispatchRequest, error) {
-	if err := rb.Validate(); err != nil {
-		return contract.DispatchRequest{}, err
-	}
-	payload := a.Payload
-	if payload == nil {
-		payload = []string{}
-	}
-	req := contract.DispatchRequest{Target: contract.TaskTarget{Kind: a.Target.Kind, Value: a.Target.Value}, Goal: a.Goal, Payload: payload,
-		Acceptance: a.Acceptance, RequestedBy: rb, Workspace: a.Workspace, Base: a.Base, WorkspaceInstance: a.WorkspaceInstance}
-	if o := a.Override; o != nil {
-		req.Override = &contract.TaskOverride{Model: o.Model, Effort: o.Effort}
-		if o.Timeout != nil {
-			d, err := parseTimeout(*o.Timeout)
-			if err != nil {
-				return req, err
-			}
-			req.Override.Timeout = &d
-		}
-	}
-	return req, req.Validate()
-}
-
+// runDispatch validates its arguments with the contract's dispatch rule
+// (decode, then the session's attribution and the request, then the
+// explicit wait), the one the offline verifier also applies.
 func runDispatch(c *call, raw json.RawMessage) (toolResult, error) {
-	var a dispatchArgs
-	if err := decodeArgs(raw, &a); err != nil {
+	a, err := contract.DecodeDispatchArgs(raw)
+	if err != nil {
 		return toolResult{}, err
 	}
 	rb, err := c.s.requester()
 	if err != nil {
 		return toolResult{}, err
 	}
-	req, err := a.request(rb)
+	req, err := a.Request(rb)
 	if err != nil {
 		return toolResult{}, err
 	}
-	var explicit *time.Duration
-	if a.Wait != nil {
-		d, err := contract.ParseWaitDuration(*a.Wait)
-		if err != nil {
-			return toolResult{}, err
-		}
-		explicit = &d
+	explicit, err := a.WaitDuration()
+	if err != nil {
+		return toolResult{}, err
+	}
+	if explicit != nil {
 		c.budgeted()
 	}
 	cl, err := c.client()
@@ -933,25 +574,9 @@ func (s *session) requester() (contract.RequestedBy, error) {
 // ---- Task reads (FP-6) ----
 
 func runTaskLs(c *call, raw json.RawMessage) (toolResult, error) {
-	var a struct {
-		After *string `json:"after,omitempty"`
-		Limit *int    `json:"limit,omitempty"`
-	}
-	if err := decodeArgs(raw, &a); err != nil {
+	after, limit, err := contract.ParseTaskListArgs(raw)
+	if err != nil {
 		return toolResult{}, err
-	}
-	after, limit := "", contract.DefaultTaskListLimit
-	if a.After != nil {
-		if !contract.ValidTaskID(*a.After) {
-			return toolResult{}, invalidTaskID("after")
-		}
-		after = *a.After
-	}
-	if a.Limit != nil {
-		if *a.Limit < 1 || *a.Limit > contract.MaxTaskListLimit {
-			return toolResult{}, invalid("limit", "limit must be an integer from 1 to %d", contract.MaxTaskListLimit)
-		}
-		limit = *a.Limit
 	}
 	cl, err := c.client()
 	if err != nil {
@@ -965,28 +590,15 @@ func runTaskLs(c *call, raw json.RawMessage) (toolResult, error) {
 }
 
 func runTaskShow(c *call, raw json.RawMessage) (toolResult, error) {
-	var a struct {
-		ID    string `json:"id"`
-		Lines *int   `json:"lines,omitempty"`
-	}
-	if err := decodeArgs(raw, &a); err != nil {
+	id, lines, err := contract.ParseTaskShowArgs(raw)
+	if err != nil {
 		return toolResult{}, err
-	}
-	if !contract.ValidTaskID(a.ID) {
-		return toolResult{}, invalidTaskID("id")
-	}
-	lines := contract.DefaultTailLines
-	if a.Lines != nil {
-		if *a.Lines < 0 || *a.Lines > contract.MaxTailLines {
-			return toolResult{}, invalid("lines", "lines must be an integer from 0 to %d", contract.MaxTailLines)
-		}
-		lines = *a.Lines
 	}
 	cl, err := c.client()
 	if err != nil {
 		return toolResult{}, err
 	}
-	v, err := cl.ShowTask(c.opCtx, a.ID, lines)
+	v, err := cl.ShowTask(c.opCtx, id, lines)
 	if err != nil {
 		return toolResult{}, err
 	}
@@ -994,25 +606,19 @@ func runTaskShow(c *call, raw json.RawMessage) (toolResult, error) {
 }
 
 func runTaskLogs(c *call, raw json.RawMessage) (toolResult, error) {
-	var a struct {
-		ID   string `json:"id"`
-		Late *bool  `json:"late,omitempty"`
-	}
-	if err := decodeArgs(raw, &a); err != nil {
+	id, late, err := contract.ParseTaskLogsArgs(raw)
+	if err != nil {
 		return toolResult{}, err
-	}
-	if !contract.ValidTaskID(a.ID) {
-		return toolResult{}, invalidTaskID("id")
 	}
 	cl, err := c.client()
 	if err != nil {
 		return toolResult{}, err
 	}
 	var r contract.TaskLogsResponse
-	if a.Late != nil && *a.Late {
-		r, err = cl.TaskLateLogs(c.opCtx, a.ID)
+	if late {
+		r, err = cl.TaskLateLogs(c.opCtx, id)
 	} else {
-		r, err = cl.TaskLogs(c.opCtx, a.ID)
+		r, err = cl.TaskLogs(c.opCtx, id)
 	}
 	if err != nil {
 		return toolResult{}, err
@@ -1023,20 +629,15 @@ func runTaskLogs(c *call, raw json.RawMessage) (toolResult, error) {
 // ---- Cancel and bounded waits (FP-7) ----
 
 func runTaskCancel(c *call, raw json.RawMessage) (toolResult, error) {
-	var a struct {
-		ID string `json:"id"`
-	}
-	if err := decodeArgs(raw, &a); err != nil {
+	id, err := contract.ParseTaskCancelArgs(raw)
+	if err != nil {
 		return toolResult{}, err
-	}
-	if !contract.ValidTaskID(a.ID) {
-		return toolResult{}, invalidTaskID("id")
 	}
 	cl, err := c.client()
 	if err != nil {
 		return toolResult{}, err
 	}
-	r, err := cl.CancelTask(c.opCtx, a.ID)
+	r, err := cl.CancelTask(c.opCtx, id)
 	if err != nil {
 		return toolResult{}, err
 	}
@@ -1044,23 +645,9 @@ func runTaskCancel(c *call, raw json.RawMessage) (toolResult, error) {
 }
 
 func runTaskWait(c *call, raw json.RawMessage) (toolResult, error) {
-	var a struct {
-		TaskIDs []string `json:"task_ids"`
-		Wait    *string  `json:"wait,omitempty"`
-	}
-	if err := decodeArgs(raw, &a); err != nil {
+	ids, explicit, err := contract.ParseTaskWaitArgs(raw)
+	if err != nil {
 		return toolResult{}, err
-	}
-	if err := contract.ValidateWaitIDs(a.TaskIDs); err != nil {
-		return toolResult{}, err
-	}
-	var explicit *time.Duration
-	if a.Wait != nil {
-		d, err := contract.ParseWaitDuration(*a.Wait)
-		if err != nil {
-			return toolResult{}, err
-		}
-		explicit = &d
 	}
 	c.budgeted()
 	cl, err := c.client()
@@ -1071,7 +658,7 @@ func runTaskWait(c *call, raw json.RawMessage) (toolResult, error) {
 	if !ok {
 		return toolResult{}, errNoTime
 	}
-	r, err := cl.WaitTasks(c.opCtx, a.TaskIDs, EffectiveWait(explicit, available))
+	r, err := cl.WaitTasks(c.opCtx, ids, EffectiveWait(explicit, available))
 	if err != nil {
 		return toolResult{}, err
 	}

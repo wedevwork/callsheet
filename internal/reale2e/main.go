@@ -36,17 +36,27 @@ import (
 const Usage = `usage:
   reale2e run --callsheet ABS --claude ABS --codex ABS --grok ABS --evidence ABS [--flow ABS] [--protect-root ABS ...] [--protect-depth N]
       (requires ` + EnvOptIn + `=1, no CI and no CLAUDE_CONFIG_DIR variable; linux only; calls paid models)
-  reale2e run-dev-full --callsheet ABS --claude ABS --codex ABS --grok ABS --evidence ABS [--flow ABS] [--protect-root ABS ...] [--protect-depth N]
-      (same gate as run; development full flow; exit 3 means executed but unverified, never a PASS)
+      runs the checked full development flow (` + DevBundleSchema + `): exit 0 mechanical PASS,
+      1 executed failure or incomplete evidence, 2 usage, gate or schema error; --flow takes only the five-role
+      development flow (callsheet-dev-full-flow/v1), labelled override-flow when it differs from the default
+  reale2e run-dev-full ...
+      (deprecated alias of run: the same checked full flow, arguments and exits 0/1/2; it no longer exits 3)
+  reale2e probe-dev-full --callsheet ABS --claude ABS --codex ABS --grok ABS --evidence ABS [--flow ABS] [--protect-root ABS ...] [--protect-depth N]
+      (owner-only qualification probe, same gate as run; prints QUALIFIED or BLOCKED, never a workflow PASS;
+      exit 0 qualified, 1 blocked, 2 usage or gate error)
   reale2e check --evidence ABS
-  reale2e observe --run ABS --task ID --hop designer|design-reviewer|coder|code-reviewer
-  reale2e wait-task --run ABS --task ID --hop designer|design-reviewer|coder|code-reviewer
-  reale2e review-material --run ABS
+      (a full-flow evidence/v1 bundle, or a legacy callsheet-real-e2e/v3 bundle with its legacy scope;
+      exit 0 PASS, 1 failed or incomplete evidence, 2 malformed or unsupported evidence)
   reale2e dev-next --run ABS
   reale2e dev-observe --run ABS --ordinal N --task ID
   reale2e dev-wait-task --run ABS --ordinal N --task ID
+  reale2e dev-review-verify --task ID --candidate COMMIT --initial-source COMMIT --go ABS --deadline YYYY-MM-DDTHH:MM:SSZ
+legacy-runtime compatibility helpers (legacy run files only, never the current workflow):
+  reale2e observe --run ABS --task ID --hop designer|design-reviewer|coder|code-reviewer
+  reale2e wait-task --run ABS --task ID --hop designer|design-reviewer|coder|code-reviewer
+  reale2e review-material --run ABS
 See docs/real-e2e.md.
-` + Bounds
+` + DevBounds
 
 // EnvClaudeConfigDir present in any form refuses a live run: the
 // effective Claude home could differ from the protected one.
@@ -68,13 +78,28 @@ type Host struct {
 	observe func(*supervisor)
 	// observeDev is the development attempt's equivalent of observe.
 	observeDev func(*devSupervisor)
+	// observeProbe sees the new qualification probe before it runs.
+	observeProbe func(*devProbe)
+	// legacy, set only by package tests, runs the retained legacy
+	// four-hop supervisor for "run" as an offline compatibility fixture.
+	// Main never sets it: there is no new legacy live execution.
+	legacy bool
+	// review, when set, is dev-review-verify's injected world (tests);
+	// nil is the live checkout, clock and processes.
+	review *reviewEnv
 }
 
 // Main is the reale2e command: 0 success, 1 failure or refusal of a
 // helper's request, 2 usage, gate, schema or transport error;
-// wait-task returns the wait's status on success. 3 is development
-// execution completed but unverified: run-dev-full never returns 0 and
-// never reports a verified PASS.
+// wait-task returns the wait's status on success. Design
+// 12a-dev-flow-verify deliberately changes the run command's protocol:
+// run selects the checked full development flow (evidence/v1) and exits 0
+// for a mechanical PASS, 1 for an executed failure or incomplete
+// evidence, 2 for a usage, gate or schema error; run-dev-full is its
+// deprecated alias with the same exits and no longer exits 3. A legacy
+// callsheet-real-e2e/v3 bundle is still checked with its unchanged legacy
+// checker. probe-dev-full exits 0 qualified, 1 blocked, 2 usage or gate
+// error.
 func Main(goos, goarch string, args []string, getenv func(string) string, lookupEnv func(string) (string, bool), stdin io.Reader, stdout, stderr io.Writer) int {
 	return MainWith(Host{GOOS: goos, GOARCH: goarch, Args: args, Getenv: getenv, LookupEnv: lookupEnv, Stdin: stdin, Stdout: stdout, Stderr: stderr,
 		NewWorld: LiveWorld})
@@ -137,11 +162,14 @@ func MainWith(h Host) int {
 		return m
 	}
 	switch h.Args[0] {
-	case "run", "run-dev-full":
-		dev := h.Args[0] == "run-dev-full"
+	case "run", "run-dev-full", "probe-dev-full":
+		bounds := DevBounds
+		if h.Args[0] == "probe-dev-full" {
+			bounds = ProbeBounds
+		}
 		// The gate comes first: a refused live startup touches nothing.
 		if err := Gate(h.GOOS, h.Getenv, h.LookupEnv); err != nil {
-			fmt.Fprintf(h.Stderr, "%v\n%s", err, Bounds)
+			fmt.Fprintf(h.Stderr, "%v\n%s", err, bounds)
 			return 2
 		}
 		// Immediately after the gate, before any capability exists: an
@@ -166,10 +194,13 @@ func MainWith(h Host) int {
 		}
 		args := runArgs{callsheet: v["callsheet"], claude: v["claude"], codex: v["codex"], grok: v["grok"], evidence: v["evidence"], flow: v["flow"],
 			protectRoots: roots, protectDepth: depth}
-		if dev {
-			return runDevLive(h, args)
+		switch {
+		case h.Args[0] == "probe-dev-full":
+			return runProbeLive(h, args)
+		case h.legacy && h.Args[0] == "run":
+			return runLive(h, args)
 		}
-		return runLive(h, args)
+		return runDevLive(h, args)
 	case "check":
 		v, ok := flags(h, "check", []string{"evidence"}, nil, all("evidence"), nil)
 		if !ok {
@@ -192,6 +223,8 @@ func MainWith(h Host) int {
 		return devObserveHelper(h, opDevObserve)
 	case "dev-wait-task":
 		return devObserveHelper(h, opDevWait)
+	case "dev-review-verify":
+		return reviewVerifyHelper(h)
 	}
 	// finish and wait were removed by A3: unknown subcommands.
 	return usageError(h, "unknown subcommand "+contract.SafeText(h.Args[0], 32))

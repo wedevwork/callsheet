@@ -204,10 +204,6 @@ func TestDevFullFaults(t *testing.T) {
 		"presented_dir": {happy(), atGate(func(r *devRig) {
 			os.MkdirAll(filepath.Join(r.d.s.runtime, "review", "generations", "01"), 0o700)
 		}), "decision_binding_changed"},
-		"presented_evidence": {happy(), atGate(func(r *devRig) {
-			os.MkdirAll(filepath.Join(r.f.evidence, "review", "01"), 0o700)
-			os.WriteFile(filepath.Join(r.f.evidence, "review", "01", "design.md"), []byte("x"), 0o600)
-		}), "decision_binding_changed"},
 		"decision_runtime": {happy(), atGate(func(r *devRig) {
 			os.WriteFile(filepath.Join(r.d.s.runtime, "decisions", "01.json"), []byte("x"), 0o600)
 		}), "runtime_unavailable"},
@@ -246,7 +242,7 @@ func TestDevFullFaults(t *testing.T) {
 				c.stop = "evidence_write_failed"
 			}
 			r.expect(1, c.stop)
-			if r.execution().Outcome == outcomeUnverified {
+			if r.d.passed {
 				t.Fatal("a fault executed")
 			}
 		})

@@ -58,8 +58,13 @@ type devStream struct {
 // decodeDevStream decodes a phase stream. want is the captured session a
 // resumed phase must keep ("" for the first phase).
 func decodeDevStream(stdout []byte, want string) devStream {
+	return decodeDevStreamAs("phase-stream", stdout, want)
+}
+
+// decodeDevStreamAs is decodeDevStream whose source references name file.
+func decodeDevStreamAs(file string, stdout []byte, want string) devStream {
 	d := &deriver{codes: map[string]bool{}}
-	s := devStream{records: d.decodeLines("phase-stream", stdout), sessionID: want}
+	s := devStream{records: d.decodeLines(file, stdout), sessionID: want}
 	fail := func(code string) {
 		if s.problem == "" {
 			s.problem = code
@@ -67,6 +72,19 @@ func decodeDevStream(stdout []byte, want string) devStream {
 	}
 	if len(d.findings) > 0 {
 		fail(devSessionMalformed)
+	}
+	// An error result of a Callsheet MCP call is judged by the recorded
+	// MCP call policy (design 12a-dev-flow-verify r0.6, Error-result
+	// policy): a tolerated no-evidence answer, a lost dispatch reply
+	// reconciled through task_ls, or an invalid call. Only a vendor tool's
+	// error, or an error result matching no tool use, fails the phase here.
+	names := map[string]string{}
+	for _, r := range s.records {
+		for _, b := range r.blocks {
+			if r.kind == "assistant" && b.typ == "tool_use" {
+				names[b.id] = b.name
+			}
+		}
 	}
 	for _, r := range s.records {
 		if r.sessionID != "" {
@@ -91,7 +109,7 @@ func decodeDevStream(stdout []byte, want string) devStream {
 			s.hasResult, s.resultOK = true, !r.malformed && r.resultOK
 		case "user":
 			for _, b := range r.blocks {
-				if b.typ == "tool_result" && b.isError {
+				if b.typ == "tool_result" && b.isError && !strings.HasPrefix(names[b.toolUseID], mcpToolPrefix) {
 					fail(devToolFailed)
 				}
 			}
@@ -144,7 +162,23 @@ var devWaitInputKeys = map[string]bool{"command": true, "run_in_background": tru
 // decoded records. problem is a fixed code when the evidence is wrong;
 // incomplete evidence without a problem may still complete.
 func qualifyDevWait(records []sessionRecord, cmd, task string) (devWait, string) {
+	w, _, problem := deriveDevWait(records, cmd, task)
+	return w, problem
+}
+
+// devWaitSources are a qualified wait's facts' source lines: the
+// background start's tool use and its handle result, the notification and
+// the consuming task_show result.
+type devWaitSources struct {
+	start, handle, wake, consume SourceRef
+}
+
+// deriveDevWait is qualifyDevWait with the source line of each fact
+// (the sources are zero when problem is set).
+func deriveDevWait(records []sessionRecord, cmd, task string) (devWait, devWaitSources, string) {
 	var w devWait
+	var src devWaitSources
+	fail := func(code string) (devWait, devWaitSources, string) { return w, devWaitSources{}, code }
 	interrupted := false
 	showUse := map[string]bool{}
 	for _, r := range records {
@@ -163,28 +197,38 @@ func qualifyDevWait(records []sessionRecord, cmd, task string) (devWait, string)
 					c := rawString(in["command"])
 					if c != cmd {
 						if strings.Contains(c, task) && (strings.Contains(c, " dev-wait-task ") || strings.Contains(c, " task wait ")) {
-							return w, devWaitMismatch
+							return fail(devWaitMismatch)
 						}
 						continue
 					}
 					if w.StartUse != "" {
-						return w, devDuplicateWait
+						return fail(devDuplicateWait)
 					}
 					var bg bool
 					if !rawTyped(in["run_in_background"], &bg) || !bg {
-						return w, devWaitMismatch
+						return fail(devWaitMismatch)
 					}
 					for k := range in {
 						if !devWaitInputKeys[k] {
-							return w, devWaitMismatch
+							return fail(devWaitMismatch)
 						}
 					}
-					w.StartUse = b.id
+					w.StartUse, src.start = b.id, r.src
 				case toolTaskShow:
-					var in struct {
-						ID string `json:"id"`
+					// The whole input by the MCP server's own validator: exactly
+					// this task's id; lines (how much log tail to read, within
+					// the server's range) is the one field a consuming read may
+					// legitimately choose.
+					id, _, err := contract.ParseTaskShowArgs(b.input)
+					if err != nil {
+						if strings.Contains(string(b.input), task) {
+							// A task_show of this task the MCP tool would refuse
+							// is never its consumption.
+							return fail(devWaitMismatch)
+						}
+						continue
 					}
-					if json.Unmarshal(b.input, &in) == nil && in.ID == task && w.Woke && !w.Consumed {
+					if id == task && w.Woke && !w.Consumed {
 						showUse[b.id] = true
 					}
 				}
@@ -200,13 +244,13 @@ func qualifyDevWait(records []sessionRecord, cmd, task string) (devWait, string)
 				case b.toolUseID == w.StartUse && w.StartUse != "" && w.Handle == "":
 					m := backgroundRE.FindStringSubmatch(strings.TrimSpace(b.text))
 					if b.isError || m == nil {
-						return w, devWaitMismatch
+						return fail(devWaitMismatch)
 					}
-					w.Handle = m[1]
+					w.Handle, src.handle = m[1], r.src
 				case showUse[b.toolUseID] && !w.Consumed:
 					v, err := contract.ParseTaskShowResponse([]byte(b.text))
 					if err == nil && v.TaskID == task && contract.TaskTerminal(v.State) {
-						w.Consumed, w.ConsumeUse, w.Automatic = true, b.toolUseID, !interrupted
+						w.Consumed, w.ConsumeUse, w.Automatic, src.consume = true, b.toolUseID, !interrupted, r.src
 					}
 				}
 			}
@@ -216,15 +260,15 @@ func qualifyDevWait(records []sessionRecord, cmd, task string) (devWait, string)
 			n, ok, unsupported := parseNotification(strings.TrimSpace(r.userText))
 			switch {
 			case unsupported:
-				return w, devWakeUnsupported
+				return fail(devWakeUnsupported)
 			case ok && w.Handle != "" && n.taskID == w.Handle:
 				if n.toolUseID != w.StartUse || w.Woke {
-					return w, devWakeMismatch
+					return fail(devWakeMismatch)
 				}
 				if n.status != "completed" {
-					return w, devWaitFailed
+					return fail(devWaitFailed)
 				}
-				w.Woke = true
+				w.Woke, src.wake = true, r.src
 			case ok:
 				// Another background job's completion is not this wake.
 			case w.Woke && !w.Consumed:
@@ -233,9 +277,9 @@ func qualifyDevWait(records []sessionRecord, cmd, task string) (devWait, string)
 		}
 	}
 	if w.Consumed && !w.Automatic {
-		return w, devWakeNotAutomatic
+		return fail(devWakeNotAutomatic)
 	}
-	return w, ""
+	return w, src, ""
 }
 
 // devWaitCommand is the simple background command for one workflow slot.

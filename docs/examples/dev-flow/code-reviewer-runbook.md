@@ -38,6 +38,8 @@ Captured local command evidence: `git archive -h` prints `usage: git archive [<o
 
 Both exports must succeed, and the relevant file bytes must match the named commits. If history or required files are unavailable, including archive exclusions, report the blocker. Do not substitute another revision and do not fetch an unpinned source.
 
+When the task envelope names a harness-owned verification helper with its exact command, running that command once is the equivalent of this pinned archive export for the exports and commands it performs: it exports the pinned candidate from the checkout's own objects into `after/` and runs the envelope's commands there. Every input, scratch, and cleanup guarantee of this runbook still applies, and the helper's receipt is evidence for your report, not a review: you still read the design, the code, and the tests and judge every FP yourself. This clause is conditional on such an envelope.
+
 ## Independent red and green
 
 A test absent from the buggy revision must be copied unchanged from the candidate into the exported buggy source. Prove it fails for the asserted defect, not compilation or setup. Then run those identical test bytes against the candidate source. Use the same toolchain, flags, coverage scope, and environment for the comparison.

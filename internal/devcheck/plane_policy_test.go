@@ -11,10 +11,18 @@ import (
 // from them.
 const (
 	wantTestNative = "go test -count=1 -timeout=180s ./..."
-	wantTestRace   = "go test -race -p=1 -count=1 -timeout=180s ./..."
-	wantNative     = "go test -json -tags=realadaptercheck -count=1 -timeout=300s ./..."
-	wantBenchGit   = "go test ./internal/spikes/gittransport -run ^$ -bench . -benchmem -benchtime=3x -count=1 -timeout=180s"
-	wantBenchPlane = "go test ./internal/plane -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s"
+	// wantTestRace is the shared race step: every package but
+	// internal/reale2e, one at a time (design 12a-ci-race-schedule; the
+	// exclusion since code review round 5 of design 12a-dev-flow-verify).
+	wantTestRace = "go test -race -p=1 -count=1 -timeout=180s ./cmd/... ./internal/adapter/... ./internal/cicheck/... ./internal/cli/... " +
+		"./internal/client/... ./internal/contract/... ./internal/devcheck/... ./internal/logging/... ./internal/mcp/... ./internal/mcpqual/... " +
+		"./internal/plane/... ./internal/sidecar/... ./internal/spikes/... ./internal/taskpublication/... ./internal/taskworkspace/... " +
+		"./internal/testkit/... ./internal/workspace/... ./internal/workspacetransfer/... ./tests/..."
+	// wantTestRaceReale2e is internal/reale2e's own race step and bound.
+	wantTestRaceReale2e = "go test -race -count=1 -timeout=360s ./internal/reale2e"
+	wantNative          = "go test -json -tags=realadaptercheck -count=1 -timeout=300s ./..."
+	wantBenchGit        = "go test ./internal/spikes/gittransport -run ^$ -bench . -benchmem -benchtime=3x -count=1 -timeout=180s"
+	wantBenchPlane      = "go test ./internal/plane -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s"
 	// wantBenchContract is iteration 03's frame benchmark command.
 	wantBenchContract = "go test ./internal/contract -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s"
 	// wantBenchSidecar and wantBenchAdapter are iteration 04's appended
@@ -56,7 +64,7 @@ const (
 	wantTestTagged     = "go test -tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$ -count=1"
 	wantTestTaggedRace = "go test -race -tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$ -count=1"
 	// wantTestPlanLinux is the complete Linux test plan in order.
-	wantTestPlanLinux = wantTestNative + "|" + wantTestRace + "|" + wantTestTagged + "|" + wantTestTaggedRace
+	wantTestPlanLinux = wantTestNative + "|" + wantTestRace + "|" + wantTestRaceReale2e + "|" + wantTestTagged + "|" + wantTestTaggedRace
 )
 
 func argvOf(steps []Step) []string {

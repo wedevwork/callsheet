@@ -43,6 +43,9 @@ func (d *devSupervisor) openWindow(phaseExitSeq int) {
 	d.gate = nil
 	w := &devWindow{kind: g.kind, gen: g.gen, phaseExitSeq: phaseExitSeq}
 	switch g.kind {
+	case pauseProbe:
+		// A continuation window presents nothing: it only authorizes the
+		// next probe phase.
 	case pauseOwner:
 		sums, err := d.presentDesign(g.gen)
 		if err != nil {
@@ -55,7 +58,11 @@ func (d *devSupervisor) openWindow(phaseExitSeq int) {
 			return
 		}
 	}
-	ev := d.s.ev.event(Event{Type: EvAwaitingOwner, Hop: fmt.Sprintf("generation-%d", g.gen), Code: g.kind})
+	hop := fmt.Sprintf("generation-%d", g.gen)
+	if g.kind == pauseProbe {
+		hop = fmt.Sprintf("probe-phase-%d", g.gen)
+	}
+	ev := d.s.ev.event(Event{Type: EvAwaitingOwner, Hop: hop, Code: g.kind})
 	at, ok := parseTime(ev.Time)
 	if !ok {
 		at = d.s.w.Clock.Now()
@@ -75,9 +82,12 @@ func (d *devSupervisor) openWindow(phaseExitSeq int) {
 	}
 	d.discardPending()
 	d.window = w
-	if g.kind == pauseOwner {
+	switch g.kind {
+	case pauseProbe:
+		fmt.Fprintf(d.s.stdout, "Continue qualification after phase %d? Type exactly \"continue %d\" or \"no %d\".\n", g.gen, g.gen, g.gen)
+	case pauseOwner:
 		fmt.Fprintf(d.s.stdout, "Approve design generation %d and start coding? Type exactly \"yes %d\" or \"no %d\".\n", g.gen, g.gen, g.gen)
-	} else {
+	default:
 		fmt.Fprintf(d.s.stdout, "Answer the designer's questions for generation %d: type exactly \"answer %d <text>\" (one line, at most %d bytes, no secrets).\n",
 			g.gen, g.gen, triageTaskCeiling)
 	}
@@ -205,11 +215,11 @@ func (d *devSupervisor) presentDesign(gen int) (map[string]string, error) {
 		if !ok || sha256Hex(f.Content) != want[name] {
 			return nil, fmt.Errorf("%s does not match the approving audit", name)
 		}
+		// The presented bytes are the approving audit's admitted tree, kept
+		// in the evidence repository; only the private read-only copy is
+		// written here.
 		p := filepath.Join(dir, name)
 		if err := writePrivateReadOnly(p, f.Content); err != nil {
-			return nil, err
-		}
-		if err := d.s.ev.writeFile(fmt.Sprintf("review/%02d/%s", gen, name), f.Content); err != nil {
 			return nil, err
 		}
 		sums[name] = want[name]
@@ -259,6 +269,9 @@ func (d *devSupervisor) ownerLine(in ownerInput, ok bool) {
 		return
 	}
 	kind, text, match := ownerLineKind(in.line, d.window.gen, d.window.kind == pauseAnswer)
+	if d.window.kind == pauseProbe {
+		kind, match = probeLineKind(in.line, d.window.gen)
+	}
 	if !match {
 		d.s.say("not a decision for generation %d; the window's deadline is unchanged", d.window.gen)
 		return
@@ -271,7 +284,11 @@ func (d *devSupervisor) decide(kind, text string) {
 	w := d.window
 	d.window = nil
 	d.decisions++
-	ev := d.s.ev.event(Event{Type: EvOwnerDecision, Hop: fmt.Sprintf("generation-%d", w.gen), Code: kind})
+	hop := fmt.Sprintf("generation-%d", w.gen)
+	if w.kind == pauseProbe {
+		hop = fmt.Sprintf("probe-phase-%d", w.gen)
+	}
+	ev := d.s.ev.event(Event{Type: EvOwnerDecision, Hop: hop, Code: kind})
 	rec := DevDecision{Sequence: d.decisions, Kind: kind, Window: w.kind, Generation: w.gen, EventSeq: ev.Seq, Time: ev.Time, Answer: text}
 	b, err := encodeJSON(rec)
 	if err != nil {
@@ -283,15 +300,21 @@ func (d *devSupervisor) decide(kind, text string) {
 		d.stop("runtime_unavailable", err.Error())
 		return
 	}
-	if !d.writeEvidence("decisions/"+name, b) {
+	evidence := "decisions/" + name
+	if w.kind == pauseProbe {
+		evidence = "probe/decisions/" + name
+	}
+	if !d.writeEvidenceJSON(evidence, envelope("decision", d.s.runID, rec)) {
 		return
 	}
 	var st DevFullState
 	var res StepResult
-	switch kind {
-	case "no":
+	switch {
+	case w.kind == pauseProbe:
+		st, res = d.probe.decision(kind, w.gen)
+	case kind == "no":
 		st, res = OwnerDecision(d.state, w.gen, false, OwnerReceipt{}, rec.Sequence)
-	case "answer":
+	case kind == "answer":
 		st, res = OwnerAnswer(d.state, w.gen, text, rec.Sequence)
 	default:
 		r, ok := d.receipt(w, ev)
@@ -346,7 +369,7 @@ func (d *devSupervisor) receipt(w *devWindow, decision Event) (OwnerReceipt, boo
 		d.stop("runtime_unavailable", err.Error())
 		return r, false
 	}
-	if !d.writeEvidence("receipts/"+name, b) {
+	if !d.writeEvidenceJSON("receipts/"+name, envelope("receipt", d.s.runID, r)) {
 		return r, false
 	}
 	d.receiptBytes[w.gen] = b

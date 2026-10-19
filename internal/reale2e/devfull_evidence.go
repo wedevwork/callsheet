@@ -11,23 +11,22 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/storer"
 )
 
-// Development execution evidence (design 12a-dev-flow-harness, FP-7).
-// This is not a Report and it is not a PASS. The legacy checker rejects it.
+// Development runtime records (design 12a-dev-flow-harness, FP-7). Design
+// 12a-dev-flow-verify retired the execution-only record
+// (callsheet-dev-full-execution/v1, dev-execution.json): new runs write
+// the checked evidence/v1 bundle instead, and the checker refuses an
+// execution-only bundle as unsupported.
 
 const (
+	// DevExecutionSchema and DevExecutionFile name the retired
+	// execution-only record, kept only to refuse it.
 	DevExecutionSchema = "callsheet-dev-full-execution/v1"
 	DevExecutionFile   = "dev-execution.json"
 	DevRunSchema       = "callsheet-dev-full-run/v1"
-
-	outcomeUnverified = "executed-unverified"
-	outcomeStopped    = "stopped"
-	outcomeFailed     = "failed"
-
-	devUnverifiedLine = "EXECUTED — UNVERIFIED: slice 2d.3 verification required"
 )
 
-// DevBounds is the development full flow's cost and time disclosure.
-const DevBounds = `Development full flow cost and time bounds (policy, not measurements):
+// DevBounds is the full development flow's cost and time disclosure.
+const DevBounds = `Cost and time bounds of the full development flow (policy, not measurements):
   - five paid authentication preflight tasks (one per role pair), each at most 2m;
   - four paid workflow tasks on the happy path; the two bounded revision loops allow up to
     twelve ordinary-pair calls and at most two recovery calls (at most fourteen workflow
@@ -36,39 +35,11 @@ const DevBounds = `Development full flow cost and time bounds (policy, not measu
   - the headless Claude Code coordinator adds vendor-dependent turns and tool calls in up to
     four phases; there is no extra paid coordinator preflight;
   - each owner window at most 20m; the whole attempt at most 90m from preflight start (the
-    first owner-environment fingerprint included), then at most 2m of cleanup; 60s of final
-    validation is reserved for slice 2d.3;
+    first owner-environment fingerprint included); the final candidate's validation shares
+    one 60s budget; then at most 2m of cleanup;
   - no automatic model retries; no token-price ceiling is claimed. The task-time sum can exceed
     90m; the attempt deadline stops first.
 `
-
-// DevExecution is the development attempt's manifest. It never carries a
-// PASS result.
-type DevExecution struct {
-	Schema          string `json:"schema"`
-	RunID           string `json:"run_id"`
-	Outcome         string `json:"outcome"`
-	StopCode        string `json:"stop_code,omitempty"`
-	StopReason      string `json:"stop_reason,omitempty"`
-	FlowLabel       string `json:"flow_label"`
-	FlowSHA256      string `json:"flow_sha256"`
-	SelectionSHA256 string `json:"selection_sha256"`
-	CandidateTask   string `json:"final_candidate_task,omitempty"`
-	FinalCandidate  string `json:"final_candidate,omitempty"`
-	ReviewTask      string `json:"final_review_task,omitempty"`
-	FinalReview     string `json:"final_review,omitempty"`
-	Preflights      int    `json:"preflights"`
-	Tasks           int    `json:"tasks"`
-	Rejected        int    `json:"rejected_admissions"`
-	Transitions     int    `json:"transitions"`
-	Decisions       int    `json:"decisions"`
-	Receipts        int    `json:"receipts"`
-	Phases          int    `json:"phases"`
-	IgnoredLines    int    `json:"ignored_owner_lines"`
-	Cleanup         string `json:"cleanup"`
-	ProtectedChange bool   `json:"protected_change"`
-	EvidenceError   string `json:"evidence_error,omitempty"`
-}
 
 // DevRunFile is the development runtime's run file. Legacy helpers reject
 // it, and development helpers reject a legacy run file.

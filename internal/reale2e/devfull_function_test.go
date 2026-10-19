@@ -108,7 +108,7 @@ func TestDevFullFP8(t *testing.T) {
 	}
 	r.expect(1, "owner_no")
 	var sources []SourceRecord
-	if err := json.Unmarshal(r.evidence("setup/sources.json"), &sources); err != nil || len(sources) != len(before) {
+	if err := r.data("setup/sources.json", &sources); err != nil || len(sources) != len(before) {
 		t.Fatalf("sources %v %d", err, len(sources))
 	}
 	for _, s := range sources {
@@ -131,7 +131,7 @@ func TestDevFullFP8(t *testing.T) {
 		}
 	}
 	var rendered []RenderedRecord
-	if err := json.Unmarshal(r.evidence("setup/rendered.json"), &rendered); err != nil {
+	if err := r.data("setup/rendered.json", &rendered); err != nil {
 		t.Fatal(err)
 	}
 	system := r.evidence("setup/coordinator-system.md")
@@ -217,7 +217,7 @@ func TestDevFullFP2(t *testing.T) {
 		}
 		for i := range 5 {
 			var obs DevPreflightRecord
-			if err := json.Unmarshal(r.evidence("preflight/"+hopDir(i)+"/observation.json"), &obs); err != nil || obs.Role != want.Roles[i].ID ||
+			if err := r.data("preflight/"+hopDir(i)+"/observation.json", &obs); err != nil || obs.Role != want.Roles[i].ID ||
 				obs.Model != want.Roles[i].Model || !obs.Answered {
 				t.Fatalf("preflight %d %+v %v", i, obs, err)
 			}
@@ -275,7 +275,7 @@ func TestDevFullFP2(t *testing.T) {
 			!strings.Contains(label["selection"], `"effort":"medium"`) || label["flow_sha256"] != sha256Hex(body) {
 			t.Fatalf("label %s", r.evidence("setup/flow-label.json"))
 		}
-		if r.d.flow.Roles[0].Effort != "medium" || r.execution().FlowLabel != "override-flow" {
+		if r.d.flow.Roles[0].Effort != "medium" || r.manifest().FlowLabel != FlowOverride || r.report().FlowLabel != FlowOverride {
 			t.Fatalf("%+v", r.d.flow.Roles[0])
 		}
 	})
@@ -294,7 +294,7 @@ func TestDevFullFP3(t *testing.T) {
 		}
 		for i, task := range tasks {
 			var w DevWaitRecord
-			if err := json.Unmarshal(r.evidence("tasks/"+hopDir(i)+"/wait.json"), &w); err != nil || w.Ordinal != i+1 || w.Task != task.TaskID ||
+			if err := r.data("tasks/"+hopDir(i)+"/wait.json", &w); err != nil || w.Ordinal != i+1 || w.Task != task.TaskID ||
 				!w.Wait.complete() || w.ConsumedSeq <= w.StartSeq || *w.ExitCode != 0 {
 				t.Fatalf("wait %d %+v %v", i+1, w, err)
 			}
@@ -325,7 +325,7 @@ func TestDevFullFP3(t *testing.T) {
 			r := newDevRig(t, happy())
 			r.owner = []string{"yes 1"}
 			r.eager = eager
-			r.expect(3, "")
+			r.expect(0, "")
 			if len(r.workflowTasks()) != 4 || r.taskCount() != 4 || len(r.docs) != 4 {
 				t.Fatalf("tasks %d admitted %d documents %d", len(r.workflowTasks()), r.taskCount(), len(r.docs))
 			}
@@ -362,7 +362,7 @@ func TestDevFullFP3(t *testing.T) {
 					t.Fatalf("task %s left %s", id, r.terminalState(id))
 				}
 			}
-			if !c.Complete || len(c.UnresolvedTasks) != 0 || r.execution().Outcome != outcomeStopped {
+			if !c.Complete || len(c.UnresolvedTasks) != 0 || r.report().Result != ResultFail || r.report().Stop != stop {
 				t.Fatalf("cleanup %+v", c)
 			}
 			if fault != "unobserved" && len(c.CancelledTasks) == 0 {
@@ -380,7 +380,7 @@ func TestDevFullFP4(t *testing.T) {
 			{marker: markerImplComplete}, {marker: markerReviewChanges}, {marker: markerFixesComplete}, {marker: markerReviewApproved},
 		})
 		r.owner = []string{"yes 2"}
-		r.expect(3, "")
+		r.expect(0, "")
 		st := r.d.state
 		rounds := []int{0, 0, 1, 1, 0, 0, 1, 1}
 		for i, task := range st.Tasks {
@@ -393,12 +393,12 @@ func TestDevFullFP4(t *testing.T) {
 				t.Fatalf("plan %d header round", i+1)
 			}
 		}
-		ex := r.execution()
+		ex := r.manifest()
 		if ex.FinalCandidate != st.Tasks[6].Commit || ex.FinalReview != st.Tasks[7].Commit || ex.FinalCandidate == ex.FinalReview ||
-			ex.CandidateTask != st.Tasks[6].TaskID || ex.Outcome != outcomeUnverified || st.DesignCycles != 1 || st.CodeCycles != 1 {
-			t.Fatalf("execution %+v", ex)
+			ex.FinalCandidateTask != st.Tasks[6].TaskID || ex.StopCode != nil || st.DesignCycles != 1 || st.CodeCycles != 1 {
+			t.Fatalf("manifest %+v", ex)
 		}
-		if out := r.f.stdout.String(); !strings.Contains(out, devUnverifiedLine) || strings.Contains(out, "PASS") && !strings.Contains(out, "never reports PASS") {
+		if out := r.f.stdout.String(); !strings.Contains(out, "full development flow: PASS") || strings.Contains(out, "EXECUTED") {
 			t.Fatalf("stdout %s", out)
 		}
 		if len(r.workflowTasks()) != 8 {
@@ -450,7 +450,7 @@ func TestDevFullFP4(t *testing.T) {
 			{marker: markerDesignDraft}, {marker: markerDesignApproved}, {marker: markerImplComplete}, {marker: markerReviewApproved},
 		})
 		r.owner = []string{"yes 1", "yes 2"}
-		r.expect(3, "")
+		r.expect(0, "")
 		if !strings.Contains(r.goals[3], "design_questions: resolve every question") || !strings.Contains(r.goals[3], "partial_work: commit "+r.d.state.Tasks[2].Commit) {
 			t.Fatalf("design repair envelope:\n%s", r.goals[3])
 		}
@@ -463,7 +463,7 @@ func TestDevFullFP4(t *testing.T) {
 			{marker: markerReviewApproved},
 		})
 		r.owner = []string{"yes 1"}
-		r.expect(3, "")
+		r.expect(0, "")
 		tasks := r.d.state.Tasks
 		if tasks[5].Role != "triage" || tasks[6].Mode != modeFix || r.d.state.Recovery != 1 {
 			t.Fatalf("%+v", tasks)
@@ -514,7 +514,7 @@ func TestDevFullFP4(t *testing.T) {
 			{marker: markerDesignDraft}, {marker: markerDesignApproved}, {marker: markerImplComplete}, {marker: markerReviewApproved},
 		})
 		r.owner = []string{"yes 1", "yes 2"}
-		r.expect(3, "")
+		r.expect(0, "")
 		st := r.d.state
 		if st.Tasks[2].Mode != modeImplement || st.Tasks[5].Mode != modeImplement || st.Tasks[3].Reason != "needs_design" || len(st.Receipts) != 2 ||
 			st.Receipts[0].Valid || !st.Receipts[1].Valid || st.Recovery != 1 || st.CodeCycles != 1 || st.DesignCycles != 1 {
@@ -560,14 +560,14 @@ func TestDevFullFP5(t *testing.T) {
 		t.Parallel()
 		r := newDevRig(t, renewal)
 		r.owner = []string{"yes 1", "yes 2"}
-		r.expect(3, "")
+		r.expect(0, "")
 		st := r.d.state
 		if len(st.Receipts) != 2 || st.Receipts[0].Valid || !st.Receipts[1].Valid || st.Receipts[0].Design == st.Receipts[1].Design {
 			t.Fatalf("receipts %+v", st.Receipts)
 		}
 		for gen, rec := range map[int]OwnerReceipt{1: st.Receipts[0], 2: st.Receipts[1]} {
 			var got OwnerReceipt
-			if err := json.Unmarshal(r.evidence("receipts/"+hopDir(gen-1)+".json"), &got); err != nil || got.Generation != gen || !got.Valid ||
+			if err := r.data("receipts/"+hopDir(gen-1)+".json", &got); err != nil || got.Generation != gen || !got.Valid ||
 				got.AuditTask != rec.AuditTask {
 				t.Fatalf("receipt %d %+v", gen, got)
 			}
@@ -611,7 +611,7 @@ func TestDevFullFP5(t *testing.T) {
 				t.Fatalf("transition %d %+v want %+v", i+1, tr, w)
 			}
 			var got TransitionRecord
-			if err := json.Unmarshal(r.evidence("transitions/"+hopDir(i)+".json"), &got); err != nil || got != tr {
+			if err := r.data("transitions/"+hopDir(i)+".json", &got); err != nil || got != tr {
 				t.Fatalf("transition %d evidence %+v %v", i+1, got, err)
 			}
 		}
@@ -697,7 +697,7 @@ func TestDevFullFP5(t *testing.T) {
 			t.Fatal("a no dispatched further work")
 		}
 		var dec DevDecision
-		if err := json.Unmarshal(r.evidence("decisions/01.json"), &dec); err != nil || dec.Kind != "no" || dec.Generation != 1 {
+		if err := r.data("decisions/01.json", &dec); err != nil || dec.Kind != "no" || dec.Generation != 1 {
 			t.Fatalf("decision %+v", dec)
 		}
 	})
@@ -737,7 +737,7 @@ func TestDevFullFP5(t *testing.T) {
 			t.Fatalf("clarified designer envelope:\n%s", r.goals[1])
 		}
 		var dec DevDecision
-		if err := json.Unmarshal(r.evidence("decisions/01.json"), &dec); err != nil || dec.Kind != "answer" || dec.Answer != "call the flag --name" {
+		if err := r.data("decisions/01.json", &dec); err != nil || dec.Kind != "answer" || dec.Answer != "call the flag --name" {
 			t.Fatalf("answer record %+v", dec)
 		}
 	})
@@ -752,7 +752,7 @@ func TestDevFullFP6(t *testing.T) {
 			t.Parallel()
 			r := newDevRig(t, ok(alter))
 			r.owner = []string{"yes 1"}
-			r.expect(3, "")
+			r.expect(0, "")
 			run := r.reviews[0]
 			want := []string{"after"}
 			if alter != "" {
@@ -802,34 +802,40 @@ func TestDevFullFP6(t *testing.T) {
 }
 
 func TestDevFullFP7(t *testing.T) {
-	t.Run("exit3", func(t *testing.T) {
+	t.Run("checked", func(t *testing.T) {
 		t.Parallel()
+		// Design 12a-dev-flow-verify changes the completion protocol
+		// deliberately: a checked PASS exits 0, with the versioned bundle.
 		r := newDevRig(t, happy())
 		r.owner = []string{"yes 1"}
-		r.expect(3, "")
+		r.expect(0, "")
 		out := r.f.stdout.String()
-		if !strings.Contains(out, devUnverifiedLine) || !strings.Contains(out, "five paid authentication preflight") ||
+		if !strings.Contains(out, "full development flow: PASS") || !strings.Contains(out, "five paid authentication preflight") ||
 			!strings.Contains(out, "at most 19 paid worker") || !strings.Contains(out, "up to\n    four phases") || strings.Contains(out, "no automatic retries or fix loops") {
 			t.Fatalf("stdout %s", out)
 		}
-		if !strings.Contains(Usage, "exit 3") || !strings.Contains(Usage, "run-dev-full") {
+		if !strings.Contains(Usage, "no longer exits 3") || !strings.Contains(Usage, "run-dev-full") {
 			t.Fatal("usage")
 		}
-		ex := r.execution()
-		if ex.Schema != DevExecutionSchema || ex.Outcome != outcomeUnverified || ex.Cleanup != "complete" || ex.Phases != 2 || ex.Tasks != 4 {
-			t.Fatalf("%+v", ex)
+		m := r.manifest()
+		if m.Schema != DevBundleSchema || m.StopCode != nil || !r.cleanupRecord().Complete || r.report().Phases != 2 || r.report().Tasks != 4 {
+			t.Fatalf("%+v", m)
 		}
 		for _, name := range []string{"tasks/01/plan.json", "tasks/01/dispatch.json", "tasks/01/task.json", "tasks/01/observation.json", "tasks/01/wait.json",
-			"tasks/01/wait-result.json", "tasks/01/admission.json", "tasks/04/record.json", "transitions/01.json", "session/phase-1.stdout.jsonl",
-			"session/phase-2.stdout.jsonl", "setup/launch-phase-2.json", "session/coordinator-exit.json", "workspace/tree-manifest.json",
-			"workspace/repo.git/refs/heads/task-04", "workspace/repo.git/refs/heads/seed", "cleanup.json", "ledger.json", "receipts/01.json",
-			"decisions/01.json", "review/01/design.md", "setup/seed-push.json", "environment/diff.json"} {
+			"tasks/01/wait-result.json", "tasks/01/admission.json", "tasks/04/record.json", "tasks/04/review-evidence.json", "transitions/01.json",
+			"session/phase-1.stdout.jsonl", "session/phase-2.stdout.jsonl", "setup/launch-phase-2.json", "session/coordinator-exit.json",
+			"workspace/tree-manifest.json", "workspace/repo.git/refs/heads/task-04", "workspace/repo.git/refs/heads/seed", "cleanup.json", "ledger.json",
+			"receipts/01.json", "decisions/01.json", "setup/seed-push.json", "environment/diff.json", "report.json", "audit.json", "cost.json",
+			"admissions.json", "session/event-map.json", "validation/coverage.json"} {
 			r.evidence(name)
 		}
-		// The checker rejects the development evidence before any task.
+		if _, err := os.Stat(filepath.Join(r.f.evidence, DevExecutionFile)); err == nil {
+			t.Fatal("a new run wrote the retired execution record")
+		}
+		// The offline check repeats the run's own PASS.
 		var o, e bytes.Buffer
-		if code := CheckEvidence(r.f.bundle(), &o, &e); code != 2 || !strings.Contains(e.String(), "unsupported schema") {
-			t.Fatalf("check %d %s", code, e.String())
+		if code := CheckEvidence(r.f.bundle(), &o, &e); code != 0 {
+			t.Fatalf("check %d %s\n%s", code, e.String(), o.String())
 		}
 	})
 	t.Run("legacy", func(t *testing.T) {
@@ -859,7 +865,7 @@ func TestDevFullFP7(t *testing.T) {
 		r := newDevRig(t, happy())
 		r.owner = []string{"yes 1"}
 		r.delay = 450
-		r.expect(3, "")
+		r.expect(0, "")
 	})
 	t.Run("attempt_timeout", func(t *testing.T) {
 		t.Parallel()
@@ -922,7 +928,7 @@ func TestDevFullFP7(t *testing.T) {
 			}
 		}
 		r.expect(1, "evidence_write_failed")
-		if r.taskCount() != 1 || len(r.workflowTasks()) != 1 || r.execution().Outcome != outcomeFailed {
+		if r.taskCount() != 1 || len(r.workflowTasks()) != 1 || r.d.passed {
 			t.Fatalf("dispatch continued after an evidence failure: %d", len(r.workflowTasks()))
 		}
 	})
@@ -962,7 +968,7 @@ func TestDevFullFP7(t *testing.T) {
 			}
 		}
 		r.expect(1, "evidence_write_failed")
-		if r.taskCount() != 0 || len(r.workflowTasks()) != 1 || len(r.docs) != 1 || r.execution().Outcome != outcomeFailed {
+		if r.taskCount() != 0 || len(r.workflowTasks()) != 1 || len(r.docs) != 1 || r.d.passed {
 			t.Fatalf("dispatch continued after an event failure: tasks %d workflow %d documents %d", r.taskCount(), len(r.workflowTasks()), len(r.docs))
 		}
 	})
@@ -1012,7 +1018,7 @@ func TestDevFullFP7(t *testing.T) {
 			resp, err := devControlCall(r.d.s.runtime, ControlRequest{Op: opDevNext})
 			answers = append(answers, fmt.Sprintf("%s %v", resp.Code, err))
 		}
-		r.expect(3, "")
+		r.expect(0, "")
 		if len(answers) != 1 || answers[0] != CodePending+" <nil>" || len(r.docs) != 4 || len(r.workflowTasks()) != 4 {
 			t.Fatalf("control during a slow pull: answers %v documents %d workflow %d", answers, len(r.docs), len(r.workflowTasks()))
 		}
@@ -1064,7 +1070,7 @@ func TestDevFullFP7(t *testing.T) {
 			}
 		}
 		r.expect(1, "evidence_write_failed")
-		if pulls != 0 || r.taskCount() != 0 || len(r.workflowTasks()) != 1 || r.execution().Outcome != outcomeFailed {
+		if pulls != 0 || r.taskCount() != 0 || len(r.workflowTasks()) != 1 || r.d.passed {
 			t.Fatalf("work continued after a log failure: pulls %d tasks %d", pulls, r.taskCount())
 		}
 	})
@@ -1075,7 +1081,7 @@ func TestDevFullFP7(t *testing.T) {
 		r := newDevRig(t, happy())
 		r.owner = []string{"yes 1"}
 		r.fragment = true
-		r.expect(3, "")
+		r.expect(0, "")
 		if !r.tailWritten {
 			t.Fatal("the second fragment was never written")
 		}
@@ -1102,10 +1108,10 @@ func TestDevFullFP7(t *testing.T) {
 		}
 		got := r.run()
 		c := r.cleanupRecord()
-		if got != 1 || c.Complete || c.ScanError == "" || r.d.cleanupOK || r.execution().Outcome == outcomeUnverified || extra == "" {
+		if got != 1 || c.Complete || c.ScanError == "" || r.d.cleanupOK || r.d.passed || extra == "" {
 			t.Fatalf("exit %d cleanup %+v", got, c)
 		}
-		if strings.Contains(r.f.stdout.String(), devUnverifiedLine) {
+		if strings.Contains(r.f.stdout.String(), "full development flow: PASS") {
 			t.Fatal("an incomplete final scan reported execution")
 		}
 	})
@@ -1121,9 +1127,11 @@ func TestDevFullFP7(t *testing.T) {
 				Acceptance: "x", Payload: []string{}, RequestedBy: requester}).TaskID
 		}
 		r.expect(1, "extra_admission")
-		ex, c := r.execution(), r.cleanupRecord()
-		if ex.Rejected != 1 || !slices.Equal(r.d.rejected, []string{extra}) || r.terminalState(extra) != contract.TaskCancelled ||
-			!slices.Contains(c.CancelledTasks, extra) || !c.Complete || ex.Outcome != outcomeStopped {
+		ex, c := r.report(), r.cleanupRecord()
+		var cost DevCost
+		json.Unmarshal(r.evidence(devCostFile), &cost)
+		if len(cost.RejectedTasks) != 1 || !slices.Equal(r.d.rejected, []string{extra}) || r.terminalState(extra) != contract.TaskCancelled ||
+			!slices.Contains(c.CancelledTasks, extra) || !c.Complete || ex.Result != ResultFail {
 			t.Fatalf("late admission: %+v %+v", ex, c)
 		}
 	})
@@ -1134,7 +1142,7 @@ func TestDevFullFP7(t *testing.T) {
 		r.fault = "linger"
 		got := r.run()
 		c := r.cleanupRecord()
-		if got != 1 || r.d.cleanupOK || c.Complete || strings.Contains(r.f.stdout.String(), devUnverifiedLine) || r.execution().Cleanup != "incomplete" {
+		if got != 1 || r.d.cleanupOK || c.Complete || strings.Contains(r.f.stdout.String(), "full development flow: PASS") || r.d.passed {
 			t.Fatalf("cleanup claimed complete: exit %d %+v", got, c)
 		}
 	})

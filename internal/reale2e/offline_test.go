@@ -160,17 +160,28 @@ func buildConstraint(f *ast.File) constraint.Expr {
 	return nil
 }
 
-// shippedTemplates checks the docs/examples contracts (UT-8).
+// shippedTemplates checks the retained legacy exercise fixture (UT-8;
+// design 12a-dev-flow-verify moved its exact bytes from docs/examples to
+// internal/reale2e/testdata/legacy-example) and the current runbook.
 func shippedTemplates(t *testing.T, root string) {
 	t.Helper()
-	dir := filepath.Join(root, filepath.FromSlash(ExamplesDir))
+	legacyFixture(t, root)
+	shippedRunbook(t, root)
+}
+
+// legacyFixture pins the unchanged legacy templates: the four-role flow,
+// the role manuals, the coordinator prompt's positional waits and the
+// two-phase prompts, rendered from the offline fixture.
+func legacyFixture(t *testing.T, root string) {
+	t.Helper()
+	dir := filepath.Join(root, filepath.FromSlash(legacyExampleDir))
 	tpl, err := loadTemplates(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	flow, err := ParseFlow(tpl[FlowFile])
 	if err != nil || flow.Kind() != FlowDefault {
-		t.Fatalf("shipped flow %+v %v", flow, err)
+		t.Fatalf("legacy flow %+v %v", flow, err)
 	}
 	all := map[string]string{}
 	for _, p := range Placeholders {
@@ -185,6 +196,9 @@ func shippedTemplates(t *testing.T, root string) {
 			}
 			if h == HopCodeReviewer {
 				manualBytes += len(tpl[n])
+			}
+			if !bytes.Contains(tpl[n], []byte("Legacy four-hop exercise content")) {
+				t.Errorf("legacy manual %s is not labeled legacy", n)
 			}
 		}
 		runbook := string(tpl[manualName(h, "runbook")])
@@ -221,6 +235,13 @@ func shippedTemplates(t *testing.T, root string) {
 			t.Errorf("the coordinator prompt lacks hop %s's marker or wait command", h)
 		}
 	}
+	// The legacy positional wait template.
+	if got := waitCommand(permissionValues{reale2e: "R", runtime: "D"}, 2); got != "R wait-task --run D --task TASK_ID --hop coder" {
+		t.Errorf("legacy wait template %q", got)
+	}
+	if decisionPrompt != "Approve this design and start coding? [yes/no]" {
+		t.Errorf("legacy decision prompt %q", decisionPrompt)
+	}
 	phases := map[string][]byte{}
 	for _, n := range []string{PhasePrompt1, PhasePrompt2} {
 		if phases[n], err = renderTemplate(n, tpl[n], all); err != nil {
@@ -240,57 +261,86 @@ func shippedTemplates(t *testing.T, root string) {
 			t.Errorf("no coordinator template uses %s", p)
 		}
 	}
-	// A3 retired the manual session contract everywhere it was shipped.
+	for n, b := range tpl {
+		retired(t, "legacy "+n, bytes.ReplaceAll(b, []byte("reale2e wait-task"), nil))
+		if bytes.Contains(b, []byte("capture-wait")) || bytes.Contains(b, []byte("{{CALLSHEET}}")) || bytes.Contains(b, []byte("{{WAITS_DIR}}")) {
+			t.Errorf("%s still carries the A3.6 wait", n)
+		}
+	}
+	for _, c := range FeatureCases {
+		if !bytes.Contains(tpl[manualName(HopCoder, "runbook")], []byte(c.ID)) {
+			t.Errorf("the legacy coder runbook lacks case %s", c.ID)
+		}
+	}
+	// None of the legacy files is shipped documentation any more.
+	for _, n := range TemplateNames() {
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(ExamplesDir), n)); !os.IsNotExist(err) {
+			t.Errorf("the legacy %s is still shipped under %s", n, ExamplesDir)
+		}
+	}
+}
+
+// retired fails on the A3-retired manual session contract.
+func retired(t *testing.T, name string, b []byte) {
+	t.Helper()
+	for _, gone := range []string{"reale2e wait", "reale2e finish", "--coordinator-settings", "--setting-sources", "--strict-mcp-config", "--session-id",
+		"setup-attestation", "attested", "python3", "continue after recorded decision", "move CLAUDE.md", "coordinator-exit.json", "event-map.json"} {
+		if bytes.Contains(b, []byte(gone)) {
+			t.Errorf("%s still carries the retired %q", name, gone)
+		}
+	}
+}
+
+// shippedRunbook checks docs/real-e2e.md, the single entry point of the
+// current exercise (design 12a-dev-flow-verify, Default and documentation
+// migration).
+func shippedRunbook(t *testing.T, root string) {
+	t.Helper()
 	doc, err := os.ReadFile(filepath.Join(root, "docs", "real-e2e.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	shipped := map[string][]byte{"docs/real-e2e.md": doc}
-	for n, b := range tpl {
-		shipped[n] = b
-	}
-	for name, b := range shipped {
-		// A3.7's wait-task helper is not the retired wait relay.
-		b = bytes.ReplaceAll(b, []byte("reale2e wait-task"), nil)
-		for _, gone := range []string{"reale2e wait", "reale2e finish", "--coordinator-settings", "--setting-sources", "--strict-mcp-config", "--session-id",
-			"setup-attestation", "attested", "python3", "continue after recorded decision", "move CLAUDE.md", "coordinator-exit.json", "event-map.json"} {
-			if bytes.Contains(b, []byte(gone)) {
-				t.Errorf("%s still carries the retired %q", name, gone)
-			}
+	retired(t, "docs/real-e2e.md", bytes.ReplaceAll(doc, []byte("reale2e wait-task"), nil))
+	// It links every shared-method and exercise input at its source path.
+	for _, n := range DevMethodNames() {
+		if !bytes.Contains(doc, []byte("("+strings.TrimPrefix(devSourceRel(n), "docs/")+")")) {
+			t.Errorf("docs/real-e2e.md does not link %s", devSourceRel(n))
 		}
 	}
-	// The short runbook is the single entry point: it links every shipped
-	// file, shows the one command and the exact prompt, and agrees with the
-	// flow's role table and the fixed case IDs.
-	for _, n := range TemplateNames() {
-		if !bytes.Contains(doc, []byte("examples/real-e2e/"+n)) {
-			t.Errorf("docs/real-e2e.md does not link %s", n)
-		}
-	}
+	gen := "Approve design generation N and start coding? Type exactly \"yes N\" or \"no N\"."
 	for _, want := range []string{"## Prerequisites", "## Roles, models and efforts", "## Run", "## Sign-off", "## Reading the result", "## Rerun",
-		EnvOptIn + "=1", "reale2e run", "--protect-root", decisionPrompt, "report.txt", "audit.md", "audit-review.md", "~/.claude.json",
-		"No repository root was protected", NestedRepoLimitation, "--protect-depth", JudgmentReportLine, `--settings '{"sandbox":{"enabled":false}}'`, "reale2e check --evidence"} {
+		EnvOptIn + "=1", "reale2e run", "--protect-root", gen, "`yes <generation>` or `no <generation>`", "report.txt", "audit.md", "audit-review.md",
+		"~/.claude.json", "No repository root was protected", NestedRepoLimitation, "--protect-depth", JudgmentReportLine,
+		`--settings '{"sandbox":{"enabled":false}}'`, "reale2e check --evidence"} {
 		if !bytes.Contains(doc, []byte(want)) {
 			t.Errorf("docs/real-e2e.md lacks %q", want)
 		}
 	}
-	// FP-8: the runbook states the auto-mode flags, the prerequisites and
-	// that a historical allow-list bundle is not this recipe. A3.7's
-	// wait-task command and the coverage exclusions stay.
+	// The renewed receipt's prompt is the supervisor's own template.
+	if got := fmt.Sprintf("Approve design generation %d and start coding? Type exactly \"yes %d\" or \"no %d\".", 2, 2, 2); got != strings.ReplaceAll(gen, "N", "2") {
+		t.Errorf("prompt template %q", got)
+	}
+	// The auto-mode flags, the prerequisites, the historical-bundle
+	// guidance, the current helper recipes, the reviewer helper's evidence
+	// contract and the coverage exclusions; legacy helpers only as a
+	// compatibility note.
 	exclusions := append(slices.Clone(ClaudeStateExclusions), OwnerAcceptedExclusions...)
 	for _, want := range []string{"```\n" + strings.Join(exclusions, "\n") + "\n```\n",
 		"`--permission-mode auto`", "`--permission-prompts none`", "permissions.disableAutoMode",
-		"3 consecutive or 20 total", "historical bundle with the revision that recorded it", "`launch_shape_invalid`",
-		"`reale2e wait-task --run D --task ID --hop H`", "`reale2e review-material --run D`", "`coordinator_tool_denied`", "`permission_rule_invalid`",
-		"exactly `R wait-task --run D --task TASK_ID --hop H`",
+		"3 consecutive or 20 total", "historical bundle with the revision that recorded it", "`launch_shape_invalid`", "`permission_rule_invalid`",
+		"`reale2e dev-next --run D`", "`reale2e dev-observe --run D --ordinal N --task ID`", "exactly `R dev-wait-task --run D --task TASK_ID --ordinal N`",
+		"`reale2e dev-review-verify --task ID --candidate COMMIT --initial-source COMMIT --go ABS --deadline YYYY-MM-DDTHH:MM:SSZ`",
+		"`Reviewer run sha256: <64 lowercase hex>`", "`review.md`", "Legacy-runtime compatibility helpers",
 		"tool-maintained", "`environment/diff.json`", "| `~/.codex` | root `AGENTS*.md`, `instructions.md`, `prompts/` |",
-		"| `~/.claude` | `CLAUDE.md`, root `settings*.json`, `agents/`, `skills/`, `commands/`, `hooks/`, `plugins/installed_plugins.json`, `plugins/blocklist.json`, `plugins/config.json` |"} {
+		"| `~/.claude` | `CLAUDE.md`, root `settings*.json`, `agents/`, `skills/`, `commands/`, `hooks/`, `plugins/installed_plugins.json`, `plugins/blocklist.json`, `plugins/config.json` |",
+		"never repairs, moves, restores or deletes", "probe-dev-full", "QUALIFIED or BLOCKED", "up to 28 worker calls", "Live status: pending"} {
 		if !strings.Contains(string(doc), want) {
 			t.Errorf("docs/real-e2e.md lacks %q", want)
 		}
 	}
 	for _, gone := range []string{"capture-wait", `"$?"`, "16 rules", "exactly the 15 rules", "exactly two session-only flags",
-		"| `config.toml`, root `AGENTS*.md`", "`plugins/known_marketplaces.json`, `plugins/blocklist.json`"} {
+		"| `config.toml`, root `AGENTS*.md`", "`plugins/known_marketplaces.json`, `plugins/blocklist.json`", "[yes/no]",
+		"exactly `R wait-task --run D --task TASK_ID --hop H`", "EXECUTED", "exit 3"} {
 		if strings.Contains(string(doc), gone) {
 			t.Errorf("docs/real-e2e.md still carries %q", gone)
 		}
@@ -303,18 +353,13 @@ func shippedTemplates(t *testing.T, root string) {
 	if !strings.Contains(codex, "`[projects.\"<dir>\"] trust_level` entry to `~/.codex/config.toml` for every directory they work in") {
 		t.Error("the Codex section of docs/coordinator.md does not say that Codex workers add trust entries")
 	}
-	for n, b := range tpl {
-		if bytes.Contains(b, []byte("capture-wait")) || bytes.Contains(b, []byte("{{CALLSHEET}}")) || bytes.Contains(b, []byte("{{WAITS_DIR}}")) {
-			t.Errorf("%s still carries the A3.6 wait", n)
-		}
-	}
-	for _, r := range flow.Roles {
+	for _, r := range DefaultDevFullFlow().Roles {
 		if !bytes.Contains(doc, []byte(fmt.Sprintf("| %s | %s | %s | %s |", r.ID, r.Adapter, r.Model, r.Effort))) {
 			t.Errorf("the runbook's role table disagrees with the flow on %s", r.ID)
 		}
 	}
 	for _, c := range FeatureCases {
-		for name, b := range map[string][]byte{"runbook": doc, "FEATURE.md": []byte(FeatureRequest), "coder runbook": tpl[manualName(HopCoder, "runbook")]} {
+		for name, b := range map[string][]byte{"runbook": doc, "FEATURE.md": []byte(FeatureRequest)} {
 			if !bytes.Contains(b, []byte(c.ID)) {
 				t.Errorf("the %s lacks case %s", name, c.ID)
 			}

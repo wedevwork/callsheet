@@ -772,11 +772,12 @@ func TestStressStageDispatch(t *testing.T) {
 	// all stays test, coverage, bench, cross: stress is explicit.
 	f := &fakeRunner{coverTotal: "81%", cmdList: cmdList, profile: goodProfile}
 	cr := newContainerRunnerFixture(t, f).(*containerRunner)
-	// Ordinary calls: test(4, iteration 08) + coverage(3) + bench(14,
+	// Ordinary calls: test(5: iteration 08's two and internal/reale2e's
+	// race step) + coverage(3) + bench(14,
 	// the dev-full step after the client wait step) + cross(12); the
 	// container operation's calls (one iteration) run between test and
 	// coverage.
-	if code, _, errOut := runDriver(t, "linux", cr, "all"); code != 0 || len(f.calls) != 33 {
+	if code, _, errOut := runDriver(t, "linux", cr, "all"); code != 0 || len(f.calls) != 34 {
 		t.Fatalf("all = %d with %d calls %s", code, len(f.calls), errOut)
 	}
 	if got := strings.Join(cr.containerKinds(), "|"); got != strings.Join(oneIterationKinds, "|") {
@@ -2400,8 +2401,9 @@ func TestPlatformSeamContract(t *testing.T) {
 		t.Run(goos, func(t *testing.T) {
 			test := TestSteps(goos)
 			// Iteration 08 adds the tagged sidecar contract step (and its race
-			// counterpart on Linux).
-			wantTest := map[string]int{"linux": 4, "darwin": 2}[goos]
+			// counterpart on Linux); internal/reale2e's race step is Linux's
+			// fifth (code review round 5 of design 12a-dev-flow-verify).
+			wantTest := map[string]int{"linux": 5, "darwin": 2}[goos]
 			if len(test) != wantTest {
 				t.Fatalf("TestSteps(%s) = %d steps", goos, len(test))
 			}

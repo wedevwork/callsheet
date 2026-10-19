@@ -56,6 +56,9 @@ type admitInput struct {
 	// Candidate is the code review's candidate input commit and TaskID
 	// the reviewer's actual task (its scratch path).
 	Candidate, TaskID string
+	// ReviewRun is the SHA-256 of the verification helper's complete
+	// receipt the captured log corroborates ("" when there is none).
+	ReviewRun string
 }
 
 // admitResult is what an admitted publication supplies to Next.
@@ -95,7 +98,7 @@ func AdmitPublication(in admitInput) (admitResult, error) {
 		if err != nil {
 			return res, fmt.Errorf("publication: %w: the review blocker field", err)
 		}
-		if err := ReviewReportOK(report, in.Marker, in.Candidate, in.TaskID, bmap); err != nil {
+		if err := ReviewReportOK(report, in.Marker, in.Candidate, in.TaskID, bmap, in.ReviewRun); err != nil {
 			return res, err
 		}
 		res.Report, res.Blocker = report, blocker
@@ -330,16 +333,36 @@ var (
 	reviewCoverageRE = regexp.MustCompile(`^[0-9]{1,3}(\.[0-9]+)?% [^ ].*$`)
 )
 
+// reviewRunField is review.md's reviewer-run digest field (design
+// 12a-dev-flow-verify, Reviewer evidence; required by the exercise
+// envelope only).
+const reviewRunField = "Reviewer run sha256:"
+
 // ReviewReportOK checks the fields the supervisor requires of review.md:
 // the terminal marker agrees with the final one, the reviewed candidate
 // commit, every candidate source file's SHA-256, both exact verification
 // commands with their exits (the coverage profile inside this task's
 // scratch), the coverage scope and value, and the cleanup result. It does
-// not treat the prose as proof that the tests ran.
-func ReviewReportOK(report, marker, candidate, taskID string, candidateFiles map[string]TreeFile) error {
+// not treat the prose as proof that the tests ran. runDigest is the
+// SHA-256 of the verification helper's receipt the captured log
+// corroborates: when set, review.md carries exactly one plain
+// "Reviewer run sha256: <digest>" line equal to it; when empty, it
+// carries none (and an approval is impossible).
+func ReviewReportOK(report, marker, candidate, taskID string, candidateFiles map[string]TreeFile, runDigest string) error {
 	got, err := parseTerminalMarker(report)
 	if err != nil || got != marker {
 		return fmt.Errorf("publication: review.md does not end with the final marker %s", marker)
+	}
+	runs, bad := fieldValues(report, reviewRunField)
+	switch {
+	case bad || len(runs) > 1 || len(runs) == 1 && !hex64RE.MatchString(runs[0]):
+		return fmt.Errorf("publication: review.md has a malformed or repeated %q line", reviewRunField)
+	case runDigest == "" && len(runs) != 0:
+		return fmt.Errorf("publication: review.md names a reviewer run the captured log does not corroborate")
+	case runDigest == "" && marker == markerReviewApproved:
+		return fmt.Errorf("publication: an approving review.md has no corroborated reviewer run")
+	case runDigest != "" && (len(runs) != 1 || runs[0] != runDigest):
+		return fmt.Errorf("publication: review.md does not name the reviewer run sha256 %s", runDigest)
 	}
 	one := func(key string) (string, error) {
 		vals, bad := fieldValues(report, key)

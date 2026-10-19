@@ -1988,20 +1988,6 @@ func rowReported(r AuditRow, reported map[string][]string) bool {
 	return true
 }
 
-// snapshotShards returns a phase's two stored shards, or false when one
-// is missing.
-func (c *checker) snapshotShards(phase string) ([][]byte, bool) {
-	var out [][]byte
-	for _, name := range envFiles(phase) {
-		data, ok := c.b.Files[name]
-		if !ok {
-			return nil, false
-		}
-		out = append(out, data)
-	}
-	return out, true
-}
-
 // ownerEnvironment (A3, FP-11): the manifest's supplied roots (sorted,
 // unique, never nested) are exactly both snapshots' and the diff's; both
 // snapshots parse and are complete, every entry's class the one derived
@@ -2015,30 +2001,63 @@ func (c *checker) snapshotShards(phase string) ([][]byte, bool) {
 // tool-maintained change, or omitted tool-maintained detail, alone never
 // does. It resolves no host path.
 func (c *checker) ownerEnvironment() {
-	m, d := c.b.Manifest, c.b.Diff
-	var roots []string
-	if m != nil {
-		roots = m.ProtectedRoots
+	in := envCheckInput{files: c.b.Files, diff: c.b.Diff, notReached: func() bool { return c.unreached(CritOwnerEnv, msBaseline) }}
+	if m := c.b.Manifest; m != nil {
+		in.manifest, in.roots, in.depth = true, m.ProtectedRoots, m.ProtectDepth
+	}
+	checkOwnerEnvironment(in, func(code string) { c.fail(CritOwnerEnv, code) })
+}
+
+// envCheckInput is one owner-environment check's evidence: the manifest's
+// supplied roots and depth (manifest false: no manifest), the bundle's
+// files (snapshot shards by their fixed names), the stored diff and
+// notReached, which reports (and records) that the attempt stopped before
+// its baseline fingerprint.
+type envCheckInput struct {
+	manifest   bool
+	roots      []string
+	depth      int
+	files      map[string][]byte
+	diff       *EnvDiff
+	notReached func() bool
+}
+
+// checkOwnerEnvironment is the owner-environment criterion over captured
+// evidence alone (shared by the legacy and the development checkers): it
+// recomputes the diff from the two shard sets and compares it with the
+// stored one, failing every protected change.
+func checkOwnerEnvironment(in envCheckInput, fail func(code string)) {
+	roots, d := in.roots, in.diff
+	shardsOf := func(phase string) ([][]byte, bool) {
+		var out [][]byte
+		for _, name := range envFiles(phase) {
+			data, ok := in.files[name]
+			if !ok {
+				return nil, false
+			}
+			out = append(out, data)
+		}
+		return out, true
 	}
 	var snaps [2]*Snapshot
 	for i, phase := range []string{"before", "after"} {
-		shards, ok := c.snapshotShards(phase)
+		shards, ok := shardsOf(phase)
 		if !ok {
-			if !c.unreached(CritOwnerEnv, msBaseline) {
-				c.fail(CritOwnerEnv, CodeEnvUnobserved)
+			if !in.notReached() {
+				fail(CodeEnvUnobserved)
 			}
 			continue
 		}
 		s, err := parseSnapshot(shards)
 		if err != nil || s.Phase != phase {
-			c.fail(CritOwnerEnv, "snapshot_invalid")
+			fail("snapshot_invalid")
 			continue
 		}
 		// A complete claim needs the vendor homes and supplied roots
 		// observed, with every record of a valid kind, scope and path.
 		if err := checkInventory(s, roots); err != nil {
-			c.fail(CritOwnerEnv, CodeEnvInventory)
-			c.fail(CritOwnerEnv, CodeEnvUnobserved)
+			fail(CodeEnvInventory)
+			fail(CodeEnvUnobserved)
 			continue
 		}
 		snaps[i] = s
@@ -2046,27 +2065,27 @@ func (c *checker) ownerEnvironment() {
 	for i, a := range roots {
 		for _, b := range roots[i+1:] {
 			if a == b || tokenStrictlyUnder(a, b) || tokenStrictlyUnder(b, a) {
-				c.fail(CritOwnerEnv, "protected_roots_invalid")
+				fail("protected_roots_invalid")
 			}
 		}
 	}
 	for _, s := range snaps {
-		if s != nil && (m == nil || !slices.Equal(s.Roots, roots)) {
-			c.fail(CritOwnerEnv, "protected_roots_mismatch")
+		if s != nil && (!in.manifest || !slices.Equal(s.Roots, roots)) {
+			fail("protected_roots_mismatch")
 		}
 		// A3.2: both snapshots discovered at the manifest's depth.
-		if s != nil && (m == nil || s.Depth != m.ProtectDepth || m.ProtectDepth < 0 || m.ProtectDepth > maxProtectDepth) {
-			c.fail(CritOwnerEnv, "protect_depth_mismatch")
+		if s != nil && (!in.manifest || s.Depth != in.depth || in.depth < 0 || in.depth > maxProtectDepth) {
+			fail("protect_depth_mismatch")
 		}
 	}
 	if d == nil {
-		if !c.unreached(CritOwnerEnv, msBaseline) {
-			c.fail(CritOwnerEnv, "environment_diff_missing")
+		if !in.notReached() {
+			fail("environment_diff_missing")
 		}
 		return
 	}
-	if m == nil || !slices.Equal(d.ProtectedRoots, roots) {
-		c.fail(CritOwnerEnv, "protected_roots_mismatch")
+	if !in.manifest || !slices.Equal(d.ProtectedRoots, roots) {
+		fail("protected_roots_mismatch")
 	}
 	if snaps[0] != nil && snaps[1] != nil {
 		// A3.4: the stored snapshots are compact; the diff's detail must
@@ -2074,8 +2093,8 @@ func (c *checker) ownerEnvironment() {
 		// record hashing to its snapshot's, and every change is re-derived
 		// from that bound detail.
 		if err := verifyDetail(snaps[0], snaps[1], d.Detail); err != nil {
-			c.fail(CritOwnerEnv, "environment_diff_mismatch")
-			c.fail(CritOwnerEnv, CodeEnvUnobserved)
+			fail("environment_diff_mismatch")
+			fail(CodeEnvUnobserved)
 			snaps[0] = nil
 		}
 	}
@@ -2083,7 +2102,7 @@ func (c *checker) ownerEnvironment() {
 		want := diffFromDetail(snaps[0], snaps[1], roots, d.Detail)
 		for _, phase := range []string{"before", "after"} {
 			for _, name := range envFiles(phase) {
-				fh := FileHash{Name: name, SHA256: sha256Hex(c.b.Files[name])}
+				fh := FileHash{Name: name, SHA256: sha256Hex(in.files[name])}
 				if phase == "before" {
 					want.Before = append(want.Before, fh)
 				} else {
@@ -2092,19 +2111,19 @@ func (c *checker) ownerEnvironment() {
 			}
 		}
 		if !bytes.Equal(mustJSON(want), mustJSON(*d)) {
-			c.fail(CritOwnerEnv, "environment_diff_mismatch")
+			fail("environment_diff_mismatch")
 		}
 		for _, code := range want.Codes {
-			c.fail(CritOwnerEnv, code)
+			fail(code)
 		}
 	}
 	for _, code := range d.Codes {
-		c.fail(CritOwnerEnv, code)
+		fail(code)
 	}
 	if !d.Complete {
-		c.fail(CritOwnerEnv, CodeEnvUnobserved)
+		fail(CodeEnvUnobserved)
 	}
 	if len(d.Protected) > 0 {
-		c.fail(CritOwnerEnv, CodeEnvModified)
+		fail(CodeEnvModified)
 	}
 }

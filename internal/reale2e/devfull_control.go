@@ -217,7 +217,12 @@ func decodeDevResponse(op string, line []byte) (controlResponse, error) {
 			return controlResponse{}, errMalformedResponse
 		}
 	case op == opDevNext && resp.OK && resp.Code == CodePaused:
-		if _, _, err := parsePhaseGate(resp.Summary); err != nil {
+		// The helper relays a full-flow gate or a qualification probe's
+		// gate; the supervisor, which knows its mode, judges which one the
+		// phase must end with.
+		_, _, ferr := parsePhaseGate(resp.Summary)
+		_, complete, perr := parseProbePhaseGate(resp.Summary)
+		if ferr != nil && (perr != nil || complete) {
 			return controlResponse{}, errMalformedResponse
 		}
 	}

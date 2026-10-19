@@ -294,14 +294,19 @@ func TestControlPolicy(t *testing.T) {
 			t.Fatal("the stress budget policy changed")
 		}
 		// The complete suite (with tests/function) keeps its shared 180 s
-		// bound; iteration 08's tagged step runs internal/sidecar's one
+		// bound, and so does the shared race step (every package but
+		// internal/reale2e); internal/reale2e's own race step alone has
+		// 360 s (code review round 5 of design 12a-dev-flow-verify, owner
+		// approved); iteration 08's tagged step runs internal/sidecar's one
 		// contract only.
 		for _, st := range TestSteps("linux") {
-			if slices.Contains(st.Argv, "./...") && !slices.Contains(st.Argv, "-timeout=180s") {
+			shared := slices.Contains(st.Argv, "./...") || slices.Contains(st.Argv, "./tests/...")
+			if shared && !slices.Contains(st.Argv, "-timeout=180s") {
 				t.Fatalf("the function package timeout changed: %v", st.Argv)
 			}
-			if !slices.Contains(st.Argv, "./...") && !slices.Equal(st.Argv[len(st.Argv)-3:], []string{"./internal/sidecar", "-run=^TestRealAdapterLocal$", "-count=1"}) {
-				t.Fatalf("a partial test step other than the tagged sidecar contract: %v", st.Argv)
+			reale2e := slices.Equal(st.Argv, []string{"go", "test", "-race", "-count=1", "-timeout=360s", "./internal/reale2e"})
+			if !shared && !reale2e && !slices.Equal(st.Argv[len(st.Argv)-3:], []string{"./internal/sidecar", "-run=^TestRealAdapterLocal$", "-count=1"}) {
+				t.Fatalf("a partial test step other than the tagged sidecar contract and the reale2e race: %v", st.Argv)
 			}
 		}
 	})

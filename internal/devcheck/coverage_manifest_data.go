@@ -342,6 +342,27 @@ var WorkspaceCoverageManifest = []CoverageEntry{
 	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devfull_supervisor.go"},
 	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devfull_templates.go"},
 	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devfull_workspace.go"},
+	// Design 12a-dev-flow-verify: the versioned bundle, its checker,
+	// replay and audit, the reviewer helper and evidence, the candidate
+	// oracle, the collector producers and the qualification probe, new
+	// untagged files, whole.
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devfull_accounting.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devfull_audit.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devfull_bundle.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devfull_check.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devfull_collect.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devfull_coverage.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devfull_criteria.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devfull_probe.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devfull_replay.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devfull_review.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devfull_reviewcheck.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devfull_sessionmap.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devfull_validate.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devfull_mcpcalls.go"},
+	// The server's per-tool argument rules, shared by the MCP handlers and
+	// the checker's call judges, whole.
+	{Group: GroupChanged, File: modulePath + "/internal/contract/toolargs.go"},
 	{Group: GroupChanged, File: modulePath + "/internal/devcheck/platform.go"},
 }
 

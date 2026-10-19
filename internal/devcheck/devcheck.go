@@ -347,12 +347,52 @@ func MissingCmdPackages(listOut, profile string) []string {
 	return missing
 }
 
+// RaceReale2ePackage is the package whose race tests run as their own
+// step with a 360-second bound (design 12a-dev-flow-verify, code review
+// round 5, owner-approved): its offline full-flow rig records and checks
+// complete attempts, which under the race detector need more than the
+// shared step's 180 seconds.
+const RaceReale2ePackage = "./internal/reale2e"
+
+// RaceSharedPackages select every package of the module except
+// RaceReale2ePackage for the shared race step (packages one at a time,
+// 180 seconds each, design 12a-ci-race-schedule). The go tool has no
+// exclusion pattern, so they are listed; TestRaceSelectionCoversModule
+// keeps them equal to go list ./... without that package, so a new
+// package cannot fall outside both race steps.
+var RaceSharedPackages = []string{
+	"./cmd/...",
+	"./internal/adapter/...",
+	"./internal/cicheck/...",
+	"./internal/cli/...",
+	"./internal/client/...",
+	"./internal/contract/...",
+	"./internal/devcheck/...",
+	"./internal/logging/...",
+	"./internal/mcp/...",
+	"./internal/mcpqual/...",
+	"./internal/plane/...",
+	"./internal/sidecar/...",
+	"./internal/spikes/...",
+	"./internal/taskpublication/...",
+	"./internal/taskworkspace/...",
+	"./internal/testkit/...",
+	"./internal/workspace/...",
+	"./internal/workspacetransfer/...",
+	"./tests/...",
+}
+
 // TestSteps, BenchSteps and CoverageSteps are the planned stage commands.
 func TestSteps(goos string) []Step {
 	steps := []Step{{Name: "test", Argv: []string{"go", "test", "-count=1", "-timeout=180s", "./..."}}}
 	if goos == "linux" {
+		// The race suite: every package but internal/reale2e serialized
+		// with -p=1 under the shared bound, then internal/reale2e alone
+		// under its own.
 		steps = append(steps, Step{Name: "test -race", Env: []string{"CGO_ENABLED=1"},
-			Argv: []string{"go", "test", "-race", "-p=1", "-count=1", "-timeout=180s", "./..."}})
+			Argv: append([]string{"go", "test", "-race", "-p=1", "-count=1", "-timeout=180s"}, RaceSharedPackages...)},
+			Step{Name: "test -race reale2e", Env: []string{"CGO_ENABLED=1"},
+				Argv: []string{"go", "test", "-race", "-count=1", "-timeout=360s", RaceReale2ePackage}})
 	}
 	// Iteration 08: the ordinary-only tagged sidecar contract, as its own
 	// step (and its race counterpart where the suite has one), on the task

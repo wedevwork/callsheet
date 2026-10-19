@@ -852,9 +852,6 @@ func TestJSONHelpers(t *testing.T) {
 	if bytes.ContainsAny(esc, "\x01\x7f\n") || bytes.Contains(esc, []byte(" ")) || bytes.Contains(esc, []byte("\u0085")) {
 		t.Fatalf("raw controls in %q", esc)
 	}
-	if containsNull([]byte(`{"a":"null","b":"\"null"}`)) || !containsNull([]byte(`{"a":[1,null]}`)) {
-		t.Fatal("containsNull")
-	}
 	if describeWriteError(io.ErrClosedPipe) != "the pipe is closed" || len(describeWriteError(errors.New(strings.Repeat("x", 300)))) > 120 {
 		t.Fatal("describeWriteError")
 	}

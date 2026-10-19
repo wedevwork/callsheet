@@ -7,6 +7,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -137,19 +138,58 @@ type finalValidation struct {
 	BuildOut []byte
 	BuildErr []byte
 	Reqs     RequirementsRecord
+	// Cover, CoverOut, CoverErr and Profile are the development path's
+	// coverage run (design 12a-dev-flow-verify, Candidate oracle): its
+	// record, output and the profile it wrote (nil when it wrote none).
+	Cover    *ExecRecord
+	CoverOut []byte
+	CoverErr []byte
+	Profile  []byte
 	Err      error
 }
 
 // maxBuildOutput bounds each retained build output stream.
 const maxBuildOutput = 1 << 16
 
+// maxProfileBytes bounds a coverage profile read back.
+const maxProfileBytes = 1 << 20
+
+// validationArgvCover is the development final validation's coverage run
+// ($PROFILE: the profile's absolute path outside the exported source).
+var validationArgvCover = []string{"go", "test", "-buildvcs=false", "-count=1", "-covermode=set", "-coverprofile=$PROFILE", "./..."}
+
 // runFinalValidation exports files into dir and runs every final
 // validation command within FinalTestBound from now.
 func runFinalValidation(run commandRunner, clock Clock, goBin, pathEnv, dir string, files map[string][]byte, commit, tree string,
 	mark func(typ, name string) int) finalValidation {
+	return runFinalValidationWith(validationOptions{run: run, clock: clock, goBin: goBin, pathEnv: pathEnv, dir: dir, files: files, commit: commit,
+		tree: tree, mark: mark, deadline: clock.Now().Add(FinalTestBound), allowed: projectFiles})
+}
+
+// validationOptions are one final validation's inputs: the explicit
+// shared deadline, the tree policy of the exported files and, for the
+// development path, the coverage run.
+type validationOptions struct {
+	run          commandRunner
+	clock        Clock
+	goBin        string
+	pathEnv      string
+	dir          string
+	files        map[string][]byte
+	commit, tree string
+	mark         func(typ, name string) int
+	deadline     time.Time
+	allowed      map[string]bool
+	cover        bool
+}
+
+// runFinalValidationWith exports files into dir and runs every final
+// validation command within the shared deadline.
+func runFinalValidationWith(o validationOptions) finalValidation {
+	run, clock, goBin, pathEnv, dir, files, commit, tree, mark := o.run, o.clock, o.goBin, o.pathEnv, o.dir, o.files, o.commit, o.tree, o.mark
 	out := finalValidation{Cases: CasesRecord{Schema: CasesSchema, Commit: commit, Tree: tree, Cases: []CaseResult{}}}
-	deadline := clock.Now().Add(FinalTestBound)
-	src, env, err := exportProject(dir, files, pathEnv)
+	deadline := o.deadline
+	src, env, err := exportProjectAllowed(dir, files, pathEnv, o.allowed)
 	out.Test = TestRun{Schema: TestRunSchema, Argv: append([]string(nil), testArgv...), Commit: commit, Tree: tree, Files: sortedKeys(files), Env: offlineEnv(env)}
 	if err != nil {
 		out.Err = err
@@ -186,6 +226,19 @@ func runFinalValidation(run commandRunner, clock Clock, goBin, pathEnv, dir stri
 	jsonRec, tj := v.exec("go_test_json", goBin, validationArgvJSON, validationArgvJSON[1:], env, 4<<20)
 	out.TestJSON, out.TestJSONEr = tj.Stdout, tj.Stderr
 	out.Reqs = buildRequirements(files, out.TestJSON, out.Cases.Cases, jsonRec, commit)
+	if o.cover {
+		profile := filepath.Join(dir, "cover", "coverage.out")
+		args := slices.Clone(validationArgvCover[1:])
+		if err := os.MkdirAll(filepath.Dir(profile), 0o700); err != nil && v.err == nil {
+			v.err = err
+		}
+		args[slices.Index(args, "-coverprofile=$PROFILE")] = "-coverprofile=" + profile
+		rec, res := v.exec("go_test_cover", goBin, validationArgvCover, args, env, 1<<20)
+		out.Cover, out.CoverOut, out.CoverErr = &rec, res.Stdout, res.Stderr
+		if b, err := readBounded(profile, maxProfileBytes); err == nil {
+			out.Profile = b
+		}
+	}
 	out.Err = v.err
 	return out
 }

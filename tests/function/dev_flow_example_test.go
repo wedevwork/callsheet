@@ -46,6 +46,17 @@ var devFlowFiles = []string{
 	"triage-runbook.md",
 }
 
+// devFullExerciseLinks are the four dev-full exercise files the runbook
+// links (relative to docs/).
+var devFullExerciseLinks = []string{
+	"examples/real-e2e/dev-full/flow.json",
+	"examples/real-e2e/dev-full/coordinator-prompt.md",
+	"examples/real-e2e/dev-full/phase.md",
+	"examples/real-e2e/dev-full/scenario.md",
+}
+
+// legacyRoleManuals are the retired four-hop role pairs, no longer
+// shipped (their exact bytes are internal/reale2e's legacy fixture).
 var legacyRoleManuals = []string{
 	"docs/examples/real-e2e/designer-instruction.md",
 	"docs/examples/real-e2e/designer-runbook.md",
@@ -915,15 +926,39 @@ func TestDevFlowPackage(t *testing.T) {
 	if !strings.Contains(coord, "examples/dev-flow/README.md") || !strings.Contains(e2e, "examples/dev-flow/README.md") {
 		t.Fatal("coordinator or real-e2e entry link missing")
 	}
+	// Design 12a-dev-flow-verify migrated the exercise: run selects the
+	// checked full flow, run-dev-full is its deprecated alias with the
+	// same exits, and the runbook links the shared method, the new
+	// exercise README and every dev-full exercise file.
 	if err := requirePhrases(e2e, []string{
-		"still uses its old manuals until the migration slices ship",
-		"legacy four-hop exercise content",
+		"`reale2e run` selects the checked full development flow",
+		"`reale2e run-dev-full` is a documented deprecated alias of `reale2e run`",
+		"the same exits 0/1/2",
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := resolveDocLinks(filepath.Join(root, "docs", "real-e2e.md"), e2e); err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range append([]string{"examples/dev-flow/README.md", "examples/real-e2e/README.md"}, devFullExerciseLinks...) {
+		if !strings.Contains(e2e, "]("+target+")") {
+			t.Fatalf("docs/real-e2e.md does not link %s", target)
+		}
+	}
+	exercise := filepath.Join(root, "docs", "examples", "real-e2e", "README.md")
+	if err := resolveDocLinks(exercise, string(repoFile(t, "docs/examples/real-e2e/README.md"))); err != nil {
+		t.Fatal(err)
+	}
+	// The retired legacy role pairs are gone from the shipped docs; the
+	// shared ten role files stay.
 	for _, rel := range legacyRoleManuals {
-		if !strings.Contains(string(repoFile(t, rel)), "Legacy four-hop exercise content") {
-			t.Fatalf("%s is not labeled legacy", rel)
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel))); !os.IsNotExist(err) {
+			t.Fatalf("the retired %s is still shipped", rel)
+		}
+	}
+	for _, name := range devFlowFiles[2:] {
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(devFlowDir), name)); err != nil {
+			t.Fatalf("the shared %s is missing: %v", name, err)
 		}
 	}
 

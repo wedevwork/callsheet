@@ -285,11 +285,12 @@ func RenderText(r Report) string {
 	return b.String()
 }
 
-// CheckEvidence runs the offline check of root and writes the JSON report
-// to out: 0 for PASS, 1 for failed or incomplete evidence, 2 for schema
-// errors (a version 1 bundle included). It writes nothing to the bundle
-// and executes nothing.
-func CheckEvidence(root string, out, errOut io.Writer) int {
+// checkLegacyEvidence is the unchanged legacy offline check of root (a
+// callsheet-real-e2e/v3 bundle; CheckEvidence routes it here): it writes
+// the JSON report to out and returns 0 for PASS, 1 for failed or
+// incomplete evidence, 2 for schema errors (a version 1 bundle included).
+// It writes nothing to the bundle and executes nothing.
+func checkLegacyEvidence(root string, out, errOut io.Writer) int {
 	b, err := LoadBundle(root)
 	if err != nil {
 		// Every load failure is a schema error: malformed or unsafe

@@ -236,16 +236,31 @@ type behavior struct {
 	lingering bool
 }
 
-// fakeLauncher starts scripted children.
+// fakeLauncher starts scripted children; a spec real accepts runs as a
+// real process instead (the explicitly named real-toolchain tests).
 type fakeLauncher struct {
 	mu      sync.Mutex
 	pid     int
 	script  func(ProcSpec) behavior
+	real    func(ProcSpec) bool
 	started []ProcSpec
 	procs   []*fakeProc
 }
 
 func (l *fakeLauncher) Start(s ProcSpec) (Proc, error) {
+	if l.real != nil && l.real(s) {
+		l.mu.Lock()
+		l.started = append(l.started, s)
+		l.mu.Unlock()
+		// A real process under the fake clock runs to its end inside Start:
+		// the caller's timers fire at once, so it must find the process
+		// already reaped (its output pipes closed with its group).
+		p, err := ExecLauncher{}.Start(s)
+		if err == nil {
+			<-p.Done()
+		}
+		return p, err
+	}
 	b := l.script(s)
 	if b.startErr != nil {
 		return nil, b.startErr
@@ -343,7 +358,7 @@ func fakeView(id string, req contract.DispatchRequest, role contract.RoleView, n
 // fakePlane is an in-memory plane with a go-git hub.
 type fakePlane struct {
 	mu      sync.Mutex
-	t       *testing.T
+	t       testing.TB
 	clock   Clock
 	roles   []contract.RoleView
 	tasks   map[string]*contract.TaskView
@@ -382,7 +397,7 @@ type fakePlane struct {
 	onList func()
 }
 
-func newFakePlane(t *testing.T, clock Clock) *fakePlane {
+func newFakePlane(t testing.TB, clock Clock) *fakePlane {
 	return &fakePlane{t: t, clock: clock, tasks: map[string]*contract.TaskView{}, hub: memory.NewStorage(), logs: map[string][]byte{}}
 }
 
@@ -580,7 +595,11 @@ func (p *fakePlane) ListTasks(_ context.Context, after string, limit int) ([]con
 			continue
 		}
 		v := p.tasks[id]
-		out = append(out, contract.TaskSummary{TaskID: id, Role: v.Role, State: v.State, CreatedAt: v.CreatedAt, RequestedBy: v.Request.RequestedBy})
+		// The plane's complete summary of the task's view.
+		out = append(out, contract.TaskSummary{TaskID: id, Target: v.Request.Target, Role: v.Role, State: v.State, StopRequested: v.StopRequested,
+			CreatedAt: v.CreatedAt, StartedAt: v.StartedAt, FinishedAt: v.FinishedAt, ElapsedMS: v.ElapsedMS, Effective: v.Effective,
+			RequestedBy: v.Request.RequestedBy, Reconciling: v.Reconciling, CompletionPending: v.CompletionPending,
+			PersistenceReason: v.PersistenceReason, DurabilityConfirmed: v.DurabilityConfirmed, Reason: v.Reason})
 		if len(out) == 2 {
 			// Small pages exercise pagination.
 			last := id
@@ -604,6 +623,13 @@ func (p *fakePlane) CancelTask(_ context.Context, id string) (contract.CancelRes
 	return contract.CancelResponse{}, nil
 }
 
+// setLog replaces task id's retained log (a scripted vendor stream).
+func (p *fakePlane) setLog(id string, data []byte) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.logs[id] = data
+}
+
 func (p *fakePlane) TaskLogs(_ context.Context, id string) (contract.TaskLogsResponse, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -611,7 +637,7 @@ func (p *fakePlane) TaskLogs(_ context.Context, id string) (contract.TaskLogsRes
 	if !ok {
 		return contract.TaskLogsResponse{}, contract.New(contract.CodeNotFound, "no logs")
 	}
-	return contract.TaskLogsResponse{TaskID: id, Data: d, SourceBytes: len(d), RetainedBytes: len(d)}, nil
+	return contract.TaskLogsResponse{Version: contract.ProtocolVersion, TaskID: id, Data: d, SourceBytes: len(d), RetainedBytes: len(d)}, nil
 }
 
 func (p *fakePlane) CreateWorkspace(_ context.Context, name string) (contract.WorkspaceView, error) {
@@ -671,13 +697,13 @@ func (f *fakePuller) PullResult(_ context.Context, task, repo string) error {
 
 // writeCommit stores a commit of files (all at the tree root) with parent
 // into st and returns it.
-func writeCommit(t *testing.T, st *memory.Storage, files map[string][]byte, parents ...plumbing.Hash) (plumbing.Hash, plumbing.Hash) {
+func writeCommit(t testing.TB, st *memory.Storage, files map[string][]byte, parents ...plumbing.Hash) (plumbing.Hash, plumbing.Hash) {
 	t.Helper()
 	return writeCommitMode(t, st, files, nil, parents...)
 }
 
 // writeCommitMode is writeCommit with per-file modes (default regular).
-func writeCommitMode(t *testing.T, st *memory.Storage, files map[string][]byte, modes map[string]filemode.FileMode, parents ...plumbing.Hash) (plumbing.Hash, plumbing.Hash) {
+func writeCommitMode(t testing.TB, st *memory.Storage, files map[string][]byte, modes map[string]filemode.FileMode, parents ...plumbing.Hash) (plumbing.Hash, plumbing.Hash) {
 	t.Helper()
 	tree := &object.Tree{}
 	for _, name := range sortedKeys(files) {
@@ -833,7 +859,7 @@ const testSession = "0f1e2d3c-4b5a-4968-8786-a5b4c3d2e1f0"
 // session transcript (rewritten whole under the fake Claude home, as the
 // vendor appends to it).
 type fakeSession struct {
-	t          *testing.T
+	t          testing.TB
 	home       string
 	sid        string
 	cwd        string
@@ -956,7 +982,7 @@ func (s *fakeSession) result(p int, ok bool, denials []map[string]string) {
 // ListTasks call of the feature loop, on the supervisor's goroutine, while
 // its phase process is running.
 type coordScript struct {
-	t      *testing.T
+	t      testing.TB
 	f      *fakeWorld
 	s      *supervisor
 	p      *fakePlane
@@ -1021,7 +1047,7 @@ type coordScript struct {
 	turnInit func(i int, v map[string]any)
 }
 
-func newCoordScript(t *testing.T) *coordScript {
+func newCoordScript(t testing.TB) *coordScript {
 	c := &coordScript{t: t, failHop: -1, extraAt: -1, stopAfter: -1, waitExit: "0", overrideHop: -1, nilFinal: -1, unpublished: -1, userBetween: -1}
 	c.finals = [4]string{"Design written.\nSTATUS: DESIGN_DRAFT\n", "Approved.\nSTATUS: DESIGN_REVIEW_APPROVED\n",
 		"Implemented.\nSTATUS: IMPL_COMPLETE\n", "Looks right.\nSTATUS: REVIEW_APPROVED\n"}
@@ -1439,7 +1465,7 @@ func (t *fakeTerminal) typeEarly(l string) {
 
 // fakeWorld is one offline attempt's world.
 type fakeWorld struct {
-	t        *testing.T
+	t        testing.TB
 	clock    *autoClock
 	launcher *fakeLauncher
 	plane    *fakePlane
@@ -1484,10 +1510,17 @@ type fakeWorld struct {
 	// build is the go build's behavior (zero: success).
 	build behavior
 	env   map[string]string
+	// goPath replaces the go executable's path (empty: fakeGo); profile,
+	// when set, replaces the final coverage run's synthesized profile.
+	goPath  string
+	profile func(module string, main []byte) []byte
 }
 
+// goBin is the world's go executable path.
+func (f *fakeWorld) goBin() string { return cmp.Or(f.goPath, fakeGo) }
+
 // mustRead reads a file.
-func mustRead(t *testing.T, p string) []byte {
+func mustRead(t testing.TB, p string) []byte {
 	t.Helper()
 	b, err := os.ReadFile(p)
 	if err != nil {
@@ -1520,9 +1553,15 @@ var repoRootOnce struct {
 	root string
 }
 
+// legacyExampleDir is the retained legacy four-hop exercise's exact bytes
+// (design 12a-dev-flow-verify, Default and documentation migration): an
+// offline compatibility fixture, no longer shipped documentation.
+const legacyExampleDir = "internal/reale2e/testdata/legacy-example"
+
 // newCheckout creates a minimal checkout: the Callsheet go.mod, the
-// shipped templates (copied from this repository's docs) and design/.
-func newCheckout(t *testing.T) string {
+// legacy templates (copied from the legacy fixture to the location the
+// retained legacy supervisor reads) and design/.
+func newCheckout(t testing.TB) string {
 	t.Helper()
 	repoRootOnce.Do(func() { repoRootOnce.root = testkit.MustRepoRoot(t) })
 	co := t.TempDir()
@@ -1537,7 +1576,7 @@ func newCheckout(t *testing.T) string {
 		t.Fatal(err)
 	}
 	for _, n := range TemplateNames() {
-		b, err := os.ReadFile(filepath.Join(repoRootOnce.root, filepath.FromSlash(ExamplesDir), n))
+		b, err := os.ReadFile(filepath.Join(repoRootOnce.root, filepath.FromSlash(legacyExampleDir), n))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1565,7 +1604,7 @@ func newCheckout(t *testing.T) string {
 
 // newHome creates a fake owner home with owner configuration in each
 // vendor home (Cursor absent).
-func newHome(t *testing.T) string {
+func newHome(t testing.TB) string {
 	t.Helper()
 	h := t.TempDir()
 	for rel, content := range map[string]string{
@@ -1601,7 +1640,7 @@ func runFileJSON(run, callsheet string) string {
 
 // shortTemp returns a short private temporary root (socket paths stay
 // within their bound whatever TMPDIR is).
-func shortTemp(t *testing.T) string {
+func shortTemp(t testing.TB) string {
 	t.Helper()
 	// Explicitly under /tmp, never $TMPDIR: an inherited TMPDIR may be
 	// arbitrarily long, and the runtime's Unix socket must stay within
@@ -1620,7 +1659,7 @@ func shortTemp(t *testing.T) string {
 
 // fakeGitRunner answers the evidence destination's checks (ignored, no
 // tracked path) and fails any repository probe (no protected root).
-func fakeGitRunner(t *testing.T) GitRunner {
+func fakeGitRunner(t testing.TB) GitRunner {
 	return func(dir string, _ io.Writer, args ...string) ([]byte, int, error) {
 		switch {
 		case len(args) > 0 && args[0] == "check-ignore":
@@ -1633,7 +1672,7 @@ func fakeGitRunner(t *testing.T) GitRunner {
 	}
 }
 
-func newFakeWorld(t *testing.T) *fakeWorld {
+func newFakeWorld(t testing.TB) *fakeWorld {
 	f := &fakeWorld{t: t, clock: newAutoClock(), stdout: &syncBuffer{}, stderr: &syncBuffer{}, probeErr: map[string]error{}, lookErr: map[string]error{},
 		ctx: context.Background(), versions: map[string]string{fakeClaude: "2.1.290 (Claude Code)", fakeCodex: "codex-cli 0.160.0", fakeGrok: "grok 1.0.47 (abcdef0) [stable]"},
 		testActions: map[string]string{}, cases: map[string]behavior{}, env: map[string]string{EnvOptIn: "1"}}
@@ -1707,14 +1746,26 @@ func (f *fakeWorld) base(s ProcSpec) behavior {
 	case s.Path == fakeClaude && len(a) > 1 && a[0] == "-p":
 		spec := s
 		return behavior{long: true, onStart: func(p *fakeProc) { f.coord.started(spec, p) }}
-	case s.Path == fakeGo && len(a) == 1 && a[0] == "version":
+	case s.Path == f.goBin() && len(a) == 1 && a[0] == "version":
 		return behavior{stdout: "go version go1.26.4 linux/amd64\n"}
-	case s.Path == fakeGo && strings.Join(a, " ") == "test -buildvcs=false -count=1 ./...":
+	case s.Path == f.goBin() && strings.Join(a, " ") == "test -buildvcs=false -count=1 ./...":
 		return behavior{stdout: "ok  \texample.com/greeting\t0.01s\n"}
-	case s.Path == fakeGo && strings.Join(a, " ") == "test -json -buildvcs=false -count=1 ./...":
+	case s.Path == f.goBin() && strings.Join(a, " ") == "test -json -buildvcs=false -count=1 ./...":
 		return behavior{stdout: f.testJSON() + f.jsonExtra, exit: f.jsonExit}
-	case s.Path == fakeGo && len(a) == 5 && strings.Join(a[:3], " ") == "build -buildvcs=false -o" && a[4] == ".":
+	case s.Path == f.goBin() && len(a) == 5 && strings.Join(a[:3], " ") == "build -buildvcs=false -o" && a[4] == ".":
 		return f.build
+	case s.Path == f.goBin() && len(a) == 6 && strings.Join(a[:4], " ") == "test -buildvcs=false -count=1 -covermode=set" &&
+		strings.HasPrefix(a[4], "-coverprofile=") && a[5] == "./...":
+		dir, out := s.Dir, strings.TrimPrefix(a[4], "-coverprofile=")
+		return behavior{stdout: "ok  \texample.com/greeting\t0.01s\tcoverage: 88.9% of statements\n", after: func() {
+			main, _ := os.ReadFile(filepath.Join(dir, "main.go"))
+			gomod, _ := os.ReadFile(filepath.Join(dir, "go.mod"))
+			profile := synthProfile(modulePathOf(gomod), main)
+			if f.profile != nil {
+				profile = f.profile(modulePathOf(gomod), main)
+			}
+			os.WriteFile(out, profile, 0o600)
+		}}
 	case filepath.Base(s.Path) == "greeting":
 		for _, c := range FeatureCases {
 			if slices.Equal(c.Args, a) {
@@ -1755,6 +1806,9 @@ func (f *fakeWorld) world() *World {
 		LookPath: func(n string) (string, error) {
 			if err := f.lookErr[n]; err != nil {
 				return "", err
+			}
+			if n == "go" {
+				return f.goBin(), nil
 			}
 			return "/fake/bin/" + n, nil
 		},
@@ -1797,7 +1851,7 @@ func (f *fakeWorld) args() []string {
 // host returns run's host inputs with the opt-in set; the scripted
 // coordinator sees the new supervisor through its observe seam.
 func (f *fakeWorld) host() Host {
-	return Host{GOOS: "linux", GOARCH: "amd64", Args: f.args(),
+	return Host{GOOS: "linux", GOARCH: "amd64", Args: f.args(), legacy: true,
 		Getenv: func(k string) string { return f.env[k] },
 		LookupEnv: func(k string) (string, bool) {
 			v, ok := f.env[k]
