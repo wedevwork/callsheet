@@ -582,6 +582,16 @@ func TestTaskStream(t *testing.T) {
 			g := newSessionHold()
 			tr := startTaskRun(t, fp, taskOpts{adjust: func(d *deps) { d.observe = g.observe }})
 			ins, run := manuals(t, tr.dir, "a", "i")
+			// The revision's first ready-check probe is held until the slot
+			// report without that cycle's readiness has been seen: its
+			// pass then changes CanAccept at the same frozen instant (the
+			// CI flake's window, every run).
+			block := make(chan struct{})
+			var unblock sync.Once
+			release := func() { unblock.Do(func() { close(block) }) }
+			t.Cleanup(release)
+			tr.script.set(nil, block)
+			start := tr.clk.Now()
 			s := tr.connect(t, 1, 1, roleConfig("a", ins, run))
 			t.Cleanup(g.release)
 			st, ch := s.run(t, 1, 0, "live")
@@ -596,8 +606,24 @@ func TestTaskStream(t *testing.T) {
 			// available yet. prompted stays set, so the result — once it
 			// exists — is written before any further report can clear the
 			// timer.
-			s.report(t, 1, func(r contract.RoleStatus) bool { return r.Inflight == 1 })
+			// While the revision's first cycle is held, the slot report
+			// carries no readiness yet; the cycle's pass then changes
+			// CanAccept at the same frozen instant, and its prompt report
+			// re-arms the timer for its own request. So the barrier waits
+			// for that cycle and acknowledges the report that carries both
+			// the occupied slot and its readiness, the last status change
+			// while the clock stands still (as TestTaskWorkspaceLifecycle).
+			s.report(t, 1, func(r contract.RoleStatus) bool { return r.Inflight == 1 && !r.CanAccept })
 			at := tr.clk.Now().Add(heartbeatInterval)
+			// Regression setup: the released cycle's prompt report is
+			// acknowledged and re-arms the timer for its own, later request
+			// at the same instant before the barrier samples, so a barrier
+			// that latched the held slot report fails every run.
+			held := s.b - 1
+			release()
+			tr.ev.awaitArmedAfter(t, s.c.minSession, held, at)
+			cyc := tr.ev.awaitCycleSince(t, 1, start)
+			s.report(t, 1, func(r contract.RoleStatus) bool { return r.Inflight == 1 && r.CanAccept == cyc.passed[0] })
 			tr.ev.awaitHeartbeatArmed(t, s.c.minSession, s.b-1, at)
 			tr.ev.armMu.Lock()
 			var armEv event

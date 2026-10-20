@@ -81,8 +81,11 @@ var platformGuardPolicy = platformPolicy{
 	wrappers: []platformWrapper{
 		{file: "internal/cli/cli.go", fn: "Run", ret: true, callee: "runFor",
 			args: []wrapperArg{paramArg("ctx"), hostArg("GOOS"), paramArg("args"), paramArg("in"), paramArg("out"), paramArg("errOut")}},
-		{file: "internal/devcheck/devcheck.go", fn: "Run", ret: true, callee: "runFor",
-			args: []wrapperArg{paramArg("ctx"), hostArg("GOOS"), paramArg("args"), paramArg("out"), paramArg("errOut"), paramArg("run"), paramArg("opts")}},
+		// Design 12a-dev-flow-verify r0.7: Run also hands runWith the
+		// process environment lookup it reads CI presence from once.
+		{file: "internal/devcheck/devcheck.go", fn: "Run", ret: true, callee: "runWith",
+			args: []wrapperArg{paramArg("ctx"), hostArg("GOOS"), packageArg("lookupEnv"), paramArg("args"), paramArg("out"), paramArg("errOut"), paramArg("run"),
+				paramArg("opts")}},
 		{file: "internal/spikes/processgroup/experiment.go", fn: "evaluate", ret: false, callee: "evaluateFor",
 			args: []wrapperArg{paramArg("r"), hostArg("GOOS")}},
 		{file: "internal/spikes/processgroup/experiment.go", fn: "RunHelper", ret: true, callee: "runHelperFor",
