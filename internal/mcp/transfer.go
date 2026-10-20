@@ -99,39 +99,8 @@ func (c *call) transfers() (Transfers, error) {
 	return c.s.cfg.Transfer(c.opCtx, cwd)
 }
 
-// optionalPath validates an optional path argument (omitted: the working
-// directory; present: nonempty, valid UTF-8, no NUL, native length).
-func (c *call) optionalPath(p *string) (string, bool, error) {
-	if p == nil {
-		return "", false, nil
-	}
-	if err := contract.ValidateLocalPath(c.s.cfg.GOOS, *p); err != nil {
-		return "", false, err
-	}
-	return *p, true, nil
-}
-
 func runWsPush(c *call, raw json.RawMessage) (toolResult, error) {
-	var a struct {
-		Name     string  `json:"name"`
-		Instance string  `json:"instance"`
-		Branch   *string `json:"branch,omitempty"`
-		Path     *string `json:"path,omitempty"`
-	}
-	if err := decodeArgs(raw, &a); err != nil {
-		return toolResult{}, err
-	}
-	branch := ""
-	if a.Branch != nil {
-		if *a.Branch == "" {
-			return toolResult{}, invalid("branch", "branch must not be empty; omit it for main")
-		}
-		branch = *a.Branch
-	}
-	if _, err := contract.ValidatePush(a.Name, a.Instance, branch); err != nil {
-		return toolResult{}, err
-	}
-	path, set, err := c.optionalPath(a.Path)
+	a, err := contract.ParseWsPushArgs(raw, c.s.cfg.GOOS)
 	if err != nil {
 		return toolResult{}, err
 	}
@@ -140,75 +109,29 @@ func runWsPush(c *call, raw json.RawMessage) (toolResult, error) {
 		return toolResult{}, err
 	}
 	defer tr.Close()
-	r, err := tr.Push(c.opCtx, workspacetransfer.PushRequest{Name: a.Name, Instance: a.Instance, Branch: branch, Path: path, PathSet: set})
+	r, err := tr.Push(c.opCtx, workspacetransfer.PushRequest{Name: a.Name, Instance: a.Instance, Branch: a.Branch, Path: a.Path, PathSet: a.PathSet})
 	if err != nil {
 		return toolResult{}, err
 	}
 	return encodeJSON(r)
 }
 
-// pullArgs are ws_pull's flat arguments (iteration 10c): the explicit
-// form {name, ref, path?} or the task form {task_id, path?}; exactly one
-// form and no mixed key are runtime rules.
-type pullArgs struct {
-	TaskID *string `json:"task_id,omitempty"`
-	Name   *string `json:"name,omitempty"`
-	Ref    *string `json:"ref,omitempty"`
-	Path   *string `json:"path,omitempty"`
-}
-
-// request validates the form and returns the pull request (without the
-// task form's resolved selection) and whether it is the task form.
-func (a pullArgs) request() (workspacetransfer.PullRequest, bool, error) {
-	var req workspacetransfer.PullRequest
-	switch {
-	case a.TaskID != nil && (a.Name != nil || a.Ref != nil):
-		return req, false, invalid("task_id", "ws_pull takes either task_id or name and ref, never both")
-	case a.TaskID != nil && !contract.ValidTaskID(*a.TaskID):
-		return req, false, invalidTaskID("task_id")
-	case a.TaskID != nil:
-		return req, true, nil
-	case a.Name == nil || a.Ref == nil:
-		return req, false, invalid("name", "ws_pull needs task_id, or name and ref together")
-	}
-	if !contract.ValidWorkspaceName(*a.Name) {
-		return req, false, invalidWsName()
-	}
-	// A bare task ID means its full task ref (refs/heads/t_... escapes to
-	// a branch); the unchanged ValidatePull then checks the result.
-	sel, err := contract.ParseTaskSelector(*a.Ref, "ref", false)
-	if err != nil {
-		return req, false, err
-	}
-	req.Name, req.Ref = *a.Name, contract.SelectorString(sel)
-	if _, err := contract.ValidatePull(req.Name, req.Ref); err != nil {
-		return req, false, err
-	}
-	return req, false, nil
-}
-
 func runWsPull(c *call, raw json.RawMessage) (toolResult, error) {
-	var a pullArgs
-	if err := decodeArgs(raw, &a); err != nil {
-		return toolResult{}, err
-	}
-	req, task, err := a.request()
+	a, err := contract.ParseWsPullArgs(raw, c.s.cfg.GOOS)
 	if err != nil {
 		return toolResult{}, err
 	}
-	if req.Path, req.PathSet, err = c.optionalPath(a.Path); err != nil {
-		return toolResult{}, err
-	}
+	req := workspacetransfer.PullRequest{Name: a.Name, Ref: a.Ref, Path: a.Path, PathSet: a.PathSet}
 	tr, err := c.transfers()
 	if err != nil {
 		return toolResult{}, err
 	}
 	defer tr.Close()
-	if task {
+	if a.TaskID != "" {
 		// The task's record selects its bound instance and immutable
 		// result; the pair guards the transfer itself. The call's context
 		// cancels the lookup and the transfer alike.
-		sel, err := tr.ResolveTaskResult(c.opCtx, *a.TaskID)
+		sel, err := tr.ResolveTaskResult(c.opCtx, a.TaskID)
 		if err != nil {
 			return toolResult{}, err
 		}

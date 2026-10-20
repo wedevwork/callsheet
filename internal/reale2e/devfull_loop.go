@@ -109,29 +109,36 @@ func (d *devSupervisor) deadlines() bool {
 // incomplete scan is never "no admissions".
 func (d *devSupervisor) scan() {
 	after := ""
+	sw := d.sweeps.begin(sweepMonitor)
 	for !d.halted() {
 		ctx, cancel := d.s.opCtx()
 		page, next, err := d.s.plane.ListTasks(ctx, after, contract.MaxTaskListLimit)
 		cancel()
 		if err != nil {
+			// A transport error closes the sweep explicitly.
+			sw.end(err)
 			d.stop("task_scan_failed", err.Error())
 			return
 		}
+		sw.page(after, page, next)
 		for _, t := range page {
 			if d.s.known[t.TaskID] != "" {
 				continue
 			}
 			v, err := d.s.show(t.TaskID, 0)
 			if err != nil {
+				sw.end(err)
 				d.stop("task_scan_failed", err.Error())
 				return
 			}
 			d.classify(v)
 			if d.halted() {
+				sw.end(errors.New("the sweep stopped at a refused admission"))
 				return
 			}
 		}
 		if next == nil {
+			sw.end(nil)
 			return
 		}
 		after = *next
@@ -177,8 +184,8 @@ func (d *devSupervisor) matchSlot(v contract.TaskView) {
 		at = d.s.w.Clock.Now()
 	}
 	sl.matched, sl.admittedAt = v.TaskID, at
-	d.s.known[v.TaskID] = workflowLabel(sl.plan.Ordinal)
-	sl.admittedSeq = d.s.ev.event(Event{Type: EvTaskAdmitted, Hop: workflowLabel(sl.plan.Ordinal), Task: v.TaskID}).Seq
+	d.s.known[v.TaskID] = d.planLabel(sl.plan)
+	sl.admittedSeq = d.s.ev.event(Event{Type: EvTaskAdmitted, Hop: d.planLabel(sl.plan), Task: v.TaskID}).Seq
 	sl.cmd = devWaitCommand(d.s.w.Executable, d.s.runtime, v.TaskID, sl.plan.Ordinal)
 }
 
@@ -186,6 +193,9 @@ func (d *devSupervisor) matchSlot(v contract.TaskView) {
 // exact goal and acceptance bytes, empty payload, no override, the frozen
 // selection, and the workspace name, instance and planned base.
 func (d *devSupervisor) bindingOK(v contract.TaskView, plan TaskPlan) error {
+	if d.probe != nil {
+		return d.probe.binding(v, plan)
+	}
 	role, ok := d.flow.Role(plan.Role)
 	switch {
 	case !ok || v.Role.ID != plan.Role || v.Role.Adapter != role.Adapter:
@@ -258,8 +268,8 @@ func (d *devSupervisor) devNext() controlResponse {
 		}
 		d.seedVerified = true
 		d.s.ev.event(Event{Type: EvSeedCreated, Code: "seed_pushed"})
-		if !d.writeEvidenceJSON("setup/seed-push.json", map[string]string{"workspace": d.s.workspace.Name, "instance": d.s.workspace.Instance,
-			"ref": contract.DefaultBranchRef, "commit": d.s.workspace.SeedCommit}) {
+		if !d.writeEvidenceJSON("setup/seed-push.json", DevSeedPush{Schema: devKind("seed-push"), RunID: d.s.runID, Workspace: d.s.workspace.Name,
+			Instance: d.s.workspace.Instance, Ref: contract.DefaultBranchRef, Commit: d.s.workspace.SeedCommit}) {
 			return devCode(CodeClosing)
 		}
 	}
@@ -277,7 +287,7 @@ func (d *devSupervisor) devNext() controlResponse {
 	if !sl.exposed {
 		// The exposure is persisted before the slot is exposed or its plan
 		// named: a failure of this event itself closes dispatch.
-		d.s.ev.event(Event{Type: EvCoordinatorReady, Hop: workflowLabel(sl.plan.Ordinal), Code: "plan_exposed"})
+		d.s.ev.event(Event{Type: EvCoordinatorReady, Hop: d.planLabel(sl.plan), Code: "plan_exposed"})
 		if d.halted() {
 			return devCode(CodeClosing)
 		}
@@ -310,7 +320,7 @@ func (d *devSupervisor) devObserve(req ControlRequest) string {
 	switch label := d.s.known[req.Task]; {
 	case sl.observed && sl.matched == req.Task:
 		return CodeAlreadyObserved
-	case sl.observed, sl.matched != "" && sl.matched != req.Task, label != "" && label != "seen" && label != workflowLabel(n):
+	case sl.observed, sl.matched != "" && sl.matched != req.Task, label != "" && label != "seen" && label != d.planLabel(sl.plan):
 		d.stop("observation_conflict", "task "+req.Task+" conflicts with the slot's admission")
 		return CodeObservationClash
 	}
@@ -337,9 +347,9 @@ func (d *devSupervisor) devObserve(req ControlRequest) string {
 		d.matchSlot(v)
 	}
 	sl.observed, sl.phase = true, len(d.phases)-1
-	sl.observedSeq = d.s.ev.event(Event{Type: EvObserved, Hop: workflowLabel(n), Task: req.Task}).Seq
-	if !d.writeEvidenceJSON("tasks/"+hopDir(n-1)+"/observation.json", map[string]any{"ordinal": n, "task": req.Task, "admitted_seq": sl.admittedSeq,
-		"observed_seq": sl.observedSeq, "phase": sl.phase + 1, "created_at": v.CreatedAt}) {
+	sl.observedSeq = d.s.ev.event(Event{Type: EvObserved, Hop: d.planLabel(sl.plan), Task: req.Task}).Seq
+	if !d.writeEvidenceJSON(d.planDir(sl.plan)+"/observation.json", DevObservation{Schema: devKind("observation"), RunID: d.s.runID, Ordinal: n, Task: req.Task,
+		AdmittedSeq: sl.admittedSeq, ObservedSeq: sl.observedSeq, Phase: sl.phase + 1, CreatedAt: v.CreatedAt}) {
 		return CodeInternalError
 	}
 	return CodeAccepted
@@ -358,7 +368,7 @@ func (d *devSupervisor) devWait(req ControlRequest) string {
 		return CodeDuplicateWait
 	}
 	sl.waitStarted = true
-	sl.waitSeq = d.s.ev.event(Event{Type: EvTaskAdmitted, Hop: workflowLabel(n), Task: req.Task, Code: "wait_started"}).Seq
+	sl.waitSeq = d.s.ev.event(Event{Type: EvTaskAdmitted, Hop: d.planLabel(sl.plan), Task: req.Task, Code: "wait_started"}).Seq
 	return CodeAccepted
 }
 
@@ -380,17 +390,20 @@ func (d *devSupervisor) progress() {
 	if !contract.TaskTerminal(v.State) {
 		return
 	}
-	dir := "tasks/" + hopDir(sl.plan.Ordinal-1)
+	dir := d.planDir(sl.plan)
 	if !sl.terminal {
 		sl.terminal = true
-		d.s.ev.event(Event{Type: EvTaskTerminal, Hop: workflowLabel(sl.plan.Ordinal), Task: v.TaskID})
+		d.s.ev.event(Event{Type: EvTaskTerminal, Hop: d.planLabel(sl.plan), Task: v.TaskID})
 		if !d.writeEvidenceJSON(dir+"/task.json", contract.TaskShowResponse{Version: contract.ProtocolVersion, Task: v}) {
 			return
 		}
 		if v.Result != nil && v.Result.FinalMessage != nil && !d.writeEvidence(dir+"/final.txt", []byte(*v.Result.FinalMessage)) {
 			return
 		}
-		d.s.storeLogs(dir, v.TaskID)
+		// The task's log is retrieved once, here, with its complete
+		// metadata; the reviewer's execution evidence is derived from these
+		// bytes and no later retrieval may replace them.
+		sl.logs, sl.logMeta = d.storeDevLogs(dir, v.TaskID)
 		if d.halted() {
 			// A log (or event) write failed: nothing more is inspected.
 			return
@@ -433,9 +446,13 @@ func (d *devSupervisor) progress() {
 		// Incomplete evidence: wait for it within the task's deadline.
 		return
 	}
-	rec.ConsumedSeq = d.s.ev.event(Event{Type: EvTaskTerminal, Hop: workflowLabel(sl.plan.Ordinal), Task: sl.matched, Code: "wait_consumed"}).Seq
-	if !d.writeWaitFiles(sl, files) || !d.writeEvidenceJSON(dir+"/wait.json", rec) {
+	rec.ConsumedSeq = d.s.ev.event(Event{Type: EvTaskTerminal, Hop: d.planLabel(sl.plan), Task: sl.matched, Code: "wait_consumed"}).Seq
+	if !d.writeWaitFiles(sl, files) || !d.writeEvidenceJSON(dir+"/wait.json", envelope("wait", d.s.runID, rec)) {
 		d.stop("evidence_write_failed", "the wait evidence of task "+sl.matched)
+		return
+	}
+	if d.probe != nil && sl.plan.Role == HopDesigner {
+		d.probe.admitWake(v, rec.ConsumedSeq)
 		return
 	}
 	d.admitPublication(v, rec.ConsumedSeq)
@@ -580,12 +597,27 @@ func (d *devSupervisor) admitInspected(insp *devInspection, base, result []TreeF
 	if plan.Role == "design-reviewer" {
 		in.DesignDigest = fileSHA(bmap, "design.md")
 	}
+	dir := d.planDir(&plan)
 	if plan.Role == "code-reviewer" {
 		if plan.ExpectedBase != d.state.CandidateCommit {
 			d.stop("publication_rejected", "the code review's input is not the candidate")
 			return
 		}
 		in.Candidate = plan.ExpectedBase
+		// The reviewer's execution evidence, derived from the log captured
+		// at its terminal observation, is persisted before the review can
+		// select any transition: an approval needs its corroborated
+		// successful receipt.
+		rmap, _ := indexTree(result)
+		ev := DeriveDevReviewEvidence(d.reviewEvidenceInput(sl, v, marker, bmap, fileText(rmap, "review.md")))
+		if !d.writeEvidenceJSON(dir+"/review-evidence.json", DevReviewRecord{Schema: devKind("review-evidence"), RunID: d.s.runID, Evidence: ev}) {
+			return
+		}
+		if code, stop := ev.blocks(); stop {
+			d.stop(code, fmt.Sprintf("the code review %s's execution evidence is %s (%s)", v.TaskID, ev.Status, ev.Code))
+			return
+		}
+		in.ReviewRun = ev.runDigest()
 	}
 	res, err := AdmitPublication(in)
 	if err != nil {
@@ -612,9 +644,9 @@ func (d *devSupervisor) admitInspected(insp *devInspection, base, result []TreeF
 	if v.FinishedAt != nil {
 		out.FinishedAt = *v.FinishedAt
 	}
-	if !d.writeEvidenceJSON("tasks/"+hopDir(plan.Ordinal-1)+"/admission.json", map[string]any{"task": v.TaskID, "marker": marker, "commit": commit,
-		"parent": plan.ExpectedBase, "tree": tree, "artifacts": out.Artifacts, "disposition": dispositionOf(plan.Role, marker),
-		"blocker": res.Blocker, "design_required": res.DesignRequired, "brief_current": res.BriefCurrent}) {
+	if !d.writeEvidenceJSON(dir+"/admission.json", DevAdmission{Schema: devKind("admission"), RunID: d.s.runID, Task: v.TaskID, Marker: marker,
+		Commit: commit, Parent: plan.ExpectedBase, Tree: tree, Artifacts: out.Artifacts, Disposition: dispositionOf(plan.Role, marker),
+		Blocker: res.Blocker, DesignRequired: res.DesignRequired, BriefCurrent: res.BriefCurrent}) {
 		return
 	}
 	if d.deadlines() {
@@ -622,13 +654,49 @@ func (d *devSupervisor) admitInspected(insp *devInspection, base, result []TreeF
 		// prepared; a sticky evidence failure also stops here.
 		return
 	}
-	st, step := Next(d.state, out)
+	var st DevFullState
+	var step StepResult
+	if d.probe != nil {
+		st, step = d.probe.next(d.state, out)
+	} else {
+		st, step = Next(d.state, out)
+	}
 	d.slot = nil
 	d.apply(st, step)
-	if !d.halted() && len(d.state.Tasks) > 0 {
+	if len(d.state.Tasks) > 0 && d.state.Tasks[len(d.state.Tasks)-1].Ordinal == plan.Ordinal {
 		last := d.state.Tasks[len(d.state.Tasks)-1]
-		d.writeEvidenceJSON("tasks/"+hopDir(last.Ordinal-1)+"/record.json", last)
+		d.writeEvidenceJSON(dir+"/record.json", envelope("task-record", d.s.runID, last))
 	}
+}
+
+// reviewEvidenceInput is a code review's evidence derivation input: the
+// log captured at its terminal observation, its authoritative task, the
+// plan's helper recipe and the candidate and seed trees.
+func (d *devSupervisor) reviewEvidenceInput(sl *devSlot, v contract.TaskView, marker string, cand map[string]TreeFile, report string) reviewEvidenceInput {
+	in := reviewEvidenceInput{Ordinal: sl.plan.Ordinal, Log: sl.logs, LogFile: d.planDir(sl.plan) + "/logs.txt", Meta: sl.logMeta, Task: v.TaskID,
+		Helper: d.helper, Candidate: sl.plan.ExpectedBase, Initial: d.state.InitialCommit, CandTree: d.candidateTree(sl.plan.ExpectedBase),
+		CandFiles: cand, SeedMain: fileContent(d.trees[d.state.InitialCommit], "main.go"), Marker: marker, Report: report}
+	if at, ok := contract.ParseTime(v.CreatedAt); ok {
+		in.AdmittedAt = at
+	}
+	if v.FinishedAt != nil {
+		if at, ok := contract.ParseTime(*v.FinishedAt); ok {
+			in.FinishedAt = at
+		}
+	}
+	return in
+}
+
+// storeDevLogs retrieves a terminal task's log once and stores it with
+// its complete metadata (the legacy log storage, retaining the bytes).
+func (d *devSupervisor) storeDevLogs(dir, task string) ([]byte, DevLogMeta) {
+	ctx, cancel := d.s.opCtx()
+	logs, err := d.s.plane.TaskLogs(ctx, task)
+	cancel()
+	data, meta := devLogMetaOf(logs, err)
+	d.writeEvidence(dir+"/logs.txt", storedLog(data))
+	d.writeEvidenceJSON(dir+"/logs.json", DevLogRecord{Schema: devKind("logs"), RunID: d.s.runID, Task: task, Meta: meta})
+	return data, meta
 }
 
 // readInspection reads a finished pull's inspection repository: the
@@ -667,7 +735,7 @@ func (d *devSupervisor) apply(st DevFullState, res StepResult) {
 	}
 	d.state = st
 	for ; d.written < len(d.state.Transitions); d.written++ {
-		if !d.writeEvidenceJSON(fmt.Sprintf("transitions/%02d.json", d.written+1), d.state.Transitions[d.written]) {
+		if !d.writeEvidenceJSON(fmt.Sprintf("transitions/%02d.json", d.written+1), envelope("transition", d.s.runID, d.state.Transitions[d.written])) {
 			return
 		}
 	}
@@ -680,7 +748,7 @@ func (d *devSupervisor) apply(st DevFullState, res StepResult) {
 		d.stop(res.Stop, cmpOr(res.Reason, res.Stop))
 	case actionComplete:
 		d.complete = true
-		d.s.say("the code review approved candidate %s: execution complete, still unverified (no PASS)", d.state.CandidateCommit)
+		d.s.say("the code review approved candidate %s: the workflow is complete; final validation and verification are pending", d.state.CandidateCommit)
 	case actionPause:
 		d.gate = &devGate{kind: res.Pause, gen: res.Generation}
 	case actionDispatch:
@@ -693,7 +761,10 @@ func (d *devSupervisor) apply(st DevFullState, res StepResult) {
 // exposed, and opens its slot.
 func (d *devSupervisor) prepareSlot() {
 	plan := d.state.Pending
-	goal, acc, inputs, err := d.envelope(plan)
+	goal, acc, inputs, err := plan.Goal, plan.Acceptance, plan.Inputs, error(nil)
+	if d.probe == nil {
+		goal, acc, inputs, err = d.envelope(plan)
+	}
 	if err != nil {
 		d.stop(codeOf(err), err.Error())
 		return
@@ -708,13 +779,17 @@ func (d *devSupervisor) prepareSlot() {
 	doc := devDispatchDoc{Schema: devDispatchSchema, Ordinal: plan.Ordinal, Role: plan.Role, Mode: plan.Mode,
 		Target: contract.TaskTarget{Kind: contract.TargetID, Value: plan.Role}, Goal: goal, Acceptance: acc, Payload: []string{},
 		Workspace: d.s.workspace.Name, Instance: d.s.workspace.Instance, Base: plan.ExpectedBase}
+	if d.probe != nil && plan.Role == HopDesigner {
+		// A wake probe has no workspace, base or publication.
+		doc.Workspace, doc.Instance, doc.Base = "", "", ""
+	}
 	body, err := marshalDispatch(doc)
 	if err != nil || len(body) > maxDispatchDocByte {
 		d.stop(CodePromptBudget, "the prepared dispatch document exceeds 32 KiB")
 		return
 	}
-	dir := "tasks/" + hopDir(plan.Ordinal-1)
-	if !d.writeEvidenceJSON(dir+"/plan.json", plan) || !d.writeEvidence(dir+"/dispatch.json", body) || d.halted() {
+	dir := d.planDir(plan)
+	if !d.writeEvidenceJSON(dir+"/plan.json", envelope("plan", d.s.runID, *plan)) || !d.writeEvidence(dir+"/dispatch.json", body) || d.halted() {
 		return
 	}
 	path, sum, err := exposeDispatch(filepath.Join(d.s.runtime, "dispatch"), plan.Ordinal, goal, body)
@@ -754,9 +829,27 @@ func (d *devSupervisor) phaseExited() {
 		return
 	}
 	switch {
-	case d.complete && d.slot == nil:
+	case d.complete && d.slot == nil && d.probe != nil:
+		if _, complete, err := parseProbePhaseGate(stream.resultText); err != nil || !complete {
+			d.stop("phase_result", fmt.Sprintf("probe phase %d did not end with exactly probe=complete", p.n))
+			return
+		}
 		d.executed = true
-		d.s.say("coordinator phase %d ended after the approving review", p.n)
+	case d.complete && d.slot == nil:
+		// The approving review's wait was consumed and the phase exited
+		// cleanly: the final candidate is validated now, before execution
+		// is marked finished and before cleanup.
+		d.s.say("coordinator phase %d ended after the approving review; validating the final candidate", p.n)
+		if d.runDevFinalValidation() {
+			d.executed = true
+		}
+	case d.gate != nil && d.probe != nil:
+		gen, complete, err := parseProbePhaseGate(stream.resultText)
+		if err != nil || complete || gen != d.gate.gen {
+			d.stop("phase_result", fmt.Sprintf("probe phase %d did not end with exactly gate=probe generation=%d", p.n, d.gate.gen))
+			return
+		}
+		d.openWindow(p.rec.ExitedSeq)
 	case d.gate != nil:
 		gate, gen, err := parsePhaseGate(stream.resultText)
 		if err != nil || gate != d.gate.kind || gen != d.gate.gen {

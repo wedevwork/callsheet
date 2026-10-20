@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -167,10 +168,18 @@ var (
 // regular-file bytes must not exceed limit. It returns the loose object
 // paths.
 func validateRepoLayout(root string, limit int64) ([]string, error) {
+	return validateRepoLayoutRefs(root, limit, legacyRef)
+}
+
+// legacyRef reports one of the five fixed legacy refs.
+func legacyRef(name string) bool { return slices.Contains(evidenceRefs, name) }
+
+// validateRepoLayoutRefs is validateRepoLayout over a ref policy: refOK
+// names the loose refs a protocol's repository may hold (design
+// 12a-dev-flow-verify parameterizes it for the development refs; the
+// legacy wrapper keeps the five fixed refs).
+func validateRepoLayoutRefs(root string, limit int64, refOK func(string) bool) ([]string, error) {
 	allowedFile := map[string]bool{"HEAD": true, "config": true}
-	for _, r := range evidenceRefs {
-		allowedFile[r] = true
-	}
 	var objects []string
 	var total int64
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
@@ -202,7 +211,7 @@ func validateRepoLayout(root string, limit int64) ([]string, error) {
 			return nil
 		case !st.Mode().IsRegular():
 			return fmt.Errorf("%w: special file %s", errRepoLayout, rel)
-		case !allowedFile[rel] && !looseObjectRE.MatchString(rel):
+		case !allowedFile[rel] && !looseObjectRE.MatchString(rel) && !(strings.HasPrefix(rel, "refs/heads/") && refOK(rel)):
 			return fmt.Errorf("%w: file %s", errRepoLayout, rel)
 		}
 		total += st.Size()
@@ -342,7 +351,13 @@ type repoView struct {
 // openEvidenceRepo validates root's layout, size and objects, opens it
 // and resolves exactly the five fixed refs (HEAD to the seed).
 func openEvidenceRepo(root string) (*repoView, error) {
-	objects, err := validateRepoLayout(root, maxRepoFileBytes)
+	return openEvidenceRepoRefs(root, legacyRef, evidenceRefs[0])
+}
+
+// openEvidenceRepoRefs is openEvidenceRepo over a ref policy: only refs
+// refOK accepts may exist and HEAD must point to head.
+func openEvidenceRepoRefs(root string, refOK func(string) bool, head string) (*repoView, error) {
+	objects, err := validateRepoLayoutRefs(root, maxRepoFileBytes, refOK)
 	if err != nil {
 		return nil, err
 	}
@@ -364,8 +379,8 @@ func openEvidenceRepo(root string) (*repoView, error) {
 	err = iter.ForEach(func(ref *plumbing.Reference) error {
 		name := ref.Name().String()
 		if name == "HEAD" {
-			if ref.Type() != plumbing.SymbolicReference || ref.Target().String() != evidenceRefs[0] {
-				return errors.New("evidence repository HEAD must point to refs/heads/seed")
+			if ref.Type() != plumbing.SymbolicReference || ref.Target().String() != head {
+				return errors.New("evidence repository HEAD must point to " + head)
 			}
 			return nil
 		}
@@ -379,11 +394,7 @@ func openEvidenceRepo(root string) (*repoView, error) {
 		return nil, err
 	}
 	for name := range v.refs {
-		ok := false
-		for _, r := range evidenceRefs {
-			ok = ok || r == name
-		}
-		if !ok {
+		if !refOK(name) {
 			return nil, fmt.Errorf("evidence repository has the extra ref %s", name)
 		}
 	}

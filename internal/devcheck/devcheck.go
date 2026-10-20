@@ -347,12 +347,63 @@ func MissingCmdPackages(listOut, profile string) []string {
 	return missing
 }
 
+// RaceReale2ePackage is the package whose race tests run as their own
+// step with a 360-second bound (design 12a-dev-flow-verify, code review
+// round 5, owner-approved): its offline full-flow rig records and checks
+// complete attempts, which under the race detector need more than the
+// shared step's 180 seconds. That step is local-only (design r0.7, owner
+// decision 2026-10-19): in CI mode the package runs in the ordinary
+// step only, the development harness not justifying its CI race cost.
+const RaceReale2ePackage = "./internal/reale2e"
+
+// RaceSharedPackages select every package of the module except
+// RaceReale2ePackage for the shared race step (packages one at a time,
+// 180 seconds each, design 12a-ci-race-schedule). The go tool has no
+// exclusion pattern, so they are listed; TestRaceSelectionCoversModule
+// keeps them equal to go list ./... without that package, so a new
+// package cannot fall outside both race steps.
+var RaceSharedPackages = []string{
+	"./cmd/...",
+	"./internal/adapter/...",
+	"./internal/cicheck/...",
+	"./internal/cli/...",
+	"./internal/client/...",
+	"./internal/contract/...",
+	"./internal/devcheck/...",
+	"./internal/logging/...",
+	"./internal/mcp/...",
+	"./internal/mcpqual/...",
+	"./internal/plane/...",
+	"./internal/sidecar/...",
+	"./internal/spikes/...",
+	"./internal/taskpublication/...",
+	"./internal/taskworkspace/...",
+	"./internal/testkit/...",
+	"./internal/workspace/...",
+	"./internal/workspacetransfer/...",
+	"./tests/...",
+}
+
 // TestSteps, BenchSteps and CoverageSteps are the planned stage commands.
-func TestSteps(goos string) []Step {
+// TestSteps is the local test plan (testSteps with ci false).
+func TestSteps(goos string) []Step { return testSteps(goos, false) }
+
+// testSteps is the test plan for goos in CI mode (ci) or local mode. It
+// reads no ambient environment: the driver passes the mode Run read once.
+// The only difference between the modes is the local-only dedicated
+// internal/reale2e race step on Linux.
+func testSteps(goos string, ci bool) []Step {
 	steps := []Step{{Name: "test", Argv: []string{"go", "test", "-count=1", "-timeout=180s", "./..."}}}
 	if goos == "linux" {
+		// The race suite: every package but internal/reale2e serialized
+		// with -p=1 under the shared bound, then, locally, internal/reale2e
+		// alone under its own.
 		steps = append(steps, Step{Name: "test -race", Env: []string{"CGO_ENABLED=1"},
-			Argv: []string{"go", "test", "-race", "-p=1", "-count=1", "-timeout=180s", "./..."}})
+			Argv: append([]string{"go", "test", "-race", "-p=1", "-count=1", "-timeout=180s"}, RaceSharedPackages...)})
+		if !ci {
+			steps = append(steps, Step{Name: "test -race reale2e", Env: []string{"CGO_ENABLED=1"},
+				Argv: []string{"go", "test", "-race", "-count=1", "-timeout=360s", RaceReale2ePackage}})
+		}
 	}
 	// Iteration 08: the ordinary-only tagged sidecar contract, as its own
 	// step (and its race counterpart where the suite has one), on the task
@@ -485,6 +536,8 @@ type driver struct {
 	errOut  io.Writer
 	scratch string
 	goos    string
+	// ci is the mode Run read once (CI present).
+	ci bool
 	// evidenceDir is the selected container evidence directory
 	// (RunOptions.EvidenceDir); evidence is its open report while the
 	// Linux test stage or the container-e2e stage runs.
@@ -520,11 +573,18 @@ func (d *driver) withEvidence(stage string, count int, f func() error) error {
 // evidence directory opened before any child. A failed plan command
 // leaves the report "not started" with its failure phase.
 func (d *driver) test() error {
+	// The selected mode, once, before the stage's first child command.
+	if d.ci {
+		fmt.Fprintln(d.out, TestPlanCILine)
+	} else {
+		fmt.Fprintln(d.out, TestPlanLocalLine)
+	}
+	plan := testSteps(d.goos, d.ci)
 	if d.goos != "linux" {
-		return d.steps(TestSteps(d.goos))
+		return d.steps(plan)
 	}
 	return d.withEvidence("test", 1, func() error {
-		for _, s := range TestSteps(d.goos) {
+		for _, s := range plan {
 			if err := d.steps([]Step{s}); err != nil {
 				d.evidence.phases = append(d.evidence.phases, "failed before container setup: "+s.Name)
 				return err
@@ -661,10 +721,37 @@ func isStage(name string) bool {
 // 0 success, 1 failed stage, 2 usage error. opts.EvidenceDir must be
 // absolute (there is no fallback).
 func Run(ctx context.Context, args []string, out, errOut io.Writer, run Runner, opts RunOptions) int {
-	return runFor(ctx, runtime.GOOS, args, out, errOut, run, opts)
+	return runWith(ctx, runtime.GOOS, lookupEnv, args, out, errOut, run, opts)
 }
 
-func runFor(ctx context.Context, goos string, args []string, out, errOut io.Writer, run Runner, opts RunOptions) int {
+// lookupEnv is the process environment lookup Run hands runWith.
+var lookupEnv = os.LookupEnv
+
+// runWith reads CI presence once, at entry (design 12a-dev-flow-verify
+// r0.7), and runs in that mode.
+func runWith(ctx context.Context, goos string, lookup func(string) (string, bool), args []string, out, errOut io.Writer, run Runner, opts RunOptions) int {
+	return runMode(ctx, goos, ciPresent(lookup), args, out, errOut, run, opts)
+}
+
+// ciPresent reports CI mode: the CI variable is present, with any value
+// (empty, false and 0 included), as internal/mcpqual's ciPresent reads
+// it; a missing lookup counts as CI.
+func ciPresent(lookup func(string) (string, bool)) bool {
+	if lookup == nil {
+		return true
+	}
+	_, ok := lookup("CI")
+	return ok
+}
+
+// Test-plan mode lines (one is printed at the start of the test stage).
+const (
+	TestPlanCILine    = "devcheck: test plan: ci (CI is set) — dedicated internal/reale2e race step omitted"
+	TestPlanLocalLine = "devcheck: test plan: local (CI unset)"
+)
+
+// runMode runs args for goos in CI mode (ci) or local mode.
+func runMode(ctx context.Context, goos string, ci bool, args []string, out, errOut io.Writer, run Runner, opts RunOptions) int {
 	if len(args) == 0 {
 		io.WriteString(errOut, usage)
 		return 2
@@ -719,7 +806,7 @@ func runFor(ctx context.Context, goos string, args []string, out, errOut io.Writ
 		return 1
 	}
 	fmt.Fprintf(out, "devcheck: scratch %s\n", scratch)
-	d := &driver{ctx: ctx, run: run, out: out, errOut: errOut, scratch: scratch, goos: goos, evidenceDir: opts.EvidenceDir}
+	d := &driver{ctx: ctx, run: run, out: out, errOut: errOut, scratch: scratch, goos: goos, ci: ci, evidenceDir: opts.EvidenceDir}
 	for _, st := range stages {
 		var err error
 		switch st {

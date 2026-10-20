@@ -28,7 +28,7 @@ func TestDevFullConcurrentControl(t *testing.T) {
 		r := newDevRig(t, happy())
 		r.owner = []string{"yes 1"}
 		r.fault = "concurrent-idempotent"
-		r.expect(3, "")
+		r.expect(0, "")
 		counts := map[string]int{}
 		for _, c := range r.codes {
 			counts[c]++

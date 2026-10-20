@@ -15,12 +15,14 @@ import (
 	"github.com/wedevwork/callsheet/internal/contract"
 )
 
-// devSupervisor runs one development full-flow attempt (design
-// 12a-dev-flow-harness). It reuses the legacy supervisor's process, plane,
-// evidence, fingerprint and cleanup machinery and never calls the legacy
-// four-hop judge. Every control request, terminal line, phase exit and
-// monitor tick is handled by one loop goroutine (devfull_loop.go); the
-// socket goroutines only forward requests to it.
+// devSupervisor runs one full development flow attempt (designs
+// 12a-dev-flow-harness and 12a-dev-flow-verify). It reuses the legacy
+// supervisor's process, plane, evidence, fingerprint and cleanup machinery
+// and never calls the legacy four-hop judge. Every control request,
+// terminal line, phase exit and monitor tick is handled by one loop
+// goroutine (devfull_loop.go); the socket goroutines only forward requests
+// to it. Its evidence is the versioned callsheet-dev-full-evidence/v1
+// bundle, judged at the end by the same checker the offline check runs.
 type devSupervisor struct {
 	s         *supervisor
 	flow      DevFullFlow
@@ -55,17 +57,33 @@ type devSupervisor struct {
 	late   []string
 	finals map[string]string
 
+	// manifest is the evidence manifest, completed after collection;
+	// helper is the reviewer verification helper's fixed recipe; sweeps
+	// records every ListTasks sweep; settled are the owned tasks' states
+	// at cleanup.
+	manifest DevManifest
+	helper   reviewHelperSpec
+	sweeps   sweepRecorder
+	settled  []DevSettlement
+
 	seedVerified bool
 	ticks        int
 	written      int
 
 	stopCode, stopReason string
+	stopSeq              int
 	complete             bool
 	executed             bool
 	cleanupOK            bool
 	protected            bool
 	finished             bool
 	looping              bool
+	// passed is the checked result: PASS with every derived file written
+	// (for the qualification probe: QUALIFIED).
+	passed bool
+	// probe, when set, runs the owner-only qualification probe instead of
+	// the full flow (devfull_probe.go).
+	probe *devProbe
 }
 
 // devGate is a pending phase-ending gate.
@@ -102,6 +120,10 @@ type devSlot struct {
 	waitWritten bool
 	terminal    bool
 	cmd         string
+	// logs and logMeta are the task's TaskLogs, retrieved once at its
+	// terminal observation (the reviewer's execution evidence source).
+	logs    []byte
+	logMeta DevLogMeta
 }
 
 // devPhase is one coordinator phase.
@@ -114,18 +136,18 @@ type devPhase struct {
 	rec    PhaseProcess
 }
 
-// runDevLive builds the world and runs one development attempt.
+// runDevLive builds the world and runs one checked full-flow attempt.
 func runDevLive(h Host, a runArgs) int {
 	w, release, err := h.NewWorld(h)
 	if err != nil {
-		fmt.Fprintf(h.Stderr, "reale2e run-dev-full: %v\n", err)
+		fmt.Fprintf(h.Stderr, "reale2e run: %v\n", err)
 		return 1
 	}
 	defer release()
 	s := &supervisor{stdout: h.Stdout, stderr: h.Stderr, goos: h.GOOS, goarch: h.GOARCH, w: w, args: a, ctx: w.Context,
 		known: map[string]string{}, stoppedSet: map[*child]bool{}, reqs: make(chan ctrlMsg), loopDone: make(chan struct{})}
 	d := &devSupervisor{s: s, manuals: map[string][2]string{}, receiptBytes: map[int][]byte{}, trees: map[string]map[string]TreeFile{},
-		finals: map[string]string{}}
+		finals: map[string]string{}, sweeps: sweepRecorder{clock: w.Clock}}
 	if h.observeDev != nil {
 		h.observeDev(d)
 	}
@@ -133,29 +155,42 @@ func runDevLive(h Host, a runArgs) int {
 }
 
 func (d *devSupervisor) run() int {
-	fmt.Fprint(d.s.stdout, DevBounds)
-	fmt.Fprintln(d.s.stdout, "development full flow: exit 3 means executed but unverified; this command never reports PASS")
+	if d.probe != nil {
+		fmt.Fprint(d.s.stdout, ProbeBounds)
+		fmt.Fprintln(d.s.stdout, "qualification probe: prints QUALIFIED or BLOCKED, never a workflow PASS; exit 0 qualified, 1 blocked, 2 usage or gate error")
+	} else {
+		fmt.Fprint(d.s.stdout, DevBounds)
+		fmt.Fprintln(d.s.stdout, "full development flow: checked "+DevBundleSchema+" evidence; exit 0 mechanical PASS, 1 executed failure or incomplete evidence, 2 usage, gate or schema error")
+	}
 	if err := d.s.locate(); err != nil {
-		fmt.Fprintf(d.s.stderr, "reale2e run-dev-full: %v\n", err)
+		fmt.Fprintf(d.s.stderr, "reale2e run: %v\n", err)
 		return 2
 	}
 	now := d.s.w.Clock.Now()
 	id, err := newRunID(now, d.s.w.Rand)
 	if err != nil {
-		fmt.Fprintf(d.s.stderr, "reale2e run-dev-full: %v\n", err)
+		fmt.Fprintf(d.s.stderr, "reale2e run: %v\n", err)
 		return 1
 	}
 	d.s.runID = id
 	if d.s.ev, err = newEvidenceWriter(d.s.evidenceDir, d.s.w.Clock); err != nil {
-		fmt.Fprintf(d.s.stderr, "reale2e run-dev-full: %v\n", err)
+		fmt.Fprintf(d.s.stderr, "reale2e run: %v\n", err)
 		return 1
 	}
 	d.s.manifest = Manifest{RunID: id, ProtectedRoots: []string{}}
+	d.manifest = DevManifest{Schema: DevBundleSchema, RunID: id, Scenario: scenarioFull, GOOS: d.s.goos, GOARCH: d.s.goarch,
+		Gate: GateRecord{OptIn: true, CIAbsent: true, Platform: d.s.goos}, Versions: []VersionRecord{}, Roles: []FlowRole{}, ProtectedRoots: []string{},
+		Render: map[string]string{}, Inventory: []InventoryEntry{}}
 	d.s.ev.event(Event{Type: EvRunStarted})
-	d.s.say("development run %s: evidence %s", id, d.s.ev.root)
+	d.s.say("run %s: evidence %s", id, d.s.ev.root)
 	d.s.attempt = d.s.w.Clock.Now()
+	d.manifest.AttemptStart, d.manifest.AttemptDeadline = formatTime(d.s.attempt), formatTime(d.attemptDeadline())
 	d.s.ev.event(Event{Type: EvPreflightStarted})
-	if err := d.start(); err != nil {
+	start := d.start
+	if d.probe != nil {
+		start = d.probeStart
+	}
+	if err := start(); err != nil {
 		d.fail(err)
 	} else {
 		d.loop()
@@ -169,17 +204,17 @@ func (d *devSupervisor) fail(err error) {
 	d.stop(codeOf(err), err.Error())
 }
 
-// stop records the attempt's first stop code; no further dispatch or
-// completion is accepted after it.
+// stop records the attempt's first stop code and its event; no further
+// dispatch or completion is accepted after it.
 func (d *devSupervisor) stop(code, reason string) {
 	if d.stopCode != "" {
 		return
 	}
 	d.stopCode, d.stopReason = code, cmpOr(reason, code)
 	if d.s.ev != nil {
-		d.s.ev.event(Event{Type: EvAttemptFailed, Code: code})
+		d.stopSeq = d.s.ev.event(Event{Type: EvAttemptFailed, Code: code}).Seq
 	}
-	fmt.Fprintf(d.s.stderr, "reale2e run-dev-full: stopped (%s): %s\n", code, contract.SafeText(d.stopReason, 400))
+	fmt.Fprintf(d.s.stderr, "reale2e run: stopped (%s): %s\n", code, contract.SafeText(d.stopReason, 400))
 }
 
 // halted reports a stopped or fully executed attempt. A sticky evidence
@@ -222,9 +257,9 @@ func (d *devSupervisor) writeEvidenceJSON(rel string, v any) bool {
 // start runs setup to the first coordinator phase. Every step first
 // checks the interrupt and the attempt deadline (now >= deadline).
 func (d *devSupervisor) start() error {
-	for _, f := range []func() error{d.s.printPermissionTemplate, d.s.protectedRoots, d.s.baselineSnapshot, d.loadSelection, d.versionProbes,
-		d.s.createRuntime, d.s.renderPermissions, d.extraDirs, d.deployDev, d.preflightDev, d.seedDev, d.openControl, d.activateTerminal,
-		d.initialPlan, d.launchPhase} {
+	for _, f := range []func() error{d.s.printPermissionTemplate, d.hashExecutable, d.s.protectedRoots, d.s.baselineSnapshot, d.loadSelection,
+		d.versionProbes, d.s.createRuntime, d.s.renderPermissions, d.extraDirs, d.deployDev, d.preflightDev, d.seedDev, d.openControl,
+		d.activateTerminal, d.initialPlan, d.launchPhase} {
 		switch {
 		case d.s.ctx.Err() != nil:
 			return failure("interrupted", d.s.ctx.Err())
@@ -242,7 +277,9 @@ func (d *devSupervisor) start() error {
 }
 
 // loadSelection captures the shared method and exercise files once, then
-// freezes and validates the selection before anything is deployed.
+// freezes and validates the selection before anything is deployed. An
+// explicit --flow takes only the five-role development schema (a legacy
+// four-role flow is refused here, before any paid work).
 func (d *devSupervisor) loadSelection() error {
 	loaded, err := LoadDevMethod(d.s.checkout)
 	if err != nil {
@@ -276,20 +313,24 @@ func (d *devSupervisor) loadSelection() error {
 	if err != nil {
 		return failure("flow_invalid", err)
 	}
-	d.flowLabel = "default-flow"
+	d.flowLabel = FlowDefault
 	if string(def) != string(got) {
-		d.flowLabel = "override-flow"
+		d.flowLabel = FlowOverride
 	}
 	d.flow, d.loaded, d.selection = flow, loaded, got
+	d.manifest.FlowLabel, d.manifest.FlowSHA256, d.manifest.SelectionSHA256 = d.flowLabel, sha256Hex(flowRaw), sha256Hex(got)
+	d.manifest.Roles = append([]FlowRole{}, flow.Roles...)
 	orig, gen := sha256Hex([]byte(FeatureRequest)), ""
 	if f, err := devFullFeatureRequest(); err == nil {
 		gen = sha256Hex([]byte(f))
 	}
+	run := d.s.runID
 	for rel, v := range map[string]any{
-		"setup/sources.json":    loaded.Sources,
-		"setup/flow-label.json": map[string]string{"label": d.flowLabel, "flow_sha256": sha256Hex(flowRaw), "selection_sha256": sha256Hex(got), "selection": string(got)},
-		"setup/feature-request.json": map[string]string{"original_sha256": orig, "generated_sha256": gen,
-			"source": "internal/reale2e/seed.go FeatureRequest"},
+		"setup/sources.json": envelope("sources", run, loaded.Sources),
+		"setup/flow-label.json": DevFlowLabel{Schema: devKind("flow-label"), RunID: run, Label: d.flowLabel, FlowSHA256: sha256Hex(flowRaw),
+			SelectionSHA256: sha256Hex(got), Selection: string(got)},
+		"setup/feature-request.json": DevFeatureRecord{Schema: devKind("feature-request"), RunID: run, OriginalSHA256: orig, GeneratedSHA256: gen,
+			Source: "internal/reale2e/seed.go FeatureRequest"},
 	} {
 		if !d.writeEvidenceJSON(rel, v) {
 			return failure(d.stopCode, errors.New(d.stopReason))
@@ -317,17 +358,24 @@ func (d *devSupervisor) loadSelection() error {
 	return nil
 }
 
-// versionProbes checks the executables' versions and eligibility.
+// versionProbes checks the executables' versions and eligibility and
+// records each observation and the checkout revision in the manifest.
 func (d *devSupervisor) versionProbes() error {
-	if _, err := d.s.probeOutput(d.s.args.callsheet, "version"); err != nil {
+	ver, err := d.s.probeOutput(d.s.args.callsheet, "version")
+	if err != nil {
 		return failure("version_preflight_failed", err)
 	}
+	d.manifest.CallsheetVersion, d.manifest.Revision = ver, checkoutRevision(d.s.checkout)
 	for _, v := range []string{"claude", "codex", "grok"} {
 		exe := d.s.args.vendor(v)
-		if _, err := d.s.probeOutput(exe, "--version"); err != nil {
-			return failure("version_preflight_failed", err)
+		rec := VersionRecord{Tool: v, Path: d.s.tok(exe)}
+		out, err := d.s.probeOutput(exe, "--version")
+		if err == nil {
+			err = d.s.w.Probe(d.s.ctx, v, exe, d.s.w.TempRoot)
 		}
-		if err := d.s.w.Probe(d.s.ctx, v, exe, d.s.w.TempRoot); err != nil {
+		rec.Version, rec.Eligible = out, err == nil
+		d.manifest.Versions = append(d.manifest.Versions, rec)
+		if err != nil {
 			return failure("version_preflight_failed", err)
 		}
 	}
@@ -336,7 +384,9 @@ func (d *devSupervisor) versionProbes() error {
 		if err != nil {
 			return failure("version_preflight_failed", err)
 		}
-		if _, err := d.s.probeOutput(exe, tool.arg); err != nil {
+		out, err := d.s.probeOutput(exe, tool.arg)
+		d.manifest.Versions = append(d.manifest.Versions, VersionRecord{Tool: tool.name, Path: d.s.tok(exe), Version: out, Eligible: err == nil})
+		if err != nil {
 			return failure("version_preflight_failed", err)
 		}
 		if tool.name == "go" {
@@ -434,7 +484,7 @@ func (d *devSupervisor) verifyManuals() error {
 			rec = append(rec, SourceRecord{Path: "manuals/" + name, Bytes: len(got), SHA256: sha256Hex(got)})
 		}
 	}
-	if !d.writeEvidenceJSON("setup/installed-manuals.json", rec) {
+	if !d.writeEvidenceJSON("setup/installed-manuals.json", envelope("installed-manuals", d.s.runID, rec)) {
 		return failure(d.stopCode, errors.New(d.stopReason))
 	}
 	return nil
@@ -474,8 +524,8 @@ func (d *devSupervisor) awaitDevReady() error {
 			}
 		}
 		if ready {
-			d.s.ev.event(Event{Type: EvRolesReady})
-			if !d.writeEvidenceJSON("setup/roles.json", snap) {
+			ev := d.s.ev.event(Event{Type: EvRolesReady})
+			if !d.writeEvidenceJSON("setup/roles.json", RolesRecord{Schema: RolesSchema, ReadyAt: ev.Time, Roles: snap}) {
 				return failure(d.stopCode, errors.New(d.stopReason))
 			}
 			return nil
@@ -499,7 +549,7 @@ func (d *devSupervisor) preflightDev() error {
 	return nil
 }
 
-// DevPreflightRecord is preflight/NN/observation.json.
+// DevPreflightRecord is preflight/NN/observation.json's data.
 type DevPreflightRecord struct {
 	Label       string `json:"label"`
 	Role        string `json:"role"`
@@ -534,12 +584,19 @@ func (d *devSupervisor) preflightOne(i int, role FlowRole) error {
 		}
 	}
 	d.s.ev.event(Event{Type: EvPreflightFinished, Hop: label, Task: id})
-	if !d.writeEvidenceJSON("preflight/"+hopDir(i)+"/observation.json", rec) {
+	if !d.writeEvidenceJSON("preflight/"+hopDir(i)+"/observation.json", envelope("observation", d.s.runID, rec)) {
 		return failure(d.stopCode, errors.New(d.stopReason))
 	}
 	if err != nil {
 		return err
 	}
+	return preflightVerdict(label, role, *v)
+}
+
+// preflightVerdict judges one authentication preflight's authoritative
+// view: no workspace, the exact effective pair, success with a complete
+// nonempty answer (the token echo is information only).
+func preflightVerdict(label string, role FlowRole, v contract.TaskView) error {
 	r := v.Result
 	switch {
 	case v.WorkspaceBinding != nil:
@@ -551,7 +608,6 @@ func (d *devSupervisor) preflightOne(i int, role FlowRole) error {
 	case r.FinalMessage == nil || r.FinalMessageTruncated || !authAnswerPresent(*r.FinalMessage):
 		return failure("preflight_not_authenticated", fmt.Errorf("%s gave no complete, non-empty answer", label))
 	}
-	d.s.say("%s authenticated (token_echoed: %t)", label, authAnswerOK(*r.FinalMessage))
 	return nil
 }
 
@@ -642,7 +698,9 @@ func (d *devSupervisor) verifySeed() (bool, error) {
 
 // openControl writes the development run file and MCP configuration,
 // renders the harness-owned prompts and opens the control socket, whose
-// requests the loop serves one at a time.
+// requests the loop serves one at a time. The render values and the
+// reviewer helper's recipe are recorded for the offline rebuild of every
+// prompt and envelope.
 func (d *devSupervisor) openControl() error {
 	b, err := encodeJSON(DevRunFile{Schema: DevRunSchema, RunID: d.s.runID, Callsheet: d.s.args.callsheet, Plane: d.s.dep.url, CA: d.s.dep.caPath})
 	if err != nil {
@@ -668,13 +726,17 @@ func (d *devSupervisor) openControl() error {
 	if err != nil {
 		return failure("prompt_render_failed", err)
 	}
+	d.manifest.Render = vals
+	d.helper = reviewHelperSpec{Reale2e: d.s.w.Executable, Go: d.s.goBin, Deadline: formatHelperDeadline(d.attemptDeadline())}
+	d.manifest.Helper = d.helper
 	d.loaded = loaded
 	d.s.rendered = map[string][]byte{CoordinatorPrompt: loaded.Rendered[DevSystemName], DevPhaseFile: loaded.Rendered[DevPhaseFile]}
 	sanitized, err := mcpConfig(d.s.tok(d.s.args.callsheet), d.s.dep.url, d.s.tok(d.s.dep.caPath))
 	if err != nil {
 		return failure("internal_error", err)
 	}
-	if !d.writeEvidenceJSON("setup/rendered.json", loaded.Records) || !d.writeEvidence("setup/coordinator-system.md", loaded.Rendered[DevSystemName]) ||
+	if !d.writeEvidenceJSON("setup/rendered.json", envelope("rendered", d.s.runID, loaded.Records)) ||
+		!d.writeEvidence("setup/coordinator-system.md", loaded.Rendered[DevSystemName]) ||
 		!d.writeEvidence("setup/phase.md", loaded.Rendered[DevPhaseFile]) || !d.writeEvidence("setup/scenario.md", loaded.Rendered[DevScenario]) ||
 		!d.writeEvidence("setup/mcp-config.json", sanitized) {
 		return failure(d.stopCode, errors.New(d.stopReason))
@@ -700,13 +762,16 @@ func (d *devSupervisor) initialPlan() error {
 // resumes the captured session). At most four phases run, one at a time.
 func (d *devSupervisor) launchPhase() error {
 	n := len(d.phases) + 1
-	if n > maxPhases {
-		return failure("phase_cap", errors.New("at most four coordinator phases"))
+	if n > maxPhases || d.probe != nil && n > maxProbePhases {
+		return failure("phase_cap", errors.New("the coordinator phase cap is reached"))
 	}
 	if n > 1 && !sessionIDRE.MatchString(d.sessionID) {
 		return failure("session_missing", errors.New("the coordinator published no resumable session"))
 	}
 	prompt := d.s.rendered[DevPhaseFile]
+	if d.probe != nil {
+		prompt = d.probe.prompts[n]
+	}
 	system := d.s.rendered[CoordinatorPrompt]
 	argv := devLaunchArgv(n, string(prompt), d.s.mcpPath, string(system), d.sessionID)
 	coord := filepath.Join(d.s.runtime, "coord")
@@ -720,11 +785,23 @@ func (d *devSupervisor) launchPhase() error {
 	d.phases = append(d.phases, p)
 	seq := d.s.track(&child{name: phaseHandle(n), spec: spec, proc: proc, logs: newLineLog()}, EvPhaseStarted)
 	p.rec = PhaseProcess{Phase: n, PID: proc.PID(), StartedSeq: seq}
-	rec := LaunchRecord{Schema: LaunchSchema, Phase: n, Executable: d.s.tok(d.s.args.claude), Argv: []string{}, Cwd: d.s.tok(coord),
-		PromptSHA256: sha256Hex(prompt), SystemSHA256: sha256Hex(system), StartedSeq: seq, Display: []string{d.s.tok(d.s.args.claude)},
-		WaitTemplates: []string{devWaitCommand(d.s.tok(d.s.w.Executable), d.s.tok(d.s.runtime), "TASK_ID", 0)}}
+	rec := devLaunchRecord(n, d.s.tok, d.s.args.claude, coord, argv, prompt, system, seq, d.sessionID,
+		devWaitCommand(d.s.tok(d.s.w.Executable), d.s.tok(d.s.runtime), "TASK_ID", 0))
+	if !d.writeEvidenceJSON(fmt.Sprintf("setup/launch-phase-%d.json", n), rec) {
+		return failure(d.stopCode, errors.New(d.stopReason))
+	}
+	d.s.say("coordinator phase %d started (pid %d)", n, proc.PID())
+	return nil
+}
+
+// devLaunchRecord is phase n's launch record: the sanitized argv with
+// each prompt replaced by its hash.
+func devLaunchRecord(n int, tok func(string) string, claude, coord string, argv []string, prompt, system []byte, seq int, session, wait string) LaunchRecord {
+	rec := LaunchRecord{Schema: LaunchSchema, Phase: n, Executable: tok(claude), Argv: []string{}, Cwd: tok(coord),
+		PromptSHA256: sha256Hex(prompt), SystemSHA256: sha256Hex(system), StartedSeq: seq, Display: []string{tok(claude)},
+		WaitTemplates: []string{wait}}
 	if n > 1 {
-		rec.ResumeSession = d.sessionID
+		rec.ResumeSession = session
 	}
 	for i, a := range argv {
 		switch {
@@ -733,16 +810,12 @@ func (d *devSupervisor) launchPhase() error {
 		case i > 0 && argv[i-1] == "--append-system-prompt":
 			a = "<coordinator instructions sha256=" + rec.SystemSHA256 + ">"
 		default:
-			a = d.s.tok(a)
+			a = tok(a)
 		}
 		rec.Argv = append(rec.Argv, a)
 		rec.Display = append(rec.Display, a)
 	}
-	if !d.writeEvidenceJSON(fmt.Sprintf("setup/launch-phase-%d.json", n), rec) {
-		return failure(d.stopCode, errors.New(d.stopReason))
-	}
-	d.s.say("coordinator phase %d started (pid %d)", n, proc.PID())
-	return nil
+	return rec
 }
 
 func devLaunchArgv(phase int, prompt, mcpPath, system, session string) []string {
@@ -755,26 +828,24 @@ func devLaunchArgv(phase int, prompt, mcpPath, system, session string) []string 
 	return argv
 }
 
-// exitCode is 3 only for an executed attempt with verified cleanup, no
-// protected change and complete evidence; every stop or failure is 1.
+// exitCode is 0 only for a fully written, checked PASS; an executed
+// attempt whose own checker fails, and any collection or write failure,
+// is 1.
 func (d *devSupervisor) exitCode() int {
-	if d.outcome() == outcomeUnverified {
-		fmt.Fprintln(d.s.stdout, devUnverifiedLine)
-		return 3
+	if d.probe != nil {
+		if d.passed {
+			fmt.Fprintln(d.s.stdout, "qualification probe: "+ResultQualified)
+			return 0
+		}
+		fmt.Fprintln(d.s.stdout, "qualification probe: "+ResultBlocked)
+		return 1
 	}
+	if d.passed {
+		fmt.Fprintln(d.s.stdout, "full development flow: PASS (mechanical and deterministic criteria); "+JudgmentReportLine)
+		return 0
+	}
+	fmt.Fprintln(d.s.stdout, "full development flow: FAIL; "+JudgmentReportLine)
 	return 1
-}
-
-func (d *devSupervisor) outcome() string {
-	switch {
-	case d.protected || (d.s.ev != nil && d.s.ev.failure() != nil):
-		return outcomeFailed
-	case d.executed && d.stopCode == "" && d.cleanupOK:
-		return outcomeUnverified
-	case d.stopCode != "":
-		return outcomeStopped
-	}
-	return outcomeFailed
 }
 
 // finish is cleanup and evidence under one shared 2m cleanup deadline:
@@ -782,7 +853,9 @@ func (d *devSupervisor) outcome() string {
 // admission (preflights, workflow, rejected and any task the final scan
 // finds on the private plane) is cancelled and its settlement verified,
 // every child is stopped and reaped, and only then is the runtime removed.
-// The final fingerprint is taken once.
+// The final fingerprint is taken once. Then the primary records are
+// completed (cleanup, ledger, admissions, the session map, the cost), the
+// manifest with its inventory is written, and the bundle is judged.
 func (d *devSupervisor) finish() {
 	if d.finished {
 		return
@@ -800,7 +873,11 @@ func (d *devSupervisor) finish() {
 	d.joinInspection()
 	unresolved, scanErr := d.cancelOwned()
 	d.collectSlotWait()
-	d.writeRepository()
+	if d.probe != nil {
+		d.writeProbeRepository()
+	} else {
+		d.writeRepository()
+	}
 	if len(d.phases) > 0 {
 		ce := CoordinatorExit{Schema: CoordExitSchema, Phases: []PhaseProcess{}}
 		for _, p := range d.phases {
@@ -823,7 +900,7 @@ func (d *devSupervisor) finish() {
 	if rec.Complete && d.s.runtime != "" {
 		if err := d.s.removeRuntime(); err != nil {
 			rec.Complete = false
-			fmt.Fprintf(d.s.stderr, "reale2e run-dev-full: runtime %s kept: %v\n", d.s.runtime, err)
+			fmt.Fprintf(d.s.stderr, "reale2e run: runtime %s kept: %v\n", d.s.runtime, err)
 		} else {
 			rec.RuntimeRemoved = true
 			d.s.ev.event(Event{Type: EvRuntimeRemoved})
@@ -832,17 +909,19 @@ func (d *devSupervisor) finish() {
 	rec.Complete = rec.Complete && (rec.RuntimeRemoved || d.s.runtime == "")
 	rec.FinishedAt = formatTime(d.s.w.Clock.Now())
 	d.cleanupOK = rec.Complete
-	dc := DevCleanup{CleanupRecord: rec, UnresolvedTasks: append([]string{}, unresolved...), OverBudget: overBudget, Deadline: formatTime(d.s.cleanupBy),
-		LateAdmissions: append([]string{}, d.late...)}
+	dc := DevCleanup{Started: rec.Started, Processes: rec.Processes, CancelledTasks: rec.CancelledTasks, UnsettledTasks: rec.UnsettledTasks,
+		RuntimeRemoved: rec.RuntimeRemoved, StartedAt: rec.StartedAt, FinishedAt: rec.FinishedAt, Complete: rec.Complete,
+		UnresolvedTasks: append([]string{}, unresolved...), OverBudget: overBudget, Deadline: formatTime(d.s.cleanupBy),
+		LateAdmissions: append([]string{}, d.late...), Settled: append([]DevSettlement{}, d.settled...)}
 	if scanErr != nil {
 		dc.ScanError = contract.SafeText(scanErr.Error(), 400)
 	}
-	d.s.ev.writeJSON("cleanup.json", dc)
-	d.s.ev.event(Event{Type: EvCleanupFinished})
 	if !d.cleanupOK {
 		d.stop("cleanup_incomplete", "cleanup could not prove every owned task settled and every owned process group gone")
 		d.s.recovery(rec)
 	}
+	d.s.ev.writeJSON(devCleanupFile, envelope("cleanup", d.s.runID, dc))
+	d.s.ev.event(Event{Type: EvCleanupFinished})
 	if d.s.before != nil {
 		// A protected change, or a final fingerprint that could not be
 		// compared completely, is never a clean execution.
@@ -850,42 +929,75 @@ func (d *devSupervisor) finish() {
 			d.protected = true
 		}
 	}
-	d.s.ev.writeJSON("ledger.json", d.state)
-	ex := DevExecution{Schema: DevExecutionSchema, RunID: d.s.runID, StopCode: d.stopCode, StopReason: contract.SafeText(d.stopReason, 400),
-		FlowLabel: d.flowLabel, FlowSHA256: d.loaded.FlowSum, SelectionSHA256: sha256Hex(d.selection), Preflights: len(d.s.preflight),
-		Tasks: len(d.state.Tasks), Rejected: len(d.rejected), Transitions: len(d.state.Transitions), Decisions: d.decisions,
-		Receipts: len(d.state.Receipts), Phases: len(d.phases), IgnoredLines: d.ignoredLines, ProtectedChange: d.protected,
-		Cleanup: map[bool]string{true: "complete", false: "incomplete"}[d.cleanupOK]}
-	if d.complete {
-		ex.CandidateTask, ex.FinalCandidate = d.state.CandidateTask, d.state.CandidateCommit
-		ex.ReviewTask, ex.FinalReview = d.state.ReviewTask, d.state.ReviewCommit
+	if d.probe == nil {
+		d.s.ev.writeJSON(devLedgerFile, envelope("ledger", d.s.runID, normalizeState(d.state)))
 	}
+	d.s.ev.writeJSON(devAdmissionsFile, DevAdmissions{Schema: devKind("admissions"), RunID: d.s.runID, Sweeps: append([]DevSweep{}, d.sweeps.sweeps...)})
 	if err := d.s.ev.failure(); err != nil {
-		ex.EvidenceError = contract.SafeText(err.Error(), 400)
-	}
-	ex.Outcome = d.outcome()
-	if err := d.s.ev.writeJSON(DevExecutionFile, ex); err != nil {
-		fmt.Fprintf(d.s.stderr, "reale2e run-dev-full: %s not written: %v\n", DevExecutionFile, err)
-	}
-	if err := d.s.ev.failure(); err != nil {
-		fmt.Fprintf(d.s.stderr, "reale2e run-dev-full: evidence is incomplete: %v\n", err)
+		fmt.Fprintf(d.s.stderr, "reale2e run: evidence is incomplete: %v\n", err)
 	}
 	d.s.ev.close()
-	d.s.say("development execution record: %s (%s)", filepath.Join(d.s.ev.root, DevExecutionFile), ex.Outcome)
+	if d.probe != nil {
+		d.passed = d.collectProbe() && d.s.ev.failure() == nil
+		return
+	}
+	d.passed = d.collect() && d.s.ev.failure() == nil
 }
 
-// DevCleanup is the development cleanup.json.
-type DevCleanup struct {
-	CleanupRecord
-	UnresolvedTasks []string `json:"unresolved_tasks"`
-	OverBudget      bool     `json:"over_budget"`
-	Deadline        string   `json:"deadline"`
-	// ScanError is the final task listing's failure: the scan is then
-	// incomplete and cleanup cannot be complete.
-	ScanError string `json:"scan_error,omitempty"`
-	// LateAdmissions are tasks first found by the final scan that were not
-	// the exposed plan's admission; each fails the attempt.
-	LateAdmissions []string `json:"late_admissions"`
+// collect writes the derived primary records (the session map and the
+// cost), then the manifest with its inventory, then judges the bundle. It
+// reports a checked PASS whose derived files were all written.
+func (d *devSupervisor) collect() bool {
+	// One load of the collected bundle serves every derivation and the
+	// judgment: each record written after it (the session map, the cost,
+	// the manifest) is written and then ingested from the same bytes, as
+	// the loader would decode them.
+	b, err := LoadDevBundle(d.s.ev.root)
+	put := func(rel string, v any) error {
+		data, err := encodeJSON(v)
+		if err != nil {
+			return d.s.ev.writeJSON(rel, v)
+		}
+		if err := d.s.ev.writeFile(rel, data); err != nil {
+			return err
+		}
+		return b.ingest(rel, data)
+	}
+	if err == nil && len(d.phases) > 0 {
+		err = d.collectDevSession(b, put)
+	}
+	if err == nil {
+		err = put(devCostFile, deriveDevCost(b, d.s.runID))
+	}
+	if err == nil {
+		err = d.writeDevManifest(put)
+	}
+	if err != nil {
+		fmt.Fprintf(d.s.stderr, "reale2e run: evidence collection failed: %v\n", err)
+		return false
+	}
+	pass, err := d.judgeDev(b)
+	if err != nil {
+		fmt.Fprintf(d.s.stderr, "reale2e run: the report or audit was not written: %v\n", err)
+		return false
+	}
+	return pass
+}
+
+// collectProbe writes the probe's cost and its qualification record and
+// decides the result.
+func (d *devSupervisor) collectProbe() bool {
+	b, err := LoadDevQualification(d.s.ev.root)
+	var cost DevCost
+	if err == nil {
+		cost = deriveDevCost(b, d.s.runID)
+		err = d.s.ev.writeJSON(devCostFile, cost)
+	}
+	if err != nil {
+		fmt.Fprintf(d.s.stderr, "reale2e probe-dev-full: evidence collection failed: %v\n", err)
+		return false
+	}
+	return d.probeFinish(cost)
 }
 
 // stopRunningPhase stops a still running coordinator phase by its
@@ -946,9 +1058,9 @@ func (d *devSupervisor) lateAdmission(id string) {
 }
 
 // cancelOwned cancels every owned nonterminal task within the shared
-// cleanup deadline and verifies its settlement. A task whose state cannot
-// be read or that does not settle is unresolved; a failed final scan is
-// returned as scanErr.
+// cleanup deadline and verifies its settlement, recording every owned
+// task's settled state. A task whose state cannot be read or that does
+// not settle is unresolved; a failed final scan is returned as scanErr.
 func (d *devSupervisor) cancelOwned() (unresolved []string, scanErr error) {
 	if d.s.plane == nil {
 		return nil, nil
@@ -962,10 +1074,13 @@ func (d *devSupervisor) cancelOwned() (unresolved []string, scanErr error) {
 		seen[id] = true
 		v, err := d.s.show(id, 0)
 		if err == nil && contract.TaskTerminal(v.State) {
+			d.settled = append(d.settled, settlementOf(id, d.s.known[id], &v))
 			continue
 		}
 		d.s.cancelTask(id)
-		if _, ok := d.s.settle(id, d.s.left(30*time.Second)); !ok {
+		last, ok := d.s.settle(id, d.s.left(30*time.Second))
+		d.settled = append(d.settled, settlementOf(id, d.s.known[id], last))
+		if !ok {
 			unresolved = append(unresolved, id)
 			d.s.unsettled = append(d.s.unsettled, id)
 		}
@@ -973,21 +1088,26 @@ func (d *devSupervisor) cancelOwned() (unresolved []string, scanErr error) {
 	return unresolved, scanErr
 }
 
-// listTaskIDs lists every task on the plane, all pages.
+// listTaskIDs lists every task on the plane, all pages, as the final
+// recorded sweep.
 func (d *devSupervisor) listTaskIDs() ([]string, error) {
 	var out []string
+	sw := d.sweeps.begin(sweepFinal)
 	after := ""
 	for {
 		ctx, cancel := d.s.opCtx()
 		page, next, err := d.s.plane.ListTasks(ctx, after, contract.MaxTaskListLimit)
 		cancel()
 		if err != nil {
+			sw.end(err)
 			return out, err
 		}
+		sw.page(after, page, next)
 		for _, t := range page {
 			out = append(out, t.TaskID)
 		}
 		if next == nil {
+			sw.end(nil)
 			return out, nil
 		}
 		after = *next
@@ -1009,7 +1129,7 @@ func (d *devSupervisor) writeWaitFiles(sl *devSlot, f devWaitFiles) bool {
 		return true
 	}
 	sl.waitWritten = true
-	dir := "tasks/" + hopDir(sl.plan.Ordinal-1) + "/"
+	dir := d.planDir(sl.plan) + "/"
 	ok := true
 	if f.OKR {
 		ok = ok && d.s.ev.writeFile(dir+waitResultFile, []byte(toValidUTF8(f.Result))) == nil
@@ -1033,7 +1153,7 @@ func (d *devSupervisor) writeRepository() {
 	if err := writeDevEvidenceRepo(filepath.Join(d.s.ev.root, "workspace", "repo.git"), d.s.collect.Storer, d.s.seed.Commit, d.commits); err != nil {
 		d.stop("evidence_write_failed", err.Error())
 	}
-	if err := d.s.ev.writeJSON("workspace/tree-manifest.json", tm); err != nil {
+	if err := d.s.ev.writeJSON(devTreesFile, envelope("trees", d.s.runID, tm)); err != nil {
 		d.stop("evidence_write_failed", err.Error())
 	}
 }

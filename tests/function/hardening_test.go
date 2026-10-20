@@ -253,7 +253,7 @@ func validGuardTree() map[string]string {
 			"func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer) int {\n\treturn runFor(ctx, runtime.GOOS, args, in, out, errOut)\n}\n",
 		"internal/devcheck/devcheck.go": "package devcheck\n\nimport (\n\t\"context\"\n\t\"io\"\n\t\"runtime\"\n)\n\n" +
 			"type RunOptions struct{ EvidenceDir string }\n\n" +
-			"func Run(ctx context.Context, args []string, out, errOut io.Writer, run Runner, opts RunOptions) int {\n\treturn runFor(ctx, runtime.GOOS, args, out, errOut, run, opts)\n}\n",
+			"func Run(ctx context.Context, args []string, out, errOut io.Writer, run Runner, opts RunOptions) int {\n\treturn runWith(ctx, runtime.GOOS, lookupEnv, args, out, errOut, run, opts)\n}\n",
 		"internal/spikes/processgroup/experiment.go": "//go:build linux || darwin\n\npackage processgroup\n\nimport \"runtime\"\n\n" +
 			"func evaluate(r *CaseResult) { evaluateFor(r, runtime.GOOS) }\n\n" +
 			"func RunHelper(getenv func(string) string) int {\n\treturn runHelperFor(getenv, runtime.GOOS, runtime.GOARCH)\n}\n",

@@ -406,8 +406,18 @@ func TestCIWorkflowContract(t *testing.T) {
 
 // FP-2: the Linux job runs devcheck test (then race), coverage, bench and
 // cross; its stress moved to ci-linux-stress (iteration 02b).
-// Design 12a-ci-race-schedule adds the serial whole-module race subtests.
+// Design 12a-ci-race-schedule adds the serial whole-module race subtests;
+// since code review round 5 of design 12a-dev-flow-verify (owner
+// approved) the whole module's race suite is two steps: every package but
+// internal/reale2e serialized under 180 s, then internal/reale2e alone
+// under 360 s (internal/devcheck's TestRaceSelectionCoversModule keeps the
+// two selections equal to ./...).
 func TestCILinuxBar(t *testing.T) {
+	const wantRace = "go test -race -p=1 -count=1 -timeout=180s ./cmd/... ./internal/adapter/... ./internal/cicheck/... ./internal/cli/... " +
+		"./internal/client/... ./internal/contract/... ./internal/devcheck/... ./internal/logging/... ./internal/mcp/... ./internal/mcpqual/... " +
+		"./internal/plane/... ./internal/sidecar/... ./internal/spikes/... ./internal/taskpublication/... ./internal/taskworkspace/... " +
+		"./internal/testkit/... ./internal/workspace/... ./internal/workspacetransfer/... ./tests/..."
+	const wantRaceReale2e = "go test -race -count=1 -timeout=360s ./internal/reale2e"
 	t.Run("race-schedule", func(t *testing.T) {
 		stages, err := cicheck.ExtractStages(ciWorkflow(t))
 		if err != nil {
@@ -417,19 +427,20 @@ func TestCILinuxBar(t *testing.T) {
 			t.Fatalf("linux stages = %q", got)
 		}
 		plan := devcheck.TestSteps("linux")
-		const wantRace = "go test -race -p=1 -count=1 -timeout=180s ./..."
-		if len(plan) < 2 || plan[1].Name != "test -race" || strings.Join(plan[1].Argv, " ") != wantRace ||
-			strings.Join(plan[1].Env, " ") != "CGO_ENABLED=1" || strings.Count(wantRace, "./...") != 1 {
-			t.Fatalf("linux race step = %+v", plan)
+		if len(plan) < 3 || plan[1].Name != "test -race" || strings.Join(plan[1].Argv, " ") != wantRace ||
+			strings.Join(plan[1].Env, " ") != "CGO_ENABLED=1" || strings.Contains(wantRace, "reale2e") ||
+			plan[2].Name != "test -race reale2e" || strings.Join(plan[2].Argv, " ") != wantRaceReale2e || strings.Join(plan[2].Env, " ") != "CGO_ENABLED=1" {
+			t.Fatalf("linux race steps = %+v", plan)
 		}
 	})
 	t.Run("race-stage-compatibility", func(t *testing.T) {
 		plan := devcheck.TestSteps("linux")
-		if len(plan) != 4 ||
+		if len(plan) != 5 ||
 			plan[0].Name != "test" || strings.Join(plan[0].Argv, " ") != "go test -count=1 -timeout=180s ./..." || len(plan[0].Env) != 0 ||
-			plan[1].Name != "test -race" || strings.Join(plan[1].Argv, " ") != "go test -race -p=1 -count=1 -timeout=180s ./..." || strings.Join(plan[1].Env, " ") != "CGO_ENABLED=1" ||
-			plan[2].Name != "test realadaptercheck" || strings.Join(plan[2].Argv, " ") != "go test -tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$ -count=1" || len(plan[2].Env) != 0 ||
-			plan[3].Name != "test realadaptercheck -race" || strings.Join(plan[3].Argv, " ") != "go test -race -tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$ -count=1" || strings.Join(plan[3].Env, " ") != "CGO_ENABLED=1" {
+			plan[1].Name != "test -race" || strings.Join(plan[1].Argv, " ") != wantRace || strings.Join(plan[1].Env, " ") != "CGO_ENABLED=1" ||
+			plan[2].Name != "test -race reale2e" || strings.Join(plan[2].Argv, " ") != wantRaceReale2e || strings.Join(plan[2].Env, " ") != "CGO_ENABLED=1" ||
+			plan[3].Name != "test realadaptercheck" || strings.Join(plan[3].Argv, " ") != "go test -tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$ -count=1" || len(plan[3].Env) != 0 ||
+			plan[4].Name != "test realadaptercheck -race" || strings.Join(plan[4].Argv, " ") != "go test -race -tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$ -count=1" || strings.Join(plan[4].Env, " ") != "CGO_ENABLED=1" {
 			t.Fatalf("linux test plan = %+v", plan)
 		}
 		darwin := devcheck.TestSteps("darwin")
@@ -443,7 +454,7 @@ func TestCILinuxBar(t *testing.T) {
 		// stage's added container operation is driven by internal/devcheck's
 		// container driver contract tests, never from here).
 		host := devcheck.TestSteps(runtime.GOOS)
-		if runtime.GOOS == "linux" && (len(host) != 4 || host[1].Argv[2] != "-race" || host[1].Argv[3] != "-p=1" || host[3].Argv[2] != "-race") {
+		if runtime.GOOS == "linux" && (len(host) != 5 || host[1].Argv[2] != "-race" || host[1].Argv[3] != "-p=1" || host[2].Argv[2] != "-race" || host[4].Argv[2] != "-race") {
 			t.Fatalf("linux must run test then race: %+v", host)
 		}
 		if runtime.GOOS == "darwin" && (len(host) != 2 || strings.Join(host[1].Argv, " ") != "go test -tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$ -count=1") {
@@ -464,7 +475,7 @@ func TestCILinuxBar(t *testing.T) {
 		code, out, errOut := devcheckRun(t, r, "test")
 		want := []string{
 			"go test -count=1 -timeout=180s ./...",
-			"go test -race -p=1 -count=1 -timeout=180s ./...",
+			wantRace,
 		}
 		var got []string
 		for _, c := range r.calls {

@@ -40,6 +40,38 @@ func decodeStrict(raw json.RawMessage, v any, what string) error {
 // arguments are absent, never null) checks it before decoding.
 func DecodeStrict(raw []byte, v any, what string) error { return decodeStrict(raw, v, what) }
 
+// DecodeToolArgs decodes one MCP tool call's arguments exactly as the
+// Callsheet MCP server does (empty arguments are {}, a null anywhere is
+// refused, then DecodeStrict), so a recorded call can be judged by the
+// rule that admitted it.
+func DecodeToolArgs(raw []byte, v any) error {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		raw = []byte("{}")
+	}
+	if containsNull(raw) {
+		return New(CodeInvalidArgument, "tool arguments must not contain null: omit an optional argument instead")
+	}
+	return decodeStrict(raw, v, "tool arguments")
+}
+
+// containsNull reports whether a validated JSON value holds a null
+// anywhere (outside strings).
+func containsNull(raw []byte) bool {
+	in := false
+	for i := 0; i < len(raw); i++ {
+		c := raw[i]
+		switch {
+		case in && c == '\\':
+			i++
+		case c == '"':
+			in = !in
+		case !in && c == 'n' && bytes.HasPrefix(raw[i:], []byte("null")):
+			return true
+		}
+	}
+	return false
+}
+
 var (
 	strictType = reflect.TypeFor[strictUnmarshaler]()
 	bytesType  = reflect.TypeFor[[]byte]()

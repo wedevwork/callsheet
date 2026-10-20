@@ -453,9 +453,11 @@ func TestDevFullPublications(t *testing.T) {
 	design := sha256Hex([]byte("# d\n"))
 	audit := with(draft, map[string]string{"design-review.md": "design " + design + "\nSTATUS: DESIGN_REVIEW_APPROVED\n"})
 	coded := with(audit, map[string]string{"main.go": "package main\nfunc main() { println(1) }\n"})
+	runDigest := sha256Hex([]byte("the helper's receipt\n"))
 	adm := func(role, mode, marker string, base, result map[string]string) (admitResult, error) {
 		return AdmitPublication(admitInput{Role: role, Mode: mode, Marker: marker, Base: treeOf(base), Result: treeOf(result), DesignDigest: design,
-			Candidate: commitOf("cand"), TaskID: "t_" + strings.Repeat("ab", 16), Final: "CALLSHEET_REVIEW_BLOCKER: none\nSTATUS: " + marker + "\n"})
+			Candidate: commitOf("cand"), TaskID: "t_" + strings.Repeat("ab", 16), Final: "CALLSHEET_REVIEW_BLOCKER: none\nSTATUS: " + marker + "\n",
+			ReviewRun: runDigest})
 	}
 	if _, err := adm("designer", modeDraft, markerDesignDraft, seed, draft); err != nil {
 		t.Fatal(err)
@@ -479,7 +481,7 @@ func TestDevFullPublications(t *testing.T) {
 			}
 		}
 		b.WriteString("Verification exit 0: go test ./...\nVerification exit 0: go test -coverprofile=.callsheet-review-scratch/t_" + strings.Repeat("ab", 16) +
-			"/coverage.out ./...\nCoverage: 85.0% of statements\nCleanup: scratch removed\nCALLSHEET_REVIEW_BLOCKER: none\nSTATUS: " + marker + "\n")
+			"/coverage.out ./...\nCoverage: 85.0% of statements\nCleanup: scratch removed\nReviewer run sha256: " + runDigest + "\nCALLSHEET_REVIEW_BLOCKER: none\nSTATUS: " + marker + "\n")
 		return b.String()
 	}
 	reviewed := with(coded, map[string]string{"review.md": report(markerReviewApproved, "")})
@@ -1297,8 +1299,8 @@ func TestDevFullControl(t *testing.T) {
 	if slices.Contains(okCodes, CodePrepared) || slices.Contains(errorCodes, CodeDuplicateWait) || len(okCodes) != 2 || len(errorCodes) != 8 {
 		t.Fatal("legacy codes changed")
 	}
-	if !strings.Contains(Usage, "exit 3") {
-		t.Fatal("usage does not document exit 3")
+	if !strings.Contains(Usage, "run-dev-full") || !strings.Contains(Usage, "deprecated alias of run") || !strings.Contains(Usage, "no longer exits 3") {
+		t.Fatal("usage does not document the run-dev-full alias")
 	}
 }
 

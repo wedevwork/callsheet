@@ -319,25 +319,27 @@ func scratchFrom(out string) string {
 }
 
 func TestStagePlanning(t *testing.T) {
-	// The Linux test stage: four commands, the whole-module race serialized
-	// with -p=1, then the container operation (synthetic container fixture).
+	// The Linux test stage: five commands, the race suite serialized with
+	// -p=1 except internal/reale2e, which runs alone under its own bound,
+	// then the container operation (synthetic container fixture).
 	f := &fakeRunner{}
 	cr := newContainerRunnerFixture(t, f).(*containerRunner)
 	code, out, errOut := runDriver(t, "linux", cr, "test")
 	if code != 0 {
 		t.Fatalf("linux test = %d %s", code, errOut)
 	}
-	if got := strings.Join(f.argvs(), "|"); got != "go test -count=1 -timeout=180s ./...|go test -race -p=1 -count=1 -timeout=180s ./..."+
+	if got := strings.Join(f.argvs(), "|"); got != "go test -count=1 -timeout=180s ./...|"+wantTestRace+"|"+wantTestRaceReale2e+
 		"|go test -tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$ -count=1|go test -race -tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$ -count=1" {
 		t.Fatalf("linux test = %s", got)
 	}
-	if strings.Count(f.argvs()[1], "./...") != 1 {
+	if strings.Contains(f.argvs()[1], "reale2e") || strings.Contains(f.argvs()[1], " ./... ") {
 		t.Fatalf("race selection = %s", f.argvs()[1])
 	}
 	pos := 0
 	for i, line := range []string{
 		"devcheck: test: go test -count=1 -timeout=180s ./...",
-		"devcheck: test -race: go test -race -p=1 -count=1 -timeout=180s ./...",
+		"devcheck: test -race: " + wantTestRace,
+		"devcheck: test -race reale2e: " + wantTestRaceReale2e,
 		"devcheck: test realadaptercheck: go test -tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$ -count=1",
 		"devcheck: test realadaptercheck -race: go test -race -tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$ -count=1",
 	} {
@@ -347,7 +349,8 @@ func TestStagePlanning(t *testing.T) {
 		}
 		pos = at + 1
 	}
-	if !strings.Contains(strings.Join(f.calls[1].env, " "), "CGO_ENABLED=1") || !strings.Contains(strings.Join(f.calls[3].env, " "), "CGO_ENABLED=1") {
+	if !strings.Contains(strings.Join(f.calls[1].env, " "), "CGO_ENABLED=1") || !strings.Contains(strings.Join(f.calls[2].env, " "), "CGO_ENABLED=1") ||
+		!strings.Contains(strings.Join(f.calls[4].env, " "), "CGO_ENABLED=1") {
 		t.Fatal("race runs need CGO_ENABLED=1")
 	}
 	if got := strings.Join(cr.containerKinds(), "|"); got != strings.Join(oneIterationKinds, "|") {
@@ -477,24 +480,25 @@ func TestAllStopsAtFirstFailure(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("all = %d %s", code, errOut)
 	}
-	// Ordinary calls: test(4) + coverage(3) + bench(14, the dev-full step
-	// after the client wait step) + cross(12), in that order; the
-	// container operation's own calls run inside the test stage
-	// (asserted separately: one iteration).
+	// Ordinary calls: test(5, internal/reale2e's race step third) +
+	// coverage(3) + bench(14, the dev-full step after the client wait
+	// step) + cross(12), in that order; the container operation's own
+	// calls run inside the test stage (asserted separately: one
+	// iteration).
 	a := f.argvs()
 	if got := strings.Join(cr.containerKinds(), "|"); got != strings.Join(oneIterationKinds, "|") {
 		t.Fatalf("all container calls = %s", got)
 	}
-	if len(a) != 33 || !strings.Contains(a[0], "go test -count=1") || !strings.Contains(a[2], "-tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$") ||
-		!strings.Contains(a[4], "-coverprofile") || !strings.Contains(a[7], "-bench") ||
-		!strings.Contains(a[8], "./internal/plane -run=^$ -bench=.") || !strings.Contains(a[9], "./internal/contract -run=^$ -bench=.") ||
-		!strings.Contains(a[10], "./internal/sidecar -run=^$ -bench=.") || !strings.Contains(a[11], "./internal/adapter -run=^$ -bench=.") ||
-		!strings.Contains(a[12], "./internal/mcp -run=^$ -bench=.") || !strings.Contains(a[13], "./internal/mcpqual -run=^$ -bench=.") ||
-		!strings.Contains(a[14], "./internal/workspace -run=^$ -bench=.") || !strings.Contains(a[15], "./internal/workspacetransfer -run=^$ -bench=.") ||
-		!strings.Contains(a[16], "./internal/taskworkspace -run=^$ -bench=.") ||
-		!strings.Contains(a[17], "-bench=^BenchmarkRealAdapterFile$") || !strings.Contains(a[18], "-bench=^BenchmarkContainerEvidence$") ||
-		!strings.Contains(a[19], "./internal/client -run=^$ -bench=^BenchmarkWaitUntilDone$") ||
-		!strings.Contains(a[20], "./internal/reale2e -run=^$ -bench=^BenchmarkDevFull") || !strings.Contains(a[21], "go build") {
+	if len(a) != 34 || !strings.Contains(a[0], "go test -count=1") || !strings.Contains(a[2], "-timeout=360s ./internal/reale2e") || !strings.Contains(a[3], "-tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$") ||
+		!strings.Contains(a[5], "-coverprofile") || !strings.Contains(a[8], "-bench") ||
+		!strings.Contains(a[9], "./internal/plane -run=^$ -bench=.") || !strings.Contains(a[10], "./internal/contract -run=^$ -bench=.") ||
+		!strings.Contains(a[11], "./internal/sidecar -run=^$ -bench=.") || !strings.Contains(a[12], "./internal/adapter -run=^$ -bench=.") ||
+		!strings.Contains(a[13], "./internal/mcp -run=^$ -bench=.") || !strings.Contains(a[14], "./internal/mcpqual -run=^$ -bench=.") ||
+		!strings.Contains(a[15], "./internal/workspace -run=^$ -bench=.") || !strings.Contains(a[16], "./internal/workspacetransfer -run=^$ -bench=.") ||
+		!strings.Contains(a[17], "./internal/taskworkspace -run=^$ -bench=.") ||
+		!strings.Contains(a[18], "-bench=^BenchmarkRealAdapterFile$") || !strings.Contains(a[19], "-bench=^BenchmarkContainerEvidence$") ||
+		!strings.Contains(a[20], "./internal/client -run=^$ -bench=^BenchmarkWaitUntilDone$") ||
+		!strings.Contains(a[21], "./internal/reale2e -run=^$ -bench=^BenchmarkDevFull") || !strings.Contains(a[22], "go build") {
 		t.Fatalf("all order = %v", a)
 	}
 	// A later bench failure is reached only past successful synthetic

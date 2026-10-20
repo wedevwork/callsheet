@@ -203,8 +203,15 @@ type commandRunner func(spec ProcSpec, timeout time.Duration, limit int) (Comman
 // project files, regular, private) with its private caches, returning the
 // source directory and the isolated environment.
 func exportProject(dir string, files map[string][]byte, pathEnv string) (string, []string, error) {
+	return exportProjectAllowed(dir, files, pathEnv, projectFiles)
+}
+
+// exportProjectAllowed is exportProject under an explicit tree policy:
+// every file must be one allowed name (the development path admits its
+// seven planning/report artifacts as inert files).
+func exportProjectAllowed(dir string, files map[string][]byte, pathEnv string, allowed map[string]bool) (string, []string, error) {
 	for _, n := range sortedKeys(files) {
-		if !projectFiles[n] {
+		if !allowed[n] {
 			return "", nil, fmt.Errorf("the tree holds the unexpected file %s; nothing was executed", n)
 		}
 	}

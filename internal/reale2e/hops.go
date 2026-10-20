@@ -1,6 +1,7 @@
 package reale2e
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -464,13 +465,36 @@ func (s *supervisor) storeLogs(dir, task string) {
 	} else {
 		meta.PlaneIncomplete = true
 	}
-	if len(data) > maxStoredLog {
-		data, meta.StoredTruncated = data[len(data)-maxStoredLog:], true
-	}
-	data = []byte(toValidUTF8(data))
+	data = storedLog(data)
+	meta.StoredTruncated = len(logs.Data) > maxStoredLog
 	meta.StoredBytes = len(data)
 	s.ev.writeFile(dir+"/logs.txt", data)
 	s.ev.writeJSON(dir+"/logs.json", meta)
+}
+
+// storedLog is a log's stored form: its last maxStoredLog bytes, invalid
+// UTF-8 replaced.
+func storedLog(data []byte) []byte {
+	if len(data) > maxStoredLog {
+		data = data[len(data)-maxStoredLog:]
+	}
+	return []byte(toValidUTF8(data))
+}
+
+// devLogMetaOf is the development collector's complete log metadata
+// (design 12a-dev-flow-verify, Collector changes): every TaskLogs
+// completeness field, the raw bytes' digest and whether the stored form
+// lost or changed any byte. It returns the raw bytes, retained once.
+func devLogMetaOf(logs contract.TaskLogsResponse, err error) ([]byte, DevLogMeta) {
+	if err != nil {
+		return nil, DevLogMeta{Error: contract.SafeText(err.Error(), 200), RawSHA256: sha256Hex(nil)}
+	}
+	data := logs.Data
+	stored := storedLog(data)
+	return data, DevLogMeta{SourceBytes: logs.SourceBytes, RetainedBytes: logs.RetainedBytes, DroppedBytes: logs.DroppedBytes,
+		Truncated: logs.Truncated, Incomplete: logs.Incomplete, CounterOverflow: logs.CounterOverflow, MayBeIncomplete: logs.LogMayBeIncomplete,
+		DataBytes: len(data), RawSHA256: sha256Hex(data), StoredBytes: len(stored), StoredTruncated: len(data) > maxStoredLog,
+		StoredChanged: len(data) <= maxStoredLog && !bytes.Equal(stored, data)}
 }
 
 // awaitOwner presents the approved design and review to the owner and

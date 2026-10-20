@@ -3,12 +3,12 @@ package reale2e
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -122,7 +122,7 @@ func (t *devTerminal) close() { close(t.ch) }
 
 // devRig drives one offline development attempt.
 type devRig struct {
-	t     *testing.T
+	t     testing.TB
 	f     *fakeWorld
 	d     *devSupervisor
 	steps []devAct
@@ -183,7 +183,43 @@ type devRig struct {
 	// onFinal runs once inside the first ListTasks call after the attempt
 	// finished (the final cleanup scan).
 	onFinal func(r *devRig)
+	// command replaces the run command ("run-dev-full", "probe-dev-full").
+	command string
+	// inspect is the coordinator's optional workspace inspection mode
+	// (inspectNone, inspectFull or inspectPartial).
+	inspection string
+	// reviewGo is the verification helper's scripted Go; realHelper runs
+	// the helper's commands with the real local toolchain instead.
+	reviewGo   reviewScript
+	realHelper string
+	// helperOut and receipts are each review's helper output and receipt;
+	// reviewLogs are the reviewer tasks' scripted vendor logs.
+	helperOut  map[string]string
+	receipts   map[string]DevReviewRun
+	reviewLogs map[string][]byte
 }
+
+// offsetClock runs real time from a fake clock's instant (a real helper
+// process in a rig on fake time): Now is the base plus the real elapsed
+// time, timers are real; settle moves the fake clock past it.
+type offsetClock struct {
+	fake  *autoClock
+	base  time.Time
+	start time.Time
+}
+
+func newOffsetClock(fake *autoClock) *offsetClock {
+	return &offsetClock{fake: fake, base: fake.Now(), start: time.Now()}
+}
+
+func (c *offsetClock) Now() time.Time { return c.base.Add(time.Since(c.start)) }
+
+func (c *offsetClock) NewTimer(d time.Duration) (<-chan time.Time, func() bool) {
+	return realClock{}.NewTimer(d)
+}
+
+// settle advances the fake clock to this clock's now.
+func (c *offsetClock) settle() { c.fake.advance(c.Now().Sub(c.fake.Now()) + time.Millisecond) }
 
 // heldReader is an operator terminal's input, served one byte per Read as
 // the line reader asks for it. Before its last byte it closes consumed
@@ -236,9 +272,9 @@ func (p hookPuller) PullResult(ctx context.Context, task, dir string) error {
 	return p.p.PullResult(ctx, task, dir)
 }
 
-func copyDevDocs(t *testing.T, checkout string) {
+func copyDevDocs(t testing.TB, checkout string) {
 	t.Helper()
-	for _, rel := range []string{DevFlowDir, DevFullDir} {
+	for _, rel := range []string{DevFlowDir, DevFullDir, devProbeFixtureDir} {
 		src := filepath.Join(repoRoot(t), filepath.FromSlash(rel))
 		err := filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
@@ -264,12 +300,18 @@ func copyDevDocs(t *testing.T, checkout string) {
 	}
 }
 
-func newDevRig(t *testing.T, steps []devAct) *devRig {
+func newDevRig(t testing.TB, steps []devAct) *devRig {
 	t.Helper()
 	f := newFakeWorld(t)
 	copyDevDocs(t, f.checkout)
+	// The harness executable and the pinned Go are real files (the
+	// manifest and the reviewer receipt hash them); every process the
+	// supervisor starts with them stays scripted.
+	bin := t.TempDir()
+	f.executable, f.goPath = stubFile(t, bin, "reale2e"), stubFile(t, bin, "go")
 	r := &devRig{t: t, f: f, steps: steps, term: newDevTerminal(), answered: map[*devWindow]bool{},
-		published: map[string]map[string][]byte{}, stage: "next"}
+		published: map[string]map[string][]byte{}, stage: "next", helperOut: map[string]string{}, receipts: map[string]DevReviewRun{},
+		reviewLogs: map[string][]byte{}}
 	f.liveTerm = r.term
 	f.puller = nil
 	f.override = func(s ProcSpec) (behavior, bool) {
@@ -290,9 +332,11 @@ func newDevRig(t *testing.T, steps []devAct) *devRig {
 
 func (r *devRig) host() Host {
 	h := r.f.host()
-	args := r.f.args()
-	args[0] = "run-dev-full"
-	h.Args = args
+	h.Args = r.f.args()
+	if r.command != "" {
+		h.Args[0] = r.command
+	}
+	h.legacy = false
 	h.observe = nil
 	h.observeDev = func(d *devSupervisor) { r.d = d }
 	world := h.NewWorld
@@ -717,7 +761,11 @@ func (r *devRig) reply() bool {
 			r.endPhase(f[1] + " " + f[2])
 			r.stage = "next"
 		case len(f) == 1 && f[0] == CodeComplete:
-			r.endPhase("Execution complete.")
+			if r.d.probe != nil {
+				r.endPhase("probe=complete")
+			} else {
+				r.endPhase("Execution complete.")
+			}
 			r.stage = "end"
 		case len(f) == 1 && f[0] == CodePending:
 			// The previous result is not admitted yet: ask again later,
@@ -769,12 +817,20 @@ func (r *devRig) reply() bool {
 // ws_push does.
 func (r *devRig) seed() {
 	d := r.d
-	if err := copyObjects(d.s.seed.repo.Storer, r.f.plane.hub, []plumbing.Hash{d.s.seed.Commit}); err != nil {
+	commit, path := d.s.seed.Commit, d.s.seed.Path
+	if d.probe != nil {
+		// The probe's main branch is the pinned fixture candidate.
+		commit = d.probe.cand
+	}
+	if err := copyObjects(d.s.seed.repo.Storer, r.f.plane.hub, []plumbing.Hash{commit}); err != nil {
 		r.t.Fatal(err)
 	}
-	r.f.plane.pushSeed(d.s.seed.Commit)
-	r.toolUse("mcp__callsheet__ws_push", map[string]any{"name": d.s.workspace.Name, "instance": d.s.workspace.Instance, "branch": "main", "path": d.s.seed.Path},
-		`{"commit":"`+d.s.seed.Commit.String()+`"}`, false)
+	r.f.plane.pushSeed(commit)
+	// The MCP ws_push answer: the complete push result of the seed.
+	pushed := mcpAnswer(r, contract.ParseWorkspacePushResult, contract.WorkspacePushResult{Name: d.s.workspace.Name, Instance: d.s.workspace.Instance,
+		Branch: "refs/heads/main", Commit: commit.String(), SourceKind: contract.KindGit, Changed: true})
+	r.toolUse("mcp__callsheet__ws_push", map[string]any{"name": d.s.workspace.Name, "instance": d.s.workspace.Instance, "branch": "main", "path": path},
+		pushed, false)
 	r.seeded = true
 }
 
@@ -784,6 +840,10 @@ func (r *devRig) dispatch(act devAct) bool {
 	ws, inst, base := doc.Workspace, doc.Instance, doc.Base
 	req := contract.DispatchRequest{Target: doc.Target, Goal: doc.Goal, Acceptance: doc.Acceptance, Payload: []string{},
 		RequestedBy: contract.RequestedBy{Name: "claude-code", Version: "2.1.292", Hostname: "localhost"}, Workspace: &ws, Base: &base, WorkspaceInstance: &inst}
+	if ws == "" {
+		// A no-workspace probe task: the document names no workspace.
+		req.Workspace, req.Base, req.WorkspaceInstance = nil, nil, nil
+	}
 	fault := r.fault
 	switch fault {
 	case "extra", "duplicate", "unobserved", "lost", "premature-coder", "bad-acceptance":
@@ -807,6 +867,7 @@ func (r *devRig) dispatch(act devAct) bool {
 		if _, err := r.f.plane.Dispatch(r.f.ctx, req); err == nil {
 			r.t.Fatal("the lost dispatch returned a view")
 		}
+		r.toolUse(toolDispatch, dispatchInput(doc), "the answer was lost", true)
 		// Recovery by task_ls: exactly one matching authoritative request.
 		var match []string
 		for _, id := range r.f.plane.ids() {
@@ -818,16 +879,37 @@ func (r *devRig) dispatch(act devAct) bool {
 		if len(match) != 1 {
 			r.t.Fatalf("lost reply recovery found %d tasks", len(match))
 		}
-		r.toolUse("mcp__callsheet__task_ls", map[string]any{}, `{"tasks":["`+match[0]+`"]}`, false)
+		// The MCP task_ls answers: the plane's own listing pages, followed
+		// by their exclusive cursors until the page holding the task.
+		hook := r.f.plane.onList
+		r.f.plane.onList = nil
+		after := ""
+		for {
+			page, next, err := r.f.plane.ListTasks(r.f.ctx, after, contract.DefaultTaskListLimit)
+			if err != nil {
+				r.t.Fatal(err)
+			}
+			in := map[string]any{}
+			if after != "" {
+				in["after"] = after
+			}
+			listing, _ := json.Marshal(contract.TaskListResponse{Version: contract.ProtocolVersion, Tasks: page, NextAfter: next})
+			r.toolUse("mcp__callsheet__task_ls", in, string(listing), false)
+			if slices.ContainsFunc(page, func(s contract.TaskSummary) bool { return s.TaskID == match[0] }) || next == nil {
+				break
+			}
+			after = *next
+		}
+		r.f.plane.onList = hook
 		r.task = match[0]
 		r.stage = "observe"
 		return true
 	}
 	v := r.mustDispatch(req)
 	r.task = v.TaskID
-	out, _ := json.Marshal(map[string]any{"task_id": v.TaskID, "state": v.State})
-	r.toolUse(toolDispatch, map[string]any{"target": doc.Target, "goal": doc.Goal, "acceptance": doc.Acceptance, "workspace": ws,
-		"workspace_instance": inst, "base": base}, string(out), false)
+	// The MCP dispatch answer: the strict asynchronous dispatch response.
+	out, _ := json.Marshal(contract.DispatchResponse{Version: contract.ProtocolVersion, TaskID: v.TaskID, Task: &v})
+	r.toolUse(toolDispatch, dispatchInput(doc), string(out), false)
 	if fault == "unobserved" {
 		r.finish(act, v.TaskID)
 		r.stage = "unobserved"
@@ -836,6 +918,32 @@ func (r *devRig) dispatch(act devAct) bool {
 	}
 	r.stage = "observe"
 	return true
+}
+
+// mcpAnswer encodes v as the Callsheet MCP server does and requires its
+// own strict parser to accept it (a rig answer is always a server answer).
+func mcpAnswer[T any](r *devRig, parse func([]byte) (T, error), v any) string {
+	b, err := contract.Encode(v)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	if _, err := parse(b); err != nil {
+		r.t.Fatalf("the rig's answer %s is not a server answer: %v", b, err)
+	}
+	return string(b)
+}
+
+// dispatchInput is the MCP dispatch tool input of exactly the prepared
+// document: optional workspace arguments are absent when the document has
+// none (the MCP server never receives an empty or null one).
+func dispatchInput(doc devDispatchDoc) map[string]any {
+	in := map[string]any{"target": doc.Target, "goal": doc.Goal, "acceptance": doc.Acceptance}
+	for k, v := range map[string]string{"workspace": doc.Workspace, "workspace_instance": doc.Instance, "base": doc.Base} {
+		if v != "" {
+			in[k] = v
+		}
+	}
+	return in
 }
 
 func (r *devRig) mustDispatch(req contract.DispatchRequest) contract.TaskView {
@@ -912,11 +1020,14 @@ func (r *devRig) wake(act devAct) bool {
 
 // show consumes the wake with one task_show of the task. With fragment
 // set, the first such result record reaches the stream in two writes.
+// After a consumed wake the coordinator inspects the task's workspace as
+// its playbook requires (inspect).
 func (r *devRig) show() {
 	v, _ := r.f.plane.ShowTask(r.f.ctx, r.task, 0)
 	show, _ := json.Marshal(contract.TaskShowResponse{Version: contract.ProtocolVersion, Task: v})
 	if !r.fragment || r.tailWritten || r.tail != nil {
 		r.toolUse(toolTaskShow, map[string]any{"id": r.task}, string(show), false)
+		r.inspect(v)
 		return
 	}
 	r.handles++
@@ -930,10 +1041,177 @@ func (r *devRig) show() {
 	r.tail = rec[half:]
 }
 
+// inspectGeneration is the rig workspace's generation token.
+const inspectGeneration = "11111111111111111111111111111111"
+
+// Inspection modes of the rig's optional coordinator workspace
+// inspection (design 12a-dev-flow-verify r0.6: never required, but bound
+// when made).
+const (
+	inspectNone    = ""
+	inspectFull    = "full"
+	inspectPartial = "partial"
+)
+
+// diffChanges are the changed paths from base to result, in raw path
+// byte order, as the workspace diff reports them (regular files).
+func diffChanges(base, result map[string][]byte) []contract.WorkspaceChange {
+	var paths []string
+	for p := range base {
+		paths = append(paths, p)
+	}
+	for p := range result {
+		if _, ok := base[p]; !ok {
+			paths = append(paths, p)
+		}
+	}
+	sort.Strings(paths)
+	mode := "100644"
+	var changes []contract.WorkspaceChange
+	for _, p := range paths {
+		b, inBase := base[p]
+		n, inResult := result[p]
+		c := contract.WorkspaceChange{PathBase64: base64.StdEncoding.EncodeToString([]byte(p))}
+		switch {
+		case inBase && inResult && bytes.Equal(b, n):
+			continue
+		case inBase && inResult:
+			ob, nb := int64(len(b)), int64(len(n))
+			c.Kind, c.OldMode, c.NewMode, c.OldBytes, c.NewBytes = contract.ChangeModified, &mode, &mode, &ob, &nb
+		case inBase:
+			ob := int64(len(b))
+			c.Kind, c.OldMode, c.OldBytes = contract.ChangeDeleted, &mode, &ob
+		default:
+			nb := int64(len(n))
+			c.Kind, c.NewMode, c.NewBytes = contract.ChangeAdded, &mode, &nb
+		}
+		changes = append(changes, c)
+	}
+	return changes
+}
+
+// rigDiffCall is one recorded ws_diff page call with its answer.
+type rigDiffCall struct {
+	in     map[string]any
+	answer string
+}
+
+// diffPages are the paged diff calls of one enumeration (limit rows per
+// page): first carries the form's selection, each continuation the
+// previous page's cursor, instance and generation.
+func (r *devRig) diffPages(first map[string]any, header contract.WorkspaceDiffResponse, changes []contract.WorkspaceChange, limit int) []rigDiffCall {
+	var out []rigDiffCall
+	in := first
+	for i := 0; i == 0 || i < len(changes); i += limit {
+		end := min(i+limit, len(changes))
+		page := header
+		page.Changes = append([]contract.WorkspaceChange{}, changes[i:end]...)
+		var after []byte
+		if i > 0 {
+			after, _ = base64.StdEncoding.DecodeString(changes[i-1].PathBase64)
+		}
+		if end < len(changes) {
+			next := changes[end-1].PathBase64
+			page.NextAfter = &next
+		}
+		answer := mcpAnswer(r, func(b []byte) (contract.WorkspaceDiffResponse, error) {
+			return contract.ParseWorkspaceDiff(b, after, limit)
+		}, page)
+		out = append(out, rigDiffCall{in: in, answer: answer})
+		if end >= len(changes) {
+			break
+		}
+		in = map[string]any{"after": changes[end-1].PathBase64, "instance": header.Instance, "generation": inspectGeneration, "limit": limit}
+		for _, k := range []string{"task_id", "name", "base", "target"} {
+			if v, ok := first[k]; ok {
+				in[k] = v
+			}
+		}
+	}
+	return out
+}
+
+// inspect is the coordinator's optional workspace inspection of a
+// consumed task with a published result (r.inspect): task_logs; the task
+// forms of ws_status, ws_diff (paged, one change per page) and ws_pull;
+// and the explicit forms of ws_status, ws_diff (seed main to the result
+// commit, two changes per page) and ws_pull of main, with the two diff
+// enumerations interleaved. Partial inspection requests only the task
+// form's first diff page. Every answer is the server's answer.
+func (r *devRig) inspect(v contract.TaskView) {
+	if r.inspection == inspectNone || r.d.probe != nil || v.Result == nil || v.Result.Workspace == nil || v.Result.Workspace.Commit == nil || v.WorkspaceBinding == nil {
+		return
+	}
+	ctx := r.f.ctx
+	ws, seed := r.d.s.workspace, r.d.s.workspace.SeedCommit
+	commit := *v.Result.Workspace.Commit
+	base := map[string][]byte{}
+	for p, f := range r.d.trees[*v.WorkspaceBinding.BaseCommit] {
+		base[p] = f.Content
+	}
+	seedFiles := map[string][]byte{}
+	for p, f := range r.d.trees[seed] {
+		seedFiles[p] = f.Content
+	}
+	taskDiff := r.diffPages(map[string]any{"task_id": v.TaskID, "limit": 1}, contract.WorkspaceDiffResponse{Name: ws.Name, Instance: ws.Instance,
+		Generation: inspectGeneration, BaseCommit: v.WorkspaceBinding.BaseCommit, TargetCommit: commit}, diffChanges(base, r.published[commit]), 1)
+	if r.inspection == inspectPartial {
+		// Only a multi-page enumeration can stop before exhaustion.
+		if len(taskDiff) >= 2 {
+			r.toolUse(toolWsDiff, taskDiff[0].in, taskDiff[0].answer, false)
+		}
+		return
+	}
+	logs, err := r.f.plane.TaskLogs(ctx, v.TaskID)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	r.toolUse(toolTaskLogs, map[string]any{"id": v.TaskID}, mcpAnswer(r, contract.ParseTaskLogsResponse, logs), false)
+	status := contract.TaskWorkspaceStatusResponse{Version: contract.ProtocolVersion, Workspace: contract.TaskWorkspaceStatus{TaskID: v.TaskID, State: v.State,
+		WorkspacePhase: v.WorkspacePhase, Binding: *v.WorkspaceBinding, Result: v.Result.Workspace, Available: true}}
+	r.toolUse(toolWsStatus, map[string]any{"task_id": v.TaskID}, mcpAnswer(r, contract.ParseTaskWorkspaceStatusResponse, status), false)
+	published := "2026-10-10T12:00:00Z"
+	refs := []contract.WorkspaceRef{{Name: contract.TaskRefPrefix + v.TaskID, Commit: commit, PublishedAt: &published},
+		{Name: contract.DefaultBranchRef, Commit: seed}}
+	explicit := contract.WorkspaceStatusResponse{Name: ws.Name, Instance: ws.Instance, Generation: inspectGeneration, DefaultBranch: contract.DefaultBranchRef, Refs: refs}
+	r.toolUse(toolWsStatus, map[string]any{"name": ws.Name}, mcpAnswer(r, func(b []byte) (contract.WorkspaceStatusResponse, error) {
+		return contract.ParseWorkspaceStatus(b, "", contract.DefaultWorkspaceLimit)
+	}, explicit), false)
+	explicitDiff := r.diffPages(map[string]any{"name": ws.Name, "base": "main", "target": commit, "limit": 2}, contract.WorkspaceDiffResponse{Name: ws.Name,
+		Instance: ws.Instance, Generation: inspectGeneration, BaseCommit: &seed, TargetCommit: commit}, diffChanges(seedFiles, r.published[commit]), 2)
+	for i := 0; i < max(len(taskDiff), len(explicitDiff)); i++ {
+		if i < len(taskDiff) {
+			r.toolUse(toolWsDiff, taskDiff[i].in, taskDiff[i].answer, false)
+		}
+		if i < len(explicitDiff) {
+			r.toolUse(toolWsDiff, explicitDiff[i].in, explicitDiff[i].answer, false)
+		}
+	}
+	pulled := contract.WorkspacePullResult{Name: ws.Name, Instance: ws.Instance, Selector: *v.Result.Workspace.Ref,
+		Commit: commit, DestinationKind: contract.KindFolder, Changed: true}
+	r.toolUse(toolWsPull, map[string]any{"task_id": v.TaskID, "path": "inspect/" + v.TaskID}, mcpAnswer(r, contract.ParseWorkspacePullResult, pulled), false)
+	main := contract.WorkspacePullResult{Name: ws.Name, Instance: ws.Instance, Selector: contract.DefaultBranchRef, Commit: seed,
+		DestinationKind: contract.KindFolder, Changed: true}
+	r.toolUse(toolWsPull, map[string]any{"name": ws.Name, "ref": "main", "path": "inspect/main-" + v.TaskID}, mcpAnswer(r, contract.ParseWorkspacePullResult, main), false)
+}
+
 // finish publishes the act's result for task and ends it.
 func (r *devRig) finish(act devAct, task string) {
 	d := r.d
 	doc := r.doc
+	if d.probe != nil && doc.Role == HopDesigner {
+		// A harmless wake probe: an answer, no workspace or publication.
+		final := "CALLSHEET_PROBE_OK\n"
+		state := contract.TaskSucceeded
+		switch act.alter {
+		case "failed":
+			state = contract.TaskFailed
+		case "empty":
+			final = "  \n"
+		}
+		r.f.plane.finish(task, state, &final, false, nil)
+		return
+	}
 	base := map[string][]byte{}
 	for p, f := range d.trees[doc.Base] {
 		base[p] = f.Content
@@ -954,9 +1232,21 @@ func (r *devRig) finish(act devAct, task string) {
 	case "wrong-parent":
 		doc.Base = r.d.state.InitialCommit
 	}
-	h := writeNestedCommit(r.t, r.f.plane.hub, files, plumbing.NewHash(doc.Base))
+	switch act.alter {
+	case "scratch-pub":
+		files[reviewScratch+"/"+task+"/after/main.go"] = base["main.go"]
+	}
+	var h plumbing.Hash
+	if act.alter == "exec-mode" {
+		h, _ = writeCommitMode(r.t, r.f.plane.hub, files, map[string]filemode.FileMode{"main.go": filemode.Executable}, plumbing.NewHash(doc.Base))
+	} else {
+		h = writeNestedCommit(r.t, r.f.plane.hub, files, plumbing.NewHash(doc.Base))
+	}
 	r.published[h.String()] = files
 	r.f.plane.finish(task, state, &final, truncated, &h)
+	if log, ok := r.reviewLogs[task]; ok {
+		r.f.plane.setLog(task, log)
+	}
 }
 
 // final is the act's final answer.
@@ -1006,6 +1296,11 @@ func (r *devRig) publication(act devAct, doc devDispatchDoc, base map[string][]b
 		if act.marker == markerDesignDraft {
 			files["design.md"] = []byte(fmt.Sprintf("# Design\n\nrevision %d\n", n))
 			files["revision-history.md"] = []byte(fmt.Sprintf("# History\n\n- revision %d\n", n))
+			if act.alter == "same-design" {
+				// A redraft byte-identical to the approved design.
+				files["design.md"] = []byte("# Design\n\nrevision 1\n")
+				files["revision-history.md"] = []byte("# History\n\n- revision 1\n")
+			}
 			if q, ok := files["design-questions.md"]; ok && len(q) > 0 {
 				files["design-questions.md"] = []byte{}
 			}
@@ -1027,6 +1322,15 @@ func (r *devRig) publication(act devAct, doc devDispatchDoc, base map[string][]b
 			}
 			files["main.go"] = []byte(strings.Replace(fixtureMain, "package main", fmt.Sprintf("// revision %d\npackage main", n), 1))
 			files["main_test.go"] = []byte(fixtureTest)
+			switch act.alter {
+			case "no-signature":
+				// run takes its streams in another order.
+				files["main.go"] = bytes.Replace(files["main.go"], []byte("func run(args []string, stdout, stderr io.Writer) int"),
+					[]byte("func run(stdout, stderr io.Writer, args []string) int"), 1)
+			case "no-table":
+				// The test calls run once, without its table loop.
+				files["main_test.go"] = []byte("package main\n\nimport (\n\t\"io\"\n\t\"testing\"\n)\n\nfunc TestRun(t *testing.T) {\n\tif run(nil, io.Discard, io.Discard) != 0 {\n\t\tt.Fatal(\"run failed\")\n\t}\n}\n")
+			}
 		case markerQuestions:
 			files["design-questions.md"] = []byte("What should the flag be called?\n")
 		case markerNeedsDesign, markerNeedsTriage:
@@ -1063,97 +1367,96 @@ type reviewRun struct {
 	scratchOK bool
 }
 
-// review is the scripted code reviewer: it refuses pre-existing scratch,
-// exports the pinned candidate (and optionally the initial source) into a
-// fresh private scratch, runs owned test processes there, removes the
-// scratch and verifies it absent, then publishes only review.md. The
-// returned tree is the checkout's visible files after the processes ended.
+// review is the scripted code reviewer: in a pinned checkout of its base
+// it runs the fixed verification helper once (the helper refuses
+// pre-existing scratch, exports the pinned candidate into fresh private
+// scratch, runs its scripted processes there, removes the scratch and
+// verifies it absent), its execution is recorded as one top-level Codex
+// command record in the task's log, and it publishes only review.md with
+// the receipt's exits, coverage and digest. The returned tree is the
+// checkout's visible files after the processes ended.
 func (r *devRig) review(act devAct, doc devDispatchDoc, base map[string][]byte, task string) map[string][]byte {
-	co := r.t.TempDir()
-	for p, b := range base {
-		if err := os.WriteFile(filepath.Join(co, p), b, 0o644); err != nil {
-			r.t.Fatal(err)
-		}
+	co := physicalTempDir(r.t)
+	pinReviewCheckout(r.t, co, r.f.plane.hub, plumbing.NewHash(doc.Base), base)
+	candidate := strings.Fields(goalField(doc.Goal, "candidate_commit") + " x")[0]
+	initial := goalField(doc.Goal, "initial_source_commit")
+	run := reviewRun{task: task, exits: map[string]int{}}
+	argv := r.d.helper.argv(task, candidate, initial)
+	if act.alter == "cross-task" {
+		argv = r.d.helper.argv(hexID("t_", 99), candidate, initial)
 	}
-	manifest := func() string {
-		var lines []string
-		filepath.WalkDir(co, func(p string, e fs.DirEntry, err error) error {
-			if err == nil && e.Type().IsRegular() {
-				b, _ := os.ReadFile(p)
-				rel, _ := filepath.Rel(co, p)
-				lines = append(lines, filepath.ToSlash(rel)+" "+sha256Hex(b))
-			}
-			return nil
-		})
-		sort.Strings(lines)
-		return strings.Join(lines, "\n")
+	var out string
+	var rec DevReviewRun
+	ran := act.alter != "prose-only" && act.alter != "no-helper"
+	if ran {
+		env := reviewEnv{cwd: co, clock: r.f.clock, launcher: &fakeLauncher{script: r.reviewGo.script}, path: "/usr/bin:/bin"}
+		if r.realHelper != "" {
+			env = reviewEnv{cwd: co, clock: newOffsetClock(r.f.clock), launcher: ExecLauncher{}, path: r.realHelper}
+		}
+		var code int
+		out, _, code = verifyHelperRun(env, argv)
+		if c, ok := env.clock.(*offsetClock); ok {
+			c.settle()
+		}
+		if err := json.Unmarshal([]byte(out), &rec); err != nil {
+			r.t.Fatalf("the helper printed no receipt: %v\n%s", err, out)
+		}
+		r.helperOut[task], r.receipts[task] = out, rec
+		if rec.ScratchCreated {
+			run.exports = append(run.exports, "after")
+		}
+		if c := commandNamed(rec.Commands, "go_test"); c != nil {
+			run.exits["after/test"] = c.Exit
+		}
+		if c := commandNamed(rec.Commands, "go_test_cover"); c != nil {
+			run.exits["after/cover"] = c.Exit
+		}
+		run.scratchOK = rec.ScratchRemoved
+		command := "/bin/bash -lc '" + strings.Join(argv, " ") + "'"
+		switch act.alter {
+		case "wrapped":
+			command = "cd " + co + " && " + strings.Join(argv, " ")
+		}
+		log := codexLog(command, out, code)
+		switch act.alter {
+		case "start-only":
+			lines := strings.SplitAfter(string(log), "\n")
+			log = []byte(strings.Join(append(lines[:4], lines[5:]...), ""))
+		case "nested":
+			// The receipt only inside an agent message: never a record.
+			log = []byte(codexRecord(map[string]any{"type": "item.completed", "item": map[string]any{"id": "item_9", "type": "agent_message",
+				"text": string(codexLog(command, out, code))}}))
+		case "split-record":
+			lines := strings.SplitAfter(string(log), "\n")
+			half := len(lines[4]) / 2
+			log = []byte(strings.Join(lines[:4], "") + lines[4][:half] + "\nstderr noise\n" + lines[4][half:] + strings.Join(lines[5:], ""))
+		}
+		r.reviewLogs[task] = log
 	}
 	scratch := filepath.Join(co, reviewScratch, task)
-	if _, err := os.Lstat(filepath.Join(co, reviewScratch)); err == nil {
-		r.t.Fatal("pre-existing review scratch")
-	}
-	initial := manifest()
-	run := reviewRun{task: task, exits: map[string]int{}}
-	exports := map[string]map[string][]byte{"after": base}
 	if act.alter == "before-export" {
-		seed := map[string][]byte{}
-		for p, f := range r.d.trees[r.d.state.InitialCommit] {
-			seed[p] = f.Content
-		}
-		exports["before"] = seed
-	}
-	for _, name := range []string{"before", "after"} {
-		files, ok := exports[name]
-		if !ok {
-			continue
-		}
-		dir := filepath.Join(scratch, name)
+		// The reviewer's own optional before/ export after the helper, with
+		// its own cleanup.
+		dir := filepath.Join(scratch, "before")
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			r.t.Fatal(err)
 		}
-		for p, b := range files {
-			if err := os.WriteFile(filepath.Join(dir, p), b, 0o644); err != nil {
+		for p, f := range r.d.trees[r.d.state.InitialCommit] {
+			if err := os.WriteFile(filepath.Join(dir, p), f.Content, 0o600); err != nil {
 				r.t.Fatal(err)
 			}
 		}
-		for p, b := range files {
-			if got, err := os.ReadFile(filepath.Join(dir, p)); err != nil || !bytes.Equal(got, b) {
-				r.t.Fatalf("%s export of %s does not match the pinned commit", name, p)
-			}
-		}
-		run.exports = append(run.exports, name)
-		// The owned test processes: the plain run and the coverage run.
-		for _, c := range []struct{ label, script string }{
-			{"test", "test -f main.go && test -f main_test.go"},
-			{"cover", "test -f main.go && printf 'mode: set\\n' > ../coverage.out"},
-		} {
-			cmd := exec.Command("sh", "-c", c.script)
-			cmd.Dir = dir
-			err := cmd.Run()
-			code := 0
-			if ee, ok := err.(*exec.ExitError); ok {
-				code = ee.ExitCode()
-			} else if err != nil {
-				r.t.Fatal(err)
-			}
-			if cmd.ProcessState == nil || !cmd.ProcessState.Exited() {
-				r.t.Fatal("a review process did not exit")
-			}
-			run.exits[name+"/"+c.label] = code
-		}
-	}
-	if act.alter != "scratch" {
+		run.exports = append([]string{"before"}, run.exports...)
 		if err := os.RemoveAll(filepath.Join(co, reviewScratch)); err != nil {
 			r.t.Fatal(err)
 		}
-		_, err := os.Lstat(filepath.Join(co, reviewScratch))
-		run.scratchOK = os.IsNotExist(err)
-		if manifest() != initial {
-			r.t.Fatal("the review changed the candidate checkout")
-		}
 	}
-	candidate := goalField(doc.Goal, "candidate_commit")
-	candidate = strings.Fields(candidate + " x")[0]
+	if act.alter == "scratch" {
+		if err := os.MkdirAll(filepath.Join(scratch, "after"), 0o700); err != nil {
+			r.t.Fatal(err)
+		}
+		os.WriteFile(filepath.Join(scratch, "after", "main.go"), base["main.go"], 0o600)
+	}
 	var rep strings.Builder
 	fmt.Fprintf(&rep, "# Review\n\nReviewed candidate: %s\n", candidate)
 	for _, p := range devSourceFiles {
@@ -1162,10 +1465,28 @@ func (r *devRig) review(act devAct, doc devDispatchDoc, base map[string][]byte, 
 		}
 		fmt.Fprintf(&rep, "Source sha256: %s %s\n", p, sha256Hex(base[p]))
 	}
+	scratchPath := filepath.Join(co, reviewScratch, task)
+	if rec.Scratch != "" {
+		scratchPath = rec.Scratch
+	}
 	fmt.Fprintf(&rep, "Verification exit %d: go test ./...\n", run.exits["after/test"])
-	fmt.Fprintf(&rep, "Verification exit %d: go test -coverprofile=%s/%s/coverage.out ./...\n", run.exits["after/cover"], reviewScratch, task)
-	rep.WriteString("Coverage: 91.5% of statements in ./...\n")
+	fmt.Fprintf(&rep, "Verification exit %d: go test -coverprofile=%s/coverage.out ./...\n", run.exits["after/cover"], scratchPath)
+	percent := "91.5"
+	if rec.Coverage != nil {
+		percent = rec.Coverage.Percent
+	}
+	fmt.Fprintf(&rep, "Coverage: %s%% of the changed statements (the helper's derivation)\n", percent)
 	fmt.Fprintf(&rep, "Cleanup: scratch removed and verified absent (%t)\n", run.scratchOK)
+	switch {
+	case act.alter == "prose-only":
+		rep.WriteString("Reviewer run sha256: " + sha256Hex([]byte("I ran the tests and they passed.\n")) + "\n")
+	case act.alter == "bad-hash":
+		rep.WriteString("Reviewer run sha256: " + strings.Repeat("0", 64) + "\n")
+	case ran:
+		rep.WriteString("Reviewer run sha256: " + sha256Hex([]byte(out)) + "\n")
+	default:
+		rep.WriteString("The verification helper could not start: no execution evidence exists.\n")
+	}
 	marker := act.marker
 	if act.alter == "bad-report" {
 		marker = markerBlocked
@@ -1176,24 +1497,27 @@ func (r *devRig) review(act devAct, doc devDispatchDoc, base map[string][]byte, 
 	}
 	r.reviews = append(r.reviews, run)
 	// The publication: every visible file once the processes ended.
-	out := map[string][]byte{}
+	pub := map[string][]byte{}
 	filepath.WalkDir(co, func(p string, e fs.DirEntry, err error) error {
+		if err == nil && e.IsDir() && e.Name() == ".git" {
+			return fs.SkipDir
+		}
 		if err == nil && e.Type().IsRegular() {
 			b, _ := os.ReadFile(p)
 			rel, _ := filepath.Rel(co, p)
-			out[filepath.ToSlash(rel)] = b
+			pub[filepath.ToSlash(rel)] = b
 		}
 		return nil
 	})
 	if act.alter == "edit-main" {
-		out["main.go"] = []byte("package main\n\nfunc main() { println(9) }\n")
+		pub["main.go"] = []byte("package main\n\nfunc main() { println(9) }\n")
 	}
-	return out
+	return pub
 }
 
 // writeNestedCommit stores a commit of files (slash paths make subtrees)
 // with parent into st.
-func writeNestedCommit(t *testing.T, st *memory.Storage, files map[string][]byte, parent plumbing.Hash) plumbing.Hash {
+func writeNestedCommit(t testing.TB, st *memory.Storage, files map[string][]byte, parent plumbing.Hash) plumbing.Hash {
 	t.Helper()
 	var build func(prefix string) plumbing.Hash
 	build = func(prefix string) plumbing.Hash {
@@ -1266,27 +1590,56 @@ func (r *devRig) evidence(name string) []byte {
 	return b
 }
 
-// execution reads dev-execution.json.
-func (r *devRig) execution() DevExecution {
+// data decodes an envelope's data into v, requiring this run's schema
+// envelope.
+func (r *devRig) data(name string, v any) error {
 	r.t.Helper()
-	var ex DevExecution
-	if err := json.Unmarshal(r.evidence(DevExecutionFile), &ex); err != nil {
-		r.t.Fatal(err)
+	var env struct {
+		Schema string          `json:"schema"`
+		RunID  string          `json:"run_id"`
+		Data   json.RawMessage `json:"data"`
 	}
-	return ex
+	if err := json.Unmarshal(r.evidence(name), &env); err != nil {
+		return err
+	}
+	if !strings.HasPrefix(env.Schema, "callsheet-dev-full-") || env.RunID != r.d.s.runID {
+		return fmt.Errorf("%s is not this run's envelope", name)
+	}
+	return json.Unmarshal(env.Data, v)
 }
 
-// cleanupRecord reads cleanup.json.
+// report reads the attempt's report.json.
+func (r *devRig) report() DevReport {
+	r.t.Helper()
+	var rep DevReport
+	if err := json.Unmarshal(r.evidence("report.json"), &rep); err != nil {
+		r.t.Fatal(err)
+	}
+	return rep
+}
+
+// manifest reads the attempt's manifest.json.
+func (r *devRig) manifest() DevManifest {
+	r.t.Helper()
+	var m DevManifest
+	if err := json.Unmarshal(r.evidence(devManifestFile), &m); err != nil {
+		r.t.Fatal(err)
+	}
+	return m
+}
+
+// cleanupRecord reads cleanup.json's data.
 func (r *devRig) cleanupRecord() DevCleanup {
 	r.t.Helper()
-	var c DevCleanup
+	var c devEnvelope[DevCleanup]
 	if err := json.Unmarshal(r.evidence("cleanup.json"), &c); err != nil {
 		r.t.Fatal(err)
 	}
-	return c
+	return c.Data
 }
 
-// expect runs the attempt and requires its exit and stop code.
+// expect runs the attempt and requires its exit and stop code. A passing
+// attempt's own report is PASS and its offline check repeats it.
 func (r *devRig) expect(code int, stop string) {
 	r.t.Helper()
 	got := r.run()
@@ -1295,11 +1648,15 @@ func (r *devRig) expect(code int, stop string) {
 		if r.d != nil {
 			name = r.d.stopCode + ": " + r.d.stopReason
 		}
-		r.t.Fatalf("exit %d want %d, stop %q want %q (%s); tasks %d, acts %d, stage %s, codes %v\nstderr: %s",
-			got, code, name, stop, name, r.taskCount(), r.i, r.stage, r.codes, r.f.stderr.String())
+		detail := ""
+		if b, err := os.ReadFile(filepath.Join(r.f.evidence, "report.txt")); err == nil {
+			detail = string(b)
+		}
+		r.t.Fatalf("exit %d want %d, stop %q want %q (%s); tasks %d, acts %d, stage %s, codes %v\nstderr: %s\nreport:\n%s",
+			got, code, name, stop, name, r.taskCount(), r.i, r.stage, r.codes, r.f.stderr.String(), detail)
 	}
-	if code == 3 && r.d.s.ev.failure() != nil {
-		r.t.Fatalf("an executed attempt has an evidence failure: %v", r.d.s.ev.failure())
+	if code == 0 && (r.d.s.ev.failure() != nil || r.d.probe == nil && r.report().Result != ResultPass) {
+		r.t.Fatalf("a passing attempt has an evidence failure or no PASS report: %v", r.d.s.ev.failure())
 	}
 }
 

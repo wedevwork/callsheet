@@ -867,6 +867,31 @@ func (e *events) awaitAck(t testing.TB, minSession, k int) {
 	}
 }
 
+// awaitArmedAfter waits until a session numbered minSession or later
+// armed its periodic heartbeat timer for instant at after a request later
+// than k (its latest arming): a successor report's exchange completed and
+// replaced request k's arming at the same instant.
+func (e *events) awaitArmedAfter(t testing.TB, minSession, k int, at time.Time) {
+	t.Helper()
+	deadline := time.After(testWait)
+	for {
+		e.armMu.Lock()
+		sig := e.armSig
+		for s, ev := range e.armed {
+			if s >= minSession && ev.acks > k && ev.at.Equal(at) {
+				e.armMu.Unlock()
+				return
+			}
+		}
+		e.armMu.Unlock()
+		select {
+		case <-sig:
+		case <-deadline:
+			t.Fatalf("no heartbeat after b%d armed its timer for %v", k, at)
+		}
+	}
+}
+
 // awaitHeartbeatArmed waits until a session numbered minSession or later
 // armed its periodic heartbeat timer for exactly instant at after request
 // k's exchange completed (that session's latest arming): no exchange is

@@ -89,7 +89,7 @@ func errorsJoin(a, b error) error {
 }
 
 // readJSON decodes a bundle file into a generic value (numbers kept).
-func readJSON(t *testing.T, path string) map[string]any {
+func readJSON(t testing.TB, path string) map[string]any {
 	t.Helper()
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -105,7 +105,7 @@ func readJSON(t *testing.T, path string) map[string]any {
 }
 
 // writeJSONFile replaces a bundle file with v.
-func writeJSONFile(t *testing.T, path string, v any) {
+func writeJSONFile(t testing.TB, path string, v any) {
 	t.Helper()
 	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
@@ -117,7 +117,7 @@ func writeJSONFile(t *testing.T, path string, v any) {
 }
 
 // editJSON edits a JSON document of the bundle in place.
-func editJSON(t *testing.T, bundle, rel string, f func(m map[string]any)) {
+func editJSON(t testing.TB, bundle, rel string, f func(m map[string]any)) {
 	t.Helper()
 	p := filepath.Join(bundle, filepath.FromSlash(rel))
 	m := readJSON(t, p)

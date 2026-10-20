@@ -13,4 +13,6 @@ Each workflow task comes from `{{REALE2E}} dev-next --run {{RUNTIME}}`:
 
 After each dispatch, report the admitted task with `{{REALE2E}} dev-observe --run {{RUNTIME}} --ordinal N --task ID`, then start exactly one harness-managed background command `{{REALE2E}} dev-wait-task --run {{RUNTIME}} --task ID --ordinal N`. No `&`, setsid, redirect, pipe or detached shell. When its completion notification arrives, consume it with one task_show of that task ID before anything else, and only then ask `dev-next` for a successor. A lost dispatch reply is recovered with task_ls: exactly one matching task, never a redispatch.
 
+Callsheet tools: this exercise permits exactly these nine Callsheet MCP tools: dispatch, task_ls, task_show, task_logs, task_cancel, ws_status, ws_diff, ws_push and ws_pull. Every other Callsheet tool is forbidden. task_wait is forbidden in this exercise: the shared playbook's task_wait fallback for an unqualified wake does not apply, and an unqualified wake ends the phase. dispatch never takes a wait. ws_push is only the seed push above, before the first dispatch. task_cancel is only for this attempt's own dispatched tasks when the attempt stops.
+
 A tool denial stops the attempt. Do not widen permissions or edit any configuration. At most one workflow task is active. This exercise cannot report a verified PASS.

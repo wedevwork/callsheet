@@ -165,23 +165,18 @@ func BenchmarkMCPCodec(b *testing.B) {
 			{toolWsDiff, json.RawMessage(`{"name":"alpha","base":"empty","target":"main",` + cont + `}`), true},
 			{toolWsDiff, json.RawMessage(`{` + task + `,"base":"empty"}`), false},
 		}
+		// The handlers' own argument validators (internal/contract, design
+		// 12a-dev-flow-verify: shared with the offline verifier).
 		check := func(tool string, raw json.RawMessage) error {
-			if tool == toolWsPull {
-				var a pullArgs
-				if err := decodeArgs(raw, &a); err != nil {
-					return err
-				}
-				_, _, err := a.request()
-				return err
+			var err error
+			switch tool {
+			case toolWsPull:
+				_, err = contract.ParseWsPullArgs(raw, "linux")
+			case toolWsStatus:
+				_, err = contract.ParseWsStatusArgs(raw)
+			default:
+				_, err = contract.ParseWsDiffArgs(raw)
 			}
-			var a wsFormArgs
-			if err := decodeArgs(raw, &a); err != nil {
-				return err
-			}
-			if _, err := a.form(tool, tool == toolWsDiff); err != nil {
-				return err
-			}
-			_, _, _, _, err := a.paging().page()
 			return err
 		}
 		b.ReportAllocs()

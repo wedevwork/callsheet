@@ -639,21 +639,3 @@ func (sc *jsonScanner) number() error {
 	}
 	return nil
 }
-
-// containsNull reports whether a validated JSON value holds a null
-// anywhere (outside strings).
-func containsNull(raw []byte) bool {
-	in := false
-	for i := 0; i < len(raw); i++ {
-		c := raw[i]
-		switch {
-		case in && c == '\\':
-			i++
-		case c == '"':
-			in = !in
-		case !in && c == 'n' && bytes.HasPrefix(raw[i:], []byte("null")):
-			return true
-		}
-	}
-	return false
-}

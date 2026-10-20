@@ -265,12 +265,23 @@ func TestContainerDriverContract(t *testing.T) {
 			{
 				fail:   "-p=1",
 				phase:  "failed before container setup: test -race",
-				errSub: "stage test FAILED: test -race failed: go test -race -p=1 -count=1 -timeout=180s ./...",
+				errSub: "stage test FAILED: test -race failed: " + wantTestRace,
 				prefix: []string{
 					"go test -count=1 -timeout=180s ./...",
-					"go test -race -p=1 -count=1 -timeout=180s ./...",
+					wantTestRace,
 				},
 				log: "test--race.log",
+			},
+			{
+				fail:   "-timeout=360s",
+				phase:  "failed before container setup: test -race reale2e",
+				errSub: "stage test FAILED: test -race reale2e failed: " + wantTestRaceReale2e,
+				prefix: []string{
+					"go test -count=1 -timeout=180s ./...",
+					wantTestRace,
+					wantTestRaceReale2e,
+				},
+				log: "test--race-reale2e.log",
 			},
 		} {
 			f := &fakeRunner{fail: c.fail}
