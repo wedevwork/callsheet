@@ -106,13 +106,18 @@ func TestRunWrapper(t *testing.T) {
 	if code := run([]string{"stress-packages-cpu"}, &out, &errOut, fake, opts); code != 0 || len(calls) != 9 || !strings.Contains(out.String(), "devcheck: stage stress-packages-cpu ok") {
 		t.Fatalf("stress-packages-cpu = %d, calls %q, %s", code, calls, errOut.String())
 	}
-	for i, pkg := range []string{"./internal/contract", "./internal/mcpqual", "./internal/workspace"} {
+	// Design 12a-mcpqual-stress-budget: only the mcpqual group has
+	// -timeout=8m; contract and workspace keep -timeout=6m.
+	for i, want := range [][]string{
+		{"go test -race -count=20 -cpu=1 -timeout=6m ./internal/contract", "go test -race -count=20 -cpu=2 -timeout=6m ./internal/contract", "go test -race -count=20 -cpu=4 -timeout=6m ./internal/contract"},
+		{"go test -race -count=20 -cpu=1 -timeout=8m ./internal/mcpqual", "go test -race -count=20 -cpu=2 -timeout=8m ./internal/mcpqual", "go test -race -count=20 -cpu=4 -timeout=8m ./internal/mcpqual"},
+		{"go test -race -count=20 -cpu=1 -timeout=6m ./internal/workspace", "go test -race -count=20 -cpu=2 -timeout=6m ./internal/workspace", "go test -race -count=20 -cpu=4 -timeout=6m ./internal/workspace"},
+	} {
 		var got []string
 		for _, c := range calls[3*i : 3*i+3] {
 			got = append(got, strings.Join(c, " "))
 		}
 		slices.Sort(got)
-		want := []string{"go test -race -count=20 -cpu=1 -timeout=6m " + pkg, "go test -race -count=20 -cpu=2 -timeout=6m " + pkg, "go test -race -count=20 -cpu=4 -timeout=6m " + pkg}
 		if !slices.Equal(got, want) {
 			t.Fatalf("stress-packages-cpu group %d = %q, want %q", i+1, got, want)
 		}

@@ -1488,7 +1488,9 @@ func TestMCPEnrollmentCIPolicy(t *testing.T) {
 				}
 				var want []string
 				for _, n := range []string{"1", "2", "4"} {
-					want = append(want, "go test -race -count=20 -cpu="+n+" -timeout=6m ./internal/mcpqual")
+					// Design 12a-mcpqual-stress-budget: the mcpqual
+					// stress binaries alone have -timeout=8m.
+					want = append(want, "go test -race -count=20 -cpu="+n+" -timeout=8m ./internal/mcpqual")
 				}
 				if !slices.Equal(mcpqualArgv, want) || live(steps) != "" {
 					t.Fatalf("%s mcpqual stress %q", goos, mcpqualArgv)

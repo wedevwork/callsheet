@@ -275,8 +275,28 @@ func TestControlPolicy(t *testing.T) {
 			for _, sh := range shards {
 				for _, st := range slices.Concat(append([][]Step{sh.Steps}, sh.CPUGroups...)...) {
 					a := strings.Join(st.Argv, " ")
-					if !strings.Contains(a, "-race") || !strings.Contains(a, "-count=20") || !strings.Contains(a, "-timeout=6m") {
+					if !strings.Contains(a, "-race") || !strings.Contains(a, "-count=20") {
 						t.Fatalf("%s %s: %s", goos, sh.Name, a)
+					}
+					// Design 12a-mcpqual-stress-budget: exactly one
+					// timeout flag, -timeout=8m exactly when the step's
+					// package is ./internal/mcpqual, -timeout=6m
+					// otherwise; neither is accepted in place of the other.
+					var timeouts, pkgs []string
+					for _, arg := range st.Argv {
+						switch {
+						case strings.HasPrefix(arg, "-timeout"):
+							timeouts = append(timeouts, arg)
+						case strings.HasPrefix(arg, "./"):
+							pkgs = append(pkgs, arg)
+						}
+					}
+					want := "-timeout=6m"
+					if slices.Equal(pkgs, []string{"./internal/mcpqual"}) {
+						want = "-timeout=8m"
+					}
+					if len(timeouts) != 1 || timeouts[0] != want {
+						t.Fatalf("%s %s: timeout flags %q, want exactly %s: %s", goos, sh.Name, timeouts, want, a)
 					}
 				}
 				// Design 06a-perf, sidecar CPU4 since design
@@ -288,9 +308,10 @@ func TestControlPolicy(t *testing.T) {
 				}
 			}
 		}
-		// Hosted budget policy: the count, the per-binary timeout and the
+		// Hosted budget policy: the count, the per-binary timeouts (the
+		// mcpqual one since design 12a-mcpqual-stress-budget) and the
 		// concurrency are fixed; no plane fallback wave is applied.
-		if StressCount != 20 || stressTestTimeout != "6m" || maxConcurrentCPU != 3 || len(stressWaves) != 0 {
+		if StressCount != 20 || stressTestTimeout != "6m" || stressMcpqualTestTimeout != "8m" || maxConcurrentCPU != 3 || len(stressWaves) != 0 {
 			t.Fatal("the stress budget policy changed")
 		}
 		// The complete suite (with tests/function) keeps its shared 180 s
