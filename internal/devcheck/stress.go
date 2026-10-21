@@ -82,7 +82,8 @@ var (
 	// execution order. Each left the combined -cpu=1,2,4 invocation for
 	// three single-setting invocations, each StressCount times at one
 	// setting: the same 60 repetitions per test, each binary with its own
-	// 6-minute limit. Since the headroom fixes they ran in the packages
+	// limit (stressPackageTimeout: 6 minutes, 8 minutes for mcpqual since
+	// design 12a-mcpqual-stress-budget). Since the headroom fixes they ran in the packages
 	// shard after the combined invocation; the stress worker rebalance
 	// (2026-10-07) moved them unchanged to the packages-cpu shard, its own
 	// stage and CI worker per platform, so the macOS packages worker no
@@ -178,8 +179,15 @@ var (
 )
 
 const (
-	// stressTestTimeout bounds each test binary (go test -timeout).
+	// stressTestTimeout bounds each test binary (go test -timeout) except
+	// the mcpqual per-CPU binaries (stressMcpqualTestTimeout).
 	stressTestTimeout = "6m"
+	// stressMcpqualTestTimeout bounds each ./internal/mcpqual per-CPU stress
+	// binary (design 12a-mcpqual-stress-budget): its macOS CPU1 binary hit
+	// the 6-minute limit at 360.2 s with CPU2 and CPU4 at 346.0 s and
+	// 342.0 s (main run 39546490440), without a package cost regression.
+	// It is a static plan decision: no option or environment overrides it.
+	stressMcpqualTestTimeout = "8m"
 	// stressWatchdog bounds one stress command, compilation included: each
 	// shard stage has its own, and "stress" shares one across all shards.
 	stressWatchdog = 15 * time.Minute
@@ -243,9 +251,20 @@ func stressNodeSelector() string {
 	return stressSelector(stressNodeFunctionTests) + "/" + stressSelector(stressNodeSubtests)
 }
 
-// stressFlags returns the fixed go test prefix for one CPU list.
-func stressFlags(cpus string) []string {
-	return []string{"go", "test", "-race", "-count=" + strconv.Itoa(StressCount), "-cpu=" + cpus, "-timeout=" + stressTestTimeout}
+// stressFlags returns the fixed go test prefix for one CPU list and one
+// test-binary timeout.
+func stressFlags(cpus, timeout string) []string {
+	return []string{"go", "test", "-race", "-count=" + strconv.Itoa(StressCount), "-cpu=" + cpus, "-timeout=" + timeout}
+}
+
+// stressPackageTimeout is the test-binary timeout of a single-package
+// stress step: stressMcpqualTestTimeout for exactly ./internal/mcpqual,
+// stressTestTimeout for every other package.
+func stressPackageTimeout(pkg string) string {
+	if pkg == "./internal/mcpqual" {
+		return stressMcpqualTestTimeout
+	}
+	return stressTestTimeout
 }
 
 func stressSupported(goos string) error {
@@ -285,7 +304,7 @@ func StressShards(goos string) ([]StressShard, error) {
 		steps := make([]Step, 0, len(cpus))
 		for _, c := range cpus {
 			steps = append(steps, Step{Name: "stress " + name + " cpu" + strconv.Itoa(c), Env: env(),
-				Argv: append(stressFlags(strconv.Itoa(c)), pkg)})
+				Argv: append(stressFlags(strconv.Itoa(c), stressPackageTimeout(pkg)), pkg)})
 		}
 		return steps
 	}
@@ -295,7 +314,7 @@ func StressShards(goos string) ([]StressShard, error) {
 	}
 	return []StressShard{
 		{Name: "packages", Steps: []Step{
-			{Name: "stress packages", Env: env(), Argv: append(stressFlags(stressCPUList()), stressPackages...)},
+			{Name: "stress packages", Env: env(), Argv: append(stressFlags(stressCPUList(), stressTestTimeout), stressPackages...)},
 		}},
 		{Name: "packages-cpu", CPUGroups: groups},
 		{Name: "plane-cpu1", Parallel: true, Steps: perCPU("plane", stressPlanePackage, []int{1})},
@@ -306,11 +325,11 @@ func StressShards(goos string) ([]StressShard, error) {
 		{Name: "processgroup", Parallel: true, Steps: perCPU("processgroup", stressProcessGroupPackage, stressCPUs)},
 		{Name: "functions", Steps: []Step{
 			{Name: "stress function", Env: env(),
-				Argv: append(stressFlags(stressCPUList()), "-run="+stressSelector(stressFunctionTests), stressFunctionPackage)},
+				Argv: append(stressFlags(stressCPUList(), stressTestTimeout), "-run="+stressSelector(stressFunctionTests), stressFunctionPackage)},
 			{Name: "stress plane function", Env: env(),
-				Argv: append(stressFlags(stressCPUList()), "-run="+stressPlaneSelector(), stressFunctionPackage)},
+				Argv: append(stressFlags(stressCPUList(), stressTestTimeout), "-run="+stressPlaneSelector(), stressFunctionPackage)},
 			{Name: "stress node function", Env: env(),
-				Argv: append(stressFlags(stressCPUList()), "-run="+stressNodeSelector(), stressFunctionPackage)},
+				Argv: append(stressFlags(stressCPUList(), stressTestTimeout), "-run="+stressNodeSelector(), stressFunctionPackage)},
 		}},
 	}, nil
 }

@@ -38,15 +38,16 @@ import (
 // and ./internal/mcpqual and ./internal/workspace likewise by the workspace
 // and mcpqual headroom fix (those three groups in the packages-cpu shard
 // since the stress worker rebalance);
-// the function commands are unchanged.
+// the function commands are unchanged. Design 12a-mcpqual-stress-budget
+// gives only the three mcpqual commands -timeout=8m.
 const (
 	speedPackages      = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/workspacetransfer ./internal/taskworkspace ./internal/taskpublication"
 	speedContract1     = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/contract"
 	speedContract2     = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/contract"
 	speedContract4     = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/contract"
-	speedMcpqual1      = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/mcpqual"
-	speedMcpqual2      = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/mcpqual"
-	speedMcpqual4      = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/mcpqual"
+	speedMcpqual1      = "go test -race -count=20 -cpu=1 -timeout=8m ./internal/mcpqual"
+	speedMcpqual2      = "go test -race -count=20 -cpu=2 -timeout=8m ./internal/mcpqual"
+	speedMcpqual4      = "go test -race -count=20 -cpu=4 -timeout=8m ./internal/mcpqual"
 	speedWorkspace1    = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/workspace"
 	speedWorkspace2    = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/workspace"
 	speedWorkspace4    = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/workspace"

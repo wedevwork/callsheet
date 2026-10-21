@@ -37,7 +37,9 @@ import (
 // moving those three groups unchanged into the group-only packages-cpu
 // shard, leaving the packages shard with the combined invocation alone, and
 // design 12a-stress-sidecar-margin makes nine by moving sidecar CPU4 into
-// its own singleton shard);
+// its own singleton shard; design 12a-mcpqual-stress-budget gives only the
+// three ./internal/mcpqual binaries -timeout=8m, every other one keeping
+// -timeout=6m);
 // it is compared against StressShards and StressSteps, never derived from
 // them.
 const (
@@ -45,9 +47,9 @@ const (
 	wantStressContract1     = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/contract"
 	wantStressContract2     = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/contract"
 	wantStressContract4     = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/contract"
-	wantStressMcpqual1      = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/mcpqual"
-	wantStressMcpqual2      = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/mcpqual"
-	wantStressMcpqual4      = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/mcpqual"
+	wantStressMcpqual1      = "go test -race -count=20 -cpu=1 -timeout=8m ./internal/mcpqual"
+	wantStressMcpqual2      = "go test -race -count=20 -cpu=2 -timeout=8m ./internal/mcpqual"
+	wantStressMcpqual4      = "go test -race -count=20 -cpu=4 -timeout=8m ./internal/mcpqual"
 	wantStressWorkspace1    = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/workspace"
 	wantStressWorkspace2    = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/workspace"
 	wantStressWorkspace4    = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/workspace"
@@ -259,6 +261,30 @@ func TestStressPlan(t *testing.T) {
 		if err != nil || len(steps) != 22 || strings.Join(argvOf(steps), "|") != wantStressPlan || strings.Join(flat, "|") != wantStressPlan {
 			t.Fatalf("%s flattened = %v %v", goos, argvOf(steps), err)
 		}
+		// Design 12a-mcpqual-stress-budget: each command has exactly one
+		// timeout flag, -timeout=8m on the three mcpqual commands only and
+		// -timeout=6m on the other nineteen.
+		n8, n6 := 0, 0
+		for _, s := range steps {
+			var tf []string
+			for _, a := range s.Argv {
+				if strings.HasPrefix(a, "-timeout") {
+					tf = append(tf, a)
+				}
+			}
+			mcpqual := strings.HasPrefix(s.Name, "stress mcpqual cpu") && s.Argv[len(s.Argv)-1] == "./internal/mcpqual"
+			switch {
+			case len(tf) == 1 && tf[0] == "-timeout=8m" && mcpqual:
+				n8++
+			case len(tf) == 1 && tf[0] == "-timeout=6m" && !mcpqual:
+				n6++
+			default:
+				t.Fatalf("%s %s: timeout flags %q", goos, s.Name, tf)
+			}
+		}
+		if n8 != 3 || n6 != 19 {
+			t.Fatalf("%s: %d commands at 8m and %d at 6m, want 3 and 19", goos, n8, n6)
+		}
 		for i, name := range []string{"stress packages", "stress contract cpu1", "stress contract cpu2", "stress contract cpu4",
 			"stress mcpqual cpu1", "stress mcpqual cpu2", "stress mcpqual cpu4", "stress workspace cpu1", "stress workspace cpu2", "stress workspace cpu4", "stress plane cpu1", "stress plane cpu2", "stress plane cpu4", "stress sidecar cpu1", "stress sidecar cpu2",
 			"stress sidecar cpu4", "stress processgroup cpu1", "stress processgroup cpu2", "stress processgroup cpu4", "stress function", "stress plane function",
@@ -385,15 +411,20 @@ func TestStressPlan(t *testing.T) {
 type selection struct{ pkg, selector, cpu, count string }
 
 // normalize expands one argv display into its selection tuples and checks
-// the fixed race/timeout flags. It is written independently of stress.go.
-func normalize(t *testing.T, argv string) []selection {
+// the fixed race flag and exactly one -timeout flag, equal to timeout (a
+// different -timeout value is an unexpected argument). It is written
+// independently of stress.go: the historical selections pass "6m", and
+// current callers choose the timeout with wantTimeoutOf.
+func normalize(t *testing.T, argv, timeout string) []selection {
 	t.Helper()
 	f := strings.Fields(argv)
-	if len(f) < 7 || f[0] != "go" || f[1] != "test" || f[2] != "-race" || !slices.Contains(f, "-timeout=6m") {
-		t.Fatalf("not a race go test with the 6m timeout: %s", argv)
+	flag := "-timeout=" + timeout
+	if len(f) < 7 || f[0] != "go" || f[1] != "test" || f[2] != "-race" || !slices.Contains(f, flag) {
+		t.Fatalf("not a race go test with the %s timeout: %s", timeout, argv)
 	}
 	var count, sel string
 	var cpus, pkgs []string
+	timeouts := 0
 	for _, a := range f[3:] {
 		switch {
 		case strings.HasPrefix(a, "-count="):
@@ -402,7 +433,10 @@ func normalize(t *testing.T, argv string) []selection {
 			cpus = strings.Split(strings.TrimPrefix(a, "-cpu="), ",")
 		case strings.HasPrefix(a, "-run="):
 			sel = strings.TrimPrefix(a, "-run=")
-		case a == "-timeout=6m":
+		case a == flag:
+			if timeouts++; timeouts > 1 {
+				t.Fatalf("more than one %s in %s", flag, argv)
+			}
 		case strings.HasPrefix(a, "./"):
 			pkgs = append(pkgs, a)
 		default:
@@ -416,6 +450,49 @@ func normalize(t *testing.T, argv string) []selection {
 		}
 	}
 	return out
+}
+
+// TestStressPackageTimeout pins design 12a-mcpqual-stress-budget's timeout
+// selection: the two literal budgets, the exact-match override for
+// ./internal/mcpqual and the default for every other package string, and
+// stressFlags' use of the timeout it is given.
+func TestStressPackageTimeout(t *testing.T) {
+	if stressTestTimeout != "6m" || stressMcpqualTestTimeout != "8m" {
+		t.Fatalf("budgets %q and %q, want 6m and 8m", stressTestTimeout, stressMcpqualTestTimeout)
+	}
+	if got := stressPackageTimeout("./internal/mcpqual"); got != "8m" {
+		t.Fatalf("./internal/mcpqual timeout = %q, want 8m", got)
+	}
+	for _, pkg := range []string{"./internal/contract", "./internal/workspace", "./internal/mcp", "./internal/plane", "./internal/sidecar", "./internal/spikes/processgroup",
+		"./tests/function", "./internal/mcpqual/", "./internal/mcpqualx", "internal/mcpqual", "./internal/MCPQUAL", " ./internal/mcpqual", "./internal/mcpqual ", ""} {
+		if got := stressPackageTimeout(pkg); got != "6m" {
+			t.Fatalf("stressPackageTimeout(%q) = %q, want 6m", pkg, got)
+		}
+	}
+	if got := strings.Join(stressFlags("2", "8m"), " "); got != "go test -race -count=20 -cpu=2 -timeout=8m" {
+		t.Fatalf("stressFlags(2, 8m) = %s", got)
+	}
+	if got := strings.Join(stressFlags("1,2,4", "6m"), " "); got != "go test -race -count=20 -cpu=1,2,4 -timeout=6m" {
+		t.Fatalf("stressFlags(1,2,4, 6m) = %s", got)
+	}
+}
+
+// wantTimeoutOf is the -timeout value a current stress command must carry
+// (design 12a-mcpqual-stress-budget): "8m" exactly for a command whose only
+// package is ./internal/mcpqual, "6m" for every other command. It is
+// written independently of stress.go; the historical selections are not
+// passed through it.
+func wantTimeoutOf(argv string) string {
+	var pkgs []string
+	for _, a := range strings.Fields(argv) {
+		if strings.HasPrefix(a, "./") {
+			pkgs = append(pkgs, a)
+		}
+	}
+	if slices.Equal(pkgs, []string{"./internal/mcpqual"}) {
+		return "8m"
+	}
+	return "6m"
 }
 
 // TestStressShardUnion (UT-1) proves the shards' union is exactly the 02b
@@ -433,7 +510,7 @@ func normalize(t *testing.T, argv string) []selection {
 func TestStressShardUnion(t *testing.T) {
 	want := map[selection]int{}
 	for _, argv := range want02bSelection {
-		for _, s := range normalize(t, argv) {
+		for _, s := range normalize(t, argv, "6m") {
 			want[s]++
 		}
 	}
@@ -441,7 +518,7 @@ func TestStressShardUnion(t *testing.T) {
 		t.Fatalf("02b baseline has %d tuples", len(want))
 	}
 	for _, argv := range want03Additions {
-		for _, s := range normalize(t, argv) {
+		for _, s := range normalize(t, argv, "6m") {
 			if want[s] != 0 {
 				t.Fatalf("03 addition %v overlaps 02b", s)
 			}
@@ -452,7 +529,7 @@ func TestStressShardUnion(t *testing.T) {
 		t.Fatalf("03 selection has %d tuples", len(want))
 	}
 	for _, argv := range want04Additions {
-		for _, s := range normalize(t, argv) {
+		for _, s := range normalize(t, argv, "6m") {
 			if want[s] != 0 {
 				t.Fatalf("04 addition %v overlaps", s)
 			}
@@ -463,7 +540,7 @@ func TestStressShardUnion(t *testing.T) {
 		t.Fatalf("04 selection has %d tuples", len(want))
 	}
 	for _, argv := range want07aAdditions {
-		for _, s := range normalize(t, argv) {
+		for _, s := range normalize(t, argv, "6m") {
 			if want[s] != 0 {
 				t.Fatalf("07a addition %v overlaps", s)
 			}
@@ -474,7 +551,7 @@ func TestStressShardUnion(t *testing.T) {
 		t.Fatalf("07a selection has %d tuples", len(want))
 	}
 	for _, argv := range want07bAdditions {
-		for _, s := range normalize(t, argv) {
+		for _, s := range normalize(t, argv, "6m") {
 			if want[s] != 0 {
 				t.Fatalf("07b addition %v overlaps", s)
 			}
@@ -485,7 +562,7 @@ func TestStressShardUnion(t *testing.T) {
 		t.Fatalf("07b selection has %d tuples", len(want))
 	}
 	for _, argv := range want09aAdditions {
-		for _, s := range normalize(t, argv) {
+		for _, s := range normalize(t, argv, "6m") {
 			if want[s] != 0 {
 				t.Fatalf("09a addition %v overlaps", s)
 			}
@@ -496,7 +573,7 @@ func TestStressShardUnion(t *testing.T) {
 		t.Fatalf("09a selection has %d tuples", len(want))
 	}
 	for _, argv := range want09bAdditions {
-		for _, s := range normalize(t, argv) {
+		for _, s := range normalize(t, argv, "6m") {
 			if want[s] != 0 {
 				t.Fatalf("09b addition %v overlaps", s)
 			}
@@ -507,7 +584,7 @@ func TestStressShardUnion(t *testing.T) {
 		t.Fatalf("09b selection has %d tuples", len(want))
 	}
 	for _, argv := range want10bAdditions {
-		for _, s := range normalize(t, argv) {
+		for _, s := range normalize(t, argv, "6m") {
 			if want[s] != 0 {
 				t.Fatalf("10b addition %v overlaps", s)
 			}
@@ -526,6 +603,7 @@ func TestStressShardUnion(t *testing.T) {
 		owner := map[selection]string{}
 		inGroup := map[selection]int{}
 		groupOf := map[selection]int{}
+		timeouts := map[string]int{}
 		for _, sh := range shards {
 			steps := slices.Clone(sh.Steps)
 			stepGroup := make([]int, len(steps))
@@ -536,7 +614,9 @@ func TestStressShardUnion(t *testing.T) {
 				}
 			}
 			for k, st := range steps {
-				for _, s := range normalize(t, strings.Join(st.Argv, " ")) {
+				argv := strings.Join(st.Argv, " ")
+				timeouts[wantTimeoutOf(argv)]++
+				for _, s := range normalize(t, argv, wantTimeoutOf(argv)) {
 					if prev, dup := owner[s]; dup {
 						t.Fatalf("%s: %v selected by both %s and %s", goos, s, prev, sh.Name)
 					}
@@ -548,6 +628,12 @@ func TestStressShardUnion(t *testing.T) {
 					}
 				}
 			}
+		}
+		// Design 12a-mcpqual-stress-budget: exactly the three mcpqual
+		// commands carry -timeout=8m and the other nineteen -timeout=6m
+		// (normalize has checked each command's one timeout flag).
+		if len(timeouts) != 2 || timeouts["8m"] != 3 || timeouts["6m"] != 19 {
+			t.Errorf("%s: commands per timeout %v, want 3 at 8m and 19 at 6m", goos, timeouts)
 		}
 		// The per-CPU groups hold exactly the three CPU settings of
 		// contract (group 1), mcpqual (group 2) and workspace (group 3), one
@@ -838,7 +924,7 @@ func TestStressFailFastRetainsLogs(t *testing.T) {
 		// fails the stage after its group's three have run, before the next
 		// group or shard. Aggregate counts are unchanged by the rebalance.
 		{"stress", "-cpu=4 -timeout=6m ./internal/contract", "stress contract cpu4", 4},
-		{"stress", "-cpu=2 -timeout=6m ./internal/mcpqual", "stress mcpqual cpu2", 7},
+		{"stress", "-cpu=2 -timeout=8m ./internal/mcpqual", "stress mcpqual cpu2", 7},
 		{"stress", "-cpu=1 -timeout=6m ./internal/workspace", "stress workspace cpu1", 10},
 		{"stress", "-cpu=1 -timeout=6m ./internal/plane", "stress plane cpu1", 11},
 		{"stress", "-cpu=2 -timeout=6m ./internal/plane", "stress plane cpu2", 13},
@@ -853,7 +939,7 @@ func TestStressFailFastRetainsLogs(t *testing.T) {
 		// and a failed group stops the stage after its three invocations.
 		{"stress-packages-cpu", "-cpu=1 -timeout=6m ./internal/contract", "stress contract cpu1", 3},
 		{"stress-packages-cpu", "-cpu=2 -timeout=6m ./internal/contract", "stress contract cpu2", 3},
-		{"stress-packages-cpu", "-cpu=4 -timeout=6m ./internal/mcpqual", "stress mcpqual cpu4", 6},
+		{"stress-packages-cpu", "-cpu=4 -timeout=8m ./internal/mcpqual", "stress mcpqual cpu4", 6},
 		{"stress-packages-cpu", "-cpu=2 -timeout=6m ./internal/workspace", "stress workspace cpu2", 9},
 		{"stress-plane-cpu1", "-cpu=1 ", "stress plane cpu1", 1},
 		{"stress-plane", "-cpu=4 ", "stress plane cpu4", 2},
@@ -1686,7 +1772,7 @@ func TestStressConcurrencyContract(t *testing.T) {
 			groups           [][]string
 		}{
 			{"-cpu=2 -timeout=6m ./internal/contract", "stress contract cpu2", "stress contract cpu4", [][]string{groupPackages, groupContract}},
-			{"-cpu=1 -timeout=6m ./internal/mcpqual", "stress mcpqual cpu1", "stress mcpqual cpu4", [][]string{groupPackages, groupContract, groupMcpqual}},
+			{"-cpu=1 -timeout=8m ./internal/mcpqual", "stress mcpqual cpu1", "stress mcpqual cpu4", [][]string{groupPackages, groupContract, groupMcpqual}},
 			{"-cpu=4 -timeout=6m ./internal/workspace", "stress workspace cpu4", "stress workspace cpu1", [][]string{groupPackages, groupContract, groupMcpqual, groupWorkspace}},
 			{"-cpu=1 -timeout=6m ./internal/plane", "stress plane cpu1", "", [][]string{groupPackages, groupContract, groupMcpqual, groupWorkspace, groupPlane1}},
 			{"-cpu=2 -timeout=6m ./internal/plane", "stress plane cpu2", "stress plane cpu4", [][]string{groupPackages, groupContract, groupMcpqual, groupWorkspace, groupPlane1, groupPlane}},
@@ -1712,7 +1798,7 @@ func TestStressConcurrencyContract(t *testing.T) {
 			groups           [][]string
 		}{
 			{"-cpu=4 -timeout=6m ./internal/contract", "stress contract cpu4", "stress contract cpu1", [][]string{groupContract}},
-			{"-cpu=1 -timeout=6m ./internal/mcpqual", "stress mcpqual cpu1", "stress mcpqual cpu4", [][]string{groupContract, groupMcpqual}},
+			{"-cpu=1 -timeout=8m ./internal/mcpqual", "stress mcpqual cpu1", "stress mcpqual cpu4", [][]string{groupContract, groupMcpqual}},
 			{"-cpu=2 -timeout=6m ./internal/workspace", "stress workspace cpu2", "stress workspace cpu4", [][]string{groupContract, groupMcpqual, groupWorkspace}},
 		} {
 			f := &fakeRunner{fail: c.fail}
@@ -2042,7 +2128,7 @@ func TestStressConcurrencyContract(t *testing.T) {
 			stage, fail, failedLog string
 			logs                   []string
 		}{
-			{"stress-packages-cpu", "-cpu=2 -timeout=6m ./internal/mcpqual", "stress-mcpqual-cpu2.log",
+			{"stress-packages-cpu", "-cpu=2 -timeout=8m ./internal/mcpqual", "stress-mcpqual-cpu2.log",
 				[]string{"stress-contract-cpu1.log", "stress-contract-cpu2.log", "stress-contract-cpu4.log", "stress-mcpqual-cpu1.log", "stress-mcpqual-cpu2.log", "stress-mcpqual-cpu4.log"}},
 			{"stress-plane-cpu1", "-cpu=1 ", "stress-plane-cpu1.log", []string{"stress-plane-cpu1.log"}},
 			{"stress-plane", "-cpu=2 ", "stress-plane-cpu2.log", []string{"stress-plane-cpu2.log", "stress-plane-cpu4.log"}},

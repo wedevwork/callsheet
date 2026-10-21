@@ -37,16 +37,18 @@ import (
 // workspace and mcpqual headroom fix ./internal/mcpqual and
 // ./internal/workspace into per-CPU groups of their own after it; the
 // stress worker rebalance moved the three groups into the packages-cpu
-// shard, leaving this flattened order unchanged.
+// shard, leaving this flattened order unchanged. Design
+// 12a-mcpqual-stress-budget gives only the three mcpqual binaries
+// -timeout=8m; every other binary keeps -timeout=6m.
 const (
 	hardeningStressCount     = 20
 	hardeningStressPackages  = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/workspacetransfer ./internal/taskworkspace ./internal/taskpublication"
 	hardeningStressContract1 = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/contract"
 	hardeningStressContract2 = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/contract"
 	hardeningStressContract4 = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/contract"
-	hardeningStressMcpqual1  = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/mcpqual"
-	hardeningStressMcpqual2  = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/mcpqual"
-	hardeningStressMcpqual4  = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/mcpqual"
+	hardeningStressMcpqual1  = "go test -race -count=20 -cpu=1 -timeout=8m ./internal/mcpqual"
+	hardeningStressMcpqual2  = "go test -race -count=20 -cpu=2 -timeout=8m ./internal/mcpqual"
+	hardeningStressMcpqual4  = "go test -race -count=20 -cpu=4 -timeout=8m ./internal/mcpqual"
 	hardeningStressWS1       = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/workspace"
 	hardeningStressWS2       = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/workspace"
 	hardeningStressWS4       = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/workspace"
@@ -172,7 +174,7 @@ func TestHardeningStress(t *testing.T) {
 		failOn, step string
 		calls        int
 	}{{"./internal/spikes/gittransport", "stress packages", 1}, {"-cpu=2 -timeout=6m ./internal/contract", "stress contract cpu2", 4},
-		{"-cpu=4 -timeout=6m ./internal/mcpqual", "stress mcpqual cpu4", 7}, {"-cpu=1 -timeout=6m ./internal/workspace", "stress workspace cpu1", 10},
+		{"-cpu=4 -timeout=8m ./internal/mcpqual", "stress mcpqual cpu4", 7}, {"-cpu=1 -timeout=6m ./internal/workspace", "stress workspace cpu1", 10},
 		{"-cpu=1 -timeout=6m ./internal/plane", "stress plane cpu1", 11},
 		{"-cpu=4 -timeout=6m ./internal/plane", "stress plane cpu4", 13}, {"-cpu=1 -timeout=6m ./internal/sidecar", "stress sidecar cpu1", 14},
 		{"-cpu=4 -timeout=6m ./internal/sidecar", "stress sidecar cpu4", 16},
@@ -193,7 +195,7 @@ func TestHardeningStress(t *testing.T) {
 		stage, failOn, step string
 		calls               int
 	}{{"stress-packages", "./internal/spikes/gittransport", "stress packages", 1}, {"stress-packages-cpu", "-cpu=2 -timeout=6m ./internal/contract", "stress contract cpu2", 3},
-		{"stress-packages-cpu", "-cpu=4 -timeout=6m ./internal/mcpqual", "stress mcpqual cpu4", 6}, {"stress-packages-cpu", "-cpu=1 -timeout=6m ./internal/workspace", "stress workspace cpu1", 9}} {
+		{"stress-packages-cpu", "-cpu=4 -timeout=8m ./internal/mcpqual", "stress mcpqual cpu4", 6}, {"stress-packages-cpu", "-cpu=1 -timeout=6m ./internal/workspace", "stress workspace cpu1", 9}} {
 		r := &ciRunner{failOn: c.failOn}
 		code, out, errOut := devcheckRun(t, r, c.stage)
 		if code != 1 || len(r.calls) != c.calls || !strings.Contains(errOut, "stage "+c.stage+" FAILED: "+c.step+" failed") ||
