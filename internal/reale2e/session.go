@@ -117,6 +117,12 @@ type sessionRecord struct {
 	malformed bool
 	denials   []string
 	phase     int
+	// typ and subtype are the record's own type and subtype strings; raw
+	// keeps a task_notification candidate's fields (any record type) for
+	// the development notification decoder (devNoteOf), which the legacy
+	// derivation never reads.
+	typ, subtype string
+	raw          map[string]json.RawMessage
 }
 
 // deriver holds one derivation's state.
@@ -232,6 +238,10 @@ func parseInit(raw map[string]json.RawMessage, r *sessionRecord) {
 func parseRecord(raw map[string]json.RawMessage, src SourceRef) sessionRecord {
 	r := sessionRecord{src: src, kind: "other"}
 	typ, subtype := rawString(raw["type"]), rawString(raw["subtype"])
+	r.typ, r.subtype = typ, subtype
+	if subtype == "task_notification" {
+		r.raw = raw
+	}
 	r.sessionID = rawString(raw["session_id"])
 	if s := rawString(raw["sessionId"]); s != "" {
 		r.sessionID = s

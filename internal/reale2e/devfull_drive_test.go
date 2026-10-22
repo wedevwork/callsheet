@@ -148,6 +148,18 @@ type devRig struct {
 	use       string
 	handles   int
 	wakeAfter int
+	// wakeForm is the coordinator's completion-notification form: "" the
+	// user <task-notification> text, "system" the top-level system
+	// task_notification record Claude Code 2.1.306 printed (design
+	// 12a-dev-flow-verify r0.8, run_id and uuid included).
+	wakeForm string
+	// refusedLine is the stream line of the last notification the rig
+	// emitted that the supervisor must refuse (0: none).
+	refusedLine int
+	// tickDuringPull keeps the monitor ticking (the fake time unmoved)
+	// while a publication pull is held, instead of gating its poll timer
+	// on the pull.
+	tickDuringPull bool
 	// observable results
 	goals     []string
 	docs      []devDispatchDoc
@@ -546,6 +558,13 @@ func (r *devRig) hook() {
 		}
 	}
 	if in := d.inspection; in != nil {
+		if r.tickDuringPull {
+			// The monitor keeps ticking while the pull is held, the fake
+			// time unmoved (as the real poll timer keeps firing).
+			r.f.clock.release()
+			r.f.clock.holdNext()
+			return
+		}
 		// Hold the fake time the same way while the supervisor's owned
 		// publication pull runs: the loop takes its result (or serves a
 		// request) instead of spinning through ticks.
@@ -968,6 +987,13 @@ func (r *devRig) work(act devAct) bool {
 		r.stage = "end"
 		return false
 	}
+	if act.alter == "early-fail" {
+		// The wait dies early: its failed notification arrives while the
+		// task still runs (never terminal here).
+		r.refused(func() { r.notify(r.waitHandle(), r.use, "failed") })
+		r.stage = "end"
+		return false
+	}
 	r.finish(act, r.task)
 	if act.alter == "deny" {
 		r.emit(map[string]any{"type": "result", "subtype": "success", "is_error": false, "result": "denied",
@@ -1011,11 +1037,61 @@ func (r *devRig) wake(act devAct) bool {
 	case "foreground":
 		r.userText("<task-notification>\n<task-id>b99</task-id>\n<tool-use-id>other</tool-use-id>\n<status>completed</status>\n</task-notification>")
 		r.emit(map[string]any{"type": "system", "subtype": "status"})
+	case "bad-wake":
+		// Bound to the wait's handle under another tool use: refused at
+		// its record; the valid notification after it repairs nothing.
+		r.refused(func() { r.notify(r.waitHandle(), "toolu_dev_wrong", "completed") })
+		r.notify(r.waitHandle(), r.use, "completed")
+	case "malformed-wake":
+		// Refused by the stream decoder itself: an unknown system field, or
+		// a user envelope under another session.
+		r.refused(func() {
+			if r.wakeForm == "system" {
+				r.emit(map[string]any{"type": "system", "subtype": "task_notification", "task_id": r.waitHandle(), "tool_use_id": r.use,
+					"status": "completed", "exit_code": 0})
+				return
+			}
+			r.emit(map[string]any{"type": "user", "session_id": "11111111-1111-4111-8111-111111111111", "message": map[string]any{"role": "user",
+				"content": "<task-notification>\n<task-id>" + r.waitHandle() + "</task-id>\n<tool-use-id>" + r.use + "</tool-use-id>\n<status>completed</status>\n</task-notification>"}})
+		})
+		r.notify(r.waitHandle(), r.use, "completed")
+	case "failed-wake":
+		r.refused(func() { r.notify(r.waitHandle(), r.use, "failed") })
+		r.notify(r.waitHandle(), r.use, "completed")
+	case "deadline-no-wake":
+		// No notification ever comes: the slot reaches its bound.
+		r.f.clock.advance(FeatureTaskBound)
+		return false
 	default:
-		r.userText(fmt.Sprintf("<task-notification>\n<task-id>b%d</task-id>\n<tool-use-id>%s</tool-use-id>\n<status>completed</status>\n<summary>done</summary>\n</task-notification>",
-			r.doc.Ordinal, r.use))
+		r.notify(r.waitHandle(), r.use, "completed")
 	}
 	return true
+}
+
+// waitHandle is the slot's background wait handle.
+func (r *devRig) waitHandle() string { return fmt.Sprintf("b%d", r.doc.Ordinal) }
+
+// notify emits a completion notification in the rig's wake form.
+func (r *devRig) notify(handle, use, status string) { r.emit(r.notification(handle, use, status)) }
+
+// notification is a completion notification record in the rig's wake
+// form.
+func (r *devRig) notification(handle, use, status string) map[string]any {
+	if r.wakeForm == "system" {
+		return map[string]any{"type": "system", "subtype": "task_notification", "task_id": handle, "tool_use_id": use, "status": status,
+			"output_file": "/tmp/claude/tasks/" + handle + ".output", "summary": "Background command \"wait\" completed (exit code 0)",
+			"run_id": "11111111-2222-3333-4444-555555555555", "uuid": "66666666-7777-8888-9999-000000000000"}
+	}
+	return map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": fmt.Sprintf(
+		"<task-notification>\n<task-id>%s</task-id>\n<tool-use-id>%s</tool-use-id>\n<status>%s</status>\n<summary>done</summary>\n</task-notification>",
+		handle, use, status)}}
+}
+
+// refused emits records through emit and remembers the line of the last
+// one: the notification the supervisor must refuse.
+func (r *devRig) refused(emit func()) {
+	emit()
+	r.refusedLine = bytes.Count(r.d.current().stdout.Bytes(), []byte("\n"))
 }
 
 // show consumes the wake with one task_show of the task. With fragment

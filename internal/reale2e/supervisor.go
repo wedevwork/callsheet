@@ -191,6 +191,10 @@ type supervisor struct {
 	// environment snapshot.
 	roots  []string
 	before *Snapshot
+	// envPolicy is the ownership policy of the environment comparison:
+	// legacy for the v3 attempt, the development policy (design
+	// 12a-dev-flow-verify r0.8, FP-6) for the full flow and qualification.
+	envPolicy envPolicy
 	// mcpPath, phases and launches are the coordinator's configuration
 	// and its two headless phases; done is set once phase 2 completed.
 	mcpPath     string
@@ -467,7 +471,7 @@ func (s *supervisor) snapshot(phase string, deadline time.Time) *Snapshot {
 	if s.runtime != "" {
 		exclude = append(exclude, s.runtime)
 	}
-	snap := takeSnapshotDepth(phase, s.w.Home, s.roots, exclude, s.w.Git, s.envTokenizer(), s.w.Clock, deadline, s.args.protectDepth)
+	snap := takeSnapshotFor(s.envPolicy, phase, s.w.Home, s.roots, exclude, s.w.Git, s.envTokenizer(), s.w.Clock, deadline, s.args.protectDepth)
 	shards, err := encodeSnapshot(snap)
 	if err != nil {
 		snap.Complete, snap.Code, snap.Records = false, CodeEnvLimit, nil

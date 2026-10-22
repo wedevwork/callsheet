@@ -315,6 +315,9 @@ func (c *devChecker) checkSession() {
 		}
 		if facts != nil {
 			irb.refs(facts.Inits, "")
+			if facts.ProblemSource != nil {
+				irb.refs([]SourceRef{*facts.ProblemSource}, "")
+			}
 			irb.see("session %s, %d init records", auditText(facts.SessionID, 40), len(facts.Inits))
 		}
 		irb.done()
@@ -430,6 +433,11 @@ func (c *devChecker) checkWaits() {
 			fmt.Sprintf("Task %d's one exact background wait command started, its handle's own completion notification arrived automatically, one task_show of the task consumed it with no ordinary user input between, the captured wait exited 0 with the task's terminal result, and the consumption preceded the successor", n),
 			groupEvents).task(n, t.Task, plan.Role, plan.Mode, plan.Round, plan.ExpectedBase, "").at(cmpOrInt(ev.waitStart, ev.observed))
 		rb.refs(t.WaitSources, t.Task)
+		if t.ProblemSource != nil {
+			// The refused notification record (design 12a-dev-flow-verify
+			// r0.8).
+			rb.refs([]SourceRef{*t.ProblemSource}, t.Task)
+		}
 		problem := t.Problem
 		if problem == devDispatchUnobserved || problem == devDispatchMismatch || problem == devDispatchOrder {
 			problem = ""
@@ -988,7 +996,7 @@ func (c *devChecker) checkEnvironment() {
 	in := envCheckInput{manifest: true, roots: m.ProtectedRoots, depth: m.ProtectDepth, files: c.b.Files, diff: doc[EnvDiff](c.b, "environment/diff.json"),
 		notReached: func() bool {
 			return c.stop != nil && !c.reached(func(e Event) bool { return e.Type == EvSnapshotTaken && e.Code == "before" })
-		}}
+		}, policy: envPolicyDev}
 	checkOwnerEnvironment(in, func(code string) {
 		if code == CodeEnvUnobserved || code == "environment_diff_missing" {
 			rb.miss(code, true)

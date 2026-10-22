@@ -97,7 +97,7 @@ func (d *devSupervisor) deadlines() bool {
 		d.stop("owner_expired", fmt.Sprintf("no %s decision for generation %d within its window", d.window.kind, d.window.gen))
 	case d.slot != nil && d.slot.matched != "" && d.expired(d.slot.admittedAt.Add(FeatureTaskBound)):
 		d.s.cancelTask(d.slot.matched)
-		d.stop("task_timeout", fmt.Sprintf("workflow task %s reached its 10m bound before it was admitted", d.slot.matched))
+		d.stop("task_timeout", fmt.Sprintf("workflow task %s reached its 10m bound after admission before wait consumption and publication admission completed", d.slot.matched))
 	}
 	return d.halted()
 }
@@ -377,9 +377,26 @@ func (d *devSupervisor) devWait(req ControlRequest) string {
 // then its publication's admission and the semantic transition.
 func (d *devSupervisor) progress() {
 	sl := d.slot
-	if sl == nil || sl.matched == "" || d.inspection != nil {
-		// No admission yet, or its consumed wait's publication is being
-		// inspected: the loop takes the pull's result when it returns.
+	if sl == nil || sl.matched == "" {
+		// No admission yet.
+		return
+	}
+	// Design 12a-dev-flow-verify r0.8: once the wait started, the phase
+	// stream is decoded on every pass, before the inspection, terminal and
+	// observation gates below, so an observed unsupported notification
+	// stops the attempt at its first complete record whatever the task's
+	// state, even while its publication is being inspected (code review
+	// C1).
+	var w devWait
+	if sl.waitStarted {
+		var ok bool
+		if w, ok = d.waitEvidence(sl); !ok {
+			return
+		}
+	}
+	if d.inspection != nil {
+		// The consumed wait's publication is being inspected: the loop
+		// takes the pull's result when it returns.
 		return
 	}
 	v, err := d.s.show(sl.matched, contract.DefaultTailLines)
@@ -416,24 +433,6 @@ func (d *devSupervisor) progress() {
 	if !sl.observed || !sl.waitStarted {
 		return
 	}
-	p := d.phases[sl.phase]
-	stdout := p.stdout.Bytes()
-	if !p.exited {
-		// A running phase's unfinished last record is a partial pipe read:
-		// decode the complete records only and keep the tail for a later
-		// pass. The whole stream is validated once the phase exits.
-		stdout = completeRecords(stdout)
-	}
-	stream := decodeDevStream(stdout, d.sessionID)
-	if stream.problem != "" {
-		d.stop(stream.problem, fmt.Sprintf("coordinator phase %d stream", p.n))
-		return
-	}
-	w, problem := qualifyDevWait(stream.records, sl.cmd, sl.matched)
-	if problem != "" {
-		d.stop(problem, "the wait for task "+sl.matched)
-		return
-	}
 	files := readDevWaitFiles(d.s.runtime, sl.plan.Ordinal)
 	rec := DevWaitRecord{Ordinal: sl.plan.Ordinal, Task: sl.matched, Command: d.s.tok(sl.cmd), StartSeq: sl.waitSeq, Wait: w}
 	captured := files.captured(sl.matched, &rec)
@@ -456,6 +455,39 @@ func (d *devSupervisor) progress() {
 		return
 	}
 	d.admitPublication(v, rec.ConsumedSeq)
+}
+
+// waitEvidence decodes the slot's phase stream and derives its wait
+// evidence, stopping the attempt (ok false) at a stream or wait problem;
+// a refused notification is named by its record.
+func (d *devSupervisor) waitEvidence(sl *devSlot) (devWait, bool) {
+	p := d.phases[sl.phase]
+	stdout := p.stdout.Bytes()
+	if !p.exited {
+		// A running phase's unfinished last record is a partial pipe read:
+		// decode the complete records only and keep the tail for a later
+		// pass. The whole stream is validated once the phase exits.
+		stdout = completeRecords(stdout)
+	}
+	stream := decodeDevStreamAs(devStreamFile(p.n), stdout, d.sessionID)
+	if stream.problem != "" {
+		d.stop(stream.problem, fmt.Sprintf("coordinator phase %d stream", p.n)+refusedAt(stream.problem, stream.problemSrc))
+		return devWait{}, false
+	}
+	w, src, problem := deriveDevWait(stream.records, sl.cmd, sl.matched)
+	if problem != "" {
+		d.stop(problem, "the wait for task "+sl.matched+refusedAt(problem, src.refused))
+		return w, false
+	}
+	return w, true
+}
+
+// refusedAt names a refused notification's record in a stop reason.
+func refusedAt(problem string, src SourceRef) string {
+	if problem != devWakeUnsupported || src.File == "" {
+		return ""
+	}
+	return fmt.Sprintf(": the notification at %s line %d", src.File, src.FirstLine)
 }
 
 // completeRecords is a running phase's stream up to and including its last
@@ -807,7 +839,7 @@ func (d *devSupervisor) prepareSlot() {
 func (d *devSupervisor) phaseExited() {
 	p := d.current()
 	d.observePhase(p, StoppedExited, groupBound)
-	stream := decodeDevStream(p.stdout.Bytes(), d.sessionID)
+	stream := decodeDevStreamAs(devStreamFile(p.n), p.stdout.Bytes(), d.sessionID)
 	if d.sessionID == "" {
 		d.sessionID = stream.sessionID
 	}
@@ -816,7 +848,7 @@ func (d *devSupervisor) phaseExited() {
 		// The phase's evidence could not be written: no gate or completion.
 		return
 	case stream.problem != "":
-		d.stop(stream.problem, fmt.Sprintf("coordinator phase %d stream", p.n))
+		d.stop(stream.problem, fmt.Sprintf("coordinator phase %d stream", p.n)+refusedAt(stream.problem, stream.problemSrc))
 		return
 	case !p.rec.GroupGone:
 		d.stop("coordinator_group_alive", fmt.Sprintf("coordinator phase %d's process group did not end", p.n))
@@ -862,6 +894,12 @@ func (d *devSupervisor) phaseExited() {
 	case d.inspection != nil:
 		d.stop("coordinator_exited", fmt.Sprintf("coordinator phase %d ended while the publication of task %s was being admitted", p.n, d.slot.matched))
 	case d.slot != nil && d.slot.observed:
+		// A refused notification of the ended phase is its own stop.
+		if d.slot.waitStarted {
+			if _, ok := d.waitEvidence(d.slot); !ok {
+				return
+			}
+		}
 		d.stop(devWaitFailed, "the coordinator ended before the wait for task "+d.slot.matched+" was consumed")
 	default:
 		d.stop("coordinator_exited", fmt.Sprintf("coordinator phase %d ended with no gate and no completion", p.n))

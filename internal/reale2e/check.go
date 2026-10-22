@@ -2020,6 +2020,9 @@ type envCheckInput struct {
 	files      map[string][]byte
 	diff       *EnvDiff
 	notReached func() bool
+	// policy is the ownership policy the classes are derived under (the
+	// development checkers' own, never the bundle's).
+	policy envPolicy
 }
 
 // checkOwnerEnvironment is the owner-environment criterion over captured
@@ -2055,7 +2058,7 @@ func checkOwnerEnvironment(in envCheckInput, fail func(code string)) {
 		}
 		// A complete claim needs the vendor homes and supplied roots
 		// observed, with every record of a valid kind, scope and path.
-		if err := checkInventory(s, roots); err != nil {
+		if err := checkInventoryFor(in.policy, s, roots); err != nil {
 			fail(CodeEnvInventory)
 			fail(CodeEnvUnobserved)
 			continue
@@ -2092,14 +2095,14 @@ func checkOwnerEnvironment(in envCheckInput, fail func(code string)) {
 		// list exactly the entries whose compact records differ, each full
 		// record hashing to its snapshot's, and every change is re-derived
 		// from that bound detail.
-		if err := verifyDetail(snaps[0], snaps[1], d.Detail); err != nil {
+		if err := verifyDetailFor(in.policy, snaps[0], snaps[1], d.Detail); err != nil {
 			fail("environment_diff_mismatch")
 			fail(CodeEnvUnobserved)
 			snaps[0] = nil
 		}
 	}
 	if snaps[0] != nil && snaps[1] != nil {
-		want := diffFromDetail(snaps[0], snaps[1], roots, d.Detail)
+		want := diffFromDetailFor(in.policy, snaps[0], snaps[1], roots, d.Detail)
 		for _, phase := range []string{"before", "after"} {
 			for _, name := range envFiles(phase) {
 				fh := FileHash{Name: name, SHA256: sha256Hex(in.files[name])}
