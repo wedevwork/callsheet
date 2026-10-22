@@ -145,7 +145,7 @@ func runDevLive(h Host, a runArgs) int {
 	}
 	defer release()
 	s := &supervisor{stdout: h.Stdout, stderr: h.Stderr, goos: h.GOOS, goarch: h.GOARCH, w: w, args: a, ctx: w.Context,
-		known: map[string]string{}, stoppedSet: map[*child]bool{}, reqs: make(chan ctrlMsg), loopDone: make(chan struct{})}
+		known: map[string]string{}, stoppedSet: map[*child]bool{}, reqs: make(chan ctrlMsg), loopDone: make(chan struct{}), envPolicy: envPolicyDev}
 	d := &devSupervisor{s: s, manuals: map[string][2]string{}, receiptBytes: map[int][]byte{}, trees: map[string]map[string]TreeFile{},
 		finals: map[string]string{}, sweeps: sweepRecorder{clock: w.Clock}}
 	if h.observeDev != nil {

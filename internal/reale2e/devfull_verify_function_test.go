@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-git/go-git/v5/plumbing/filemode"
 
@@ -276,6 +278,139 @@ func TestDevFullVerifyFP2(t *testing.T) {
 	t.Run("mcp_positive_attempts", func(t *testing.T) { t.Parallel(); testMCPPositiveAttempts(t) })
 	t.Run("mcp_wiring", func(t *testing.T) { t.Parallel(); testMCPWiring(t) })
 	t.Run("mcp_scenarios", func(t *testing.T) { t.Parallel(); testMCPScenarios(t) })
+	// Design 12a-dev-flow-verify r0.8: the system task_notification wake
+	// completes every slot of the normal workflow (never waiting until the
+	// task bound) and the offline check re-derives the same wake facts.
+	t.Run("system_wake", func(t *testing.T) {
+		t.Parallel()
+		r := newDevRig(t, happy())
+		r.owner = []string{"yes 1"}
+		r.wakeForm = "system"
+		r.expect(0, "")
+		if code, rep := r.offline(); code != 0 {
+			t.Fatalf("offline %v", devCodes(rep))
+		}
+		checkSystemWakes(t, r, len(r.d.state.Tasks))
+	})
+	// A refused notification stops the attempt at its first observed
+	// complete record, before the slot's bound, in both forms; the valid
+	// record after it repairs nothing, and the offline check names the
+	// same record.
+	for _, form := range []string{"", "system"} {
+		for _, alter := range []string{"bad-wake", "failed-wake", "early-fail", "malformed-wake"} {
+			t.Run("refused_"+cmpOr(form, "xml")+"_"+alter, func(t *testing.T) {
+				t.Parallel()
+				r := newDevRig(t, []devAct{{marker: markerDesignDraft, alter: alter}})
+				r.wakeForm = form
+				r.expect(1, devWakeUnsupported)
+				checkRefusedWake(t, r)
+				code, rep := r.offline()
+				if waits := devCriterion(rep, "waits").Codes; code != 1 || slices.Contains(waits, "event_map_mismatch") {
+					t.Fatalf("offline %v", devCodes(rep))
+				}
+				// The re-derived event map names the same record: the
+				// phase's own refusal (a notification's shape or session),
+				// else the slot's.
+				em := bundleDoc[DevEventMap](t, r.f.bundle(), devEventMapFile)
+				src, problem := em.Phases[0].ProblemSource, em.Phases[0].Problem
+				if alter != "malformed-wake" {
+					if len(em.Tasks) != 1 || em.Phases[0].Problem != "" {
+						t.Fatalf("event map %+v %+v", em.Phases, em.Tasks)
+					}
+					src, problem = em.Tasks[0].ProblemSource, em.Tasks[0].Problem
+					if !slices.Contains(devCriterion(rep, "waits").Codes, devWakeUnsupported) {
+						t.Fatalf("offline %v", devCodes(rep))
+					}
+				} else if !slices.Contains(devCriterion(rep, "coordinator_setup").Codes, devWakeUnsupported) {
+					t.Fatalf("offline %v", devCodes(rep))
+				}
+				if problem != devWakeUnsupported || src == nil || src.FirstLine != r.refusedLine || src.File != devStreamFile(1) {
+					t.Fatalf("event map %+v %+v", em.Phases, em.Tasks)
+				}
+			})
+		}
+	}
+	// Code review C1: a complete invalid notification observed while the
+	// consumed wait's publication is being inspected (its pull held until
+	// the attempt stops) is refused at once, never left to the bound.
+	for _, form := range []string{"", "system"} {
+		t.Run("refused_during_inspection_"+cmpOr(form, "xml"), func(t *testing.T) {
+			t.Parallel()
+			r := newDevRig(t, []devAct{{marker: markerDesignDraft}})
+			r.wakeForm = form
+			r.tickDuringPull = true
+			// The phase stream is taken on the supervisor's goroutine; the
+			// held pull writes the duplicate through it (the buffer is
+			// synchronized, the phase list is not).
+			var stream *limitBuffer
+			r.onTick = func(r *devRig) {
+				if p := r.d.current(); p != nil && r.d.inspection == nil {
+					stream = p.stdout
+				}
+			}
+			r.pullCtx = func(ctx context.Context, r *devRig) error {
+				stream.Write(r.record(r.notification(r.waitHandle(), r.use, "completed")))
+				r.refusedLine = bytes.Count(stream.Bytes(), []byte("\n"))
+				// Held until the attempt stops; the real-time bound only
+				// turns a missed refusal into a failure instead of a hang.
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(30 * time.Second):
+					return errors.New("the held pull was never cancelled")
+				}
+			}
+			r.expect(1, devWakeUnsupported)
+			if r.d.inspection == nil {
+				t.Fatal("no inspection was running")
+			}
+			checkRefusedWake(t, r)
+		})
+	}
+	t.Run("deadline_without_wake", func(t *testing.T) {
+		t.Parallel()
+		r := newDevRig(t, []devAct{{marker: markerDesignDraft, alter: "deadline-no-wake"}})
+		r.expect(1, "task_timeout")
+		id := r.workflowTasks()[0]
+		if r.d.stopReason != "workflow task "+id+" reached its 10m bound after admission before wait consumption and publication admission completed" {
+			t.Fatalf("stop reason %q", r.d.stopReason)
+		}
+	})
+}
+
+// checkSystemWakes checks a passing attempt's first n slots each woke on
+// its system task_notification record, by the stored and re-derived event
+// map alike.
+func checkSystemWakes(t *testing.T, r *devRig, n int) {
+	t.Helper()
+	stored := bundleDoc[DevEventMap](t, r.f.bundle(), devEventMapFile)
+	if len(stored.Tasks) < n {
+		t.Fatalf("event map tasks %d", len(stored.Tasks))
+	}
+	for _, tf := range stored.Tasks[:n] {
+		if !tf.Wait.complete() || tf.Problem != "" || len(tf.WaitSources) != 4 {
+			t.Fatalf("task %d wait %+v %s", tf.Ordinal, tf.Wait, tf.Problem)
+		}
+		wake := tf.WaitSources[2]
+		lines := strings.Split(string(r.evidence(wake.File)), "\n")
+		if !strings.Contains(lines[wake.FirstLine-1], `"subtype":"task_notification"`) {
+			t.Fatalf("task %d woke on %s", tf.Ordinal, lines[wake.FirstLine-1])
+		}
+	}
+}
+
+// checkRefusedWake checks an attempt stopped at its refused notification:
+// the reason names the record, before the slot's 10m bound.
+func checkRefusedWake(t *testing.T, r *devRig) {
+	t.Helper()
+	sl := r.d.slot
+	want := fmt.Sprintf(": the notification at %s line %d", devStreamFile(1), r.refusedLine)
+	if r.refusedLine == 0 || !strings.HasSuffix(r.d.stopReason, want) {
+		t.Fatalf("stop reason %q want suffix %q", r.d.stopReason, want)
+	}
+	if sl == nil || sl.admittedAt.IsZero() || !r.d.s.w.Clock.Now().Before(sl.admittedAt.Add(FeatureTaskBound)) {
+		t.Fatal("the refusal waited for the task bound")
+	}
 }
 
 func TestDevFullVerifyFP3(t *testing.T) {
@@ -596,6 +731,87 @@ func TestDevFullVerifyFP6(t *testing.T) {
 			t.Fatal("the harness restored an owner file")
 		}
 	})
+	// Live probe 20261022T132232Z-3fe07457 (design 12a-dev-flow-verify
+	// r0.8, FP-6): Claude Code's synced-skills bookkeeping changed during
+	// the attempt. Only the enumerated bookkeeping entries are
+	// tool-maintained (report-only, metadata only); a synced skill's
+	// content stays protected.
+	syncedSkills := func(t *testing.T, r *devRig) string {
+		t.Helper()
+		synced := filepath.Join(r.f.home, ".claude", "skills", "synced")
+		acct := filepath.Join(synced, "acct-1")
+		for p, body := range map[string]string{
+			filepath.Join(acct, "manifest.json"):              `{"skills":["greet"]}`,
+			filepath.Join(acct, "greet", "SKILL.md"):          "# greet\n",
+			filepath.Join(acct, ".last-complete-round"):       "1\n",
+			filepath.Join(acct, ".staging", "greet", "x.md"):  "staged\n",
+			filepath.Join(synced, ".bucket-f21645ff-0001"):    "b\n",
+			filepath.Join(synced, ".bucket-f21645ff-gone"):    "g\n",
+			filepath.Join(acct, ".staging", "old", "deep.md"): "old\n",
+		} {
+			if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return synced
+	}
+	t.Run("synced_skills_bookkeeping", func(t *testing.T) {
+		t.Parallel()
+		r := newDevRig(t, happy())
+		r.owner = []string{"yes 1"}
+		synced := syncedSkills(t, r)
+		acct := filepath.Join(synced, "acct-1")
+		r.onTick = func(r *devRig) {
+			if r.fault == "" && len(r.d.state.Tasks) == 1 {
+				r.fault = "edited"
+				// Added, modified and deleted bookkeeping of every pattern.
+				os.WriteFile(filepath.Join(acct, ".last-complete-round"), []byte("2\n"), 0o600)
+				os.RemoveAll(filepath.Join(acct, ".staging", "old"))
+				os.WriteFile(filepath.Join(acct, ".staging", "greet", "x.md"), []byte("restaged\n"), 0o600)
+				os.MkdirAll(filepath.Join(acct, ".staging", "new"), 0o700)
+				os.WriteFile(filepath.Join(acct, ".staging", "new", "y.md"), []byte("y\n"), 0o600)
+				os.WriteFile(filepath.Join(synced, ".bucket-f21645ff-0001"), []byte("bb\n"), 0o600)
+				os.Remove(filepath.Join(synced, ".bucket-f21645ff-gone"))
+				os.WriteFile(filepath.Join(synced, ".bucket-f21645ff-0002"), []byte("n\n"), 0o600)
+			}
+		}
+		r.expect(0, "")
+		code, rep := r.offline()
+		var diff EnvDiff
+		json.Unmarshal(r.evidence("environment/diff.json"), &diff)
+		if code != 0 || len(rep.Protected) != 0 || diff.ToolDetailCount+diff.ToolOmittedCount < 8 {
+			t.Fatalf("synced-skills bookkeeping %v %+v", devCodes(rep), diff.Protected)
+		}
+		for _, e := range diff.Detail {
+			for _, rec := range []*EnvRecord{e.Before, e.After} {
+				if rec != nil && strings.Contains(decodeToken(rec.Path), "skills/synced/") && (rec.Class != ClassTool || rec.SHA256 != "") {
+					t.Fatalf("bookkeeping record %+v is not metadata-only tool state", *rec)
+				}
+			}
+		}
+	})
+	t.Run("synced_skill_content", func(t *testing.T) {
+		t.Parallel()
+		r := newDevRig(t, happy())
+		r.owner = []string{"yes 1"}
+		synced := syncedSkills(t, r)
+		r.onTick = func(r *devRig) {
+			if r.fault == "" && len(r.d.state.Tasks) == 1 {
+				r.fault = "edited"
+				os.WriteFile(filepath.Join(synced, "acct-1", "greet", "SKILL.md"), []byte("# changed\n"), 0o600)
+			}
+		}
+		if got := r.run(); got != 1 {
+			t.Fatalf("exit %d", got)
+		}
+		code, rep := r.offline()
+		if code != 1 || !slices.Contains(devCriterion(rep, "owner_environment").Codes, CodeEnvModified) || len(rep.Protected) != 1 {
+			t.Fatalf("synced skill content %v %+v", devCodes(rep), rep.Protected)
+		}
+	})
 	t.Run("tool_state_only", func(t *testing.T) {
 		t.Parallel()
 		r := newDevRig(t, happy())
@@ -800,6 +1016,57 @@ func TestDevFullVerifyFP8(t *testing.T) {
 			t.Fatalf("check of a qualification %d %s", code, errOut)
 		}
 	})
+	// Design 12a-dev-flow-verify r0.8: the probe qualifies on the system
+	// task_notification wake (print_notification included), and the
+	// offline qualification check re-derives it.
+	t.Run("system_wake", func(t *testing.T) {
+		t.Parallel()
+		r := probeRig(t)
+		r.wakeForm = "system"
+		r.expect(0, "")
+		if q := r.qualification(); q.Result != ResultQualified || !qualifiedStages(q.Stages) {
+			t.Fatalf("qualification %+v", q.Stages)
+		}
+		if codes := qualificationCodes(t, r.f.bundle()); len(codes) != 0 {
+			t.Fatalf("offline %v", codes)
+		}
+		b, err := LoadDevQualification(r.f.bundle())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for n := 1; n <= 3; n++ {
+			recs, _ := probeRecords(b, n)
+			v := doc[contract.TaskShowResponse](b, "probe/wake/"+hopDir(n-1)+"/task.json")
+			if v == nil {
+				t.Fatalf("wake %d task", n)
+			}
+			w, src, p := deriveDevWait(recs, devWaitCommand(r.d.s.w.Executable, r.d.s.runtime, v.Task.TaskID, n), v.Task.TaskID)
+			line := strings.Split(string(r.evidence(src.wake.File)), "\n")[src.wake.FirstLine-1]
+			if p != "" || !w.complete() || !strings.Contains(line, `"subtype":"task_notification"`) {
+				t.Fatalf("wake %d %+v %s %s", n, w, p, line)
+			}
+		}
+	})
+	for _, form := range []string{"", "system"} {
+		for _, alter := range []string{"bad-wake", "early-fail"} {
+			t.Run("refused_"+cmpOr(form, "xml")+"_"+alter, func(t *testing.T) {
+				t.Parallel()
+				r := probeRig(t)
+				r.steps[0].alter = alter
+				r.wakeForm = form
+				r.expect(1, devWakeUnsupported)
+				checkRefusedWake(t, r)
+				q := r.qualification()
+				if q.Result != ResultBlocked || q.Stages[1].Result == stagePass || q.Stages[2].Result == stagePass {
+					t.Fatalf("a refused wake qualified %+v", q.Stages)
+				}
+				// The offline check refuses to qualify it.
+				if codes := qualificationCodes(t, r.f.bundle()); !slices.Contains(codes, "not_qualified") {
+					t.Fatalf("the blocked record rechecked as %v", codes)
+				}
+			})
+		}
+	}
 	t.Run("missing_notification", func(t *testing.T) {
 		t.Parallel()
 		r := newDevRig(t, []devAct{{}, {alter: "no-wake"}, {}, {marker: markerReviewApproved}})

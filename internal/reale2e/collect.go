@@ -407,7 +407,7 @@ func (s *supervisor) environmentDiff() *EnvDiff {
 		return nil
 	}
 	after := s.snapshot("after", s.cleanupBy)
-	diff := CompareEnvironment(s.before, after, s.manifest.ProtectedRoots)
+	diff := compareEnvironmentFor(s.envPolicy, s.before, after, s.manifest.ProtectedRoots)
 	for _, phase := range []string{"before", "after"} {
 		for _, name := range envFiles(phase) {
 			sum := ""
@@ -422,11 +422,11 @@ func (s *supervisor) environmentDiff() *EnvDiff {
 			}
 		}
 	}
-	data, fitted, err := encodeDiff(diff)
+	data, fitted, err := encodeDiffFor(s.envPolicy, diff)
 	if err != nil {
 		diff = EnvDiff{Schema: DiffSchema, ProtectedRoots: diff.ProtectedRoots, Before: diff.Before, After: diff.After, Codes: []string{CodeEnvLimit},
 			Protected: []EnvChange{}, ToolSummary: []ToolSummaryRow{}, OversizedConfig: []string{}, Detail: []EnvDetail{}}
-		data, fitted, _ = encodeDiff(diff)
+		data, fitted, _ = encodeDiffFor(s.envPolicy, diff)
 	}
 	diff = fitted
 	s.ev.writeFile("environment/diff.json", data)

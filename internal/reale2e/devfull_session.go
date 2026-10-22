@@ -1,6 +1,7 @@
 package reale2e
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -22,9 +23,15 @@ import (
 // record exit 0 and a terminal result for the task. A narrative or a phase
 // result alone never satisfies a wait.
 //
-// ASSUMPTION (unverified, the design's repeated-resume probe settles it):
-// the coordinator's print-mode stream carries the background completion
-// notification as a user record in the same phase.
+// Qualified wake envelopes (design 12a-dev-flow-verify r0.8, owner
+// decision 2026-10-22): the completion notification is either the user
+// text <task-notification> envelope or a top-level system
+// task_notification record (captured from Claude Code 2.1.306), in the
+// same phase. Both bind to a preceding background Bash start by its
+// tool-use ID and to that start's handle result by the handle; only a
+// dev-wait-task start's notification is a wake. An observed notification
+// that is malformed, unbound, mis-bound, duplicated, failed or in another
+// location is refused at its record (wake_representation_unsupported).
 
 // Development stream problem codes.
 const (
@@ -38,7 +45,6 @@ const (
 	devWaitMismatch     = "wait_command_mismatch"
 	devDuplicateWait    = "duplicate_wait"
 	devWakeUnsupported  = "wake_representation_unsupported"
-	devWakeMismatch     = "wake_mismatch"
 	devWakeNotAutomatic = "wake_not_automatic"
 	devWaitFailed       = "wait_failed"
 )
@@ -47,8 +53,11 @@ const (
 type devStream struct {
 	records   []sessionRecord
 	sessionID string
-	// problem is the first fatal problem's fixed code ("" none).
-	problem string
+	// problem is the first fatal problem's fixed code ("" none);
+	// problemSrc is the record it was found at (zero when no single
+	// record is the cause).
+	problem    string
+	problemSrc SourceRef
 	// result is the last result record's text and ok (the phase result).
 	resultText string
 	resultOK   bool
@@ -65,13 +74,27 @@ func decodeDevStream(stdout []byte, want string) devStream {
 func decodeDevStreamAs(file string, stdout []byte, want string) devStream {
 	d := &deriver{codes: map[string]bool{}}
 	s := devStream{records: d.decodeLines(file, stdout), sessionID: want}
-	fail := func(code string) {
+	fail := func(code string, src SourceRef) {
 		if s.problem == "" {
-			s.problem = code
+			s.problem, s.problemSrc = code, src
 		}
 	}
+	// A line the strict decoder refused (a duplicate key, say) that is a
+	// notification candidate in either form (devNoteOf of its lenient
+	// reading) is an unsupported notification, never merely a malformed
+	// record (code review W1).
 	if len(d.findings) > 0 {
-		fail(devSessionMalformed)
+		f := d.findings[0]
+		code, src := devSessionMalformed, SourceRef{}
+		if len(f.Sources) == 1 {
+			src = f.Sources[0]
+			lines := bytes.Split(stdout, []byte("\n"))
+			var raw map[string]json.RawMessage
+			if i := src.FirstLine - 1; i >= 0 && i < len(lines) && json.Unmarshal(lines[i], &raw) == nil && raw != nil && devNoteOf(parseRecord(raw, src)).candidate {
+				code = devWakeUnsupported
+			}
+		}
+		fail(code, src)
 	}
 	// An error result of a Callsheet MCP call is judged by the recorded
 	// MCP call policy (design 12a-dev-flow-verify r0.6, Error-result
@@ -86,39 +109,61 @@ func decodeDevStreamAs(file string, stdout []byte, want string) devStream {
 			}
 		}
 	}
+	// A notification's own session is validated as part of the
+	// notification (r0.8): a mismatch refuses it before the generic
+	// session check; one seen before the phase's session is known is
+	// checked once it is.
+	var unsessioned []devNote
 	for _, r := range s.records {
+		if note := devNoteOf(r); note.candidate {
+			switch {
+			case note.unsupported:
+				fail(devWakeUnsupported, r.src)
+			case !note.hasSession:
+			case s.sessionID == "":
+				unsessioned = append(unsessioned, note)
+			case note.session != s.sessionID:
+				fail(devWakeUnsupported, r.src)
+			}
+			continue
+		}
 		if r.sessionID != "" {
 			if s.sessionID == "" {
 				s.sessionID = r.sessionID
 			} else if r.sessionID != s.sessionID {
-				fail(devSessionMismatch)
+				fail(devSessionMismatch, r.src)
 			}
 		}
 		switch r.kind {
 		case "init":
 			if r.malformed || r.init.PermissionMode != autoModeFlag || r.sessionID == "" {
-				fail(devAutoModeMissing)
+				fail(devAutoModeMissing, r.src)
 			}
 		case "result":
 			if len(r.denials) > 0 {
-				fail(devToolDenied)
+				fail(devToolDenied, r.src)
 			}
 			if r.malformed || !r.resultOK {
-				fail(devResultFailed)
+				fail(devResultFailed, r.src)
 			}
 			s.hasResult, s.resultOK = true, !r.malformed && r.resultOK
 		case "user":
 			for _, b := range r.blocks {
 				if b.typ == "tool_result" && b.isError && !strings.HasPrefix(names[b.toolUseID], mcpToolPrefix) {
-					fail(devToolFailed)
+					fail(devToolFailed, r.src)
 				}
 			}
 		case "assistant":
 			for _, b := range r.blocks {
 				if b.typ == "tool_use" && b.name == toolTaskWait {
-					fail(devLongPoll)
+					fail(devLongPoll, r.src)
 				}
 			}
+		}
+	}
+	for _, note := range unsessioned {
+		if note.session != s.sessionID {
+			fail(devWakeUnsupported, note.src)
 		}
 	}
 	if s.hasResult {
@@ -168,20 +213,195 @@ func qualifyDevWait(records []sessionRecord, cmd, task string) (devWait, string)
 
 // devWaitSources are a qualified wait's facts' source lines: the
 // background start's tool use and its handle result, the notification and
-// the consuming task_show result.
+// the consuming task_show result. refused is the notification record a
+// wake_representation_unsupported refusal names.
 type devWaitSources struct {
 	start, handle, wake, consume SourceRef
+	refused                      SourceRef
+}
+
+// devNote is one record classified as a completion-notification
+// candidate (design 12a-dev-flow-verify r0.8): candidate false for every
+// other record; unsupported for a candidate in no accepted form; n its
+// normalized fields; session the record's own session ID when it has one.
+type devNote struct {
+	candidate, unsupported bool
+	n                      notification
+	session                string
+	hasSession             bool
+	src                    SourceRef
+}
+
+// devSystemNoteKeys are the system notification's only fields: the
+// required task_id, tool_use_id and status, the optional session_id, and
+// the report-only output_file, summary, run_id and uuid.
+var devSystemNoteKeys = map[string]bool{"type": true, "subtype": true, "task_id": true, "tool_use_id": true, "status": true, "session_id": true,
+	"output_file": true, "summary": true, "run_id": true, "uuid": true}
+
+// devNoteOf classifies r. The two accepted forms are a top-level system
+// record with subtype task_notification (exact field set and types) and a
+// user text record whose whole text is the <task-notification> envelope
+// parseNotification accepts. The task_notification subtype on another
+// record type, any other system notification shape, an envelope (or its
+// mention) beside tool results in a user record, and an envelope
+// parseNotification refuses are unsupported candidates. Assistant prose,
+// tool output and other records are never candidates.
+func devNoteOf(r sessionRecord) devNote {
+	note := devNote{src: r.src}
+	switch {
+	case r.subtype == "task_notification":
+		note.candidate = true
+		if r.typ != "system" || r.raw == nil {
+			note.unsupported = true
+			return note
+		}
+		for k := range r.raw {
+			if !devSystemNoteKeys[k] {
+				note.unsupported = true
+				return note
+			}
+		}
+		required := func(k string) string {
+			var v string
+			if !rawTyped(r.raw[k], &v) || v == "" {
+				note.unsupported = true
+			}
+			return v
+		}
+		note.n = notification{taskID: required("task_id"), toolUseID: required("tool_use_id"), status: required("status")}
+		for _, k := range []string{"output_file", "summary", "run_id", "uuid"} {
+			var v string
+			if !optTyped(r.raw[k], &v) {
+				note.unsupported = true
+			}
+		}
+		if v, ok := r.raw["session_id"]; ok {
+			note.hasSession = true
+			if !rawTyped(v, &note.session) || note.session == "" {
+				note.unsupported = true
+			}
+		}
+		return note
+	case r.kind == "user":
+		withResults := false
+		for _, b := range r.blocks {
+			withResults = withResults || b.typ == "tool_result"
+		}
+		if !r.hasText || !strings.Contains(r.userText, "<task-notification>") {
+			return note
+		}
+		note.candidate = true
+		if withResults {
+			note.unsupported = true
+			return note
+		}
+		n, ok, _ := parseNotification(strings.TrimSpace(r.userText))
+		note.n, note.unsupported = n, !ok
+		note.session, note.hasSession = r.sessionID, r.sessionID != ""
+		return note
+	}
+	return note
+}
+
+// devWaitPrefix is the part of slot command cmd (devWaitCommand) before
+// its task: the known executable and runtime ("" when cmd is not the
+// slot's command).
+func devWaitPrefix(cmd, task string) string {
+	i := strings.LastIndex(cmd, " --task "+task+" --ordinal ")
+	if i <= 0 {
+		return ""
+	}
+	return cmd[:i]
+}
+
+// isDevWaitStart reports whether a Bash input is a dev-wait-task start of
+// any slot (r0.8's start recognizer): exactly devWaitCommand's grammar for
+// the known executable and runtime (prefix), any valid task ID and
+// ordinal, run_in_background true and only the permitted keys.
+func isDevWaitStart(in map[string]json.RawMessage, prefix string) bool {
+	if prefix == "" {
+		return false
+	}
+	rest, ok := strings.CutPrefix(rawString(in["command"]), prefix+" --task ")
+	if !ok {
+		return false
+	}
+	task, ordinal, ok := strings.Cut(rest, " --ordinal ")
+	n, err := strconv.Atoi(ordinal)
+	if !ok || !contract.ValidTaskID(task) || err != nil || n < 1 || itoa(n) != ordinal {
+		return false
+	}
+	var bg bool
+	if !rawTyped(in["run_in_background"], &bg) || !bg {
+		return false
+	}
+	for k := range in {
+		if !devWaitInputKeys[k] {
+			return false
+		}
+	}
+	return true
+}
+
+// devBackground is one background Bash start of a phase: its handle once
+// its result named one, whether it is a dev-wait-task start and whether
+// its one notification arrived.
+type devBackground struct {
+	devWait bool
+	handle  string
+	woke    bool
 }
 
 // deriveDevWait is qualifyDevWait with the source line of each fact
-// (the sources are zero when problem is set).
+// (the sources are zero when problem is set, except refused).
+//
+// Every notification candidate is judged at its record, in source order,
+// against all preceding background Bash starts of the phase: it must name
+// a start's tool-use ID and that start's handle from its successful
+// background result. A completed notification of another background job
+// is a non-wake; one of a dev-wait-task start (this slot's or another's)
+// must be completed and the first for that start, and wakes only that
+// start. Anything else is refused as wake_representation_unsupported, even
+// when later evidence would complete the wait.
 func deriveDevWait(records []sessionRecord, cmd, task string) (devWait, devWaitSources, string) {
 	var w devWait
 	var src devWaitSources
-	fail := func(code string) (devWait, devWaitSources, string) { return w, devWaitSources{}, code }
+	var cur SourceRef
+	fail := func(code string) (devWait, devWaitSources, string) {
+		out := devWaitSources{}
+		if code == devWakeUnsupported {
+			out.refused = cur
+		}
+		return w, out, code
+	}
+	prefix := devWaitPrefix(cmd, task)
+	starts := map[string]*devBackground{}
 	interrupted := false
 	showUse := map[string]bool{}
 	for _, r := range records {
+		cur = r.src
+		if note := devNoteOf(r); note.candidate {
+			if note.unsupported {
+				return fail(devWakeUnsupported)
+			}
+			bg := starts[note.n.toolUseID]
+			if bg == nil || bg.handle == "" || bg.handle != note.n.taskID {
+				// Unbound, or naming one start's use with another's handle.
+				return fail(devWakeUnsupported)
+			}
+			if !bg.devWait {
+				// Another background job's completion is not a wake.
+				continue
+			}
+			if note.n.status != "completed" || bg.woke {
+				return fail(devWakeUnsupported)
+			}
+			bg.woke = true
+			if note.n.toolUseID == w.StartUse {
+				w.Woke, src.wake = true, r.src
+			}
+			continue
+		}
 		switch r.kind {
 		case "assistant":
 			for _, b := range r.blocks {
@@ -194,6 +414,10 @@ func deriveDevWait(records []sessionRecord, cmd, task string) (devWait, devWaitS
 					if json.Unmarshal(b.input, &in) != nil {
 						continue
 					}
+					var bgFlag bool
+					if rawTyped(in["run_in_background"], &bgFlag) && bgFlag && starts[b.id] == nil {
+						starts[b.id] = &devBackground{devWait: isDevWaitStart(in, prefix)}
+					}
 					c := rawString(in["command"])
 					if c != cmd {
 						if strings.Contains(c, task) && (strings.Contains(c, " dev-wait-task ") || strings.Contains(c, " task wait ")) {
@@ -204,8 +428,7 @@ func deriveDevWait(records []sessionRecord, cmd, task string) (devWait, devWaitS
 					if w.StartUse != "" {
 						return fail(devDuplicateWait)
 					}
-					var bg bool
-					if !rawTyped(in["run_in_background"], &bg) || !bg {
+					if !bgFlag {
 						return fail(devWaitMismatch)
 					}
 					for k := range in {
@@ -247,6 +470,13 @@ func deriveDevWait(records []sessionRecord, cmd, task string) (devWait, devWaitS
 						return fail(devWaitMismatch)
 					}
 					w.Handle, src.handle = m[1], r.src
+					starts[b.toolUseID].handle = m[1]
+				case starts[b.toolUseID] != nil && starts[b.toolUseID].handle == "":
+					// Another background start's handle, when its result
+					// names one.
+					if m := backgroundRE.FindStringSubmatch(strings.TrimSpace(b.text)); !b.isError && m != nil {
+						starts[b.toolUseID].handle = m[1]
+					}
 				case showUse[b.toolUseID] && !w.Consumed:
 					v, err := contract.ParseTaskShowResponse([]byte(b.text))
 					if err == nil && v.TaskID == task && contract.TaskTerminal(v.State) {
@@ -257,21 +487,9 @@ func deriveDevWait(records []sessionRecord, cmd, task string) (devWait, devWaitS
 			if handled || !r.hasText {
 				continue
 			}
-			n, ok, unsupported := parseNotification(strings.TrimSpace(r.userText))
-			switch {
-			case unsupported:
-				return fail(devWakeUnsupported)
-			case ok && w.Handle != "" && n.taskID == w.Handle:
-				if n.toolUseID != w.StartUse || w.Woke {
-					return fail(devWakeMismatch)
-				}
-				if n.status != "completed" {
-					return fail(devWaitFailed)
-				}
-				w.Woke, src.wake = true, r.src
-			case ok:
-				// Another background job's completion is not this wake.
-			case w.Woke && !w.Consumed:
+			// An ordinary user message between the wake and its
+			// consumption.
+			if w.Woke && !w.Consumed {
 				interrupted = true
 			}
 		}

@@ -223,6 +223,233 @@ func TestDevFullOfflineEnvironment(t *testing.T) {
 			t.Fatal("the report does not state its protection limits")
 		}
 	})
+	t.Run("synced_skills_classifier", func(t *testing.T) {
+		t.Parallel()
+		// Design 12a-dev-flow-verify r0.8 (FP-6): exactly the enumerated
+		// Claude synced-skills bookkeeping is tool-maintained under the
+		// development policy; the legacy policy is unchanged.
+		for rel, tool := range map[string]bool{
+			"skills/synced/acct/.last-complete-round":       true,
+			"skills/synced/acct/.staging":                   true,
+			"skills/synced/acct/.staging/greet":             true,
+			"skills/synced/acct/.staging/greet/deep/x":      true,
+			"skills/synced/.bucket-f21645ff-0001":           true,
+			"skills/synced/.bucket-x":                       true,
+			"skills":                                        false,
+			"skills/synced":                                 false,
+			"skills/synced/acct":                            false,
+			"skills/synced/acct/manifest.json":              false,
+			"skills/synced/acct/greet":                      false,
+			"skills/synced/acct/greet/SKILL.md":             false,
+			"skills/synced/acct/.bucket-x":                  false,
+			"skills/synced/.bucketx":                        false,
+			"skills/synced/.bucket-":                        false,
+			"skills/synced/.bucket-x/inner":                 false,
+			"skills/synced/acct/.last-complete-round/x":     false,
+			"skills/synced/acct/greet/.last-complete-round": false,
+			"skills/synced/acct/greet/.staging":             false,
+			"skills/synced/acct/greet/.staging/x":           false,
+			"skills/synced-other/.bucket-x":                 false,
+			"skills/synced-other/acct/.staging":             false,
+			"skills/other/.staging":                         false,
+			"skills/.last-complete-round":                   false,
+		} {
+			want := ClassOwner
+			if tool {
+				want = ClassTool
+			}
+			if got := ownerClassFor(envPolicyDev, "claude", rel); got != want {
+				t.Errorf("dev %s: %s want %s", rel, got, want)
+			}
+			if got := ownerClass("claude", rel); got != ClassOwner {
+				t.Errorf("legacy %s: %s, the legacy policy is unchanged", rel, got)
+			}
+			if !tool && strings.HasPrefix(rel, "skills/synced/") && syncedSkillsBookkeeping("claude", rel) {
+				t.Errorf("%s matched", rel)
+			}
+		}
+		// Another vendor home keeps its own classes.
+		for _, v := range []string{"codex", "grok", "cursor"} {
+			for _, rel := range []string{"skills/synced/acct/.staging", "skills/synced/.bucket-x", "prompts/x"} {
+				if ownerClassFor(envPolicyDev, v, rel) != ownerClass(v, rel) || syncedSkillsBookkeeping(v, rel) {
+					t.Errorf("%s %s reclassified", v, rel)
+				}
+			}
+		}
+	})
+	t.Run("synced_skills_rederived", func(t *testing.T) {
+		t.Parallel()
+		home := t.TempDir()
+		synced := filepath.Join(home, ".claude", "skills", "synced")
+		acct := filepath.Join(synced, "acct")
+		for p, body := range map[string]string{
+			filepath.Join(acct, "manifest.json"):                 "{}\n",
+			filepath.Join(acct, "greet", "SKILL.md"):             "# greet\n",
+			filepath.Join(acct, ".last-complete-round"):          "1\n",
+			filepath.Join(acct, ".staging", "greet", "SKILL.md"): "staged\n",
+			filepath.Join(acct, ".staging", "old", "x"):          "old\n",
+			filepath.Join(synced, ".bucket-a"):                   "a\n",
+			filepath.Join(synced, ".bucket-gone"):                "g\n",
+			filepath.Join(home, "elsewhere", "target", "t.md"):   "t\n",
+		} {
+			write(t, p, body)
+		}
+		take := func(phase string) *Snapshot {
+			s := takeSnapshotFor(envPolicyDev, phase, home, nil, nil, realGit(t), pathTokenizer{home: home}, realClock{}, time.Time{}, DefaultProtectDepth)
+			if !s.Complete {
+				t.Fatalf("%s incomplete: %s", phase, s.Code)
+			}
+			return s
+		}
+		before := take("before")
+		// Added, modified and deleted bookkeeping of every pattern; the
+		// staging entry finally a symlink to an outside tree (its own
+		// metadata only, never followed).
+		write(t, filepath.Join(acct, ".last-complete-round"), "2\n")
+		write(t, filepath.Join(acct, ".staging", "greet", "SKILL.md"), "restaged\n")
+		os.RemoveAll(filepath.Join(acct, ".staging", "old"))
+		write(t, filepath.Join(acct, ".staging", "new", "y"), "y\n")
+		write(t, filepath.Join(synced, ".bucket-a"), "aa\n")
+		os.Remove(filepath.Join(synced, ".bucket-gone"))
+		write(t, filepath.Join(synced, ".bucket-new"), "n\n")
+		mid := take("after")
+		d := compareEnvironmentFor(envPolicyDev, before, mid, nil)
+		if len(d.Protected) != 0 || d.ToolDetailCount+d.ToolOmittedCount < 8 || slices.Contains(d.Codes, CodeEnvModified) {
+			t.Fatalf("bookkeeping changes %+v codes %v tools %d", d.Protected, d.Codes, d.ToolDetailCount+d.ToolOmittedCount)
+		}
+		if legacy := compareEnvironmentFor(envPolicyLegacy, before, mid, nil); len(legacy.Protected) == 0 {
+			t.Fatal("the legacy policy no longer protects synced-skills bookkeeping")
+		}
+		for _, s := range []*Snapshot{before, mid} {
+			for _, r := range s.Records {
+				if rel := decodeToken(r.Path); r.Kind == RecEntry && syncedSkillsBookkeeping("claude", rel) && (r.Class != ClassTool || r.SHA256 != "" || r.Method == MethodContent) {
+					t.Fatalf("%s is not metadata-only tool state: %+v", rel, r)
+				}
+			}
+		}
+		// Offline: the checker re-derives the classes and the diff under
+		// the development policy (never a bundle class), and the legacy
+		// policy refuses the same records.
+		files := map[string][]byte{}
+		for _, s := range []*Snapshot{before, mid} {
+			shards, err := encodeSnapshot(s)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i, name := range envFiles(s.Phase) {
+				files[name] = shards[i]
+			}
+		}
+		_, fitted, err := encodeDiffFor(envPolicyDev, d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range append(envFiles("before"), envFiles("after")...) {
+			fh := FileHash{Name: name, SHA256: sha256Hex(files[name])}
+			if strings.HasPrefix(name, "environment/before") {
+				fitted.Before = append(fitted.Before, fh)
+			} else {
+				fitted.After = append(fitted.After, fh)
+			}
+		}
+		check := func(p envPolicy) []string {
+			var codes []string
+			checkOwnerEnvironment(envCheckInput{manifest: true, roots: []string{}, depth: DefaultProtectDepth, files: files, diff: &fitted,
+				notReached: func() bool { return false }, policy: p}, func(c string) { codes = append(codes, c) })
+			return codes
+		}
+		if codes := check(envPolicyDev); len(codes) != 0 {
+			t.Fatalf("offline rederivation %v", codes)
+		}
+		if codes := check(envPolicyLegacy); !slices.Contains(codes, CodeEnvInventory) {
+			t.Fatalf("legacy recheck of development classes %v", codes)
+		}
+		// A link substituted for the staging entry is its own record.
+		os.RemoveAll(filepath.Join(acct, ".staging"))
+		if err := os.Symlink(filepath.Join(home, "elsewhere", "target"), filepath.Join(acct, ".staging")); err != nil {
+			t.Fatal(err)
+		}
+		linked := take("after")
+		for _, r := range linked.Records {
+			if rel := decodeToken(r.Path); strings.HasPrefix(rel, "skills/synced/acct/.staging/") {
+				t.Fatalf("the staging link was followed: %s", rel)
+			}
+		}
+		if d := compareEnvironmentFor(envPolicyDev, before, linked, nil); len(d.Protected) != 0 {
+			t.Fatalf("staging link %+v", d.Protected)
+		}
+	})
+	t.Run("synced_skills_protected", func(t *testing.T) {
+		t.Parallel()
+		// Everything else under skills stays protected under the
+		// development policy: synced skill content, other skills,
+		// near-prefix names, bookkeeping-looking names inside a skill, the
+		// account and synced directories, a link substituted for skill
+		// content, and a protected repository inside the staging tree.
+		for name, mutate := range map[string]func(home string){
+			"skill_content":    func(h string) { write(t, filepath.Join(h, ".claude/skills/synced/acct/greet/SKILL.md"), "# changed\n") },
+			"manifest_content": func(h string) { write(t, filepath.Join(h, ".claude/skills/synced/acct/manifest.json"), `{"x":1}`+"\n") },
+			"other_skill":      func(h string) { write(t, filepath.Join(h, ".claude/skills/mine/SKILL.md"), "# mine\n") },
+			"bucket_in_account": func(h string) {
+				write(t, filepath.Join(h, ".claude/skills/synced/acct/.bucket-x"), "b\n")
+			},
+			"bucketx":        func(h string) { write(t, filepath.Join(h, ".claude/skills/synced/.bucketx"), "b\n") },
+			"bucket_subtree": func(h string) { write(t, filepath.Join(h, ".claude/skills/synced/.bucket-d/inner"), "b\n") },
+			"round_in_skill": func(h string) {
+				write(t, filepath.Join(h, ".claude/skills/synced/acct/greet/.last-complete-round"), "1\n")
+			},
+			"staging_in_skill": func(h string) { write(t, filepath.Join(h, ".claude/skills/synced/acct/greet/.staging/x"), "x\n") },
+			"synced_other":     func(h string) { write(t, filepath.Join(h, ".claude/skills/synced-other/acct/.staging/x"), "x\n") },
+			"account_mode":     func(h string) { os.Chmod(filepath.Join(h, ".claude/skills/synced/acct"), 0o700) },
+			"account_removed":  func(h string) { os.RemoveAll(filepath.Join(h, ".claude/skills/synced/acct")) },
+			"skill_link": func(h string) {
+				p := filepath.Join(h, ".claude/skills/synced/acct/greet/SKILL.md")
+				os.Remove(p)
+				os.Symlink(filepath.Join(h, "elsewhere"), p)
+			},
+		} {
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				home := t.TempDir()
+				write(t, filepath.Join(home, ".claude/skills/synced/acct/greet/SKILL.md"), "# greet\n")
+				write(t, filepath.Join(home, ".claude/skills/synced/acct/manifest.json"), "{}\n")
+				write(t, filepath.Join(home, ".claude/skills/synced/.bucket-d/keep"), "k\n")
+				os.Chmod(filepath.Join(home, ".claude/skills/synced/acct"), 0o755)
+				take := func(phase string) *Snapshot {
+					return takeSnapshotFor(envPolicyDev, phase, home, nil, nil, realGit(t), pathTokenizer{home: home}, realClock{}, time.Time{}, DefaultProtectDepth)
+				}
+				before := take("before")
+				mutate(home)
+				d := compareEnvironmentFor(envPolicyDev, before, take("after"), nil)
+				if len(d.Protected) == 0 || !slices.Contains(d.Codes, CodeEnvModified) {
+					t.Fatalf("%s was not protected: %+v", name, d)
+				}
+			})
+		}
+		t.Run("repository_in_staging", func(t *testing.T) {
+			t.Parallel()
+			home := t.TempDir()
+			repo := filepath.Join(home, ".claude/skills/synced/acct/.staging/repo")
+			newRepo(t, repo)
+			root, err := canonicalPath(filepath.Join(home, ".claude/skills/synced/acct/.staging"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			take := func(phase string) *Snapshot {
+				s := takeSnapshotFor(envPolicyDev, phase, home, []string{root}, nil, realGit(t), pathTokenizer{home: home}, realClock{}, time.Time{}, DefaultProtectDepth)
+				if !s.Complete {
+					t.Fatalf("%s incomplete: %s", phase, s.Code)
+				}
+				return s
+			}
+			before := take("before")
+			os.WriteFile(filepath.Join(repo, "a.txt"), []byte("changed\n"), 0o644)
+			d := compareEnvironmentFor(envPolicyDev, before, take("after"), []string{root})
+			if len(d.Protected) == 0 || !slices.ContainsFunc(d.Protected, func(c EnvChange) bool { return c.Scope == "" }) {
+				t.Fatalf("a protected repository in the staging tree was waived: %+v", d.Protected)
+			}
+		})
+	})
 }
 
 // devProbePassing is the shared qualified probe record.

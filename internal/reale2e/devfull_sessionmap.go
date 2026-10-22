@@ -39,6 +39,10 @@ type DevPhaseFacts struct {
 	ResultText string      `json:"result_text"`
 	ResultOK   bool        `json:"result_ok"`
 	Problem    string      `json:"problem"`
+	// ProblemSource is the refused notification record of a
+	// wake_representation_unsupported problem (design 12a-dev-flow-verify
+	// r0.8).
+	ProblemSource *SourceRef `json:"problem_source,omitempty"`
 }
 
 // DevTaskFacts is one reached task's coordinator facts.
@@ -52,6 +56,9 @@ type DevTaskFacts struct {
 	Wait        devWait     `json:"wait"`
 	WaitSources []SourceRef `json:"wait_sources"`
 	Problem     string      `json:"problem"`
+	// ProblemSource is the refused notification record of a
+	// wake_representation_unsupported problem (r0.8).
+	ProblemSource *SourceRef `json:"problem_source,omitempty"`
 }
 
 // devMapTask is one reached task's derivation input.
@@ -102,6 +109,10 @@ func deriveDevEventMap(in devMapInput) DevEventMap {
 		}
 		f := DevPhaseFacts{Phase: p, File: file, SHA256: sha256Hex(data), SessionID: s.sessionID, Inits: []SourceRef{}, ResultText: s.resultText,
 			ResultOK: s.hasResult && s.resultOK, Problem: s.problem}
+		if s.problem == devWakeUnsupported && s.problemSrc.File != "" {
+			ps := s.problemSrc
+			f.ProblemSource = &ps
+		}
 		for _, r := range s.records {
 			switch r.kind {
 			case "init":
@@ -137,6 +148,10 @@ func deriveDevEventMap(in devMapInput) DevEventMap {
 		}
 		if tf.Problem == "" {
 			tf.Problem = problem
+			if problem == devWakeUnsupported && src.refused.File != "" {
+				ps := src.refused
+				tf.ProblemSource = &ps
+			}
 		}
 		for _, s := range []SourceRef{src.start, src.handle, src.wake, src.consume} {
 			if s.File != "" {

@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -1082,11 +1084,19 @@ func TestDevFullLifecycle(t *testing.T) {
 	cmd := devWaitCommand("/bin/reale2e", "/tmp/rt", task, 1)
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
+	// lines counts the stream's records (each test stream restarts it).
+	lines := 0
 	w := func(v map[string]any) {
 		if _, ok := v["session_id"]; !ok {
 			v["session_id"] = testSession
 		}
+		lines++
 		enc.Encode(v)
+	}
+	// raw writes one literal record (no session added).
+	raw := func(line string) {
+		lines++
+		buf.WriteString(line + "\n")
 	}
 	use := func(id, name string, input map[string]any) {
 		w(map[string]any{"type": "assistant", "message": map[string]any{"content": []any{map[string]any{"type": "tool_use", "id": id, "name": name, "input": input}}}})
@@ -1099,11 +1109,31 @@ func TestDevFullLifecycle(t *testing.T) {
 			"</tool-use-id>\n<status>completed</status>\n</task-notification>"}})
 	}
 	show, _ := json.Marshal(contract.TaskShowResponse{Version: contract.ProtocolVersion, Task: view})
-	qualify := func(build func()) (devWait, string) {
+	// judge decodes a built stream and derives the slot's wait: the stream
+	// problem first (a notification's own session and shape), then the
+	// wait's, with the line of the record a refusal names.
+	judge := func(build func()) (devWait, string, int) {
 		buf.Reset()
+		lines = 0
 		w(map[string]any{"type": "system", "subtype": "init", "permissionMode": "auto"})
 		build()
 		s := decodeDevStream(buf.Bytes(), "")
+		if s.problem != "" {
+			return devWait{}, s.problem, s.problemSrc.FirstLine
+		}
+		got, src, p := deriveDevWait(s.records, cmd, task)
+		return got, p, src.refused.FirstLine
+	}
+	// qualify is the slot's wait derivation alone, after a clean stream.
+	qualify := func(build func()) (devWait, string) {
+		buf.Reset()
+		lines = 0
+		w(map[string]any{"type": "system", "subtype": "init", "permissionMode": "auto"})
+		build()
+		s := decodeDevStream(buf.Bytes(), "")
+		if s.problem != "" && s.problem != devToolFailed {
+			t.Fatalf("stream problem %s", s.problem)
+		}
 		return qualifyDevWait(s.records, cmd, task)
 	}
 	start := func() {
@@ -1117,12 +1147,32 @@ func TestDevFullLifecycle(t *testing.T) {
 	if got, p := qualify(func() { start(); note("b1", "tu"); consume("ts") }); p != "" || !got.complete() || got.Handle != "b1" {
 		t.Fatalf("qualified wait %+v %s", got, p)
 	}
-	// A foreground command, an unrelated notification and a system event
-	// are no wake.
+	// Live probe 20261022T132232Z-3fe07457 (design 12a-dev-flow-verify
+	// r0.8): Claude Code 2.1.306 reports the completed background wait as
+	// a top-level system task_notification record (sanitized copy of the
+	// captured shape, run_id and uuid included).
+	sysFields := func(handle, toolUse string) map[string]any {
+		return map[string]any{"type": "system", "subtype": "task_notification", "task_id": handle, "tool_use_id": toolUse, "status": "completed",
+			"output_file": "/tmp/claude/tasks/" + handle + ".output", "summary": "Background command \"wait\" completed (exit code 0)",
+			"run_id": "11111111-2222-3333-4444-555555555555", "uuid": "66666666-7777-8888-9999-000000000000"}
+	}
+	sysNote := func(handle, toolUse string) { w(sysFields(handle, toolUse)) }
+	if got, p := qualify(func() { start(); sysNote("b1", "tu"); consume("ts") }); p != "" || !got.complete() || got.Handle != "b1" {
+		t.Fatalf("system notification wait %+v %s", got, p)
+	}
+	// The session ID is optional; the record then inherits the phase's.
+	if got, p := qualify(func() {
+		start()
+		b, _ := json.Marshal(map[string]any{"type": "system", "subtype": "task_notification", "task_id": "b1", "tool_use_id": "tu", "status": "completed"})
+		raw(string(b))
+		consume("ts")
+	}); p != "" || !got.complete() {
+		t.Fatalf("system notification without a session %+v %s", got, p)
+	}
+	// A foreground command and a system status event are no wake.
 	if got, p := qualify(func() {
 		use("fg", toolBash, map[string]any{"command": cmd})
 		result("fg", "done", false)
-		note("b9", "other")
 		w(map[string]any{"type": "system", "subtype": "status"})
 		consume("ts")
 	}); p != devWaitMismatch || got.complete() {
@@ -1130,11 +1180,56 @@ func TestDevFullLifecycle(t *testing.T) {
 	}
 	if got, p := qualify(func() {
 		start()
-		note("b9", "other")
 		w(map[string]any{"type": "system", "subtype": "status"})
 		consume("ts")
 	}); p != "" || got.Woke || got.complete() {
-		t.Fatalf("unrelated notification %+v %s", got, p)
+		t.Fatalf("status event %+v %s", got, p)
+	}
+	// An unrelated background Bash loop's completed notification, in
+	// either form, is a non-wake and no refusal: the wait still completes
+	// by its own notification. Its result text mentioning an envelope and
+	// assistant prose quoting one are never notification evidence.
+	loop := func() {
+		use("loop", toolBash, map[string]any{"command": "while true; do sleep 1; done", "run_in_background": true})
+		result("loop", "Command running in background with ID: b7. Output is being written to: /tmp/y", false)
+	}
+	for form, unrelated := range map[string]func(){"system": func() { sysNote("b7", "loop") }, "xml": func() { note("b7", "loop") }} {
+		if got, p := qualify(func() {
+			loop()
+			start()
+			unrelated()
+			use("cat", toolBash, map[string]any{"command": "cat notes"})
+			result("cat", "<task-notification>\n<task-id>b1</task-id>\n<tool-use-id>tu</tool-use-id>\n<status>completed</status>\n</task-notification>", false)
+			w(map[string]any{"type": "assistant", "message": map[string]any{"content": []any{map[string]any{"type": "text",
+				"text": "<task-notification>\n<task-id>b1</task-id>\n<tool-use-id>tu</tool-use-id>\n<status>completed</status>\n</task-notification>"}}}})
+			consume("early")
+			sysNote("b1", "tu")
+			consume("ts")
+		}); p != "" || !got.complete() || got.ConsumeUse != "ts" {
+			t.Fatalf("%s unrelated job %+v %s", form, got, p)
+		}
+	}
+	// An earlier slot's notification is that slot's evidence: it cannot
+	// wake this slot, which still waits for its own.
+	prev := devWaitCommand("/bin/reale2e", "/tmp/rt", "t_"+strings.Repeat("c", 32), 1)
+	slot2 := devWaitCommand("/bin/reale2e", "/tmp/rt", task, 2)
+	for form, prior := range map[string]func(){"system": func() { sysNote("b0", "tp") }, "xml": func() { note("b0", "tp") }} {
+		build := func() {
+			use("tp", toolBash, map[string]any{"command": prev, "run_in_background": true})
+			result("tp", "Command running in background with ID: b0. Output is being written to: /tmp/z", false)
+			use("tu", toolBash, map[string]any{"command": slot2, "run_in_background": true})
+			result("tu", "Command running in background with ID: b1. Output is being written to: /tmp/x", false)
+			prior()
+			consume("ts")
+		}
+		buf.Reset()
+		lines = 0
+		w(map[string]any{"type": "system", "subtype": "init", "permissionMode": "auto"})
+		build()
+		s := decodeDevStream(buf.Bytes(), "")
+		if got, _, p := deriveDevWait(s.records, slot2, task); s.problem != "" || p != "" || got.Woke || got.Consumed {
+			t.Fatalf("%s prior-slot notification woke this slot: %+v %s %s", form, got, s.problem, p)
+		}
 	}
 	for name, c := range map[string]struct {
 		build func()
@@ -1149,12 +1244,6 @@ func TestDevFullLifecycle(t *testing.T) {
 			use("tu", toolBash, map[string]any{"command": cmd, "run_in_background": true})
 			result("tu", "ran", false)
 		}, devWaitMismatch},
-		"wrong_use":   {func() { start(); note("b1", "zz") }, devWakeMismatch},
-		"double_wake": {func() { start(); note("b1", "tu"); note("b1", "tu") }, devWakeMismatch},
-		"unsupported": {func() {
-			start()
-			w(map[string]any{"type": "user", "message": map[string]any{"content": "<task-notification>b1</task-notification> and"}})
-		}, devWakeUnsupported},
 		"interrupted": {func() {
 			start()
 			note("b1", "tu")
@@ -1170,9 +1259,164 @@ func TestDevFullLifecycle(t *testing.T) {
 			t.Errorf("%s: problem %q want %q", name, p, c.want)
 		}
 	}
+	// Every refused notification fails at its own record with
+	// wake_representation_unsupported, even when a valid notification,
+	// the consuming task_show and the captured files follow it (r0.8).
+	field := func(mutate func(m map[string]any)) func() {
+		return func() {
+			m := sysFields("b1", "tu")
+			mutate(m)
+			w(m)
+		}
+	}
+	rawSys := func(body string) func() {
+		return func() { raw(`{"type":"system","subtype":"task_notification",` + body + `}`) }
+	}
+	refusals := map[string]func(){
+		"sys_wrong_handle":   field(func(m map[string]any) { m["task_id"] = "b2" }),
+		"sys_missing_handle": field(func(m map[string]any) { delete(m, "task_id") }),
+		"sys_empty_handle":   field(func(m map[string]any) { m["task_id"] = "" }),
+		"sys_number_handle":  field(func(m map[string]any) { m["task_id"] = 7 }),
+		"sys_null_handle":    field(func(m map[string]any) { m["task_id"] = nil }),
+		"sys_wrong_use":      field(func(m map[string]any) { m["tool_use_id"] = "zz" }),
+		"sys_missing_use":    field(func(m map[string]any) { delete(m, "tool_use_id") }),
+		"sys_empty_use":      field(func(m map[string]any) { m["tool_use_id"] = "" }),
+		"sys_object_use":     field(func(m map[string]any) { m["tool_use_id"] = map[string]any{} }),
+		"sys_failed":         field(func(m map[string]any) { m["status"] = "failed" }),
+		"sys_status_case":    field(func(m map[string]any) { m["status"] = "Completed" }),
+		"sys_missing_status": field(func(m map[string]any) { delete(m, "status") }),
+		"sys_empty_status":   field(func(m map[string]any) { m["status"] = "" }),
+		"sys_bool_status":    field(func(m map[string]any) { m["status"] = true }),
+		"sys_other_session":  field(func(m map[string]any) { m["session_id"] = "11111111-1111-4111-8111-111111111111" }),
+		"sys_empty_session":  field(func(m map[string]any) { m["session_id"] = "" }),
+		"sys_number_session": field(func(m map[string]any) { m["session_id"] = 1 }),
+		"sys_unknown_field":  field(func(m map[string]any) { m["exit_code"] = 0 }),
+		"sys_session_alias":  field(func(m map[string]any) { m["sessionId"] = testSession }),
+		"sys_wrong_summary":  field(func(m map[string]any) { m["summary"] = 1 }),
+		"sys_null_uuid":      field(func(m map[string]any) { m["uuid"] = nil }),
+		"sys_duplicate_key":  rawSys(`"task_id":"b1","task_id":"b1","tool_use_id":"tu","status":"completed"`),
+		// Code review W1: a user XML notification the strict decoder
+		// refuses (a duplicate key) is still a refused notification.
+		"xml_duplicate_key": func() {
+			raw(`{"type":"user","type":"user","session_id":"` + testSession + `","message":{"content":"<task-notification>\n<task-id>b1</task-id>\n<tool-use-id>tu</tool-use-id>\n<status>completed</status>\n</task-notification>"}}`)
+		},
+		"sys_on_user_record": func() {
+			w(map[string]any{"type": "user", "subtype": "task_notification", "task_id": "b1", "tool_use_id": "tu", "status": "completed"})
+		},
+		"sys_on_assistant": func() {
+			w(map[string]any{"type": "assistant", "subtype": "task_notification", "task_id": "b1", "tool_use_id": "tu", "status": "completed"})
+		},
+		"xml_wrong_use":    func() { note("b1", "zz") },
+		"xml_wrong_handle": func() { note("b2", "tu") },
+		"xml_failed": func() {
+			w(map[string]any{"type": "user", "message": map[string]any{"content": "<task-notification>\n<task-id>b1</task-id>\n<tool-use-id>tu</tool-use-id>\n<status>failed</status>\n</task-notification>"}})
+		},
+		"xml_other_session": func() { note("b1", "tu") /* replaced below */ },
+		"xml_unsupported_shape": func() {
+			w(map[string]any{"type": "user", "message": map[string]any{"content": "<task-notification>b1</task-notification> and"}})
+		},
+		"xml_beside_results": func() {
+			w(map[string]any{"type": "user", "message": map[string]any{"content": []any{
+				map[string]any{"type": "tool_result", "tool_use_id": "q", "content": "x"},
+				map[string]any{"type": "text", "text": "<task-notification>\n<task-id>b1</task-id>\n<tool-use-id>tu</tool-use-id>\n<status>completed</status>\n</task-notification>"}}}})
+		},
+	}
+	refusals["xml_other_session"] = func() {
+		w(map[string]any{"type": "user", "session_id": "11111111-1111-4111-8111-111111111111", "message": map[string]any{"content": "<task-notification>\n<task-id>b1</task-id>\n<tool-use-id>tu</tool-use-id>\n<status>completed</status>\n</task-notification>"}})
+	}
+	for name, bad := range refusals {
+		var at int
+		if _, p, line := judge(func() {
+			start()
+			bad()
+			at = lines
+			sysNote("b1", "tu")
+			consume("ts")
+		}); p != devWakeUnsupported || line != at {
+			t.Errorf("%s: problem %q at line %d, want %s at line %d", name, p, line, devWakeUnsupported, at)
+		}
+	}
+	// A notification's own session mismatch is refused by the stream
+	// decoder itself, before the generic session check and before any wait
+	// derivation.
+	for _, name := range []string{"sys_other_session", "xml_other_session", "sys_empty_session", "sys_unknown_field", "sys_duplicate_key", "xml_duplicate_key"} {
+		buf.Reset()
+		lines = 0
+		w(map[string]any{"type": "system", "subtype": "init", "permissionMode": "auto"})
+		start()
+		refusals[name]()
+		if s := decodeDevStream(buf.Bytes(), ""); s.problem != devWakeUnsupported || s.problemSrc.FirstLine != lines {
+			t.Errorf("%s: stream problem %q at %d", name, s.problem, s.problemSrc.FirstLine)
+		}
+		// The event map names the same record.
+		em := deriveDevEventMap(devMapInput{streams: map[int][]byte{1: buf.Bytes()}, phases: 1})
+		if f := em.Phases[0]; f.Problem != devWakeUnsupported || f.ProblemSource == nil || f.ProblemSource.FirstLine != lines || f.ProblemSource.File != devStreamFile(1) {
+			t.Errorf("%s: event map phase %+v", name, f)
+		}
+	}
+	// Binding: before the start or its handle, unbound, cross-bound with
+	// an unrelated start, or a duplicate within or across the two forms.
+	for name, c := range map[string]struct {
+		build func() int
+	}{
+		"before_start": {func() int { sysNote("b1", "tu"); at := lines; start(); return at }},
+		"before_handle": {func() int {
+			use("tu", toolBash, map[string]any{"command": cmd, "run_in_background": true})
+			note("b1", "tu")
+			return lines
+		}},
+		"sys_unbound":   {func() int { start(); sysNote("b9", "other"); return lines }},
+		"xml_unbound":   {func() int { start(); note("b9", "other"); return lines }},
+		"sys_cross":     {func() int { loop(); start(); sysNote("b1", "loop"); return lines }},
+		"xml_cross":     {func() int { loop(); start(); note("b1", "loop"); return lines }},
+		"sys_cross_use": {func() int { loop(); start(); sysNote("b7", "tu"); return lines }},
+		"xml_cross_use": {func() int { loop(); start(); note("b7", "tu"); return lines }},
+		"sys_duplicate": {func() int { start(); sysNote("b1", "tu"); sysNote("b1", "tu"); return lines }},
+		"xml_duplicate": {func() int { start(); note("b1", "tu"); note("b1", "tu"); return lines }},
+		"sys_then_xml":  {func() int { start(); sysNote("b1", "tu"); note("b1", "tu"); return lines }},
+		"xml_then_sys":  {func() int { start(); note("b1", "tu"); sysNote("b1", "tu"); return lines }},
+		"after_consume": {func() int { start(); sysNote("b1", "tu"); consume("ts"); note("b1", "tu"); return lines }},
+	} {
+		var at int
+		if _, p, line := judge(func() { at = c.build(); consume("ts2") }); p != devWakeUnsupported || line != at {
+			t.Errorf("%s: problem %q at line %d, want %s at line %d", name, p, line, devWakeUnsupported, at)
+		}
+	}
 	// Consumption before the wake does not count.
 	if got, _ := qualify(func() { start(); consume("ts"); note("b1", "tu") }); got.Consumed {
 		t.Fatal("a task_show before the wake consumed it")
+	}
+	// The recognizer: devWaitCommand's grammar for the known executable
+	// and runtime, any valid task and ordinal, background, permitted keys.
+	prefix := devWaitPrefix(cmd, task)
+	for c, want := range map[string]bool{
+		devWaitCommand("/bin/reale2e", "/tmp/rt", "t_"+strings.Repeat("c", 32), 7):   true,
+		devWaitCommand("/bin/reale2e", "/tmp/rt", task, 2):                           true,
+		devWaitCommand("/bin/other", "/tmp/rt", task, 2):                             false,
+		devWaitCommand("/bin/reale2e", "/tmp/rt2", task, 2):                          false,
+		devWaitCommand("/bin/reale2e", "/tmp/rt", "t_x", 2):                          false,
+		"/bin/reale2e dev-wait-task --run /tmp/rt --task " + task + " --ordinal 02":  false,
+		"/bin/reale2e dev-wait-task --run /tmp/rt --task " + task + " --ordinal 0":   false,
+		"/bin/reale2e dev-wait-task --run /tmp/rt --task " + task + " --ordinal 1 &": false,
+	} {
+		in := map[string]json.RawMessage{"command": json.RawMessage(strconv.Quote(c)), "run_in_background": json.RawMessage("true")}
+		if got := isDevWaitStart(in, prefix); got != want {
+			t.Errorf("recognizer %q: %v want %v", c, got, want)
+		}
+	}
+	good := map[string]json.RawMessage{"command": json.RawMessage(strconv.Quote(cmd)), "run_in_background": json.RawMessage("true"), "description": json.RawMessage(`"w"`)}
+	if !isDevWaitStart(good, prefix) || isDevWaitStart(good, "") {
+		t.Fatal("the slot's own command")
+	}
+	for k, v := range map[string]string{"run_in_background": "false", "timeout": "1"} {
+		bad := maps.Clone(good)
+		bad[k] = json.RawMessage(v)
+		if isDevWaitStart(bad, prefix) {
+			t.Errorf("recognized with %s=%s", k, v)
+		}
+	}
+	if devWaitPrefix("callsheet task wait", task) != "" {
+		t.Fatal("a prefix from another command")
 	}
 	// Stream-level problems.
 	for name, c := range map[string]struct {

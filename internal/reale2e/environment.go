@@ -540,20 +540,73 @@ func structuralAncestor(vendor, rel string) bool {
 	return slices.Contains(structuralAncestors[vendor], rel)
 }
 
+// envPolicy is an ownership policy: the legacy v3 policy (A3.6) or the
+// development full-flow and qualification policy (design
+// 12a-dev-flow-verify r0.8, FP-6), which adds only the Claude
+// synced-skills bookkeeping reclassification. A policy is chosen by the
+// code path, never by a bundle.
+type envPolicy int
+
+const (
+	envPolicyLegacy envPolicy = iota
+	envPolicyDev
+)
+
+// syncedSkillsBookkeeping reports whether rel (a clean slash path below
+// the Claude home) is synced-skills bookkeeping, tool-maintained under the
+// development policy (owner decision 2026-10-22): exactly
+// skills/synced/<id>/.last-complete-round, skills/synced/<id>/.staging and
+// all its descendants (<id> one nonempty component), and a
+// skills/synced/.bucket-<suffix> entry itself (a nonempty suffix, directly
+// under skills/synced, never a subtree below it). skills, skills/synced,
+// the account directories, synced skill contents and every other skills
+// path stay owner-configuration.
+func syncedSkillsBookkeeping(vendor, rel string) bool {
+	if vendor != "claude" {
+		return false
+	}
+	parts := strings.Split(rel, "/")
+	if len(parts) < 3 || parts[0] != "skills" || parts[1] != "synced" || parts[2] == "" {
+		return false
+	}
+	switch {
+	case len(parts) == 3:
+		return strings.HasPrefix(parts[2], ".bucket-") && len(parts[2]) > len(".bucket-")
+	case len(parts) == 4 && parts[3] == ".last-complete-round":
+		return true
+	default:
+		return parts[3] == ".staging"
+	}
+}
+
 // ownerClass is the class of the vendor entry at rel (a slash path below
-// the vendor home): owner-configuration at, below or as a structural
-// ancestor of a strict path, else tool-maintained, regardless of its
-// basename, suffix, type or age.
+// the vendor home) under the legacy policy: owner-configuration at, below
+// or as a structural ancestor of a strict path, else tool-maintained,
+// regardless of its basename, suffix, type or age.
 func ownerClass(vendor, rel string) string {
+	return ownerClassFor(envPolicyLegacy, vendor, rel)
+}
+
+// ownerClassFor is ownerClass under policy p: the development policy
+// classifies synced-skills bookkeeping as tool-maintained before the
+// general skills rule.
+func ownerClassFor(p envPolicy, vendor, rel string) string {
+	if p == envPolicyDev && syncedSkillsBookkeeping(vendor, rel) {
+		return ClassTool
+	}
 	if strictUnder(vendor, rel) || structuralAncestor(vendor, rel) {
 		return ClassOwner
 	}
 	return ClassTool
 }
 
-// toolKey reports whether a record key is a tool-maintained vendor entry.
-func toolKey(k envKey) bool {
-	return k.kind == RecEntry && ownerClass(k.scope, decodeToken(k.path)) == ClassTool
+// toolKey reports whether a record key is a tool-maintained vendor entry
+// under the legacy policy.
+func toolKey(k envKey) bool { return toolKeyFor(envPolicyLegacy, k) }
+
+// toolKeyFor is toolKey under policy p.
+func toolKeyFor(p envPolicy, k envKey) bool {
+	return k.kind == RecEntry && ownerClassFor(p, k.scope, decodeToken(k.path)) == ClassTool
 }
 
 // topLevel is a tool-maintained entry's summary group: its first path
@@ -591,6 +644,8 @@ type envScanner struct {
 	evidenceR string
 	// openDir opens a directory for chunked reading (nil: openDir).
 	openDir func(string) (dirReader, error)
+	// policy classifies vendor entries (ownerClassFor).
+	policy envPolicy
 }
 
 // dirChunk is the number of directory entries read at a time.
@@ -738,6 +793,12 @@ func takeSnapshot(phase, home string, roots, exclude []string, git GitRunner, to
 // (validateRoots); the home, the exclusions and the tokenizer's prefixes are
 // made canonical here, as every path discovery reaches below a root is.
 func takeSnapshotDepth(phase, home string, roots, exclude []string, git GitRunner, tok pathTokenizer, clock Clock, deadline time.Time, depth int) *Snapshot {
+	return takeSnapshotFor(envPolicyLegacy, phase, home, roots, exclude, git, tok, clock, deadline, depth)
+}
+
+// takeSnapshotFor is takeSnapshotDepth classifying vendor entries under
+// policy p.
+func takeSnapshotFor(p envPolicy, phase, home string, roots, exclude []string, git GitRunner, tok pathTokenizer, clock Clock, deadline time.Time, depth int) *Snapshot {
 	if c, err := canonicalPath(home); home != "" && err == nil {
 		home = c
 	}
@@ -748,7 +809,7 @@ func takeSnapshotDepth(phase, home string, roots, exclude []string, git GitRunne
 		}
 	}
 	sc := &envScanner{home: home, roots: roots, exclude: exclude, git: git, tok: tok.canonical(), clock: clock, deadline: deadline, phase: phase, depth: depth,
-		repoSeen: map[string]bool{}}
+		repoSeen: map[string]bool{}, policy: p}
 	sc.rtok = sc.tok.rootFrame(roots)
 	sc.snap = Snapshot{Phase: phase, Complete: true, Roots: []string{}, Depth: depth}
 	for _, r := range roots {
@@ -893,7 +954,7 @@ func (sc *envScanner) vendorEntry(vendor, p, rel string) error {
 	if err != nil {
 		return sc.fail(CodeEnvUnobserved)
 	}
-	rec := EnvRecord{Kind: RecEntry, Scope: vendor, Path: encodePath(rel), Class: ownerClass(vendor, rel)}
+	rec := EnvRecord{Kind: RecEntry, Scope: vendor, Path: encodePath(rel), Class: ownerClassFor(sc.policy, vendor, rel)}
 	statRecord(&rec, st)
 	switch rec.Type {
 	case TypeDir:
@@ -1450,6 +1511,12 @@ func parseSnapshot(shards [][]byte) (*Snapshot, error) {
 // tool-maintained entry carries no content digest; other kinds carry
 // neither class nor type.
 func checkInventory(s *Snapshot, roots []string) error {
+	return checkInventoryFor(envPolicyLegacy, s, roots)
+}
+
+// checkInventoryFor is checkInventory deriving entry classes under
+// ownership policy p.
+func checkInventoryFor(p envPolicy, s *Snapshot, roots []string) error {
 	homes, seenRoots := map[string]bool{}, map[string]bool{}
 	for _, c := range s.Compact {
 		ok := c.Kind == RecEntry || (c.Class == "" && c.Type == "")
@@ -1458,7 +1525,7 @@ func checkInventory(s *Snapshot, roots []string) error {
 			ok = ok && slices.Contains(Vendors, c.Scope) && c.Path == "$HOME/."+c.Scope && !homes[c.Scope]
 			homes[c.Scope] = true
 		case RecEntry:
-			ok = slices.Contains(Vendors, c.Scope) && cleanRelative(c.Path) && c.Class == ownerClass(c.Scope, decodeToken(c.Path)) &&
+			ok = slices.Contains(Vendors, c.Scope) && cleanRelative(c.Path) && c.Class == ownerClassFor(p, c.Scope, decodeToken(c.Path)) &&
 				slices.Contains([]string{TypeFile, TypeDir, TypeSymlink, TypeOther}, c.Type) && (c.Class == ClassOwner || (c.Content == "" && !c.Oversized))
 		case RecRoot:
 			ok = ok && c.Scope == "" && slices.Contains(roots, c.Path) && !seenRoots[c.Path]
@@ -1571,11 +1638,16 @@ func ownerConfigFields(a, b EnvRecord, fields []string) []string {
 // (never an unchanged claim); every protected difference yields
 // owner_environment_modified, whatever else failed.
 func CompareEnvironment(before, after *Snapshot, roots []string) EnvDiff {
+	return compareEnvironmentFor(envPolicyLegacy, before, after, roots)
+}
+
+// compareEnvironmentFor is CompareEnvironment under ownership policy p.
+func compareEnvironmentFor(p envPolicy, before, after *Snapshot, roots []string) EnvDiff {
 	var detail []EnvDetail
 	if before != nil && after != nil {
 		detail = changedDetail(before, after)
 	}
-	return diffFromDetail(before, after, roots, detail)
+	return diffFromDetailFor(p, before, after, roots, detail)
 }
 
 // compactKey is a compact record's key.
@@ -1643,11 +1715,11 @@ func changedDetail(before, after *Snapshot) []EnvDetail {
 // detailKeys are the differing keys a diff's detail must list, in order:
 // every key that is not a tool-maintained entry, and the first tools of
 // the tool-maintained ones.
-func detailKeys(keys []envKey, tools int) []envKey {
+func detailKeys(p envPolicy, keys []envKey, tools int) []envKey {
 	var out []envKey
 	n := 0
 	for _, k := range keys {
-		if !toolKey(k) {
+		if !toolKeyFor(p, k) {
 			out = append(out, k)
 		} else if n < tools {
 			out = append(out, k)
@@ -1664,21 +1736,26 @@ func detailKeys(keys []envKey, tools int) []envKey {
 // digest (so the checker derives every change from evidence bound to the
 // snapshots).
 func verifyDetail(before, after *Snapshot, detail []EnvDetail) error {
+	return verifyDetailFor(envPolicyLegacy, before, after, detail)
+}
+
+// verifyDetailFor is verifyDetail under ownership policy p.
+func verifyDetailFor(p envPolicy, before, after *Snapshot, detail []EnvDetail) error {
 	bc, ac := before.compactRecords(), after.compactRecords()
 	tools := 0
 	for _, e := range detail {
 		for _, r := range []*EnvRecord{e.Before, e.After} {
-			if r != nil && toolKey(keyOf(*r)) {
+			if r != nil && toolKeyFor(p, keyOf(*r)) {
 				if r.SHA256 != "" {
 					return errors.New("diff detail holds a content digest of tool-maintained state")
 				}
 			}
 		}
-		if r := detailRecord(e); r != nil && toolKey(keyOf(*r)) {
+		if r := detailRecord(e); r != nil && toolKeyFor(p, keyOf(*r)) {
 			tools++
 		}
 	}
-	keys := detailKeys(differingKeys(bc, ac), tools)
+	keys := detailKeys(p, differingKeys(bc, ac), tools)
 	if len(keys) != len(detail) {
 		return fmt.Errorf("diff detail lists %d entries, the snapshots require %d", len(detail), len(keys))
 	}
@@ -1718,6 +1795,11 @@ func detailRecord(e EnvDetail) *EnvRecord {
 // tool-maintained summary and counts come from the complete compact
 // inventories, the protected changes and change kinds from the detail.
 func diffFromDetail(before, after *Snapshot, roots []string, detail []EnvDetail) EnvDiff {
+	return diffFromDetailFor(envPolicyLegacy, before, after, roots, detail)
+}
+
+// diffFromDetailFor is diffFromDetail under ownership policy p.
+func diffFromDetailFor(p envPolicy, before, after *Snapshot, roots []string, detail []EnvDetail) EnvDiff {
 	d := EnvDiff{Schema: DiffSchema, ProtectedRoots: slices.Clone(roots), Complete: true, Codes: []string{}, Protected: []EnvChange{},
 		ToolSummary: []ToolSummaryRow{}, OversizedConfig: []string{}, Detail: []EnvDetail{}}
 	oversized := func(scope, path string, over bool) {
@@ -1758,12 +1840,12 @@ func diffFromDetail(before, after *Snapshot, roots []string, detail []EnvDetail)
 			d.Complete = false
 		}
 		var tools int
-		d.ToolSummary, tools = toolSummary(before.compactRecords(), after.compactRecords())
+		d.ToolSummary, tools = toolSummary(p, before.compactRecords(), after.compactRecords())
 		for _, e := range detail {
-			ch, protected := classifyChange(e.Before, e.After)
+			ch, protected := classifyChangeFor(p, e.Before, e.After)
 			e.Change = ch.Kind
 			d.Detail = append(d.Detail, e)
-			if r := detailRecord(e); r != nil && toolKey(keyOf(*r)) {
+			if r := detailRecord(e); r != nil && toolKeyFor(p, keyOf(*r)) {
 				d.ToolDetailCount++
 			} else if protected {
 				d.Protected = append(d.Protected, ch)
@@ -1790,6 +1872,11 @@ func diffFromDetail(before, after *Snapshot, roots []string, detail []EnvDetail)
 // vendor home or of a structural ancestor as a real directory (A3.6); a
 // tool-maintained difference of any kind is report-only.
 func classifyChange(bp, ap *EnvRecord) (EnvChange, bool) {
+	return classifyChangeFor(envPolicyLegacy, bp, ap)
+}
+
+// classifyChangeFor is classifyChange under ownership policy p.
+func classifyChangeFor(p envPolicy, bp, ap *EnvRecord) (EnvChange, bool) {
 	r := bp
 	if r == nil {
 		r = ap
@@ -1798,7 +1885,7 @@ func classifyChange(bp, ap *EnvRecord) (EnvChange, bool) {
 		return EnvChange{Fields: []string{}}, false
 	}
 	k := keyOf(*r)
-	tool := toolKey(k)
+	tool := toolKeyFor(p, k)
 	ch := EnvChange{Scope: k.scope, Path: k.path, BeforeSize: sizeOf(bp), AfterSize: sizeOf(ap), Fields: []string{}}
 	if bp != nil {
 		ch.BeforeType, ch.BeforeMode, ch.Class = bp.Type, bp.Mode, bp.Class
@@ -1845,7 +1932,7 @@ func classifyChange(bp, ap *EnvRecord) (EnvChange, bool) {
 // and returns their total. Each entry counts once, a directory in its own
 // group; an existing entry with a differing digest is changed, whatever
 // its subtype.
-func toolSummary(before, after []EnvCompact) ([]ToolSummaryRow, int) {
+func toolSummary(p envPolicy, before, after []EnvCompact) ([]ToolSummaryRow, int) {
 	bm, am := map[envKey]EnvCompact{}, map[envKey]EnvCompact{}
 	for _, c := range before {
 		bm[compactKey(c)] = c
@@ -1856,7 +1943,7 @@ func toolSummary(before, after []EnvCompact) ([]ToolSummaryRow, int) {
 	rows := map[[2]string]*ToolSummaryRow{}
 	total := 0
 	for _, k := range differingKeys(before, after) {
-		if !toolKey(k) {
+		if !toolKeyFor(p, k) {
 			continue
 		}
 		b, inB := bm[k]
@@ -1921,9 +2008,14 @@ func sortChanges(cs []EnvChange) {
 // omitted. It returns the fitted diff; a mandatory part over the bound
 // fails.
 func encodeDiff(d EnvDiff) ([]byte, EnvDiff, error) {
+	return encodeDiffFor(envPolicyLegacy, d)
+}
+
+// encodeDiffFor is encodeDiff under ownership policy p.
+func encodeDiffFor(p envPolicy, d EnvDiff) ([]byte, EnvDiff, error) {
 	var tools []int
 	for i, e := range d.Detail {
-		if r := detailRecord(e); r != nil && toolKey(keyOf(*r)) {
+		if r := detailRecord(e); r != nil && toolKeyFor(p, keyOf(*r)) {
 			tools = append(tools, i)
 		}
 	}
