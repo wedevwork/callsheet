@@ -367,6 +367,67 @@ func TestDevFullVerifyFP2(t *testing.T) {
 			checkRefusedWake(t, r)
 		})
 	}
+	// Design 12a-dev-flow-verify r0.9: the wait start's optional Bash
+	// timeout. A positive integer token (the captured 900000, 1, beyond
+	// uint64) is accepted and the workflow completes, in both wake forms;
+	// any other value fails wait_command_mismatch at the start; a stopped
+	// wait (its timeout) is refused at once while the worker still runs;
+	// a prior slot's grammar command with an invalid input is never an
+	// unrelated job.
+	for name, c := range map[string]struct{ timeout, form string }{
+		"captured_system": {"900000", "system"}, "captured_xml": {"900000", ""}, "one": {"1", "system"}, "beyond_uint64": {"99999999999999999999999", ""},
+	} {
+		t.Run("timeout_"+name, func(t *testing.T) {
+			t.Parallel()
+			r := newDevRig(t, happy())
+			r.owner = []string{"yes 1"}
+			r.wakeForm, r.waitTimeout = c.form, c.timeout
+			r.expect(0, "")
+			if code, rep := r.offline(); code != 0 {
+				t.Fatalf("offline %v", devCodes(rep))
+			}
+			if c.form == "system" {
+				checkSystemWakes(t, r, len(r.d.state.Tasks))
+			}
+		})
+	}
+	for _, timeout := range []string{"1.5", "1e3", "0", "-1"} {
+		t.Run("timeout_invalid_"+timeout, func(t *testing.T) {
+			t.Parallel()
+			r := newDevRig(t, []devAct{{marker: markerDesignDraft}})
+			r.waitTimeout = timeout
+			r.expect(1, devWaitMismatch)
+			code, rep := r.offline()
+			if waits := devCriterion(rep, "waits").Codes; code != 1 || !slices.Contains(waits, devWaitMismatch) || slices.Contains(waits, "event_map_mismatch") {
+				t.Fatalf("offline %v", devCodes(rep))
+			}
+		})
+	}
+	for _, form := range []string{"", "system"} {
+		t.Run("timeout_stopped_"+cmpOr(form, "xml"), func(t *testing.T) {
+			t.Parallel()
+			r := newDevRig(t, []devAct{{marker: markerDesignDraft, alter: "early-stopped"}})
+			r.wakeForm, r.waitTimeout = form, "900000"
+			r.expect(1, devWakeUnsupported)
+			checkRefusedWake(t, r)
+			if code, rep := r.offline(); code != 1 || !slices.Contains(devCriterion(rep, "waits").Codes, devWakeUnsupported) {
+				t.Fatalf("offline %v", devCodes(rep))
+			}
+		})
+	}
+	t.Run("prior_slot_invalid", func(t *testing.T) {
+		t.Parallel()
+		r := newDevRig(t, []devAct{{marker: markerDesignDraft}, {marker: markerDesignApproved, alter: "prior-invalid"}})
+		r.expect(1, devWaitMismatch)
+		code, rep := r.offline()
+		if waits := devCriterion(rep, "waits").Codes; code != 1 || !slices.Contains(waits, devWaitMismatch) || slices.Contains(waits, "event_map_mismatch") {
+			t.Fatalf("offline %v", devCodes(rep))
+		}
+		em := bundleDoc[DevEventMap](t, r.f.bundle(), devEventMapFile)
+		if len(em.Tasks) != 2 || em.Tasks[1].Problem != devWaitMismatch {
+			t.Fatalf("event map %+v", em.Tasks)
+		}
+	})
 	t.Run("deadline_without_wake", func(t *testing.T) {
 		t.Parallel()
 		r := newDevRig(t, []devAct{{marker: markerDesignDraft, alter: "deadline-no-wake"}})
@@ -1047,6 +1108,39 @@ func TestDevFullVerifyFP8(t *testing.T) {
 			}
 		}
 	})
+	// r0.9: the probe qualifies with the captured timeout start; a stopped
+	// or invalid timeout start blocks it.
+	t.Run("timeout_wake", func(t *testing.T) {
+		t.Parallel()
+		r := probeRig(t)
+		r.wakeForm, r.waitTimeout = "system", "900000"
+		r.expect(0, "")
+		if q := r.qualification(); q.Result != ResultQualified || !qualifiedStages(q.Stages) {
+			t.Fatalf("qualification %+v", q.Stages)
+		}
+		if codes := qualificationCodes(t, r.f.bundle()); len(codes) != 0 {
+			t.Fatalf("offline %v", codes)
+		}
+	})
+	for name, c := range map[string]struct{ timeout, alter, stop string }{
+		"timeout_invalid":        {"1.0", "", devWaitMismatch},
+		"timeout_stopped_xml":    {"900000", "early-stopped", devWakeUnsupported},
+		"timeout_stopped_system": {"900000", "early-stopped", devWakeUnsupported},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			r := probeRig(t)
+			r.steps[0].alter = c.alter
+			r.waitTimeout = c.timeout
+			if strings.HasSuffix(name, "_system") {
+				r.wakeForm = "system"
+			}
+			r.expect(1, c.stop)
+			if q := r.qualification(); q.Result != ResultBlocked || q.Stages[1].Result == stagePass {
+				t.Fatalf("qualified %+v", q.Stages)
+			}
+		})
+	}
 	for _, form := range []string{"", "system"} {
 		for _, alter := range []string{"bad-wake", "early-fail"} {
 			t.Run("refused_"+cmpOr(form, "xml")+"_"+alter, func(t *testing.T) {

@@ -72,6 +72,14 @@ func decodeDevStream(stdout []byte, want string) devStream {
 
 // decodeDevStreamAs is decodeDevStream whose source references name file.
 func decodeDevStreamAs(file string, stdout []byte, want string) devStream {
+	return decodeDevStreamFor(file, stdout, want, "")
+}
+
+// decodeDevStreamFor is decodeDevStreamAs knowing the slot commands'
+// prefix (devWaitPrefixOf): a record the strict decoder refuses (a
+// duplicate key) holding a dev-wait-task start fails wait_command_mismatch
+// (design 12a-dev-flow-verify r0.9), never merely session_malformed.
+func decodeDevStreamFor(file string, stdout []byte, want, waitPrefix string) devStream {
 	d := &deriver{codes: map[string]bool{}}
 	s := devStream{records: d.decodeLines(file, stdout), sessionID: want}
 	fail := func(code string, src SourceRef) {
@@ -90,8 +98,14 @@ func decodeDevStreamAs(file string, stdout []byte, want string) devStream {
 			src = f.Sources[0]
 			lines := bytes.Split(stdout, []byte("\n"))
 			var raw map[string]json.RawMessage
-			if i := src.FirstLine - 1; i >= 0 && i < len(lines) && json.Unmarshal(lines[i], &raw) == nil && raw != nil && devNoteOf(parseRecord(raw, src)).candidate {
-				code = devWakeUnsupported
+			if i := src.FirstLine - 1; i >= 0 && i < len(lines) && json.Unmarshal(lines[i], &raw) == nil && raw != nil {
+				r := parseRecord(raw, src)
+				switch {
+				case devNoteOf(r).candidate:
+					code = devWakeUnsupported
+				case devWaitStartIn(r, waitPrefix):
+					code = devWaitMismatch
+				}
 			}
 		}
 		fail(code, src)
@@ -200,8 +214,14 @@ func (w devWait) complete() bool {
 	return w.StartUse != "" && w.Handle != "" && w.Woke && w.Consumed && w.Automatic
 }
 
-// devWaitInputKeys are a wait's only Bash input keys.
-var devWaitInputKeys = map[string]bool{"command": true, "run_in_background": true, "description": true}
+// devWaitInputKeys are a wait's only Bash input keys: command,
+// description, run_in_background and, since design 12a-dev-flow-verify
+// r0.9 (owner decision 2026-10-22), an optional timeout (devWaitInputOK).
+var devWaitInputKeys = map[string]bool{"command": true, "run_in_background": true, "description": true, "timeout": true}
+
+// devWaitTimeoutRE is the only accepted raw timeout token: a positive
+// decimal integer, matched as text (no float conversion, no ceiling).
+var devWaitTimeoutRE = regexp.MustCompile(`^[1-9][0-9]*$`)
 
 // qualifyDevWait derives the slot's wait evidence for task from a phase's
 // decoded records. problem is a fixed code when the evidence is wrong;
@@ -314,25 +334,53 @@ func devWaitPrefix(cmd, task string) string {
 	return cmd[:i]
 }
 
-// isDevWaitStart reports whether a Bash input is a dev-wait-task start of
-// any slot (r0.8's start recognizer): exactly devWaitCommand's grammar for
-// the known executable and runtime (prefix), any valid task ID and
-// ordinal, run_in_background true and only the permitted keys.
-func isDevWaitStart(in map[string]json.RawMessage, prefix string) bool {
+// devWaitStartIn reports whether assistant record r holds a Bash tool use
+// whose command is a dev-wait-task command (any slot) for prefix.
+func devWaitStartIn(r sessionRecord, prefix string) bool {
+	if r.kind != "assistant" {
+		return false
+	}
+	for _, b := range r.blocks {
+		if b.typ == "tool_use" && b.name == toolBash && devWaitStartClass(b.input, prefix) != devStartUnrelated {
+			return true
+		}
+	}
+	return false
+}
+
+// devStartClass is a Bash start's classification (design
+// 12a-dev-flow-verify r0.9): an unrelated command, a dev-wait-task
+// command whose input is invalid, or a recognized dev-wait-task start.
+type devStartClass int
+
+const (
+	devStartUnrelated devStartClass = iota
+	devStartInvalid
+	devStartWait
+)
+
+// devWaitGrammar reports whether command is exactly devWaitCommand's
+// grammar for the known executable and runtime (prefix, devWaitPrefixOf):
+// any valid task ID and any positive ordinal without leading zeros.
+func devWaitGrammar(command, prefix string) bool {
 	if prefix == "" {
 		return false
 	}
-	rest, ok := strings.CutPrefix(rawString(in["command"]), prefix+" --task ")
+	rest, ok := strings.CutPrefix(command, prefix+" --task ")
 	if !ok {
 		return false
 	}
 	task, ordinal, ok := strings.Cut(rest, " --ordinal ")
 	n, err := strconv.Atoi(ordinal)
-	if !ok || !contract.ValidTaskID(task) || err != nil || n < 1 || itoa(n) != ordinal {
-		return false
-	}
-	var bg bool
-	if !rawTyped(in["run_in_background"], &bg) || !bg {
+	return ok && contract.ValidTaskID(task) && err == nil && n >= 1 && itoa(n) == ordinal
+}
+
+// devWaitInputOK reports whether a dev-wait-task Bash input object (raw,
+// and its keys in) is valid: no duplicate key, only devWaitInputKeys,
+// run_in_background exactly true, and a timeout, when present, a JSON
+// number whose raw token is a positive decimal integer.
+func devWaitInputOK(raw json.RawMessage, in map[string]json.RawMessage) bool {
+	if !rawKeysUnique(raw) && walkDuplicateKeys(raw) != nil {
 		return false
 	}
 	for k := range in {
@@ -340,7 +388,30 @@ func isDevWaitStart(in map[string]json.RawMessage, prefix string) bool {
 			return false
 		}
 	}
+	var bg bool
+	if !rawTyped(in["run_in_background"], &bg) || !bg {
+		return false
+	}
+	if t, ok := in["timeout"]; ok && !devWaitTimeoutRE.MatchString(strings.Trim(string(t), " \t\r\n")) {
+		return false
+	}
 	return true
+}
+
+// devWaitStartClass classifies a Bash tool input of any slot (r0.9),
+// before any filter on run_in_background: a command outside the
+// dev-wait-task grammar is unrelated; a grammar command with an invalid
+// input is invalid (wait_command_mismatch, never an unrelated job); else
+// it is a recognized dev-wait-task start.
+func devWaitStartClass(raw json.RawMessage, prefix string) devStartClass {
+	var in map[string]json.RawMessage
+	if json.Unmarshal(raw, &in) != nil || in == nil || !devWaitGrammar(rawString(in["command"]), prefix) {
+		return devStartUnrelated
+	}
+	if !devWaitInputOK(raw, in) {
+		return devStartInvalid
+	}
+	return devStartWait
 }
 
 // devBackground is one background Bash start of a phase: its handle once
@@ -410,13 +481,20 @@ func deriveDevWait(records []sessionRecord, cmd, task string) (devWait, devWaitS
 				}
 				switch b.name {
 				case toolBash:
+					// Classified before the background filter (r0.9): a
+					// dev-wait-task command of any slot with an invalid input
+					// fails here, never counted as an unrelated job.
+					class := devWaitStartClass(b.input, prefix)
+					if class == devStartInvalid {
+						return fail(devWaitMismatch)
+					}
 					var in map[string]json.RawMessage
 					if json.Unmarshal(b.input, &in) != nil {
 						continue
 					}
 					var bgFlag bool
 					if rawTyped(in["run_in_background"], &bgFlag) && bgFlag && starts[b.id] == nil {
-						starts[b.id] = &devBackground{devWait: isDevWaitStart(in, prefix)}
+						starts[b.id] = &devBackground{devWait: class == devStartWait}
 					}
 					c := rawString(in["command"])
 					if c != cmd {
@@ -428,13 +506,8 @@ func deriveDevWait(records []sessionRecord, cmd, task string) (devWait, devWaitS
 					if w.StartUse != "" {
 						return fail(devDuplicateWait)
 					}
-					if !bgFlag {
+					if class != devStartWait {
 						return fail(devWaitMismatch)
-					}
-					for k := range in {
-						if !devWaitInputKeys[k] {
-							return fail(devWaitMismatch)
-						}
 					}
 					w.StartUse, src.start = b.id, r.src
 				case toolTaskShow:
@@ -502,7 +575,13 @@ func deriveDevWait(records []sessionRecord, cmd, task string) (devWait, devWaitS
 
 // devWaitCommand is the simple background command for one workflow slot.
 func devWaitCommand(reale2e, runtime, task string, ordinal int) string {
-	return reale2e + " dev-wait-task --run " + runtime + " --task " + task + " --ordinal " + itoa(ordinal)
+	return devWaitPrefixOf(reale2e, runtime) + " --task " + task + " --ordinal " + itoa(ordinal)
+}
+
+// devWaitPrefixOf is every slot command's part before its task, for the
+// known executable and runtime.
+func devWaitPrefixOf(reale2e, runtime string) string {
+	return reale2e + " dev-wait-task --run " + runtime
 }
 
 // devWaitFiles is one slot's captured wait output.

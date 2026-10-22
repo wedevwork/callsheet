@@ -89,3 +89,38 @@ func TestDevProbeSeedUnpublishedFatal(t *testing.T) {
 		t.Fatalf("an errored seed_unpublished dev-next: %q, want %s", s.problem, devToolFailed)
 	}
 }
+
+// TestDevPromptsWaitStartKeys pins design 12a-dev-flow-verify r0.9's
+// prompt rule: both the full-flow coordinator prompt and the rendered
+// probe system prompt ask for the background dev-wait-task Bash call with
+// exactly command, description and run_in_background: true, and no
+// timeout (the verifier still tolerates a valid optional timeout).
+func TestDevPromptsWaitStartKeys(t *testing.T) {
+	loaded, err := LoadDevMethod(repoRoot(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded, err = RenderDevPrompts(loaded, seedPromptValues()); err != nil {
+		t.Fatal(err)
+	}
+	probe, err := renderProbePrompt("devProbeSystemPrompt", devProbeSystemPrompt, seedPromptValues())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, c := range map[string]struct {
+		text string
+		want string
+	}{
+		"coordinator-prompt.md": {string(loaded.Rendered[DevPromptFile]),
+			"Start it with one Bash call passing exactly `command` (that command), `description` (a short string) and `run_in_background: true`, with no `timeout` and no other key."},
+		"devProbeSystemPrompt": {string(probe),
+			"Start each wait with one Bash call passing exactly command (that command), description (a short string) and run_in_background: true, with no timeout and no other key."},
+	} {
+		if strings.Count(c.text, c.want) != 1 {
+			t.Errorf("%s does not ask for exactly the three-key wait start", name)
+		}
+		if strings.Count(c.text, "timeout") != 1 {
+			t.Errorf("%s mentions a timeout other than to exclude it", name)
+		}
+	}
+}

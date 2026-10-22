@@ -79,6 +79,8 @@ type devMapInput struct {
 	streams map[int][]byte
 	phases  int
 	tasks   []devMapTask
+	// waitPrefix is the slot commands' prefix (devWaitPrefixOf).
+	waitPrefix string
 }
 
 // devStreamFile is phase p's bundle stream path.
@@ -103,7 +105,7 @@ func deriveDevEventMap(in devMapInput) DevEventMap {
 	for p := 1; p <= in.phases; p++ {
 		file := devStreamFile(p)
 		data := in.streams[p]
-		s := decodeDevStreamAs(file, data, em.SessionID)
+		s := decodeDevStreamFor(file, data, em.SessionID, in.waitPrefix)
 		if em.SessionID == "" {
 			em.SessionID = s.sessionID
 		}
