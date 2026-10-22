@@ -1157,33 +1157,71 @@ func fakeEnable() int {
 }
 
 // fakeLeader is a pre-existing owner service in the directory
-// FAKE_VENDOR_LEADER: forever, it reads one request from req.fifo and
-// answers "ok <request>" on ack.fifo, until its owner kills it.
+// FAKE_VENDOR_LEADER: forever, it reads one request line from req.fifo and
+// answers "ok <request>" on ack.fifo, until its owner kills it. A writer
+// that closes without a line (a previous request's writer closing after
+// its line was read) is skipped.
 func fakeLeader() int {
 	dir := fakeEnv("LEADER")
 	fakeReady("leader")
 	for {
-		req, err := os.ReadFile(filepath.Join(dir, "req.fifo"))
+		req, err := readLine(filepath.Join(dir, "req.fifo"))
+		if err == io.EOF {
+			continue
+		}
 		if err != nil {
 			return 1
 		}
-		if err := os.WriteFile(filepath.Join(dir, "ack.fifo"), append([]byte("ok "), req...), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, "ack.fifo"), []byte("ok "+req), 0o600); err != nil {
 			return 1
 		}
 	}
 }
 
-// connectLeader uses the owner's leader: one request and its answer.
+// connectLeader uses the owner's leader: one request line and its answer
+// line.
 func connectLeader(dir string) error {
 	req := fmt.Sprintf("session %d\n", os.Getpid())
 	if err := os.WriteFile(filepath.Join(dir, "req.fifo"), []byte(req), 0o600); err != nil {
 		return err
 	}
-	ack, err := os.ReadFile(filepath.Join(dir, "ack.fifo"))
-	if err == nil && string(ack) != "ok "+req {
-		err = errors.New("unexpected leader answer " + string(ack))
+	ack, err := readLine(filepath.Join(dir, "ack.fifo"))
+	if err == nil && ack != "ok "+req {
+		err = errors.New("unexpected leader answer " + ack)
 	}
 	return err
+}
+
+// readLine opens the FIFO at path, reads one newline-terminated line and
+// returns at its newline, never waiting for the writer to close: Darwin
+// may not end a FIFO read on the writer's close. It reads a byte at a time,
+// so nothing after the line is consumed. A writer that closes before any
+// byte gives io.EOF; one that closes inside a line, io.ErrUnexpectedEOF.
+func readLine(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	var line []byte
+	b := make([]byte, 1)
+	for len(line) < 4096 {
+		n, err := f.Read(b)
+		if n == 1 {
+			line = append(line, b[0])
+			if b[0] == '\n' {
+				return string(line), nil
+			}
+			continue
+		}
+		if err == io.EOF && len(line) > 0 {
+			err = io.ErrUnexpectedEOF
+		}
+		if err != nil {
+			return string(line), err
+		}
+	}
+	return string(line), errors.New("the line exceeds 4096 bytes")
 }
 
 // cursorRealCallID is the fake's opaque Cursor call ID: two parts joined by

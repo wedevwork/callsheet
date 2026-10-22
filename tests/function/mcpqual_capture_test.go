@@ -1,6 +1,7 @@
 package function
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -1788,19 +1789,55 @@ func startLeader(t *testing.T, f *grokFixture) *leader {
 	return l
 }
 
+// leaderExchange sends one request line to the leader serving dir and
+// returns its answer line, never waiting for the leader to close the FIFO
+// (Darwin may not end a FIFO read on the writer's close).
+func leaderExchange(dir, req string) (string, error) {
+	if err := os.WriteFile(filepath.Join(dir, "req.fifo"), []byte(req), 0o600); err != nil {
+		return "", err
+	}
+	return readFIFOLine(filepath.Join(dir, "ack.fifo"))
+}
+
+// readFIFOLine opens the FIFO at path and returns at the newline of its
+// first line, a byte at a time, so nothing after the line is consumed; a
+// writer that closes before the newline ends it with an error.
+func readFIFOLine(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	var line []byte
+	b := make([]byte, 1)
+	for len(line) < 4096 {
+		n, err := f.Read(b)
+		if n == 1 {
+			line = append(line, b[0])
+			if b[0] == '\n' {
+				return string(line), nil
+			}
+			continue
+		}
+		if err == io.EOF {
+			err = io.ErrUnexpectedEOF
+		}
+		if err != nil {
+			return string(line), err
+		}
+	}
+	return string(line), fmt.Errorf("the line exceeds 4096 bytes")
+}
+
 // serving proves the leader still answers (a bounded request/answer
 // handshake), then its owner stops it and proves it gone.
 func (l *leader) servingThenStop(t *testing.T) {
 	t.Helper()
 	answered := make(chan error, 1)
 	go func() {
-		err := os.WriteFile(filepath.Join(l.dir, "req.fifo"), []byte("owner check\n"), 0o600)
-		if err == nil {
-			var ack []byte
-			ack, err = os.ReadFile(filepath.Join(l.dir, "ack.fifo"))
-			if err == nil && string(ack) != "ok owner check\n" {
-				err = io.ErrUnexpectedEOF
-			}
+		ack, err := leaderExchange(l.dir, "owner check\n")
+		if err == nil && ack != "ok owner check\n" {
+			err = io.ErrUnexpectedEOF
 		}
 		answered <- err
 	}()
@@ -1819,6 +1856,113 @@ func (l *leader) servingThenStop(t *testing.T) {
 	if err := processgroup.WaitGone(processgroup.SysSignaler{}, processgroup.RealClock{}, 5*time.Second, 10*time.Millisecond, l.cmd.Process.Pid); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// TestMCPCaptureLeaderFraming pins the owner/leader FIFO protocol of
+// TestMCPCaptureGrokRecipe (fix 12a-mcproles-release-race, second defect):
+// a request and its answer are each one newline-terminated line, and
+// neither side waits for its peer to close the FIFO (Darwin may not end a
+// FIFO read on the writer's close, as procexec's barrier notes). Each half
+// holds the writer open after its line and requires the answer within a
+// short bound: the real fakevendor leader answering a request, then
+// leaderExchange (servingThenStop's exchange) reading a stub's answer.
+func TestMCPCaptureLeaderFraming(t *testing.T) {
+	const bound = 2 * time.Second
+	fifos := func(t *testing.T) string {
+		dir := t.TempDir()
+		for _, n := range []string{"req.fifo", "ack.fifo", "ready.fifo"} {
+			if err := syscall.Mkfifo(filepath.Join(dir, n), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return dir
+	}
+	// within runs f in the background and reports its result, or "" with
+	// false when bound passes first.
+	within := func(f func() (string, error)) (string, error, bool) {
+		type res struct {
+			s   string
+			err error
+		}
+		ch := make(chan res, 1)
+		go func() { s, err := f(); ch <- res{s, err} }()
+		select {
+		case r := <-ch:
+			return r.s, r.err, true
+		case <-time.After(bound):
+			return "", nil, false
+		}
+	}
+	readLine := func(path string) (string, error) {
+		f, err := os.OpenFile(path, os.O_RDONLY, 0)
+		if err != nil {
+			return "", err
+		}
+		defer f.Close()
+		return bufio.NewReader(f).ReadString('\n')
+	}
+	t.Run("leader-request", func(t *testing.T) {
+		dir := fifos(t)
+		cmd := exec.Command(fakeVendorBinary(t))
+		cmd.Env = []string{"FAKE_VENDOR_MODE=leader", "FAKE_VENDOR_LEADER=" + dir, "FAKE_VENDOR_READY=" + filepath.Join(dir, "ready.fifo")}
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan struct{})
+		go func() { cmd.Wait(); close(done) }()
+		t.Cleanup(func() { cmd.Process.Kill(); <-done })
+		if line, err := readLine(filepath.Join(dir, "ready.fifo")); err != nil || !strings.HasPrefix(line, "ready ") {
+			t.Fatalf("the leader is not ready: %q %v", line, err)
+		}
+		// The request's writer stays open until the test ends.
+		var w *os.File
+		if _, err, ok := within(func() (string, error) {
+			var err error
+			w, err = os.OpenFile(filepath.Join(dir, "req.fifo"), os.O_WRONLY, 0)
+			if err == nil {
+				_, err = w.WriteString("owner check\n")
+			}
+			return "", err
+		}); !ok || err != nil {
+			t.Fatalf("the request was not delivered: %v", err)
+		}
+		t.Cleanup(func() { w.Close() })
+		ack, err, ok := within(func() (string, error) { return readLine(filepath.Join(dir, "ack.fifo")) })
+		if !ok {
+			t.Fatalf("the leader did not answer within %v while the request's writer stayed open", bound)
+		}
+		if err != nil || ack != "ok owner check\n" {
+			t.Fatalf("leader answer %q %v", ack, err)
+		}
+	})
+	t.Run("owner-answer", func(t *testing.T) {
+		dir := fifos(t)
+		release := make(chan struct{})
+		t.Cleanup(func() { close(release) })
+		// The stub leader answers one request and holds its answer's
+		// writer open until the test ends.
+		go func() {
+			req, err := readLine(filepath.Join(dir, "req.fifo"))
+			if err != nil {
+				return
+			}
+			w, err := os.OpenFile(filepath.Join(dir, "ack.fifo"), os.O_WRONLY, 0)
+			if err != nil {
+				return
+			}
+			defer w.Close()
+			w.WriteString("ok " + req)
+			<-release
+		}()
+		ack, err, ok := within(func() (string, error) { return leaderExchange(dir, "owner check\n") })
+		if !ok {
+			t.Fatalf("the owner did not read the answer within %v while the answer's writer stayed open", bound)
+		}
+		if err != nil || ack != "ok owner check\n" {
+			t.Fatalf("owner read %q %v", ack, err)
+		}
+	})
 }
 
 // FP-12: the trusted Grok recipe (global --trust, the generated

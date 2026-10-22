@@ -240,6 +240,10 @@ type mcpWorker struct {
 	rev   int
 	roles []contract.RoleRecord
 	tasks map[string]*simTask
+	// released holds releases of tasks not recorded yet: the worker
+	// acknowledges task_start before startLocked records the task, so a
+	// release can arrive first; startLocked applies it.
+	released map[string]bool
 }
 
 func startMCPWorker(t *testing.T, p *mcpPlane, id string) *mcpWorker {
@@ -504,6 +508,16 @@ func (w *mcpWorker) startLocked(st contract.TaskStartBody) {
 	script, arg, _ := strings.Cut(strings.TrimSpace(st.Request.Goal), " ")
 	s := &simTask{start: st, script: script}
 	w.tasks[st.TaskID] = s
+	// A release that arrived before this start ends the task now, on every
+	// return path, as release does for a recorded task (finishLocked keeps
+	// a result already sealed).
+	defer func() {
+		if w.released[st.TaskID] {
+			delete(w.released, st.TaskID)
+			s.released = true
+			w.finishLocked(s)
+		}
+	}()
 	switch script {
 	case scriptHold, scriptStubborn:
 		s.out = []byte("working on " + st.TaskID + "\n")
@@ -584,13 +598,38 @@ func (w *mcpWorker) sendResultLocked(s *simTask, replayLogs bool) {
 }
 
 // release ends a held task (a stubborn one reports cancelled if a stop
-// arrived).
+// arrived). A task the worker has not recorded yet is remembered and ended
+// when startLocked records it.
 func (w *mcpWorker) release(id string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if s := w.tasks[id]; s != nil {
 		s.released = true
 		w.finishLocked(s)
+		return
+	}
+	if w.released == nil {
+		w.released = map[string]bool{}
+	}
+	w.released[id] = true
+}
+
+// TestMCPWorkerReleaseBeforeStart pins the simulated worker's ordering
+// contract (fix 12a-mcproles-release-race): a release that arrives before
+// the worker has recorded the task (it writes task_start_result before
+// startLocked, and the plane admits a task before its start is delivered)
+// still ends the held task once it starts, as a release after the start
+// does. The worker has no socket, so nothing is sent.
+func TestMCPWorkerReleaseBeforeStart(t *testing.T) {
+	const id = "t_00000000000000000000000000000001"
+	w := &mcpWorker{t: t, events: newEvset(), tasks: map[string]*simTask{}}
+	w.release(id)
+	w.mu.Lock()
+	w.startLocked(contract.TaskStartBody{TaskID: id, Execution: contract.ExecutionToken{Epoch: strings.Repeat("e", 32), Attachment: 1}, Request: contract.DispatchRequest{Goal: scriptHold + " slot", Acceptance: "a"}})
+	s := w.tasks[id]
+	w.mu.Unlock()
+	if s == nil || s.result == nil || !s.released || s.result.Outcome != contract.OutcomeNatural {
+		t.Fatalf("a release before the start left the held task unfinished: %+v", s)
 	}
 }
 

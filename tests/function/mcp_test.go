@@ -412,6 +412,9 @@ func TestMCPRoles(t *testing.T) {
 		if v := roleOf(t, m.ok("role_show", map[string]any{"id": "slots"})); v.Concurrency != 2 || v.Inflight != 1 {
 			t.Fatalf("slots seen from B: %+v", v)
 		}
+		// The plane admits the task before the worker records it; release
+		// it once the worker has started it, as force-pending does.
+		w.await(t, "started "+id)
 		w.release(id)
 		p.awaitTask(t, id, func(v contract.TaskView) bool { return v.State == contract.TaskSucceeded })
 	})
