@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -109,6 +110,103 @@ func startRecovery(t *testing.T, fp *fakePlane, root string, g *fakeGroups, cmds
 		d.taskCommand = cmds.send
 	}})
 	return &recoveryRun{taskRun: tr, g: g, cmds: cmds, cfg: cfg}
+}
+
+// awaitRecoveryDone waits, like events.await, for tr's recovery-done
+// event, and names the cause when it does not come (diagnostic.md,
+// TestControlRestart/repeat, 2026-10-22): a Run that ends first fails at
+// once with its error; at the testWait deadline the failure is still "no
+// recovery-done event". Both report recoveryDiagnostics. Events are
+// consumed as events.await consumes them.
+func awaitRecoveryDone(t *testing.T, tr *taskRun, root, taskID string) {
+	t.Helper()
+	var kinds []string
+	deadline := time.After(testWait)
+	for {
+		select {
+		case ev := <-tr.ev.ch:
+			if ev.kind == evRecoveryDone {
+				return
+			}
+			kinds = append(kinds, string(ev.kind))
+		case err := <-tr.run.done:
+			tr.run.done <- err
+			// An event emitted before the Run ended still counts, as it
+			// does for events.await.
+			for drained := false; !drained; {
+				select {
+				case ev := <-tr.ev.ch:
+					if ev.kind == evRecoveryDone {
+						return
+					}
+					kinds = append(kinds, string(ev.kind))
+				default:
+					drained = true
+				}
+			}
+			t.Fatalf("the restarted Run ended before recovery-done: %v\n%s", err, recoveryDiagnostics(tr, root, taskID, kinds))
+		case <-deadline:
+			t.Fatalf("no recovery-done event\n%s", recoveryDiagnostics(tr, root, taskID, kinds))
+		}
+	}
+}
+
+// recoveryDiagnostics reports what the test can observe of a restarted
+// Run that has not emitted recovery-done, without product hooks: the Run's
+// error (or that it is still running), the task's journal phase on disk,
+// the recovery workers' retry state read under their locks (a pending lost
+// outcome and a failing journal mean recoveryLoop parks on its journalRetry
+// pause), the fake clock's active timers (that pause is a one-second
+// timer, and the clock is never advanced here), whether the journal-retry
+// warning was logged, and the event kinds seen while waiting.
+func recoveryDiagnostics(tr *taskRun, root, taskID string, kinds []string) string {
+	var b strings.Builder
+	select {
+	case err := <-tr.run.done:
+		tr.run.done <- err
+		fmt.Fprintf(&b, "run: ended: %v\n", err)
+	default:
+		b.WriteString("run: still running\n")
+	}
+	if lj, err := (layout{root: root}).loadJournal(taskID, tr.lookup()); err != nil {
+		fmt.Fprintf(&b, "journal %s: unreadable: %v\n", taskID, err)
+	} else {
+		fmt.Fprintf(&b, "journal %s: phase %s\n", taskID, lj.j.Phase)
+	}
+	if tr.cur == nil {
+		select {
+		case tr.cur = <-tr.sup:
+		default:
+		}
+	}
+	// The supervisor and worker locks are only tried: a Run stuck holding
+	// one must not keep the failure from being reported (code review C1).
+	// Fields are read only under a lock this function acquired.
+	if s := tr.cur; s == nil {
+		b.WriteString("recovery workers: no task supervisor yet\n")
+	} else if !s.mu.TryLock() {
+		b.WriteString("recovery workers: supervisor lock busy: state unavailable\n")
+	} else {
+		ws := make([]*taskWorker, 0, len(s.workers))
+		for w := range s.workers {
+			ws = append(ws, w)
+		}
+		s.mu.Unlock()
+		fmt.Fprintf(&b, "recovery workers: %d\n", len(ws))
+		for _, w := range ws {
+			if !w.mu.TryLock() {
+				fmt.Fprintf(&b, "  %s: worker lock busy: state unavailable\n", w.id())
+				continue
+			}
+			fmt.Fprintf(&b, "  %s: pending lost outcome %v, journal failing %v, cleaning %v, cleanup ok %v, outcome %v\n",
+				w.id(), w.pendingLost != nil, w.journalFailing, w.cleaning, w.cleanupOK, w.outcome != nil)
+			w.mu.Unlock()
+		}
+	}
+	fmt.Fprintf(&b, "fake clock timers (a %v non-ticker may be the journalRetry pause): %+v\n", journalRetry, tr.clk.Waiters())
+	fmt.Fprintf(&b, "journal retry logged: %v\n", strings.Contains(tr.logs.String(), "task journal publication failed; retrying"))
+	fmt.Fprintf(&b, "events seen while waiting: %v", kinds)
+	return b.String()
 }
 
 // statusKeys decodes a heartbeat body's per-role status keys (the
@@ -1071,7 +1169,7 @@ func TestControlRestart(t *testing.T) {
 		rr.run.cancel()
 		rr.run.result(t)
 		rr2 := startRecovery(t, fp, root, &fakeGroups{}, &fakeCommands{}, nil)
-		rr2.ev.await(t, evRecoveryDone)
+		awaitRecoveryDone(t, rr2.taskRun, root, st.TaskID)
 		second, err := (layout{root: root}).loadJournal(st.TaskID, rr2.lookup())
 		if err != nil || second.j.Result.Digest != first.j.Result.Digest {
 			t.Fatalf("second recovery changed the outbox: %v", err)
