@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -1160,6 +1159,19 @@ func TestDevFullLifecycle(t *testing.T) {
 	if got, p := qualify(func() { start(); sysNote("b1", "tu"); consume("ts") }); p != "" || !got.complete() || got.Handle != "b1" {
 		t.Fatalf("system notification wait %+v %s", got, p)
 	}
+	// Live probe 20261022T181848Z-dbf4f52f (design 12a-dev-flow-verify
+	// r0.9): Claude Code 2.1.306 started the wait with a Bash timeout
+	// (sanitized copy of the captured start: the exact command, its
+	// description, timeout 900000 and run_in_background true, in that key
+	// order).
+	capturedStart := func() {
+		raw(`{"type":"assistant","session_id":"` + testSession + `","message":{"content":[{"type":"tool_use","id":"tu","name":"Bash","input":{"command":` +
+			strconv.Quote(cmd) + `,"description":"Wait in background for the probe task to finish","timeout":900000,"run_in_background":true}}]}}`)
+		result("tu", "Command running in background with ID: b1. Output is being written to: /tmp/x", false)
+	}
+	if got, p := qualify(func() { capturedStart(); sysNote("b1", "tu"); consume("ts") }); p != "" || !got.complete() || got.Handle != "b1" {
+		t.Fatalf("captured timeout start %+v %s", got, p)
+	}
 	// The session ID is optional; the record then inherits the phase's.
 	if got, p := qualify(func() {
 		start()
@@ -1236,7 +1248,9 @@ func TestDevFullLifecycle(t *testing.T) {
 		want  string
 	}{
 		"duplicate": {func() { start(); start() }, devDuplicateWait},
-		"extra_key": {func() { use("tu", toolBash, map[string]any{"command": cmd, "run_in_background": true, "timeout": 1}) }, devWaitMismatch},
+		"extra_key": {func() {
+			use("tu", toolBash, map[string]any{"command": cmd, "run_in_background": true, "timeout_ms": 1})
+		}, devWaitMismatch},
 		"other_cmd": {func() {
 			use("tu", toolBash, map[string]any{"command": "callsheet task wait " + task, "run_in_background": true})
 		}, devWaitMismatch},
@@ -1386,11 +1400,16 @@ func TestDevFullLifecycle(t *testing.T) {
 	if got, _ := qualify(func() { start(); consume("ts"); note("b1", "tu") }); got.Consumed {
 		t.Fatal("a task_show before the wake consumed it")
 	}
-	// The recognizer: devWaitCommand's grammar for the known executable
-	// and runtime, any valid task and ordinal, background, permitted keys.
+	// The recognizer (r0.9): devWaitCommand's grammar for the known
+	// executable and runtime, any valid task and ordinal, classified three
+	// ways before any background filter.
 	prefix := devWaitPrefix(cmd, task)
+	if prefix != devWaitPrefixOf("/bin/reale2e", "/tmp/rt") || devWaitPrefix("callsheet task wait", task) != "" {
+		t.Fatalf("prefix %q", prefix)
+	}
+	other := "t_" + strings.Repeat("c", 32)
 	for c, want := range map[string]bool{
-		devWaitCommand("/bin/reale2e", "/tmp/rt", "t_"+strings.Repeat("c", 32), 7):   true,
+		devWaitCommand("/bin/reale2e", "/tmp/rt", other, 7):                          true,
 		devWaitCommand("/bin/reale2e", "/tmp/rt", task, 2):                           true,
 		devWaitCommand("/bin/other", "/tmp/rt", task, 2):                             false,
 		devWaitCommand("/bin/reale2e", "/tmp/rt2", task, 2):                          false,
@@ -1398,25 +1417,113 @@ func TestDevFullLifecycle(t *testing.T) {
 		"/bin/reale2e dev-wait-task --run /tmp/rt --task " + task + " --ordinal 02":  false,
 		"/bin/reale2e dev-wait-task --run /tmp/rt --task " + task + " --ordinal 0":   false,
 		"/bin/reale2e dev-wait-task --run /tmp/rt --task " + task + " --ordinal 1 &": false,
+		"while true; do sleep 1; done":                                               false,
 	} {
-		in := map[string]json.RawMessage{"command": json.RawMessage(strconv.Quote(c)), "run_in_background": json.RawMessage("true")}
-		if got := isDevWaitStart(in, prefix); got != want {
-			t.Errorf("recognizer %q: %v want %v", c, got, want)
+		if got := devWaitGrammar(c, prefix); got != want || devWaitGrammar(c, "") {
+			t.Errorf("grammar %q: %v want %v", c, got, want)
 		}
 	}
-	good := map[string]json.RawMessage{"command": json.RawMessage(strconv.Quote(cmd)), "run_in_background": json.RawMessage("true"), "description": json.RawMessage(`"w"`)}
-	if !isDevWaitStart(good, prefix) || isDevWaitStart(good, "") {
-		t.Fatal("the slot's own command")
-	}
-	for k, v := range map[string]string{"run_in_background": "false", "timeout": "1"} {
-		bad := maps.Clone(good)
-		bad[k] = json.RawMessage(v)
-		if isDevWaitStart(bad, prefix) {
-			t.Errorf("recognized with %s=%s", k, v)
+	// classOf classifies a literal input object.
+	classOf := func(input string) devStartClass { return devWaitStartClass(json.RawMessage(input), prefix) }
+	q := strconv.Quote
+	for _, c := range []string{cmd, devWaitCommand("/bin/reale2e", "/tmp/rt", other, 1)} {
+		for input, want := range map[string]devStartClass{
+			`{"command":` + q(c) + `,"run_in_background":true}`:                                     devStartWait,
+			`{"command":` + q(c) + `,"description":"w","run_in_background":true}`:                   devStartWait,
+			`{"command":` + q(c) + `,"description":"w","timeout":900000,"run_in_background":true}`:  devStartWait,
+			`{"command":` + q(c) + `,"timeout":1,"run_in_background":true}`:                         devStartWait,
+			`{"command":` + q(c) + `,"timeout": 99999999999999999999999 ,"run_in_background":true}`: devStartWait,
+			`{"command":` + q(c) + `,"timeout":1.0,"run_in_background":true}`:                       devStartInvalid,
+			`{"command":` + q(c) + `,"timeout":1e3,"run_in_background":true}`:                       devStartInvalid,
+			`{"command":` + q(c) + `,"timeout":0,"run_in_background":true}`:                         devStartInvalid,
+			`{"command":` + q(c) + `,"timeout":-1,"run_in_background":true}`:                        devStartInvalid,
+			`{"command":` + q(c) + `,"timeout":"900000","run_in_background":true}`:                  devStartInvalid,
+			`{"command":` + q(c) + `,"timeout":true,"run_in_background":true}`:                      devStartInvalid,
+			`{"command":` + q(c) + `,"timeout":null,"run_in_background":true}`:                      devStartInvalid,
+			`{"command":` + q(c) + `,"timeout":[1],"run_in_background":true}`:                       devStartInvalid,
+			`{"command":` + q(c) + `,"timeout":1,"timeout":1,"run_in_background":true}`:             devStartInvalid,
+			`{"command":` + q(c) + `,"description":"a","description":"a","run_in_background":true}`: devStartInvalid,
+			`{"command":` + q(c) + `,"run_in_background":true,"run_in_background":true}`:            devStartInvalid,
+			`{"command":` + q(c) + `,"run_in_background":true,"dangerouslyDisableSandbox":true}`:    devStartInvalid,
+			`{"command":` + q(c) + `,"run_in_background":true,"timeout_ms":1}`:                      devStartInvalid,
+			`{"command":` + q(c) + `}`:                                                                devStartInvalid,
+			`{"command":` + q(c) + `,"run_in_background":false}`:                                      devStartInvalid,
+			`{"command":` + q(c) + `,"run_in_background":"true"}`:                                     devStartInvalid,
+			`{"command":` + q(c) + `,"run_in_background":null}`:                                       devStartInvalid,
+			`{"command":"while true; do sleep 1; done","timeout":1.5,"run_in_background":true,"x":1}`: devStartUnrelated,
+			`{"command":"while true; do sleep 1; done"}`:                                              devStartUnrelated,
+			`{"command":1,"run_in_background":true}`:                                                  devStartUnrelated,
+			`[]`:                                                                                      devStartUnrelated,
+		} {
+			if got := classOf(input); got != want {
+				t.Errorf("class %s: %d want %d", input, got, want)
+			}
 		}
 	}
-	if devWaitPrefix("callsheet task wait", task) != "" {
-		t.Fatal("a prefix from another command")
+	// Through the slot's derivation, current slot and prior slot alike:
+	// a valid timeout start is recognized; every invalid grammar start
+	// fails wait_command_mismatch at its start, background or not, and is
+	// never an unrelated job.
+	startWith := func(id, c, extra string) {
+		raw(`{"type":"assistant","session_id":"` + testSession + `","message":{"content":[{"type":"tool_use","id":"` + id + `","name":"Bash","input":{"command":` +
+			q(c) + extra + `}}]}}`)
+	}
+	prior := devWaitCommand("/bin/reale2e", "/tmp/rt", other, 1)
+	for _, timeout := range []string{"1", "900000", "99999999999999999999999"} {
+		if got, p := qualify(func() {
+			startWith("tp", prior, `,"timeout":`+timeout+`,"run_in_background":true`)
+			result("tp", "Command running in background with ID: b0. Output is being written to: /tmp/z", false)
+			sysNote("b0", "tp")
+			startWith("tu", cmd, `,"description":"w","timeout":`+timeout+`,"run_in_background":true`)
+			result("tu", "Command running in background with ID: b1. Output is being written to: /tmp/x", false)
+			note("b1", "tu")
+			consume("ts")
+		}); p != "" || !got.complete() {
+			t.Errorf("timeout %s: %+v %s", timeout, got, p)
+		}
+	}
+	for _, extra := range []string{`,"timeout":1.0,"run_in_background":true`, `,"timeout":0,"run_in_background":true`, `,"timeout":"1","run_in_background":true`,
+		`,"timeout":null,"run_in_background":true`, `,"run_in_background":true,"x":1`, `,"run_in_background":false`, ``, `,"run_in_background":1`} {
+		for slot, c := range map[string]string{"current": cmd, "prior": prior} {
+			var at int
+			if _, p, line := judge(func() { startWith("tz", c, extra); at = lines }); p != devWaitMismatch {
+				t.Errorf("%s slot %s: %q at %d (start at %d)", slot, extra, p, line, at)
+			}
+		}
+	}
+	// A duplicate key makes the record refused by the strict decoder: a
+	// dev-wait-task start (with the known prefix) is wait_command_mismatch,
+	// at its record; without the prefix it stays session_malformed.
+	for slot, c := range map[string]string{"current": cmd, "prior": prior} {
+		buf.Reset()
+		lines = 0
+		w(map[string]any{"type": "system", "subtype": "init", "permissionMode": "auto"})
+		startWith("td", c, `,"timeout":1,"timeout":1,"run_in_background":true`)
+		if s := decodeDevStreamFor("phase-stream", buf.Bytes(), "", prefix); s.problem != devWaitMismatch || s.problemSrc.FirstLine != lines {
+			t.Errorf("%s duplicate timeout: %q at %d", slot, s.problem, s.problemSrc.FirstLine)
+		}
+		if s := decodeDevStream(buf.Bytes(), ""); s.problem != devSessionMalformed {
+			t.Errorf("%s duplicate timeout without the prefix: %q", slot, s.problem)
+		}
+		em := deriveDevEventMap(devMapInput{streams: map[int][]byte{1: buf.Bytes()}, phases: 1, waitPrefix: prefix})
+		if em.Phases[0].Problem != devWaitMismatch {
+			t.Errorf("%s duplicate timeout event map %+v", slot, em.Phases[0])
+		}
+	}
+	// With an accepted timeout start, a timeout-stopped wait's notification
+	// is refused at once, in either form; no false wake.
+	for form, stopped := range map[string]func(){
+		"system": func() {
+			w(map[string]any{"type": "system", "subtype": "task_notification", "task_id": "b1", "tool_use_id": "tu", "status": "stopped"})
+		},
+		"xml": func() {
+			w(map[string]any{"type": "user", "message": map[string]any{"content": "<task-notification>\n<task-id>b1</task-id>\n<tool-use-id>tu</tool-use-id>\n<status>stopped</status>\n</task-notification>"}})
+		},
+	} {
+		var at int
+		if got, p, line := judge(func() { capturedStart(); stopped(); at = lines }); p != devWakeUnsupported || line != at || got.Woke {
+			t.Errorf("%s stopped wait: %q at %d want %d", form, p, line, at)
+		}
 	}
 	// Stream-level problems.
 	for name, c := range map[string]struct {

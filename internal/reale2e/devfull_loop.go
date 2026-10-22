@@ -469,7 +469,7 @@ func (d *devSupervisor) waitEvidence(sl *devSlot) (devWait, bool) {
 		// pass. The whole stream is validated once the phase exits.
 		stdout = completeRecords(stdout)
 	}
-	stream := decodeDevStreamAs(devStreamFile(p.n), stdout, d.sessionID)
+	stream := decodeDevStreamFor(devStreamFile(p.n), stdout, d.sessionID, devWaitPrefixOf(d.s.w.Executable, d.s.runtime))
 	if stream.problem != "" {
 		d.stop(stream.problem, fmt.Sprintf("coordinator phase %d stream", p.n)+refusedAt(stream.problem, stream.problemSrc))
 		return devWait{}, false
@@ -839,7 +839,7 @@ func (d *devSupervisor) prepareSlot() {
 func (d *devSupervisor) phaseExited() {
 	p := d.current()
 	d.observePhase(p, StoppedExited, groupBound)
-	stream := decodeDevStreamAs(devStreamFile(p.n), p.stdout.Bytes(), d.sessionID)
+	stream := decodeDevStreamFor(devStreamFile(p.n), p.stdout.Bytes(), d.sessionID, devWaitPrefixOf(d.s.w.Executable, d.s.runtime))
 	if d.sessionID == "" {
 		d.sessionID = stream.sessionID
 	}

@@ -156,6 +156,10 @@ type devRig struct {
 	// refusedLine is the stream line of the last notification the rig
 	// emitted that the supervisor must refuse (0: none).
 	refusedLine int
+	// waitTimeout, when set, is the raw JSON number token the coordinator
+	// passes as the wait start's Bash timeout (design 12a-dev-flow-verify
+	// r0.9; Claude Code 2.1.306 passed 900000).
+	waitTimeout string
 	// tickDuringPull keeps the monitor ticking (the fake time unmoved)
 	// while a publication pull is held, instead of gating its poll timer
 	// on the pull.
@@ -677,7 +681,18 @@ func (r *devRig) advance() bool {
 		if !bg {
 			res = "waited"
 		}
-		r.use = r.toolUse(toolBash, map[string]any{"command": cmd, "run_in_background": bg, "description": "wait"}, res, false)
+		if act.alter == "prior-invalid" {
+			// The previous slot's exact command, started in the foreground:
+			// a dev-wait-task command with an invalid input is never an
+			// unrelated job (r0.9).
+			prior := devWaitCommand(d.s.w.Executable, d.s.runtime, r.workflowTasks()[0], 1)
+			r.toolUse(toolBash, map[string]any{"command": prior, "description": "wait"}, "waited", false)
+		}
+		input := map[string]any{"command": cmd, "run_in_background": bg, "description": "wait"}
+		if r.waitTimeout != "" {
+			input["timeout"] = json.Number(r.waitTimeout)
+		}
+		r.use = r.toolUse(toolBash, input, res, false)
 		req := ControlRequest{Op: opDevWait, Task: r.task, Ordinal: itoa(r.doc.Ordinal)}
 		switch {
 		case r.fault == "concurrent-wait":
@@ -987,10 +1002,15 @@ func (r *devRig) work(act devAct) bool {
 		r.stage = "end"
 		return false
 	}
-	if act.alter == "early-fail" {
-		// The wait dies early: its failed notification arrives while the
-		// task still runs (never terminal here).
-		r.refused(func() { r.notify(r.waitHandle(), r.use, "failed") })
+	if act.alter == "early-fail" || act.alter == "early-stopped" {
+		// The wait dies early (failed, or stopped by its Bash timeout): its
+		// notification arrives while the task still runs (never terminal
+		// here).
+		status := "failed"
+		if act.alter == "early-stopped" {
+			status = "stopped"
+		}
+		r.refused(func() { r.notify(r.waitHandle(), r.use, status) })
 		r.stage = "end"
 		return false
 	}

@@ -284,7 +284,7 @@ func deriveDevCost(b *DevBundle, runID string) DevCost {
 // phase streams, and every observed task with its plan's goal, its phase
 // and its exact wait command (from the manifest's recorded render values).
 func sessionMapInput(b *DevBundle, runID, goos, reale2e, runtime string) devMapInput {
-	in := devMapInput{runID: runID, goos: goos, streams: map[int][]byte{}}
+	in := devMapInput{runID: runID, goos: goos, streams: map[int][]byte{}, waitPrefix: devWaitPrefixOf(reale2e, runtime)}
 	for p := 1; p <= maxPhases; p++ {
 		if data, ok := b.Files[devStreamFile(p)]; ok {
 			in.streams[p], in.phases = data, p
