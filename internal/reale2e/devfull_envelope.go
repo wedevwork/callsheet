@@ -209,15 +209,8 @@ func roleFields(ec envelopeContext, b *strings.Builder, p *TaskPlan, base map[st
 		}
 		line("verification_helper: run exactly this one command once, from your checkout's root, with your actual task ID substituted and nothing else changed (no prefix, redirect, pipe or wrapper of your own):")
 		line("  %s", ec.helper.command("<your task ID>", st.CandidateCommit, st.InitialCommit))
-		line("  It is the harness-owned equivalent of the runbook's pinned archive export: it exports the pinned candidate into %s/<your task ID>/after/, runs go test ./..., go test -coverprofile=<task scratch path>/coverage.out ./... and go test -json -count=1 ./... there, removes its scratch and verifies it absent, and prints one JSON line (exit 0 passed, 1 executed failure, 2 invalid invocation). Read the design, code and tests and assess every FP yourself; the helper only supplies the evidence.", reviewScratch)
-		line("review_fields: review.md has these plain lines outside code fences, exact case and spacing:")
-		line("  Reviewed candidate: <candidate_commit>")
-		line("  Source sha256: <path> <sha256> (one line each for FEATURE.md, go.mod, main.go and main_test.go at the candidate)")
-		line("  Verification exit <exit>: go test ./...")
-		line("  Verification exit <exit>: go test -coverprofile=%s/<your task ID>/coverage.out ./... (the helper's absolute scratch path)", reviewScratch)
-		line("  Coverage: <the helper's coverage percent>%% <scope>")
-		line("  Cleanup: <result>")
-		line("  Reviewer run sha256: <64 lowercase hex: the SHA-256 of the helper's complete JSON output, including its final LF> (omit it only when the helper could not start, and then say so; never invent it)")
+		line("  It is the harness-owned equivalent of the runbook's pinned archive export: it exports the pinned candidate into %s/<your task ID>/after/, runs go test ./..., go test -coverprofile=<task scratch path>/coverage.out ./... and go test -json -count=1 ./... there, removes its scratch and verifies it absent, and prints its one-line JSON receipt followed by the report lines for review.md (exit 0 passed, 1 executed failure, 2 invalid invocation). Read the design, code and tests and assess every FP yourself; the helper only supplies the evidence.", reviewScratch)
+		line("%s", reviewFieldsInstruction)
 		line("review_blocker: exactly one line CALLSHEET_REVIEW_BLOCKER: environment or CALLSHEET_REVIEW_BLOCKER: none immediately before the terminal STATUS line, with no blank line between, in both review.md and the final answer, with matching values; environment only with REVIEW_CHANGES_REQUESTED")
 	case "triage":
 		if n := st.NeedsTriage; n != nil {
@@ -263,7 +256,7 @@ func devAcceptance(p *TaskPlan) string {
 	case "coder/" + modeFix:
 		return "Fix every Critical and Warning (or justify a retained Warning) under the original implement bar: go test ./... passes 100%, coverage above 80%. Publish only main.go and main_test.go (design-questions.md only when blocked). End with exactly one of STATUS: FIXES_COMPLETE, STATUS: DESIGN_QUESTIONS, STATUS: NEEDS_DESIGN, STATUS: NEEDS_TRIAGE or STATUS: BLOCKED."
 	case "code-reviewer/" + modeReviewFull:
-		return "Run the verification_helper command once in your checkout (it runs both commands in " + reviewScratch + "/<task ID>/after/ and removes its scratch), and publish only review.md with the review_fields, the Reviewer run sha256 line and the review_blocker line. Full bar: every FP, 100% pass, coverage above 80%, a function test per FP. An approval needs the helper's successful run. End review.md and the final answer with the same STATUS: REVIEW_APPROVED, STATUS: REVIEW_CHANGES_REQUESTED or STATUS: NEEDS_DESIGN."
+		return "Run the verification_helper command once in your checkout (it runs both commands in " + reviewScratch + "/<task ID>/after/ and removes its scratch), and publish only review.md with the helper's report lines pasted verbatim (review_fields) and the review_blocker line. Full bar: every FP, 100% pass, coverage above 80%, a function test per FP. An approval needs the helper's successful run. End review.md and the final answer with the same STATUS: REVIEW_APPROVED, STATUS: REVIEW_CHANGES_REQUESTED or STATUS: NEEDS_DESIGN."
 	case "triage/" + modeInvestigate:
 		return "Publish rca.md; publish fix.md only at CONFIRMED or PROBABLE, with exactly one Design required: yes or Design required: no line and one matching Confidence: CONFIRMED or Confidence: PROBABLE line. Source, tests and configuration are read-only. End with exactly one of STATUS: TRIAGE_CONFIRMED, STATUS: TRIAGE_PROBABLE, STATUS: TRIAGE_UNCONFIRMED or STATUS: TRIAGE_BLOCKED."
 	}
@@ -301,3 +294,8 @@ func sortedTree(t map[string]TreeFile) []string {
 	sort.Strings(out)
 	return out
 }
+
+// reviewFieldsInstruction is both reviewer envelopes' review_fields
+// instruction (design 12a-dev-flow-verify r0.11): paste the helper's
+// report lines verbatim, add no other Verification exit line.
+const reviewFieldsInstruction = "review_fields: after its one JSON receipt line the helper prints review.md's report lines: Reviewed candidate, the four Source sha256 lines, the two Verification exit lines, Coverage, Cleanup and Reviewer run sha256. Paste those lines into review.md verbatim, each as a plain line outside code fences, unedited and in full; add no other Verification exit line and never compose, recompute or reword any of them. If the helper could not start, say so and invent none of them."

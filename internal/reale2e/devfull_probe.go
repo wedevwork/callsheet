@@ -511,14 +511,7 @@ func (p *devProbe) reviewEnvelope() (string, string) {
 	line("allowed_outputs: review.md; every other path stays byte-identical with the same mode")
 	line("verification_helper: run exactly this one command once, from your checkout's root, with your actual task ID substituted and nothing else changed:")
 	line("  %s", d.helper.command("<your task ID>", p.cand.String(), p.seed.String()))
-	line("review_fields: review.md has these plain lines outside code fences, exact case and spacing:")
-	line("  Reviewed candidate: <candidate_commit>")
-	line("  Source sha256: <path> <sha256> (one line each for FEATURE.md, go.mod, main.go and main_test.go at the candidate)")
-	line("  Verification exit <exit>: go test ./...")
-	line("  Verification exit <exit>: go test -coverprofile=%s/<your task ID>/coverage.out ./... (the helper's absolute scratch path)", reviewScratch)
-	line("  Coverage: <the helper's coverage percent>%% <scope>")
-	line("  Cleanup: <result>")
-	line("  Reviewer run sha256: <64 lowercase hex: the SHA-256 of the helper's complete JSON output, including its final LF>")
+	line("%s", reviewFieldsInstruction)
 	line("review_blocker: exactly one line CALLSHEET_REVIEW_BLOCKER: none (or environment, only with REVIEW_CHANGES_REQUESTED) immediately before the terminal STATUS line, in both review.md and the final answer")
 	return b.String(), devAcceptance(&TaskPlan{Role: HopCodeReviewer, Mode: modeReviewFull})
 }
@@ -826,7 +819,7 @@ func (d *devSupervisor) writeProbeRepository() {
 
 var (
 	probeWakeRE     = regexp.MustCompile(`^probe/wake/0[1-3]/(plan\.json|dispatch\.json|task\.json|final\.txt|observation\.json|record\.json|wait\.json|wait-result\.json|wait-stderr\.txt|wait-exit\.txt|logs\.txt|logs\.json)$`)
-	probeReviewRE   = regexp.MustCompile(`^probe/reviewer/01/(plan\.json|dispatch\.json|task\.json|final\.txt|observation\.json|admission\.json|record\.json|wait\.json|wait-result\.json|wait-stderr\.txt|wait-exit\.txt|logs\.txt|logs\.json|review-evidence\.json)$`)
+	probeReviewRE   = regexp.MustCompile(`^probe/reviewer/01/(plan\.json|dispatch\.json|task\.json|final\.txt|observation\.json|admission\.json|record\.json|wait\.json|wait-result\.json|wait-stderr\.txt|wait-exit\.txt|logs\.txt|logs\.json|review-evidence\.json|publication-rejection\.json|rejected-review\.bin)$`)
 	probeDecisionRE = regexp.MustCompile(`^probe/decisions/0[12]\.json$`)
 	probeSessionRE  = regexp.MustCompile(`^session/(phase-[1-3]\.stdout\.jsonl|phase-[1-3]\.stderr\.txt|transcript-phase-[1-3]\.jsonl|coordinator-exit\.json)$`)
 	probeSetupRE    = regexp.MustCompile(`^setup/(launch-phase-[1-3]\.json|probe-phase-[1-3]\.md)$`)
@@ -984,6 +977,18 @@ func CheckDevQualification(b *DevBundle) []string {
 	if code := probeReviewerCheck(b, q); code != "" {
 		bad(code)
 	}
+	// A retained rejection (design 12a-dev-flow-verify r0.11) is diagnostic
+	// evidence of a refused review: never part of a qualified record, and
+	// judged by the full flow's own validator in the probe's namespace.
+	if v := probeRejection(b, q); v.present {
+		bad("publication_rejected")
+		for _, code := range v.bad {
+			bad(code)
+		}
+		if v.recheck != "" {
+			bad(v.recheck)
+		}
+	}
 	// The derived accounting holds every paid call the record counts and
 	// every settled task.
 	if cost := doc[DevCost](b, devCostFile); cost == nil {
@@ -1065,28 +1070,9 @@ func probeReviewerCheck(b *DevBundle, q *DevQualification) string {
 	if _, ok := b.Files[dir+"/logs.txt"]; !ok {
 		return "reviewer_evidence_unobserved"
 	}
-	tree := func(ref string) (string, string, map[string]TreeFile, bool) {
-		h, ok := b.Repo.refs["refs/heads/"+ref]
-		if !ok {
-			return "", "", nil, false
-		}
-		cm, err := b.Repo.repo.CommitObject(h)
-		if err != nil {
-			return "", "", nil, false
-		}
-		files, err := readTree(b.Repo.repo, cm, ref)
-		if err != nil {
-			return "", "", nil, false
-		}
-		m := map[string]TreeFile{}
-		for _, f := range files {
-			m[f.Path] = f
-		}
-		return h.String(), cm.TreeHash.String(), m, true
-	}
-	seed, _, seedFiles, ok1 := tree("seed")
-	cand, candTree, candFiles, ok2 := tree("candidate")
-	review, _, reviewFiles, ok3 := tree("review")
+	seed, _, seedFiles, ok1 := probeRefTree(b, "seed")
+	cand, candTree, candFiles, ok2 := probeRefTree(b, "candidate")
+	review, _, reviewFiles, ok3 := probeRefTree(b, "review")
 	if !ok1 || !ok2 || !ok3 || cand != q.Candidate || review != q.ReviewCommit || plan.Data.ExpectedBase != cand {
 		return "reviewer_binding_mismatch"
 	}
@@ -1106,6 +1092,52 @@ func probeReviewerCheck(b *DevBundle, q *DevQualification) string {
 		return "reviewer_evidence_mismatch"
 	}
 	return ""
+}
+
+// probeRefTree is the evidence repository's branch ref: its commit, tree
+// hash and files (false when it is not retained).
+func probeRefTree(b *DevBundle, ref string) (string, string, map[string]TreeFile, bool) {
+	if b.Repo == nil {
+		return "", "", nil, false
+	}
+	h, ok := b.Repo.refs["refs/heads/"+ref]
+	if !ok {
+		return "", "", nil, false
+	}
+	cm, err := b.Repo.repo.CommitObject(h)
+	if err != nil {
+		return "", "", nil, false
+	}
+	files, err := readTree(b.Repo.repo, cm, ref)
+	if err != nil {
+		return "", "", nil, false
+	}
+	m := map[string]TreeFile{}
+	for _, f := range files {
+		m[f.Path] = f
+	}
+	return h.String(), cm.TreeHash.String(), m, true
+}
+
+// probeRejection judges the reviewer probe's retained rejection with the
+// full flow's validator: bound to probe/reviewer/01's plan, task and
+// observation, the record's verified stop, and, for its reconstruction,
+// the pinned seed and candidate and the recorded helper recipe.
+func probeRejection(b *DevBundle, q *DevQualification) rejectionVerdict {
+	const dir = "probe/reviewer/01"
+	in := rejectionInput{b: b, dir: dir, runID: q.RunID}
+	if q.StopCode != nil && probeStopped(b, q) {
+		in.stopCode = *q.StopCode
+	}
+	if plan := doc[devEnvelope[TaskPlan]](b, dir+"/plan.json"); plan != nil {
+		in.ordinal = plan.Data.Ordinal
+	}
+	seed, _, seedFiles, ok1 := probeRefTree(b, "seed")
+	cand, candTree, candFiles, ok2 := probeRefTree(b, "candidate")
+	if ok1 && ok2 && cand == q.Candidate {
+		in.review = &reviewRecheck{helper: q.Helper, candidate: cand, initial: seed, candTree: candTree, cand: candFiles, seedMain: fileContent(seedFiles, "main.go")}
+	}
+	return judgeRejection(in)
 }
 
 // probeMCPProblems judges the qualification's recorded Callsheet calls

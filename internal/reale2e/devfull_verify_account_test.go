@@ -508,6 +508,29 @@ func qualificationCodes(t *testing.T, dir string) []string {
 
 func TestDevFullQualification(t *testing.T) {
 	t.Parallel()
+	t.Run("rejection_diagnostics_layout", func(t *testing.T) {
+		t.Parallel()
+		// Design 12a-dev-flow-verify r0.11: exactly the two retained
+		// rejection diagnostics, in the reviewer probe's and a workflow
+		// task's directory.
+		for rel, want := range map[string]bool{
+			"probe/reviewer/01/" + publicationRejectionFile: true, "probe/reviewer/01/" + rejectedReviewFile: true,
+			"probe/wake/01/" + publicationRejectionFile: false, "probe/reviewer/02/" + rejectedReviewFile: false,
+			"probe/reviewer/01/rejected-review.txt": false, "probe/reviewer/01/rejected-review.bin.1": false,
+		} {
+			if probeFileAllowed(rel) != want {
+				t.Errorf("probe %s: %v", rel, !want)
+			}
+		}
+		for rel, want := range map[string]bool{
+			"tasks/04/" + publicationRejectionFile: true, "tasks/14/" + rejectedReviewFile: true,
+			"tasks/15/" + rejectedReviewFile: false, "tasks/04/rejected-review.md": false, "preflight/01/" + rejectedReviewFile: false,
+		} {
+			if devFileAllowed(rel) != want {
+				t.Errorf("full flow %s: %v", rel, !want)
+			}
+		}
+	})
 	t.Run("qualified_record", func(t *testing.T) {
 		t.Parallel()
 		dir := devProbeBundle(t)

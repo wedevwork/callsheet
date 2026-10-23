@@ -773,12 +773,18 @@ func TestDevFullFP6(t *testing.T) {
 		})
 	}
 	for alter, why := range map[string]string{"edit-main": "not an allowed change", "scratch": "scratch remnant", "bad-report": "final marker",
-		"no-commit": "published no result", "missing-field": "source hash", "blocker-mismatch": "review blocker"} {
+		"no-commit": "published no result", "missing-field": "review_report_lines_mismatch", "blocker-mismatch": "review blocker"} {
 		t.Run(alter, func(t *testing.T) {
 			t.Parallel()
 			r := newDevRig(t, ok(alter))
 			r.owner = []string{"yes 1"}
-			r.expect(1, "publication_rejected")
+			// Design 12a-dev-flow-verify r0.11: a pasted report line left
+			// out is a reviewer evidence mismatch before publication.
+			stop := "publication_rejected"
+			if alter == "missing-field" {
+				stop = CodeReviewMismatch
+			}
+			r.expect(1, stop)
 			if !strings.Contains(r.d.stopReason, why) || r.taskCount() != 3 {
 				t.Fatalf("stop reason %q", r.d.stopReason)
 			}

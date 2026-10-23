@@ -357,6 +357,8 @@ var WorkspaceCoverageManifest = []CoverageEntry{
 	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devfull_replay.go"},
 	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devfull_review.go"},
 	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devfull_reviewcheck.go"},
+	// Design 12a-dev-flow-verify r0.11: rejected-publication retention.
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devfull_rejection.go"},
 	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devfull_sessionmap.go"},
 	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devfull_validate.go"},
 	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devfull_mcpcalls.go"},

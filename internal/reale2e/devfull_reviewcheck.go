@@ -4,12 +4,16 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/go-git/go-git/v5/plumbing/filemode"
+
+	"github.com/wedevwork/callsheet/internal/contract"
 )
 
 // Reviewer execution evidence (design 12a-dev-flow-verify, Reviewer
@@ -248,13 +252,23 @@ func DeriveDevReviewEvidence(in reviewEvidenceInput) DevReviewEvidence {
 	if c.status != "completed" || c.exit == nil {
 		return set(evidenceMismatch, "review_command_incomplete")
 	}
+	// Design 12a-dev-flow-verify r0.11: the helper's stdout is its JSON
+	// receipt line, then the report-line trailer; only the receipt line
+	// (with its LF) is the run and its digest. Historical receipt-only
+	// output has no trailer.
 	out := []byte(c.output)
-	ev.RunSHA256, ev.RunBytes = sha256Hex(out), len(out)
-	if len(out) == 0 || len(out) > maxReviewRunBytes || out[len(out)-1] != '\n' || bytes.Count(out, []byte("\n")) != 1 {
+	i := bytes.IndexByte(out, '\n')
+	if i < 0 {
+		ev.RunSHA256, ev.RunBytes = sha256Hex(out), len(out)
+		return set(evidenceUnobserved, "review_receipt_incomplete")
+	}
+	receipt, trailer := out[:i+1], out[i+1:]
+	ev.RunSHA256, ev.RunBytes = sha256Hex(receipt), len(receipt)
+	if len(receipt) > maxReviewRunBytes || len(trailer) > maxReviewTrailerBytes {
 		return set(evidenceUnobserved, "review_receipt_incomplete")
 	}
 	var run DevReviewRun
-	if err := decodeStrict(bytes.TrimSuffix(out, []byte("\n")), &run); err != nil || run.Schema != DevReviewRunSchema {
+	if err := decodeStrict(out[:i], &run); err != nil || run.Schema != DevReviewRunSchema {
 		return set(evidenceUnobserved, "review_receipt_incomplete")
 	}
 	ev.RunStatus = run.Status
@@ -263,6 +277,16 @@ func DeriveDevReviewEvidence(in reviewEvidenceInput) DevReviewEvidence {
 	}
 	ev.RejectedEntry = run.RejectedEntry
 	ev.Coverage = run.Coverage
+	if len(trailer) > 0 {
+		// The trailer is exactly the shared renderer's lines for this
+		// receipt, and review.md carries each of them exactly once.
+		if want, ok := renderReviewReportLines(run, receipt); !ok || want != string(trailer) {
+			return set(evidenceMismatch, "review_report_lines_mismatch")
+		}
+		if code := checkReviewTrailerClaims(in.Report, string(trailer)); code != "" {
+			return set(evidenceMismatch, code)
+		}
+	}
 	if code := checkReviewReportClaims(in.Report, run); code != "" {
 		return set(evidenceMismatch, code)
 	}
@@ -370,6 +394,105 @@ func checkReviewRun(in reviewEvidenceInput, run DevReviewRun, exit int) string {
 		return "review_rejected_entry_invalid"
 	}
 	return ""
+}
+
+// maxReviewTrailerBytes bounds the helper's report-line trailer (r0.11);
+// the whole helper stdout is at most maxReviewRunBytes plus this.
+const maxReviewTrailerBytes = 8 << 10
+
+// reviewPercentRE is a derived coverage percent the report can state.
+var reviewPercentRE = regexp.MustCompile(`^[0-9]{1,3}(\.[0-9]+)?$`)
+
+// renderReviewReportLines is the one pure report-line renderer the
+// helper's emission and the derivation share (design 12a-dev-flow-verify
+// r0.11): from receipt run and its finalized JSON line receipt (with its
+// LF), in order, the reviewed candidate, the four source digests, the
+// two verification commands with their recorded exits (each command's
+// exact logical argv, reviewLogicalArgv, in the receipt's absolute task
+// scratch), the derived coverage percent, the cleanup booleans and the
+// receipt digest. It renders only facts the receipt actually has (no
+// line for an unrun command or an absent coverage) and reports false when
+// the lines exceed their bound.
+func renderReviewReportLines(run DevReviewRun, receipt []byte) (string, bool) {
+	var b strings.Builder
+	if hex40RE.MatchString(run.Candidate) {
+		fmt.Fprintf(&b, "Reviewed candidate: %s\n", run.Candidate)
+	}
+	for _, p := range devSourceFiles {
+		for _, in := range run.Inputs {
+			if in.Path == p && hex64RE.MatchString(in.SHA256) {
+				fmt.Fprintf(&b, "Source sha256: %s %s\n", p, in.SHA256)
+				break
+			}
+		}
+	}
+	scratchOK := contract.ValidTaskID(run.Task) && filepath.IsAbs(run.Scratch) && filepath.Clean(run.Scratch) == run.Scratch &&
+		strings.HasSuffix(run.Scratch, "/"+reviewScratch+"/"+run.Task) && !strings.ContainsAny(run.Scratch, "\r\n\x00")
+	for _, name := range []string{"go_test", "go_test_cover"} {
+		var c *ReviewCommand
+		n := 0
+		for i := range run.Commands {
+			if run.Commands[i].Name == name {
+				c, n = &run.Commands[i], n+1
+			}
+		}
+		if n != 1 || !c.Started || c.Exit < 0 || c.Exit > 999 || !scratchOK || !slices.Equal(c.Argv, reviewLogicalArgv(name, run.Scratch)) {
+			continue
+		}
+		fmt.Fprintf(&b, "Verification exit %d: %s\n", c.Exit, strings.Join(c.Argv, " "))
+	}
+	if run.Coverage != nil && reviewPercentRE.MatchString(run.Coverage.Percent) {
+		fmt.Fprintf(&b, "Coverage: %s%% changed production statements\n", run.Coverage.Percent)
+	}
+	fmt.Fprintf(&b, "Cleanup: scratch_created=%t; scratch_removed=%t; inputs_unchanged=%t\n", run.ScratchCreated, run.ScratchRemoved, run.InputsUnchanged)
+	fmt.Fprintf(&b, "%s %s\n", reviewRunField, sha256Hex(receipt))
+	out := b.String()
+	return out, len(out) <= maxReviewTrailerBytes
+}
+
+// reviewTrailerKeys are the report-line fields, in rendering order.
+var reviewTrailerKeys = []string{"Reviewed candidate:", "Source sha256:", "Verification exit", "Coverage:", "Cleanup:", reviewRunField}
+
+// checkReviewTrailerClaims requires review.md to carry every rendered
+// report line's field exactly as rendered, once each (the four sources and
+// the two verification commands distinct), with no other line of a
+// rendered field's key: copied lines are compared, never trusted as
+// authority (the receipt checks stand on their own).
+func checkReviewTrailerClaims(report, trailer string) string {
+	want := map[string][]string{}
+	for _, l := range strings.Split(strings.TrimSuffix(trailer, "\n"), "\n") {
+		for _, k := range reviewTrailerKeys {
+			if v, ok := strings.CutPrefix(l, k+" "); ok {
+				want[k] = append(want[k], v)
+				break
+			}
+		}
+	}
+	for k, vs := range want {
+		got, bad := fieldValues(report, k)
+		got, vs = slices.Sorted(slices.Values(got)), slices.Sorted(slices.Values(vs))
+		if bad || !slices.Equal(got, vs) || len(slices.Compact(slices.Clone(got))) != len(got) {
+			return "review_report_lines_mismatch"
+		}
+	}
+	return ""
+}
+
+// reportLinesComplete reports a trailer with every field a successful
+// receipt must supply: the candidate, the four sources, exactly the two
+// verification lines and the coverage.
+func reportLinesComplete(trailer string) bool {
+	count := func(prefix string) int {
+		n := 0
+		for _, l := range strings.Split(trailer, "\n") {
+			if strings.HasPrefix(l, prefix) {
+				n++
+			}
+		}
+		return n
+	}
+	return count("Reviewed candidate: ") == 1 && count("Source sha256: ") == len(devSourceFiles) && count("Verification exit ") == 2 &&
+		count("Coverage: ") == 1
 }
 
 // checkReviewReportClaims compares review.md's command, coverage and
