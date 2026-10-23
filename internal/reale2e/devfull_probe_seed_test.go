@@ -124,3 +124,34 @@ func TestDevPromptsWaitStartKeys(t *testing.T) {
 		}
 	}
 }
+
+// TestDevPromptsConsumingRead pins design 12a-dev-flow-verify r0.10's
+// prompt rule (fourth probe): the coordinator prompts and the repeated
+// phase instruction ask for the consuming read as one Callsheet task_show
+// with "lines": 0, so the duplicated log tails never reach the vendor's
+// tool-output limit.
+func TestDevPromptsConsumingRead(t *testing.T) {
+	loaded, err := LoadDevMethod(repoRoot(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded, err = RenderDevPrompts(loaded, seedPromptValues()); err != nil {
+		t.Fatal(err)
+	}
+	probe, err := renderProbePrompt("devProbeSystemPrompt", devProbeSystemPrompt, seedPromptValues())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const read = `one Callsheet task_show request {"id": "<that task id>", "lines": 0}`
+	for name, text := range map[string]string{"coordinator-prompt.md": string(loaded.Rendered[DevPromptFile]), "phase.md": string(loaded.Rendered[DevPhaseFile]),
+		"devProbeSystemPrompt": string(probe)} {
+		if strings.Count(text, read) != 1 {
+			t.Errorf("%s does not ask for the consuming read with lines 0", name)
+		}
+		for _, s := range regexp.MustCompile(`[.;]\s+`).Split(text, -1) {
+			if strings.Contains(s, "task_show") && strings.Contains(strings.ToLower(s), "consume") && !strings.Contains(s, read) {
+				t.Errorf("%s has a consuming read without lines 0: %q", name, s)
+			}
+		}
+	}
+}

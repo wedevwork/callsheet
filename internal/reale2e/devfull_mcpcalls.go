@@ -1060,6 +1060,12 @@ func mcpAnalyze(phases map[int][]sessionRecord, a *mcpAuthority) (map[int]string
 			}
 			continue
 		}
+		if name == "task_show" && taskShowReplaced(res.text) {
+			// The vendor's persisted-output replacement of a task_show
+			// answer (design 12a-dev-flow-verify r0.10): no evidence, never
+			// a response to bind. Any other malformed success still fails.
+			continue
+		}
 		if _, err := contract.ParseErrorBody([]byte(res.text)); err == nil {
 			fail(c.pos.phase, "%s %s: a success-flagged error body", name, c.id)
 			continue

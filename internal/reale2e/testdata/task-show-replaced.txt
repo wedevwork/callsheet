@@ -1,0 +1,9 @@
+Error: result (67,506 characters across 1 line) exceeds maximum allowed tokens. Output has been saved to /home/user/.claude/projects/example/tool-results/mcp-callsheet-task_show-0.txt.
+Format: Plain text
+Search within the file for specific content, and use jq if the content is JSON.
+REQUIREMENTS FOR SUMMARIZATION/ANALYSIS/REVIEW:
+- You MUST read the content from the file at /home/user/.claude/projects/example/tool-results/mcp-callsheet-task_show-0.txt in sequential chunks until 100% of the content has been read.
+- Note: this file's lines are too long for Read's offset/limit chunking. If a shell tool is available, slice by character range (e.g. python read()[A:B], dd, or cut -c) instead.
+- If you receive truncation warnings when reading the file, reduce the chunk size until you have read 100% of the content without truncation.
+- Before producing ANY summary or analysis, you MUST explicitly describe what portion of the content you have read. ***If you did not read the entire content, you MUST explicitly state this.***
+- If after a few attempts you cannot read the file (file not found, lines too long for Read's offset/limit, no shell access), STOP retrying. Summarize what you were able to read, explicitly state which portion you could not read and why, and proceed.

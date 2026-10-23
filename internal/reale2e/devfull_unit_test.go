@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -1395,6 +1396,135 @@ func TestDevFullLifecycle(t *testing.T) {
 		if _, p, line := judge(func() { at = c.build(); consume("ts2") }); p != devWakeUnsupported || line != at {
 			t.Errorf("%s: problem %q at line %d, want %s at line %d", name, p, line, devWakeUnsupported, at)
 		}
+	}
+	// Fourth probe (design 12a-dev-flow-verify r0.10): the vendor's
+	// persisted-output replacement of the consuming task_show is no
+	// evidence, with or without is_error; a later separately paired lines:0
+	// read consumes; a Bash read of the saved file never does.
+	replaced := "Error: result (67,506 characters across 1 line) exceeds maximum allowed tokens. Output has been saved to /tmp/claude/tool-results/mcp-callsheet-task_show-1.txt."
+	for _, isErr := range []bool{false, true} {
+		if got, p := qualify(func() {
+			start()
+			note("b1", "tu")
+			use("big", toolTaskShow, map[string]any{"id": task})
+			result("big", replaced, isErr)
+		}); p != "" || got.Consumed {
+			t.Fatalf("the replacement (is_error %t) consumed: %+v %s", isErr, got, p)
+		}
+		if got, p := qualify(func() {
+			start()
+			note("b1", "tu")
+			use("big", toolTaskShow, map[string]any{"id": task})
+			result("big", replaced, isErr)
+			use("cat", toolBash, map[string]any{"command": "cat /tmp/claude/tool-results/mcp-callsheet-task_show-1.txt"})
+			result("cat", string(show), false)
+			use("small", toolTaskShow, map[string]any{"id": task, "lines": 0})
+			result("small", string(show), false)
+		}); p != "" || !got.complete() || got.ConsumeUse != "small" {
+			t.Fatalf("a later lines:0 read (is_error %t): %+v %s", isErr, got, p)
+		}
+	}
+	if got, _ := qualify(func() {
+		start()
+		note("b1", "tu")
+		use("big", toolTaskShow, map[string]any{"id": task})
+		result("big", replaced, false)
+		use("cat", toolBash, map[string]any{"command": "cat /tmp/claude/tool-results/mcp-callsheet-task_show-1.txt"})
+		result("cat", string(show), false)
+	}); got.Consumed {
+		t.Fatal("a Bash read of the saved file consumed the wait")
+	}
+	for text, want := range map[string]bool{
+		replaced:        true,
+		replaced + "\n": true,
+		"Error: result (67506 characters across 1 line) exceeds maximum allowed tokens. Output has been saved to /x.":        true,
+		"Error: result (1,234,567 characters across 1 line) exceeds maximum allowed tokens. Output has been saved to /x.":    true,
+		"Error: result (67,506 characters across 1 line) exceeds maximum allowed tokens. Output has been saved to /x":        false,
+		"Error: result (67,506 characters across 1 line) exceeds maximum allowed tokens. Output has been saved to .":         false,
+		"Error: result (67,506 characters across 2 lines) exceeds maximum allowed tokens. Output has been saved to /x.":      false,
+		"Error: result (67,5060 characters across 1 line) exceeds maximum allowed tokens. Output has been saved to /x.":      false,
+		"Error: result (,506 characters across 1 line) exceeds maximum allowed tokens. Output has been saved to /x.":         false,
+		"Error: result (67,506 characters across 1 line) exceeds maximum allowed tokens. Output has been saved to /x.\nmore": false,
+		"Error: the result exceeds the maximum allowed tokens; it was saved to /x.":                                          false,
+		" " + replaced: false,
+	} {
+		if taskShowReplaced(text) != want {
+			t.Errorf("replacement %q: %v", text, !want)
+		}
+	}
+	// r0.10c: the captured multiline replacement (package fixture: the
+	// decoded tool result of the fourth probe's line 47 with its saved path
+	// neutralized), its accepted variants and every mutation outside the
+	// carve-out.
+	captured := string(mustRead(t, filepath.Join("testdata", "task-show-replaced.txt")))
+	// The capture's saved path is replaced by a neutral absolute path (owner
+	// decision); every other byte is the captured payload's.
+	const capturedPath = "/home/user/.claude/projects/example/tool-results/mcp-callsheet-task_show-0.txt"
+	capLines := strings.Split(strings.TrimSuffix(captured, "\n"), "\n")
+	if len(capLines) != 9 || strings.Count(captured, capturedPath) != 2 || !strings.HasSuffix(captured, ".\n") {
+		t.Fatalf("fixture %d lines, path %d times", len(capLines), strings.Count(captured, capturedPath))
+	}
+	join := func(ls []string) string { return strings.Join(ls, "\n") + "\n" }
+	edited := func(f func(ls []string) []string) string { return join(f(slices.Clone(capLines))) }
+	accepted := map[string]string{
+		"captured":           captured,
+		"no_trailing_lf":     strings.TrimSuffix(captured, "\n"),
+		"ungrouped":          strings.Replace(captured, "(67,506 ", "(67506 ", 1),
+		"other_path":         strings.ReplaceAll(captured, capturedPath, "/tmp/other dir/x in y.txt"),
+		"short_path":         strings.ReplaceAll(captured, capturedPath, "/x"),
+		"grouped_large":      strings.Replace(captured, "(67,506 ", "(1,234,567 ", 1),
+		"one_line_crlf":      capLines[0] + "\r\n",
+		"one_line_no_ending": capLines[0],
+	}
+	refused := map[string]string{
+		"extra_trailing_lf": captured + "\n",
+		"bullet_path":       strings.Replace(captured, "file at "+capturedPath, "file at "+capturedPath+"x", 1),
+		"first_path":        strings.Replace(captured, "saved to "+capturedPath, "saved to "+capturedPath+"x", 1),
+		"relative_path":     strings.ReplaceAll(captured, capturedPath, "tool-results/x.txt"),
+		"empty_path":        strings.ReplaceAll(captured, capturedPath, ""),
+		"root_only":         strings.ReplaceAll(captured, capturedPath, "/"),
+		"crlf":              strings.ReplaceAll(captured, "\n", "\r\n"),
+		"blank_line":        edited(func(ls []string) []string { return slices.Insert(ls, 4, "") }),
+		"reordered":         edited(func(ls []string) []string { ls[1], ls[2] = ls[2], ls[1]; return ls }),
+		"tail":              captured + "more\n",
+		"trimmed":           edited(func(ls []string) []string { ls[3] = ls[3] + " "; return ls }),
+		"one_line_cr_only":  capLines[0] + "\r",
+		"one_line_relative": strings.Replace(capLines[0], "saved to /", "saved to ", 1),
+	}
+	for i := 1; i < 9; i++ {
+		refused[fmt.Sprintf("changed_%d", i)] = edited(func(ls []string) []string { ls[i] = strings.Replace(ls[i], " ", "  ", 1); return ls })
+		refused[fmt.Sprintf("deleted_%d", i)] = edited(func(ls []string) []string { return slices.Delete(ls, i, i+1) })
+		refused[fmt.Sprintf("inserted_%d", i)] = edited(func(ls []string) []string { return slices.Insert(ls, i, ls[i]) })
+	}
+	for name, text := range accepted {
+		if !taskShowReplaced(text) {
+			t.Errorf("accepted %s refused", name)
+		}
+	}
+	for name, text := range refused {
+		if taskShowReplaced(text) {
+			t.Errorf("refused %s accepted", name)
+		}
+	}
+	// Through the session: the captured payload is no evidence, then a
+	// later lines:0 read consumes.
+	if got, p := qualify(func() {
+		start()
+		sysNote("b1", "tu")
+		use("big", toolTaskShow, map[string]any{"id": task})
+		result("big", captured, false)
+	}); p != "" || got.Consumed {
+		t.Fatalf("the captured payload consumed: %+v %s", got, p)
+	}
+	if got, p := qualify(func() {
+		start()
+		sysNote("b1", "tu")
+		use("big", toolTaskShow, map[string]any{"id": task})
+		result("big", captured, false)
+		use("small", toolTaskShow, map[string]any{"id": task, "lines": 0})
+		result("small", string(show), false)
+	}); p != "" || !got.complete() || got.ConsumeUse != "small" {
+		t.Fatalf("a later lines:0 read %+v %s", got, p)
 	}
 	// Consumption before the wake does not count.
 	if got, _ := qualify(func() { start(); consume("ts"); note("b1", "tu") }); got.Consumed {
