@@ -428,6 +428,54 @@ func TestDevFullVerifyFP2(t *testing.T) {
 			t.Fatalf("event map %+v", em.Tasks)
 		}
 	})
+	// Design 12a-dev-flow-verify r0.10 (fourth probe): the vendor's
+	// persisted-output replacement of a consuming task_show is no
+	// evidence. A later lines:0 read consumes and the workflow completes,
+	// live and offline; the replacement alone, or a Bash read of the saved
+	// file, never completes a wait; another wording fails closed offline.
+	for _, mode := range []string{"replaced", "replaced-error", "captured"} {
+		t.Run("consuming_read_"+mode, func(t *testing.T) {
+			t.Parallel()
+			r := newDevRig(t, happy())
+			r.owner = []string{"yes 1"}
+			r.replacedRead = mode
+			r.expect(0, "")
+			if code, rep := r.offline(); code != 0 {
+				t.Fatalf("offline %v", devCodes(rep))
+			}
+			em := bundleDoc[DevEventMap](t, r.f.bundle(), devEventMapFile)
+			for _, tf := range em.Tasks {
+				if !tf.Wait.complete() || tf.Wait.ConsumeUse == "" {
+					t.Fatalf("task %d %+v", tf.Ordinal, tf.Wait)
+				}
+				line := strings.Split(string(r.evidence(tf.WaitSources[3].File)), "\n")[tf.WaitSources[3].FirstLine-1]
+				if strings.Contains(line, "exceeds maximum allowed tokens") {
+					t.Fatalf("task %d consumed by the replacement", tf.Ordinal)
+				}
+			}
+		})
+	}
+	for _, mode := range []string{"replaced-only", "bash-read"} {
+		t.Run("consuming_read_"+mode, func(t *testing.T) {
+			t.Parallel()
+			r := newDevRig(t, []devAct{{marker: markerDesignDraft}})
+			r.replacedRead = mode
+			r.expect(1, devWaitFailed)
+		})
+	}
+	t.Run("consuming_read_other_wording", func(t *testing.T) {
+		t.Parallel()
+		r := newDevRig(t, happy())
+		r.owner = []string{"yes 1"}
+		r.replacedRead = "other-wording"
+		if got := r.run(); got != 1 {
+			t.Fatalf("exit %d", got)
+		}
+		code, rep := r.offline()
+		if code != 1 || !slices.Contains(devCriterion(rep, "coordinator_setup").Codes, devMCPCallInvalid) {
+			t.Fatalf("offline %v", devCodes(rep))
+		}
+	})
 	t.Run("deadline_without_wake", func(t *testing.T) {
 		t.Parallel()
 		r := newDevRig(t, []devAct{{marker: markerDesignDraft, alter: "deadline-no-wake"}})
@@ -596,6 +644,61 @@ func TestDevFullVerifyFP4(t *testing.T) {
 			}
 		})
 	}
+	// Design 12a-dev-flow-verify r0.10 (fourth probe): the helper passes
+	// in a checkout holding Callsheet's runtime directory and Codex's
+	// empty placeholders; a stranger is refused with its entry, which the
+	// evidence keeps, and the refusal supports only changes requested.
+	realEntries := func(t *testing.T) func(co string, n int) {
+		return func(co string, n int) {
+			rt := filepath.Join(co, contract.RuntimeDirPrefix+"f846bdfc244bc90db8bbdec60103c06c")
+			os.MkdirAll(filepath.Join(rt, "final"), 0o700)
+			os.WriteFile(filepath.Join(rt, "final", "out.txt"), []byte("x\n"), 0o600)
+			for _, p := range []string{".agents", ".aws", ".codex"} {
+				os.Mkdir(filepath.Join(co, p), 0o555)
+			}
+		}
+	}
+	t.Run("checkout_entries", func(t *testing.T) {
+		t.Parallel()
+		r := newDevRig(t, happy())
+		r.owner = []string{"yes 1"}
+		r.reviewEntries = realEntries(t)
+		r.expect(0, "")
+		review := r.d.state.Tasks[3]
+		if rec := r.receipts[review.TaskID]; rec.Status != reviewPassed || rec.RejectedEntry != nil {
+			t.Fatalf("receipt %+v", rec)
+		}
+		if code, _ := r.offline(); code != 0 {
+			t.Fatal("offline")
+		}
+	})
+	t.Run("checkout_stranger", func(t *testing.T) {
+		t.Parallel()
+		r := newDevRig(t, devLoopSteps())
+		r.owner = []string{"yes 1"}
+		entries := realEntries(t)
+		r.reviewEntries = func(co string, n int) {
+			entries(co, n)
+			if n == 0 {
+				// An empty stray directory (it publishes nothing).
+				os.Mkdir(filepath.Join(co, "stray"), 0o755)
+			}
+		}
+		r.expect(0, "")
+		first := r.receipts[r.d.state.Tasks[3].TaskID]
+		if first.Status != reviewRefused || first.Code != "unexpected_file" || first.RejectedEntry == nil ||
+			*first.RejectedEntry != (ReviewRejectedEntry{"stray", "directory"}) {
+			t.Fatalf("first receipt %+v", first)
+		}
+		var ev DevReviewRecord
+		if err := json.Unmarshal(r.evidence("tasks/04/review-evidence.json"), &ev); err != nil || ev.Evidence.Status != evidenceFailedRun ||
+			ev.Evidence.Code != "unexpected_file" || ev.Evidence.RejectedEntry == nil || *ev.Evidence.RejectedEntry != *first.RejectedEntry {
+			t.Fatalf("evidence %+v %v", ev, err)
+		}
+		if code, _ := r.offline(); code != 0 {
+			t.Fatal("offline")
+		}
+	})
 	t.Run("failed_run_changes_requested", func(t *testing.T) {
 		t.Parallel()
 		// A complete failed receipt supports changes requested: a legal
@@ -1106,6 +1209,73 @@ func TestDevFullVerifyFP8(t *testing.T) {
 			if p != "" || !w.complete() || !strings.Contains(line, `"subtype":"task_notification"`) {
 				t.Fatalf("wake %d %+v %s %s", n, w, p, line)
 			}
+		}
+	})
+	// r0.10: the probe qualifies past a replaced consuming read; the
+	// replacement alone blocks it.
+	for _, mode := range []string{"replaced", "captured"} {
+		t.Run("consuming_read_"+mode, func(t *testing.T) {
+			t.Parallel()
+			r := probeRig(t)
+			r.replacedRead = mode
+			r.expect(0, "")
+			if codes := qualificationCodes(t, r.f.bundle()); len(codes) != 0 {
+				t.Fatalf("offline %v", codes)
+			}
+		})
+	}
+	// The recorded-call rule on public offline fixtures: the captured
+	// replacement of a valid task_show is no evidence, with or without
+	// is_error; an invalid request, a second result and another wording
+	// still fail mcp_call_invalid.
+	t.Run("consuming_read_recorded_calls", func(t *testing.T) {
+		t.Parallel()
+		replaced := "Error: result (67,506 characters across 1 line) exceeds maximum allowed tokens. Output has been saved to /tmp/claude/x.txt."
+		captured := string(mustRead(t, filepath.Join("testdata", "task-show-replaced.txt")))
+		c := firstCall(t, devProbeBundle(t), toolTaskShow, nil)
+		var args map[string]any
+		json.Unmarshal([]byte(c.args), &args)
+		id, _ := args["id"].(string)
+		for name, cs := range map[string]struct {
+			input   string
+			results []string
+			invalid bool
+		}{
+			"replaced":            {`{"id":"` + id + `"}`, []string{replaced}, false},
+			"replaced_error":      {`{"id":"` + id + `"}`, []string{replaced + "!"}, false},
+			"invalid_request":     {`{"id":"` + id + `","lines":201}`, []string{replaced}, true},
+			"second_result":       {`{"id":"` + id + `"}`, []string{replaced, c.answer}, true},
+			"other_wording":       {`{"id":"` + id + `"}`, []string{"Error: the result was too large."}, true},
+			"replaced_lines_zero": {`{"id":"` + id + `","lines":0}`, []string{replaced}, false},
+			// r0.10c: the exact captured multiline payload, and mutations
+			// outside the carve-out.
+			"captured":                  {`{"id":"` + id + `"}`, []string{captured}, false},
+			"captured_error":            {`{"id":"` + id + `"}`, []string{captured + "!"}, false},
+			"captured_extra_lf":         {`{"id":"` + id + `"}`, []string{captured + "\n"}, true},
+			"captured_bullet_path":      {`{"id":"` + id + `"}`, []string{strings.Replace(captured, "file at /", "file at /x", 1)}, true},
+			"captured_no_guidance_line": {`{"id":"` + id + `"}`, []string{strings.Replace(captured, "Format: Plain text\n", "", 1)}, true},
+			"captured_relative":         {`{"id":"` + id + `"}`, []string{strings.ReplaceAll(captured, "/home/user/.claude/projects/", "home/")}, true},
+		} {
+			dir := devProbeBundle(t)
+			lines := phaseStream(t, dir, 1)
+			recs := []string{useLine(sessionOf(lines), "toolu_big", toolTaskShow, cs.input)}
+			for _, res := range cs.results {
+				recs = append(recs, resultLine(sessionOf(lines), "toolu_big", strings.TrimSuffix(res, "!"), strings.HasSuffix(res, "!")))
+			}
+			insertAt(t, dir, 1, -1, recs...)
+			requalify(t, dir)
+			if codes := qualificationCodes(t, dir); slices.Contains(codes, devMCPCallInvalid) != cs.invalid {
+				t.Errorf("%s: %v", name, codes)
+			}
+		}
+	})
+	t.Run("consuming_read_replaced_only", func(t *testing.T) {
+		t.Parallel()
+		r := probeRig(t)
+		r.replacedRead = "replaced-only"
+		r.expect(1, devWaitFailed)
+		if q := r.qualification(); q.Result != ResultBlocked {
+			t.Fatalf("qualified %+v", q.Stages)
 		}
 	})
 	// r0.9: the probe qualifies with the captured timeout start; a stopped

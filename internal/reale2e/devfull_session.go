@@ -550,6 +550,9 @@ func deriveDevWait(records []sessionRecord, cmd, task string) (devWait, devWaitS
 					if m := backgroundRE.FindStringSubmatch(strings.TrimSpace(b.text)); !b.isError && m != nil {
 						starts[b.toolUseID].handle = m[1]
 					}
+				case showUse[b.toolUseID] && !w.Consumed && taskShowReplaced(b.text):
+					// The vendor's persisted-output replacement (r0.10): no
+					// evidence; the wait stays unconsumed.
 				case showUse[b.toolUseID] && !w.Consumed:
 					v, err := contract.ParseTaskShowResponse([]byte(b.text))
 					if err == nil && v.TaskID == task && contract.TaskTerminal(v.State) {
@@ -571,6 +574,56 @@ func deriveDevWait(records []sessionRecord, cmd, task string) (devWait, devWaitS
 		return fail(devWakeNotAutomatic)
 	}
 	return w, src, ""
+}
+
+// taskShowReplacedFirstRE is the first sentence Claude Code 2.1.306
+// substitutes for a tool result over its output limit (fourth probe,
+// design 12a-dev-flow-verify r0.10c): the size N in decimal digits,
+// optionally comma-grouped, and the saved path P, which begins with "/",
+// has at least one further character and holds no CR, LF or NUL. The final
+// period is punctuation, not part of P.
+var taskShowReplacedFirstRE = regexp.MustCompile(`^Error: result \((?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+) characters across 1 line\) exceeds maximum allowed tokens\. Output has been saved to (/[^\r\n\x00]+)\.$`)
+
+// taskShowReplacedGuidance is the captured guidance that follows the
+// first sentence in the multiline form, with the first sentence's P
+// substituted literally into its first bullet (P is opaque text: never
+// captured a second time, resolved or opened). The lines join with LF.
+func taskShowReplacedGuidance(p string) string {
+	return strings.Join([]string{
+		"Format: Plain text",
+		"Search within the file for specific content, and use jq if the content is JSON.",
+		"REQUIREMENTS FOR SUMMARIZATION/ANALYSIS/REVIEW:",
+		"- You MUST read the content from the file at " + p + " in sequential chunks until 100% of the content has been read.",
+		"- Note: this file's lines are too long for Read's offset/limit chunking. If a shell tool is available, slice by character range (e.g. python read()[A:B], dd, or cut -c) instead.",
+		"- If you receive truncation warnings when reading the file, reduce the chunk size until you have read 100% of the content without truncation.",
+		"- Before producing ANY summary or analysis, you MUST explicitly describe what portion of the content you have read. ***If you did not read the entire content, you MUST explicitly state this.***",
+		"- If after a few attempts you cannot read the file (file not found, lines too long for Read's offset/limit, no shell access), STOP retrying. Summarize what you were able to read, explicitly state which portion you could not read and why, and proceed.",
+	}, "\n")
+}
+
+// taskShowReplaced reports a task_show result replaced by the vendor's
+// persisted-output text (r0.10c), in one of its two captured forms: the
+// first sentence alone, with an optional single LF or CRLF ending; or the
+// first sentence, LF, and exactly the captured eight guidance lines with
+// the same P in its first bullet, compared byte for byte, with an optional
+// single trailing LF. Any other text is not this replacement. It is no
+// task evidence at all (never a consuming read, never a response to
+// bind); a later, separately paired valid read may still consume.
+func taskShowReplaced(text string) bool {
+	first, rest, multiline := strings.Cut(text, "\n")
+	switch {
+	case !multiline:
+		return taskShowReplacedFirstRE.MatchString(first)
+	case rest == "":
+		// The one-line form's LF or CRLF ending.
+		return taskShowReplacedFirstRE.MatchString(strings.TrimSuffix(first, "\r"))
+	}
+	m := taskShowReplacedFirstRE.FindStringSubmatch(first)
+	if m == nil {
+		return false
+	}
+	want := taskShowReplacedGuidance(m[1])
+	return rest == want || rest == want+"\n"
 }
 
 // devWaitCommand is the simple background command for one workflow slot.

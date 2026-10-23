@@ -165,6 +165,17 @@ type DevReviewRun struct {
 	OutputsOmitted    bool              `json:"outputs_omitted"`
 	Status            string            `json:"status"`
 	Code              string            `json:"code"`
+	// RejectedEntry names the checkout entry of an unexpected_file
+	// refusal or final-check failure (design 12a-dev-flow-verify r0.10;
+	// absent otherwise, and from older receipts).
+	RejectedEntry *ReviewRejectedEntry `json:"rejected_entry,omitempty"`
+}
+
+// ReviewRejectedEntry is an unexpected_file receipt's rejected checkout
+// entry: its exact root basename and its kind (reviewEntryKinds).
+type ReviewRejectedEntry struct {
+	Name string `json:"name"`
+	Kind string `json:"kind"`
 }
 
 // Review run statuses.
@@ -300,6 +311,9 @@ func runReviewVerify(env reviewEnv, a reviewArgs) DevReviewRun {
 	refuse := func(code string) DevReviewRun { return finish(reviewRefused, code) }
 	in, err := inspectReviewCheckout(env.cwd, a)
 	if err != nil {
+		// The rejected entry of an unexpected_file refusal is kept beside
+		// the code (r0.10).
+		rec.RejectedEntry = in.rejected
 		return refuse(codeOf(err))
 	}
 	rec.InputTree, rec.Inputs = in.tree, in.inputs
@@ -392,7 +406,13 @@ func runReviewVerify(env reviewEnv, a reviewArgs) DevReviewRun {
 	if !rec.ScratchRemoved {
 		fail("cleanup_unverified")
 	}
-	if now, err := snapshotReviewInputs(env.cwd); err == nil {
+	// The final check classifies the checkout's entries as the initial
+	// inspection did: an entry turned invalid fails unexpected_file with
+	// the entry, never inputs unchanged.
+	if now, rejected, err := snapshotReviewInputs(env.cwd, in.files); rejected != nil {
+		rec.RejectedEntry = rejected
+		fail("unexpected_file")
+	} else if err == nil {
 		rec.InputsAfter = now
 		rec.InputsUnchanged = slices.Equal(now, rec.Inputs)
 	}
@@ -466,13 +486,15 @@ type reviewCheckout struct {
 	files    map[string]TreeFile
 	inputs   []ReviewInputFile
 	seedMain []byte
+	// rejected is an unexpected_file refusal's entry.
+	rejected *ReviewRejectedEntry
 }
 
 // inspectReviewCheckout validates the checkout before anything runs: a
 // real directory, no pre-existing scratch, HEAD at the candidate, both
 // commits present with the initial source an ancestor, every input equal
 // to the pinned candidate (review.md may be in progress) and nothing
-// else.
+// else but the checkout-only entries (checkoutOnly).
 func inspectReviewCheckout(cwd string, a reviewArgs) (reviewCheckout, error) {
 	var rc reviewCheckout
 	canon, err := filepath.EvalSymlinks(cwd)
@@ -523,6 +545,7 @@ func inspectReviewCheckout(cwd string, a reviewArgs) (reviewCheckout, error) {
 		return rc, failure("checkout_unsafe", err)
 	}
 	seen := map[string]bool{}
+	runtimeSeen := false
 	for _, e := range entries {
 		name := e.Name()
 		if name == ".git" {
@@ -530,7 +553,13 @@ func inspectReviewCheckout(cwd string, a reviewArgs) (reviewCheckout, error) {
 		}
 		f, inCandidate := rc.files[name]
 		if !inCandidate && name != "review.md" {
-			return rc, failure("unexpected_file", fmt.Errorf("unexpected checkout entry %s", contract.SafeText(name, 64)))
+			runtime, rejected := checkoutOnly(cwd, name, runtimeSeen)
+			if rejected != nil {
+				rc.rejected = rejected
+				return rc, failure("unexpected_file", fmt.Errorf("unexpected checkout entry %s", contract.SafeText(name, 64)))
+			}
+			runtimeSeen = runtimeSeen || runtime
+			continue
 		}
 		st, err := os.Lstat(filepath.Join(cwd, name))
 		if err != nil || !st.Mode().IsRegular() || st.Mode().Perm()&0o111 != 0 {
@@ -550,10 +579,15 @@ func inspectReviewCheckout(cwd string, a reviewArgs) (reviewCheckout, error) {
 			return rc, failure("input_modified", fmt.Errorf("%s is missing", contract.SafeText(name, 64)))
 		}
 	}
-	rc.inputs, err = snapshotReviewInputs(cwd)
-	if err != nil {
+	inputs, rejected, err := snapshotReviewInputs(cwd, rc.files)
+	switch {
+	case rejected != nil:
+		rc.rejected = rejected
+		return rc, failure("unexpected_file", fmt.Errorf("unexpected checkout entry %s", contract.SafeText(rejected.Name, 64)))
+	case err != nil:
 		return rc, failure("input_modified", err)
 	}
+	rc.inputs = inputs
 	return rc, nil
 }
 
@@ -577,30 +611,95 @@ func isAncestor(repo *git.Repository, a plumbing.Hash, c *object.Commit) bool {
 }
 
 // snapshotReviewInputs lists every checkout input but review.md and
-// .git with its digest and mode.
-func snapshotReviewInputs(cwd string) ([]ReviewInputFile, error) {
+// .git with its digest and mode. An entry outside the candidate (files)
+// is a checkout-only entry, validated and left out, or the rejected entry
+// (design 12a-dev-flow-verify r0.10).
+func snapshotReviewInputs(cwd string, files map[string]TreeFile) ([]ReviewInputFile, *ReviewRejectedEntry, error) {
 	entries, err := os.ReadDir(cwd)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	out := []ReviewInputFile{}
+	runtimeSeen := false
 	for _, e := range entries {
 		name := e.Name()
 		if name == ".git" || name == "review.md" || name == reviewScratch {
 			continue
 		}
+		if _, inCandidate := files[name]; !inCandidate {
+			runtime, rejected := checkoutOnly(cwd, name, runtimeSeen)
+			if rejected != nil {
+				return nil, rejected, nil
+			}
+			runtimeSeen = runtimeSeen || runtime
+			continue
+		}
 		st, err := os.Lstat(filepath.Join(cwd, name))
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		b, err := readBounded(filepath.Join(cwd, name), maxArtifactBytes)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		out = append(out, ReviewInputFile{Path: name, SHA256: sha256Hex(b), Mode: gitModeOf(st)})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
-	return out, nil
+	return out, nil, nil
+}
+
+// reviewPlaceholders are the root names Codex may leave in a checkout,
+// tolerated only as empty real directories (owner decision 2026-10-23).
+var reviewPlaceholders = map[string]bool{".agents": true, ".aws": true, ".codex": true}
+
+// reviewEntryKinds are a rejected entry's kinds.
+var reviewEntryKinds = []string{"directory", "regular", "symlink", "other", "unknown"}
+
+// entryKind is a checkout entry's kind by Lstat ("unknown" when it cannot
+// be determined); a link is never followed.
+func entryKind(p string) string {
+	st, err := os.Lstat(p)
+	switch {
+	case err != nil:
+		return "unknown"
+	case st.Mode()&fs.ModeSymlink != 0:
+		return "symlink"
+	case st.IsDir():
+		return "directory"
+	case st.Mode().IsRegular():
+		return "regular"
+	}
+	return "other"
+}
+
+// checkoutOnly judges a root checkout entry outside the candidate tree
+// (never .git or review.md) under design 12a-dev-flow-verify r0.10: at
+// most one real directory named by contract.ValidRuntimeDir (Callsheet's
+// runtime directory: its contents are never traversed, read or hashed),
+// and .agents, .aws and .codex only as real directories with no entries
+// at all. runtime reports an accepted runtime directory; anything else,
+// a second runtime directory included, is the rejected entry. A read or
+// stat error is a rejection, never an empty placeholder.
+func checkoutOnly(cwd, name string, runtimeSeen bool) (runtime bool, rejected *ReviewRejectedEntry) {
+	p := filepath.Join(cwd, name)
+	kind := entryKind(p)
+	reject := &ReviewRejectedEntry{Name: name, Kind: kind}
+	switch {
+	case contract.ValidRuntimeDir(name):
+		if kind != "directory" || runtimeSeen {
+			return false, reject
+		}
+		return true, nil
+	case reviewPlaceholders[name]:
+		if kind != "directory" {
+			return false, reject
+		}
+		if es, err := os.ReadDir(p); err != nil || len(es) != 0 {
+			return false, reject
+		}
+		return false, nil
+	}
+	return false, reject
 }
 
 // gitModeOf is a checkout entry's Git mode: 100644 for a regular

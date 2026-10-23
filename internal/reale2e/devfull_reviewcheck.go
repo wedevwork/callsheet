@@ -165,6 +165,9 @@ type DevReviewEvidence struct {
 	RunStatus  string       `json:"run_status"`
 	Coverage   *DevCoverage `json:"coverage"`
 	Approving  bool         `json:"approving"`
+	// RejectedEntry is the receipt's rejected checkout entry, retained as
+	// explanatory evidence (design 12a-dev-flow-verify r0.10).
+	RejectedEntry *ReviewRejectedEntry `json:"rejected_entry,omitempty"`
 }
 
 // Review evidence statuses.
@@ -258,6 +261,7 @@ func DeriveDevReviewEvidence(in reviewEvidenceInput) DevReviewEvidence {
 	if code := checkReviewRun(in, run, *c.exit); code != "" {
 		return set(evidenceMismatch, code)
 	}
+	ev.RejectedEntry = run.RejectedEntry
 	ev.Coverage = run.Coverage
 	if code := checkReviewReportClaims(in.Report, run); code != "" {
 		return set(evidenceMismatch, code)
@@ -278,7 +282,11 @@ func checkReviewRun(in reviewEvidenceInput, run DevReviewRun, exit int) string {
 	switch {
 	case run.Task != in.Task || run.Candidate != in.Candidate || run.InitialSource != in.Initial:
 		return "review_receipt_binding"
-	case run.Go.Path != want.Go || run.Deadline != want.Deadline || !hex64RE.MatchString(run.Go.SHA256):
+	case run.Go.Path != want.Go || run.Deadline != want.Deadline:
+		return "review_receipt_binding"
+	case !hex64RE.MatchString(run.Go.SHA256) && (run.Status != reviewRefused || run.Go.SHA256 != ""):
+		// A refusal before the toolchain was read (at checkout
+		// inspection, r0.10's unexpected_file included) records no digest.
 		return "review_receipt_binding"
 	case run.InputTree != in.CandTree && (run.Status != reviewRefused || run.InputTree != ""):
 		return "review_receipt_binding"
@@ -353,6 +361,13 @@ func checkReviewRun(in reviewEvidenceInput, run DevReviewRun, exit int) string {
 	}
 	if run.Status != reviewPassed && run.Status != reviewFailed && run.Status != reviewRefused {
 		return "review_status_mismatch"
+	}
+	// The optional rejected checkout entry (r0.10): a root basename and a
+	// known kind, never on a successful receipt. It explains a refusal; it
+	// proves nothing about the filesystem.
+	if e := run.RejectedEntry; e != nil && (run.Status == reviewPassed || e.Name == "" || e.Name == "." || e.Name == ".." ||
+		strings.ContainsAny(e.Name, "/\x00") || !slices.Contains(reviewEntryKinds, e.Kind)) {
+		return "review_rejected_entry_invalid"
 	}
 	return ""
 }

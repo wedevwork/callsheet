@@ -15,6 +15,8 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/storage/memory"
+
+	"github.com/wedevwork/callsheet/internal/contract"
 )
 
 // Unit groups of design 12a-dev-flow-verify for FP-4 and FP-5: the
@@ -220,6 +222,133 @@ func TestDevFullReviewRunner(t *testing.T) {
 			}
 		})
 	}
+	// Design 12a-dev-flow-verify r0.10 (fourth probe): a real workspace
+	// checkout holds Callsheet's runtime directory and may hold Codex's
+	// empty .agents, .aws and .codex placeholders. They pass inspection,
+	// stay out of the inputs, export and hashes, and persist untouched.
+	runtimeDir := contract.RuntimeDirPrefix + "f846bdfc244bc90db8bbdec60103c06c"
+	for name, entries := range map[string]func(t *testing.T, co string){
+		"runtime_dir": func(t *testing.T, co string) {
+			rt := filepath.Join(co, runtimeDir)
+			write(t, filepath.Join(rt, "final", "out.txt"), "final output\n")
+			// Never traversed: an unreadable subdirectory inside it.
+			if err := os.Mkdir(filepath.Join(rt, "sealed"), 0o000); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { os.Chmod(filepath.Join(rt, "sealed"), 0o700) })
+		},
+		"placeholders": func(t *testing.T, co string) {
+			for _, p := range []string{".agents", ".aws", ".codex"} {
+				if err := os.Mkdir(filepath.Join(co, p), 0o555); err != nil {
+					t.Fatal(err)
+				}
+			}
+		},
+		"both": func(t *testing.T, co string) {
+			write(t, filepath.Join(co, runtimeDir, "x"), "x\n")
+			for _, p := range []string{".agents", ".codex"} {
+				os.Mkdir(filepath.Join(co, p), 0o555)
+			}
+		},
+	} {
+		t.Run("checkout_entries_"+name, func(t *testing.T) {
+			t.Parallel()
+			clean, _, _ := newReviewFix(t).run()
+			f := newReviewFix(t)
+			entries(t, f.co)
+			before := treeState(t, f.co)
+			exported := map[string]bool{}
+			inner := f.script.script
+			f.launcher = &fakeLauncher{script: func(s ProcSpec) behavior {
+				if len(exported) == 0 {
+					es, _ := os.ReadDir(s.Dir)
+					for _, e := range es {
+						exported[e.Name()] = true
+					}
+				}
+				// Runtime content may churn while the helper runs.
+				if _, err := os.Lstat(filepath.Join(f.co, runtimeDir)); err == nil {
+					os.WriteFile(filepath.Join(f.co, runtimeDir, "churn"), []byte(s.Args[0]), 0o600)
+				}
+				return inner(s)
+			}}
+			out, _, code := verifyHelperRun(reviewEnv{cwd: f.co, clock: f.clock, launcher: f.launcher, path: "/usr/bin:/bin"}, f.argv())
+			var rec DevReviewRun
+			json.Unmarshal([]byte(out), &rec)
+			if code != 0 || rec.Status != reviewPassed || rec.RejectedEntry != nil || rec.InputTree != clean.InputTree ||
+				!slices.Equal(rec.Inputs, clean.Inputs) || !slices.Equal(rec.InputsAfter, clean.Inputs) || len(exported) != len(f.candFiles) {
+				t.Fatalf("receipt %d %s exported %v", code, out, exported)
+			}
+			// Only the helper's scratch is gone; the entries persist.
+			after := treeState(t, f.co)
+			for p := range before {
+				if _, ok := after[p]; !ok {
+					t.Fatalf("%s was removed", p)
+				}
+			}
+		})
+	}
+	for name, c := range map[string]struct {
+		prepare func(t *testing.T, co string)
+		entry   ReviewRejectedEntry
+	}{
+		"stranger":      {func(t *testing.T, co string) { write(t, filepath.Join(co, "notes.txt"), "x\n") }, ReviewRejectedEntry{"notes.txt", "regular"}},
+		"runtime_upper": {func(t *testing.T, co string) { os.Mkdir(filepath.Join(co, strings.ToUpper(runtimeDir)), 0o700) }, ReviewRejectedEntry{strings.ToUpper(runtimeDir), "directory"}},
+		"runtime_short": {func(t *testing.T, co string) { os.Mkdir(filepath.Join(co, runtimeDir[:len(runtimeDir)-1]), 0o700) }, ReviewRejectedEntry{runtimeDir[:len(runtimeDir)-1], "directory"}},
+		"runtime_long":  {func(t *testing.T, co string) { os.Mkdir(filepath.Join(co, runtimeDir+"0"), 0o700) }, ReviewRejectedEntry{runtimeDir + "0", "directory"}},
+		"runtime_file":  {func(t *testing.T, co string) { write(t, filepath.Join(co, runtimeDir), "x") }, ReviewRejectedEntry{runtimeDir, "regular"}},
+		"runtime_link":  {func(t *testing.T, co string) { os.Symlink(t.TempDir(), filepath.Join(co, runtimeDir)) }, ReviewRejectedEntry{runtimeDir, "symlink"}},
+		"two_runtimes": {func(t *testing.T, co string) {
+			os.Mkdir(filepath.Join(co, runtimeDir), 0o700)
+			os.Mkdir(filepath.Join(co, contract.RuntimeDirPrefix+strings.Repeat("a", 32)), 0o700)
+		}, ReviewRejectedEntry{runtimeDir, "directory"}},
+		"placeholder_nonempty": {func(t *testing.T, co string) { write(t, filepath.Join(co, ".codex", ".hidden"), "x") }, ReviewRejectedEntry{".codex", "directory"}},
+		"placeholder_file":     {func(t *testing.T, co string) { write(t, filepath.Join(co, ".aws"), "x") }, ReviewRejectedEntry{".aws", "regular"}},
+		"placeholder_link":     {func(t *testing.T, co string) { os.Symlink(t.TempDir(), filepath.Join(co, ".agents")) }, ReviewRejectedEntry{".agents", "symlink"}},
+		"other_dot_dir":        {func(t *testing.T, co string) { os.Mkdir(filepath.Join(co, ".cache"), 0o555) }, ReviewRejectedEntry{".cache", "directory"}},
+	} {
+		t.Run("refuses_checkout_"+name, func(t *testing.T) {
+			t.Parallel()
+			f := newReviewFix(t)
+			c.prepare(t, f.co)
+			before := treeState(t, f.co)
+			rec, out, code := f.run()
+			if code != 1 || rec.Status != reviewRefused || rec.Code != "unexpected_file" || rec.RejectedEntry == nil || *rec.RejectedEntry != c.entry ||
+				len(f.launcher.started) != 0 || rec.ScratchCreated {
+				t.Fatalf("receipt %d %s", code, out)
+			}
+			if !maps2Equal(before, treeState(t, f.co)) {
+				t.Fatal("a refusal changed the checkout")
+			}
+		})
+	}
+	// Entries that turn invalid while the helper runs fail its final
+	// check with unexpected_file and the entry, never inputs unchanged.
+	for name, c := range map[string]struct {
+		add   func(co string)
+		entry ReviewRejectedEntry
+	}{
+		"stranger_added":     {func(co string) { os.WriteFile(filepath.Join(co, "notes.txt"), []byte("x"), 0o600) }, ReviewRejectedEntry{"notes.txt", "regular"}},
+		"placeholder_filled": {func(co string) { os.WriteFile(filepath.Join(co, ".codex", "x"), []byte("x"), 0o600) }, ReviewRejectedEntry{".codex", "directory"}},
+	} {
+		t.Run("final_check_"+name, func(t *testing.T) {
+			t.Parallel()
+			f := newReviewFix(t)
+			os.Mkdir(filepath.Join(f.co, ".codex"), 0o755)
+			inner := f.script.script
+			f.launcher = &fakeLauncher{script: func(s ProcSpec) behavior {
+				c.add(f.co)
+				return inner(s)
+			}}
+			out, _, code := verifyHelperRun(reviewEnv{cwd: f.co, clock: f.clock, launcher: f.launcher, path: "/usr/bin:/bin"}, f.argv())
+			var rec DevReviewRun
+			json.Unmarshal([]byte(out), &rec)
+			if code != 1 || rec.Status != reviewFailed || rec.Code != "unexpected_file" || rec.InputsUnchanged || rec.RejectedEntry == nil ||
+				*rec.RejectedEntry != c.entry || !rec.ScratchRemoved {
+				t.Fatalf("receipt %d %s", code, out)
+			}
+		})
+	}
 	t.Run("group_not_gone", func(t *testing.T) {
 		t.Parallel()
 		// A command whose group outlives every signal: nothing more runs,
@@ -403,6 +532,56 @@ func TestDevFullReviewEvidence(t *testing.T) {
 			}
 			if _, blocks := ev.blocks(); blocks {
 				t.Fatal("a verified approval blocks")
+			}
+		}
+	})
+	// Design 12a-dev-flow-verify r0.10: an unexpected_file receipt keeps
+	// its rejected entry through strict decoding and the derivation; the
+	// entry is validated, never on a successful receipt, and an older
+	// receipt without it stays readable without proving anything.
+	t.Run("rejected_entry", func(t *testing.T) {
+		refF := newReviewFix(t)
+		refF.task, refF.spec, refF.cand, refF.seed = f.task, f.spec, f.cand, f.seed
+		refF.co = physicalTempDir(t)
+		pinReviewCheckout(t, refF.co, f.hub, f.cand, f.candFiles)
+		refF.hub, refF.candFiles, refF.seedFiles = f.hub, f.candFiles, f.seedFiles
+		write(t, filepath.Join(refF.co, "notes.txt"), "x\n")
+		_, refusedOut, rcode := refF.run()
+		const entry = `,"rejected_entry":{"name":"notes.txt","kind":"regular"}}`
+		if rcode != 1 || !strings.HasSuffix(strings.TrimSpace(refusedOut), `"status":"refused","code":"unexpected_file"`+entry) {
+			t.Fatalf("refused receipt %s", refusedOut)
+		}
+		var run DevReviewRun
+		if err := decodeStrict([]byte(strings.TrimSpace(refusedOut)), &run); err != nil || run.RejectedEntry == nil ||
+			*run.RejectedEntry != (ReviewRejectedEntry{"notes.txt", "regular"}) {
+			t.Fatalf("strict decoding %+v %v", run.RejectedEntry, err)
+		}
+		ev := derive(plain, refusedOut, 1, markerReviewChanges, nil)
+		if ev.Status != evidenceFailedRun || ev.Code != "unexpected_file" || ev.RejectedEntry == nil || *ev.RejectedEntry != *run.RejectedEntry {
+			t.Fatalf("refused evidence %+v", ev)
+		}
+		if ev := derive(plain, refusedOut, 1, markerReviewApproved, nil); ev.Code != "review_approved_failed_run" || ev.Status == evidenceVerified {
+			t.Fatalf("an approval over a refusal %+v", ev)
+		}
+		// An older receipt without the entry.
+		old := strings.Replace(refusedOut, entry, "}", 1)
+		if ev := derive(plain, old, 1, markerReviewChanges, nil); ev.Status != evidenceFailedRun || ev.Code != "unexpected_file" || ev.RejectedEntry != nil {
+			t.Fatalf("an older receipt %+v", ev)
+		}
+		for name, out := range map[string]string{
+			"on_success":    strings.Replace(passOut, `"code":""}`, `"code":"","rejected_entry":{"name":"x","kind":"regular"}}`, 1),
+			"bad_kind":      strings.Replace(refusedOut, `"kind":"regular"`, `"kind":"file"`, 1),
+			"path_name":     strings.Replace(refusedOut, `"name":"notes.txt"`, `"name":"a/notes.txt"`, 1),
+			"empty_name":    strings.Replace(refusedOut, `"name":"notes.txt"`, `"name":""`, 1),
+			"dot_dot":       strings.Replace(refusedOut, `"name":"notes.txt"`, `"name":".."`, 1),
+			"unknown_field": strings.Replace(refusedOut, `"kind":"regular"`, `"kind":"regular","target":"/etc"`, 1),
+		} {
+			exit := 1
+			if name == "on_success" {
+				exit = 0
+			}
+			if ev := derive(plain, out, exit, markerReviewChanges, nil); ev.Status == evidenceVerified || ev.Status == evidenceFailedRun {
+				t.Errorf("%s: %s/%s", name, ev.Status, ev.Code)
 			}
 		}
 	})

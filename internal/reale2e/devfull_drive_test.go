@@ -160,6 +160,19 @@ type devRig struct {
 	// passes as the wait start's Bash timeout (design 12a-dev-flow-verify
 	// r0.9; Claude Code 2.1.306 passed 900000).
 	waitTimeout string
+	// reviewEntries, when set, adds entries to review n's checkout (from
+	// 0) before the helper runs: the runtime directory and placeholders a
+	// real workspace checkout holds (design 12a-dev-flow-verify r0.10).
+	reviewEntries func(co string, n int)
+	// replacedRead makes every consuming task_show's first answer the
+	// vendor's persisted-output replacement (design 12a-dev-flow-verify
+	// r0.10): "replaced" or "replaced-error" (is_error set), then a valid
+	// lines:0 read; "replaced-only" and "bash-read" end the phase without a
+	// valid read; "other-wording" is a replacement outside the captured
+	// grammar, then a valid read; "captured" is the exact captured
+	// multiline payload (testdata/task-show-replaced.txt), then a valid
+	// read.
+	replacedRead string
 	// tickDuringPull keeps the monitor ticking (the fake time unmoved)
 	// while a publication pull is held, instead of gating its poll timer
 	// on the pull.
@@ -1121,6 +1134,34 @@ func (r *devRig) refused(emit func()) {
 func (r *devRig) show() {
 	v, _ := r.f.plane.ShowTask(r.f.ctx, r.task, 0)
 	show, _ := json.Marshal(contract.TaskShowResponse{Version: contract.ProtocolVersion, Task: v})
+	if mode := r.replacedRead; mode != "" {
+		// The vendor replaced the consuming read's answer (fourth probe):
+		// no evidence, so a later lines:0 read consumes, a Bash read of the
+		// saved file never does, and another wording is refused offline.
+		saved := "/tmp/claude/projects/x/tool-results/mcp-callsheet-task_show-1792709393274.txt"
+		text := "Error: result (67,506 characters across 1 line) exceeds maximum allowed tokens. Output has been saved to " + saved + "."
+		switch mode {
+		case "other-wording":
+			text = "Error: the result exceeds the maximum allowed tokens; it was saved to " + saved + "."
+		case "captured":
+			// The fourth probe's multiline payload, its saved path
+			// neutralized (r0.10c).
+			text = string(mustRead(r.t, filepath.Join("testdata", "task-show-replaced.txt")))
+		}
+		r.toolUse(toolTaskShow, map[string]any{"id": r.task}, text, mode == "replaced-error")
+		switch mode {
+		case "replaced-only":
+			r.endPhase("The task's answer was too large to read.")
+			return
+		case "bash-read":
+			r.toolUse(toolBash, map[string]any{"command": "cat " + saved, "description": "read the saved answer"}, string(show), false)
+			r.endPhase("I read the saved answer instead.")
+			return
+		}
+		r.toolUse(toolTaskShow, map[string]any{"id": r.task, "lines": 0}, string(show), false)
+		r.inspect(v)
+		return
+	}
 	if !r.fragment || r.tailWritten || r.tail != nil {
 		r.toolUse(toolTaskShow, map[string]any{"id": r.task}, string(show), false)
 		r.inspect(v)
@@ -1474,6 +1515,9 @@ type reviewRun struct {
 func (r *devRig) review(act devAct, doc devDispatchDoc, base map[string][]byte, task string) map[string][]byte {
 	co := physicalTempDir(r.t)
 	pinReviewCheckout(r.t, co, r.f.plane.hub, plumbing.NewHash(doc.Base), base)
+	if r.reviewEntries != nil {
+		r.reviewEntries(co, len(r.reviews))
+	}
 	candidate := strings.Fields(goalField(doc.Goal, "candidate_commit") + " x")[0]
 	initial := goalField(doc.Goal, "initial_source_commit")
 	run := reviewRun{task: task, exits: map[string]int{}}
@@ -1596,6 +1640,11 @@ func (r *devRig) review(act devAct, doc devDispatchDoc, base map[string][]byte, 
 	pub := map[string][]byte{}
 	filepath.WalkDir(co, func(p string, e fs.DirEntry, err error) error {
 		if err == nil && e.IsDir() && e.Name() == ".git" {
+			return fs.SkipDir
+		}
+		// The task workspace never publishes its owned runtime directory
+		// (internal/taskworkspace), and empty placeholders hold no file.
+		if err == nil && e.IsDir() && contract.ValidRuntimeDir(e.Name()) {
 			return fs.SkipDir
 		}
 		if err == nil && e.Type().IsRegular() {
