@@ -19,6 +19,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 
 	"github.com/wedevwork/callsheet/internal/contract"
+	"github.com/wedevwork/callsheet/internal/workspacetransfer"
 )
 
 // A passing synthetic bundle (design 12a-real-e2e, UT-6): produced once
@@ -327,11 +328,17 @@ func requireCode(t *testing.T, name string, code int, r Report, crit, want strin
 }
 
 // TestMain also serves as the re-executed helper child of the real
-// process tests (REALE2E_TEST_CHILD selects its conduct).
+// process tests (REALE2E_TEST_CHILD selects its conduct). It makes the
+// result pull's task-database durability (workspacetransfer's fsync and
+// syncfs) a no-op for the whole process: these tests assert pulled
+// trees, evidence and verdicts, never power loss, and the benchmarks
+// build their pulled fixtures outside the timed loop. The evidence
+// writer's own syncs are untouched.
 func TestMain(m *testing.M) {
 	if mode := os.Getenv("REALE2E_TEST_CHILD"); mode != "" {
 		os.Exit(childMain(mode))
 	}
+	workspacetransfer.SetSyncForTest(func(int) error { return nil })
 	d, err := os.MkdirTemp("", "reale2e-bundles-")
 	if err != nil {
 		panic(err)

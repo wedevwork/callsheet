@@ -447,3 +447,10 @@ func pruneObjects(t *testing.T, repoDir string) {
 		return nil
 	})
 }
+
+// receiptLine is the helper stdout's first line: its JSON receipt
+// (design 12a-dev-flow-verify r0.11: the report lines follow it).
+func receiptLine(out string) string {
+	l, _, _ := strings.Cut(out, "\n")
+	return l
+}

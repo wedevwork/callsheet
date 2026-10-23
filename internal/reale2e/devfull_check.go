@@ -521,6 +521,7 @@ func (c *devChecker) run() {
 	c.checkRoles()
 	c.checkPreflight()
 	c.replay()
+	c.checkRejections()
 	c.checkSession()
 	c.checkAdmissions()
 	c.checkReceipts()

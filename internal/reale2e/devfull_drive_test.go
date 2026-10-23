@@ -164,6 +164,8 @@ type devRig struct {
 	// 0) before the helper runs: the runtime directory and placeholders a
 	// real workspace checkout holds (design 12a-dev-flow-verify r0.10).
 	reviewEntries func(co string, n int)
+	// lastReport is the last scripted review.md's bytes.
+	lastReport []byte
 	// replacedRead makes every consuming task_show's first answer the
 	// vendor's persisted-output replacement (design 12a-dev-flow-verify
 	// r0.10): "replaced" or "replaced-error" (is_error set), then a valid
@@ -1538,7 +1540,7 @@ func (r *devRig) review(act devAct, doc devDispatchDoc, base map[string][]byte, 
 		if c, ok := env.clock.(*offsetClock); ok {
 			c.settle()
 		}
-		if err := json.Unmarshal([]byte(out), &rec); err != nil {
+		if err := json.Unmarshal([]byte(receiptLine(out)), &rec); err != nil {
 			r.t.Fatalf("the helper printed no receipt: %v\n%s", err, out)
 		}
 		r.helperOut[task], r.receipts[task] = out, rec
@@ -1598,6 +1600,43 @@ func (r *devRig) review(act devAct, doc devDispatchDoc, base map[string][]byte, 
 		os.WriteFile(filepath.Join(scratch, "after", "main.go"), base["main.go"], 0o600)
 	}
 	var rep strings.Builder
+	if _, trailer, _ := strings.Cut(out, "\n"); ran && trailer != "" {
+		// Design 12a-dev-flow-verify r0.11: the reviewer pastes the
+		// helper's report lines verbatim and adds its own analysis.
+		rep.WriteString("# Review\n\nThe candidate meets every FP.\n\n")
+		for _, l := range strings.SplitAfter(trailer, "\n") {
+			switch {
+			case act.alter == "missing-field" && strings.HasPrefix(l, "Source sha256: main.go "):
+				continue
+			case act.alter == "bad-hash" && strings.HasPrefix(l, reviewRunField+" "):
+				l = reviewRunField + " " + strings.Repeat("0", 64) + "\n"
+			}
+			rep.WriteString(l)
+		}
+		// A failed or refused run's trailer has only the facts its receipt
+		// has; the scripted reviewer supplies the other required fields
+		// itself, as before r0.11.
+		if !strings.Contains(trailer, "Source sha256: ") {
+			for _, p := range devSourceFiles {
+				fmt.Fprintf(&rep, "Source sha256: %s %s\n", p, sha256Hex(base[p]))
+			}
+		}
+		if !strings.Contains(trailer, "Verification exit ") {
+			fmt.Fprintf(&rep, "Verification exit %d: go test ./...\n", run.exits["after/test"])
+			fmt.Fprintf(&rep, "Verification exit %d: go test -coverprofile=%s/coverage.out ./...\n", run.exits["after/cover"], rec.Scratch)
+		}
+		if !strings.Contains(trailer, "Coverage: ") {
+			rep.WriteString("Coverage: 0% unobserved changed production statements\n")
+		}
+		marker := act.marker
+		if act.alter == "bad-report" {
+			marker = markerBlocked
+		}
+		fmt.Fprintf(&rep, "\nCALLSHEET_REVIEW_BLOCKER: %s\nSTATUS: %s\n", cmpOr(act.blocker, blockerNone), marker)
+		r.writeReview(act, co, rep.String())
+		r.reviews = append(r.reviews, run)
+		return r.reviewPublication(act, co)
+	}
 	fmt.Fprintf(&rep, "# Review\n\nReviewed candidate: %s\n", candidate)
 	for _, p := range devSourceFiles {
 		if act.alter == "missing-field" && p == "main.go" {
@@ -1632,10 +1671,26 @@ func (r *devRig) review(act devAct, doc devDispatchDoc, base map[string][]byte, 
 		marker = markerBlocked
 	}
 	fmt.Fprintf(&rep, "\nCALLSHEET_REVIEW_BLOCKER: %s\nSTATUS: %s\n", cmpOr(act.blocker, blockerNone), marker)
-	if err := os.WriteFile(filepath.Join(co, "review.md"), []byte(rep.String()), 0o644); err != nil {
+	r.writeReview(act, co, rep.String())
+	r.reviews = append(r.reviews, run)
+	return r.reviewPublication(act, co)
+}
+
+// writeReview writes the scripted review.md (an extra-exit alter adds a
+// hand-written go version Verification exit line, fifth probe: the
+// publication check refuses it).
+func (r *devRig) writeReview(act devAct, co, report string) {
+	if act.alter == "extra-exit" {
+		report = strings.Replace(report, "Coverage:", "Verification exit 0: go version\nCoverage:", 1)
+	}
+	r.lastReport = []byte(report)
+	if err := os.WriteFile(filepath.Join(co, "review.md"), r.lastReport, 0o644); err != nil {
 		r.t.Fatal(err)
 	}
-	r.reviews = append(r.reviews, run)
+}
+
+// reviewPublication is a review checkout's published tree.
+func (r *devRig) reviewPublication(act devAct, co string) map[string][]byte {
 	// The publication: every visible file once the processes ended.
 	pub := map[string][]byte{}
 	filepath.WalkDir(co, func(p string, e fs.DirEntry, err error) error {

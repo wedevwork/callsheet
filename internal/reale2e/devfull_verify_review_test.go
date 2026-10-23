@@ -81,7 +81,7 @@ func (f *reviewFix) run() (DevReviewRun, string, int) {
 	out, errOut, code := verifyHelperRun(reviewEnv{cwd: f.co, clock: f.clock, launcher: f.launcher, path: "/usr/bin:/bin"}, f.argv())
 	var rec DevReviewRun
 	if code != 2 {
-		if err := json.Unmarshal([]byte(out), &rec); err != nil {
+		if err := json.Unmarshal([]byte(receiptLine(out)), &rec); err != nil {
 			f.t.Fatalf("no receipt (%d): %v %s %s", code, err, out, errOut)
 		}
 	}
@@ -131,8 +131,30 @@ func TestDevFullReviewRunner(t *testing.T) {
 		if _, err := os.Lstat(filepath.Join(f.co, reviewScratch)); err == nil {
 			t.Fatal("the scratch survived")
 		}
-		if len(out) > maxReviewRunBytes || strings.Count(out, "\n") != 1 {
-			t.Fatal("the receipt is not one bounded line")
+		if r := receiptLine(out) + "\n"; len(r) > maxReviewRunBytes || len(out)-len(r) > maxReviewTrailerBytes || !strings.HasPrefix(out, r) {
+			t.Fatal("the receipt is not one bounded line before a bounded trailer")
+		}
+	})
+	// Design 12a-dev-flow-verify r0.11 (fifth probe): after the JSON
+	// receipt line the helper prints the paste-ready report lines; the run
+	// digest covers the receipt line only.
+	t.Run("report_trailer", func(t *testing.T) {
+		t.Parallel()
+		f := newReviewFix(t)
+		rec, out, code := f.run()
+		line, trailer, _ := strings.Cut(out, "\n")
+		receipt := line + "\n"
+		var want strings.Builder
+		fmt.Fprintf(&want, "Reviewed candidate: %s\n", f.cand)
+		for _, p := range []string{"FEATURE.md", "go.mod", "main.go", "main_test.go"} {
+			fmt.Fprintf(&want, "Source sha256: %s %s\n", p, sha256Hex(f.candFiles[p]))
+		}
+		fmt.Fprintf(&want, "Verification exit 0: go test ./...\nVerification exit 0: go test -coverprofile=%s/coverage.out ./...\n", rec.Scratch)
+		fmt.Fprintf(&want, "Coverage: %s%% changed production statements\n", rec.Coverage.Percent)
+		want.WriteString("Cleanup: scratch_created=true; scratch_removed=true; inputs_unchanged=true\n")
+		fmt.Fprintf(&want, "Reviewer run sha256: %s\n", sha256Hex([]byte(receipt)))
+		if code != 0 || trailer != want.String() {
+			t.Fatalf("trailer %d:\n%s\nwant:\n%s", code, trailer, want.String())
 		}
 	})
 	t.Run("exports_the_candidate", func(t *testing.T) {
@@ -274,7 +296,7 @@ func TestDevFullReviewRunner(t *testing.T) {
 			}}
 			out, _, code := verifyHelperRun(reviewEnv{cwd: f.co, clock: f.clock, launcher: f.launcher, path: "/usr/bin:/bin"}, f.argv())
 			var rec DevReviewRun
-			json.Unmarshal([]byte(out), &rec)
+			json.Unmarshal([]byte(receiptLine(out)), &rec)
 			if code != 0 || rec.Status != reviewPassed || rec.RejectedEntry != nil || rec.InputTree != clean.InputTree ||
 				!slices.Equal(rec.Inputs, clean.Inputs) || !slices.Equal(rec.InputsAfter, clean.Inputs) || len(exported) != len(f.candFiles) {
 				t.Fatalf("receipt %d %s exported %v", code, out, exported)
@@ -342,7 +364,7 @@ func TestDevFullReviewRunner(t *testing.T) {
 			}}
 			out, _, code := verifyHelperRun(reviewEnv{cwd: f.co, clock: f.clock, launcher: f.launcher, path: "/usr/bin:/bin"}, f.argv())
 			var rec DevReviewRun
-			json.Unmarshal([]byte(out), &rec)
+			json.Unmarshal([]byte(receiptLine(out)), &rec)
 			if code != 1 || rec.Status != reviewFailed || rec.Code != "unexpected_file" || rec.InputsUnchanged || rec.RejectedEntry == nil ||
 				*rec.RejectedEntry != c.entry || !rec.ScratchRemoved {
 				t.Fatalf("receipt %d %s", code, out)
@@ -364,7 +386,7 @@ func TestDevFullReviewRunner(t *testing.T) {
 		}}
 		out, _, code := verifyHelperRun(reviewEnv{cwd: f.co, clock: f.clock, launcher: f.launcher, path: "/usr/bin:/bin"}, f.argv())
 		var rec DevReviewRun
-		json.Unmarshal([]byte(out), &rec)
+		json.Unmarshal([]byte(receiptLine(out)), &rec)
 		if code != 1 || rec.Code != "process_not_gone" || rec.ScratchRemoved || len(rec.Commands) != 2 {
 			t.Fatalf("receipt %d %s", code, out)
 		}
@@ -414,7 +436,7 @@ func TestDevFullReviewRunner(t *testing.T) {
 		var out, errb bytes.Buffer
 		code := MainWith(Host{Args: f.argv()[1:], Stdout: &out, Stderr: &errb})
 		var rec DevReviewRun
-		if err := json.Unmarshal(out.Bytes(), &rec); err != nil || code != 1 || rec.Status != reviewRefused || rec.Code != "checkout_unsafe" {
+		if err := json.Unmarshal([]byte(receiptLine(out.String())), &rec); err != nil || code != 1 || rec.Status != reviewRefused || rec.Code != "checkout_unsafe" {
 			t.Fatalf("live helper %d %s %s", code, out.String(), errb.String())
 		}
 	})
@@ -450,7 +472,7 @@ func TestDevFullReviewRunner(t *testing.T) {
 		}}
 		out, _, code := verifyHelperRun(reviewEnv{cwd: f.co, clock: f.clock, launcher: f.launcher, path: "/bin"}, f.argv())
 		var rec DevReviewRun
-		json.Unmarshal([]byte(out), &rec)
+		json.Unmarshal([]byte(receiptLine(out)), &rec)
 		if code != 1 || rec.Code != "output_truncated" || len(rec.Commands[1].Stdout) != reviewStreamCap {
 			t.Fatalf("receipt %d %s", code, rec.Code)
 		}
@@ -472,7 +494,7 @@ func mustOpenRepo(t testing.TB, dir string) *git.Repository {
 func (f *reviewFix) evidenceInput(command, out string, exit int, marker string) reviewEvidenceInput {
 	log := codexLog(command, out, exit)
 	var rec DevReviewRun
-	json.Unmarshal([]byte(out), &rec)
+	json.Unmarshal([]byte(receiptLine(out)), &rec)
 	pct := "91.5"
 	if rec.Coverage != nil {
 		pct = rec.Coverage.Percent
@@ -486,6 +508,11 @@ func (f *reviewFix) evidenceInput(command, out string, exit int, marker string) 
 	}
 	report := fmt.Sprintf("# Review\n\nVerification exit %d: go test ./...\nVerification exit %d: go test -coverprofile=%s/coverage.out ./...\nCoverage: %s%% of the changed statements\n",
 		exits[0], exits[1], rec.Scratch, pct)
+	if _, trailer, _ := strings.Cut(out, "\n"); trailer != "" {
+		// Design 12a-dev-flow-verify r0.11: the reviewer pastes the
+		// helper's report lines verbatim.
+		report = "# Review\n\n" + trailer
+	}
 	return reviewEvidenceInput{Ordinal: 4, Log: log, LogFile: "tasks/04/logs.txt", Meta: completeMeta(log), Task: f.task, Helper: f.spec,
 		Candidate: f.cand.String(), Initial: f.seed.String(), CandTree: f.tree(), CandFiles: f.treeFiles(), SeedMain: f.seedFiles["main.go"],
 		AdmittedAt: newAutoClock().Now().Add(-time.Second), Marker: marker, Report: report}
@@ -526,7 +553,8 @@ func TestDevFullReviewEvidence(t *testing.T) {
 	t.Run("verified", func(t *testing.T) {
 		for _, cmd := range []string{plain, bash} {
 			ev := derive(cmd, passOut, 0, markerReviewApproved, nil)
-			if ev.Status != evidenceVerified || ev.RunSHA256 != sha256Hex([]byte(passOut)) || ev.Started == nil || ev.Completed == nil ||
+			if ev.Status != evidenceVerified || ev.RunSHA256 != sha256Hex([]byte(receiptLine(passOut)+"\n")) || ev.RunBytes != len(receiptLine(passOut))+1 ||
+				ev.Started == nil || ev.Completed == nil ||
 				ev.Started.FirstLine != 4 || ev.Completed.FirstLine != 5 || ev.runDigest() != ev.RunSHA256 {
 				t.Fatalf("%s: %+v", cmd, ev)
 			}
@@ -548,11 +576,15 @@ func TestDevFullReviewEvidence(t *testing.T) {
 		write(t, filepath.Join(refF.co, "notes.txt"), "x\n")
 		_, refusedOut, rcode := refF.run()
 		const entry = `,"rejected_entry":{"name":"notes.txt","kind":"regular"}}`
-		if rcode != 1 || !strings.HasSuffix(strings.TrimSpace(refusedOut), `"status":"refused","code":"unexpected_file"`+entry) {
+		if rcode != 1 || !strings.HasSuffix(receiptLine(refusedOut), `"status":"refused","code":"unexpected_file"`+entry) {
 			t.Fatalf("refused receipt %s", refusedOut)
 		}
+		if _, rt, _ := strings.Cut(refusedOut, "\n"); strings.Contains(rt, "Verification exit") || strings.Contains(rt, "Coverage:") ||
+			!strings.Contains(rt, "Cleanup: scratch_created=false; scratch_removed=false; inputs_unchanged=false\n") {
+			t.Fatalf("a refused trailer invents results:\n%s", rt)
+		}
 		var run DevReviewRun
-		if err := decodeStrict([]byte(strings.TrimSpace(refusedOut)), &run); err != nil || run.RejectedEntry == nil ||
+		if err := decodeStrict([]byte(receiptLine(refusedOut)), &run); err != nil || run.RejectedEntry == nil ||
 			*run.RejectedEntry != (ReviewRejectedEntry{"notes.txt", "regular"}) {
 			t.Fatalf("strict decoding %+v %v", run.RejectedEntry, err)
 		}
@@ -563,8 +595,8 @@ func TestDevFullReviewEvidence(t *testing.T) {
 		if ev := derive(plain, refusedOut, 1, markerReviewApproved, nil); ev.Code != "review_approved_failed_run" || ev.Status == evidenceVerified {
 			t.Fatalf("an approval over a refusal %+v", ev)
 		}
-		// An older receipt without the entry.
-		old := strings.Replace(refusedOut, entry, "}", 1)
+		// An older, receipt-only output without the entry.
+		old := strings.Replace(receiptLine(refusedOut), entry, "}", 1) + "\n"
 		if ev := derive(plain, old, 1, markerReviewChanges, nil); ev.Status != evidenceFailedRun || ev.Code != "unexpected_file" || ev.RejectedEntry != nil {
 			t.Fatalf("an older receipt %+v", ev)
 		}
@@ -640,10 +672,10 @@ func TestDevFullReviewEvidence(t *testing.T) {
 		"finished_first": {func(in *reviewEvidenceInput) { in.FinishedAt = in.AdmittedAt }, evidenceMismatch, "review_receipt_time"},
 		"report_exit": {func(in *reviewEvidenceInput) {
 			in.Report = strings.Replace(in.Report, "Verification exit 0: go test ./...", "Verification exit 1: go test ./...", 1)
-		}, evidenceMismatch, "review_report_exit_mismatch"},
+		}, evidenceMismatch, "review_report_lines_mismatch"},
 		"report_coverage": {func(in *reviewEvidenceInput) {
 			in.Report = strings.Replace(in.Report, "Coverage: ", "Coverage: 99.9% and ", 1)
-		}, evidenceMismatch, "review_report_coverage_mismatch"},
+		}, evidenceMismatch, "review_report_lines_mismatch"},
 		"inputs_differ": {func(in *reviewEvidenceInput) {
 			in.CandFiles = withTreeFile(in.CandFiles, "design.md", "# Other\n")
 		}, evidenceMismatch, "review_inputs_mismatch"},
@@ -667,6 +699,76 @@ func TestDevFullReviewEvidence(t *testing.T) {
 			}
 		})
 	}
+	// Design 12a-dev-flow-verify r0.11 (fifth probe): the helper's report
+	// lines pasted verbatim pass the unchanged publication check and the
+	// receipt reconciliation; any other Verification exit line, a
+	// hand-written variant, a duplicate or a mutated value fails; the
+	// trailer itself must be exactly the renderer's.
+	t.Run("report_lines", func(t *testing.T) {
+		_, trailer, _ := strings.Cut(passOut, "\n")
+		var run DevReviewRun
+		json.Unmarshal([]byte(receiptLine(passOut)), &run)
+		pasted := "# Review\n\nEvery FP is covered.\n\n" + trailer + "\nCALLSHEET_REVIEW_BLOCKER: none\nSTATUS: REVIEW_APPROVED\n"
+		ev := derive(plain, passOut, 0, markerReviewApproved, func(in *reviewEvidenceInput) { in.Report = pasted })
+		if ev.Status != evidenceVerified {
+			t.Fatalf("pasted lines %s/%s", ev.Status, ev.Code)
+		}
+		if err := ReviewReportOK(pasted, markerReviewApproved, f.cand.String(), f.task, f.treeFiles(), ev.runDigest()); err != nil {
+			t.Fatalf("the publication check refuses the pasted lines: %v", err)
+		}
+		if ev.runDigest() != sha256Hex([]byte(receiptLine(passOut)+"\n")) || !strings.Contains(trailer, reviewRunField+" "+ev.runDigest()+"\n") {
+			t.Fatal("the digest is not the receipt line's")
+		}
+		cover := "Verification exit 0: go test -coverprofile=" + run.Scratch + "/coverage.out ./..."
+		for name, report := range map[string]string{
+			"go_version_line": strings.Replace(pasted, "Coverage:", "Verification exit 0: go version\nCoverage:", 1),
+			"json_line":       strings.Replace(pasted, "Coverage:", "Verification exit 0: go test -json -count=1 ./...\nCoverage:", 1),
+			"relative_parenthetical": strings.Replace(pasted, cover, "Verification exit 0: go test -coverprofile=.callsheet-review-scratch/"+f.task+
+				"/coverage.out ./... (the helper's absolute scratch path)", 1),
+			"duplicate":        strings.Replace(pasted, "Verification exit 0: go test ./...\n", "Verification exit 0: go test ./...\nVerification exit 0: go test ./...\n", 1),
+			"mutated_exit":     strings.Replace(pasted, "Verification exit 0: go test ./...", "Verification exit 1: go test ./...", 1),
+			"mutated_coverage": strings.Replace(pasted, "Coverage: "+run.Coverage.Percent+"%", "Coverage: 99.9%", 1),
+			"mutated_cleanup":  strings.Replace(pasted, "inputs_unchanged=true", "inputs_unchanged=false", 1),
+			"mutated_source":   strings.Replace(pasted, "Source sha256: main.go ", "Source sha256: main.go 0", 1),
+			"missing_source":   strings.Replace(pasted, "Source sha256: go.mod ", "Source-sha256: go.mod ", 1),
+			"mutated_hash":     strings.Replace(pasted, reviewRunField+" "+ev.runDigest(), reviewRunField+" "+strings.Repeat("0", 64), 1),
+		} {
+			ev := derive(plain, passOut, 0, markerReviewApproved, func(in *reviewEvidenceInput) { in.Report = report })
+			pub := ReviewReportOK(report, markerReviewApproved, f.cand.String(), f.task, f.treeFiles(), ev.runDigest())
+			if ev.Status == evidenceVerified && pub == nil {
+				t.Errorf("%s: accepted", name)
+			}
+		}
+		// The trailer in the helper output: edited, missing a line or with
+		// an extra one.
+		for name, out := range map[string]string{
+			"edited":     strings.Replace(passOut, "scratch_removed=true", "scratch_removed=false", 1),
+			"missing":    strings.Replace(passOut, "Coverage: "+run.Coverage.Percent+"% changed production statements\n", "", 1),
+			"extra":      passOut + "Verification exit 0: go version\n",
+			"over_bound": receiptLine(passOut) + "\n" + trailer + strings.Repeat("x", maxReviewTrailerBytes) + "\n",
+		} {
+			ev := derive(plain, out, 0, markerReviewApproved, func(in *reviewEvidenceInput) { in.Report = pasted })
+			if ev.Status == evidenceVerified || (name != "over_bound" && ev.Code != "review_report_lines_mismatch") {
+				t.Errorf("trailer %s: %s/%s", name, ev.Status, ev.Code)
+			}
+		}
+		// Historical receipt-only output keeps its existing report checks.
+		legacy := receiptLine(passOut) + "\n"
+		if ev := derive(plain, legacy, 0, markerReviewApproved, nil); ev.Status != evidenceVerified || ev.runDigest() != sha256Hex([]byte(legacy)) {
+			t.Fatalf("receipt-only output %s/%s", ev.Status, ev.Code)
+		}
+		if ev := derive(plain, legacy, 0, markerReviewApproved, func(in *reviewEvidenceInput) {
+			in.Report = strings.Replace(in.Report, "Verification exit 0: go test ./...", "Verification exit 1: go test ./...", 1)
+		}); ev.Code != "review_report_exit_mismatch" {
+			t.Fatalf("receipt-only exit claim %s/%s", ev.Status, ev.Code)
+		}
+		// A failed run's trailer has its executed exits and no invented
+		// result; a refused one has no Verification exit line at all.
+		_, failTrailer, _ := strings.Cut(failOut, "\n")
+		if !strings.Contains(failTrailer, "Verification exit 1: go test ./...\n") || !strings.Contains(failTrailer, "Cleanup: scratch_created=true; ") {
+			t.Fatalf("failed trailer:\n%s", failTrailer)
+		}
+	})
 	t.Run("no_helper_changes_requested", func(t *testing.T) {
 		in := f.evidenceInput(plain, passOut, 0, markerReviewChanges)
 		in.Log = []byte(codexRecord(map[string]any{"type": "turn.started"}))
@@ -973,4 +1075,33 @@ func TestDevFullOracle(t *testing.T) {
 			t.Fatalf("the 60s bound does not win: %s", got)
 		}
 	})
+}
+
+// TestDevFullReviewOutputBound: a receipt whose report lines cannot be
+// rendered within their bound fails closed (design 12a-dev-flow-verify
+// r0.11): never a passing receipt, never a partial trailer.
+func TestDevFullReviewOutputBound(t *testing.T) {
+	t.Parallel()
+	task := hexID("t_", 11)
+	scratch := "/" + strings.Repeat("d", maxReviewTrailerBytes) + "/" + reviewScratch + "/" + task
+	cov := DevCoverage{Percent: "91.5", Pass: true}
+	rec := DevReviewRun{Schema: DevReviewRunSchema, Task: task, Candidate: strings.Repeat("a", 40), Scratch: scratch, Status: reviewPassed, Coverage: &cov,
+		Commands: []ReviewCommand{{Name: "go_test", Argv: reviewLogicalArgv("go_test", scratch), Started: true},
+			{Name: "go_test_cover", Argv: reviewLogicalArgv("go_test_cover", scratch), Started: true}}}
+	out, code := reviewHelperStdout(rec)
+	var got DevReviewRun
+	line, trailer, _ := strings.Cut(string(out), "\n")
+	if err := json.Unmarshal([]byte(line), &got); err != nil || code != 1 || got.Status != reviewFailed || got.Code != "report_lines_invalid" || trailer != "" {
+		t.Fatalf("over-bound report lines %d %s %q", code, got.Code, trailer)
+	}
+	// A passing receipt missing a field its trailer needs fails closed too.
+	rec.Scratch = "/x/" + reviewScratch + "/" + task
+	rec.Commands = rec.Commands[:1]
+	rec.Commands[0].Argv = reviewLogicalArgv("go_test", rec.Scratch)
+	out, code = reviewHelperStdout(rec)
+	line, trailer, _ = strings.Cut(string(out), "\n")
+	json.Unmarshal([]byte(line), &got)
+	if code != 1 || got.Status != reviewFailed || got.Code != "report_lines_invalid" || strings.Count(trailer, "Verification exit") != 1 {
+		t.Fatalf("incomplete report lines %d %s %q", code, got.Code, trailer)
+	}
 }

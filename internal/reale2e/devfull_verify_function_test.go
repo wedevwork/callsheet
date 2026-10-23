@@ -524,6 +524,9 @@ func checkRefusedWake(t *testing.T, r *devRig) {
 
 func TestDevFullVerifyFP3(t *testing.T) {
 	t.Parallel()
+	// Design 12a-dev-flow-verify r0.11: rejected publications retain their
+	// diagnostics (devfull_rejection_test.go).
+	t.Run("publication_rejection", func(t *testing.T) { t.Parallel(); testPublicationRejection(t) })
 	// Each role publishes its authorized report, then a malicious change:
 	// the live admission rejects it and the offline check agrees.
 	for name, c := range map[string]struct {
@@ -619,7 +622,7 @@ func TestDevFullVerifyFP4(t *testing.T) {
 		}
 		var ev DevReviewRecord
 		if err := json.Unmarshal(r.evidence("tasks/04/review-evidence.json"), &ev); err != nil || ev.Evidence.Status != evidenceVerified ||
-			ev.Evidence.RunSHA256 != sha256Hex([]byte(r.helperOut[review.TaskID])) || ev.Evidence.Started == nil {
+			ev.Evidence.RunSHA256 != sha256Hex([]byte(receiptLine(r.helperOut[review.TaskID])+"\n")) || ev.Evidence.Started == nil {
 			t.Fatalf("evidence %+v %v", ev, err)
 		}
 		// Only review.md changed.
@@ -658,6 +661,40 @@ func TestDevFullVerifyFP4(t *testing.T) {
 			}
 		}
 	}
+	// Design 12a-dev-flow-verify r0.11 (fifth probe): a review.md with an
+	// extra Verification exit line is refused, and the refusal and the
+	// rejected review.md bytes are retained before cleanup.
+	t.Run("rejection_retained", func(t *testing.T) {
+		t.Parallel()
+		r := newDevRig(t, []devAct{{marker: markerDesignDraft}, {marker: markerDesignApproved}, {marker: markerImplComplete},
+			{marker: markerReviewApproved, alter: "extra-exit"}})
+		r.owner = []string{"yes 1"}
+		// The pasted lines no longer reconcile: the review's evidence is a
+		// mismatch, a rejection of the inspected publication.
+		r.expect(1, CodeReviewMismatch)
+		if got, err := os.ReadFile(filepath.Join(r.f.evidence, "tasks", "04", "rejected-review.bin")); err != nil || !bytes.Equal(got, r.lastReport) {
+			t.Fatalf("rejected review.md not retained: %v", err)
+		}
+		var rej devEnvelope[DevPublicationRejection]
+		if err := json.Unmarshal(r.evidence("tasks/04/publication-rejection.json"), &rej); err != nil || rej.Data.Code != CodeReviewMismatch ||
+			!strings.Contains(rej.Data.Reason, "review_report_lines_mismatch") || rej.Data.Review.State != captureComplete ||
+			*rej.Data.Review.CapturedSHA256 != sha256Hex(r.lastReport) || rej.Data.Ordinal != 4 || rej.Data.Role != HopCodeReviewer {
+			t.Fatalf("rejection record %+v %v", rej, err)
+		}
+		code, rep := r.offline()
+		if code != 1 || rep.Result == ResultPass {
+			t.Fatalf("offline %d %v", code, devCodes(rep))
+		}
+		// The honest record verifies, and its retained review.md
+		// reproduces the refusal offline.
+		pubs := devCriterion(rep, "publications").Codes
+		for _, bad := range append(rejectionContradictions, "rejection_unobserved") {
+			if containsCode(pubs, bad) {
+				t.Fatalf("an honest record fails %s: %v", bad, devCodes(rep))
+			}
+		}
+		rejectionRows(t, r.f.bundle(), true, true)
+	})
 	t.Run("checkout_entries", func(t *testing.T) {
 		t.Parallel()
 		r := newDevRig(t, happy())
@@ -1331,6 +1368,43 @@ func TestDevFullVerifyFP8(t *testing.T) {
 			})
 		}
 	}
+	// Design 12a-dev-flow-verify r0.11: the reviewer probe's rejected
+	// publication is retained in its closed layout; the record stays
+	// BLOCKED and rechecks as such.
+	t.Run("reviewer_rejection_retained", func(t *testing.T) {
+		t.Parallel()
+		r := probeRig(t)
+		r.steps[3].alter = "extra-exit"
+		r.expect(1, CodeReviewMismatch)
+		if got, err := os.ReadFile(filepath.Join(r.f.evidence, "probe", "reviewer", "01", rejectedReviewFile)); err != nil || !bytes.Equal(got, r.lastReport) {
+			t.Fatalf("rejected review.md not retained: %v", err)
+		}
+		if rec := rejectionRecord(t, r.f.evidence, "probe/reviewer/01"); rec.Code != CodeReviewMismatch || rec.Review.State != captureComplete {
+			t.Fatalf("record %+v", rec)
+		}
+		if q := r.qualification(); q.Result != ResultBlocked {
+			t.Fatalf("qualified %+v", q.Stages)
+		}
+		codes := qualificationCodes(t, r.f.bundle())
+		if !slices.Contains(codes, "publication_rejected") || slices.Contains(codes, "rejection_record_invalid") {
+			t.Fatalf("codes %v", codes)
+		}
+		// Exactly these two diagnostic names are admitted.
+		dir := filepath.Join(t.TempDir(), "probe")
+		if err := copyTree(r.f.bundle(), dir); err != nil {
+			t.Fatal(err)
+		}
+		os.WriteFile(filepath.Join(dir, "probe", "reviewer", "01", "rejected-review.txt"), []byte("x"), 0o600)
+		if _, err := LoadDevQualification(dir); err == nil {
+			t.Fatal("an arbitrary probe diagnostic was admitted")
+		}
+		os.WriteFile(filepath.Join(dir, "probe", "reviewer", "01", rejectedReviewFile), []byte("changed"), 0o600)
+		os.Remove(filepath.Join(dir, "probe", "reviewer", "01", "rejected-review.txt"))
+		requalify(t, dir)
+		if codes := qualificationCodes(t, dir); !slices.Contains(codes, "rejection_capture_invalid") {
+			t.Fatalf("changed diagnostic bytes %v", codes)
+		}
+	})
 	t.Run("missing_notification", func(t *testing.T) {
 		t.Parallel()
 		r := newDevRig(t, []devAct{{}, {alter: "no-wake"}, {}, {marker: markerReviewApproved}})

@@ -603,12 +603,12 @@ func (d *devSupervisor) inspected() {
 		return
 	}
 	if in.err != nil {
-		d.stop("publication_rejected", fmt.Errorf("publication: the result pull failed: %w", in.err).Error())
+		d.rejectInspection(in, "publication_rejected", fmt.Errorf("publication: the result pull failed: %w", in.err).Error())
 		return
 	}
 	base, result, tree, err := d.readInspection(in)
 	if err != nil {
-		d.stop("publication_rejected", err.Error())
+		d.rejectInspection(in, "publication_rejected", err.Error())
 		return
 	}
 	if d.deadlines() {
@@ -632,7 +632,7 @@ func (d *devSupervisor) admitInspected(insp *devInspection, base, result []TreeF
 	dir := d.planDir(&plan)
 	if plan.Role == "code-reviewer" {
 		if plan.ExpectedBase != d.state.CandidateCommit {
-			d.stop("publication_rejected", "the code review's input is not the candidate")
+			d.rejectInspection(insp, "publication_rejected", "the code review's input is not the candidate")
 			return
 		}
 		in.Candidate = plan.ExpectedBase
@@ -646,20 +646,20 @@ func (d *devSupervisor) admitInspected(insp *devInspection, base, result []TreeF
 			return
 		}
 		if code, stop := ev.blocks(); stop {
-			d.stop(code, fmt.Sprintf("the code review %s's execution evidence is %s (%s)", v.TaskID, ev.Status, ev.Code))
+			d.rejectInspection(insp, code, fmt.Sprintf("the code review %s's execution evidence is %s (%s)", v.TaskID, ev.Status, ev.Code))
 			return
 		}
 		in.ReviewRun = ev.runDigest()
 	}
 	res, err := AdmitPublication(in)
 	if err != nil {
-		d.stop("publication_rejected", err.Error())
+		d.rejectInspection(insp, "publication_rejected", err.Error())
 		return
 	}
 	if plan.Role == "coder" {
 		if err := d.checkReceipt(plan.ExpectedBase); err != nil || fileSHA(res.Files, "design.md") != d.state.Receipt.Design ||
 			fileSHA(res.Files, "revision-history.md") != d.state.Receipt.History {
-			d.stop("stale_receipt", "the coder's publication is not bound to the current receipt")
+			d.rejectInspection(insp, "stale_receipt", "the coder's publication is not bound to the current receipt")
 			return
 		}
 	}

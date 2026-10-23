@@ -230,7 +230,7 @@ var devDerivedFiles = map[string]bool{"report.json": true, "report.txt": true, "
 // Closed layout patterns.
 var (
 	devPreflightRE  = regexp.MustCompile(`^preflight/0[1-5]/(observation\.json|task\.json|final\.txt)$`)
-	devTaskFileRE   = regexp.MustCompile(`^tasks/(0[1-9]|1[0-4])/(plan\.json|dispatch\.json|observation\.json|task\.json|final\.txt|logs\.txt|logs\.json|admission\.json|record\.json|wait\.json|wait-result\.json|wait-stderr\.txt|wait-exit\.txt|review-evidence\.json)$`)
+	devTaskFileRE   = regexp.MustCompile(`^tasks/(0[1-9]|1[0-4])/(plan\.json|dispatch\.json|observation\.json|task\.json|final\.txt|logs\.txt|logs\.json|admission\.json|record\.json|wait\.json|wait-result\.json|wait-stderr\.txt|wait-exit\.txt|review-evidence\.json|publication-rejection\.json|rejected-review\.bin)$`)
 	devTransitionRE = regexp.MustCompile(`^transitions/(0[1-9]|[1-5][0-9]|6[0-4])\.json$`)
 	devDecisionRE   = regexp.MustCompile(`^(decisions|receipts)/0[1-3]\.json$`)
 	devSessionRE    = regexp.MustCompile(`^session/(phase-[1-4]\.stdout\.jsonl|phase-[1-4]\.stderr\.txt|transcript-phase-[1-4]\.jsonl|coordinator-exit\.json|event-map\.json)$`)
@@ -465,8 +465,18 @@ func (b *DevBundle) readFiles() error {
 		if err != nil {
 			return errDevSchema("evidence %s: %v", rel, err)
 		}
-		if !utf8.Valid(data) {
+		// A rejected review.md's retained bytes are raw (design
+		// 12a-dev-flow-verify r0.11): the one exception to the UTF-8 rule,
+		// within its own 32 KiB bound and the text budgets.
+		switch {
+		case filepath.Base(rel) == rejectedReviewFile:
+			if len(data) > maxRejectedReviewBytes {
+				return errDevSchema("evidence file %s exceeds %d bytes", rel, maxRejectedReviewBytes)
+			}
+		case !utf8.Valid(data):
 			return errDevSchema("evidence file %s is not valid UTF-8", rel)
+		case filepath.Base(rel) == publicationRejectionFile && len(data) > maxRejectionRecordBytes:
+			return errDevSchema("evidence file %s exceeds %d bytes", rel, maxRejectionRecordBytes)
 		}
 		b.Files[rel] = data
 		return nil
@@ -549,6 +559,8 @@ func devDocType(rel string) (any, string) {
 			return &devEnvelope[DevWaitRecord]{}, devKind("wait")
 		case "review-evidence.json":
 			return &DevReviewRecord{}, devKind("review-evidence")
+		case publicationRejectionFile:
+			return &devEnvelope[DevPublicationRejection]{}, devKind("publication-rejection")
 		}
 	}
 	return nil, ""

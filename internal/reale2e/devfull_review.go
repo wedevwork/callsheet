@@ -264,14 +264,42 @@ func reviewVerifyHelper(h Host) int {
 		env = &live
 	}
 	rec := runReviewVerify(*env, a)
-	out, code := encodeReviewRun(rec)
+	out, code := reviewHelperStdout(rec)
 	h.Stdout.Write(out)
 	return code
+}
+
+// reviewHelperStdout is the helper's whole stdout (design 12a-dev-flow-verify
+// r0.11): the finalized, bounded JSON receipt line, then the paste-ready
+// report-line trailer the shared renderer derives from it. A receipt
+// whose trailer cannot be rendered completely within its bound fails
+// closed: a passing receipt becomes a failed one (report_lines_invalid)
+// and is finalized again, and a trailer that still cannot be rendered is
+// omitted rather than emitted partially.
+func reviewHelperStdout(rec DevReviewRun) ([]byte, int) {
+	out, final, code := encodeReviewRunRec(rec)
+	trailer, ok := renderReviewReportLines(final, out)
+	if !ok || final.Status == reviewPassed && !reportLinesComplete(trailer) {
+		if final.Status == reviewPassed {
+			final.Status, final.Code = reviewFailed, "report_lines_invalid"
+		}
+		out, final, code = encodeReviewRunRec(final)
+		if trailer, ok = renderReviewReportLines(final, out); !ok {
+			trailer = ""
+		}
+	}
+	return append(out, trailer...), code
 }
 
 // encodeReviewRun renders the receipt as one compact JSON line within its
 // bound; an over-bound receipt drops the command outputs and fails.
 func encodeReviewRun(rec DevReviewRun) ([]byte, int) {
+	out, _, code := encodeReviewRunRec(rec)
+	return out, code
+}
+
+// encodeReviewRunRec is encodeReviewRun returning the finalized receipt.
+func encodeReviewRunRec(rec DevReviewRun) ([]byte, DevReviewRun, int) {
 	enc := func(r DevReviewRun) []byte {
 		b, _ := json.Marshal(r)
 		return append(b, '\n')
@@ -286,9 +314,9 @@ func encodeReviewRun(rec DevReviewRun) ([]byte, int) {
 		out = enc(rec)
 	}
 	if rec.Status == reviewPassed {
-		return out, 0
+		return out, rec, 0
 	}
-	return out, 1
+	return out, rec, 1
 }
 
 // runReviewVerify is the helper's whole run.

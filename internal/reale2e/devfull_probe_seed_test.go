@@ -155,3 +155,38 @@ func TestDevPromptsConsumingRead(t *testing.T) {
 		}
 	}
 }
+
+// TestDevReviewerInstructions pins design 12a-dev-flow-verify r0.11's
+// reviewer instruction (fifth probe): both the workflow and the probe
+// code-review envelopes tell the reviewer to paste the helper's report
+// lines verbatim and add no other Verification exit line, without the
+// former hand-composition templates.
+func TestDevReviewerInstructions(t *testing.T) {
+	t.Parallel()
+	for _, want := range []string{"Paste those lines into review.md verbatim", "add no other Verification exit line", "never compose, recompute or reword"} {
+		if !strings.Contains(reviewFieldsInstruction, want) {
+			t.Fatalf("the instruction lacks %q", want)
+		}
+	}
+	full := newDevRig(t, happy())
+	full.owner = []string{"yes 1"}
+	full.expect(0, "")
+	probe := probeRig(t)
+	probe.expect(0, "")
+	for name, docs := range map[string][]devDispatchDoc{"workflow": full.docs, "probe": probe.docs} {
+		n := 0
+		for _, d := range docs {
+			if d.Role != HopCodeReviewer {
+				continue
+			}
+			n++
+			if !strings.Contains(d.Goal, reviewFieldsInstruction) || strings.Contains(d.Goal, "(the helper's absolute scratch path)") ||
+				strings.Contains(d.Goal, "<64 lowercase hex") || strings.Contains(d.Goal, "Verification exit <exit>") || strings.Contains(d.Goal, "<scope>") {
+				t.Errorf("%s reviewer goal:\n%s", name, d.Goal)
+			}
+		}
+		if n == 0 {
+			t.Errorf("%s: no code-review envelope", name)
+		}
+	}
+}
