@@ -151,10 +151,19 @@ func TestTestPlanModes(t *testing.T) {
 	if strings.Join(argvOf(TestSteps("linux")), "|") != strings.Join(argvOf(local), "|") {
 		t.Error("TestSteps is not the local plan")
 	}
-	// macOS native still runs internal/reale2e in its ordinary suite.
+	// macOS native still runs internal/reale2e, without the race detector,
+	// as its own second command after every other package (design
+	// 12a-native-reale2e-budget); neither inherits -race or -p=1.
 	native, err := NativeSteps("darwin")
-	if err != nil || len(native) != 1 || !slices.Contains(native[0].Argv, "./...") || slices.Contains(native[0].Argv, "-race") {
+	if err != nil || len(native) != 2 || slices.Contains(native[0].Argv, "./...") || slices.Contains(native[0].Argv, RaceReale2ePackage) ||
+		!slices.Contains(native[0].Argv, "-timeout=300s") ||
+		strings.Join(native[1].Argv, " ") != "go test -json -tags=realadaptercheck -count=1 -timeout=600s ./internal/reale2e" {
 		t.Errorf("native %v %v", native, err)
+	}
+	for _, s := range native {
+		if slices.Contains(s.Argv, "-race") || slices.Contains(s.Argv, "-p=1") || len(s.Env) != 0 {
+			t.Errorf("native step %+v inherits the race step's flags", s)
+		}
 	}
 }
 

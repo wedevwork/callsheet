@@ -20,9 +20,18 @@ const (
 		"./internal/testkit/... ./internal/workspace/... ./internal/workspacetransfer/... ./tests/..."
 	// wantTestRaceReale2e is internal/reale2e's own race step and bound.
 	wantTestRaceReale2e = "go test -race -count=1 -timeout=360s ./internal/reale2e"
-	wantNative          = "go test -json -tags=realadaptercheck -count=1 -timeout=300s ./..."
-	wantBenchGit        = "go test ./internal/spikes/gittransport -run ^$ -bench . -benchmem -benchtime=3x -count=1 -timeout=180s"
-	wantBenchPlane      = "go test ./internal/plane -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s"
+	// wantNativeShared and wantNativeReale2e are Darwin's two native
+	// commands in order (design 12a-native-reale2e-budget): every package
+	// but internal/reale2e under 300 s, then internal/reale2e alone under
+	// 600 s; wantNative is the flattened plan.
+	wantNativeShared = "go test -json -tags=realadaptercheck -count=1 -timeout=300s ./cmd/... ./internal/adapter/... ./internal/cicheck/... ./internal/cli/... " +
+		"./internal/client/... ./internal/contract/... ./internal/devcheck/... ./internal/logging/... ./internal/mcp/... ./internal/mcpqual/... " +
+		"./internal/plane/... ./internal/sidecar/... ./internal/spikes/... ./internal/taskpublication/... ./internal/taskworkspace/... " +
+		"./internal/testkit/... ./internal/workspace/... ./internal/workspacetransfer/... ./tests/..."
+	wantNativeReale2e = "go test -json -tags=realadaptercheck -count=1 -timeout=600s ./internal/reale2e"
+	wantNative        = wantNativeShared + "|" + wantNativeReale2e
+	wantBenchGit      = "go test ./internal/spikes/gittransport -run ^$ -bench . -benchmem -benchtime=3x -count=1 -timeout=180s"
+	wantBenchPlane    = "go test ./internal/plane -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s"
 	// wantBenchContract is iteration 03's frame benchmark command.
 	wantBenchContract = "go test ./internal/contract -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s"
 	// wantBenchSidecar and wantBenchAdapter are iteration 04's appended
@@ -142,7 +151,7 @@ func TestPlaneVerificationPolicyContract(t *testing.T) {
 		if err := check(stream(qualification()...)); err != nil {
 			t.Fatalf("complete evidence: %v", err)
 		}
-		f := &fakeRunner{native: stream(qualification()...)}
+		f := nativeRunner(qualification())
 		code, out, errOut := runDriver(t, "darwin", f, "native")
 		// Iteration 09a: after the qualification, the coverage stage and
 		// the workspace benchmarks run outside the parsed event stream;
@@ -150,11 +159,12 @@ func TestPlaneVerificationPolicyContract(t *testing.T) {
 		// the task workspace benchmarks; non-blocking coordinator waits:
 		// then the client wait benchmark; decoder enrollment: then the
 		// qualification harness's benchmark; development full flow: then
-		// its benchmark (ten invocations).
+		// its benchmark; design 12a-native-reale2e-budget: two
+		// qualification commands first (eleven invocations).
 		a := f.argvs()
-		if code != 0 || len(a) != 10 || a[0] != wantNative || !strings.Contains(a[1], "-coverprofile=") || !strings.HasPrefix(a[2], "go tool cover") ||
-			!strings.HasPrefix(a[3], "go list") || a[4] != wantBenchWorkspace || a[5] != wantBenchTransfer || a[6] != wantBenchTaskWorkspace || a[7] != wantBenchClientWait ||
-			a[8] != wantBenchMCPQual || a[9] != wantBenchDevFull ||
+		if code != 0 || len(a) != 11 || a[0] != wantNativeShared || a[1] != wantNativeReale2e || !strings.Contains(a[2], "-coverprofile=") || !strings.HasPrefix(a[3], "go tool cover") ||
+			!strings.HasPrefix(a[4], "go list") || a[5] != wantBenchWorkspace || a[6] != wantBenchTransfer || a[7] != wantBenchTaskWorkspace || a[8] != wantBenchClientWait ||
+			a[9] != wantBenchMCPQual || a[10] != wantBenchDevFull ||
 			!strings.Contains(out, "TestPlaneStatus/expiry-warnings, TestPlanePlatform") {
 			t.Fatalf("darwin native = %d %v %s", code, a, errOut)
 		}
@@ -164,7 +174,7 @@ func TestPlaneVerificationPolicyContract(t *testing.T) {
 			evs := without(without(qualification(), "run", name), "pass", name)
 			mustFail(t, "missing "+name, stream(evs...), name+" has no run event", unobserved)
 			mustFail(t, "no pass "+name, stream(without(qualification(), "pass", name)...), name+" has no pass event", unobserved)
-			f := &fakeRunner{native: stream(evs...)}
+			f := nativeRunner(evs)
 			code, out, errOut := runDriver(t, "darwin", f, "native")
 			if code != 1 || !strings.Contains(errOut, name+" has no run event") || strings.Contains(out, "stage native ok") {
 				t.Fatalf("native stage with %s missing = %d %s", name, code, errOut)
@@ -182,7 +192,7 @@ func TestPlaneVerificationPolicyContract(t *testing.T) {
 		for _, name := range planeNames() {
 			evs := replacing(qualification(), "pass", name, ev("fail", NativePackage, name))
 			mustFail(t, "failed "+name, stream(evs...), "test "+name+" in "+NativePackage+" failed")
-			f := &fakeRunner{native: stream(evs...)}
+			f := nativeRunner(evs)
 			code, out, _ := runDriver(t, "darwin", f, "native")
 			if code != 1 {
 				t.Fatalf("native stage with %s failed = %d", name, code)

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -34,9 +35,14 @@ type fakeRunner struct {
 	coverTotal string
 	cmdList    string
 	profile    string
-	// native is written to stdout and nativeErr to stderr for go test -json.
-	native    string
-	nativeErr string
+	// native is written to stdout and nativeErr to stderr for go test -json;
+	// nativeReale2e replaces native as the stdout of the dedicated
+	// internal/reale2e command (design 12a-native-reale2e-budget), so each
+	// native child writes its own disjoint stream (nativeRunner partitions
+	// a combined stream).
+	native        string
+	nativeReale2e string
+	nativeErr     string
 }
 
 func (f *fakeRunner) run(_ context.Context, argv, env []string, dir string, stdout, stderr io.Writer) error {
@@ -73,6 +79,9 @@ func (f *fakeRunner) run(_ context.Context, argv, env []string, dir string, stdo
 		return err
 	}
 	switch {
+	case strings.HasPrefix(joined, "go test -json") && slices.Contains(argv, "./internal/reale2e"):
+		io.WriteString(stdout, f.nativeReale2e)
+		io.WriteString(stderr, f.nativeErr)
 	case strings.HasPrefix(joined, "go test -json"):
 		io.WriteString(stdout, f.native)
 		io.WriteString(stderr, f.nativeErr)

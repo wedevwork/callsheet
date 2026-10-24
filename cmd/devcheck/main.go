@@ -8,8 +8,11 @@
 //	go run ./cmd/devcheck all
 //	go run ./cmd/devcheck stress
 //
-// native runs the full suite with go test -json on macOS and requires passing
-// evidence for the process-group qualification tests; other hosts reject it.
+// native runs the full suite with go test -json on macOS, as two sequential
+// tagged commands (every package but internal/reale2e, then
+// internal/reale2e alone under its own cap), and requires passing evidence
+// for the process-group qualification tests in their combined stream; other
+// hosts reject it.
 // stress repeats the timing- and concurrency-sensitive tests under the race
 // detector (StressCount times at each of -cpu=1,2,4) on Linux and macOS; it is
 // deliberately not part of all. It runs nine shards in order, each also a

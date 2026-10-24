@@ -548,9 +548,17 @@ var nativeRequired = []string{
 // pass in the sidecar's own package within the same full-suite stream.
 // Iteration 08 appends its realadaptercheck-tagged sidecar contract and its
 // five subtests, and iteration 11 that contract's four wave-2 subtests
-// (direct subtests of the same parent): the native command compiles the
-// tag, and names passing in tests/function never satisfy these.
+// (direct subtests of the same parent): the first native command compiles
+// the tag and runs internal/sidecar, and names passing in tests/function
+// never satisfy these.
 const NativeTaskProcessPackage = "github.com/wedevwork/callsheet/internal/sidecar"
+
+// NativeReale2ePackage is the package the second native command runs alone
+// under its own 600-second binary cap (design 12a-native-reale2e-budget):
+// the combined qualification stream must show its package start and its
+// package pass. A package skip never satisfies it; its individual tests are
+// not enrolled.
+const NativeReale2ePackage = "github.com/wedevwork/callsheet/internal/reale2e"
 
 var nativeTaskProcess = []string{"TestTaskExecutionContract", "TestTaskExecutionContract/process",
 	"TestRealAdapterLocal", "TestRealAdapterLocal/selection", "TestRealAdapterLocal/file", "TestRealAdapterLocal/ordering",
@@ -577,16 +585,28 @@ func unsupportedNative(goos string) error {
 	return fmt.Errorf("devcheck: native stage is unsupported on %q: it qualifies darwin only (use test or all on other hosts)", goos)
 }
 
-// NativeSteps returns the native qualification plan: the complete suite as a
-// go test JSON event stream. Only darwin is supported; every other goos
-// (including linux and windows) is rejected before any child runs.
+// NativeSteps returns the native qualification plan: the complete suite as
+// a go test JSON event stream from two sequential tagged commands (design
+// 12a-native-reale2e-budget). The first, "native", selects every package
+// but internal/reale2e (the RaceSharedPackages patterns) under the
+// 300-second binary cap; the second, "native reale2e", runs
+// internal/reale2e alone under a 600-second cap. The selections are
+// disjoint and together the whole module (TestNativeSelectionCoversModule),
+// so every package starts once in the combined stream. Only darwin is
+// supported; every other goos (including linux and windows) is rejected
+// before any child runs.
 func NativeSteps(goos string) ([]Step, error) {
 	if goos != "darwin" {
 		return nil, unsupportedNative(goos)
 	}
-	// One invocation (one package start each): the tag compiles and runs the
-	// sidecar's tagged contract within the complete suite (iteration 08).
-	return []Step{{Name: "native", Argv: []string{"go", "test", "-json", "-tags=" + RealAdapterTag, "-count=1", "-timeout=300s", "./..."}}}, nil
+	// The tag compiles and runs the sidecar's tagged contract in the first
+	// command (iteration 08). Each call allocates fresh argv slices: the
+	// shared patterns are copied, never aliased.
+	shared := append([]string{"go", "test", "-json", "-tags=" + RealAdapterTag, "-count=1", "-timeout=300s"}, RaceSharedPackages...)
+	return []Step{
+		{Name: "native", Argv: shared},
+		{Name: "native reale2e", Argv: []string{"go", "test", "-json", "-tags=" + RealAdapterTag, "-count=1", "-timeout=600s", RaceReale2ePackage}},
+	}, nil
 }
 
 // acceptedActions is the exact go test -json Action set the parser accepts.
@@ -782,6 +802,14 @@ func (c *nativeChecker) finish() error {
 	} else if !p.passed {
 		missing = append(missing, "package "+NativePackage+" has no pass event")
 	}
+	// The dedicated second command's package (design
+	// 12a-native-reale2e-budget): its start and its package pass, never a
+	// package skip.
+	if p := c.pkgs[NativeReale2ePackage]; p == nil {
+		missing = append(missing, "package "+NativeReale2ePackage+" has no start event")
+	} else if !p.passed {
+		missing = append(missing, "package "+NativeReale2ePackage+" has no pass event")
+	}
 	for _, name := range nativeRequired {
 		st := c.tests[testKey(NativePackage, name)]
 		switch {
@@ -807,12 +835,16 @@ func (c *nativeChecker) finish() error {
 }
 
 // CheckNativeResults validates a go test -json stdout event stream from the
-// NativeSteps plan without invoking any tool. Only goos darwin is accepted.
-// It fails for malformed or truncated JSON, a missing, empty or unknown
-// Action, any fail or build-fail, any test skip, a package skip other than
-// a nonrequired no-test-files package, a started package that never
-// finishes, and missing run/pass evidence for NativePackage and its
-// required process-group and plane trust tests.
+// NativeSteps plan without invoking any tool: the combined stream of both
+// commands, the first command's stdout followed by the second's, checked
+// once with one package state, so a package started by both commands is a
+// duplicate start. Only goos darwin is accepted. It fails for malformed or
+// truncated JSON, a missing, empty or unknown Action, any fail or
+// build-fail, any test skip, a package skip other than a nonrequired
+// no-test-files package, a started package that never finishes, missing
+// run/pass evidence for NativePackage and its required tests or for the
+// NativeTaskProcessPackage tuple, and a missing package start or package
+// pass of NativeReale2ePackage (design 12a-native-reale2e-budget).
 func CheckNativeResults(goos string, r io.Reader) error {
 	if goos != "darwin" {
 		return unsupportedNative(goos)
@@ -854,8 +886,10 @@ func (t *tailBuffer) Write(p []byte) (int, error) {
 
 // native runs the native plan with separate stdout and stderr: stdout goes
 // to the user and a scratch JSON file (the only parser input), stderr to a
-// scratch log and the user's diagnostics. It stops at the first child
-// failure and validates the JSON only after every child succeeded; only
+// scratch log and the user's diagnostics. Every child appends to the same
+// event file (design 12a-native-reale2e-budget: both qualification
+// commands). It stops at the first child failure and validates the
+// combined JSON once, only after every child succeeded; only
 // then (iteration 09a) does it run the coverage stage and the workspace
 // benchmark step, and (iteration 09b) the transfer benchmark step.
 func (d *driver) native(steps []Step) error {

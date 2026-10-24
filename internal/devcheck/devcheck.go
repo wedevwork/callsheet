@@ -361,7 +361,11 @@ const RaceReale2ePackage = "./internal/reale2e"
 // 180 seconds each, design 12a-ci-race-schedule). The go tool has no
 // exclusion pattern, so they are listed; TestRaceSelectionCoversModule
 // keeps them equal to go list ./... without that package, so a new
-// package cannot fall outside both race steps.
+// package cannot fall outside both race steps. Darwin native qualification
+// reuses a fresh copy of the same patterns, in order, for its first,
+// 300-second tagged command, internal/reale2e running alone in the second
+// (design 12a-native-reale2e-budget); TestNativeSelectionCoversModule keeps
+// that tagged pair equal to go list -tags=realadaptercheck ./....
 var RaceSharedPackages = []string{
 	"./cmd/...",
 	"./internal/adapter/...",

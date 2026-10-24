@@ -130,7 +130,7 @@ func TestRolePolicy(t *testing.T) {
 		if len(req) != 145+len(mcpNames())+len(qualNames())+len(realNames())+len(wsNames())+len(trNames())+len(latNames())+len(wsTaskNames())+len(wsDoorNames())+len(wave2Names())+len(nbwNames())+len(dceNames())+len(b1Names())+len(b15Names())+len(b2Names())+len(b3Names()) || strings.Join(req[58:87], ",") != strings.Join(roleNames(), ",") || len(roleNames()) != 29 {
 			t.Fatalf("native required = %v", req)
 		}
-		f := &fakeRunner{native: stream(qualification()...)}
+		f := nativeRunner(qualification())
 		code, out, errOut := runDriver(t, "darwin", f, "native")
 		if code != 0 || !strings.Contains(out, "TestRolePlatform/policy") {
 			t.Fatalf("darwin native = %d %s", code, errOut)

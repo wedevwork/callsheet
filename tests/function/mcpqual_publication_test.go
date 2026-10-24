@@ -2241,8 +2241,12 @@ func catalogVersionCI(t *testing.T, live func([]devcheck.Step) string) {
 			t.Fatalf("%s test steps %+v", goos, steps)
 		}
 	}
+	// Native: the first of the two commands (design
+	// 12a-native-reale2e-budget) selects the mcpqual and catalog packages,
+	// the second internal/reale2e alone; neither is live.
 	native, err := devcheck.NativeSteps("darwin")
-	if err != nil || len(native) != 1 || !slices.Contains(native[0].Argv, "./...") || live(native) != "" {
+	if err != nil || len(native) != 2 || !slices.Contains(native[0].Argv, "./internal/mcpqual/...") || !slices.Contains(native[0].Argv, "./internal/testkit/...") ||
+		strings.Join(native[1].Argv, " ") != "go test -json -tags=realadaptercheck -count=1 -timeout=600s ./internal/reale2e" || live(native) != "" {
 		t.Fatalf("native steps %+v %v", native, err)
 	}
 	cover, _, _ := devcheck.CoverageSteps("profile.out")
