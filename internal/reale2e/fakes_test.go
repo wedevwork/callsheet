@@ -376,7 +376,11 @@ type fakePlane struct {
 	effectiveModel string
 	// wsRefs are the workspace's branch refs (a seed push sets main);
 	// statusErr fails workspace status reads.
-	wsRefs        map[string]string
+	wsRefs map[string]string
+	// others are further workspaces (a light qualification's second one)
+	// with their own main refs; a task ref belongs to its bound workspace.
+	others        []*contract.WorkspaceView
+	otherRefs     map[string]map[string]string
 	statusErr     error
 	listErr       error
 	showErr       func(id string) error
@@ -478,7 +482,7 @@ func (p *fakePlane) Dispatch(_ context.Context, req contract.DispatchRequest) (c
 			p.mu.Unlock()
 			return contract.TaskView{}, err
 		}
-		b := &contract.WorkspaceBinding{Name: *req.Workspace, Instance: p.ws.Instance, BaseSelector: contract.SelectorString(sel)}
+		b := &contract.WorkspaceBinding{Name: *req.Workspace, Instance: p.instanceOf(*req.Workspace), BaseSelector: contract.SelectorString(sel)}
 		if req.WorkspaceInstance != nil {
 			b.Instance = *req.WorkspaceInstance
 		}
@@ -657,8 +661,39 @@ func (p *fakePlane) CreateWorkspace(_ context.Context, name string) (contract.Wo
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.ws != nil {
+		// A further workspace has its own instance and refs.
+		w := &contract.WorkspaceView{Name: name, Instance: hexID("", 0xabc+len(p.others)+1)}
+		p.others = append(p.others, w)
+		if p.otherRefs == nil {
+			p.otherRefs = map[string]map[string]string{}
+		}
+		p.otherRefs[name] = map[string]string{}
+		return *w, nil
+	}
 	p.ws = &contract.WorkspaceView{Name: name, Instance: hexID("", 0xabc)}
 	return *p.ws, nil
+}
+
+// workspaceLocked is the named workspace (nil: none).
+func (p *fakePlane) workspaceLocked(name string) *contract.WorkspaceView {
+	if p.ws != nil && p.ws.Name == name {
+		return p.ws
+	}
+	for _, w := range p.others {
+		if w.Name == name {
+			return w
+		}
+	}
+	return nil
+}
+
+// instanceOf is the named workspace's instance (the primary's when none).
+func (p *fakePlane) instanceOf(name string) string {
+	if w := p.workspaceLocked(name); w != nil {
+		return w.Instance
+	}
+	return p.ws.Instance
 }
 
 // showCount is the number of task fetches so far.
@@ -1525,6 +1560,9 @@ type fakeWorld struct {
 	// when set, replaces the final coverage run's synthesized profile.
 	goPath  string
 	profile func(module string, main []byte) []byte
+	// light runs the semantic light-recipe Go (devlight_fakes_test.go)
+	// for every light command and built binary.
+	light bool
 }
 
 // goBin is the world's go executable path.
@@ -1749,6 +1787,11 @@ func (f *fakeWorld) testJSON() string {
 // base is a child's default behavior.
 func (f *fakeWorld) base(s ProcSpec) behavior {
 	a := s.Args
+	if f.light && (s.Path == f.goBin() || filepath.Base(s.Path) == "greeting") {
+		if b, ok := lightGoBehavior(s); ok {
+			return b
+		}
+	}
 	switch {
 	case s.Path == fakeCallsheet && len(a) == 1 && a[0] == "version":
 		return behavior{stdout: "callsheet dev protocol=6\n"}

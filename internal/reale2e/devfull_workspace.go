@@ -59,6 +59,11 @@ type admitInput struct {
 	// ReviewRun is the SHA-256 of the verification helper's complete
 	// receipt the captured log corroborates ("" when there is none).
 	ReviewRun string
+	// Scenario is the attempt's scenario ("" or full: the full flow) and
+	// Seed the immutable initial seed tree a light brief's root-cause
+	// reference must resolve in (design 12a-dev-flow-light, FP-2).
+	Scenario string
+	Seed     map[string]TreeFile
 }
 
 // admitResult is what an admitted publication supplies to Next.
@@ -98,7 +103,12 @@ func AdmitPublication(in admitInput) (admitResult, error) {
 		if err != nil {
 			return res, fmt.Errorf("publication: %w: the review blocker field", err)
 		}
-		if err := ReviewReportOK(report, in.Marker, in.Candidate, in.TaskID, bmap, in.ReviewRun); err != nil {
+		check := ReviewReportOK
+		if in.Mode == modeReviewLight {
+			// Dispatched by plan mode, never by the report's wording.
+			check = LightReviewReportOK
+		}
+		if err := check(report, in.Marker, in.Candidate, in.TaskID, bmap, in.ReviewRun); err != nil {
 			return res, err
 		}
 		res.Report, res.Blocker = report, blocker
@@ -122,6 +132,11 @@ func AdmitPublication(in admitInput) (admitResult, error) {
 		// The current brief's confidence must be the admitted verdict's.
 		if conf, err := parseConfidence(string(cur.Content)); err != nil || "TRIAGE_"+conf != in.Marker {
 			return res, fmt.Errorf("publication: fix.md has no single Confidence line matching %s", in.Marker)
+		}
+		if in.Scenario == scenarioLight {
+			if _, _, err := parseRootCause(string(cur.Content), in.Seed); err != nil {
+				return res, fmt.Errorf("publication: fix.md: %w", err)
+			}
 		}
 		res.DesignRequired, res.BriefCurrent = req, true
 	}

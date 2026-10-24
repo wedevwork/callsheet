@@ -217,6 +217,17 @@ type reviewRecheck struct {
 	candTree           string
 	cand               map[string]TreeFile
 	seedMain           []byte
+	// light is a light review's own recipe inputs (design
+	// 12a-dev-flow-light; nil: the full recipe).
+	light *lightRecheck
+}
+
+// lightRecheck is a light review's retained seed and the supervisor's
+// seed CLI corroboration.
+type lightRecheck struct {
+	seedFiles map[string]TreeFile
+	seedTree  string
+	seedCLI   bool
 }
 
 // rejectionVerdict is one retained rejection's judgment: present when
@@ -333,8 +344,15 @@ func recheckReview(in rejectionInput, view *contract.TaskView, recorded, report 
 		return "", "the final answer has no marker", "", nil, false
 	}
 	rv := in.review
-	ev := DeriveDevReviewEvidence(bundleReviewInput(in.b, in.dir, in.ordinal, view, rv.helper, rv.candidate, rv.initial, rv.candTree, rv.cand,
-		rv.seedMain, marker, report))
+	base := bundleReviewInput(in.b, in.dir, in.ordinal, view, rv.helper, rv.candidate, rv.initial, rv.candTree, rv.cand, rv.seedMain, marker, report)
+	var ev DevReviewEvidence
+	reportOK := ReviewReportOK
+	if rv.light != nil {
+		ev = DeriveLightReviewEvidence(lightReviewInput{reviewEvidenceInput: base, SeedFiles: rv.light.seedFiles, SeedTree: rv.light.seedTree, SeedCLI: rv.light.seedCLI})
+		reportOK = LightReviewReportOK
+	} else {
+		ev = DeriveDevReviewEvidence(base)
+	}
 	if ev.Started != nil && ev.Completed != nil {
 		receipt = []SourceRef{{File: ev.Started.File, SHA256: ev.Started.SHA256, FirstLine: ev.Started.FirstLine, LastLine: ev.Completed.LastLine}}
 	}
@@ -343,7 +361,7 @@ func recheckReview(in rejectionInput, view *contract.TaskView, recorded, report 
 		got = code
 	} else if _, err := parseReviewBlocker(*view.Result.FinalMessage, report, marker); err != nil {
 		got = "publication_rejected"
-	} else if err := ReviewReportOK(report, marker, rv.candidate, view.TaskID, rv.cand, ev.runDigest()); err != nil {
+	} else if err := reportOK(report, marker, rv.candidate, view.TaskID, rv.cand, ev.runDigest()); err != nil {
 		got = "publication_rejected"
 	}
 	switch {
@@ -398,6 +416,15 @@ func (c *devChecker) rejectionInput(n int, stop string) rejectionInput {
 		if cand, ok := c.trees[p.Data.ExpectedBase]; ok {
 			in.review = &reviewRecheck{helper: c.m.Helper, candidate: p.Data.ExpectedBase, initial: c.m.Workspace.SeedCommit,
 				candTree: c.treeHash[p.Data.ExpectedBase], cand: cand, seedMain: fileContent(c.trees[c.m.Workspace.SeedCommit], "main.go")}
+			if c.isLight() {
+				seed := c.lightSeedCommit()
+				exact := false
+				if bl := doc[DevLightBaseline](c.b, "validation/light-baseline.json"); bl != nil {
+					exact = bl.Defect.Exact
+				}
+				in.review.initial, in.review.seedMain = seed, fileContent(c.trees[seed], "main.go")
+				in.review.light = &lightRecheck{seedFiles: c.trees[seed], seedTree: c.treeHash[seed], seedCLI: exact}
+			}
 		}
 	}
 	return in

@@ -382,6 +382,10 @@ func (d *devSupervisor) receipt(w *devWindow, decision Event) (OwnerReceipt, boo
 // unchanged in the coder's base (a descendant report or triage commit is
 // allowed).
 func (d *devSupervisor) checkReceipt(base string) error {
+	if d.light != nil {
+		// A light coder is authorized by the owner's light intake.
+		return d.light.checkIntake()
+	}
 	r := d.state.Receipt
 	a := d.state.Audit
 	switch {

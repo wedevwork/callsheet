@@ -21,8 +21,6 @@ import (
 // prepared dispatch document. Every request is served by the supervisor's
 // single loop, never concurrently.
 
-const devDispatchSchema = "callsheet-dev-full-dispatch/v1"
-
 // Development response codes.
 const (
 	CodePrepared        = "prepared"
@@ -36,7 +34,7 @@ const (
 
 // devOKCodes and devErrorCodes are the development socket's closed codes.
 var (
-	devOKCodes    = []string{CodePrepared, CodePaused, CodeComplete, CodePending, CodeAccepted, CodeAlreadyObserved}
+	devOKCodes    = []string{CodePrepared, CodePaused, CodeComplete, CodePending, CodeAccepted, CodeAlreadyObserved, CodeCandidateUnpublished}
 	devErrorCodes = []string{CodeInvalidRequest, CodeRunMismatch, CodeTaskMismatch, CodeObservationClash, CodeOwnerGateClosed, CodeClosing,
 		CodeInternalError, CodeSeedUnpublished, CodePromptBudget, CodeDuplicateWait}
 )
@@ -109,7 +107,8 @@ func readDevRunFile(runtime string) (DevRunFile, error) {
 	if err := decodeStrict(data, &rf); err != nil {
 		return DevRunFile{}, err
 	}
-	if rf.Schema != DevRunSchema || !ValidRunID(rf.RunID) || !filepath.IsAbs(rf.Callsheet) || !filepath.IsAbs(rf.CA) || rf.Plane == "" {
+	if rf.Schema != DevRunSchema || !ValidRunID(rf.RunID) || !devRunScenarios[rf.Scenario] || !filepath.IsAbs(rf.Callsheet) || !filepath.IsAbs(rf.CA) ||
+		rf.Plane == "" {
 		return DevRunFile{}, errors.New("the run file is not a development run file")
 	}
 	return rf, nil
@@ -194,7 +193,7 @@ func decodeDevResponse(op string, line []byte) (controlResponse, error) {
 	switch {
 	case op == opDevNext && resp.OK && resp.Code == CodePrepared:
 		want = append(want, "path", "digest", "ordinal", "role", "mode")
-	case op == opDevNext && resp.OK && resp.Code == CodePaused:
+	case op == opDevNext && resp.OK && (resp.Code == CodePaused || resp.Code == CodeCandidateUnpublished):
 		want = append(want, "summary")
 	}
 	if len(raw) != len(want) {
@@ -208,7 +207,8 @@ func decodeDevResponse(op string, line []byte) (controlResponse, error) {
 	if resp.OK != slices.Contains(devOKCodes, resp.Code) || (!resp.OK && !slices.Contains(devErrorCodes, resp.Code)) {
 		return controlResponse{}, errors.New("unknown response code from the supervisor")
 	}
-	if op != opDevNext && (resp.Code == CodePrepared || resp.Code == CodePaused || resp.Code == CodeComplete || resp.Code == CodePending) {
+	if op != opDevNext && (resp.Code == CodePrepared || resp.Code == CodePaused || resp.Code == CodeComplete || resp.Code == CodePending ||
+		resp.Code == CodeCandidateUnpublished) {
 		return controlResponse{}, errMalformedResponse
 	}
 	switch {
@@ -223,6 +223,11 @@ func decodeDevResponse(op string, line []byte) (controlResponse, error) {
 		_, _, ferr := parsePhaseGate(resp.Summary)
 		_, complete, perr := parseProbePhaseGate(resp.Summary)
 		if ferr != nil && (perr != nil || complete) {
+			return controlResponse{}, errMalformedResponse
+		}
+	case op == opDevNext && resp.OK && resp.Code == CodeCandidateUnpublished:
+		// The light probe's prepared candidate commit to push.
+		if !contract.ValidCommitHash(resp.Summary) {
 			return controlResponse{}, errMalformedResponse
 		}
 	}
@@ -248,7 +253,7 @@ func devNextHelper(h Host) int {
 	switch resp.Code {
 	case CodePrepared:
 		fmt.Fprintf(h.Stdout, "%s %s %s\n", resp.Code, resp.Path, resp.Digest)
-	case CodePaused:
+	case CodePaused, CodeCandidateUnpublished:
 		fmt.Fprintf(h.Stdout, "%s %s\n", resp.Code, resp.Summary)
 	default:
 		fmt.Fprintln(h.Stdout, resp.Code)

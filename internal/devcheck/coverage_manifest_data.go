@@ -362,6 +362,20 @@ var WorkspaceCoverageManifest = []CoverageEntry{
 	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devfull_sessionmap.go"},
 	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devfull_validate.go"},
 	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devfull_mcpcalls.go"},
+	// Design 12a-dev-flow-light: the light scenario and the combined
+	// exercise, new untagged files, whole.
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devexercise_check.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devexercise_root.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devlight_check.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devlight_coverage.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devlight_envelope.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devlight_layout.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devlight_oracle.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devlight_probe.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devlight_probecheck.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devlight_review.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devlight_state.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devlight_supervisor.go"},
 	// The server's per-tool argument rules, shared by the MCP handlers and
 	// the checker's call judges, whole.
 	{Group: GroupChanged, File: modulePath + "/internal/contract/toolargs.go"},

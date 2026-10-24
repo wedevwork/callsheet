@@ -548,7 +548,7 @@ func TestDevFullQualification(t *testing.T) {
 		// The pinned fixture is the repository's testdata, byte for byte.
 		root := repoRoot(t)
 		for _, name := range probeFixtureFiles {
-			if !bytes.Equal(mustRead(t, filepath.Join(dir, "setup", "probe-fixture", name)), mustRead(t, filepath.Join(root, filepath.FromSlash(devProbeFixtureDir), name))) {
+			if !bytes.Equal(mustRead(t, filepath.Join(dir, filepath.FromSlash(capturedPath("setup/probe-fixture/"+name)))), mustRead(t, filepath.Join(root, filepath.FromSlash(devProbeFixtureDir), name))) {
 				t.Fatalf("fixture %s differs", name)
 			}
 		}
@@ -578,7 +578,7 @@ func TestDevFullQualification(t *testing.T) {
 			os.WriteFile(p, append(mustRead(t, p), "x\n"...), 0o600)
 		}, "prompt_provenance_mismatch"},
 		"fixture": {func(t *testing.T, dir string) {
-			os.WriteFile(filepath.Join(dir, "setup", "probe-fixture", "main.go"), []byte("package main\n"), 0o600)
+			os.WriteFile(filepath.Join(dir, filepath.FromSlash(capturedPath("setup/probe-fixture/main.go"))), []byte("package main\n"), 0o600)
 		}, "fixture_mismatch"},
 		"stage_claim": {func(t *testing.T, dir string) {
 			editJSON(t, dir, devQualificationFile, func(m map[string]any) {

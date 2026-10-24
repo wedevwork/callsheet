@@ -250,6 +250,9 @@ func markerAllowed(role, mode, marker string) bool {
 		return marker == markerImplComplete || marker == markerQuestions || marker == markerNeedsDesign || marker == markerBlocked
 	case "coder/fix":
 		return marker == markerFixesComplete || marker == markerQuestions || marker == markerNeedsDesign || marker == markerNeedsTriage || marker == markerBlocked
+	case "coder/" + modeDefect, "code-reviewer/" + modeReviewLight:
+		// Design 12a-dev-flow-light: the light modes.
+		return lightMarkerAllowed(role, mode, marker)
 	case "code-reviewer/full":
 		return marker == markerReviewApproved || marker == markerReviewChanges || marker == markerNeedsDesign
 	case "triage/investigate":

@@ -2,7 +2,7 @@
 
 This directory is a reusable Callsheet example of a full design flow and a light defect flow. Each role is an ordinary instruction and runbook pair registered with `callsheet role add`. The coordinator is the owner's own client, following [coordinator-playbook.md](coordinator-playbook.md). Callsheet does not load that playbook as a role or a daemon.
 
-The real end-to-end exercise ([real-e2e.md](../../real-e2e.md)) loads these shared manuals and this playbook directly: `reale2e run` runs the checked full development flow with them, and the exercise directory [../real-e2e/](../real-e2e/README.md) adds only its scenario and mechanics. The retired four-hop role manuals are no longer shipped. A mechanical PASS of the exercise is not a judgment of the method's outputs, and its live qualification stays pending until the owner-run attempt is recorded. Exercise constraints, when they exist, supplement this method. They do not waive its gates.
+The real end-to-end exercise ([real-e2e.md](../../real-e2e.md)) loads these shared manuals and this playbook directly: `reale2e run` runs the checked full development flow with them, `reale2e run-dev-light` runs the light defect flow on a seeded whitespace defect, `reale2e run-dev-exercise` runs both as independent attempts, and the exercise directory [../real-e2e/](../real-e2e/README.md) adds only its scenario and mechanics. The retired four-hop role manuals are no longer shipped. A mechanical PASS of the exercise is not a judgment of the method's outputs, and its live qualification stays pending until the owner-run attempt is recorded. Exercise constraints, when they exist, supplement this method. They do not waive its gates.
 
 ## Installation
 

@@ -31,11 +31,18 @@ type envelopeContext struct {
 	// helper is the fixed reviewer verification helper's recipe (design
 	// 12a-dev-flow-verify, Reviewer evidence).
 	helper reviewHelperSpec
+	// intake is a light attempt's intake receipt digest (design
+	// 12a-dev-flow-light; "" for the full flow).
+	intake string
 }
 
 // envelopeContext is the supervisor's current envelope inputs.
 func (d *devSupervisor) envelopeContext() envelopeContext {
-	return envelopeContext{runID: d.s.runID, state: d.state, trees: d.trees, finals: d.finals, scenario: d.loaded.Rendered[DevScenario], helper: d.helper}
+	ec := envelopeContext{runID: d.s.runID, state: d.state, trees: d.trees, finals: d.finals, scenario: d.loaded.Rendered[DevScenario], helper: d.helper}
+	if d.light != nil && d.light.st != nil && d.light.st.receiptBytes != nil {
+		ec.intake = sha256Hex(d.light.st.receiptBytes)
+	}
+	return ec
 }
 
 // envelope builds a plan's goal and acceptance and fills its inputs'
@@ -76,6 +83,10 @@ func buildEnvelope(ec envelopeContext, p *TaskPlan) (string, string, []PlanInput
 			in.SHA256 = sha256Hex([]byte(final))
 		}
 		inputs = append(inputs, in)
+	}
+	if ec.state.Scenario == scenarioLight {
+		goal, acc, err := buildLightEnvelope(ec, p, base, inputs)
+		return goal, acc, inputs, err
 	}
 	var b strings.Builder
 	line := func(format string, a ...any) { fmt.Fprintf(&b, format+"\n", a...) }
@@ -217,8 +228,8 @@ func roleFields(ec envelopeContext, b *strings.Builder, p *TaskPlan, base map[st
 			line("findings: investigate the finding IDs the coder task %s (commit %s) named in its final answer (data):", n.TaskID, n.Commit)
 			fenced(b, n.Final)
 		}
-		line("design_required: a qualified fix.md has exactly one standalone line Design required: yes or Design required: no outside any code fence; rca.md ends with the same STATUS line as the final answer")
-		line("confidence: a qualified fix.md has exactly one standalone line Confidence: CONFIRMED (with TRIAGE_CONFIRMED) or Confidence: PROBABLE (with TRIAGE_PROBABLE)")
+		line("%s", triageDesignRequiredInstruction)
+		line("%s", triageConfidenceInstruction)
 	}
 }
 

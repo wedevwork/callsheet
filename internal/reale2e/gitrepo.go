@@ -179,6 +179,13 @@ func legacyRef(name string) bool { return slices.Contains(evidenceRefs, name) }
 // 12a-dev-flow-verify parameterizes it for the development refs; the
 // legacy wrapper keeps the five fixed refs).
 func validateRepoLayoutRefs(root string, limit int64, refOK func(string) bool) ([]string, error) {
+	objects, _, err := validateRepoLayoutTotal(root, limit, refOK)
+	return objects, err
+}
+
+// validateRepoLayoutTotal is validateRepoLayoutRefs also returning the
+// regular-file bytes it counted.
+func validateRepoLayoutTotal(root string, limit int64, refOK func(string) bool) ([]string, int64, error) {
 	allowedFile := map[string]bool{"HEAD": true, "config": true}
 	var objects []string
 	var total int64
@@ -223,7 +230,7 @@ func validateRepoLayoutRefs(root string, limit int64, refOK func(string) bool) (
 		}
 		return nil
 	})
-	return objects, err
+	return objects, total, err
 }
 
 // errObjectBound is a decoded object, or their aggregate, over its bound.
@@ -234,15 +241,22 @@ var errObjectBound = errors.New("evidence repository objects exceed the decoded-
 // limit, every stream must match its declared size, and its SHA-1 must
 // equal its file name. Corrupt objects fail before go-git reads them.
 func verifyLooseObjects(root string, objects []string, limit int64) error {
+	_, err := verifyLooseObjectsTotal(root, objects, limit)
+	return err
+}
+
+// verifyLooseObjectsTotal is verifyLooseObjects also returning the decoded
+// bytes it counted.
+func verifyLooseObjectsTotal(root string, objects []string, limit int64) (int64, error) {
 	var total int64
 	for _, rel := range objects {
 		n, err := verifyLooseObject(filepath.Join(root, filepath.FromSlash(rel)), strings.ReplaceAll(strings.TrimPrefix(rel, "objects/"), "/", ""), limit-total)
 		if err != nil {
-			return err
+			return total, err
 		}
 		total += n
 	}
-	return nil
+	return total, nil
 }
 
 // verifyLooseObject checks one loose object against name with room
@@ -357,16 +371,30 @@ func openEvidenceRepo(root string) (*repoView, error) {
 // openEvidenceRepoRefs is openEvidenceRepo over a ref policy: only refs
 // refOK accepts may exist and HEAD must point to head.
 func openEvidenceRepoRefs(root string, refOK func(string) bool, head string) (*repoView, error) {
-	objects, err := validateRepoLayoutRefs(root, maxRepoFileBytes, refOK)
+	return openEvidenceRepoShared(root, refOK, head, &repoBudget{stored: maxRepoFileBytes, decoded: maxDecodedBytes})
+}
+
+// repoBudget is the stored and decoded bytes left to the evidence
+// repositories of one bundle that share the Git budgets (design
+// 12a-dev-flow-light: a light qualification's two repositories together).
+type repoBudget struct{ stored, decoded int64 }
+
+// openEvidenceRepoShared is openEvidenceRepoRefs within the budget left,
+// which it reduces by the repository's stored and decoded bytes.
+func openEvidenceRepoShared(root string, refOK func(string) bool, head string, budget *repoBudget) (*repoView, error) {
+	objects, stored, err := validateRepoLayoutTotal(root, budget.stored, refOK)
 	if err != nil {
 		return nil, err
 	}
+	budget.stored -= stored
 	if err := validateRepoConfig(filepath.Join(root, "config")); err != nil {
 		return nil, err
 	}
-	if err := verifyLooseObjects(root, objects, maxDecodedBytes); err != nil {
+	decoded, err := verifyLooseObjectsTotal(root, objects, budget.decoded)
+	if err != nil {
 		return nil, err
 	}
+	budget.decoded -= decoded
 	r, err := git.PlainOpen(root)
 	if err != nil {
 		return nil, fmt.Errorf("evidence repository: %w", err)

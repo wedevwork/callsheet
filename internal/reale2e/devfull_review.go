@@ -74,6 +74,21 @@ func (h reviewHelperSpec) command(task, candidate, initial string) string {
 	return strings.Join(h.argv(task, candidate, initial), " ")
 }
 
+// argvFor is scenario's exact helper argv: a light plan's appends
+// --scenario light (the full flow's stays the historical argv).
+func (h reviewHelperSpec) argvFor(scenario, task, candidate, initial string) []string {
+	argv := h.argv(task, candidate, initial)
+	if scenario == scenarioLight {
+		argv = append(argv, "--scenario", scenarioLight)
+	}
+	return argv
+}
+
+// commandFor is argvFor as one simple command line.
+func (h reviewHelperSpec) commandFor(scenario, task, candidate, initial string) string {
+	return strings.Join(h.argvFor(scenario, task, candidate, initial), " ")
+}
+
 // formatHelperDeadline renders t for --deadline: UTC, whole seconds,
 // rounded down (never extended).
 func formatHelperDeadline(t time.Time) string {
@@ -169,6 +184,9 @@ type DevReviewRun struct {
 	// refusal or final-check failure (design 12a-dev-flow-verify r0.10;
 	// absent otherwise, and from older receipts).
 	RejectedEntry *ReviewRejectedEntry `json:"rejected_entry,omitempty"`
+	// Export is the after/ export's manifests (absent from older
+	// receipts and from a refusal).
+	Export *ReviewExport `json:"export,omitempty"`
 }
 
 // ReviewRejectedEntry is an unexpected_file receipt's rejected checkout
@@ -222,16 +240,26 @@ func liveReviewEnv() (reviewEnv, error) {
 // reviewArgs are the helper's validated arguments.
 type reviewArgs struct {
 	task, candidate, initial, goBin, deadline string
-	at                                        time.Time
+	// scenario is full (also when --scenario is omitted: the historical
+	// invocation) or light.
+	scenario string
+	at       time.Time
 }
 
 // parseReviewArgs validates the helper's exact flags.
 func parseReviewArgs(args []string) (reviewArgs, error) {
-	v, ok := helperFlags(args, "task", "candidate", "initial-source", "go", "deadline")
+	v, ok := helperFlags(args, "task", "candidate", "initial-source", "go", "deadline", "scenario")
 	if !ok {
-		return reviewArgs{}, errors.New("dev-review-verify needs exactly --task ID --candidate COMMIT --initial-source COMMIT --go ABS --deadline RFC3339")
+		v, ok = helperFlags(args, "task", "candidate", "initial-source", "go", "deadline")
 	}
-	a := reviewArgs{task: v["task"], candidate: v["candidate"], initial: v["initial-source"], goBin: v["go"], deadline: v["deadline"]}
+	if !ok {
+		return reviewArgs{}, errors.New("dev-review-verify needs exactly --task ID --candidate COMMIT --initial-source COMMIT --go ABS --deadline RFC3339 [--scenario full|light]")
+	}
+	a := reviewArgs{task: v["task"], candidate: v["candidate"], initial: v["initial-source"], goBin: v["go"], deadline: v["deadline"],
+		scenario: cmpOr(v["scenario"], scenarioFull)}
+	if s, set := v["scenario"]; set && s != scenarioFull && s != scenarioLight {
+		return a, errors.New("--scenario must be full or light")
+	}
 	var dok bool
 	a.at, dok = parseHelperDeadline(a.deadline)
 	switch {
@@ -262,6 +290,13 @@ func reviewVerifyHelper(h Host) int {
 			return 2
 		}
 		env = &live
+	}
+	// The fixed recipe is selected by the validated scenario, never by
+	// bundle or checkout text.
+	if a.scenario == scenarioLight {
+		out, code := lightHelperStdout(runLightReviewVerify(*env, a))
+		h.Stdout.Write(out)
+		return code
 	}
 	rec := runReviewVerify(*env, a)
 	out, code := reviewHelperStdout(rec)
@@ -369,6 +404,12 @@ func runReviewVerify(env reviewEnv, a reviewArgs) DevReviewRun {
 	if err := exportReviewTree(after, in.files); err != nil {
 		fail("export_failed")
 	}
+	// The export as written, against the pinned objects (C2).
+	wantExport := treeInputs(in.files)
+	rec.Export = &ReviewExport{Created: exportManifest(after), After: []LightInput{}}
+	if !slices.Equal(rec.Export.Created, wantExport) {
+		fail("export_mismatch")
+	}
 	envDir := filepath.Join(scratch, "env")
 	for _, d := range []string{"gocache", "gomodcache", "gopath", "home", "tmp"} {
 		if err := os.MkdirAll(filepath.Join(envDir, d), 0o700); err != nil {
@@ -398,6 +439,12 @@ func runReviewVerify(env reviewEnv, a reviewArgs) DevReviewRun {
 				break
 			}
 		}
+	}
+	// The export after the commands: a worker-run command that changed,
+	// removed or added an entry fails the run (C2).
+	rec.Export.After = exportManifest(after)
+	if !slices.Equal(rec.Export.After, wantExport) {
+		fail("export_changed")
 	}
 	if len(rec.Commands) > 0 {
 		rec.Go.Version = strings.TrimSpace(rec.Commands[0].Stdout)
@@ -514,6 +561,10 @@ type reviewCheckout struct {
 	files    map[string]TreeFile
 	inputs   []ReviewInputFile
 	seedMain []byte
+	// seedFiles and seedTree are the initial source's tree (the light
+	// recipe's baseline and before exports).
+	seedFiles map[string]TreeFile
+	seedTree  string
 	// rejected is an unexpected_file refusal's entry.
 	rejected *ReviewRejectedEntry
 }
@@ -563,7 +614,9 @@ func inspectReviewCheckout(cwd string, a reviewArgs) (reviewCheckout, error) {
 	if err != nil {
 		return rc, failure("candidate_invalid", err)
 	}
+	rc.seedFiles, rc.seedTree = map[string]TreeFile{}, initial.TreeHash.String()
 	for _, f := range seed {
+		rc.seedFiles[f.Path] = f
 		if f.Path == "main.go" {
 			rc.seedMain = f.Content
 		}
@@ -740,6 +793,57 @@ func gitModeOf(st fs.FileInfo) string {
 		return filemode.Executable.String()
 	}
 	return st.Mode().Type().String()
+}
+
+// ReviewExport is a scratch export's manifest when it was created and
+// after the commands ran (review 2d.4 round 1, C2): every entry the
+// export holds, each regular file with its SHA-256. Older receipts have
+// none.
+type ReviewExport struct {
+	Created []LightInput `json:"created"`
+	After   []LightInput `json:"after"`
+}
+
+// maxExportEntryBytes bounds one export file a manifest digests.
+const maxExportEntryBytes = 1 << 20
+
+// exportManifest digests every entry an export directory holds, in path
+// order: each regular file by its slash path and SHA-256 (no digest when
+// unreadable or over its bound), any other non-directory entry by its path
+// and kind with no digest. A missing directory holds nothing.
+func exportManifest(dir string) []LightInput {
+	out := []LightInput{}
+	filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || p == dir {
+			return nil
+		}
+		rel, _ := filepath.Rel(dir, p)
+		rel = filepath.ToSlash(rel)
+		switch {
+		case d.IsDir():
+			return nil
+		case !d.Type().IsRegular():
+			out = append(out, LightInput{Path: rel + " (" + d.Type().String() + ")"})
+			return nil
+		}
+		in := LightInput{Path: rel}
+		if b, err := readBounded(p, maxExportEntryBytes); err == nil {
+			in.SHA256 = sha256Hex(b)
+		}
+		out = append(out, in)
+		return nil
+	})
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out
+}
+
+// treeInputs is a tree's files as an export manifest.
+func treeInputs(files map[string]TreeFile) []LightInput {
+	m := map[string][]byte{}
+	for n, f := range files {
+		m[n] = f.Content
+	}
+	return lightInputs(m)
 }
 
 // exportReviewTree writes the pinned tree into the new directory dir.

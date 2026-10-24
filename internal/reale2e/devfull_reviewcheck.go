@@ -172,6 +172,9 @@ type DevReviewEvidence struct {
 	// RejectedEntry is the receipt's rejected checkout entry, retained as
 	// explanatory evidence (design 12a-dev-flow-verify r0.10).
 	RejectedEntry *ReviewRejectedEntry `json:"rejected_entry,omitempty"`
+	// Light is a light review's derived facts (design 12a-dev-flow-light;
+	// absent for a full review).
+	Light *LightReviewFacts `json:"light,omitempty"`
 }
 
 // Review evidence statuses.
@@ -201,6 +204,10 @@ type reviewEvidenceInput struct {
 	FinishedAt time.Time
 	Marker     string
 	Report     string
+	// RequireExport requires the receipt's export manifests (review 2d.4
+	// round 1, C2): every live derivation and every v2 bundle; a v1
+	// bundle's historical receipts have none.
+	RequireExport bool
 }
 
 // DeriveDevReviewEvidence derives one code review's execution evidence.
@@ -329,6 +336,17 @@ func checkReviewRun(in reviewEvidenceInput, run DevReviewRun, exit int) string {
 	if !slices.Equal(run.Inputs, inputs) && (run.Status != reviewRefused || len(run.Inputs) != 0) {
 		return "review_inputs_mismatch"
 	}
+	// The after/ export's manifests, against the pinned objects: present
+	// on every run that created its scratch (when required), never on a
+	// refusal.
+	wantExport := treeInputs(in.CandFiles)
+	exportIntact := run.Export != nil && slices.Equal(run.Export.Created, wantExport) && slices.Equal(run.Export.After, wantExport)
+	switch {
+	case run.Export != nil && run.Status == reviewRefused:
+		return "review_export_mismatch"
+	case run.Export == nil && in.RequireExport && run.Status != reviewRefused:
+		return "review_export_mismatch"
+	}
 	start, ok1 := parseTime(run.Start)
 	end, ok2 := parseTime(run.End)
 	deadline, ok3 := parseHelperDeadline(run.Deadline)
@@ -376,7 +394,7 @@ func checkReviewRun(in reviewEvidenceInput, run DevReviewRun, exit int) string {
 	// above the bar, the tests passed, the scratch removed and the inputs
 	// unchanged.
 	ok := len(run.Commands) == len(reviewCommandNames) && cov != nil && cov.Pass && tests.Passed && run.ScratchCreated && run.ScratchRemoved &&
-		run.InputsUnchanged && slices.Equal(run.InputsAfter, run.Inputs) && !run.OutputsOmitted
+		run.InputsUnchanged && slices.Equal(run.InputsAfter, run.Inputs) && !run.OutputsOmitted && (exportIntact || run.Export == nil && !in.RequireExport)
 	for _, c := range run.Commands {
 		ok = ok && c.Started && !c.TimedOut && !c.Truncated && c.ProcessGone && c.Exit == 0 && c.Signal == ""
 	}

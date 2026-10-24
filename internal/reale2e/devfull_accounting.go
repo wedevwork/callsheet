@@ -173,7 +173,7 @@ func msBetween(a, b string) *int64 {
 // failed paid calls included), each phase's duration, the owner windows,
 // the attempt and the cleanup.
 func deriveDevCost(b *DevBundle, runID string) DevCost {
-	c := DevCost{Schema: devKind("cost"), RunID: runID, PreflightTasks: []string{}, WorkflowTasks: []string{}, RejectedTasks: []string{},
+	c := DevCost{Schema: b.kind("cost"), RunID: runID, PreflightTasks: []string{}, WorkflowTasks: []string{}, RejectedTasks: []string{},
 		QualificationRefs: []string{}, Tasks: []DevTaskCost{}, Phases: []DevPhaseCost{}, ProviderUsage: usageUnknown}
 	addView := func(kind, label string, v *contract.TaskShowResponse) {
 		tc := DevTaskCost{Task: v.Task.TaskID, Kind: kind, Label: label, State: v.Task.State}
@@ -209,6 +209,9 @@ func deriveDevCost(b *DevBundle, runID string) DevCost {
 		workflow("probe/wake/"+hopDir(n-1), probeWakeNamespace+"-"+hopDir(n-1))
 	}
 	workflow("probe/reviewer/01", probeReviewNamespace+"-01")
+	// A light or both qualification's triage and light reviewer probes.
+	workflow(probeTriageDir, probeTriageNamespace+"-01")
+	workflow(probeLightReviewDir, probeLightReviewNamespace+"-01")
 	settled := map[string]string{}
 	if cl := doc[devEnvelope[DevCleanup]](b, devCleanupFile); cl != nil {
 		for _, s := range cl.Data.Settled {
@@ -217,7 +220,8 @@ func deriveDevCost(b *DevBundle, runID string) DevCost {
 			// settlement at cleanup accounts it (a paid call is never
 			// hidden).
 			isWorkflow := strings.HasPrefix(s.Label, "workflow-") || strings.HasPrefix(s.Label, probeWakeNamespace+"-") ||
-				strings.HasPrefix(s.Label, probeReviewNamespace+"-")
+				strings.HasPrefix(s.Label, probeReviewNamespace+"-") || strings.HasPrefix(s.Label, probeTriageNamespace+"-") ||
+				strings.HasPrefix(s.Label, probeLightReviewNamespace+"-")
 			if isWorkflow && !slices.Contains(c.WorkflowTasks, s.Task) {
 				c.WorkflowTasks = append(c.WorkflowTasks, s.Task)
 				c.Tasks = append(c.Tasks, DevTaskCost{Task: s.Task, Kind: "workflow", Label: s.Label, State: s.State, DurationMS: s.DurationMS})
@@ -284,7 +288,7 @@ func deriveDevCost(b *DevBundle, runID string) DevCost {
 // phase streams, and every observed task with its plan's goal, its phase
 // and its exact wait command (from the manifest's recorded render values).
 func sessionMapInput(b *DevBundle, runID, goos, reale2e, runtime string) devMapInput {
-	in := devMapInput{runID: runID, goos: goos, streams: map[int][]byte{}, waitPrefix: devWaitPrefixOf(reale2e, runtime)}
+	in := devMapInput{runID: runID, goos: goos, streams: map[int][]byte{}, waitPrefix: devWaitPrefixOf(reale2e, runtime), schema: b.kind("event-map")}
 	for p := 1; p <= maxPhases; p++ {
 		if data, ok := b.Files[devStreamFile(p)]; ok {
 			in.streams[p], in.phases = data, p

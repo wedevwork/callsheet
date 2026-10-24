@@ -1218,7 +1218,7 @@ func TestDevFullVerifyFP8(t *testing.T) {
 		r := probeRig(t)
 		r.expect(0, "")
 		q := r.qualification()
-		if q.Result != ResultQualified || !qualifiedStages(q.Stages) || q.WorkerCalls != 9 || q.Phases != 3 || len(q.Prompts) != 6 ||
+		if q.Result != ResultQualified || !qualifiedStages(q.Stages, probeStages) || q.WorkerCalls != 9 || q.Phases != 3 || len(q.Prompts) != 6 ||
 			len(q.Fixture) != 4 || q.Schema != devKind(DevQualificationKind) {
 			t.Fatalf("qualification %+v", q)
 		}
@@ -1226,7 +1226,7 @@ func TestDevFullVerifyFP8(t *testing.T) {
 			t.Fatalf("stdout %s", out)
 		}
 		for _, n := range []string{"probe/wake/01/task.json", "probe/wake/03/wait.json", "probe/reviewer/01/review-evidence.json", "probe/decisions/02.json",
-			"setup/probe-system-source.md", "setup/probe-phase-3.md", "setup/probe-fixture/main.go", "workspace/repo.git/refs/heads/review"} {
+			"setup/probe-system-source.md", "setup/probe-phase-3.md", capturedPath("setup/probe-fixture/main.go"), "workspace/repo.git/refs/heads/review"} {
 			r.evidence(n)
 		}
 		for _, n := range []string{devManifestFile, "tasks", "report.json"} {
@@ -1251,7 +1251,7 @@ func TestDevFullVerifyFP8(t *testing.T) {
 		r := probeRig(t)
 		r.wakeForm = "system"
 		r.expect(0, "")
-		if q := r.qualification(); q.Result != ResultQualified || !qualifiedStages(q.Stages) {
+		if q := r.qualification(); q.Result != ResultQualified || !qualifiedStages(q.Stages, probeStages) {
 			t.Fatalf("qualification %+v", q.Stages)
 		}
 		if codes := qualificationCodes(t, r.f.bundle()); len(codes) != 0 {
@@ -1348,7 +1348,7 @@ func TestDevFullVerifyFP8(t *testing.T) {
 		r := probeRig(t)
 		r.wakeForm, r.waitTimeout = "system", "900000"
 		r.expect(0, "")
-		if q := r.qualification(); q.Result != ResultQualified || !qualifiedStages(q.Stages) {
+		if q := r.qualification(); q.Result != ResultQualified || !qualifiedStages(q.Stages, probeStages) {
 			t.Fatalf("qualification %+v", q.Stages)
 		}
 		if codes := qualificationCodes(t, r.f.bundle()); len(codes) != 0 {

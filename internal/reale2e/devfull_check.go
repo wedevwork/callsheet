@@ -187,6 +187,9 @@ func checkDevBundle(b *DevBundle, initial bool) devCheckResult {
 			}
 		}
 		out.Result, out.Claim = ResultFail, devClaim(ResultFail, out.FlowLabel)
+		if c.isLight() {
+			out.Claim = lightClaim(ResultFail, out.FlowLabel)
+		}
 		res.report = out
 		res.reportJSON, _ = encodeJSON(out)
 		res.reportText = renderDevReport(out)
@@ -224,11 +227,11 @@ func (c *devChecker) absent(crit, code string, reached bool) bool {
 
 // buildReport derives the report from the criteria.
 func (c *devChecker) buildReport() DevReport {
-	r := DevReport{Schema: devKind("report"), Result: ResultFail, Scope: devScope, Judgments: PendingReview, Versions: []VersionRecord{},
+	r := DevReport{Schema: c.b.kind("report"), Result: ResultFail, Scope: c.scope(), Judgments: PendingReview, Versions: []VersionRecord{},
 		ProtectedRoots: []string{}, Criteria: []DevCriterion{}, Protected: []EnvChange{}, OversizedConfig: []string{}, Artifacts: []InventoryEntry{}}
 	red := Redactor{}
 	pass := true
-	for _, id := range devCriteria {
+	for _, id := range c.criteria() {
 		cr := DevCriterion{ID: id, Result: ResultCriterionPass, Codes: []string{}, Sources: append([]string{}, c.srcs[id]...)}
 		sort.Strings(cr.Sources)
 		codes := slices.Clone(c.codes[id])
@@ -298,13 +301,20 @@ func (c *devChecker) buildReport() DevReport {
 		r.Error = CodeDevMissing
 	}
 	r.Claim = devClaim(r.Result, r.FlowLabel)
+	if c.isLight() {
+		r.Claim = lightClaim(r.Result, r.FlowLabel)
+	}
 	return r
 }
 
 // renderDevReport is report.txt.
 func renderDevReport(r DevReport) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "result: %s (full development flow mechanics and deterministic criteria)\n%s\n", r.Result, JudgmentReportLine)
+	flow := "full"
+	if r.Scope == devLightScope {
+		flow = "light"
+	}
+	fmt.Fprintf(&b, "result: %s (%s development flow mechanics and deterministic criteria)\n%s\n", r.Result, flow, JudgmentReportLine)
 	fmt.Fprintf(&b, "run: %s\nflow: %s\nclaim: %s\nrevision: %s\nplatform: %s\n", r.RunID, r.FlowLabel, r.Claim, r.Revision, r.Platform)
 	if r.Error != "" {
 		fmt.Fprintf(&b, "error: %s\n", r.Error)
@@ -370,6 +380,7 @@ const (
 	protocolLegacy    = "legacy"
 	protocolDevFull   = "dev-full"
 	protocolExecution = "execution-only"
+	protocolExercise  = "exercise"
 )
 
 // bundleProtocol decides a bundle's protocol from a safely read, strictly
@@ -389,6 +400,9 @@ func bundleProtocol(root string) (string, string, error) {
 	if _, err := lstatRegular(resolved, devQualificationFile); err == nil {
 		return "", resolved, schemaErr("%s is a qualification record, not a full-flow run", devQualificationFile)
 	}
+	if exerciseRootExists(resolved) {
+		return protocolExercise, resolved, nil
+	}
 	data, err := lstatRegular(resolved, devManifestFile)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -405,7 +419,7 @@ func bundleProtocol(root string) (string, string, error) {
 	switch schema {
 	case ManifestSchema:
 		return protocolLegacy, resolved, nil
-	case DevBundleSchema:
+	case DevBundleSchema, DevBundleSchemaV1:
 		return protocolDevFull, resolved, nil
 	}
 	return "", resolved, schemaErr("manifest.json: unsupported schema %q", contract.SafeText(schema, 80))
@@ -425,8 +439,11 @@ func CheckEvidence(root string, out, errOut io.Writer) int {
 		fmt.Fprintf(errOut, "reale2e check: %v\n", err)
 		return 2
 	}
-	if proto == protocolLegacy {
+	switch proto {
+	case protocolLegacy:
 		return checkLegacyEvidence(root, out, errOut)
+	case protocolExercise:
+		return CheckExercise(root, out, errOut)
 	}
 	b, err := LoadDevBundle(root)
 	if err != nil {
@@ -499,7 +516,7 @@ func (c *devChecker) run() {
 	c.checkEvents()
 	c.checkManifest()
 	if c.m == nil {
-		for _, id := range devCriteria[1:] {
+		for _, id := range c.criteria()[1:] {
 			c.fail(id, "manifest_missing")
 		}
 		c.setupRow("manifest", "The full-flow manifest exists and validates", []string{"manifest_missing"}, nil)
@@ -520,17 +537,27 @@ func (c *devChecker) run() {
 	c.checkProvenance()
 	c.checkRoles()
 	c.checkPreflight()
+	if c.isLight() {
+		c.checkLightIntake()
+	}
 	c.replay()
 	c.checkRejections()
 	c.checkSession()
 	c.checkAdmissions()
-	c.checkReceipts()
-	c.checkValidation()
+	if c.isLight() {
+		c.checkLightValidation()
+		c.lightJudgmentRows()
+	} else {
+		c.checkReceipts()
+		c.checkValidation()
+	}
 	c.checkCleanup()
 	c.checkEnvironment()
 	c.checkDeadlines()
 	c.checkCost()
-	c.judgmentRows()
+	if !c.isLight() {
+		c.judgmentRows()
+	}
 }
 
 // checkEvents validates the event log's own order and finds the verified
@@ -587,7 +614,7 @@ func (c *devChecker) checkManifest() {
 	switch {
 	case !ValidRunID(m.RunID):
 		c.fail("manifest", "run_id_invalid")
-	case m.Scenario != scenarioFull:
+	case m.Scenario != c.b.Scenario || c.b.ver == devBundleV1 && m.Scenario != scenarioFull:
 		c.fail("manifest", "scenario_invalid")
 	case m.GOOS != "linux":
 		c.fail("manifest", "platform_not_linux")
