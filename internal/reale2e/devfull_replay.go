@@ -47,13 +47,26 @@ func (c *devChecker) replay() {
 		return
 	}
 	seed := m.Workspace.SeedCommit
+	if c.isLight() {
+		seed = c.lightSeedCommit()
+	}
 	if _, ok := c.trees[seed]; !ok {
 		c.absent("publications", "seed_missing", c.seqOf(func(e Event) bool { return e.Type == EvSeedCreated }) > 0)
 		rp.halted = true
 		return
 	}
-	c.checkSeed(seed)
-	st, res := InitialPlan(seed)
+	if c.isLight() {
+		c.checkLightSeed(seed)
+		if c.intakeCovers() != "" && c.m.Workspace.SeedCommit == "" {
+			// A light attempt stopped at its intake: no plan was ever
+			// prepared.
+			rp.halted = true
+			return
+		}
+	} else {
+		c.checkSeed(seed)
+	}
+	st, res := InitialPlanFor(c.b.Scenario, seed)
 	st.RunID = c.runID
 	if res.Invalidate {
 		st = InvalidateReceipt(st)
@@ -221,6 +234,9 @@ func (c *devChecker) replayTask(st DevFullState) (DevFullState, StepResult, bool
 		groupEvents).task(n, taskID, p.Role, p.Mode, p.Round, p.ExpectedBase, "").at(cmpOrInt(ev.exposed, ev.admitted))
 	defer rb.done()
 	ec := envelopeContext{runID: c.runID, state: st, trees: c.trees, finals: c.finals, scenario: c.b.Files["setup/scenario.md"], helper: m.Helper}
+	if c.isLight() {
+		ec.intake = c.intakeDigest()
+	}
 	goal, acc, inputs, err := buildEnvelope(ec, p)
 	stored := doc[devEnvelope[TaskPlan]](c.b, dir+"/plan.json")
 	if err != nil {
@@ -232,8 +248,16 @@ func (c *devChecker) replayTask(st DevFullState) (DevFullState, StepResult, bool
 		return st, StepResult{}, false
 	}
 	p.Goal, p.Acceptance, p.Inputs = goal, acc, inputs
-	if p.Role == "coder" {
-		if why := c.receiptCovers(st, p.ExpectedBase); why != "" {
+	if p.Role == "coder" || c.isLight() {
+		// Every light task, the initial triage included, needs the bound
+		// light intake receipt; a full coder the current design receipt.
+		why := ""
+		if c.isLight() {
+			why = c.intakeCovers()
+		} else {
+			why = c.receiptCovers(st, p.ExpectedBase)
+		}
+		if why != "" {
 			if c.stop == nil || c.stop.code != "stale_receipt" || stored != nil {
 				rb.bad("coding_before_approval")
 			}
@@ -249,7 +273,7 @@ func (c *devChecker) replayTask(st DevFullState) (DevFullState, StepResult, bool
 	if !bytes.Equal(mustJSON(stored.Data), mustJSON(*p)) {
 		rb.bad("plan_mismatch")
 	}
-	want, _ := marshalDispatch(devDispatchDoc{Schema: devDispatchSchema, Ordinal: n, Role: p.Role, Mode: p.Mode,
+	want, _ := marshalDispatch(devDispatchDoc{Schema: c.b.kind("dispatch"), Ordinal: n, Role: p.Role, Mode: p.Mode,
 		Target: contract.TaskTarget{Kind: contract.TargetID, Value: p.Role}, Goal: goal, Acceptance: acc, Payload: []string{},
 		Workspace: m.Workspace.Name, Instance: m.Workspace.Instance, Base: p.ExpectedBase})
 	if got, ok := c.b.Files[dir+"/dispatch.json"]; !ok {
@@ -310,7 +334,13 @@ func (c *devChecker) replayTask(st DevFullState) (DevFullState, StepResult, bool
 	if !ok {
 		return st, StepResult{}, false
 	}
-	next, step := Next(st, out)
+	var next DevFullState
+	var step StepResult
+	if c.isLight() {
+		next, step = NextLight(st, out)
+	} else {
+		next, step = Next(st, out)
+	}
 	if step.Invalidate {
 		next = InvalidateReceipt(next)
 	}
@@ -452,7 +482,11 @@ func (c *devChecker) reconstructOutcome(st DevFullState, p TaskPlan, v *contract
 		prb.bad("tree_unreadable")
 		return Admitted{}, false
 	}
-	in := admitInput{Role: p.Role, Mode: p.Mode, Marker: marker, Base: treeList(base), Result: treeList(result), Final: final, TaskID: v.TaskID}
+	in := admitInput{Role: p.Role, Mode: p.Mode, Marker: marker, Base: treeList(base), Result: treeList(result), Final: final, TaskID: v.TaskID,
+		Scenario: c.b.Scenario}
+	if c.isLight() {
+		in.Seed = c.trees[c.lightSeedCommit()]
+	}
 	if p.Role == "design-reviewer" {
 		in.DesignDigest = fileSHA(base, "design.md")
 	}
@@ -462,7 +496,12 @@ func (c *devChecker) reconstructOutcome(st DevFullState, p TaskPlan, v *contract
 			return Admitted{}, false
 		}
 		in.Candidate = p.ExpectedBase
-		rev := c.reviewerExecution(n, p, v, marker, base, fileText(result, "review.md"), ev)
+		var rev DevReviewEvidence
+		if c.isLight() {
+			rev = c.lightReviewerExecution(n, p, v, marker, base, fileText(result, "review.md"), ev)
+		} else {
+			rev = c.reviewerExecution(n, p, v, marker, base, fileText(result, "review.md"), ev)
+		}
 		if _, stops := rev.blocks(); stops {
 			return Admitted{}, false
 		}
@@ -474,12 +513,20 @@ func (c *devChecker) reconstructOutcome(st DevFullState, p TaskPlan, v *contract
 		prb.see("%s", auditText(err.Error(), 300))
 		return Admitted{}, false
 	}
-	if p.Role == "coder" {
+	if c.isLight() {
+		if c.intakeCovers() != "" {
+			prb.bad("stale_receipt")
+			return Admitted{}, false
+		}
+	} else if p.Role == "coder" {
 		if why := c.receiptCovers(st, p.ExpectedBase); why != "" || fileSHA(res.Files, "design.md") != st.Receipt.Design ||
 			fileSHA(res.Files, "revision-history.md") != st.Receipt.History {
 			prb.bad("stale_receipt")
 			return Admitted{}, false
 		}
+	}
+	if p.Role == "triage" && c.isLight() {
+		c.triageBriefRow(n, p, v.TaskID, commit, marker, result, ev)
 	}
 	c.checkFixedInputs(prb, result)
 	tree := c.treeHash[commit]
@@ -493,7 +540,7 @@ func (c *devChecker) reconstructOutcome(st DevFullState, p TaskPlan, v *contract
 		out.FinishedAt = *v.FinishedAt
 	}
 	adm := doc[DevAdmission](c.b, dir+"/admission.json")
-	wantAdm := DevAdmission{Schema: devKind("admission"), RunID: c.runID, Task: v.TaskID, Marker: marker, Commit: commit, Parent: p.ExpectedBase,
+	wantAdm := DevAdmission{Schema: c.b.kind("admission"), RunID: c.runID, Task: v.TaskID, Marker: marker, Commit: commit, Parent: p.ExpectedBase,
 		Tree: tree, Artifacts: out.Artifacts, Disposition: dispositionOf(p.Role, marker), Blocker: res.Blocker, DesignRequired: res.DesignRequired,
 		BriefCurrent: res.BriefCurrent}
 	switch {
@@ -738,7 +785,7 @@ func bundleReviewInput(b *DevBundle, dir string, n int, v *contract.TaskView, he
 	logs, hasLog := b.Files[dir+"/logs.txt"]
 	lr := doc[DevLogRecord](b, dir+"/logs.json")
 	in := reviewEvidenceInput{Ordinal: n, Log: logs, LogFile: dir + "/logs.txt", Task: v.TaskID, Helper: helper, Candidate: candidate,
-		Initial: initial, CandTree: candTree, CandFiles: cand, SeedMain: seedMain, Marker: marker, Report: report}
+		Initial: initial, CandTree: candTree, CandFiles: cand, SeedMain: seedMain, Marker: marker, Report: report, RequireExport: b.ver == devBundleV2}
 	switch {
 	case lr == nil:
 		in.Meta = DevLogMeta{Error: "logs.json missing"}

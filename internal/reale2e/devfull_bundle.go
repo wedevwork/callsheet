@@ -2,6 +2,7 @@ package reale2e
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -28,11 +29,83 @@ import (
 // semantic judgment; missing files and mismatched hashes or identities
 // are failed evidence (exit 1).
 
-// DevBundleSchema is the full-flow evidence manifest's schema.
-const DevBundleSchema = "callsheet-dev-full-evidence/v1"
+// Evidence versions (design 12a-dev-flow-light, Evidence protocol). New
+// attempts write callsheet-dev-evidence/v2 (scenario full or light) with
+// callsheet-dev-<kind>/v2 envelopes and inert captured sources; a
+// historical callsheet-dev-full-evidence/v1 bundle is read at its original
+// paths under its original layout, never rewritten or migrated.
+const (
+	// DevBundleSchema is the current development evidence manifest's
+	// schema.
+	DevBundleSchema = "callsheet-dev-evidence/v2"
+	// DevBundleSchemaV1 is the historical full-flow evidence schema.
+	DevBundleSchemaV1 = "callsheet-dev-full-evidence/v1"
+	devBundleV1       = 1
+	devBundleV2       = 2
+)
 
-// devKind is a record kind's envelope schema identifier.
-func devKind(kind string) string { return "callsheet-dev-full-" + kind + "/v1" }
+// devKind is a record kind's current (v2) envelope schema identifier.
+func devKind(kind string) string { return kindFor(devBundleV2, kind) }
+
+// kindFor is a record kind's envelope schema identifier in evidence
+// version ver.
+func kindFor(ver int, kind string) string {
+	if ver == devBundleV1 {
+		return "callsheet-dev-full-" + kind + "/v1"
+	}
+	return "callsheet-dev-" + kind + "/v2"
+}
+
+// kind is a record kind's schema identifier in b's evidence version.
+func (b *DevBundle) kind(k string) string { return kindFor(b.ver, k) }
+
+// Captured-source storage (design 12a-dev-flow-light, FP-7). Every v2
+// captured repository source document and fixture file with logical path
+// L is stored inertly at _captured/L.bin, so no evidence directory forms a
+// Go package (go help packages: names beginning with "_" are ignored).
+// Writers, loaders, inventories, provenance checks and audit links share
+// this one mapping.
+const capturedDir = "_captured"
+
+// capturedPath is logical capture L's physical v2 storage path.
+func capturedPath(logical string) string { return capturedDir + "/" + logical + ".bin" }
+
+// captured returns logical capture L's bytes in b's storage layout (v1:
+// the original unpacked path; v2: its inert storage path).
+func (b *DevBundle) captured(logical string) ([]byte, bool) {
+	if b.ver == devBundleV1 {
+		data, ok := b.Files[logical]
+		return data, ok
+	}
+	data, ok := b.Files[capturedPath(logical)]
+	return data, ok
+}
+
+// foldKey is a physical path's platform-independent collision key: ASCII
+// A-Z mapped to a-z (the allowlist is ASCII; no Unicode normalization).
+func foldKey(p string) string {
+	b := []byte(p)
+	for i, c := range b {
+		if c >= 'A' && c <= 'Z' {
+			b[i] = c + ('a' - 'A')
+		}
+	}
+	return string(b)
+}
+
+// checkCaptureFold rejects distinct physical paths that collide under
+// ASCII case folding, and duplicates.
+func checkCaptureFold(paths []string) error {
+	seen := map[string]string{}
+	for _, p := range paths {
+		k := foldKey(p)
+		if prev, ok := seen[k]; ok {
+			return fmt.Errorf("captured paths %s and %s collide under case folding", contract.SafeText(prev, 160), contract.SafeText(p, 160))
+		}
+		seen[k] = p
+	}
+	return nil
+}
 
 // devEnvelope wraps an existing 2d.2 type as data.
 type devEnvelope[T any] struct {
@@ -41,7 +114,7 @@ type devEnvelope[T any] struct {
 	Data   T      `json:"data"`
 }
 
-// envelope wraps v as kind for run.
+// envelope wraps v as kind for run (the current evidence version).
 func envelope[T any](kind, run string, v T) devEnvelope[T] {
 	return devEnvelope[T]{Schema: devKind(kind), RunID: run, Data: v}
 }
@@ -264,13 +337,14 @@ func devSourcePaths() map[string]bool {
 
 // devSourceRel is a method input's repository path.
 func devSourceRel(name string) string {
-	if name == FlowFile || name == DevPromptFile || name == DevPhaseFile || name == DevScenario {
+	if name == FlowFile || name == DevPromptFile || name == DevPhaseFile || name == DevScenario || name == DevScenarioLight {
 		return DevFullDir + "/" + name
 	}
 	return DevFlowDir + "/" + name
 }
 
-// devFileAllowed reports a closed-layout file path.
+// devFileAllowed reports a closed v1 full-flow layout file path (its
+// captured sources unpacked at their logical paths).
 func devFileAllowed(rel string) bool {
 	switch {
 	case devRootFiles[rel], devSetupFiles[rel], devValidationFiles[rel], rel == devTreesFile:
@@ -284,7 +358,7 @@ func devFileAllowed(rel string) bool {
 	return devSourcePaths()[rel]
 }
 
-// devDirAllowed reports a closed-layout directory.
+// devDirAllowed reports a closed v1 full-flow layout directory.
 func devDirAllowed(rel string) bool {
 	switch rel {
 	case "setup", "preflight", "tasks", "transitions", "decisions", "receipts", "session", "workspace", devRepoDir, "validation", "environment",
@@ -295,14 +369,89 @@ func devDirAllowed(rel string) bool {
 	return devDirRE.MatchString(rel)
 }
 
+// captureDirs are the directories of a set of physical capture paths
+// (every ancestor below the root).
+func captureDirs(paths map[string]bool) map[string]bool {
+	out := map[string]bool{}
+	for p := range paths {
+		for d := filepath.ToSlash(filepath.Dir(p)); d != "." && d != "/"; d = filepath.ToSlash(filepath.Dir(d)) {
+			out[d] = true
+		}
+	}
+	return out
+}
+
+// devCaptureLogical is a v2 scenario bundle's allowlisted logical
+// captures: the scenario's captured method sources and, for light, the
+// light fixture.
+func devCaptureLogical(scenario string) []string {
+	var out []string
+	for _, n := range DevMethodNamesFor(scenario) {
+		out = append(out, "setup/sources/"+devSourceRel(n))
+	}
+	if scenario == scenarioLight {
+		for _, n := range lightFixtureFiles {
+			out = append(out, lightFixtureCaptureDir+"/"+n)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// physicalSet maps logical captures to their v2 physical paths.
+func physicalSet(logical []string) map[string]bool {
+	out := map[string]bool{}
+	for _, l := range logical {
+		out[capturedPath(l)] = true
+	}
+	return out
+}
+
+// devLayoutFor is the closed bundle layout of evidence version ver and
+// scenario (a v1 bundle is always full). The v2 layouts store captures
+// inertly: no unpacked setup/sources path and no .go file at all.
+func devLayoutFor(ver int, scenario string) devLayout {
+	if ver == devBundleV1 {
+		return devLayout{ver: devBundleV1, scenario: scenarioFull, file: devFileAllowed, dir: devDirAllowed,
+			doc: func(rel string) (any, string) { return devDocTypeV(devBundleV1, scenarioFull, rel) }, ref: devRef}
+	}
+	caps := physicalSet(devCaptureLogical(scenario))
+	capDirs := captureDirs(caps)
+	base := devFileAllowed
+	baseDir := devDirAllowed
+	if scenario == scenarioLight {
+		base, baseDir = devLightFileAllowed, devLightDirAllowed
+	}
+	return devLayout{ver: devBundleV2, scenario: scenario,
+		file: func(rel string) bool {
+			switch {
+			case strings.HasSuffix(rel, ".go"), strings.HasPrefix(rel, "setup/sources/"):
+				return false
+			case caps[rel]:
+				return true
+			}
+			return base(rel)
+		},
+		dir: func(rel string) bool {
+			if rel == "setup/sources" || strings.HasPrefix(rel, "setup/sources/") {
+				return false
+			}
+			return capDirs[rel] || baseDir(rel)
+		},
+		doc: func(rel string) (any, string) { return devDocTypeV(devBundleV2, scenario, rel) }, ref: devRef}
+}
+
 // DevBundle is a loaded, layout-checked and strictly decoded full-flow
 // bundle.
 type DevBundle struct {
-	Root     string
-	Files    map[string][]byte
-	RepoInv  []InventoryEntry
-	Repo     *repoView
-	RepoErr  error
+	Root    string
+	Files   map[string][]byte
+	RepoInv []InventoryEntry
+	Repo    *repoView
+	RepoErr error
+	// Repos are every loaded evidence repository by directory (Repo is
+	// the layout's first; a light qualification has two).
+	Repos    map[string]*repoView
 	Manifest *DevManifest
 	Events   []Event
 	// Decoded records by path (nil when absent).
@@ -312,6 +461,10 @@ type DevBundle struct {
 	// bundle with its helper and runtime render values (nil for a bundle
 	// loaded from disk); the checker reuses it only for the same values.
 	derived *derivedEventMap
+	// ver is the evidence version (devBundleV1 or devBundleV2) and
+	// Scenario the layout's scenario (full, light or probe).
+	ver      int
+	Scenario string
 }
 
 // derivedEventMap is one event-map derivation and its render inputs.
@@ -324,14 +477,43 @@ type derivedEventMap struct {
 // directories, each strictly typed record's type and schema, and the
 // evidence repository's ref policy.
 type devLayout struct {
-	file func(string) bool
-	dir  func(string) bool
-	doc  func(string) (any, string)
-	ref  func(string) bool
+	ver      int
+	scenario string
+	file     func(string) bool
+	dir      func(string) bool
+	doc      func(string) (any, string)
+	ref      func(string) bool
+	// repos are the layout's evidence repositories (nil: the single
+	// workspace/repo.git with ref and HEAD at the seed). Several
+	// repositories share the Git byte and object budgets.
+	repos []devRepoSpec
 }
 
-// devFullLayout is the full-flow bundle's closed layout.
-var devFullLayout = devLayout{file: devFileAllowed, dir: devDirAllowed, doc: devDocType, ref: devRef}
+// devRepoSpec is one evidence repository of a layout: its directory, ref
+// policy and HEAD target.
+type devRepoSpec struct {
+	dir  string
+	ref  func(string) bool
+	head string
+}
+
+// repoSpecs are the layout's evidence repositories.
+func (l devLayout) repoSpecs() []devRepoSpec {
+	if l.repos != nil {
+		return l.repos
+	}
+	return []devRepoSpec{{dir: devRepoDir, ref: l.ref, head: "refs/heads/seed"}}
+}
+
+// isRepoDir reports one of the layout's evidence repository directories.
+func (l devLayout) isRepoDir(rel string) bool {
+	for _, r := range l.repoSpecs() {
+		if r.dir == rel {
+			return true
+		}
+	}
+	return false
+}
 
 // errDevSchema reports an unsupported or malformed full-flow bundle.
 func errDevSchema(format string, a ...any) error { return schemaErr(format, a...) }
@@ -341,8 +523,55 @@ func errDevSchema(format string, a ...any) error { return schemaErr(format, a...
 // text file valid UTF-8, every JSON record strictly decoded against its
 // path's type and schema, and the evidence repository validated before
 // go-git opens it.
+//
+// The layout is the manifest discriminator's (schema and scenario, read
+// strictly before the walk): a bundle without a manifest (the collector's
+// own load before it writes one) is read as a current full bundle.
 func LoadDevBundle(root string) (*DevBundle, error) {
-	return loadDevLayout(root, devFullLayout)
+	resolved, err := safeEvidenceRoot(root)
+	if err != nil {
+		return nil, err
+	}
+	ver, scenario, err := peekDevManifest(resolved)
+	if err != nil {
+		return nil, err
+	}
+	return loadDevLayout(root, devLayoutFor(ver, scenario))
+}
+
+// loadDevBundleAs loads root under version ver and scenario's layout (the
+// collector's load of its own evidence before the manifest exists).
+func loadDevBundleAs(root string, ver int, scenario string) (*DevBundle, error) {
+	return loadDevLayout(root, devLayoutFor(ver, scenario))
+}
+
+// peekDevManifest reads a development bundle's version and scenario from
+// its manifest discriminator: v1 is full only; v2 is full or light.
+func peekDevManifest(resolved string) (int, string, error) {
+	data, err := lstatRegular(resolved, devManifestFile)
+	if errors.Is(err, fs.ErrNotExist) {
+		return devBundleV2, scenarioFull, nil
+	}
+	if err != nil {
+		return 0, "", errDevSchema("manifest.json: %v", err)
+	}
+	schema, err := manifestSchema(data)
+	if err != nil {
+		return 0, "", errDevSchema("manifest.json: %v", err)
+	}
+	var head struct {
+		Scenario string `json:"scenario"`
+	}
+	_ = json.Unmarshal(data, &head)
+	switch {
+	case schema == DevBundleSchemaV1:
+		return devBundleV1, scenarioFull, nil
+	case schema == DevBundleSchema && (head.Scenario == scenarioFull || head.Scenario == scenarioLight):
+		return devBundleV2, head.Scenario, nil
+	case schema == DevBundleSchema:
+		return 0, "", errDevSchema("manifest.json: unsupported scenario %q", contract.SafeText(head.Scenario, 32))
+	}
+	return 0, "", errDevSchema("manifest.json: unsupported schema %q", contract.SafeText(schema, 80))
 }
 
 // loadDevLayout loads an evidence directory under a closed layout.
@@ -355,26 +584,41 @@ func loadDevLayout(root string, layout devLayout) (*DevBundle, error) {
 	if err != nil || !st.IsDir() {
 		return nil, errDevSchema("evidence root is not a directory")
 	}
-	b := &DevBundle{Root: resolved, Files: map[string][]byte{}, docs: map[string]any{}, layout: layout}
+	b := &DevBundle{Root: resolved, Files: map[string][]byte{}, docs: map[string]any{}, layout: layout, ver: layout.ver, Scenario: layout.scenario}
 	if err := b.readFiles(); err != nil {
 		return nil, err
 	}
 	if err := b.decode(); err != nil {
 		return nil, err
 	}
-	if _, ok := b.Files[devRepoDir]; ok {
-		delete(b.Files, devRepoDir)
-		b.Repo, b.RepoErr = openEvidenceRepoRefs(filepath.Join(resolved, filepath.FromSlash(devRepoDir)), layout.ref, "refs/heads/seed")
-		if b.RepoErr != nil && (errors.Is(b.RepoErr, errObjectBound) || errors.Is(b.RepoErr, errRepoSize) || errors.Is(b.RepoErr, errRepoLayout)) {
-			return nil, &SchemaError{Err: b.RepoErr}
+	budget := &repoBudget{stored: maxRepoFileBytes, decoded: maxDecodedBytes}
+	for i, spec := range layout.repoSpecs() {
+		if _, ok := b.Files[spec.dir]; !ok {
+			continue
 		}
-		if b.RepoErr == nil {
-			inv, err := repoInventory(filepath.Join(resolved, filepath.FromSlash(devRepoDir)))
-			if err != nil {
-				return nil, &SchemaError{Err: err}
-			}
-			b.RepoInv = inv
+		delete(b.Files, spec.dir)
+		root := filepath.Join(resolved, filepath.FromSlash(spec.dir))
+		repo, err := openEvidenceRepoShared(root, spec.ref, spec.head, budget)
+		if err != nil && (errors.Is(err, errObjectBound) || errors.Is(err, errRepoSize) || errors.Is(err, errRepoLayout)) {
+			return nil, &SchemaError{Err: err}
 		}
+		if i == 0 {
+			b.Repo, b.RepoErr = repo, err
+		} else if err != nil && b.RepoErr == nil {
+			b.RepoErr = err
+		}
+		if err != nil {
+			continue
+		}
+		if b.Repos == nil {
+			b.Repos = map[string]*repoView{}
+		}
+		b.Repos[spec.dir] = repo
+		inv, err := repoInventory(root, spec.dir)
+		if err != nil {
+			return nil, &SchemaError{Err: err}
+		}
+		b.RepoInv = append(b.RepoInv, inv...)
 	}
 	return b, nil
 }
@@ -385,8 +629,9 @@ var devRefRE = regexp.MustCompile(`^refs/heads/(seed|task-(0[1-9]|1[0-4]))$`)
 // devRef reports an allowed development evidence ref.
 func devRef(name string) bool { return devRefRE.MatchString(name) }
 
-// repoInventory lists the stored Git files under dir (already validated).
-func repoInventory(dir string) ([]InventoryEntry, error) {
+// repoInventory lists the stored Git files under dir (already validated),
+// named under the evidence-relative prefix.
+func repoInventory(dir, prefix string) ([]InventoryEntry, error) {
 	var out []InventoryEntry
 	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -400,7 +645,7 @@ func repoInventory(dir string) ([]InventoryEntry, error) {
 			return err
 		}
 		rel, _ := filepath.Rel(dir, p)
-		out = append(out, InventoryEntry{Path: devRepoDir + "/" + filepath.ToSlash(rel), Bytes: int64(len(data)), SHA256: sha256Hex(data)})
+		out = append(out, InventoryEntry{Path: prefix + "/" + filepath.ToSlash(rel), Bytes: int64(len(data)), SHA256: sha256Hex(data)})
 		return nil
 	})
 	return out, err
@@ -410,6 +655,7 @@ func repoInventory(dir string) ([]InventoryEntry, error) {
 // text budgets before reading any file.
 func (b *DevBundle) readFiles() error {
 	var total, env, envBefore, envAfter int64
+	folds := map[string]string{}
 	return filepath.WalkDir(b.Root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return errDevSchema("evidence walk: %v", err)
@@ -426,6 +672,15 @@ func (b *DevBundle) readFiles() error {
 		if err != nil {
 			return errDevSchema("evidence %s: %v", rel, err)
 		}
+		if b.ver == devBundleV2 && strings.HasPrefix(rel, capturedDir+"/") {
+			// Distinct physical captures never collide under ASCII case
+			// folding, on any platform (design 12a-dev-flow-light, FP-7).
+			k := foldKey(rel)
+			if prev, ok := folds[k]; ok && prev != rel {
+				return errDevSchema("evidence captures %s and %s collide under case folding", contract.SafeText(prev, 160), contract.SafeText(rel, 160))
+			}
+			folds[k] = rel
+		}
 		switch {
 		case st.Mode()&fs.ModeSymlink != 0:
 			return errDevSchema("evidence entry %s is a symlink", rel)
@@ -433,7 +688,7 @@ func (b *DevBundle) readFiles() error {
 			if !b.layout.dir(rel) {
 				return errDevSchema("evidence directory %s is not part of the layout", rel)
 			}
-			if rel == devRepoDir {
+			if b.layout.isRepoDir(rel) {
 				b.Files[rel] = nil
 				return fs.SkipDir
 			}
@@ -483,11 +738,21 @@ func (b *DevBundle) readFiles() error {
 	})
 }
 
-// devDocType returns a fresh value of the record type at rel and its
-// required schema ("" when the file is not a strictly typed record).
-func devDocType(rel string) (any, string) {
+// devDocTypeV returns a fresh value of the record type at rel and its
+// required schema in evidence version ver and scenario ("" when the file
+// is not a strictly typed record).
+func devDocTypeV(ver int, scenario, rel string) (any, string) {
+	devKind := func(k string) string { return kindFor(ver, k) }
+	if ver == devBundleV2 && scenario == scenarioLight {
+		if v, schema := devLightDocType(rel); v != nil {
+			return v, schema
+		}
+	}
 	switch {
 	case rel == devManifestFile:
+		if ver == devBundleV1 {
+			return &DevManifest{}, DevBundleSchemaV1
+		}
 		return &DevManifest{}, DevBundleSchema
 	case rel == devLedgerFile:
 		return &devEnvelope[DevFullState]{}, devKind("ledger")
@@ -546,7 +811,7 @@ func devDocType(rel string) (any, string) {
 		case "plan.json":
 			return &devEnvelope[TaskPlan]{}, devKind("plan")
 		case "dispatch.json":
-			return &devDispatchDoc{}, devDispatchSchema
+			return &devDispatchDoc{}, devKind("dispatch")
 		case "observation.json":
 			return &DevObservation{}, devKind("observation")
 		case "logs.json":

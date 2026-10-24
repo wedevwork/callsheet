@@ -267,14 +267,21 @@ func (d *devSupervisor) devNext() controlResponse {
 			return devCode(CodeSeedUnpublished)
 		}
 		d.seedVerified = true
-		d.s.ev.event(Event{Type: EvSeedCreated, Code: "seed_pushed"})
+		d.seedPushSeq = d.s.ev.event(Event{Type: EvSeedCreated, Code: "seed_pushed"}).Seq
 		if !d.writeEvidenceJSON("setup/seed-push.json", DevSeedPush{Schema: devKind("seed-push"), RunID: d.s.runID, Workspace: d.s.workspace.Name,
 			Instance: d.s.workspace.Instance, Ref: contract.DefaultBranchRef, Commit: d.s.workspace.SeedCommit}) {
 			return devCode(CodeClosing)
 		}
 	}
 	sl := d.slot
-	if sl.plan.Role == "coder" {
+	if p := d.probe; p != nil && p.light != nil {
+		if resp, gated := p.gate(sl); gated {
+			return resp
+		}
+	}
+	if sl.plan.Role == "coder" || d.light != nil {
+		// A coder needs the current design receipt; every light task, the
+		// initial triage included, the bound light intake receipt.
 		if err := d.checkReceipt(sl.plan.ExpectedBase); err != nil {
 			d.stop("stale_receipt", err.Error())
 			return devCode(CodeClosing)
@@ -624,7 +631,8 @@ func (d *devSupervisor) inspected() {
 func (d *devSupervisor) admitInspected(insp *devInspection, base, result []TreeFile, tree string) {
 	sl, plan, v, marker, commit, consumedSeq := d.slot, insp.plan, insp.view, insp.marker, insp.commit, insp.consumedSeq
 	r := v.Result
-	in := admitInput{Role: plan.Role, Mode: plan.Mode, Marker: marker, Base: base, Result: result, Final: *r.FinalMessage, TaskID: v.TaskID}
+	in := admitInput{Role: plan.Role, Mode: plan.Mode, Marker: marker, Base: base, Result: result, Final: *r.FinalMessage, TaskID: v.TaskID,
+		Scenario: cmpOr(plan.Scenario, d.scenario()), Seed: d.trees[d.state.InitialCommit]}
 	bmap, _ := indexTree(base)
 	if plan.Role == "design-reviewer" {
 		in.DesignDigest = fileSHA(bmap, "design.md")
@@ -641,7 +649,14 @@ func (d *devSupervisor) admitInspected(insp *devInspection, base, result []TreeF
 		// select any transition: an approval needs its corroborated
 		// successful receipt.
 		rmap, _ := indexTree(result)
-		ev := DeriveDevReviewEvidence(d.reviewEvidenceInput(sl, v, marker, bmap, fileText(rmap, "review.md")))
+		var ev DevReviewEvidence
+		if plan.Mode == modeReviewLight {
+			// A light review's evidence: the light receipt, recipe and argv.
+			ev = DeriveLightReviewEvidence(lightReviewInput{reviewEvidenceInput: d.reviewEvidenceInput(sl, v, marker, bmap, fileText(rmap, "review.md")),
+				SeedFiles: d.trees[d.state.InitialCommit], SeedTree: d.lightSeedTree(), SeedCLI: d.lightSeedCLI()})
+		} else {
+			ev = DeriveDevReviewEvidence(d.reviewEvidenceInput(sl, v, marker, bmap, fileText(rmap, "review.md")))
+		}
 		if !d.writeEvidenceJSON(dir+"/review-evidence.json", DevReviewRecord{Schema: devKind("review-evidence"), RunID: d.s.runID, Evidence: ev}) {
 			return
 		}
@@ -656,9 +671,9 @@ func (d *devSupervisor) admitInspected(insp *devInspection, base, result []TreeF
 		d.rejectInspection(insp, "publication_rejected", err.Error())
 		return
 	}
-	if plan.Role == "coder" {
-		if err := d.checkReceipt(plan.ExpectedBase); err != nil || fileSHA(res.Files, "design.md") != d.state.Receipt.Design ||
-			fileSHA(res.Files, "revision-history.md") != d.state.Receipt.History {
+	if plan.Role == "coder" || d.light != nil {
+		if err := d.checkReceipt(plan.ExpectedBase); err != nil || d.light == nil && (fileSHA(res.Files, "design.md") != d.state.Receipt.Design ||
+			fileSHA(res.Files, "revision-history.md") != d.state.Receipt.History) {
 			d.rejectInspection(insp, "stale_receipt", "the coder's publication is not bound to the current receipt")
 			return
 		}
@@ -667,8 +682,9 @@ func (d *devSupervisor) admitInspected(insp *devInspection, base, result []TreeF
 	d.commits = append(d.commits, devCommit{Ordinal: plan.Ordinal, Task: v.TaskID, Commit: commit, Parent: plan.ExpectedBase, Tree: tree})
 	d.finals[v.TaskID] = *r.FinalMessage
 	selection, _ := d.flow.Role(plan.Role)
+	ws := d.planWorkspace(&plan)
 	out := Admitted{Ordinal: plan.Ordinal, TaskID: v.TaskID, Role: plan.Role, Mode: plan.Mode, Marker: marker, Commit: commit, Tree: tree,
-		Base: plan.ExpectedBase, Workspace: d.s.workspace.Name, Instance: d.s.workspace.Instance, Selection: selection, Final: *r.FinalMessage,
+		Base: plan.ExpectedBase, Workspace: ws.Name, Instance: ws.Instance, Selection: selection, Final: *r.FinalMessage,
 		Report: res.Report, DesignSHA: fileSHA(res.Files, "design.md"), HistorySHA: fileSHA(res.Files, "revision-history.md"),
 		ReviewSHA: fileSHA(res.Files, "design-review.md"), Artifacts: treeDigests(res.Files), Blocker: res.Blocker,
 		DesignRequired: res.DesignRequired, BriefCurrent: res.BriefCurrent, CreatedAt: v.CreatedAt, AdmittedSeq: sl.admittedSeq,
@@ -688,9 +704,12 @@ func (d *devSupervisor) admitInspected(insp *devInspection, base, result []TreeF
 	}
 	var st DevFullState
 	var step StepResult
-	if d.probe != nil {
+	switch {
+	case d.probe != nil:
 		st, step = d.probe.next(d.state, out)
-	} else {
+	case d.light != nil:
+		st, step = NextLight(d.state, out)
+	default:
 		st, step = Next(d.state, out)
 	}
 	d.slot = nil
@@ -707,7 +726,7 @@ func (d *devSupervisor) admitInspected(insp *devInspection, base, result []TreeF
 func (d *devSupervisor) reviewEvidenceInput(sl *devSlot, v contract.TaskView, marker string, cand map[string]TreeFile, report string) reviewEvidenceInput {
 	in := reviewEvidenceInput{Ordinal: sl.plan.Ordinal, Log: sl.logs, LogFile: d.planDir(sl.plan) + "/logs.txt", Meta: sl.logMeta, Task: v.TaskID,
 		Helper: d.helper, Candidate: sl.plan.ExpectedBase, Initial: d.state.InitialCommit, CandTree: d.candidateTree(sl.plan.ExpectedBase),
-		CandFiles: cand, SeedMain: fileContent(d.trees[d.state.InitialCommit], "main.go"), Marker: marker, Report: report}
+		CandFiles: cand, SeedMain: fileContent(d.trees[d.state.InitialCommit], "main.go"), Marker: marker, Report: report, RequireExport: true}
 	if at, ok := contract.ParseTime(v.CreatedAt); ok {
 		in.AdmittedAt = at
 	}
@@ -802,15 +821,15 @@ func (d *devSupervisor) prepareSlot() {
 		return
 	}
 	plan.Goal, plan.Acceptance, plan.Inputs = goal, acc, inputs
-	if plan.Role == "coder" {
+	if plan.Role == "coder" || d.light != nil {
 		if err := d.checkReceipt(plan.ExpectedBase); err != nil {
 			d.stop("stale_receipt", err.Error())
 			return
 		}
 	}
-	doc := devDispatchDoc{Schema: devDispatchSchema, Ordinal: plan.Ordinal, Role: plan.Role, Mode: plan.Mode,
+	doc := devDispatchDoc{Schema: devKind("dispatch"), Ordinal: plan.Ordinal, Role: plan.Role, Mode: plan.Mode,
 		Target: contract.TaskTarget{Kind: contract.TargetID, Value: plan.Role}, Goal: goal, Acceptance: acc, Payload: []string{},
-		Workspace: d.s.workspace.Name, Instance: d.s.workspace.Instance, Base: plan.ExpectedBase}
+		Workspace: d.planWorkspace(plan).Name, Instance: d.planWorkspace(plan).Instance, Base: plan.ExpectedBase}
 	if d.probe != nil && plan.Role == HopDesigner {
 		// A wake probe has no workspace, base or publication.
 		doc.Workspace, doc.Instance, doc.Base = "", "", ""
@@ -872,7 +891,11 @@ func (d *devSupervisor) phaseExited() {
 		// cleanly: the final candidate is validated now, before execution
 		// is marked finished and before cleanup.
 		d.s.say("coordinator phase %d ended after the approving review; validating the final candidate", p.n)
-		if d.runDevFinalValidation() {
+		validate := d.runDevFinalValidation
+		if d.light != nil {
+			validate = d.runLightFinalValidation
+		}
+		if validate() {
 			d.executed = true
 		}
 	case d.gate != nil && d.probe != nil:

@@ -5,6 +5,7 @@ The real end-to-end exercise ([../../real-e2e.md](../../real-e2e.md)) runs the s
 - [dev-full/flow.json](dev-full/flow.json): the five frozen role selections (schema `callsheet-dev-full-flow/v1`).
 - [dev-full/coordinator-prompt.md](dev-full/coordinator-prompt.md): the exercise mechanics appended to the shared playbook.
 - [dev-full/phase.md](dev-full/phase.md): each coordinator phase's prompt.
-- [dev-full/scenario.md](dev-full/scenario.md): the fixture's constraints, added to every task envelope.
+- [dev-full/scenario.md](dev-full/scenario.md): the full scenario's fixture constraints, added to every full task envelope.
+- [dev-full/scenario-light.md](dev-full/scenario-light.md): the light scenario's constraints, added instead to every light task envelope; the scenario selects which one is loaded and captured as provenance.
 
 No role method is copied here. The retired four-hop role pairs, four-role flow and two-phase prompts are no longer shipped documentation.

@@ -601,7 +601,7 @@ func TestDevFullReviewEvidence(t *testing.T) {
 			t.Fatalf("an older receipt %+v", ev)
 		}
 		for name, out := range map[string]string{
-			"on_success":    strings.Replace(passOut, `"code":""}`, `"code":"","rejected_entry":{"name":"x","kind":"regular"}}`, 1),
+			"on_success":    strings.Replace(passOut, `"code":"","export"`, `"code":"","rejected_entry":{"name":"x","kind":"regular"},"export"`, 1),
 			"bad_kind":      strings.Replace(refusedOut, `"kind":"regular"`, `"kind":"file"`, 1),
 			"path_name":     strings.Replace(refusedOut, `"name":"notes.txt"`, `"name":"a/notes.txt"`, 1),
 			"empty_name":    strings.Replace(refusedOut, `"name":"notes.txt"`, `"name":""`, 1),

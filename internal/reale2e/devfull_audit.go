@@ -275,7 +275,7 @@ func (c *devChecker) buildAudit(r DevReport) DevAudit {
 	if judge == nil {
 		judge = []DevAuditRow{}
 	}
-	return DevAudit{Schema: devKind("audit"), RunID: r.RunID, ReportSHA256: sha256Hex(data), Scope: devScope, Mechanical: r.Result,
+	return DevAudit{Schema: c.b.kind("audit"), RunID: r.RunID, ReportSHA256: sha256Hex(data), Scope: c.scope(), Mechanical: r.Result,
 		Judgments: PendingReview, Sources: r.Artifacts, Rows: rows, JudgmentRows: judge}
 }
 

@@ -81,6 +81,8 @@ type devMapInput struct {
 	tasks   []devMapTask
 	// waitPrefix is the slot commands' prefix (devWaitPrefixOf).
 	waitPrefix string
+	// schema is the event map's schema in the bundle's evidence version.
+	schema string
 }
 
 // devStreamFile is phase p's bundle stream path.
@@ -100,7 +102,7 @@ const (
 
 // deriveDevEventMap is the pure derivation.
 func deriveDevEventMap(in devMapInput) DevEventMap {
-	em := DevEventMap{Schema: devKind("event-map"), RunID: in.runID, Phases: []DevPhaseFacts{}, Tasks: []DevTaskFacts{}}
+	em := DevEventMap{Schema: cmpOr(in.schema, devKind("event-map")), RunID: in.runID, Phases: []DevPhaseFacts{}, Tasks: []DevTaskFacts{}}
 	records := map[int][]sessionRecord{}
 	for p := 1; p <= in.phases; p++ {
 		file := devStreamFile(p)

@@ -33,13 +33,44 @@ func (p *fakePlane) pushSeed(commit plumbing.Hash) {
 	p.wsRefs[contract.DefaultBranchRef] = commit.String()
 }
 
-// refsLocked is every workspace ref, sorted by name.
+// pushTo records a push to the named workspace's main branch (the
+// primary's is pushSeed).
+func (p *fakePlane) pushTo(name string, commit plumbing.Hash) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.ws != nil && p.ws.Name == name {
+		if p.wsRefs == nil {
+			p.wsRefs = map[string]string{}
+		}
+		p.wsRefs[contract.DefaultBranchRef] = commit.String()
+		return
+	}
+	p.otherRefs[name][contract.DefaultBranchRef] = commit.String()
+}
+
+// refsLocked is every primary workspace ref, sorted by name.
 func (p *fakePlane) refsLocked() []contract.WorkspaceRef {
+	if p.ws == nil {
+		return nil
+	}
+	return p.refsOfLocked(p.ws.Name)
+}
+
+// refsOfLocked is the named workspace's refs: its branches and the task
+// refs of the tasks bound to it, sorted by name.
+func (p *fakePlane) refsOfLocked(ws string) []contract.WorkspaceRef {
 	var out []contract.WorkspaceRef
-	for name, c := range p.wsRefs {
+	branches := p.wsRefs
+	if p.ws == nil || ws != p.ws.Name {
+		branches = p.otherRefs[ws]
+	}
+	for name, c := range branches {
 		out = append(out, contract.WorkspaceRef{Name: name, Commit: c})
 	}
 	for id, v := range p.tasks {
+		if v.WorkspaceBinding != nil && v.WorkspaceBinding.Name != ws {
+			continue
+		}
 		if v.Result != nil && v.Result.Workspace != nil && v.Result.Workspace.Commit != nil {
 			at := contract.FormatTime(p.clock.Now())
 			out = append(out, contract.WorkspaceRef{Name: contract.TaskRefPrefix + id, Commit: *v.Result.Workspace.Commit, PublishedAt: &at})
@@ -55,36 +86,47 @@ func (p *fakePlane) WorkspaceStatus(_ context.Context, name string, _ client.Sta
 	if p.statusErr != nil {
 		return contract.WorkspaceStatusResponse{}, p.statusErr
 	}
-	if p.ws == nil || p.ws.Name != name {
+	w := p.workspaceLocked(name)
+	if w == nil {
 		return contract.WorkspaceStatusResponse{}, contract.New(contract.CodeNotFound, "no workspace")
 	}
-	return contract.WorkspaceStatusResponse{Name: name, Instance: p.ws.Instance, Generation: hexID("", 7), DefaultBranch: contract.DefaultBranchRef,
-		Refs: p.refsLocked()}, nil
+	return contract.WorkspaceStatusResponse{Name: name, Instance: w.Instance, Generation: hexID("", 7), DefaultBranch: contract.DefaultBranchRef,
+		Refs: p.refsOfLocked(name)}, nil
 }
 
 func (p *fakePlane) ShowWorkspace(_ context.Context, name string) (contract.WorkspaceView, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.ws == nil || p.ws.Name != name {
+	w := p.workspaceLocked(name)
+	if w == nil {
 		return contract.WorkspaceView{}, contract.New(contract.CodeNotFound, "no workspace")
 	}
-	return *p.ws, nil
+	return *w, nil
 }
 
 func (p *fakePlane) WorkspaceDiff(context.Context, string, client.DiffPage) (contract.WorkspaceDiffResponse, error) {
 	return contract.WorkspaceDiffResponse{}, errors.New("the fake transfer plane serves task refs only")
 }
 
-func (p *fakePlane) WorkspaceGit(string) (workspacetransfer.Git, error) { return fakeWSGit{p: p}, nil }
+func (p *fakePlane) WorkspaceGit(name string) (workspacetransfer.Git, error) {
+	return fakeWSGit{p: p, name: name}, nil
+}
 
 // fakeWSGit serves fetches from the hub as a packfile.
-type fakeWSGit struct{ p *fakePlane }
+type fakeWSGit struct {
+	p    *fakePlane
+	name string
+}
 
 func (g fakeWSGit) ReceiveRefs(context.Context, string) (map[string]plumbing.Hash, error) {
 	g.p.mu.Lock()
 	defer g.p.mu.Unlock()
 	out := map[string]plumbing.Hash{}
-	for _, r := range g.p.refsLocked() {
+	refs := g.p.refsLocked()
+	if g.name != "" && g.p.workspaceLocked(g.name) != nil {
+		refs = g.p.refsOfLocked(g.name)
+	}
+	for _, r := range refs {
 		out[r.Name] = plumbing.NewHash(r.Commit)
 	}
 	return out, nil

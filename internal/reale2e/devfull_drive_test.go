@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	git "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/object"
@@ -223,6 +224,10 @@ type devRig struct {
 	// the helper's commands with the real local toolchain instead.
 	reviewGo   reviewScript
 	realHelper string
+	// intake is a light rig's intake answer (devlight_rig_test.go).
+	intake string
+	// extraArgs are appended to the command line (a probe's --scenario).
+	extraArgs []string
 	// helperOut and receipts are each review's helper output and receipt;
 	// reviewLogs are the reviewer tasks' scripted vendor logs.
 	helperOut  map[string]string
@@ -305,7 +310,7 @@ func (p hookPuller) PullResult(ctx context.Context, task, dir string) error {
 
 func copyDevDocs(t testing.TB, checkout string) {
 	t.Helper()
-	for _, rel := range []string{DevFlowDir, DevFullDir, devProbeFixtureDir} {
+	for _, rel := range []string{DevFlowDir, DevFullDir, devProbeFixtureDir, devLightFixtureDir} {
 		src := filepath.Join(repoRoot(t), filepath.FromSlash(rel))
 		err := filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
@@ -367,9 +372,15 @@ func (r *devRig) host() Host {
 	if r.command != "" {
 		h.Args[0] = r.command
 	}
+	h.Args = append(h.Args, r.extraArgs...)
 	h.legacy = false
 	h.observe = nil
-	h.observeDev = func(d *devSupervisor) { r.d = d }
+	h.observeDev = func(d *devSupervisor) {
+		r.d = d
+		if d.light != nil {
+			d.light.prompted = r.answerIntake
+		}
+	}
 	world := h.NewWorld
 	h.NewWorld = func(h Host) (*World, func(), error) {
 		w, release, err := world(h)
@@ -820,6 +831,10 @@ func (r *devRig) reply() bool {
 			// The previous result is not admitted yet: ask again later,
 			// never dispatch again.
 			r.stage = "next"
+		case len(f) == 2 && f[0] == CodeCandidateUnpublished:
+			// The light probe's prepared candidate: push it, then ask again.
+			r.pushCandidate(f[1])
+			r.stage = "next"
 		default:
 			// A refusal (seed_unpublished, closing): end the phase.
 			r.endPhase("The supervisor refused: " + strings.TrimSpace(res.out+res.err))
@@ -880,7 +895,42 @@ func (r *devRig) seed() {
 		Branch: "refs/heads/main", Commit: commit.String(), SourceKind: contract.KindGit, Changed: true})
 	r.toolUse("mcp__callsheet__ws_push", map[string]any{"name": d.s.workspace.Name, "instance": d.s.workspace.Instance, "branch": "main", "path": path},
 		pushed, false)
+	if p := d.probe; p != nil && p.light != nil && r.fault != "no-light-seed-push" {
+		// The light probe's second initial push: the light seed.
+		l := p.light
+		r.pushRepo(l.ws, l.seed.Path, l.seed.Commit)
+	}
 	r.seeded = true
+}
+
+// pushRepo pushes the repository at path (its HEAD commit, which must be
+// want) to ws's main branch as the coordinator's ws_push does.
+func (r *devRig) pushRepo(ws WorkspaceRecord, path string, want plumbing.Hash) {
+	repo, err := git.PlainOpen(path)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	head, err := repo.Head()
+	if err != nil || head.Hash() != want {
+		r.t.Fatalf("the push source %s is at %v, want %s (%v)", path, head, want, err)
+	}
+	if err := copyObjects(repo.Storer, r.f.plane.hub, []plumbing.Hash{want}); err != nil {
+		r.t.Fatal(err)
+	}
+	r.f.plane.pushTo(ws.Name, want)
+	pushed := mcpAnswer(r, contract.ParseWorkspacePushResult, contract.WorkspacePushResult{Name: ws.Name, Instance: ws.Instance,
+		Branch: "refs/heads/main", Commit: want.String(), SourceKind: contract.KindGit, Changed: true})
+	r.toolUse("mcp__callsheet__ws_push", map[string]any{"name": ws.Name, "instance": ws.Instance, "branch": "main", "path": path}, pushed, false)
+}
+
+// pushCandidate pushes the light probe's prepared candidate after
+// dev-next named it.
+func (r *devRig) pushCandidate(commit string) {
+	l := r.d.probe.light
+	if r.fault == "candidate-twice" {
+		r.pushRepo(l.ws, l.candPath, plumbing.NewHash(commit))
+	}
+	r.pushRepo(l.ws, l.candPath, plumbing.NewHash(commit))
 }
 
 // dispatch dispatches the prepared document with its exact fields.
@@ -1427,6 +1477,9 @@ func goalField(goal, key string) string {
 // publication is the scripted worker's visible tree after its process
 // group exited.
 func (r *devRig) publication(act devAct, doc devDispatchDoc, base map[string][]byte, task string) map[string][]byte {
+	if r.d.light != nil || r.d.probe != nil && doc.Ordinal >= probeTriageOrdinal {
+		return r.lightPublication(act, doc, base, task)
+	}
 	files := map[string][]byte{}
 	for k, v := range base {
 		files[k] = v
@@ -1804,7 +1857,7 @@ func (r *devRig) data(name string, v any) error {
 	if err := json.Unmarshal(r.evidence(name), &env); err != nil {
 		return err
 	}
-	if !strings.HasPrefix(env.Schema, "callsheet-dev-full-") || env.RunID != r.d.s.runID {
+	if !strings.HasPrefix(env.Schema, "callsheet-dev-") || !strings.HasSuffix(env.Schema, "/v2") || env.RunID != r.d.s.runID {
 		return fmt.Errorf("%s is not this run's envelope", name)
 	}
 	return json.Unmarshal(env.Data, v)

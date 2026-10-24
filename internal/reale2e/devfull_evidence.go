@@ -22,7 +22,10 @@ const (
 	// execution-only record, kept only to refuse it.
 	DevExecutionSchema = "callsheet-dev-full-execution/v1"
 	DevExecutionFile   = "dev-execution.json"
-	DevRunSchema       = "callsheet-dev-full-run/v1"
+	// DevRunSchema is the current development runtime's run file (design
+	// 12a-dev-flow-light: v2 carries the scenario discriminator; a v1 or
+	// otherwise mixed runtime is refused by every development helper).
+	DevRunSchema = "callsheet-dev-run/v2"
 )
 
 // DevBounds is the full development flow's cost and time disclosure.
@@ -46,10 +49,15 @@ const DevBounds = `Cost and time bounds of the full development flow (policy, no
 type DevRunFile struct {
 	Schema    string `json:"schema"`
 	RunID     string `json:"run_id"`
+	Scenario  string `json:"scenario"`
 	Callsheet string `json:"callsheet"`
 	Plane     string `json:"plane"`
 	CA        string `json:"ca"`
 }
+
+// devRunScenarios are the run file's scenarios: an attempt's, or the
+// qualification probe's.
+var devRunScenarios = map[string]bool{scenarioFull: true, scenarioLight: true, "probe": true}
 
 // devCommit is one admitted publication for the evidence repository.
 type devCommit struct {
