@@ -213,6 +213,49 @@ func judgeRegressions(t *testing.T, controls map[string][]mcpControl) {
 		}
 	}
 	_ = dispatched
+	// R12 (design r0.12, sixth probe): task_show's display tails. The
+	// nested tail alone is the parser's refusal; both tails changed
+	// coherently within the requested bound are accepted whether or not
+	// they equal the capture; over the bound is the derived binding's.
+	// dispatch and task_cancel keep the nested tail authority-bound.
+	tails := func(answer, tail string, nestedOnly bool) string {
+		tree := jsonTree(answer).(map[string]any)
+		v := obj(tree, "task")
+		obj(v, "result")["log_tail"] = tail
+		if !nestedOnly {
+			v["log_tail"] = tail
+		}
+		return encodeTree(tree)
+	}
+	labelled := func(form, label string) mcpControl {
+		for _, c := range controls[form] {
+			if c.label == label {
+				return c
+			}
+		}
+		t.Fatalf("no %s control %q", form, label)
+		return mcpControl{}
+	}
+	dt, ct := labelled("dispatch", "terminal view"), labelled("task_cancel", "terminal task")
+	for name, c := range map[string]struct {
+		ctl        mcpControl
+		form, args string
+		answer     string
+		field      string
+		want       func(error) bool
+	}{
+		"R12_show_nested_tail_only":     {show, "task_show", show.args, tails(show.answer, "other\n", true), "", contractErr},
+		"R12_show_tails_within_bound":   {show, "task_show", withArgs(t, show.args, map[string]any{"lines": 1}), tails(show.answer, "other\n", false), "", func(err error) bool { return err == nil }},
+		"R12_show_tails_default_lines":  {show, "task_show", withArgs(t, show.args, map[string]any{"lines": nil}), tails(show.answer, "a\nb\n", false), "", func(err error) bool { return err == nil }},
+		"R12_show_tails_over_bound":     {show, "task_show", withArgs(t, show.args, map[string]any{"lines": 1}), tails(show.answer, "a\nb\n", false), "task.log_tail", isBinding},
+		"R12_dispatch_tail_mismatch":    {dt, "dispatch", dt.args, tails(dt.answer, "other\n", false), "task.result.log_tail", isBinding},
+		"R12_task_cancel_tail_mismatch": {ct, "task_cancel", ct.args, tails(ct.answer, "other\n", false), "task.result.log_tail", isBinding},
+	} {
+		_, err := judgeMCPCall(c.ctl.auth, toolOfForm(c.form), json.RawMessage(c.args), c.answer)
+		if !c.want(err) || c.field != "" && bindingField(err) != c.field {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
 	// R5: the valid inspection calls are accepted.
 	for _, form := range []string{"ws_status/task", "ws_status/explicit", "ws_diff/task", "ws_diff/explicit", "ws_pull/task", "ws_pull/explicit", "task_logs"} {
 		c := firstControl(t, controls, form)

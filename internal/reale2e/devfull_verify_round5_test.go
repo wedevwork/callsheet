@@ -241,11 +241,12 @@ func TestDevFullReviewRound5(t *testing.T) {
 	t.Run("another_tools_answer", func(t *testing.T) {
 		t.Parallel()
 		// A task_show answer recorded as task_logs: the arguments are valid
-		// task_logs arguments; the answer is not a logs answer.
-		code, rep := verdictAfter(t, devPassingBundle(t), func(l string) bool {
-			return consumingShow(l) && !strings.Contains(l, `"lines"`)
-		}, func(rec map[string]any) {
-			firstBlock(rec)["name"] = toolTaskLogs
+		// task_logs arguments (the consuming read's lines dropped, as
+		// task_logs has none); the answer is not a logs answer.
+		code, rep := verdictAfter(t, devPassingBundle(t), consumingShow, func(rec map[string]any) {
+			b := firstBlock(rec)
+			b["name"] = toolTaskLogs
+			delete(b["input"].(map[string]any), "lines")
 		})
 		rejected(t, code, rep)
 	})

@@ -105,6 +105,9 @@ func wireLeaves(t reflect.Type, prefix string, out map[string]bool, unshaped map
 	}
 }
 
+// taskShowResultTailRule is task_show's derived result.log_tail rule.
+const taskShowResultTailRule = "equals resp:task.log_tail and satisfies the effective req:lines bound"
+
 // Field rules.
 const (
 	ruleContract  = "contract"
@@ -280,6 +283,9 @@ func mcpForms() []mcpForm {
 	underPrefix("resp:task", taskViewRules(ruleAuthority, "I(task)"), f.fields)
 	f.fields["resp:task.task_id"] = bind(ruleRequest, "the requested id, resolved in the captured authority")
 	f.fields["resp:task.log_tail"] = bind(ruleDerived, "at most the requested lines (contract LogTail counting)")
+	// Design r0.12: task_show's nested tail is the request-selected
+	// display tail (dispatch and task_cancel keep it an authority binding).
+	f.fields["resp:task.result.log_tail"] = bind(ruleDerived, taskShowResultTailRule)
 	forms = append(forms, f)
 
 	// task_logs

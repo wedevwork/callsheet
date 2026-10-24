@@ -557,7 +557,11 @@ func (p *fakePlane) finish(id, state string, final *string, truncated bool, comm
 	p.logs[id] = []byte("log of " + id + "\n")
 }
 
-func (p *fakePlane) ShowTask(ctx context.Context, id string, _ int) (contract.TaskView, error) {
+// ShowTask answers task id as the plane renders it for lines (design
+// 12a-dev-flow-verify r0.12): its retained log's contract.LogTail display
+// tail, mirrored in a terminal result, on a copied view and result (the
+// stored task and earlier answers are never changed).
+func (p *fakePlane) ShowTask(ctx context.Context, id string, lines int) (contract.TaskView, error) {
 	p.mu.Lock()
 	p.shows++
 	if _, ok := ctx.Deadline(); !ok {
@@ -575,7 +579,14 @@ func (p *fakePlane) ShowTask(ctx context.Context, id string, _ int) (contract.Ta
 	if !ok {
 		return contract.TaskView{}, contract.New(contract.CodeNotFound, "no task")
 	}
-	return *v, nil
+	out := *v
+	out.LogTail, out.TailTruncated = contract.LogTail(p.logs[id], lines)
+	if v.Result != nil {
+		r := *v.Result
+		r.LogTail = out.LogTail
+		out.Result = &r
+	}
+	return out, nil
 }
 
 func (p *fakePlane) ListTasks(_ context.Context, after string, limit int) ([]contract.TaskSummary, *string, error) {
@@ -1211,7 +1222,7 @@ func (c *coordScript) complete(i int) {
 		commit = nil
 	}
 	c.p.finish(c.tasks[i], state, final, false, commit)
-	v, _ := c.p.ShowTask(context.Background(), c.tasks[i], 0)
+	v, _ := c.p.ShowTask(context.Background(), c.tasks[i], contract.DefaultTailLines)
 	wr := contract.WaitResponse{Version: contract.ProtocolVersion, Status: contract.WaitTerminal, EffectiveWaitMS: 30000, Winner: c.tasks[i], Task: &v}
 	b, err := json.Marshal(wr)
 	if err != nil {
@@ -1252,7 +1263,7 @@ func (c *coordScript) complete(i int) {
 	if c.longPoll && i == 0 {
 		c.sess.use(p, toolTaskWait, map[string]any{"task_ids": []string{c.tasks[i]}, "wait": "5m"}, `{"status":"terminal"}`, false)
 	}
-	v, _ = c.p.ShowTask(context.Background(), c.tasks[i], 0)
+	v, _ = c.p.ShowTask(context.Background(), c.tasks[i], contract.DefaultTailLines)
 	show, _ := json.Marshal(contract.TaskShowResponse{Version: contract.ProtocolVersion, Task: v})
 	c.sess.use(p, toolTaskShow, map[string]any{"id": c.tasks[i]}, string(show), false)
 }
