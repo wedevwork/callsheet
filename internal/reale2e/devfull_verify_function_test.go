@@ -170,6 +170,19 @@ func maps2Equal(a, b map[string]string) bool {
 
 func TestDevFullVerifyFP2(t *testing.T) {
 	t.Parallel()
+	// Design 12a-dev-flow-verify r0.12 (sixth probe): the consuming lines:0
+	// reads answer empty display tails against DefaultTailLines captures
+	// of nonempty logs, and the public offline check passes them.
+	t.Run("display_tail_lines_zero", func(t *testing.T) {
+		t.Parallel()
+		r := newDevRig(t, happy())
+		r.owner = []string{"yes 1"}
+		r.expect(0, "")
+		displayTailShape(t, r.f.bundle(), []string{"tasks/01", "tasks/02", "tasks/03", "tasks/04"})
+		if code, rep := r.offline(); code != 0 || rep.Result != ResultPass {
+			t.Fatalf("offline %d %v", code, devCodes(rep))
+		}
+	})
 	for name, c := range map[string]struct {
 		steps []devAct
 		owner []string
@@ -1169,6 +1182,19 @@ func (r *devRig) qualification() DevQualification {
 
 func TestDevFullVerifyFP8(t *testing.T) {
 	t.Parallel()
+	// Design 12a-dev-flow-verify r0.12 (sixth probe): the qualification's
+	// four consuming lines:0 reads answer empty display tails against the
+	// wakes' and reviewer's DefaultTailLines captures, and the public
+	// qualification check holds.
+	t.Run("display_tail_lines_zero", func(t *testing.T) {
+		t.Parallel()
+		r := probeRig(t)
+		r.expect(0, "")
+		displayTailShape(t, r.f.bundle(), []string{"probe/wake/01", "probe/wake/02", "probe/wake/03", "probe/reviewer/01"})
+		if codes := qualificationCodes(t, r.f.bundle()); len(codes) != 0 {
+			t.Fatalf("qualification codes %v", codes)
+		}
+	})
 	t.Run("mcp_calls", func(t *testing.T) {
 		t.Parallel()
 		// The qualification's own namespace: its recorded calls are the

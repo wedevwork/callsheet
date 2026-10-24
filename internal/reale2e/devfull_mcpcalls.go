@@ -243,8 +243,13 @@ func bindEqual(field string, got, want any) error {
 // record: the entire immutable identity I(task) always; a terminal view
 // additionally exactly the captured terminal state and entire result. A
 // nonterminal view may precede the terminal capture and is not compared
-// with its later state.
-func bindView(field string, v, auth contract.TaskView) error {
+// with its later state. displayTail is task_show's form (design
+// 12a-dev-flow-verify r0.12): its result.log_tail mirrors the
+// request-selected top-level display tail, so only that leaf is left out
+// of the result equality (on copies; the captured authority is never
+// changed) and the caller binds it to the requested lines. dispatch and
+// task_cancel bind the entire result, its log_tail included.
+func bindView(field string, v, auth contract.TaskView, displayTail bool) error {
 	if err := bindEqual(field, identityOf(v), identityOf(auth)); err != nil {
 		return err
 	}
@@ -254,7 +259,21 @@ func bindView(field string, v, auth contract.TaskView) error {
 	if v.State != auth.State {
 		return bindErr(joinPath(field, "state"), "terminal state %s, captured %s", v.State, auth.State)
 	}
-	return bindEqual(joinPath(field, "result"), v.Result, auth.Result)
+	got, want := v.Result, auth.Result
+	if displayTail {
+		got, want = withoutLogTail(got), withoutLogTail(want)
+	}
+	return bindEqual(joinPath(field, "result"), got, want)
+}
+
+// withoutLogTail is a copy of r with its display tail cleared (nil: nil).
+func withoutLogTail(r *contract.TaskResult) *contract.TaskResult {
+	if r == nil {
+		return nil
+	}
+	c := *r
+	c.LogTail = ""
+	return &c
 }
 
 // bindSummary binds a task_ls entry (at field) to its captured plane
@@ -395,7 +414,7 @@ func judgeDispatch(a *mcpAuthority, args, answer []byte) (mcpOutcome, error) {
 	if err := bindEqual("task.request", v.Request, req); err != nil {
 		return mcpOutcome{}, err
 	}
-	if err := bindView("task", v, auth); err != nil {
+	if err := bindView("task", v, auth, false); err != nil {
 		return mcpOutcome{}, err
 	}
 	return mcpOutcome{dispatched: v.TaskID}, nil
@@ -455,8 +474,15 @@ func judgeTaskShow(a *mcpAuthority, args, answer []byte) (mcpOutcome, error) {
 	if !ok {
 		return mcpOutcome{}, missingAuthority("task.task_id", id)
 	}
-	if err := bindView("task", v, auth); err != nil {
+	if err := bindView("task", v, auth, true); err != nil {
 		return mcpOutcome{}, err
+	}
+	// The display tails: result.log_tail mirrors log_tail (the strict
+	// parser's rule, kept here as the binding's own), and both hold at
+	// most the requested lines; equality with the captured
+	// DefaultTailLines tail is neither required nor forbidden.
+	if v.Result != nil && v.Result.LogTail != v.LogTail {
+		return mcpOutcome{}, bindErr("task.result.log_tail", "differs from the display tail log_tail")
 	}
 	if n := tailLines(v.LogTail); n > lines {
 		return mcpOutcome{}, bindErr("task.log_tail", "%d lines for %d requested", n, lines)
@@ -526,7 +552,7 @@ func judgeTaskCancel(a *mcpAuthority, args, answer []byte) (mcpOutcome, error) {
 	if !ok {
 		return mcpOutcome{}, missingAuthority("task_id", id)
 	}
-	if err := bindView("task", r.Task, auth); err != nil {
+	if err := bindView("task", r.Task, auth, false); err != nil {
 		return mcpOutcome{}, err
 	}
 	return mcpOutcome{}, nil

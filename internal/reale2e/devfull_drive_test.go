@@ -1034,7 +1034,7 @@ func (r *devRig) work(act devAct) bool {
 		r.emit(map[string]any{"type": "result", "subtype": "success", "is_error": false, "result": "denied",
 			"permission_denials": []map[string]string{{"tool_name": "Bash", "tool_use_id": "toolu_x"}}})
 	}
-	v, _ := r.f.plane.ShowTask(r.f.ctx, r.task, 0)
+	v, _ := r.f.plane.ShowTask(r.f.ctx, r.task, contract.DefaultTailLines)
 	wr := contract.WaitResponse{Version: contract.ProtocolVersion, Status: contract.WaitTerminal, EffectiveWaitMS: 30000, Winner: r.task, Task: &v}
 	b, err := json.Marshal(wr)
 	if err != nil {
@@ -1129,10 +1129,12 @@ func (r *devRig) refused(emit func()) {
 	r.refusedLine = bytes.Count(r.d.current().stdout.Bytes(), []byte("\n"))
 }
 
-// show consumes the wake with one task_show of the task. With fragment
-// set, the first such result record reaches the stream in two writes.
-// After a consumed wake the coordinator inspects the task's workspace as
-// its playbook requires (inspect).
+// show consumes the wake with one task_show of the task, {"id","lines":0}
+// as the playbook asks (its answer's display tails are empty while the
+// supervisor's capture holds the DefaultTailLines tail of the retained
+// log). With fragment set, the first such result record reaches the
+// stream in two writes. After a consumed wake the coordinator inspects
+// the task's workspace as its playbook requires (inspect).
 func (r *devRig) show() {
 	v, _ := r.f.plane.ShowTask(r.f.ctx, r.task, 0)
 	show, _ := json.Marshal(contract.TaskShowResponse{Version: contract.ProtocolVersion, Task: v})
@@ -1165,14 +1167,14 @@ func (r *devRig) show() {
 		return
 	}
 	if !r.fragment || r.tailWritten || r.tail != nil {
-		r.toolUse(toolTaskShow, map[string]any{"id": r.task}, string(show), false)
+		r.toolUse(toolTaskShow, map[string]any{"id": r.task, "lines": 0}, string(show), false)
 		r.inspect(v)
 		return
 	}
 	r.handles++
 	id := fmt.Sprintf("toolu_dev_%04d", r.handles)
 	r.emit(map[string]any{"type": "assistant", "message": map[string]any{"role": "assistant", "content": []any{
-		map[string]any{"type": "tool_use", "id": id, "name": toolTaskShow, "input": map[string]any{"id": r.task}}}}})
+		map[string]any{"type": "tool_use", "id": id, "name": toolTaskShow, "input": map[string]any{"id": r.task, "lines": 0}}}}})
 	rec := r.record(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": []any{
 		map[string]any{"type": "tool_result", "tool_use_id": id, "content": string(show), "is_error": false}}}})
 	half := len(rec) / 2
