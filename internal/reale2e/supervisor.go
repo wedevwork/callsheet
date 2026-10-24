@@ -108,6 +108,9 @@ type runArgs struct {
 	protectRoots                                   []string
 	// protectDepth is --protect-depth (A3.2).
 	protectDepth int
+	// probeScope is probe-dev-full's --scenario (design 12a-dev-flow-light;
+	// "" is the historical full scope).
+	probeScope string
 }
 
 func (a runArgs) vendor(id string) string {

@@ -124,7 +124,11 @@ type ciRunner struct {
 	envs       [][]string
 	failOn     string
 	coverTotal string
-	stdout     string
+	// stdout is the first native command's stream and reale2eStdout the
+	// dedicated internal/reale2e command's (design
+	// 12a-native-reale2e-budget): each child writes its own part.
+	stdout        string
+	reale2eStdout string
 }
 
 // manifestBlocks is one covered profile block per coverage manifest
@@ -175,6 +179,8 @@ func (r *ciRunner) run(_ context.Context, argv, env []string, _ string, stdout, 
 	case strings.HasPrefix(joined, "go list"):
 		io.WriteString(stdout, "github.com/wedevwork/callsheet/cmd/callsheet|1\ngithub.com/wedevwork/callsheet/cmd/devcheck|1\ngithub.com/wedevwork/callsheet/cmd/fake-adapter|1\n"+
 			"github.com/wedevwork/callsheet/cmd/mcpqual|1\n")
+	case strings.HasPrefix(joined, "go test -json") && slices.Contains(argv, "./internal/reale2e"):
+		io.WriteString(stdout, r.reale2eStdout)
 	case strings.HasPrefix(joined, "go test -json"):
 		io.WriteString(stdout, r.stdout)
 	}
@@ -222,10 +228,29 @@ func events(evs ...map[string]any) string {
 	return b.String()
 }
 
-// qualifyingEvents is a complete synthetic FP-6, plane trust and node stream;
-// drop names a scenario whose events are deleted and skip one that is
-// skipped instead.
+// reale2ePkg independently pins devcheck.NativeReale2ePackage.
+const reale2ePkg = "github.com/wedevwork/callsheet/internal/reale2e"
+
+// reale2eEvents is the dedicated second native command's complete
+// synthetic stream: internal/reale2e's sole start, one test and the
+// package pass (design 12a-native-reale2e-budget).
+func reale2eEvents() string {
+	return events(synth("start", reale2ePkg, ""), synth("run", reale2ePkg, "TestRealE2ESynthetic"), synth("pass", reale2ePkg, "TestRealE2ESynthetic"),
+		synth("pass", reale2ePkg, ""))
+}
+
+// qualifyingEvents is the complete synthetic combined native stream: the
+// first command's (sharedQualifyingEvents) followed by the reale2e
+// command's.
 func qualifyingEvents(drop, skip string) string {
+	return sharedQualifyingEvents(drop, skip) + reale2eEvents()
+}
+
+// sharedQualifyingEvents is a complete synthetic first-command stream:
+// FP-6, plane trust, node and every later required name, then the sidecar
+// tuple; drop names a scenario whose events are deleted and skip one that
+// is skipped instead.
+func sharedQualifyingEvents(drop, skip string) string {
 	pkg := devcheck.NativePackage
 	evs := []map[string]any{synth("start", pkg, "")}
 	for _, name := range devcheck.NativeRequiredTests() {
@@ -507,8 +532,23 @@ func TestCILinuxBar(t *testing.T) {
 	}
 }
 
+// wantNativeShared and wantNativeReale2e are Darwin's two native commands
+// in order (design 12a-native-reale2e-budget, FP-1), literal and never
+// derived from devcheck: every package but internal/reale2e under the
+// 300-second binary cap, then internal/reale2e alone under 600 seconds.
+const (
+	wantNativeShared = "go test -json -tags=realadaptercheck -count=1 -timeout=300s ./cmd/... ./internal/adapter/... ./internal/cicheck/... ./internal/cli/... " +
+		"./internal/client/... ./internal/contract/... ./internal/devcheck/... ./internal/logging/... ./internal/mcp/... ./internal/mcpqual/... " +
+		"./internal/plane/... ./internal/sidecar/... ./internal/spikes/... ./internal/taskpublication/... ./internal/taskworkspace/... " +
+		"./internal/testkit/... ./internal/workspace/... ./internal/workspacetransfer/... ./tests/..."
+	wantNativeReale2e = "go test -json -tags=realadaptercheck -count=1 -timeout=600s ./internal/reale2e"
+)
+
 // FP-3: the macOS job runs native, which requires all three scenarios; its
-// stress moved to ci-macos-stress (iteration 02b).
+// stress moved to ci-macos-stress (iteration 02b). Design
+// 12a-native-reale2e-budget (FP-1): the native plan is two commands with
+// disjoint tagged selections whose union is the module, internal/reale2e
+// alone in the second under 600 s and never in the 300 s first.
 func TestCIDarwinQualification(t *testing.T) {
 	data := ciWorkflow(t)
 	var doc yaml.Node
@@ -523,9 +563,26 @@ func TestCIDarwinQualification(t *testing.T) {
 		t.Fatalf("macos stages = %v %v", stages, err)
 	}
 	steps, err := devcheck.NativeSteps("darwin")
-	if err != nil || len(steps) != 1 || strings.Join(steps[0].Argv, " ") != "go test -json -tags=realadaptercheck -count=1 -timeout=300s ./..." {
+	if err != nil || len(steps) != 2 || steps[0].Name != "native" || strings.Join(steps[0].Argv, " ") != wantNativeShared || len(steps[0].Env) != 0 ||
+		steps[1].Name != "native reale2e" || strings.Join(steps[1].Argv, " ") != wantNativeReale2e || len(steps[1].Env) != 0 {
 		t.Fatalf("native plan = %+v %v", steps, err)
 	}
+	// The 300 s command never selects internal/reale2e by its own pattern
+	// or an enclosing one; the resolved proof is the delegated contract.
+	for _, a := range steps[0].Argv {
+		if a == "./..." || a == "./internal/..." || strings.Contains(a, "reale2e") || a == "-race" || a == "-p=1" || a == "-timeout=600s" {
+			t.Fatalf("the 300s native command selects or inherits %q: %v", a, steps[0].Argv)
+		}
+	}
+	if devcheck.NativeReale2ePackage != reale2ePkg {
+		t.Fatalf("NativeReale2ePackage = %q", devcheck.NativeReale2ePackage)
+	}
+	// The tagged module selection proof, delegated by exact name: every
+	// package of go list -tags=realadaptercheck ./... once across the two
+	// commands, internal/reale2e alone in the second, the sidecar in the
+	// first only, planted duplicate, omission and wrong-300s plans caught.
+	const devcheckPkg = "./internal/devcheck"
+	contractRun(t, contractBinary(t, devcheckPkg), devcheckPkg, "^TestNativeSelectionCoversModule$", os.Environ(), "TestNativeSelectionCoversModule")
 	if got := strings.Join(devcheck.NativeRequiredTests()[:4], ","); got != "TestFP6ProcessGroups,TestFP6ProcessGroups/cooperative,TestFP6ProcessGroups/resistant,TestFP6ProcessGroups/leader-exits-first" {
 		t.Fatalf("required = %s", got)
 	}
@@ -629,34 +686,198 @@ func TestCINativeEvidence(t *testing.T) {
 		}
 		return
 	}
-	// Qualification, then the coverage stage (profile, func report, cmd list),
-	// the workspace benchmark, (iteration 09b) the transfer benchmark,
-	// (iteration 10b) the task workspace benchmark, (non-blocking
-	// coordinator waits) the client wait benchmark and (decoder enrollment)
-	// the qualification harness's benchmark, then the development
-	// full-flow benchmark: ten calls. An empty cover total is parsed as
-	// the literal "(statements)" and fails the stage.
-	r := &ciRunner{stdout: valid, coverTotal: "91.7%"}
+	// Qualification (design 12a-native-reale2e-budget: two commands, each
+	// writing its own part of the stream), then the coverage stage
+	// (profile, func report, cmd list), the workspace benchmark, (iteration
+	// 09b) the transfer benchmark, (iteration 10b) the task workspace
+	// benchmark, (non-blocking coordinator waits) the client wait benchmark
+	// and (decoder enrollment) the qualification harness's benchmark, then
+	// the development full-flow benchmark: eleven calls. An empty cover
+	// total is parsed as the literal "(statements)" and fails the stage.
+	first := fixture + sharedQualifyingEvents("", "")
+	r := &ciRunner{stdout: first, reale2eStdout: reale2eEvents(), coverTotal: "91.7%"}
 	code, out, errOut := devcheckRun(t, r, "native")
-	if code != 0 || len(r.calls) != 10 ||
-		strings.Join(r.calls[0], " ") != "go test -json -tags=realadaptercheck -count=1 -timeout=300s ./..." ||
-		strings.Join(r.calls[4], " ") != strings.Join(devcheck.WorkspaceBenchStep().Argv, " ") ||
-		strings.Join(r.calls[5], " ") != strings.Join(devcheck.TransferBenchStep().Argv, " ") ||
-		strings.Join(r.calls[6], " ") != strings.Join(devcheck.TaskWorkspaceBenchStep().Argv, " ") ||
-		strings.Join(r.calls[7], " ") != strings.Join(devcheck.ClientWaitBenchStep().Argv, " ") ||
-		strings.Join(r.calls[8], " ") != strings.Join(devcheck.MCPQualBenchStep().Argv, " ") ||
-		strings.Join(r.calls[9], " ") != strings.Join(devcheck.RealE2EDevBenchStep().Argv, " ") ||
+	if code != 0 || len(r.calls) != 11 ||
+		strings.Join(r.calls[0], " ") != wantNativeShared || strings.Join(r.calls[1], " ") != wantNativeReale2e ||
+		strings.Join(r.calls[5], " ") != strings.Join(devcheck.WorkspaceBenchStep().Argv, " ") ||
+		strings.Join(r.calls[6], " ") != strings.Join(devcheck.TransferBenchStep().Argv, " ") ||
+		strings.Join(r.calls[7], " ") != strings.Join(devcheck.TaskWorkspaceBenchStep().Argv, " ") ||
+		strings.Join(r.calls[8], " ") != strings.Join(devcheck.ClientWaitBenchStep().Argv, " ") ||
+		strings.Join(r.calls[9], " ") != strings.Join(devcheck.MCPQualBenchStep().Argv, " ") ||
+		strings.Join(r.calls[10], " ") != strings.Join(devcheck.RealE2EDevBenchStep().Argv, " ") ||
 		!strings.Contains(out, "native qualification passed on darwin/"+runtime.GOARCH) {
 		t.Fatalf("darwin native = %d calls=%d %s", code, len(r.calls), errOut)
 	}
 	if code, _, errOut := devcheckRun(t, &ciRunner{failOn: "-json"}, "native"); code != 1 || !strings.Contains(errOut, "injected child failure") {
 		t.Fatalf("child error = %d %s", code, errOut)
 	}
-	for name, s := range bad {
-		if code, _, _ := devcheckRun(t, &ciRunner{stdout: s}, "native"); code != 1 {
+	firstBad := map[string]string{
+		"missing":   fixture,
+		"skip":      fixture + sharedQualifyingEvents("", "resistant"),
+		"malformed": first[:len(first)-7],
+		"fail":      first + events(synth("fail", "example.com/late", "")),
+	}
+	for name, s := range firstBad {
+		if code, _, _ := devcheckRun(t, &ciRunner{stdout: s, reale2eStdout: reale2eEvents()}, "native"); code != 1 {
 			t.Fatalf("%s evidence passed the native stage", name)
 		}
 	}
+	if code, _, _ := devcheckRun(t, &ciRunner{stdout: first}, "native"); code != 1 {
+		t.Fatal("a stream without internal/reale2e passed the native stage")
+	}
+}
+
+// FP-2 (design 12a-native-reale2e-budget): the exported checker qualifies
+// the combined stream of the two native commands, a complete first stream
+// followed by internal/reale2e's own, and rejects a missing, failed,
+// skipped or truncated reale2e stream, a sidecar or reale2e package started
+// by both commands, and missing function or sidecar evidence.
+func TestCINativeSplitQualification(t *testing.T) {
+	if devcheck.NativeReale2ePackage != "github.com/wedevwork/callsheet/internal/reale2e" || reale2ePkg != devcheck.NativeReale2ePackage {
+		t.Fatalf("NativeReale2ePackage = %q", devcheck.NativeReale2ePackage)
+	}
+	r, sc := reale2ePkg, devcheck.NativeTaskProcessPackage
+	first, second := sharedQualifyingEvents("", ""), reale2eEvents()
+	checkStream := func(s string) error { return devcheck.CheckNativeResults("darwin", strings.NewReader(s)) }
+	if err := checkStream(first + second); err != nil {
+		t.Fatalf("disjoint complete streams: %v", err)
+	}
+	combined := first + second
+	for name, c := range map[string]struct{ stream, want string }{
+		"missing reale2e":           {first, "package " + r + " has no start event"},
+		"only reale2e":              {second, "package " + devcheck.NativePackage + " has no start event"},
+		"failed reale2e test":       {first + events(synth("start", r, ""), synth("run", r, "TestX"), synth("fail", r, "TestX")), "test TestX in " + r + " failed"},
+		"failed reale2e package":    {first + events(synth("start", r, ""), synth("run", r, "TestX"), synth("pass", r, "TestX"), synth("fail", r, "")), "package " + r + " failed"},
+		"skipped reale2e test":      {first + events(synth("start", r, ""), synth("run", r, "TestX"), synth("skip", r, "TestX")), "test TestX in " + r + " skipped"},
+		"skipped reale2e package":   {first + events(synth("start", r, ""), synth("skip", r, "")), "package " + r + " has no pass event"},
+		"unfinished reale2e":        {first + events(synth("start", r, ""), synth("run", r, "TestX")), "package " + r + " did not finish"},
+		"truncated reale2e":         {combined[:len(combined)-7], "malformed event stream after"},
+		"duplicate sidecar":         {first + second + events(synth("start", sc, ""), synth("pass", sc, "")), "package " + sc + " started twice"},
+		"duplicate reale2e":         {first + second + second, "package " + r + " started twice"},
+		"reale2e in the 300s child": {sharedQualifyingEvents("", "") + second + second, "package " + r + " started twice"},
+		"missing function evidence": {sharedQualifyingEvents("resistant", "") + second, "TestFP6ProcessGroups/resistant has no run event"},
+		"missing sidecar evidence":  {firstNativeStream("TestTaskExecutionContract/process") + second, "TestTaskExecutionContract/process in " + sc + " has no run event"},
+	} {
+		err := checkStream(c.stream)
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Fatalf("%s: %v, want %q", name, err, c.want)
+		}
+		if strings.Contains(name, "missing") || strings.HasPrefix(name, "skipped") {
+			if !strings.Contains(err.Error(), "native qualification unobserved") {
+				t.Fatalf("%s: %v is not unobserved", name, err)
+			}
+		}
+	}
+	if err := devcheck.CheckNativeResults("linux", strings.NewReader(first+second)); err == nil || !strings.Contains(err.Error(), "darwin only") {
+		t.Fatalf("linux checker: %v", err)
+	}
+}
+
+// FP-3 (design 12a-native-reale2e-budget): docs/ci.md carries the split
+// policy, the evidence-based provisional cap, the job-budget projection
+// with its assumption and the hosted verification procedure, distinguishing
+// pending measurements from passed tests; the workflow keeps its 30-minute
+// macOS job and adds no step timeout.
+func TestCINativeBudgetHandoff(t *testing.T) {
+	checks := docSection(t, "Checks")
+	const marker = "**Native reale2e budget (design 12a-native-reale2e-budget, 2026-10-24).**"
+	start := strings.Index(checks, marker)
+	if start < 0 || strings.Count(checks, marker) != 1 {
+		t.Fatal("Checks has no single dated native reale2e budget explanation")
+	}
+	end := strings.Index(checks[start:], "\n\nIteration 11 (real adapters, wave 2")
+	if end < 0 || !strings.Contains(strings.Join(strings.Fields(checks[:start]), " "), "That contract is in a `realadaptercheck`-tagged file") {
+		t.Fatal("the budget explanation does not follow the tagged-sidecar paragraph")
+	}
+	budget := checks[start : start+end]
+	requireTerms(t, "Checks budget", budget,
+		// The two-step, disjoint policy and the caps.
+		"two sequential tagged commands with disjoint package selections whose union is the module",
+		"every package except `internal/reale2e` under the unchanged `-timeout=300s`", "`internal/reale2e` alone under `-timeout=600s`",
+		"`TestNativeSelectionCoversModule`", "`go list -tags=realadaptercheck ./...`", "checked once after both succeed",
+		"every package starts once across the two commands", "`github.com/wedevwork/callsheet/internal/reale2e`", "a package skip never satisfies",
+		"A failure of either command stops the stage before qualification, coverage and the benchmarks",
+		// The evidence and the provisional cap.
+		"run [40116764068](https://github.com/wedevwork/callsheet/actions/runs/40116764068) at `803106b`",
+		"run [40072740039](https://github.com/wedevwork/callsheet/actions/runs/40072740039) at `7575691`",
+		`"Action":"fail", ... "Elapsed":300.187`, `"Action":"pass", ... "Elapsed":251.849`,
+		"provisional policy cap, not a measurement", "`(749.4 + 132.4) / 3 = 293.93`", "`251.849 - 660/3 = 31.849`",
+		"approximately **326 seconds before 107 unstarted new leaves**", "an estimated floor", "not an upper bound or a completed duration",
+		"`600 - 326 = 274`", "about **84% headroom over that estimated floor**", "`600 - 251.849 = 348.151`",
+		"“If a test binary runs longer than duration d, panic.”", "bounds the test binary, not its compilation or the whole command",
+		// Job feasibility, coverage's implicit bound and the projection.
+		"`timeout-minutes: 30`, 1800 seconds", "no step-level timeout",
+		"its implicit per-binary bound is go test's default, **10m (600s)**", "“The default is 10 minutes (10m).”",
+		"`ok  github.com/wedevwork/callsheet/internal/reale2e  209.197s`", "`600 - 209.197 = 390.803`",
+		"36 s setup, 346 s old combined qualification", "266 s coverage, report and listing, 222 s benchmarks and 2 s cleanup, **872 s**",
+		`"Elapsed":233.682`, "`300 - 233.682 = 66.318`", "`346 - 233.682 = 112.318`", "not spare time",
+		"**120 s planning contingency**", "`872 + 600 + 120 = 1592` seconds", "**208 seconds below the 1800-second job limit**",
+		"ASSUMPTION (unverified)", "shares that reserve with all other growth", "a conditional projection, not a worst-case bound",
+		"does not fit the job and is not promised to", "is pending until recorded; pending is not passed")
+	// The ci-macos row and the tagged-sidecar paragraph state the current
+	// two-command policy, never the former single invocation.
+	requireTerms(t, "Checks", checks,
+		"`devcheck native`: the complete suite as two sequential `go test -json -tags=realadaptercheck` commands with disjoint package selections",
+		"then `internal/reale2e` alone under `-timeout=600s`; either command failing stops the stage",
+		"must show the package start and package pass of `github.com/wedevwork/callsheet/internal/reale2e`",
+		"one package start per package across both commands",
+		"the first of the two native commands (the one selecting `internal/sidecar`; design 12a-native-reale2e-budget)")
+	flat := strings.Join(strings.Fields(checks), " ")
+	for _, stale := range []string{"the complete suite as one `go test -json", "the native stage is one invocation", "the native command, the tagged `test`"} {
+		if strings.Contains(flat, stale) {
+			t.Fatalf("Checks keeps the single-invocation claim %q", stale)
+		}
+	}
+	// The hosted procedure: what to record, where, and the pending rule.
+	first := docSection(t, "First remote run")
+	requireTerms(t, "First remote run", first,
+		"for 12a-native-reale2e-budget (2026-10-24; owner-closed delivery verification, outside the implementation acceptance bar",
+		"records in pull request #67 (or the implementing pull request)", "the run, job and attempt links and the SHA",
+		"runner image and architecture, the Go version and the cache context",
+		"(`Package` exactly `github.com/wedevwork/callsheet/internal/reale2e`, no `Test` field, `Action` `pass`) and its `Elapsed`",
+		"record `600 - Elapsed` as the observed margin",
+		"the coverage child's `ok  github.com/wedevwork/callsheet/internal/reale2e  Ns` line", "record `N` and `600 - N` against its implicit 10m (600 s) bound",
+		"compare `N` with the 209.197 s main baseline", "Require positive margins for both executions", "a successful whole job within 1800 seconds",
+		"command wall is not package `Elapsed`", "check them against the 1592-second projection",
+		"A failed, cancelled, missing or skipped result never qualifies; preserve failed attempts",
+		"mark hosted verification pending and perform the same check on the first post-merge run, recording its actual SHA",
+		"never label another SHA as the pull request sample", "Pending hosted evidence does not block implementation review when its test bar is met",
+		"until recorded it is pending, not passed", "never an automatic budget increase or a weakened test", "a successful job above 1592 seconds invalidates the projection",
+		"no repeat-until-green sampling", "Hosted verification: pending.")
+	// The workflow: the 30-minute macOS job, its four steps, no step
+	// timeout, no budget raised.
+	data := ciWorkflow(t)
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if node(t, &doc, "jobs", "macos", "timeout-minutes").Value != "30" || cicheck.Jobs()[1].ID != "macos" || cicheck.Jobs()[1].TimeoutMinutes != 30 {
+		t.Fatal("the ci-macos job is no longer 30 minutes")
+	}
+	steps := node(t, &doc, "jobs", "macos", "steps")
+	if len(steps.Content) != 4 || node(t, steps, 3, "run").Value != "go run ./cmd/devcheck native" {
+		t.Fatalf("ci-macos steps changed: %d", len(steps.Content))
+	}
+	for i, st := range steps.Content {
+		for j := 0; j+1 < len(st.Content); j += 2 {
+			if st.Content[j].Value == "timeout-minutes" {
+				t.Fatalf("ci-macos step %d has a step timeout", i)
+			}
+		}
+	}
+}
+
+// FP-4 (design 12a-native-reale2e-budget): the two native children run
+// sequentially, either one's failure stops the stage, and the coverage and
+// benchmark tail runs only after both children and the combined
+// qualification succeed, with the unchanged success line, in eleven runner
+// calls. Proved on either host by delegating devcheck's injected-driver
+// contract by exact name (no real native suite runs).
+func TestCINativeSplitExecution(t *testing.T) {
+	const pkg = "./internal/devcheck"
+	contractRun(t, contractBinary(t, pkg), pkg, "^TestNativeSplitDriverContract$", os.Environ(),
+		"TestNativeSplitDriverContract", "TestNativeSplitDriverContract/first-child-failure", "TestNativeSplitDriverContract/second-child-failure",
+		"TestNativeSplitDriverContract/malformed-second-stream", "TestNativeSplitDriverContract/tail-suppression", "TestNativeSplitDriverContract/success")
 }
 
 // FP-6: offline structural and stage-drift validation of the real workflow.

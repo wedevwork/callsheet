@@ -41,16 +41,26 @@ const Usage = `usage:
       development flow (callsheet-dev-full-flow/v1), labelled override-flow when it differs from the default
   reale2e run-dev-full ...
       (deprecated alias of run: the same checked full flow, arguments and exits 0/1/2; it no longer exits 3)
+  reale2e run-dev-light --callsheet ABS --claude ABS --codex ABS --grok ABS --evidence ABS [--flow ABS] [--protect-root ABS ...] [--protect-depth N]
+      (same gate as run) one checked light attempt (` + DevBundleSchema + `, scenario light): the owner types
+      light <attempt-id> after the seed is prepared, before any paid call; exits as run
+  reale2e run-dev-exercise --callsheet ABS --claude ABS --codex ABS --grok ABS --evidence ABS [--flow ABS] [--protect-root ABS ...] [--protect-depth N]
+      (same gate as run) the combined exercise (` + DevExerciseSchema + `): the owner types exercise <exercise-id> once,
+      then a full attempt and a light attempt run as independent children under attempts/full and attempts/light;
+      exit 0 only when both children PASS, 1 otherwise, 2 usage, gate or schema error
   reale2e probe-dev-full --callsheet ABS --claude ABS --codex ABS --grok ABS --evidence ABS [--flow ABS] [--protect-root ABS ...] [--protect-depth N]
+      [--scenario full|light|both]
       (owner-only qualification probe, same gate as run; prints QUALIFIED or BLOCKED, never a workflow PASS;
+      --scenario light or both adds the triage and light reviewer stages (identical coverage), default full;
       exit 0 qualified, 1 blocked, 2 usage or gate error)
   reale2e check --evidence ABS
-      (a full-flow evidence/v1 bundle, or a legacy callsheet-real-e2e/v3 bundle with its legacy scope;
-      exit 0 PASS, 1 failed or incomplete evidence, 2 malformed or unsupported evidence)
+      (a development evidence/v2 bundle (full or light), a combined exercise root, a full-flow evidence/v1 bundle or
+      a legacy callsheet-real-e2e/v3 bundle, each with its own scope; exit 0 PASS, 1 failed or incomplete evidence,
+      2 malformed or unsupported evidence)
   reale2e dev-next --run ABS
   reale2e dev-observe --run ABS --ordinal N --task ID
   reale2e dev-wait-task --run ABS --ordinal N --task ID
-  reale2e dev-review-verify --task ID --candidate COMMIT --initial-source COMMIT --go ABS --deadline YYYY-MM-DDTHH:MM:SSZ
+  reale2e dev-review-verify --task ID --candidate COMMIT --initial-source COMMIT --go ABS --deadline YYYY-MM-DDTHH:MM:SSZ [--scenario full|light]
 legacy-runtime compatibility helpers (legacy run files only, never the current workflow):
   reale2e observe --run ABS --task ID --hop designer|design-reviewer|coder|code-reviewer
   reale2e wait-task --run ABS --task ID --hop designer|design-reviewer|coder|code-reviewer
@@ -87,6 +97,13 @@ type Host struct {
 	// review, when set, is dev-review-verify's injected world (tests);
 	// nil is the live checkout, clock and processes.
 	review *reviewEnv
+	// exercisePrompted, when set, runs right after the combined exercise's
+	// authorization prompt (tests type the fresh answer there).
+	exercisePrompted func(id string)
+	// exerciseAggregating, when set, runs while the combined exercise's
+	// root is checked ("check") and written ("write"); tests advance the
+	// injected clock there.
+	exerciseAggregating func(stage string)
 }
 
 // Main is the reale2e command: 0 success, 1 failure or refusal of a
@@ -103,6 +120,22 @@ type Host struct {
 func Main(goos, goarch string, args []string, getenv func(string) string, lookupEnv func(string) (string, bool), stdin io.Reader, stdout, stderr io.Writer) int {
 	return MainWith(Host{GOOS: goos, GOARCH: goarch, Args: args, Getenv: getenv, LookupEnv: lookupEnv, Stdin: stdin, Stdout: stdout, Stderr: stderr,
 		NewWorld: LiveWorld})
+}
+
+// scenarioArg is a --scenario (or -scenario) value among args ("" none),
+// read before the gate only to select the disclosure it prints.
+func scenarioArg(args []string) string {
+	for i, a := range args {
+		switch {
+		case (a == "--scenario" || a == "-scenario") && i+1 < len(args):
+			return args[i+1]
+		case strings.HasPrefix(a, "--scenario="):
+			return strings.TrimPrefix(a, "--scenario=")
+		case strings.HasPrefix(a, "-scenario="):
+			return strings.TrimPrefix(a, "-scenario=")
+		}
+	}
+	return ""
 }
 
 // usageError prints msg and the usage.
@@ -162,10 +195,15 @@ func MainWith(h Host) int {
 		return m
 	}
 	switch h.Args[0] {
-	case "run", "run-dev-full", "probe-dev-full":
+	case "run", "run-dev-full", "probe-dev-full", "run-dev-light", "run-dev-exercise":
 		bounds := DevBounds
-		if h.Args[0] == "probe-dev-full" {
-			bounds = ProbeBounds
+		switch h.Args[0] {
+		case "probe-dev-full":
+			bounds = ProbeBoundsFor(scenarioArg(h.Args[1:]))
+		case "run-dev-light":
+			bounds = LightBounds
+		case "run-dev-exercise":
+			bounds = ExerciseBounds
 		}
 		// The gate comes first: a refused live startup touches nothing.
 		if err := Gate(h.GOOS, h.Getenv, h.LookupEnv); err != nil {
@@ -180,8 +218,14 @@ func MainWith(h Host) int {
 			return 2
 		}
 		names := []string{"callsheet", "claude", "codex", "grok", "evidence", "flow", "protect-depth"}
+		if h.Args[0] == "probe-dev-full" {
+			names = append(names, "scenario")
+		}
 		var roots []string
-		v, ok := flags(h, "run", names, all("flow", "protect-depth"), all("callsheet", "claude", "codex", "grok", "evidence", "flow"), &roots)
+		v, ok := flags(h, "run", names, all("flow", "protect-depth", "scenario"), all("callsheet", "claude", "codex", "grok", "evidence", "flow"), &roots)
+		if ok && v["scenario"] != "" && !probeScopeOK(v["scenario"]) {
+			return usageError(h, "probe-dev-full takes an optional --scenario of full, light or both")
+		}
 		depth, depthOK := DefaultProtectDepth, true
 		if ok && v["protect-depth"] != "" {
 			var err error
@@ -193,12 +237,16 @@ func MainWith(h Host) int {
 				"optional absolute --protect-root directories and an optional --protect-depth from 0 to 64 (default 3)")
 		}
 		args := runArgs{callsheet: v["callsheet"], claude: v["claude"], codex: v["codex"], grok: v["grok"], evidence: v["evidence"], flow: v["flow"],
-			protectRoots: roots, protectDepth: depth}
+			protectRoots: roots, protectDepth: depth, probeScope: v["scenario"]}
 		switch {
 		case h.Args[0] == "probe-dev-full":
 			return runProbeLive(h, args)
 		case h.legacy && h.Args[0] == "run":
 			return runLive(h, args)
+		case h.Args[0] == "run-dev-light":
+			return runDevLightLive(h, args)
+		case h.Args[0] == "run-dev-exercise":
+			return runExerciseLive(h, args)
 		}
 		return runDevLive(h, args)
 	case "check":

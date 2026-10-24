@@ -114,7 +114,7 @@ func TestDevFullProductionPuller(t *testing.T) {
 
 func TestDevFullControlSocket(t *testing.T) {
 	rt := shortTemp(t)
-	body := fmt.Sprintf("{\"schema\":%q,\"run_id\":%q,\"callsheet\":\"/bin/callsheet-missing\",\"plane\":\"https://127.0.0.1:9\",\"ca\":\"/tmp/ca.pem\"}\n", DevRunSchema, helperRunID)
+	body := fmt.Sprintf("{\"schema\":%q,\"run_id\":%q,\"scenario\":\"full\",\"callsheet\":\"/bin/callsheet-missing\",\"plane\":\"https://127.0.0.1:9\",\"ca\":\"/tmp/ca.pem\"}\n", DevRunSchema, helperRunID)
 	write(t, filepath.Join(rt, RunFileName), body)
 	write(t, filepath.Join(rt, ownerMarker), helperRunID+"\n")
 	if err := os.MkdirAll(waitDir(rt, 0), 0o700); err != nil {

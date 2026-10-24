@@ -49,6 +49,10 @@ type SourceRecord struct {
 	Path   string `json:"path"`
 	Bytes  int    `json:"bytes"`
 	SHA256 string `json:"sha256"`
+	// StoragePath is a v2 capture's computed inert storage path
+	// (_captured/setup/sources/<path>.bin; absent in v1 evidence and in
+	// non-capture records).
+	StoragePath string `json:"storage_path,omitempty"`
 }
 
 // RenderedRecord names a rendered harness prompt and the sources that
@@ -61,6 +65,8 @@ type RenderedRecord struct {
 
 // DevLoaded is one capture of the shared method and the exercise files.
 type DevLoaded struct {
+	// Scenario selects the exercise's scenario prompt (full or light).
+	Scenario string
 	Files    map[string][]byte
 	Sources  []SourceRecord
 	Rendered map[string][]byte
@@ -100,14 +106,22 @@ func readLiteral(path string, limit int64) ([]byte, error) {
 // JSON at 16 KiB. The returned bytes are the capture; later edits to the
 // checkout do not change them.
 func LoadDevMethod(checkout string) (DevLoaded, error) {
+	return LoadDevMethodFor(checkout, scenarioFull)
+}
+
+// LoadDevMethodFor is LoadDevMethod for scenario: a light attempt captures
+// the light scenario prompt instead of the full one (design
+// 12a-dev-flow-light, Delivery).
+func LoadDevMethodFor(checkout, scenario string) (DevLoaded, error) {
 	var loaded DevLoaded
 	loaded.Files = map[string][]byte{}
+	loaded.Scenario = scenario
 	method := filepath.Join(checkout, filepath.FromSlash(DevFlowDir))
 	exercise := filepath.Join(checkout, filepath.FromSlash(DevFullDir))
-	for _, name := range DevMethodNames() {
+	for _, name := range DevMethodNamesFor(scenario) {
 		rel, limit := filepath.ToSlash(filepath.Join(DevFlowDir, name)), int64(maxTemplateBytes)
 		dir := method
-		if name == FlowFile || name == DevPromptFile || name == DevPhaseFile || name == DevScenario {
+		if name == FlowFile || name == DevPromptFile || name == DevPhaseFile || name == DevScenario || name == DevScenarioLight {
 			rel = filepath.ToSlash(filepath.Join(DevFullDir, name))
 			dir = exercise
 		}
@@ -137,12 +151,21 @@ func RenderDevPrompts(loaded DevLoaded, vals map[string]string) (DevLoaded, erro
 		}
 	}
 	loaded.Rendered = map[string][]byte{}
-	for _, name := range []string{DevPromptFile, DevPhaseFile, DevScenario} {
+	scenarioFile := DevScenario
+	if loaded.Scenario == scenarioLight {
+		scenarioFile = DevScenarioLight
+	}
+	for _, name := range []string{DevPromptFile, DevPhaseFile, scenarioFile} {
 		out, err := renderDevPrompt(name, loaded.Files[name], vals)
 		if err != nil {
 			return DevLoaded{}, err
 		}
-		loaded.Rendered[name] = out
+		key := name
+		if name == scenarioFile {
+			// The selected scenario prompt is the rendered scenario input.
+			key = DevScenario
+		}
+		loaded.Rendered[key] = out
 		loaded.Records = append(loaded.Records, RenderedRecord{
 			Name: name, Sources: []string{filepath.ToSlash(filepath.Join(DevFullDir, name))}, SHA256: sha256Hex(out),
 		})
@@ -187,4 +210,15 @@ func (l DevLoaded) ManualPair(role string) (instruction, runbook []byte, err err
 		return nil, nil, fmt.Errorf("dev method: role %s has no manual pair", role)
 	}
 	return ins, rb, nil
+}
+
+// captureRecords are the method sources' v2 provenance records: each
+// names its computed inert storage path.
+func captureRecords(srcs []SourceRecord) []SourceRecord {
+	out := make([]SourceRecord, 0, len(srcs))
+	for _, s := range srcs {
+		s.StoragePath = capturedPath("setup/sources/" + s.Path)
+		out = append(out, s)
+	}
+	return out
 }

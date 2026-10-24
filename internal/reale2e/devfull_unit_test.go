@@ -860,7 +860,7 @@ func TestDevFullIdentity(t *testing.T) {
 	if !ok || id.Ordinal != 4 || id.Role != "design-reviewer" || id.Mode != modeAudit || id.Round != 1 || id.Input != st.Pending.ExpectedBase {
 		t.Fatalf("%+v", id)
 	}
-	for _, bad := range []string{"", "run_id: x", strings.Replace(h, "ordinal: 4", "ordinal: 04", 1), strings.Replace(h, "scenario: full", "scenario: light", 1),
+	for _, bad := range []string{"", "run_id: x", strings.Replace(h, "ordinal: 4", "ordinal: 04", 1), strings.Replace(h, "scenario: full", "scenario: probe", 1),
 		strings.Replace(h, "round: 1", "round: -1", 1), strings.Replace(h, "role: ", "role:", 1)} {
 		if _, ok := ParseGoalHeader(bad); ok {
 			t.Errorf("parsed %q", bad)

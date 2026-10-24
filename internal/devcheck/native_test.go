@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -408,9 +409,45 @@ func requiredNames(tests []struct {
 	return out
 }
 
-// qualification is a complete synthetic tests/function stream for FP-6,
-// the plane trust tests and the node tests.
-func qualification() []evt {
+// reale2eLiteral pins NativeReale2ePackage independently of production.
+const reale2eLiteral = "github.com/wedevwork/callsheet/internal/reale2e"
+
+// reale2eTest is a synthetic test of the dedicated reale2e stream.
+const reale2eTest = "TestRealE2ESynthetic"
+
+// reale2eEvents is the second native command's complete synthetic stream:
+// internal/reale2e's sole package start, one test and its package pass
+// (design 12a-native-reale2e-budget).
+func reale2eEvents() []evt {
+	return []evt{ev("start", reale2eLiteral, ""), ev("run", reale2eLiteral, reale2eTest), ev("pass", reale2eLiteral, reale2eTest),
+		ev("output", reale2eLiteral, "").with("Output", "ok\n"), ev("pass", reale2eLiteral, "")}
+}
+
+// qualification is the complete synthetic combined native stream: the
+// first command's stream (sharedQualification) followed by the dedicated
+// reale2e command's (reale2eEvents).
+func qualification() []evt { return append(sharedQualification(), reale2eEvents()...) }
+
+// nativeRunner is a fake runner whose two native children each write their
+// own disjoint part of the combined stream evs: the events of
+// internal/reale2e to the dedicated command, every other event to the
+// first command, never the complete stream twice.
+func nativeRunner(evs []evt) *fakeRunner {
+	var shared, own []evt
+	for _, e := range evs {
+		if e["Package"] == reale2eLiteral {
+			own = append(own, e)
+		} else {
+			shared = append(shared, e)
+		}
+	}
+	return &fakeRunner{native: stream(shared...), nativeReale2e: stream(own...)}
+}
+
+// sharedQualification is a complete synthetic first-command stream: the
+// tests/function package for FP-6, the plane trust tests, the node tests
+// and every later required group, then the sidecar package's tuple.
+func sharedQualification() []evt {
 	evs := []evt{ev("start", NativePackage, ""), ev("run", NativePackage, fp6),
 		ev("output", NativePackage, fp6).with("Output", "=== RUN   TestFP6ProcessGroups\n")}
 	for _, s := range scenarios {
@@ -492,9 +529,14 @@ func (c *countingReader) Read([]byte) (int, error) { c.reads++; return 0, io.EOF
 // second sidecar invocation or enables the real smoke's tag.
 func TestNativeRealAdapterEvidence(t *testing.T) {
 	steps, _ := NativeSteps("darwin")
-	if len(steps) != 1 || !slices.Contains(steps[0].Argv, "-tags=realadaptercheck") || slices.Contains(steps[0].Argv, "./internal/sidecar") ||
-		strings.Contains(strings.Join(steps[0].Argv, " "), "realadaptersmoke") {
+	if len(steps) != 2 || !slices.Contains(steps[0].Argv, "./internal/sidecar/...") {
 		t.Fatalf("native plan %+v", steps)
+	}
+	for _, s := range steps {
+		if !slices.Contains(s.Argv, "-tags=realadaptercheck") || slices.Contains(s.Argv, "./internal/sidecar") ||
+			strings.Contains(strings.Join(s.Argv, " "), "realadaptersmoke") {
+			t.Fatalf("native plan %+v", steps)
+		}
 	}
 	q := qualification()
 	if err := check(stream(q...)); err != nil {
@@ -548,10 +590,32 @@ func TestNativeRealAdapterEvidence(t *testing.T) {
 }
 
 func TestNativeStepsAndUnsupportedOS(t *testing.T) {
+	// Design 12a-native-reale2e-budget: two commands in order, the shared
+	// patterns under 300 s, then internal/reale2e alone under 600 s, each
+	// pinned by an independent literal.
 	steps, err := NativeSteps("darwin")
-	if err != nil || len(steps) != 1 || steps[0].Name != "native" || len(steps[0].Env) != 0 ||
-		strings.Join(steps[0].Argv, " ") != "go test -json -tags=realadaptercheck -count=1 -timeout=300s ./..." {
+	if err != nil || len(steps) != 2 || steps[0].Name != "native" || len(steps[0].Env) != 0 || strings.Join(steps[0].Argv, " ") != wantNativeShared ||
+		steps[1].Name != "native reale2e" || len(steps[1].Env) != 0 || strings.Join(steps[1].Argv, " ") != wantNativeReale2e {
 		t.Fatalf("darwin plan = %+v %v", steps, err)
+	}
+	if !strings.Contains(wantNativeShared, " -timeout=300s ") || strings.Contains(wantNativeShared, "600s") || strings.Contains(wantNativeShared, "reale2e") ||
+		!strings.HasSuffix(wantNativeReale2e, " -timeout=600s ./internal/reale2e") || strings.Contains(wantNativeReale2e, "300s") {
+		t.Fatal("the 300s and 600s literals are not pinned independently")
+	}
+	// Fresh argv: mutating a returned plan changes neither the next plan
+	// nor the shared race patterns.
+	saved := slices.Clone(RaceSharedPackages)
+	for _, s := range steps {
+		for i := range s.Argv {
+			s.Argv[i] = "mutated"
+		}
+	}
+	again, _ := NativeSteps("darwin")
+	if strings.Join(argvOf(again), "|") != wantNative || !slices.Equal(RaceSharedPackages, saved) {
+		t.Fatalf("NativeSteps aliases its argv: %v, race patterns %v", argvOf(again), RaceSharedPackages)
+	}
+	if strings.Join(argvOf(TestSteps("linux")), "|") != wantTestPlanLinux {
+		t.Fatal("the race plan changed")
 	}
 	for _, goos := range []string{"linux", "windows", "freebsd", ""} {
 		if steps, err := NativeSteps(goos); err == nil || steps != nil || !strings.Contains(err.Error(), fmt.Sprintf("unsupported on %q", goos)) {
@@ -809,7 +873,8 @@ func TestStagesMatchDispatch(t *testing.T) {
 	}
 	for _, goos := range []string{"linux", "darwin"} {
 		for _, st := range Stages() {
-			f := &fakeRunner{coverTotal: "90%", cmdList: cmdList, profile: goodProfile, native: stream(qualification()...)}
+			f := nativeRunner(qualification())
+			f.coverTotal, f.cmdList, f.profile = "90%", cmdList, goodProfile
 			// Linux test, all and container-e2e need the synthetic
 			// container evidence; Darwin never invokes the container.
 			var r runnerLike = f
@@ -879,7 +944,8 @@ func TestAdvertisedStageMustBeImplemented(t *testing.T) {
 }
 
 func TestNativeStageRunFor(t *testing.T) {
-	f := &fakeRunner{native: stream(qualification()...), nativeErr: "go: downloading nothing\n"}
+	f := nativeRunner(qualification())
+	f.nativeErr = "go: downloading nothing\n"
 	code, out, errOut := runDriver(t, "darwin", f, "native")
 	if code != 0 {
 		t.Fatalf("native = %d %s", code, errOut)
@@ -888,18 +954,19 @@ func TestNativeStageRunFor(t *testing.T) {
 	// workspace benchmarks; iteration 09b: then the transfer benchmarks;
 	// iteration 10b: then the task workspace benchmarks; non-blocking
 	// coordinator waits: then the client wait benchmark; decoder
-	// enrollment: then the qualification harness's benchmark (9 ordinary
-	// calls).
-	if len(f.calls) != 10 || strings.Join(f.calls[0].argv, " ") != "go test -json -tags=realadaptercheck -count=1 -timeout=300s ./..." || f.calls[0].dir != "" ||
-		strings.Join(f.calls[4].argv, " ") != strings.Join(WorkspaceBenchStep().Argv, " ") ||
-		strings.Join(f.calls[5].argv, " ") != strings.Join(TransferBenchStep().Argv, " ") ||
-		strings.Join(f.calls[6].argv, " ") != strings.Join(TaskWorkspaceBenchStep().Argv, " ") ||
-		strings.Join(f.calls[7].argv, " ") != "go test ./internal/client -run=^$ -bench=^BenchmarkWaitUntilDone$ -benchmem -benchtime=3x -count=1 -timeout=180s" ||
-		strings.Join(f.calls[8].argv, " ") != "go test ./internal/mcpqual -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s" ||
-		strings.Join(f.calls[9].argv, " ") != strings.Join(RealE2EDevBenchStep().Argv, " ") {
+	// enrollment: then the qualification harness's benchmark; design
+	// 12a-native-reale2e-budget: two qualification commands (11 calls).
+	if len(f.calls) != 11 || strings.Join(f.calls[0].argv, " ") != wantNativeShared || f.calls[0].dir != "" ||
+		strings.Join(f.calls[1].argv, " ") != wantNativeReale2e || f.calls[1].dir != "" ||
+		strings.Join(f.calls[5].argv, " ") != strings.Join(WorkspaceBenchStep().Argv, " ") ||
+		strings.Join(f.calls[6].argv, " ") != strings.Join(TransferBenchStep().Argv, " ") ||
+		strings.Join(f.calls[7].argv, " ") != strings.Join(TaskWorkspaceBenchStep().Argv, " ") ||
+		strings.Join(f.calls[8].argv, " ") != "go test ./internal/client -run=^$ -bench=^BenchmarkWaitUntilDone$ -benchmem -benchtime=3x -count=1 -timeout=180s" ||
+		strings.Join(f.calls[9].argv, " ") != "go test ./internal/mcpqual -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s" ||
+		strings.Join(f.calls[10].argv, " ") != strings.Join(RealE2EDevBenchStep().Argv, " ") {
 		t.Fatalf("calls = %+v", f.argvs())
 	}
-	if !strings.Contains(strings.Join(f.calls[0].env, "\n"), "PATH=") {
+	if !strings.Contains(strings.Join(f.calls[0].env, "\n"), "PATH=") || !strings.Contains(strings.Join(f.calls[1].env, "\n"), "PATH=") {
 		t.Fatal("child env must extend the parent environment")
 	}
 	if !strings.Contains(out, "devcheck: native qualification passed on darwin/") || !strings.Contains(out, "TestFP6ProcessGroups/leader-exits-first") ||
@@ -913,7 +980,7 @@ func TestNativeStageRunFor(t *testing.T) {
 		t.Fatal("successful scratch not deleted")
 	}
 	for _, goos := range []string{"linux", "windows", "freebsd", ""} {
-		f := &fakeRunner{native: stream(qualification()...)}
+		f := nativeRunner(qualification())
 		code, out, errOut := runDriver(t, goos, f, "native")
 		if code != 1 || len(f.calls) != 0 || !strings.Contains(errOut, "stage native FAILED") || !strings.Contains(errOut, "darwin only") {
 			t.Fatalf("%q native = %d calls=%d %s", goos, code, len(f.calls), errOut)
@@ -932,7 +999,7 @@ func TestNativeStageFailuresRetainScratch(t *testing.T) {
 	f := &fakeRunner{fail: "-json"}
 	code, out, errOut := runDriver(t, "darwin", f, "native")
 	scratch := scratchFrom(out)
-	if code != 1 || !strings.Contains(errOut, "native failed: go test -json -tags=realadaptercheck -count=1 -timeout=300s ./...: exit status 1") ||
+	if code != 1 || len(f.calls) != 1 || !strings.Contains(errOut, "native failed: "+wantNativeShared+": exit status 1") ||
 		!strings.Contains(errOut, "boom from child") || !strings.Contains(errOut, "logs retained in "+scratch) {
 		t.Fatalf("child failure = %d %s", code, errOut)
 	}
@@ -941,7 +1008,7 @@ func TestNativeStageFailuresRetainScratch(t *testing.T) {
 	}
 	os.RemoveAll(scratch)
 	// Successful exit with missing evidence fails validation.
-	f = &fakeRunner{native: stream(without(qualification(), "run", fp6+"/resistant")...)}
+	f = nativeRunner(without(qualification(), "run", fp6+"/resistant"))
 	code, out, errOut = runDriver(t, "darwin", f, "native")
 	scratch = scratchFrom(out)
 	if code != 1 || !strings.Contains(errOut, unobserved) || !strings.Contains(errOut, filepath.Join(scratch, "native-events.jsonl")) ||
@@ -967,6 +1034,16 @@ func newDriver(t *testing.T, run Runner) (*driver, *bytes.Buffer, *bytes.Buffer)
 	return &driver{ctx: context.Background(), run: run, out: &out, errOut: &errOut, scratch: t.TempDir(), goos: "darwin"}, &out, &errOut
 }
 
+// childStream is each native child's own synthetic stream: the dedicated
+// reale2e command's, or the first command's (design
+// 12a-native-reale2e-budget).
+func childStream(argv []string) string {
+	if slices.Contains(argv, "./internal/reale2e") {
+		return stream(reale2eEvents()...)
+	}
+	return stream(sharedQualification()...)
+}
+
 func TestNativeDriverStreams(t *testing.T) {
 	// stderr carrying a JSON failure event must never reach the parser.
 	bogus := `{"Action":"fail","Package":"x"}` + "\n"
@@ -977,7 +1054,7 @@ func TestNativeDriverStreams(t *testing.T) {
 			// a qualified native run.
 			return cover.run(ctx, argv, env, dir, stdout, stderr)
 		}
-		io.WriteString(stdout, stream(qualification()...))
+		io.WriteString(stdout, childStream(argv))
 		io.WriteString(stderr, bogus)
 		return nil
 	}
@@ -986,12 +1063,14 @@ func TestNativeDriverStreams(t *testing.T) {
 	if err := d.native(steps); err != nil {
 		t.Fatalf("native: %v", err)
 	}
+	// Both children append to the one event file, in order, and both
+	// stderr streams reach the log only.
 	events, _ := os.ReadFile(filepath.Join(d.scratch, "native-events.jsonl"))
 	stderrLog, _ := os.ReadFile(filepath.Join(d.scratch, "native-stderr.log"))
-	if string(events) != stream(qualification()...) || string(stderrLog) != bogus {
+	if string(events) != stream(sharedQualification()...)+stream(reale2eEvents()...) || string(events) != stream(qualification()...) || string(stderrLog) != bogus+bogus {
 		t.Fatalf("events=%q stderr=%q", events, stderrLog)
 	}
-	if errOut.String() != bogus || strings.Contains(out.String(), bogus) {
+	if errOut.String() != bogus+bogus || strings.Contains(out.String(), bogus) {
 		t.Fatalf("user streams: out=%q err=%q", out, errOut)
 	}
 	// Fail fast: a later child never runs after a failure, even if an
@@ -1014,8 +1093,8 @@ func TestNativeDriverStreams(t *testing.T) {
 }
 
 func TestNativeDriverFileFailures(t *testing.T) {
-	ok := func(_ context.Context, _, _ []string, _ string, stdout, _ io.Writer) error {
-		io.WriteString(stdout, stream(qualification()...))
+	ok := func(_ context.Context, argv, _ []string, _ string, stdout, _ io.Writer) error {
+		io.WriteString(stdout, childStream(argv))
 		return nil
 	}
 	steps, _ := NativeSteps("darwin")
@@ -1383,4 +1462,289 @@ func TestNativeDecoderEnrollmentB3Evidence(t *testing.T) {
 	if _, err := NativeSteps("darwin"); err != nil || len(BenchSteps()) != 14 || len(NativeBenchSteps()) != 6 {
 		t.Fatalf("native steps %v, %d bench steps", err, len(BenchSteps()))
 	}
+}
+
+// --- design 12a-native-reale2e-budget: the split native qualification ---
+
+// nativeSelections are a native plan's package patterns, one list per
+// step (every argument after "go test" that is not a flag).
+func nativeSelections(plan []Step) [][]string {
+	var out [][]string
+	for _, s := range plan {
+		var pats []string
+		for _, a := range s.Argv[2:] {
+			if !strings.HasPrefix(a, "-") {
+				pats = append(pats, a)
+			}
+		}
+		out = append(out, pats)
+	}
+	return out
+}
+
+// TestNativeSelectionCoversModule (FP-1) is the tagged counterpart of
+// TestRaceSelectionCoversModule for Darwin's two native commands, executed
+// by name from tests/function (TestCIDarwinQualification). Each command's
+// actual patterns resolve separately with go list -tags=realadaptercheck
+// (go list deduplicates within one invocation, never across commands):
+// every package of go list -tags=realadaptercheck ./... is selected exactly
+// once, nothing else is; internal/reale2e is absent from the 300-second
+// command and the sole package of the 600-second one, and internal/sidecar
+// (the tagged contract's package) is in the first command only. Discovery
+// errors and warnings fail (goList). Selections are resolved, not compared
+// as strings, so an enclosing pattern such as ./internal/... is caught. On
+// Darwin this proves the actual target package set; on Linux it is an
+// additional early check. Do not rename or skip.
+func TestNativeSelectionCoversModule(t *testing.T) {
+	const tag = "-tags=realadaptercheck"
+	const sidecar = "github.com/wedevwork/callsheet/internal/sidecar"
+	all := goList(t, tag, "./...")
+	if !slices.Contains(all, reale2eLiteral) || !slices.Contains(all, sidecar) {
+		t.Fatalf("go list %s ./... lacks reale2e or sidecar: %v", tag, all)
+	}
+	check := func(plan []Step) []string {
+		sel := nativeSelections(plan)
+		if len(sel) != 2 {
+			return []string{fmt.Sprintf("%d native commands, want 2", len(sel))}
+		}
+		first, second := goList(t, append([]string{tag}, sel[0]...)...), goList(t, append([]string{tag}, sel[1]...)...)
+		counts := map[string]int{}
+		for _, p := range append(slices.Clone(first), second...) {
+			counts[p]++
+		}
+		var bad []string
+		for _, p := range all {
+			if counts[p] != 1 {
+				bad = append(bad, fmt.Sprintf("%s selected by %d native commands, want 1", p, counts[p]))
+			}
+			delete(counts, p)
+		}
+		for p, n := range counts {
+			bad = append(bad, fmt.Sprintf("%s (outside ./...) selected by %d native commands", p, n))
+		}
+		if slices.Contains(first, reale2eLiteral) {
+			bad = append(bad, "the 300s command selects "+reale2eLiteral)
+		}
+		if !slices.Equal(second, []string{reale2eLiteral}) {
+			bad = append(bad, fmt.Sprintf("the 600s command selects %v, want %s alone", second, reale2eLiteral))
+		}
+		if !slices.Contains(first, sidecar) || slices.Contains(second, sidecar) {
+			bad = append(bad, "the sidecar is not selected by the first command only")
+		}
+		slices.Sort(bad)
+		return bad
+	}
+	plan, err := NativeSteps("darwin")
+	if err != nil || len(plan) != 2 || !slices.Contains(plan[0].Argv, "-timeout=300s") || !slices.Contains(plan[1].Argv, "-timeout=600s") ||
+		!slices.Contains(plan[0].Argv, tag) || !slices.Contains(plan[1].Argv, tag) {
+		t.Fatalf("native plan %+v %v", plan, err)
+	}
+	if bad := check(plan); len(bad) != 0 {
+		t.Errorf("the native selections do not cover the tagged module once each:\n%s", strings.Join(bad, "\n"))
+	}
+	// Planted negatives, each a copy of the real plan with one change.
+	planted := func(i int, edit func([]string) []string) []Step {
+		p, _ := NativeSteps("darwin")
+		p[i].Argv = edit(p[i].Argv)
+		return p
+	}
+	has := func(bad []string, want string) bool {
+		return slices.ContainsFunc(bad, func(b string) bool { return strings.Contains(b, want) })
+	}
+	// A duplicate: the second command also selects a shared package.
+	dup := check(planted(1, func(a []string) []string { return append(a, "./internal/mcp/...") }))
+	if !has(dup, "/internal/mcp selected by 2 native commands") || !has(dup, "the 600s command selects") {
+		t.Errorf("a planted duplicate: %v", dup)
+	}
+	// An omission: the first command loses one pattern.
+	omit := check(planted(0, func(a []string) []string {
+		return slices.DeleteFunc(a, func(s string) bool { return s == "./internal/workspace/..." })
+	}))
+	if len(omit) != 1 || !has(omit, "/internal/workspace selected by 0 native commands") {
+		t.Errorf("a planted omission: %v", omit)
+	}
+	// A wrong 300s selection: the old ./..., or an enclosing pattern that
+	// only resolution reveals, puts internal/reale2e under 300 s.
+	for name, pats := range map[string][]string{"./...": {"./..."}, "./internal/...": {"./cmd/...", "./internal/...", "./tests/..."}} {
+		wrong := check(planted(0, func(a []string) []string { return append(slices.Clone(a[:6]), pats...) }))
+		if !has(wrong, "/internal/reale2e selected by 2 native commands") || !has(wrong, "the 300s command selects "+reale2eLiteral) {
+			t.Errorf("a planted %s first command: %v", name, wrong)
+		}
+	}
+	// The sidecar moved to the second command.
+	moved := check(planted(1, func(a []string) []string { return append(a, "./internal/sidecar") }))
+	if !has(moved, "the sidecar is not selected by the first command only") {
+		t.Errorf("a planted second sidecar: %v", moved)
+	}
+	if bad := check(planted(1, func(a []string) []string { return a })[:1]); len(bad) != 1 || bad[0] != "1 native commands, want 2" {
+		t.Errorf("a one-command plan: %v", bad)
+	}
+}
+
+// TestNativeReale2eEvidence (FP-2): the combined stream of the two native
+// commands qualifies with internal/reale2e's sole start, its tests and its
+// package pass after a valid first stream; a missing, failed, skipped or
+// truncated reale2e stream, any package started by both commands (the
+// sidecar, tests/function or reale2e itself) and missing existing function
+// or sidecar evidence each fail.
+func TestNativeReale2eEvidence(t *testing.T) {
+	if NativeReale2ePackage != "github.com/wedevwork/callsheet/internal/reale2e" || reale2eLiteral != NativeReale2ePackage {
+		t.Fatalf("NativeReale2ePackage = %q", NativeReale2ePackage)
+	}
+	r, sc := reale2eLiteral, NativeTaskProcessPackage
+	shared, own := sharedQualification(), reale2eEvents()
+	first := stream(shared...)
+	if err := check(first + stream(own...)); err != nil {
+		t.Fatalf("a valid first stream followed by the reale2e stream: %v", err)
+	}
+	mustFail(t, "missing reale2e", first, "package "+r+" has no start event", unobserved)
+	mustFail(t, "reale2e only", stream(own...), "package "+NativePackage+" has no start event", unobserved)
+	mustFail(t, "unfinished reale2e", first+stream(own[:3]...), "package "+r+" did not finish")
+	full := first + stream(own...)
+	mustFail(t, "torn reale2e", full[:len(full)-9], "malformed event stream after")
+	mustFail(t, "failed reale2e test", first+stream(replacing(own, "pass", reale2eTest, ev("fail", r, reale2eTest))...), "test "+reale2eTest+" in "+r+" failed")
+	mustFail(t, "skipped reale2e test", first+stream(replacing(own, "pass", reale2eTest, ev("skip", r, reale2eTest))...), "test "+reale2eTest+" in "+r+" skipped: "+unobserved)
+	mustFail(t, "failed reale2e package", first+stream(append(slices.Clone(own[:4]), ev("fail", r, ""))...), "package "+r+" failed")
+	mustFail(t, "skipped reale2e package", first+stream(ev("start", r, ""), ev("output", r, "").with("Output", "?   \t"+r+"\t[no test files]\n"), ev("skip", r, "")),
+		"package "+r+" has no pass event", unobserved)
+	mustFail(t, "build-failed reale2e", first+stream(evt{"ImportPath": r + " [" + r + ".test]", "Action": "build-fail"}), "build failed for "+r)
+	// Duplicate starts across the two commands.
+	mustFail(t, "reale2e in both commands", stream(append(slices.Clone(shared), own...)...)+stream(own...), "package "+r+" started twice")
+	mustFail(t, "sidecar in both commands", first+stream(append(slices.Clone(own), ev("start", sc, ""), ev("run", sc, realLocal[0]), ev("pass", sc, realLocal[0]), ev("pass", sc, ""))...),
+		"package "+sc+" started twice")
+	mustFail(t, "function package in both commands", first+stream(append([]evt{ev("start", NativePackage, "")}, own...)...), "package "+NativePackage+" started twice")
+	// The existing evidence stays required beside a passing reale2e.
+	mustFail(t, "function evidence missing", stream(without(without(shared, "run", fp6), "pass", fp6)...)+stream(own...), fp6+" has no run event", unobserved)
+	mustFail(t, "sidecar evidence missing", stream(without(without(shared, "run", realLocal[0]), "pass", realLocal[0])...)+stream(own...),
+		realLocal[0]+" in "+sc+" has no run event", unobserved)
+	// A reale2e result under another package name never satisfies it.
+	var renamed []evt
+	for _, e := range own {
+		c := evt{}
+		for k, v := range e {
+			c[k] = v
+		}
+		c["Package"] = r + "other"
+		renamed = append(renamed, c)
+	}
+	mustFail(t, "renamed reale2e", first+stream(renamed...), "package "+r+" has no start event")
+	// Only the reale2e package is reported missing.
+	if err := check(first); strings.Count(err.Error(), " has no ") != 1 {
+		t.Fatalf("missing reale2e: %v", err)
+	}
+}
+
+// TestNativeSplitDriverContract (FP-4) is executed by name from
+// tests/function (TestCINativeSplitExecution). Through the injected Darwin
+// driver (fake runner, no real native suite) on any host: the two native
+// children run in order and the first child's failure stops before the
+// second; the second child's failure, a malformed second stream or a
+// combined stream without reale2e's pass each stop before qualification
+// succeeds, with the scratch logs retained and no coverage or benchmark
+// child; success prints the unchanged qualification line once, after both
+// children and before the tail, in eleven runner calls. Do not rename or
+// skip.
+func TestNativeSplitDriverContract(t *testing.T) {
+	const passed = "devcheck: native qualification passed on "
+	noTail := func(t *testing.T, f *fakeRunner, n int, out string) {
+		t.Helper()
+		if len(f.calls) != n || strings.Contains(out, passed) || strings.Contains(out, "devcheck: coverage: ") || strings.Contains(out, "devcheck: bench ") ||
+			strings.Contains(out, "stage native ok") {
+			t.Fatalf("%d calls %v, want %d and no tail:\n%s", len(f.calls), f.argvs(), n, out)
+		}
+		for i, c := range f.calls {
+			if want := []string{wantNativeShared, wantNativeReale2e}[i]; strings.Join(c.argv, " ") != want {
+				t.Fatalf("call %d = %v, want %s", i, c.argv, want)
+			}
+		}
+	}
+	retained := func(t *testing.T, out, errOut, wantEvents string) {
+		t.Helper()
+		scratch := scratchFrom(out)
+		defer os.RemoveAll(scratch)
+		events, err := os.ReadFile(filepath.Join(scratch, "native-events.jsonl"))
+		if scratch == "" || err != nil || string(events) != wantEvents || !strings.Contains(errOut, "logs retained in "+scratch) {
+			t.Fatalf("scratch %q not retained with the streams so far (%v): %q\n%s", scratch, err, events, errOut)
+		}
+		if _, err := os.Stat(filepath.Join(scratch, "native-stderr.log")); err != nil {
+			t.Fatalf("stderr log not retained: %v", err)
+		}
+	}
+	t.Run("first-child-failure", func(t *testing.T) {
+		f := nativeRunner(qualification())
+		f.fail = "-timeout=300s"
+		code, out, errOut := runDriver(t, "darwin", f, "native")
+		if code != 1 || !strings.Contains(errOut, "stage native FAILED") || !strings.Contains(errOut, "native failed: "+wantNativeShared+": exit status 1") ||
+			!strings.Contains(errOut, "boom from child") || strings.Contains(out, "devcheck: native reale2e: ") {
+			t.Fatalf("first child failure = %d\n%s\n%s", code, out, errOut)
+		}
+		noTail(t, f, 1, out)
+		retained(t, out, errOut, "")
+	})
+	t.Run("second-child-failure", func(t *testing.T) {
+		f := nativeRunner(qualification())
+		f.fail = "-timeout=600s"
+		code, out, errOut := runDriver(t, "darwin", f, "native")
+		if code != 1 || !strings.Contains(errOut, "stage native FAILED") || !strings.Contains(errOut, "native reale2e failed: "+wantNativeReale2e+": exit status 1") ||
+			!strings.Contains(errOut, "boom from child") || !strings.Contains(out, "devcheck: native reale2e: "+wantNativeReale2e+"\n") {
+			t.Fatalf("second child failure = %d\n%s\n%s", code, out, errOut)
+		}
+		noTail(t, f, 2, out)
+		retained(t, out, errOut, stream(sharedQualification()...))
+	})
+	t.Run("malformed-second-stream", func(t *testing.T) {
+		f := nativeRunner(qualification())
+		f.nativeReale2e = f.nativeReale2e[:len(f.nativeReale2e)-9]
+		code, out, errOut := runDriver(t, "darwin", f, "native")
+		if code != 1 || !strings.Contains(errOut, "malformed event stream after") || !strings.Contains(errOut, "native-events.jsonl") {
+			t.Fatalf("malformed second stream = %d\n%s", code, errOut)
+		}
+		noTail(t, f, 2, out)
+		retained(t, out, errOut, f.native+f.nativeReale2e)
+	})
+	t.Run("tail-suppression", func(t *testing.T) {
+		// Both children exit zero, but the combined stream lacks reale2e's
+		// start or its package pass: no qualification, no tail.
+		for name, c := range map[string]struct{ second, want string }{
+			"absent":  {"", "package " + reale2eLiteral + " has no start event"},
+			"skipped": {stream(ev("start", reale2eLiteral, ""), ev("skip", reale2eLiteral, "")), "package " + reale2eLiteral + " has no pass event"},
+		} {
+			f := nativeRunner(sharedQualification())
+			f.nativeReale2e = c.second
+			code, out, errOut := runDriver(t, "darwin", f, "native")
+			if code != 1 || !strings.Contains(errOut, c.want) || !strings.Contains(errOut, unobserved) {
+				t.Fatalf("%s = %d\n%s", name, code, errOut)
+			}
+			noTail(t, f, 2, out)
+			retained(t, out, errOut, f.native+c.second)
+		}
+	})
+	t.Run("success", func(t *testing.T) {
+		f := nativeRunner(qualification())
+		code, out, errOut := runDriver(t, "darwin", f, "native")
+		os.RemoveAll(scratchFrom(out))
+		// Two qualification children, the three coverage children (the
+		// profile run, its report and the cmd listing, scratch paths
+		// varying), then the six native benchmarks in their order.
+		want := []string{wantNativeShared, wantNativeReale2e, "go test -count=1 -tags=realadaptercheck -covermode=atomic -coverpkg=./internal/...,./cmd/... -coverprofile=",
+			"go tool cover -func=", "go list -f {{.ImportPath}}|{{len .GoFiles}} ./cmd/...",
+			wantBenchWorkspace, wantBenchTransfer, wantBenchTaskWorkspace, wantBenchClientWait, wantBenchMCPQual, wantBenchDevFull}
+		a := f.argvs()
+		if code != 0 || len(a) != len(want) || len(want) != 11 {
+			t.Fatalf("success = %d %v\n%s", code, a, errOut)
+		}
+		for i, w := range want {
+			if prefix := i == 2 || i == 3; (prefix && !strings.HasPrefix(a[i], w)) || (!prefix && a[i] != w) {
+				t.Fatalf("call %d = %q, want %q", i, a[i], w)
+			}
+		}
+		// The unchanged success line, once, between the two children and
+		// the tail.
+		line := "devcheck: native qualification passed on darwin/" + runtime.GOARCH + ": github.com/wedevwork/callsheet/tests/function: " + strings.Join(NativeRequiredTests(), ", ") + "\n"
+		at := []int{strings.Index(out, "devcheck: native: "+wantNativeShared+"\n"), strings.Index(out, "devcheck: native reale2e: "+wantNativeReale2e+"\n"),
+			strings.Index(out, line), strings.Index(out, "devcheck: coverage: "), strings.Index(out, "devcheck: bench reale2e dev-full: "), strings.Index(out, "stage native ok")}
+		if strings.Count(out, line) != 1 || strings.Count(out, passed) != 1 || !slices.IsSorted(at) || at[0] < 0 || slices.Contains(at, -1) {
+			t.Fatalf("output order %v:\n%s", at, out)
+		}
+	})
 }

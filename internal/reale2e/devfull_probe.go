@@ -2,12 +2,15 @@ package reale2e
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
+	"sort"
 	"strings"
 
 	git "github.com/go-git/go-git/v5"
@@ -79,7 +82,8 @@ const devProbePhasePrompt = `Qualification probe {{RUN_ID}}, phase {{PHASE}} of 
 `
 
 // probePromptKeys are the probe prompts' only placeholders.
-var probePromptKeys = append(slices.Clone(DevPromptKeys), "PHASE", "PROBE_TASKS", "PHASE_END")
+var probePromptKeys = append(slices.Clone(DevPromptKeys), "PHASE", "PROBE_TASKS", "PHASE_END", "PROBE_SCOPE", "LIGHT_WORKSPACE", "LIGHT_INSTANCE",
+	"LIGHT_SEED_PATH", "LIGHT_SEED_COMMIT", "LIGHT_CANDIDATE_PATH")
 
 // devProbe is one qualification probe's state.
 type devProbe struct {
@@ -98,6 +102,10 @@ type devProbe struct {
 	reviewC  string
 	stages   []DevProbeStage
 	result   string
+	// scope is the probe's --scenario (full, light or both) and light the
+	// light and both scopes' second workspace (design 12a-dev-flow-light).
+	scope string
+	light *probeLight
 }
 
 // DevProbeStage is one qualification stage's result.
@@ -113,6 +121,9 @@ type DevProbeSource struct {
 	Bytes  int    `json:"bytes"`
 	SHA256 string `json:"sha256"`
 	Origin string `json:"origin"`
+	// StoragePath is a v2 fixture capture's computed inert storage path
+	// (absent in v1 records and for prompts, which are not captures).
+	StoragePath string `json:"storage_path,omitempty"`
 }
 
 // DevQualification is qualification.json.
@@ -148,6 +159,13 @@ type DevQualification struct {
 	AttemptDeadline  string              `json:"attempt_deadline"`
 	Render           map[string]string   `json:"render"`
 	Inventory        []InventoryEntry    `json:"inventory"`
+	// Scope and StageCoverage are a v2 record's requested scope and its
+	// stage coverage in order; Light is the light and both scopes' light
+	// record (design 12a-dev-flow-light). A v1 record has none: its scope
+	// is full only.
+	Scope         string         `json:"scope,omitempty"`
+	StageCoverage []string       `json:"stage_coverage,omitempty"`
+	Light         *DevProbeLight `json:"light,omitempty"`
 }
 
 // Probe results.
@@ -174,7 +192,7 @@ func runProbeLive(h Host, a runArgs) int {
 		known: map[string]string{}, stoppedSet: map[*child]bool{}, reqs: make(chan ctrlMsg), loopDone: make(chan struct{}), envPolicy: envPolicyDev}
 	d := &devSupervisor{s: s, manuals: map[string][2]string{}, receiptBytes: map[int][]byte{}, trees: map[string]map[string]TreeFile{},
 		finals: map[string]string{}, sweeps: sweepRecorder{clock: w.Clock}}
-	d.probe = &devProbe{d: d, prompts: map[int][]byte{}}
+	d.probe = &devProbe{d: d, prompts: map[int][]byte{}, scope: cmpOr(a.probeScope, probeScopeFull)}
 	if h.observeProbe != nil {
 		h.observeProbe(d.probe)
 	}
@@ -189,7 +207,7 @@ func runProbeLive(h Host, a runArgs) int {
 func (d *devSupervisor) probeStart() error {
 	steps := []func() error{d.s.printPermissionTemplate, d.hashExecutable, d.s.protectedRoots, d.s.baselineSnapshot, d.loadSelection,
 		d.versionProbes, d.s.createRuntime, d.s.renderPermissions, d.extraDirs, d.deployDev, d.preflightDev, d.probe.models, d.probe.fixtureDev,
-		d.probe.openControl, d.activateTerminal, d.probe.firstPlan, d.launchPhase}
+		d.probe.lightFixture, d.probe.openControl, d.activateTerminal, d.probe.firstPlan, d.launchPhase}
 	for _, f := range steps {
 		switch {
 		case d.s.ctx.Err() != nil:
@@ -237,7 +255,7 @@ func (p *devProbe) fixtureDev() error {
 			return failure("fixture_missing", fmt.Errorf("probe fixture %s: %w", name, err))
 		}
 		p.fixture[name] = b
-		if !d.writeEvidence("setup/probe-fixture/"+name, b) {
+		if !d.writeEvidence(capturedPath("setup/probe-fixture/"+name), b) {
 			return failure(d.stopCode, errors.New(d.stopReason))
 		}
 	}
@@ -361,6 +379,10 @@ func probePhaseValues(vals map[string]string, n int) map[string]string {
 	out["PROBE_TASKS"] = fmt.Sprintf("one harmless designer wake task (namespace %s, ordinal %d)", probeWakeNamespace, n)
 	if n == maxProbePhases {
 		out["PROBE_TASKS"] += fmt.Sprintf(", then one code-reviewer probe task on the known-good fixture (namespace %s, ordinal %d)", probeReviewNamespace, probeReviewerOrdinal)
+		if probeLightScope(vals["PROBE_SCOPE"]) {
+			out["PROBE_TASKS"] += fmt.Sprintf(", then one triage probe task on the light seed (namespace %s, ordinal %d) and, after the light candidate push, one light code-reviewer probe task (namespace %s, ordinal %d)",
+				probeTriageNamespace, probeTriageOrdinal, probeLightReviewNamespace, probeLightReviewOrdinal)
+		}
 	}
 	return out
 }
@@ -378,7 +400,7 @@ func probePhaseEnd(n int) string {
 // provenance and opens the control socket.
 func (p *devProbe) openControl() error {
 	d := p.d
-	b, err := encodeJSON(DevRunFile{Schema: DevRunSchema, RunID: d.s.runID, Callsheet: d.s.args.callsheet, Plane: d.s.dep.url, CA: d.s.dep.caPath})
+	b, err := encodeJSON(DevRunFile{Schema: DevRunSchema, RunID: d.s.runID, Scenario: "probe", Callsheet: d.s.args.callsheet, Plane: d.s.dep.url, CA: d.s.dep.caPath})
 	if err != nil {
 		return failure("runtime_unavailable", err)
 	}
@@ -396,10 +418,12 @@ func (p *devProbe) openControl() error {
 	vals := map[string]string{"RUN_ID": d.s.runID, "RUNTIME": d.s.runtime, "PLANE_URL": d.s.dep.url, "CA_PATH": d.s.dep.caPath,
 		"REALE2E": d.s.w.Executable, "WORKSPACE": d.s.workspace.Name, "INSTANCE": d.s.workspace.Instance, "SEED_PATH": p.repoPath,
 		"SEED_COMMIT": p.cand.String(), "COORD_DIR": filepath.Join(d.s.runtime, "coord")}
+	p.lightValues(vals)
 	d.manifest.Render = vals
 	d.helper = reviewHelperSpec{Reale2e: d.s.w.Executable, Go: d.s.goBin, Deadline: formatHelperDeadline(d.attemptDeadline())}
 	d.manifest.Helper = d.helper
-	sys, err := renderProbePrompt("devProbeSystemPrompt", devProbeSystemPrompt, vals)
+	tpl, tplName := probeSystemTemplate(p.scope)
+	sys, err := renderProbePrompt(tplName, tpl, vals)
 	if err != nil {
 		return failure("prompt_render_failed", err)
 	}
@@ -414,7 +438,7 @@ func (p *devProbe) openControl() error {
 	if err != nil {
 		return failure("internal_error", err)
 	}
-	writes := map[string][]byte{probeSystemSourceFile: []byte(devProbeSystemPrompt), probePhaseSourceFile: []byte(devProbePhasePrompt),
+	writes := map[string][]byte{probeSystemSourceFile: []byte(tpl), probePhaseSourceFile: []byte(devProbePhasePrompt),
 		probeSystemFile: p.system, "setup/mcp-config.json": sanitized}
 	for n := 1; n <= maxProbePhases; n++ {
 		writes[fmt.Sprintf("setup/probe-phase-%d.md", n)] = p.prompts[n]
@@ -436,13 +460,18 @@ func (p *devProbe) openControl() error {
 // probePrompts is the qualification record's prompt provenance.
 func (p *devProbe) probePrompts() []DevProbeSource {
 	origin := "internal/reale2e/devfull_probe.go:"
+	tpl, tplName := probeSystemTemplate(p.scope)
+	tplOrigin := origin + tplName
+	if probeLightScope(p.scope) {
+		tplOrigin = "internal/reale2e/devlight_probe.go:" + tplName
+	}
 	out := []DevProbeSource{
-		{Path: probeSystemSourceFile, Bytes: len(devProbeSystemPrompt), SHA256: sha256Hex([]byte(devProbeSystemPrompt)), Origin: origin + "devProbeSystemPrompt"},
+		{Path: probeSystemSourceFile, Bytes: len(tpl), SHA256: sha256Hex([]byte(tpl)), Origin: tplOrigin},
 		{Path: probePhaseSourceFile, Bytes: len(devProbePhasePrompt), SHA256: sha256Hex([]byte(devProbePhasePrompt)), Origin: origin + "devProbePhasePrompt"},
 	}
 	if p.system != nil {
 		out = append(out, DevProbeSource{Path: probeSystemFile, Bytes: len(p.system), SHA256: sha256Hex(p.system),
-			Origin: DevFlowDir + "/" + DevPlaybook + " + " + origin + "devProbeSystemPrompt"})
+			Origin: DevFlowDir + "/" + DevPlaybook + " + " + tplOrigin})
 	}
 	for n := 1; n <= maxProbePhases; n++ {
 		if b := p.prompts[n]; b != nil {
@@ -457,7 +486,8 @@ func (p *devProbe) probeFixtureRecords() []DevProbeSource {
 	out := []DevProbeSource{}
 	for _, name := range probeFixtureFiles {
 		if b, ok := p.fixture[name]; ok {
-			out = append(out, DevProbeSource{Path: "setup/probe-fixture/" + name, Bytes: len(b), SHA256: sha256Hex(b), Origin: devProbeFixtureDir + "/" + name})
+			out = append(out, DevProbeSource{Path: "setup/probe-fixture/" + name, Bytes: len(b), SHA256: sha256Hex(b), Origin: devProbeFixtureDir + "/" + name,
+				StoragePath: capturedPath("setup/probe-fixture/" + name)})
 		}
 	}
 	return out
@@ -518,6 +548,12 @@ func (p *devProbe) reviewEnvelope() (string, string) {
 
 // label is a probe plan's evidence label.
 func (p *devProbe) label(plan *TaskPlan) string {
+	switch plan.Ordinal {
+	case probeTriageOrdinal:
+		return probeTriageNamespace + "-01"
+	case probeLightReviewOrdinal:
+		return probeLightReviewNamespace + "-01"
+	}
 	if plan.Role == HopCodeReviewer {
 		return probeReviewNamespace + "-01"
 	}
@@ -526,6 +562,12 @@ func (p *devProbe) label(plan *TaskPlan) string {
 
 // dir is a probe plan's evidence directory.
 func (p *devProbe) dir(plan *TaskPlan) string {
+	switch plan.Ordinal {
+	case probeTriageOrdinal:
+		return probeTriageDir
+	case probeLightReviewOrdinal:
+		return probeLightReviewDir
+	}
 	if plan.Role == HopCodeReviewer {
 		return "probe/reviewer/01"
 	}
@@ -553,7 +595,8 @@ func (p *devProbe) binding(v contract.TaskView, plan TaskPlan) error {
 		}
 		return nil
 	}
-	if b == nil || b.Name != d.s.workspace.Name || b.Instance != d.s.workspace.Instance || b.BaseCommit == nil || *b.BaseCommit != plan.ExpectedBase {
+	ws := d.planWorkspace(&plan)
+	if b == nil || b.Name != ws.Name || b.Instance != ws.Instance || b.BaseCommit == nil || *b.BaseCommit != plan.ExpectedBase {
 		return errors.New("the workspace binding is not the probe's")
 	}
 	return nil
@@ -609,11 +652,20 @@ func (p *devProbe) next(st DevFullState, out Admitted) (DevFullState, StepResult
 		p.setStage("resume_wake", stagePass, "")
 		p.setStage("print_notification", stagePass, "")
 		return p.reviewStep(st)
+	case pending.Ordinal == probeTriageOrdinal:
+		return p.afterTriage(st, out)
+	case pending.Ordinal == probeLightReviewOrdinal:
+		return p.afterLightReview(st, out)
 	}
 	p.reviewed = true
-	st.Complete, st.ReviewTask, st.ReviewCommit = true, out.TaskID, out.Commit
+	st.ReviewTask, st.ReviewCommit = out.TaskID, out.Commit
 	p.reviewC = out.Commit
 	p.setStage("reviewer_evidence", stagePass, "")
+	if p.light != nil {
+		// The light and both scopes continue in the same phase.
+		return p.triageStep(st)
+	}
+	st.Complete = true
 	return st, StepResult{Action: actionComplete}
 }
 
@@ -690,10 +742,20 @@ func (d *devSupervisor) planLabel(plan *TaskPlan) string {
 // admissions and settlements (failed and interrupted calls included).
 func (d *devSupervisor) probeFinish(cost DevCost) bool {
 	p := d.probe
-	for _, name := range probeStages {
+	stages := probeStagesFor(p.scope)
+	failed := false
+	for _, s := range p.stages {
+		failed = failed || s.Result == stageFail
+	}
+	for _, name := range stages {
 		result, code := stageUnreached, d.stopCode
-		if d.stopCode == "" {
+		switch {
+		case d.stopCode == "":
 			result, code = stageFail, "stage_unobserved"
+		case !failed && !p.hasStage(name):
+			// The first stage the stop left unpassed is the failed one;
+			// its successors are not reached.
+			result, failed = stageFail, true
 		}
 		if name == "models" && len(d.s.preflight) < len(DevFullRoleIDs) {
 			result = stageFail
@@ -705,9 +767,10 @@ func (d *devSupervisor) probeFinish(cost DevCost) bool {
 		FlowLabel: d.flowLabel, SelectionSHA256: d.manifest.SelectionSHA256, Roles: d.manifest.Roles, Executable: d.manifest.Executable,
 		Helper: d.helper, SessionID: d.sessionID, Workspace: d.s.workspace, Candidate: p.cand.String(), ReviewCommit: p.reviewC,
 		ProtectedRoots: append([]string{}, d.s.manifest.ProtectedRoots...), ProtectDepth: d.s.manifest.ProtectDepth,
-		Stages: orderedStages(p.stages), Prompts: p.probePrompts(), Fixture: p.probeFixtureRecords(), Phases: len(d.phases),
+		Stages: orderedStages(p.stages, stages), Prompts: p.probePrompts(), Fixture: p.probeFixtureRecords(), Phases: len(d.phases),
 		WorkerCalls: cost.WorkerCalls, AttemptStart: d.manifest.AttemptStart,
-		AttemptDeadline: d.manifest.AttemptDeadline, Render: d.manifest.Render, Inventory: []InventoryEntry{}}
+		AttemptDeadline: d.manifest.AttemptDeadline, Render: d.manifest.Render, Inventory: []InventoryEntry{},
+		Scope: p.scope, StageCoverage: append([]string{}, stages...), Light: p.lightRecord()}
 	if p.cand.IsZero() {
 		q.Candidate = ""
 	}
@@ -718,7 +781,7 @@ func (d *devSupervisor) probeFinish(cost DevCost) bool {
 		code, seq := d.stopCode, d.stopSeq
 		q.StopCode, q.StopSeq = &code, &seq
 	}
-	if qualifiedStages(q.Stages) && d.cleanupOK && !d.protected && d.stopCode == "" && d.executed {
+	if qualifiedStages(q.Stages, stages) && d.cleanupOK && !d.protected && d.stopCode == "" && d.executed && cost.WorkerCalls <= probeMaxCalls(p.scope) {
 		q.Result = ResultQualified
 	}
 	inv, err := diskInventory(d.s.ev.root)
@@ -733,7 +796,7 @@ func (d *devSupervisor) probeFinish(cost DevCost) bool {
 	}
 	// Fail closed: the written record must pass its own offline check.
 	if q.Result == ResultQualified {
-		b, err := LoadDevQualification(d.s.ev.root)
+		b, err := loadDevQualificationAs(d.s.ev.root, devBundleV2, p.scope)
 		if err != nil {
 			fmt.Fprintf(d.s.stderr, "reale2e probe-dev-full: the qualification record does not load: %v\n", err)
 			return false
@@ -749,10 +812,20 @@ func (d *devSupervisor) probeFinish(cost DevCost) bool {
 	return q.Result == ResultQualified
 }
 
-// orderedStages is stages in probeStages order.
-func orderedStages(stages []DevProbeStage) []DevProbeStage {
+// hasStage reports a recorded stage.
+func (p *devProbe) hasStage(name string) bool {
+	for _, s := range p.stages {
+		if s.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// orderedStages is stages in the order of names.
+func orderedStages(stages []DevProbeStage, names []string) []DevProbeStage {
 	out := []DevProbeStage{}
-	for _, name := range probeStages {
+	for _, name := range names {
 		for _, s := range stages {
 			if s.Name == name {
 				out = append(out, s)
@@ -762,13 +835,13 @@ func orderedStages(stages []DevProbeStage) []DevProbeStage {
 	return out
 }
 
-// qualifiedStages reports every stage passed, in order.
-func qualifiedStages(stages []DevProbeStage) bool {
-	if len(stages) != len(probeStages) {
+// qualifiedStages reports every stage of names passed, in order.
+func qualifiedStages(stages []DevProbeStage, names []string) bool {
+	if len(stages) != len(names) {
 		return false
 	}
 	for i, s := range stages {
-		if s.Name != probeStages[i] || s.Result != stagePass {
+		if s.Name != names[i] || s.Result != stagePass {
 			return false
 		}
 	}
@@ -781,6 +854,11 @@ func qualifiedStages(stages []DevProbeStage) bool {
 func (d *devSupervisor) writeProbeRepository() {
 	p := d.probe
 	if d.s.seed == nil || p.cand.IsZero() {
+		return
+	}
+	if p.light != nil && p.light.seed != nil {
+		d.writeProbeLightRepository()
+		d.writeProbeTrees()
 		return
 	}
 	dir := filepath.Join(d.s.ev.root, "workspace", "repo.git")
@@ -809,7 +887,12 @@ func (d *devSupervisor) writeProbeRepository() {
 		d.stop("evidence_write_failed", err.Error())
 		return
 	}
-	tm := DevTreeManifest{SeedCommit: p.seed.String(), SeedTree: d.s.seed.Tree.String(), Tasks: append([]devCommit{}, d.commits...)}
+	d.writeProbeTrees()
+}
+
+// writeProbeTrees writes the qualification's tree manifest.
+func (d *devSupervisor) writeProbeTrees() {
+	tm := DevTreeManifest{SeedCommit: d.probe.seed.String(), SeedTree: d.s.seed.Tree.String(), Tasks: append([]devCommit{}, d.commits...)}
 	if err := d.s.ev.writeJSON(devTreesFile, envelope("trees", d.s.runID, tm)); err != nil {
 		d.stop("evidence_write_failed", err.Error())
 	}
@@ -827,7 +910,8 @@ var (
 	probeDirRE      = regexp.MustCompile(`^probe/(wake/0[1-3]|reviewer/01)$`)
 )
 
-// probeFileAllowed reports a closed qualification layout file.
+// probeFileAllowed reports a closed v1 qualification layout file (its
+// captures unpacked at their logical paths).
 func probeFileAllowed(rel string) bool {
 	switch rel {
 	case devQualificationFile, "events.jsonl", devAdmissionsFile, devCleanupFile, devCostFile, devTreesFile, "environment/diff.json",
@@ -862,29 +946,149 @@ func probeDirAllowed(rel string) bool {
 	return devDirAllowed(rel) && !strings.HasPrefix(rel, "tasks") && rel != "transitions" && rel != "decisions" && rel != "receipts" && rel != "validation"
 }
 
-// probeDocType is a qualification record's strict type at rel.
-func probeDocType(rel string) (any, string) {
+// probeDocTypeV is a qualification record's strict type at rel in
+// evidence version ver.
+func probeDocTypeV(ver int, rel string) (any, string) {
 	switch {
 	case rel == devQualificationFile:
-		return &DevQualification{}, devKind(DevQualificationKind)
+		return &DevQualification{}, kindFor(ver, DevQualificationKind)
 	case probeDecisionRE.MatchString(rel):
-		return &devEnvelope[DevDecision]{}, devKind("decision")
+		return &devEnvelope[DevDecision]{}, kindFor(ver, "decision")
 	case strings.HasPrefix(rel, "probe/"):
-		return devDocType("tasks/01/" + filepath.Base(rel))
+		return devDocTypeV(ver, scenarioFull, "tasks/01/"+filepath.Base(rel))
 	}
-	return devDocType(rel)
+	return devDocTypeV(ver, scenarioFull, rel)
+}
+
+// probeCaptureLogical are a v2 qualification record's allowlisted logical
+// captures: the full method sources and the probe fixture, and for the
+// light and both scopes the light fixture.
+func probeCaptureLogical(scope string) []string {
+	out := devCaptureLogical(scenarioFull)
+	for _, name := range probeFixtureFiles {
+		out = append(out, "setup/probe-fixture/"+name)
+	}
+	if probeLightScope(scope) {
+		for _, n := range lightFixtureFiles {
+			out = append(out, lightFixtureCaptureDir+"/"+n)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// probeFixtureLogical are the probe fixture's logical capture paths.
+func probeFixtureLogical() []string {
+	var out []string
+	for _, name := range probeFixtureFiles {
+		out = append(out, "setup/probe-fixture/"+name)
+	}
+	return out
+}
+
+// The light and both scopes' task records and repository refs.
+var (
+	probeTriageRE      = regexp.MustCompile(`^probe/triage/01/(plan\.json|dispatch\.json|task\.json|final\.txt|observation\.json|admission\.json|record\.json|wait\.json|wait-result\.json|wait-stderr\.txt|wait-exit\.txt|logs\.txt|logs\.json|publication-rejection\.json|rejected-review\.bin)$`)
+	probeLightReviewRE = regexp.MustCompile(`^probe/light-reviewer/01/(plan\.json|dispatch\.json|task\.json|final\.txt|observation\.json|admission\.json|record\.json|wait\.json|wait-result\.json|wait-stderr\.txt|wait-exit\.txt|logs\.txt|logs\.json|review-evidence\.json|publication-rejection\.json|rejected-review\.bin)$`)
+	probeLightRefRE    = regexp.MustCompile(`^refs/heads/(seed|triage|candidate|review)$`)
+)
+
+// probeLayoutFor is the qualification layout of evidence version ver and
+// scope (v1 is full only). The light and both scopes keep two separate
+// repositories, workspace/full/repo.git and workspace/light/repo.git,
+// sharing the Git budgets; the full scope keeps workspace/repo.git.
+func probeLayoutFor(ver int, scope string) devLayout {
+	ref := func(n string) bool { return probeRefRE.MatchString(n) }
+	if ver == devBundleV1 {
+		return devLayout{ver: devBundleV1, scenario: "probe", file: probeFileAllowed, dir: probeDirAllowed,
+			doc: func(rel string) (any, string) { return probeDocTypeV(devBundleV1, rel) }, ref: ref}
+	}
+	caps := physicalSet(probeCaptureLogical(scope))
+	capDirs := captureDirs(caps)
+	light := probeLightScope(scope)
+	l := devLayout{ver: devBundleV2, scenario: "probe",
+		file: func(rel string) bool {
+			switch {
+			case strings.HasSuffix(rel, ".go"), strings.HasPrefix(rel, "setup/sources/"), strings.HasPrefix(rel, "setup/probe-fixture/"):
+				return false
+			case caps[rel]:
+				return true
+			case light && (probeTriageRE.MatchString(rel) || probeLightReviewRE.MatchString(rel)):
+				return true
+			}
+			return probeFileAllowed(rel)
+		},
+		dir: func(rel string) bool {
+			switch {
+			case rel == "setup/sources" || strings.HasPrefix(rel, "setup/sources/") || rel == "setup/probe-fixture":
+				return false
+			case light && rel == devRepoDir:
+				return false
+			case light && slices.Contains([]string{"probe/triage", probeTriageDir, "probe/light-reviewer", probeLightReviewDir, "workspace/full", "workspace/light",
+				probeFullRepoDir, probeLightRepoDir}, rel):
+				return true
+			}
+			return capDirs[rel] || probeDirAllowed(rel)
+		},
+		doc: func(rel string) (any, string) { return probeDocTypeV(devBundleV2, rel) }, ref: ref}
+	if light {
+		l.repos = []devRepoSpec{{dir: probeFullRepoDir, ref: ref, head: "refs/heads/seed"},
+			{dir: probeLightRepoDir, ref: func(n string) bool { return probeLightRefRE.MatchString(n) }, head: "refs/heads/seed"}}
+	}
+	return l
 }
 
 func (m *DevQualification) schemaID() string { return m.Schema }
 func (m *DevQualification) runIDOf() string  { return m.RunID }
 
-// probeLayout is the qualification record's closed layout.
-var probeLayout = devLayout{file: probeFileAllowed, dir: probeDirAllowed, doc: probeDocType, ref: func(n string) bool { return probeRefRE.MatchString(n) }}
+// Qualification schemas: v2 is current, v1 historical (full-only scope).
+var (
+	devQualificationSchemaV1 = kindFor(devBundleV1, DevQualificationKind)
+	devQualificationSchema   = kindFor(devBundleV2, DevQualificationKind)
+)
 
 // LoadDevQualification loads a qualification evidence directory under its
-// closed layout (the full-flow loader never admits it).
+// closed layout (the full-flow loader never admits it), versioned by the
+// record's own schema discriminator (none yet: the current version, as the
+// probe's own collector loads it before writing the record).
 func LoadDevQualification(root string) (*DevBundle, error) {
-	return loadDevLayout(root, probeLayout)
+	resolved, err := safeEvidenceRoot(root)
+	if err != nil {
+		return nil, err
+	}
+	ver, scope := devBundleV2, probeScopeFull
+	data, err := lstatRegular(resolved, devQualificationFile)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+	case err != nil:
+		return nil, errDevSchema("%s: %v", devQualificationFile, err)
+	default:
+		schema, err := manifestSchema(data)
+		var head struct {
+			Scope string `json:"scope"`
+		}
+		_ = json.Unmarshal(data, &head)
+		switch {
+		case err != nil:
+			return nil, errDevSchema("%s: %v", devQualificationFile, err)
+		case schema == devQualificationSchemaV1:
+			ver = devBundleV1
+		case schema != devQualificationSchema:
+			return nil, errDevSchema("%s: unsupported schema %q", devQualificationFile, contract.SafeText(schema, 80))
+		case !probeScopeOK(head.Scope):
+			return nil, errDevSchema("%s: unsupported scope %q", devQualificationFile, contract.SafeText(head.Scope, 32))
+		default:
+			scope = head.Scope
+		}
+	}
+	return loadDevQualificationAs(root, ver, scope)
+}
+
+// loadDevQualificationAs loads a qualification directory under version
+// ver and scope's layout (the probe's own collection before its record
+// exists).
+func loadDevQualificationAs(root string, ver int, scope string) (*DevBundle, error) {
+	return loadDevLayout(root, probeLayoutFor(ver, scope))
 }
 
 // CheckDevQualification re-checks a QUALIFIED record from its captured
@@ -904,17 +1108,37 @@ func CheckDevQualification(b *DevBundle) []string {
 	if q == nil {
 		return []string{"qualification_missing"}
 	}
-	if q.Result != ResultQualified || !qualifiedStages(q.Stages) || q.StopCode != nil {
+	// The record's scope: a v1 record is full only (it has no scope); a
+	// v2 record names its scope and exactly that scope's stage coverage
+	// (design 12a-dev-flow-light).
+	scope := probeScopeFull
+	switch {
+	case b.ver == devBundleV1 && (q.Scope != "" || q.StageCoverage != nil || q.Light != nil):
+		bad("scope_invalid")
+	case b.ver == devBundleV2 && !probeScopeOK(q.Scope):
+		bad("scope_invalid")
+	case b.ver == devBundleV2:
+		scope = q.Scope
+		if !slices.Equal(q.StageCoverage, probeStagesFor(scope)) || (q.Light != nil) != probeLightScope(scope) ||
+			(q.Render["PROBE_SCOPE"] != "") != probeLightScope(scope) || probeLightScope(scope) && q.Render["PROBE_SCOPE"] != scope {
+			bad("scope_invalid")
+		}
+	}
+	if q.Result != ResultQualified || !qualifiedStages(q.Stages, probeStagesFor(scope)) || q.StopCode != nil {
 		bad("not_qualified")
+	}
+	if q.WorkerCalls > probeMaxCalls(scope) {
+		bad("cost_bound_exceeded")
 	}
 	if !bytes.Equal(mustJSON(b.inventory()), mustJSON(q.Inventory)) {
 		bad("inventory_mismatch")
 	}
-	if !bytes.Equal(b.Files[probeSystemSourceFile], []byte(devProbeSystemPrompt)) || !bytes.Equal(b.Files[probePhaseSourceFile], []byte(devProbePhasePrompt)) {
+	tpl, tplName := probeSystemTemplate(scope)
+	if !bytes.Equal(b.Files[probeSystemSourceFile], []byte(tpl)) || !bytes.Equal(b.Files[probePhaseSourceFile], []byte(devProbePhasePrompt)) {
 		bad("prompt_provenance_mismatch")
 	}
-	sys, err := renderProbePrompt("devProbeSystemPrompt", devProbeSystemPrompt, q.Render)
-	play := b.Files["setup/sources/"+DevFlowDir+"/"+DevPlaybook]
+	sys, err := renderProbePrompt(tplName, tpl, q.Render)
+	play, _ := b.captured("setup/sources/" + DevFlowDir + "/" + DevPlaybook)
 	if err != nil || !bytes.Equal(b.Files[probeSystemFile], append(append(append([]byte(nil), play...), '\n'), sys...)) {
 		bad("prompt_provenance_mismatch")
 	}
@@ -925,7 +1149,12 @@ func CheckDevQualification(b *DevBundle) []string {
 		}
 	}
 	for _, f := range q.Fixture {
-		if data, ok := b.Files[f.Path]; !ok || sha256Hex(data) != f.SHA256 || len(data) != f.Bytes {
+		storage := ""
+		if b.ver == devBundleV2 {
+			storage = capturedPath(f.Path)
+		}
+		if data, ok := b.captured(f.Path); !ok || !slices.Contains(probeFixtureLogical(), f.Path) || sha256Hex(data) != f.SHA256 || len(data) != f.Bytes ||
+			f.StoragePath != storage {
 			bad("fixture_mismatch")
 		}
 	}
@@ -977,6 +1206,13 @@ func CheckDevQualification(b *DevBundle) []string {
 	if code := probeReviewerCheck(b, q); code != "" {
 		bad(code)
 	}
+	// The light and both scopes' triage, candidate, light review and
+	// push table.
+	if probeLightScope(scope) && q.Light != nil {
+		for _, code := range probeLightCheck(b, q) {
+			bad(code)
+		}
+	}
 	// A retained rejection (design 12a-dev-flow-verify r0.11) is diagnostic
 	// evidence of a refused review: never part of a qualified record, and
 	// judged by the full flow's own validator in the probe's namespace.
@@ -1020,7 +1256,11 @@ func CheckDevQualification(b *DevBundle) []string {
 	if len(probeMCPProblems(b, q)) > 0 {
 		bad(devMCPCallInvalid)
 	}
-	for _, dir := range []string{"probe/wake/01", "probe/wake/02", "probe/wake/03", "probe/reviewer/01"} {
+	dirs := []string{"probe/wake/01", "probe/wake/02", "probe/wake/03", "probe/reviewer/01"}
+	if probeLightScope(scope) {
+		dirs = append(dirs, probeTriageDir, probeLightReviewDir)
+	}
+	for _, dir := range dirs {
 		obs := doc[DevObservation](b, dir+"/observation.json")
 		if obs == nil {
 			continue
@@ -1097,18 +1337,24 @@ func probeReviewerCheck(b *DevBundle, q *DevQualification) string {
 // probeRefTree is the evidence repository's branch ref: its commit, tree
 // hash and files (false when it is not retained).
 func probeRefTree(b *DevBundle, ref string) (string, string, map[string]TreeFile, bool) {
-	if b.Repo == nil {
+	return repoRefTree(b.Repo, ref)
+}
+
+// repoRefTree is an evidence repository's branch ref: its commit, tree
+// hash and files (false when it is not retained).
+func repoRefTree(v *repoView, ref string) (string, string, map[string]TreeFile, bool) {
+	if v == nil {
 		return "", "", nil, false
 	}
-	h, ok := b.Repo.refs["refs/heads/"+ref]
+	h, ok := v.refs["refs/heads/"+ref]
 	if !ok {
 		return "", "", nil, false
 	}
-	cm, err := b.Repo.repo.CommitObject(h)
+	cm, err := v.repo.CommitObject(h)
 	if err != nil {
 		return "", "", nil, false
 	}
-	files, err := readTree(b.Repo.repo, cm, ref)
+	files, err := readTree(v.repo, cm, ref)
 	if err != nil {
 		return "", "", nil, false
 	}
@@ -1153,6 +1399,9 @@ func probeMCPProblems(b *DevBundle, q *DevQualification) map[int]string {
 	}
 	in.dirs[maxProbePhases+1] = "probe/reviewer/01"
 	in.labels[probeReviewNamespace+"-01"] = maxProbePhases + 1
+	if q.Light != nil {
+		probeLightAuthority(b, q, &in)
+	}
 	return mcpVerdict(mcpPhaseRecords(b, maxProbePhases), buildMCPAuthority(b, in))
 }
 

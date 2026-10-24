@@ -117,15 +117,15 @@ func TestDevFullFP8(t *testing.T) {
 		}
 		// The captured bytes themselves are retained, not only their hash
 		// (the runtime copies are removed by cleanup).
-		kept := r.evidence("setup/sources/" + s.Path)
-		if sha256Hex(kept) != s.SHA256 || len(kept) != s.Bytes {
+		kept := r.evidence(capturedPath("setup/sources/" + s.Path))
+		if sha256Hex(kept) != s.SHA256 || len(kept) != s.Bytes || s.StoragePath != capturedPath("setup/sources/"+s.Path) {
 			t.Fatalf("retained source %s does not match its record", s.Path)
 		}
 	}
 	for _, role := range DevFullRoleIDs {
 		ins, rb, _ := r.d.loaded.ManualPair(role)
 		for kind, b := range map[string][]byte{"instruction": ins, "runbook": rb} {
-			if !bytes.Equal(r.evidence("setup/sources/"+DevFlowDir+"/"+manualName(role, kind)), b) {
+			if !bytes.Equal(r.evidence(capturedPath("setup/sources/"+DevFlowDir+"/"+manualName(role, kind))), b) {
 				t.Fatalf("the captured %s %s is not retained", role, kind)
 			}
 		}

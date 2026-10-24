@@ -2494,7 +2494,9 @@ func TestPlatformSeamContract(t *testing.T) {
 				t.Fatalf("TestSteps(%s) = %d steps", goos, len(test))
 			}
 			native, nerr := NativeSteps(goos)
-			if (goos == "darwin") != (nerr == nil) || (goos == "darwin" && len(native) != 1) {
+			// Darwin's native plan is two commands (design
+			// 12a-native-reale2e-budget).
+			if (goos == "darwin") != (nerr == nil) || (goos == "darwin" && len(native) != 2) {
 				t.Fatalf("NativeSteps(%s) = %v %v", goos, native, nerr)
 			}
 			stress, serr := StressSteps(goos)
@@ -2517,7 +2519,7 @@ func TestPlatformSeamContract(t *testing.T) {
 			// TestContainerDriverContract.
 			for stage, want := range map[string]int{"stress": 22, "stress-packages": 1, "stress-packages-cpu": 9, "stress-plane-cpu1": 1, "stress-plane": 2,
 				"stress-sidecar-cpu1": 1, "stress-sidecar": 1, "stress-sidecar-cpu4": 1, "stress-processgroup": 3, "stress-functions": 3, "native": nativeCalls} {
-				f := &fakeRunner{native: stream(qualification()...)}
+				f := nativeRunner(qualification())
 				code, out, errOut := runDriver(t, goos, f, stage)
 				wantCode := 0
 				if stage == "native" && goos != "darwin" {

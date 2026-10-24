@@ -37,18 +37,23 @@ func (c *devChecker) checkProvenance() {
 		return
 	}
 	rb.ref("setup/sources.json", nil, "", "")
-	names := DevMethodNames()
-	loaded := DevLoaded{Files: map[string][]byte{}}
+	names := DevMethodNamesFor(c.b.Scenario)
+	loaded := DevLoaded{Files: map[string][]byte{}, Scenario: c.b.Scenario}
 	var want []SourceRecord
 	for _, name := range names {
 		rel := devSourceRel(name)
-		data, ok := c.b.Files["setup/sources/"+rel]
+		data, ok := c.b.captured("setup/sources/" + rel)
 		if !ok {
 			rb.bad("source_missing")
 			continue
 		}
 		loaded.Files[name] = data
-		want = append(want, SourceRecord{Path: rel, Bytes: len(data), SHA256: sha256Hex(data)})
+		rec := SourceRecord{Path: rel, Bytes: len(data), SHA256: sha256Hex(data)}
+		if c.b.ver == devBundleV2 {
+			// The computed storage path, never one a record supplies.
+			rec.StoragePath = capturedPath("setup/sources/" + rel)
+		}
+		want = append(want, rec)
 	}
 	if len(names) != 15 || !bytes.Equal(mustJSON(want), mustJSON(srcs.Data)) {
 		rb.bad("source_inventory_mismatch")
@@ -71,13 +76,17 @@ func (c *devChecker) checkProvenance() {
 		label.Selection != string(sel) || m.FlowSHA256 != label.FlowSHA256 || m.SelectionSHA256 != label.SelectionSHA256:
 		rb.bad("flow_label_mismatch")
 	}
-	feature := doc[DevFeatureRecord](c.b, "setup/feature-request.json")
-	gen, _ := devFullFeatureRequest()
-	if feature == nil || feature.OriginalSHA256 != sha256Hex([]byte(FeatureRequest)) || feature.GeneratedSHA256 != sha256Hex([]byte(gen)) {
-		rb.bad("feature_request_mismatch")
-	}
-	if seed, ok := c.trees[m.Workspace.SeedCommit]; ok && string(fileContent(seed, "FEATURE.md")) != gen {
-		rb.bad("feature_request_mismatch")
+	if !c.isLight() {
+		// The full scenario's generated FEATURE.md (a light request is the
+		// committed fixture's, recorded by setup/light-scenario.json).
+		feature := doc[DevFeatureRecord](c.b, "setup/feature-request.json")
+		gen, _ := devFullFeatureRequest()
+		if feature == nil || feature.OriginalSHA256 != sha256Hex([]byte(FeatureRequest)) || feature.GeneratedSHA256 != sha256Hex([]byte(gen)) {
+			rb.bad("feature_request_mismatch")
+		}
+		if seed, ok := c.trees[m.Workspace.SeedCommit]; ok && string(fileContent(seed, "FEATURE.md")) != gen {
+			rb.bad("feature_request_mismatch")
+		}
 	}
 	installed := doc[devEnvelope[[]SourceRecord]](c.b, "setup/installed-manuals.json")
 	if installed != nil || c.reached(typeIs(EvRolesRegistered)) {
@@ -633,7 +642,10 @@ func (c *devChecker) checkAdmissions() {
 			}
 		}
 	} else {
-		rb.miss("final_sweep_missing", c.reached(typeIs(EvCollectionStarted)) && c.b.Files[devCleanupFile] != nil)
+		// The final sweep lists the attempt's private plane: none exists
+		// when the attempt stopped before starting it (a light intake
+		// refusal, for one).
+		rb.miss("final_sweep_missing", c.reached(typeIs(EvCollectionStarted)) && c.b.Files[devCleanupFile] != nil && c.reached(typeIs(EvProcessStarted)))
 	}
 	rb.see("%d sweep records, %d listed tasks", len(a.Sweeps), len(listed))
 }
@@ -915,7 +927,7 @@ func (c *devChecker) checkCleanup() {
 	if !ok1 || !ok2 || e.Before(s) || !e.Before(s.Add(CleanupBound)) {
 		rb.bad("cleanup_deadline_exceeded")
 	}
-	var started []StartedProc
+	started := []StartedProc{}
 	for _, ev := range c.b.Events {
 		if ev.Type == EvProcessStarted || ev.Type == EvPhaseStarted {
 			started = append(started, StartedProc{Name: ev.Handle, PID: ev.PID, StartedSeq: ev.Seq})
@@ -1070,7 +1082,8 @@ func (c *devChecker) checkCost() {
 		rb.bad("cost_mismatch")
 	}
 	switch {
-	case len(want.PreflightTasks) > len(DevFullRoleIDs) || len(want.WorkflowTasks) > maxWorkflowTasks || want.PhaseStarts > maxPhases:
+	case len(want.PreflightTasks) > len(DevFullRoleIDs) || len(want.WorkflowTasks) > maxWorkflowTasks || want.PhaseStarts > maxPhases,
+		c.isLight() && (len(want.WorkflowTasks) > maxLightTasks || want.PhaseStarts > 1):
 		rb.bad("cost_ceiling_exceeded")
 	case want.ProviderUsage != usageUnknown:
 		rb.bad("usage_invented")

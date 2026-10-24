@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -105,6 +106,103 @@ type mcpAuthority struct {
 	// coordinator phase actually launched.
 	stopped   bool
 	lastPhase int
+	// extra are a light qualification's further workspaces and pushes its
+	// authoritative push table (design 12a-dev-flow-light: two initial
+	// pushes, then one after the triage stage); nil keeps the single seed
+	// push rule. lateAfter and lateBefore are the ordinals the late push
+	// must follow (dispatched) and precede (dispatch); at is the judged
+	// call's position and pushedAt each planned push's answer position.
+	extra      []*mcpWorkspace
+	pushes     []mcpPushPlan
+	lateAfter  int
+	lateBefore int
+	at         mcpPos
+	pushedAt   map[int]mcpPos
+}
+
+// mcpWorkspace is one workspace's call authority: its identity, verified
+// objects and the commits its main branch takes in push order.
+type mcpWorkspace struct {
+	name, instance string
+	objects        storer.EncodedObjectStorer
+	// mains are the planned push indexes setting main, in order (nil: the
+	// static main).
+	mains []int
+	main  string
+}
+
+// mcpPushPlan is one planned push: its exact request and answer commit.
+type mcpPushPlan struct {
+	workspace, instance, path, commit string
+	late                              bool
+}
+
+// primary is the exercise workspace's authority.
+func (a *mcpAuthority) primary() *mcpWorkspace {
+	return &mcpWorkspace{name: a.workspace, instance: a.instance, objects: a.objects, main: a.main}
+}
+
+// wsNamed is the named workspace's authority (nil: not this exercise's).
+func (a *mcpAuthority) wsNamed(name string) *mcpWorkspace {
+	if name == a.workspace {
+		return a.primary()
+	}
+	for _, w := range a.extra {
+		if w.name == name {
+			return w
+		}
+	}
+	return nil
+}
+
+// mainOf is the commit w's main branch holds at the judged call: the
+// last planned push answered before it, else its first planned commit.
+func (a *mcpAuthority) mainOf(w *mcpWorkspace) string {
+	if len(w.mains) == 0 || slices.ContainsFunc(w.mains, func(i int) bool { return i < 0 || i >= len(a.pushes) }) {
+		return w.main
+	}
+	m := a.pushes[w.mains[0]].commit
+	for _, i := range w.mains {
+		if at, ok := a.pushedAt[i]; ok && at.before(a.at) {
+			m = a.pushes[i].commit
+		}
+	}
+	return m
+}
+
+// hasCommitIn reports a verified commit object of workspace w.
+func hasCommitIn(w *mcpWorkspace, h string) bool {
+	if w == nil || w.objects == nil || !contract.ValidCommitHash(h) {
+		return false
+	}
+	_, err := object.GetCommit(w.objects, plumbing.NewHash(h))
+	return err == nil
+}
+
+// taskWorkspace is the authority of a captured task's bound workspace:
+// with several workspaces the binding names it; otherwise the exercise's.
+func (a *mcpAuthority) taskWorkspace(v contract.TaskView) *mcpWorkspace {
+	if len(a.extra) == 0 {
+		return a.primary()
+	}
+	if v.WorkspaceBinding == nil {
+		return nil
+	}
+	w := a.wsNamed(v.WorkspaceBinding.Name)
+	if w == nil || w.instance != v.WorkspaceBinding.Instance {
+		return nil
+	}
+	return w
+}
+
+// pushIndex is the planned push a ws_push request is exactly (-1: none).
+func (a *mcpAuthority) pushIndex(name, instance, path string, pathSet bool, branch string) int {
+	for i, p := range a.pushes {
+		if p.workspace == name && p.instance == instance && pathSet && p.path == path && branch == contract.DefaultBranchRef {
+			return i
+		}
+	}
+	return -1
 }
 
 // view is task id's captured plane record.
@@ -122,22 +220,33 @@ func (a *mcpAuthority) hasCommit(h string) bool {
 	return err == nil
 }
 
-// published is a captured task's published result commit, present in the
-// verified objects.
+// published is a captured task's published result commit, present in its
+// workspace's verified objects.
 func (a *mcpAuthority) published(id string) (string, bool) {
 	v, ok := a.views[id]
 	if !ok || v.Result == nil || v.Result.Workspace == nil || v.Result.Workspace.Publication != contract.PublicationPublished ||
-		v.Result.Workspace.Commit == nil || !a.hasCommit(*v.Result.Workspace.Commit) {
+		v.Result.Workspace.Commit == nil || !hasCommitIn(a.taskWorkspace(v), *v.Result.Workspace.Commit) {
 		return "", false
 	}
 	return *v.Result.Workspace.Commit, true
 }
 
-// resolve resolves a canonical selector of this exercise: refs/heads/main
-// to the prepared seed, a complete task ref to that captured published
-// task, a full hash to a verified object and (allowEmpty) empty to no
-// commit. Anything else is unknown.
-func (a *mcpAuthority) resolve(sel string, allowEmpty bool) (*string, bool) {
+// publishedIn is published, the task bound to workspace w (with several
+// workspaces, a task ref never resolves in another workspace).
+func (a *mcpAuthority) publishedIn(w *mcpWorkspace, id string) (string, bool) {
+	c, ok := a.published(id)
+	if !ok || len(a.extra) > 0 && a.views[id].WorkspaceBinding.Name != w.name {
+		return "", false
+	}
+	return c, true
+}
+
+// resolveIn resolves a canonical selector of this exercise in workspace w:
+// refs/heads/main to the commit its main branch holds, a complete task
+// ref to that captured published task of w, a full hash to a verified
+// object of w and (allowEmpty) empty to no commit. Anything else is
+// unknown.
+func (a *mcpAuthority) resolveIn(w *mcpWorkspace, sel string, allowEmpty bool) (*string, bool) {
 	s, err := contract.ParseSelector(sel, "selector", allowEmpty)
 	if err != nil {
 		return nil, false
@@ -146,16 +255,15 @@ func (a *mcpAuthority) resolve(sel string, allowEmpty bool) (*string, bool) {
 	case contract.SelectorKindEmpty:
 		return nil, true
 	case contract.SelectorKindHash:
-		if a.hasCommit(s.Value) {
+		if hasCommitIn(w, s.Value) {
 			return &s.Value, true
 		}
 	case contract.SelectorKindBranch:
-		if s.Value == contract.DefaultBranchRef && a.main != "" {
-			m := a.main
+		if m := a.mainOf(w); s.Value == contract.DefaultBranchRef && m != "" {
 			return &m, true
 		}
 	case contract.SelectorKindTask:
-		if c, ok := a.published(strings.TrimPrefix(s.Value, contract.TaskRefPrefix)); ok {
+		if c, ok := a.publishedIn(w, strings.TrimPrefix(s.Value, contract.TaskRefPrefix)); ok {
 			return &c, true
 		}
 	}
@@ -570,6 +678,13 @@ func validateWsPush(a *mcpAuthority, args []byte) error {
 	if err != nil {
 		return err
 	}
+	if a.pushes != nil {
+		// The light qualification's authoritative push table.
+		if a.pushIndex(p.Name, p.Instance, p.Path, p.PathSet, in.Branch) < 0 {
+			return bindErr("name", "not exactly a planned push (workspace, instance, branch main and path)")
+		}
+		return nil
+	}
 	switch {
 	case a.seed == nil:
 		return missingAuthority("name", "the prepared seed publication")
@@ -593,6 +708,20 @@ func judgeWsPush(a *mcpAuthority, args, answer []byte) (mcpOutcome, error) {
 	r, err := contract.ParseWorkspacePushResult(answer)
 	if err != nil {
 		return mcpOutcome{}, err
+	}
+	if a.pushes != nil {
+		plan := a.pushes[a.pushIndex(p.Name, p.Instance, p.Path, p.PathSet, in.Branch)]
+		switch {
+		case r.Branch != in.Branch:
+			return mcpOutcome{}, bindErr("branch", "answers %s for %s", r.Branch, in.Branch)
+		case r.Name != plan.workspace:
+			return mcpOutcome{}, bindErr("name", "not the planned push's workspace")
+		case r.Instance != plan.instance:
+			return mcpOutcome{}, bindErr("instance", "not the planned push's instance")
+		case r.Commit != plan.commit || !hasCommitIn(a.wsNamed(plan.workspace), r.Commit):
+			return mcpOutcome{}, bindErr("commit", "not the planned push's commit")
+		}
+		return mcpOutcome{}, nil
 	}
 	switch {
 	case r.Branch != in.Branch:
@@ -649,7 +778,8 @@ func judgeWsStatus(a *mcpAuthority, args, answer []byte) (mcpOutcome, error) {
 		}
 		return mcpOutcome{}, nil
 	}
-	if call.Name != a.workspace {
+	w := a.wsNamed(call.Name)
+	if w == nil {
 		return mcpOutcome{}, bindErr("name", "not the exercise workspace")
 	}
 	r, err := contract.ParseWorkspaceStatus(answer, call.Page.After, call.Page.Limit)
@@ -657,9 +787,9 @@ func judgeWsStatus(a *mcpAuthority, args, answer []byte) (mcpOutcome, error) {
 		return mcpOutcome{}, err
 	}
 	switch {
-	case r.Name != a.workspace:
+	case r.Name != w.name:
 		return mcpOutcome{}, bindErr("name", "not the exercise workspace")
-	case r.Instance != a.instance:
+	case r.Instance != w.instance:
 		return mcpOutcome{}, bindErr("instance", "not the exercise instance")
 	}
 	if err := bindContinuation(call.Page, r.Instance, r.Generation); err != nil {
@@ -670,9 +800,10 @@ func judgeWsStatus(a *mcpAuthority, args, answer []byte) (mcpOutcome, error) {
 		var ok bool
 		switch {
 		case ref.Name == contract.DefaultBranchRef:
-			want, ok = a.main, a.main != ""
+			want = a.mainOf(w)
+			ok = want != ""
 		case strings.HasPrefix(ref.Name, contract.TaskRefPrefix):
-			want, ok = a.published(strings.TrimPrefix(ref.Name, contract.TaskRefPrefix))
+			want, ok = a.publishedIn(w, strings.TrimPrefix(ref.Name, contract.TaskRefPrefix))
 		}
 		if !ok {
 			return mcpOutcome{}, bindErr("refs[].name", "%s is neither the seed main ref nor a captured published task ref", ref.Name)
@@ -714,27 +845,29 @@ func judgeWsDiff(a *mcpAuthority, args, answer []byte) (mcpOutcome, error) {
 	var name, instance, key string
 	var base *string
 	var target string
+	var w *mcpWorkspace
 	if call.TaskID != "" {
 		auth, ok := a.view(call.TaskID)
 		commit, pub := a.published(call.TaskID)
 		if !ok || auth.WorkspaceBinding == nil || !pub {
 			return mcpOutcome{}, missingAuthority("target_commit", call.TaskID+"'s published result")
 		}
+		w = a.taskWorkspace(auth)
 		name, instance, base, target = auth.WorkspaceBinding.Name, auth.WorkspaceBinding.Instance, auth.WorkspaceBinding.BaseCommit, commit
 		key = "ws_diff|task|" + call.TaskID
 	} else {
-		if call.Name != a.workspace {
+		if w = a.wsNamed(call.Name); w == nil {
 			return mcpOutcome{}, bindErr("name", "not the exercise workspace")
 		}
 		var ok bool
-		if base, ok = a.resolve(call.Base, true); !ok {
+		if base, ok = a.resolveIn(w, call.Base, true); !ok {
 			return mcpOutcome{}, bindErr("base_commit", "base %s is not a captured selector", call.Base)
 		}
-		t, ok := a.resolve(call.Target, false)
+		t, ok := a.resolveIn(w, call.Target, false)
 		if !ok {
 			return mcpOutcome{}, bindErr("target_commit", "target %s is not a captured selector", call.Target)
 		}
-		name, instance, target = a.workspace, a.instance, *t
+		name, instance, target = w.name, w.instance, *t
 		key = "ws_diff|" + call.Name + "|" + call.Base + "|" + call.Target
 	}
 	r, err := contract.ParseWorkspaceDiff(answer, call.AfterPath, call.Page.Limit)
@@ -755,7 +888,7 @@ func judgeWsDiff(a *mcpAuthority, args, answer []byte) (mcpOutcome, error) {
 		return mcpOutcome{}, err
 	}
 	header := contract.WorkspaceDiffResponse{Name: r.Name, Instance: r.Instance, Generation: r.Generation, BaseCommit: r.BaseCommit, TargetCommit: r.TargetCommit}
-	changes, next, err := diffPage(a.objects, header, base, target, call.AfterPath, call.Page.Limit)
+	changes, next, err := diffPage(w.objects, header, base, target, call.AfterPath, call.Page.Limit)
 	if err != nil {
 		return mcpOutcome{}, bindErr("changes", "the verified trees do not recompute: %v", err)
 	}
@@ -801,15 +934,16 @@ func judgeWsPull(a *mcpAuthority, args, answer []byte) (mcpOutcome, error) {
 		}
 		return mcpOutcome{}, nil
 	}
-	if p.Name != a.workspace {
+	w := a.wsNamed(p.Name)
+	if w == nil {
 		return mcpOutcome{}, bindErr("name", "not the exercise workspace")
 	}
 	in, _ := contract.ValidatePull(p.Name, p.Ref)
-	commit, ok := a.resolve(in.Canonical, false)
+	commit, ok := a.resolveIn(w, in.Canonical, false)
 	switch {
-	case r.Name != a.workspace:
+	case r.Name != w.name:
 		return mcpOutcome{}, bindErr("name", "not the exercise workspace")
-	case r.Instance != a.instance:
+	case r.Instance != w.instance:
 		return mcpOutcome{}, bindErr("instance", "not the exercise instance")
 	case r.Selector != in.Canonical:
 		return mcpOutcome{}, bindErr("selector", "answers %s for %s", r.Selector, in.Canonical)
@@ -1025,7 +1159,24 @@ func mcpAnalyze(phases map[int][]sessionRecord, a *mcpAuthority) (map[int]string
 	var enums []*enumeration
 	var cancels []*mcpCallRec
 	var dispatchUses []mcpPos
+	// The light qualification's late push precedes the dispatch of
+	// lateBefore's prepared document.
+	var lateLimit *mcpPos
+	if a.pushes != nil {
+		for _, c := range calls {
+			if c.tool != toolDispatch {
+				continue
+			}
+			if d, err := contract.DecodeDispatchArgs(c.args); err == nil && a.preparedOrdinal(d) == a.lateBefore && (lateLimit == nil || c.pos.before(*lateLimit)) {
+				p := c.pos
+				lateLimit = &p
+			}
+		}
+	}
+	a.pushedAt = map[int]mcpPos{}
+	pushSeen := map[int]bool{}
 	for _, c := range calls {
+		a.at = c.pos
 		name, err := mcpPermitted(c.tool)
 		if name == "" && strings.TrimPrefix(c.tool, mcpToolPrefix) == "task_wait" {
 			// coordinator_long_poll (the stream qualifier).
@@ -1044,6 +1195,33 @@ func mcpAnalyze(phases map[int][]sessionRecord, a *mcpAuthority) (map[int]string
 		case "dispatch":
 			dispatchUses = append(dispatchUses, c.pos)
 		case "ws_push":
+			var plan *mcpPushPlan
+			if a.pushes != nil {
+				p, _ := contract.ParseWsPushArgs(c.args, a.goos)
+				in, _ := contract.ValidatePush(p.Name, p.Instance, p.Branch)
+				i := a.pushIndex(p.Name, p.Instance, p.Path, p.PathSet, in.Branch)
+				if pushSeen[i] {
+					// No retry and no fourth push: each planned push once.
+					fail(c.pos.phase, "ws_push %s repeats planned push %d", c.id, i+1)
+					continue
+				}
+				pushSeen[i] = true
+				plan = &a.pushes[i]
+			}
+			if plan != nil && plan.late {
+				// After the triage task's dispatch was answered, and with its
+				// answer before the light review's dispatch.
+				at, dispatched := dispatchedAt[a.ownedTask(a.lateAfter)]
+				ok := dispatched && at.before(c.pos) && (lateLimit == nil || c.pos.before(*lateLimit))
+				for _, r := range c.results {
+					ok = ok && (lateLimit == nil || r.pos.before(*lateLimit))
+				}
+				if !ok {
+					fail(c.pos.phase, "ws_push %s: the candidate push is not between the triage dispatch and the light review dispatch", c.id)
+					continue
+				}
+				break
+			}
 			// The seed publication, its answer included, precedes workflow
 			// dispatch.
 			late := firstDispatch != nil && !c.pos.before(*firstDispatch)
@@ -1103,6 +1281,11 @@ func mcpAnalyze(phases map[int][]sessionRecord, a *mcpAuthority) (map[int]string
 		}
 		if o.dispatched != "" {
 			dispatchedAt[o.dispatched] = res.pos
+		}
+		if name == "ws_push" && a.pushes != nil {
+			p, _ := contract.ParseWsPushArgs(c.args, a.goos)
+			in, _ := contract.ValidatePush(p.Name, p.Instance, p.Branch)
+			a.pushedAt[a.pushIndex(p.Name, p.Instance, p.Path, p.PathSet, in.Branch)] = res.pos
 		}
 		for _, id := range o.listed {
 			if n, ok := a.owned[id]; ok {
@@ -1417,6 +1600,11 @@ type mcpAuthorityInput struct {
 	stopped  bool
 	dirs     map[int]string
 	labels   map[string]int
+	// extra and pushes are a light qualification's further workspaces
+	// and push table (nil: none), late its ordinals.
+	extra                 []*mcpWorkspace
+	pushes                []mcpPushPlan
+	lateAfter, lateBefore int
 }
 
 // buildMCPAuthority builds the authority from separately captured records
@@ -1428,7 +1616,8 @@ type mcpAuthorityInput struct {
 // phase_started event).
 func buildMCPAuthority(b *DevBundle, in mcpAuthorityInput) *mcpAuthority {
 	a := &mcpAuthority{goos: in.goos, views: map[string]contract.TaskView{}, owned: map[string]int{}, prepared: map[int]*devDispatchDoc{},
-		seedPath: in.seedPath, workspace: in.ws.Name, instance: in.ws.Instance, stopped: in.stopped}
+		seedPath: in.seedPath, workspace: in.ws.Name, instance: in.ws.Instance, stopped: in.stopped, extra: in.extra, pushes: in.pushes,
+		lateAfter: in.lateAfter, lateBefore: in.lateBefore, pushedAt: map[int]mcpPos{}}
 	for rel, v := range b.docs {
 		if r, ok := v.(*contract.TaskShowResponse); ok && strings.HasSuffix(rel, "/task.json") {
 			a.views[r.Task.TaskID] = r.Task

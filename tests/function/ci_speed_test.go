@@ -790,9 +790,13 @@ func TestCISpeedJobs(t *testing.T) {
 	mustReject(t, "main job waits for stress", mutated(t, func(r *yaml.Node) { setKey(node(t, r, "jobs", "linux"), "needs", "linux-stress") }), "jobs.linux.needs: unknown field")
 }
 
-// qualifyingStream is a complete synthetic native stream for every
-// required name except drop.
-func qualifyingStream(drop string) string {
+// qualifyingStream is a complete synthetic combined native stream for
+// every required name except drop, the dedicated internal/reale2e
+// command's stream last (design 12a-native-reale2e-budget).
+func qualifyingStream(drop string) string { return firstNativeStream(drop) + reale2eEvents() }
+
+// firstNativeStream is qualifyingStream's first-command part.
+func firstNativeStream(drop string) string {
 	pkg := devcheck.NativePackage
 	evs := []map[string]any{synth("start", pkg, "")}
 	for _, name := range append(append(append(append(append(append(append(append(append(append(append(append(append(append(append(append(append(append(append(slices.Clone(speedNative), speedNodeNative...), speedRoleNative...), speedTaskNative...), speedControlNative...), speedMCPNative...), speedQualNative...), speedRealNative...), speedWorkspaceNative...), speedTransferNative...), speedLatencyNative...), speedWorkspaceTaskNative...), speedWorkspaceDoorNative...), speedWave2Native...), speedNBWNative...), speedDCENative...), speedB1Native...), speedB15Native...), speedB2Native...), speedB3Native...) {

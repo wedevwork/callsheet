@@ -11,7 +11,6 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/filemode"
 
-	"github.com/wedevwork/callsheet/internal/client"
 	"github.com/wedevwork/callsheet/internal/contract"
 )
 
@@ -67,8 +66,10 @@ type devSupervisor struct {
 	settled  []DevSettlement
 
 	seedVerified bool
-	ticks        int
-	written      int
+	// seedPushSeq is the event sequence at which the seed push was seen.
+	seedPushSeq int
+	ticks       int
+	written     int
 
 	stopCode, stopReason string
 	stopSeq              int
@@ -84,6 +85,14 @@ type devSupervisor struct {
 	// probe, when set, runs the owner-only qualification probe instead of
 	// the full flow (devfull_probe.go).
 	probe *devProbe
+	// light, when set, runs the light scenario instead of the full flow
+	// (devlight_*.go).
+	light *devLight
+	// exerciseChild is a combined exercise's child attempt: its 2m cleanup
+	// tail bounds its collection and check too (finalizeExpired when it
+	// did not fit).
+	exerciseChild   bool
+	finalizeExpired bool
 }
 
 // devGate is a pending phase-ending gate.
@@ -155,10 +164,13 @@ func runDevLive(h Host, a runArgs) int {
 }
 
 func (d *devSupervisor) run() int {
-	if d.probe != nil {
-		fmt.Fprint(d.s.stdout, ProbeBounds)
+	switch {
+	case d.probe != nil:
+		fmt.Fprint(d.s.stdout, ProbeBoundsFor(d.probe.scope))
 		fmt.Fprintln(d.s.stdout, "qualification probe: prints QUALIFIED or BLOCKED, never a workflow PASS; exit 0 qualified, 1 blocked, 2 usage or gate error")
-	} else {
+	case d.light != nil:
+		fmt.Fprintln(d.s.stdout, "light development flow: checked "+DevBundleSchema+" (scenario light) evidence; exit 0 mechanical PASS, 1 executed failure or incomplete evidence, 2 usage, gate or schema error")
+	default:
 		fmt.Fprint(d.s.stdout, DevBounds)
 		fmt.Fprintln(d.s.stdout, "full development flow: checked "+DevBundleSchema+" evidence; exit 0 mechanical PASS, 1 executed failure or incomplete evidence, 2 usage, gate or schema error")
 	}
@@ -178,7 +190,7 @@ func (d *devSupervisor) run() int {
 		return 1
 	}
 	d.s.manifest = Manifest{RunID: id, ProtectedRoots: []string{}}
-	d.manifest = DevManifest{Schema: DevBundleSchema, RunID: id, Scenario: scenarioFull, GOOS: d.s.goos, GOARCH: d.s.goarch,
+	d.manifest = DevManifest{Schema: DevBundleSchema, RunID: id, Scenario: d.scenario(), GOOS: d.s.goos, GOARCH: d.s.goarch,
 		Gate: GateRecord{OptIn: true, CIAbsent: true, Platform: d.s.goos}, Versions: []VersionRecord{}, Roles: []FlowRole{}, ProtectedRoots: []string{},
 		Render: map[string]string{}, Inventory: []InventoryEntry{}}
 	d.s.ev.event(Event{Type: EvRunStarted})
@@ -187,8 +199,11 @@ func (d *devSupervisor) run() int {
 	d.manifest.AttemptStart, d.manifest.AttemptDeadline = formatTime(d.s.attempt), formatTime(d.attemptDeadline())
 	d.s.ev.event(Event{Type: EvPreflightStarted})
 	start := d.start
-	if d.probe != nil {
+	switch {
+	case d.probe != nil:
 		start = d.probeStart
+	case d.light != nil:
+		start = d.lightStart
 	}
 	if err := start(); err != nil {
 		d.fail(err)
@@ -197,6 +212,14 @@ func (d *devSupervisor) run() int {
 	}
 	d.finish()
 	return d.exitCode()
+}
+
+// scenario is the attempt's scenario (full unless a light attempt).
+func (d *devSupervisor) scenario() string {
+	if d.light != nil {
+		return scenarioLight
+	}
+	return scenarioFull
 }
 
 // fail records err as the attempt's stop (the first one wins).
@@ -281,7 +304,7 @@ func (d *devSupervisor) start() error {
 // explicit --flow takes only the five-role development schema (a legacy
 // four-role flow is refused here, before any paid work).
 func (d *devSupervisor) loadSelection() error {
-	loaded, err := LoadDevMethod(d.s.checkout)
+	loaded, err := LoadDevMethodFor(d.s.checkout, d.scenario())
 	if err != nil {
 		return failure("templates_missing", err)
 	}
@@ -325,13 +348,30 @@ func (d *devSupervisor) loadSelection() error {
 		gen = sha256Hex([]byte(f))
 	}
 	run := d.s.runID
-	for rel, v := range map[string]any{
-		"setup/sources.json": envelope("sources", run, loaded.Sources),
+	// The captured bytes are stored inertly (design 12a-dev-flow-light,
+	// FP-7): each provenance record names its computed storage path, and
+	// no two physical captures collide under case folding.
+	sources := captureRecords(loaded.Sources)
+	var physical []string
+	for _, src := range sources {
+		physical = append(physical, src.StoragePath)
+	}
+	if err := checkCaptureFold(physical); err != nil {
+		return failure("templates_missing", err)
+	}
+	records := map[string]any{
+		"setup/sources.json": envelope("sources", run, sources),
 		"setup/flow-label.json": DevFlowLabel{Schema: devKind("flow-label"), RunID: run, Label: d.flowLabel, FlowSHA256: sha256Hex(flowRaw),
 			SelectionSHA256: sha256Hex(got), Selection: string(got)},
 		"setup/feature-request.json": DevFeatureRecord{Schema: devKind("feature-request"), RunID: run, OriginalSHA256: orig, GeneratedSHA256: gen,
 			Source: "internal/reale2e/seed.go FeatureRequest"},
-	} {
+	}
+	if d.light != nil {
+		// The light request is the committed fixture's FEATURE.md, recorded
+		// by setup/light-scenario.json instead.
+		delete(records, "setup/feature-request.json")
+	}
+	for rel, v := range records {
 		if !d.writeEvidenceJSON(rel, v) {
 			return failure(d.stopCode, errors.New(d.stopReason))
 		}
@@ -340,9 +380,10 @@ func (d *devSupervisor) loadSelection() error {
 		return failure(d.stopCode, errors.New(d.stopReason))
 	}
 	// The captured bytes themselves (manuals, playbook and exercise files)
-	// are retained under setup/sources/<repository path>, within the
-	// evidence budget: the private runtime copies are removed by cleanup.
-	names := DevMethodNames()
+	// are retained inertly under _captured/setup/sources/<repository
+	// path>.bin, within the evidence budget: the private runtime copies are
+	// removed by cleanup.
+	names := DevMethodNamesFor(d.scenario())
 	if len(loaded.Sources) != len(names) {
 		return failure("templates_missing", errors.New("the captured sources do not match the method inputs"))
 	}
@@ -351,7 +392,7 @@ func (d *devSupervisor) loadSelection() error {
 		if sha256Hex(b) != src.SHA256 {
 			return failure("templates_missing", fmt.Errorf("the capture of %s does not match its record", src.Path))
 		}
-		if !d.writeEvidence("setup/sources/"+src.Path, b) {
+		if !d.writeEvidence(capturedPath("setup/sources/"+src.Path), b) {
 			return failure(d.stopCode, errors.New(d.stopReason))
 		}
 	}
@@ -402,7 +443,7 @@ func (d *devSupervisor) versionProbes() error {
 // wait directories, dispatch documents, decisions, receipts, presented
 // review copies, manuals and inspection repositories.
 func (d *devSupervisor) extraDirs() error {
-	for _, rel := range []string{"decisions", "receipts", "dispatch", "manuals", "inspect", filepath.Join("review", "generations")} {
+	for _, rel := range []string{"decisions", "receipts", "dispatch", "manuals", "inspect", "intake", filepath.Join("review", "generations")} {
 		if err := os.MkdirAll(filepath.Join(d.s.runtime, rel), 0o700); err != nil {
 			return failure("runtime_unavailable", err)
 		}
@@ -669,31 +710,7 @@ func (d *devSupervisor) seedDev() error {
 // workspace: its default branch holds exactly the seed commit in the
 // created instance. A different commit or instance stops the attempt.
 func (d *devSupervisor) verifySeed() (bool, error) {
-	page := client.StatusPage{Limit: contract.MaxWorkspaceLimit}
-	for {
-		ctx, cancel := d.s.opCtx()
-		r, err := d.s.plane.WorkspaceStatus(ctx, d.s.workspace.Name, page)
-		cancel()
-		if err != nil {
-			return false, failure("seed_unverified", err)
-		}
-		if r.Instance != d.s.workspace.Instance {
-			return false, failure("seed_unverified", errors.New("the workspace instance changed"))
-		}
-		for _, ref := range r.Refs {
-			if ref.Name != contract.DefaultBranchRef {
-				continue
-			}
-			if ref.Commit != d.s.workspace.SeedCommit {
-				return false, failure("seed_mismatch", fmt.Errorf("the workspace's main branch is %s, not the seed", contract.SafeText(ref.Commit, 64)))
-			}
-			return true, nil
-		}
-		if r.NextAfter == nil {
-			return false, nil
-		}
-		page = client.StatusPage{After: *r.NextAfter, Instance: r.Instance, Generation: r.Generation, Limit: contract.MaxWorkspaceLimit}
-	}
+	return d.verifyMain(d.s.workspace, d.s.workspace.SeedCommit, "")
 }
 
 // openControl writes the development run file and MCP configuration,
@@ -702,7 +719,7 @@ func (d *devSupervisor) verifySeed() (bool, error) {
 // reviewer helper's recipe are recorded for the offline rebuild of every
 // prompt and envelope.
 func (d *devSupervisor) openControl() error {
-	b, err := encodeJSON(DevRunFile{Schema: DevRunSchema, RunID: d.s.runID, Callsheet: d.s.args.callsheet, Plane: d.s.dep.url, CA: d.s.dep.caPath})
+	b, err := encodeJSON(DevRunFile{Schema: DevRunSchema, RunID: d.s.runID, Scenario: d.scenario(), Callsheet: d.s.args.callsheet, Plane: d.s.dep.url, CA: d.s.dep.caPath})
 	if err != nil {
 		return failure("runtime_unavailable", err)
 	}
@@ -750,9 +767,10 @@ func (d *devSupervisor) openControl() error {
 	return nil
 }
 
-// initialPlan schedules the first designer draft on the seed.
+// initialPlan schedules the scenario's first plan on the seed: the full
+// flow's designer draft, or the light attempt's initial triage.
 func (d *devSupervisor) initialPlan() error {
-	st, res := InitialPlan(d.s.seed.Commit.String())
+	st, res := InitialPlanFor(d.scenario(), d.s.seed.Commit.String())
 	st.RunID = d.s.runID
 	d.apply(st, res)
 	return nil
@@ -762,7 +780,7 @@ func (d *devSupervisor) initialPlan() error {
 // resumes the captured session). At most four phases run, one at a time.
 func (d *devSupervisor) launchPhase() error {
 	n := len(d.phases) + 1
-	if n > maxPhases || d.probe != nil && n > maxProbePhases {
+	if n > maxPhases || d.probe != nil && n > maxProbePhases || d.light != nil && n > 1 {
 		return failure("phase_cap", errors.New("the coordinator phase cap is reached"))
 	}
 	if n > 1 && !sessionIDRE.MatchString(d.sessionID) {
@@ -840,11 +858,15 @@ func (d *devSupervisor) exitCode() int {
 		fmt.Fprintln(d.s.stdout, "qualification probe: "+ResultBlocked)
 		return 1
 	}
+	name := "full development flow"
+	if d.light != nil {
+		name = "light development flow"
+	}
 	if d.passed {
-		fmt.Fprintln(d.s.stdout, "full development flow: PASS (mechanical and deterministic criteria); "+JudgmentReportLine)
+		fmt.Fprintln(d.s.stdout, name+": PASS (mechanical and deterministic criteria); "+JudgmentReportLine)
 		return 0
 	}
-	fmt.Fprintln(d.s.stdout, "full development flow: FAIL; "+JudgmentReportLine)
+	fmt.Fprintln(d.s.stdout, name+": FAIL; "+JudgmentReportLine)
 	return 1
 }
 
@@ -942,6 +964,12 @@ func (d *devSupervisor) finish() {
 		return
 	}
 	d.passed = d.collect() && d.s.ev.failure() == nil
+	if d.exerciseChild && !d.s.w.Clock.Now().Before(d.s.cleanupBy) {
+		// Cleanup, collection and the child check share the 2m tail: an
+		// expired finalization is never a PASS.
+		d.passed, d.finalizeExpired = false, true
+		fmt.Fprintf(d.s.stderr, "reale2e run: stopped (%s): cleanup, collection and the check did not finish within the 2m tail\n", stopFinalized)
+	}
 }
 
 // collect writes the derived primary records (the session map and the
@@ -952,7 +980,7 @@ func (d *devSupervisor) collect() bool {
 	// judgment: each record written after it (the session map, the cost,
 	// the manifest) is written and then ingested from the same bytes, as
 	// the loader would decode them.
-	b, err := LoadDevBundle(d.s.ev.root)
+	b, err := loadDevBundleAs(d.s.ev.root, devBundleV2, d.scenario())
 	put := func(rel string, v any) error {
 		data, err := encodeJSON(v)
 		if err != nil {
@@ -987,7 +1015,7 @@ func (d *devSupervisor) collect() bool {
 // collectProbe writes the probe's cost and its qualification record and
 // decides the result.
 func (d *devSupervisor) collectProbe() bool {
-	b, err := LoadDevQualification(d.s.ev.root)
+	b, err := loadDevQualificationAs(d.s.ev.root, devBundleV2, d.probe.scope)
 	var cost DevCost
 	if err == nil {
 		cost = deriveDevCost(b, d.s.runID)

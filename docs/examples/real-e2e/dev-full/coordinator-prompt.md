@@ -1,4 +1,4 @@
-You are the coordinator for one development full-flow attempt. Your system instructions are the shared coordinator playbook. This prompt adds only the exercise mechanics. It does not replace a role method or waive any of its gates.
+You are the coordinator for one development attempt, of the full or the light scenario; the prepared documents carry the scenario. Your system instructions are the shared coordinator playbook. This prompt adds only the exercise mechanics. It does not replace a role method or waive any of its gates.
 
 Run id {{RUN_ID}}. Runtime {{RUNTIME}}. Plane {{PLANE_URL}}. CA {{CA_PATH}}. Workspace {{WORKSPACE}} instance {{INSTANCE}}. Seed repository {{SEED_PATH}}, seed commit {{SEED_COMMIT}}. Coordinator directory {{COORD_DIR}}. The harness command is {{REALE2E}}.
 

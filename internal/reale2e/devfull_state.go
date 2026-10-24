@@ -64,6 +64,9 @@ type PlanInput struct {
 
 // TaskPlan is one persisted workflow plan. Ordinals are one-based.
 type TaskPlan struct {
+	// Scenario is set for a light plan (absent for the full flow, as in
+	// historical v1 plans).
+	Scenario      string      `json:"scenario,omitempty"`
 	Ordinal       int         `json:"ordinal"`
 	Role          string      `json:"role"`
 	Mode          string      `json:"mode"`
@@ -524,7 +527,14 @@ func schedule(st DevFullState, plan TaskPlan, reason string) (DevFullState, Step
 	if n := len(st.Tasks); n > 0 {
 		plan.Diagnostic = st.Tasks[n-1].Disposition == dispositionDiagnostic
 	}
-	plan.Inputs = planInputs(st, plan)
+	if st.Scenario == scenarioLight {
+		// Design 12a-dev-flow-light: every light plan names its scenario and
+		// keeps OriginalMode defect, including fix rounds.
+		plan.Scenario, plan.OriginalMode, plan.Allowed = scenarioLight, modeDefect, lightAllowedOutputs(plan.Role)
+		plan.Inputs = lightPlanInputs(st, plan)
+	} else {
+		plan.Inputs = planInputs(st, plan)
+	}
 	st.Pending = &plan
 	tr := TransitionRecord{Reason: reason, ToOrdinal: plan.Ordinal, ToState: plan.Role + "/" + plan.Mode, DesignBefore: st.DesignCycles,
 		DesignAfter: st.DesignCycles, CodeBefore: st.CodeCycles, CodeAfter: st.CodeCycles, RecoveryBefore: st.Recovery, RecoveryAfter: st.Recovery}
@@ -710,7 +720,7 @@ func SameFrozen(flow DevFullFlow, role string, got FlowRole) bool {
 func GoalHeader(runID string, plan TaskPlan, inputCommit string) string {
 	return strings.Join([]string{
 		"run_id: " + runID,
-		"scenario: " + scenarioFull,
+		"scenario: " + cmpOr(plan.Scenario, scenarioFull),
 		"ordinal: " + itoa(plan.Ordinal),
 		"role: " + plan.Role,
 		"mode: " + plan.Mode,
@@ -742,7 +752,7 @@ func ParseGoalHeader(goal string) (GoalIdentity, bool) {
 	}
 	ordinal, ok1 := atoi(vals[2])
 	round, ok2 := atoi(vals[5])
-	if !ok1 || !ok2 || vals[1] != scenarioFull || itoa(ordinal) != vals[2] || itoa(round) != vals[5] {
+	if !ok1 || !ok2 || vals[1] != scenarioFull && vals[1] != scenarioLight || itoa(ordinal) != vals[2] || itoa(round) != vals[5] {
 		return GoalIdentity{}, false
 	}
 	return GoalIdentity{RunID: vals[0], Scenario: vals[1], Ordinal: ordinal, Role: vals[3], Mode: vals[4], Round: round, Input: vals[6]}, true

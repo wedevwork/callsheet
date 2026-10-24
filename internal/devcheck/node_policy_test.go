@@ -107,7 +107,7 @@ func TestNodeVerificationPolicyContract(t *testing.T) {
 				t.Fatalf("native required = %v", req)
 			}
 			if goos == "darwin" {
-				f := &fakeRunner{native: stream(qualification()...)}
+				f := nativeRunner(qualification())
 				code, out, errOut := runDriver(t, goos, f, "native")
 				if code != 0 || !strings.Contains(out, "TestNodePlatform/sticky-write") {
 					t.Fatalf("darwin native = %d %s", code, errOut)

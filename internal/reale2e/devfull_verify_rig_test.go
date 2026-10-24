@@ -91,6 +91,10 @@ type reviewScript struct {
 
 func (rs reviewScript) script(s ProcSpec) behavior {
 	a := strings.Join(s.Args, " ")
+	if b, ok := lightGoBehavior(s); ok && a != "version" {
+		// The light recipe's commands (design 12a-dev-flow-light).
+		return b
+	}
 	switch {
 	case a == "version":
 		return behavior{stdout: "go version go1.26.4 linux/amd64\n"}
