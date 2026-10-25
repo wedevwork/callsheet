@@ -116,7 +116,8 @@ func TestDevFlowLightDelivery(t *testing.T) {
 				t.Errorf("the runbook's role table lacks %s", r.ID)
 			}
 		}
-		if want["triage"] != "grok/grok-4.7/xhigh" || want["coder"] != "claude/claude-opus-5-5/high" || want["code-reviewer"] != "codex/gpt-6.1-sol/high" {
+		// Design 12a-codex-triage: light triage is Codex sol/high.
+		if want["triage"] != "codex/gpt-6.1-sol/high" || want["coder"] != "claude/claude-opus-5-5/high" || want["code-reviewer"] != "codex/gpt-6.1-sol/high" {
 			t.Fatalf("the light roles' current selection %v", want)
 		}
 	})

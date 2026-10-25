@@ -94,7 +94,7 @@ For triage, the combined goal plus acceptance ceiling is 8192 bytes, both raw UT
 
 Shared limits: task-text ceiling 8192 bytes; reserve 4096 bytes; manual-pair cap 20480 bytes; prompt cap 32768 bytes.
 
-Prompt budget: triage instruction bytes plus triage runbook bytes plus 8192 plus 4096 must be <= 32768, both as raw UTF-8 and as JSON-encoded string content with HTML escaping disabled, excluding surrounding quotes and the encoder LF. The 8192-byte ceiling covers goal plus acceptance; payload is omitted and encoded as an empty array. The two manuals together must be at most 20480 bytes. The 4096-byte reserve is not permission to exceed the adapter final encoded-size check. These are Callsheet product limits (adapter.MaxGrokPromptBytes), not a claimed vendor maximum. Bulky evidence goes to an authorized workspace path and a digest instead of inline text.
+Prompt budget: triage instruction bytes plus triage runbook bytes plus 8192 plus 4096 must be <= 32768, both as raw UTF-8 and as JSON-encoded string content with HTML escaping disabled, excluding surrounding quotes and the encoder LF. The 8192-byte ceiling covers goal plus acceptance; payload is omitted and encoded as an empty array. The two manuals together must be at most 20480 bytes. The 4096-byte reserve is not permission to exceed the adapter final encoded-size check. These are Callsheet product limits (the product triage prompt cap `triagePromptCap`), not a claimed vendor maximum. Bulky evidence goes to an authorized workspace path and a digest instead of inline text.
 
 ## Admission
 
@@ -128,9 +128,11 @@ Artifact names are relative to the explicit brief or design directory, except th
 | design-reviewer | claude | claude-fable-5-1 | low | 1 | 10m |
 | coder | claude | claude-opus-5-5 | high | 1 | 10m |
 | code-reviewer | codex | gpt-6.1-sol | high | 1 | 10m |
-| triage | grok | grok-4.7 | xhigh | 1 | 10m |
+| triage | codex | gpt-6.1-sol | high | 1 | 10m |
 
-Register every role before dispatch, with `--concurrency 1 --timeout 10m`. Verify readiness after the final registry change. The triage role runs only on a Linux sidecar. Do not substitute a model when a selection or a posture check refuses the worker.
+Register every role before dispatch, with `--concurrency 1 --timeout 10m`. Verify readiness after the final registry change. Do not substitute a model when a selection or a posture check refuses the worker.
+
+Pairings are cross-family where one role judges another's work: triage (GPT) diagnoses for the coder (Opus), and the code reviewer (GPT) checks the Opus implementation. Triage and the code reviewer may both be GPT: they judge different work, and the executing code reviewer, not triage, checks the implementation.
 
 ## Waits and recovery
 

@@ -25,11 +25,21 @@ const (
 	maxExampleBytes   = 32 << 10
 	triageTaskCeiling = 8192
 	promptReserve     = 4096
+	// triagePromptCap is the product's triage prompt cap (design
+	// 12a-codex-triage), an independent literal: never a vendor adapter's
+	// bound.
+	triagePromptCap = 32768
 )
 
-const promptBudgetParagraph = "Prompt budget: triage instruction bytes plus triage runbook bytes plus 8192 plus 4096 must be <= 32768, both as raw UTF-8 and as JSON-encoded string content with HTML escaping disabled, excluding surrounding quotes and the encoder LF. The 8192-byte ceiling covers goal plus acceptance; payload is omitted and encoded as an empty array. The two manuals together must be at most 20480 bytes. The 4096-byte reserve is not permission to exceed the adapter final encoded-size check. These are Callsheet product limits (adapter.MaxGrokPromptBytes), not a claimed vendor maximum. Bulky evidence goes to an authorized workspace path and a digest instead of inline text."
+const promptBudgetParagraph = "Prompt budget: triage instruction bytes plus triage runbook bytes plus 8192 plus 4096 must be <= 32768, both as raw UTF-8 and as JSON-encoded string content with HTML escaping disabled, excluding surrounding quotes and the encoder LF. The 8192-byte ceiling covers goal plus acceptance; payload is omitted and encoded as an empty array. The two manuals together must be at most 20480 bytes. The 4096-byte reserve is not permission to exceed the adapter final encoded-size check. These are Callsheet product limits (the product triage prompt cap `triagePromptCap`), not a claimed vendor maximum. Bulky evidence goes to an authorized workspace path and a digest instead of inline text."
 
-const linuxTriageClause = "The triage role (grok) executes only on a Linux sidecar; a non-Linux worker is refused by the posture/readiness checks."
+// codexTriageClause is the README's triage posture (design
+// 12a-codex-triage): Codex is eligible on Linux and macOS.
+const codexTriageClause = "The triage role (codex) is eligible on a Linux or macOS sidecar, like every other role of this selection: `ValidateWorkerPosture` in `internal/adapter/vendor.go` returns nil for codex and claude on both."
+
+// harnessLinuxClause is the README's separately retained harness
+// prerequisite.
+const harnessLinuxClause = "The real end-to-end harness keeps its own, separate Linux prerequisite: its live execution is Linux only because it requires Linux-qualified vendor installations and sidecars"
 
 var devFlowFiles = []string{
 	"README.md",
@@ -77,7 +87,7 @@ var canonicalRoles = []roleRow{
 	{"design-reviewer", "claude", "claude-fable-5-1", "low", "1", "10m"},
 	{"coder", "claude", "claude-opus-5-5", "high", "1", "10m"},
 	{"code-reviewer", "codex", "gpt-6.1-sol", "high", "1", "10m"},
-	{"triage", "grok", "grok-4.7", "xhigh", "1", "10m"},
+	{"triage", "codex", "gpt-6.1-sol", "high", "1", "10m"},
 }
 
 var requiredRoutes = []struct{ origin, next string }{
@@ -795,11 +805,11 @@ func promptBudget(instruction, runbook []byte) error {
 	if err != nil {
 		return err
 	}
-	if raw+triageTaskCeiling+promptReserve > adapter.MaxGrokPromptBytes {
-		return fmt.Errorf("raw budget %d exceeds %d", raw+triageTaskCeiling+promptReserve, adapter.MaxGrokPromptBytes)
+	if raw+triageTaskCeiling+promptReserve > triagePromptCap {
+		return fmt.Errorf("raw budget %d exceeds %d", raw+triageTaskCeiling+promptReserve, triagePromptCap)
 	}
-	if left+right+triageTaskCeiling+promptReserve > adapter.MaxGrokPromptBytes {
-		return fmt.Errorf("encoded budget %d exceeds %d", left+right+triageTaskCeiling+promptReserve, adapter.MaxGrokPromptBytes)
+	if left+right+triageTaskCeiling+promptReserve > triagePromptCap {
+		return fmt.Errorf("encoded budget %d exceeds %d", left+right+triageTaskCeiling+promptReserve, triagePromptCap)
 	}
 	return nil
 }
@@ -832,7 +842,7 @@ func representativePrompt(instruction, runbook, goal, acceptance []byte) ([]byte
 			"goal":             string(goal),
 			"payload":          []string{},
 			"acceptance":       string(acceptance),
-			"effective":        contract.TaskEffective{Model: "grok-4.7", Effort: "xhigh", Timeout: 10 * time.Minute},
+			"effective":        contract.TaskEffective{Model: "gpt-6.1-sol", Effort: "high", Timeout: 10 * time.Minute},
 			"timeout_enforced": false,
 			"requested_by":     contract.RequestedBy{Name: "callsheet", Version: "dev", Hostname: "coordinator"},
 		},
@@ -1208,7 +1218,8 @@ func TestDevFlowTriage(t *testing.T) {
 		// Design 12a-light-triage-scratch, FP-3: the shipped runbook and
 		// docs/real-e2e.md carry the scratch lifecycle, the publication
 		// boundary, the no-fallback/invalid_marker policy and the owner
-		// probe 9 gate; each deletion or weakening is refused.
+		// probe gate (probe 10 since design 12a-codex-triage); each
+		// deletion or weakening is refused.
 		runbook := string(files["triage-runbook.md"])
 		e2e := string(repoFile(t, "docs/real-e2e.md"))
 		if err := checkTriageScratch(runbook, e2e); err != nil {
@@ -1260,7 +1271,7 @@ func TestDevFlowTriage(t *testing.T) {
 				{"Full-flow triage names no scratch", "Full-flow triage has scratch"},
 				{"Requalification is pending", "Requalification is complete"},
 				{"Check an older light or probe bundle with the revision that produced it", "Check any bundle with this revision"},
-				{"owner probe 9: `probe-dev-full --scenario both`", "a later probe"},
+				{"owner probe 10: `probe-dev-full --scenario both`", "a later probe"},
 				{"a passing marker alone does not show that the scratch instruction was followed", "a passing marker is enough"},
 				{"Probe 8 remains failed evidence", "Probe 8 passed"},
 				{"No paid run is part of implementation or review automation", "Automation may run it"},
@@ -1353,7 +1364,7 @@ func checkTriageScratch(runbook, e2e string) error {
 		"Full-flow triage names no scratch",
 		"Requalification is pending",
 		"Check an older light or probe bundle with the revision that produced it",
-		"owner probe 9: `probe-dev-full --scenario both`",
+		"owner probe 10: `probe-dev-full --scenario both`",
 		"a passing marker alone does not show that the scratch instruction was followed",
 		"Probe 8 remains failed evidence",
 		"No paid run is part of implementation or review automation",
@@ -1362,9 +1373,12 @@ func checkTriageScratch(runbook, e2e string) error {
 	}
 	for name, doc := range map[string]string{"runbook": runbook, "docs/real-e2e.md": e2e} {
 		// The literal recipe, root guards before chmod, and no other
-		// spelling of the chain.
-		n := strings.Count(doc, "`"+triageScratchRecipe+"`")
-		if n == 0 || strings.Count(doc, "chmod -R u+w .callsheet-triage-scratch") != n || strings.Count(doc, "rm -r .callsheet-triage-scratch") != n {
+		// spelling of the chain. The chain also appears verbatim, not as
+		// inline code, inside the owner's pre-probe smoke (design
+		// 12a-codex-triage, FP-6); every occurrence must still be the
+		// literal recipe.
+		n := strings.Count(doc, triageScratchRecipe)
+		if strings.Count(doc, "`"+triageScratchRecipe+"`") == 0 || strings.Count(doc, "chmod -R u+w .callsheet-triage-scratch") != n || strings.Count(doc, "rm -r .callsheet-triage-scratch") != n {
 			return fmt.Errorf("%s: the literal removal recipe is missing or respelled", name)
 		}
 		for _, bad := range []string{"rm -rf", "rm -fr", "rm -r -f", "rm -f -r", "rm --recursive --force", "rm --force --recursive"} {
@@ -1485,7 +1499,7 @@ func TestDevFlowSetup(t *testing.T) {
 			bad := append([]roleRow(nil), rows...)
 			for i := range bad {
 				if bad[i].Name == "triage" {
-					bad[i].Effort = "ultra"
+					bad[i].Effort = "minimal"
 				}
 			}
 			if err := validateSelections(bad); err == nil {
@@ -1526,17 +1540,17 @@ func TestDevFlowSetup(t *testing.T) {
 		if err != nil || n != len(`a\"b`) {
 			t.Fatalf("encoded content %d %v", n, err)
 		}
-		fit := bytes.Repeat([]byte("a"), adapter.MaxGrokPromptBytes-triageTaskCeiling-promptReserve)
+		fit := bytes.Repeat([]byte("a"), triagePromptCap-triageTaskCeiling-promptReserve)
 		if err := promptBudget(fit[:len(fit)/2], fit[len(fit)/2:]); err != nil {
 			t.Fatal(err)
 		}
-		over := bytes.Repeat([]byte("a"), adapter.MaxGrokPromptBytes-triageTaskCeiling-promptReserve+1)
+		over := bytes.Repeat([]byte("a"), triagePromptCap-triageTaskCeiling-promptReserve+1)
 		if err := promptBudget(over[:len(over)/2], over[len(over)/2:]); err == nil {
 			t.Fatal("raw overflow was accepted")
 		}
 		quotes := bytes.Repeat([]byte{'"'}, 11000)
 		slashes := bytes.Repeat([]byte{'\\'}, 1000)
-		if len(quotes)+len(slashes)+triageTaskCeiling+promptReserve > adapter.MaxGrokPromptBytes {
+		if len(quotes)+len(slashes)+triageTaskCeiling+promptReserve > triagePromptCap {
 			t.Fatal("quote fixture raw length should fit")
 		}
 		if err := promptBudget(quotes, slashes); err == nil {
@@ -1561,24 +1575,64 @@ func TestDevFlowSetup(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(full) > adapter.MaxGrokPromptBytes {
-			t.Fatalf("representative prompt %d exceeds %d", len(full), adapter.MaxGrokPromptBytes)
+		if len(full) > triagePromptCap {
+			t.Fatalf("representative prompt %d exceeds %d", len(full), triagePromptCap)
 		}
 		if !bytes.Contains(full, []byte(`"payload":[]`)) {
 			t.Fatal("representative triage task did not omit payload")
 		}
 	})
-	t.Run("linux_triage", func(t *testing.T) {
-		if !strings.Contains(readme, linuxTriageClause) {
-			t.Fatal("README lacks the Linux triage clause")
-		}
-		if err := adapter.ValidateWorkerPosture(adapter.GrokID, "linux"); err != nil {
+	t.Run("codex_triage_posture", func(t *testing.T) {
+		if err := checkTriagePosture(readme, playbook); err != nil {
 			t.Fatal(err)
 		}
-		if err := adapter.ValidateWorkerPosture(adapter.GrokID, "darwin"); err == nil {
-			t.Fatal("darwin grok worker was accepted")
+		for _, goos := range []string{"linux", "darwin"} {
+			if err := adapter.ValidateWorkerPosture(adapter.CodexID, goos); err != nil {
+				t.Fatalf("%s codex worker: %v", goos, err)
+			}
+		}
+		for _, m := range [][2]string{
+			{codexTriageClause, "The triage role (grok) executes only on a Linux sidecar; a non-Linux worker is refused by the posture/readiness checks."},
+			{harnessLinuxClause, "The harness has no platform prerequisite"},
+		} {
+			if err := checkTriagePosture(strings.Replace(readme, m[0], m[1], 1), playbook); err == nil {
+				t.Errorf("the README mutation %q was accepted", m[1])
+			}
+		}
+		stale := strings.Replace(playbook, "Verify readiness after the final registry change. Do not substitute", "Verify readiness after the final registry change. The triage role runs only on a Linux sidecar. Do not substitute", 1)
+		if err := checkTriagePosture(readme, stale); err == nil {
+			t.Error("the stale Linux-only triage sentence was accepted in the playbook")
 		}
 	})
+}
+
+// staleTriagePosture are the retired Grok-only triage posture claims
+// (design 12a-codex-triage, FP-4).
+var staleTriagePosture = []string{
+	"The triage role runs only on a Linux sidecar",
+	"The triage role (grok) executes only on a Linux sidecar",
+	"returns nil for grok only when the worker OS is linux",
+	"non-Linux triage worker",
+}
+
+// checkTriagePosture validates the shared docs' triage posture: Codex
+// eligibility on Linux and macOS, the separately retained harness Linux
+// prerequisite, and no remaining Linux-only triage claim.
+func checkTriagePosture(readme, playbook string) error {
+	if !strings.Contains(readme, codexTriageClause) {
+		return fmt.Errorf("the README lacks the Codex triage posture")
+	}
+	if !strings.Contains(readme, harnessLinuxClause) {
+		return fmt.Errorf("the README lacks the retained harness Linux prerequisite")
+	}
+	for name, doc := range map[string]string{"README": readme, "playbook": playbook} {
+		for _, s := range staleTriagePosture {
+			if strings.Contains(doc, s) {
+				return fmt.Errorf("the %s still claims %q", name, s)
+			}
+		}
+	}
+	return nil
 }
 
 func TestDevFlowOwnership(t *testing.T) {

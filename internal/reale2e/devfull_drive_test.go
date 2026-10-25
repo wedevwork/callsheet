@@ -50,7 +50,8 @@ type devAct struct {
 	// alter varies the task: publication (edit-main, scratch, bad-report,
 	// no-commit, missing-field, no-digest, replace-questions,
 	// blocker-mismatch, before-export, wrong-confidence; light triage's
-	// scratch-left, scratch-file, unrelated-path), timing (timeout,
+	// scratch-left, scratch-file, unrelated-path), the final (long-final:
+	// findings over the triage task ceiling), timing (timeout,
 	// hang, late-wake)
 	// or wait evidence (no-wake, foreground, double-wait, deny, wait-exit).
 	alter string
@@ -1453,6 +1454,11 @@ func (r *devRig) final(act devAct) string {
 		b.WriteString("The design cannot be satisfied: the flag conflicts with help.\n")
 	default:
 		b.WriteString("Done.\n")
+	}
+	if act.alter == "long-final" {
+		// Findings too long for a recovery triage envelope (design
+		// 12a-codex-triage, FP-3b).
+		b.WriteString(strings.Repeat("x", triageTaskCeiling) + "\n")
 	}
 	if r.doc.Role == "code-reviewer" {
 		block := cmpOr(act.blocker, blockerNone)
