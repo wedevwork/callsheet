@@ -26,6 +26,11 @@ const (
 	maxTreeEntries = 64
 	// reviewScratch is the code reviewer's in-checkout scratch root.
 	reviewScratch = ".callsheet-review-scratch"
+	// triageScratch is light triage's in-checkout disposable reproduction
+	// root (design 12a-light-triage-scratch). It is never an allowed
+	// output: the worker removes it before publication and admission has
+	// no exemption for it.
+	triageScratch = ".callsheet-triage-scratch"
 )
 
 // devArtifacts are the seven planning/report files under the aggregate cap.

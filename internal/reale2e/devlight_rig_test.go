@@ -97,8 +97,17 @@ func (r *devRig) lightPublication(act devAct, doc devDispatchDoc, base map[strin
 				files["fix.md"] = []byte("# Fix brief\n\nConfidence: PROBABLE\nDesign required: no\n")
 			}
 		}
-		if act.alter == "triage-edits-source" {
+		switch act.alter {
+		case "triage-edits-source":
 			files["main.go"] = []byte(fixtureMain)
+		case "scratch-left":
+			// Design 12a-light-triage-scratch: scratch left behind with
+			// a file is a root directory in the snapshot.
+			files[".callsheet-triage-scratch/raw/evidence.txt"] = []byte("raw evidence\n")
+		case "scratch-file":
+			files[".callsheet-triage-scratch"] = []byte("left behind\n")
+		case "unrelated-path":
+			files["notes.txt"] = []byte("notes\n")
 		}
 	case "coder":
 		switch act.marker {

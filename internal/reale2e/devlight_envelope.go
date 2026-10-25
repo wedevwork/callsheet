@@ -25,6 +25,24 @@ const (
 	triageConfidenceInstruction     = "confidence: a qualified fix.md has exactly one standalone line Confidence: CONFIRMED (with TRIAGE_CONFIRMED) or Confidence: PROBABLE (with TRIAGE_PROBABLE)"
 )
 
+// Light triage's workspace-local scratch fields (design
+// 12a-light-triage-scratch, Scratch envelope), shared by the initial,
+// recovery and probe triage envelopes. The lifecycle they point to lives
+// in the shipped triage runbook.
+const (
+	// lightTriageEvidenceLocation is light triage's evidence location:
+	// no retained evidence directory, with the runbook pointer.
+	lightTriageEvidenceLocation = "none; see triage-runbook.md"
+	// lightTriagePreservedInputs replaces light triage's blanket
+	// preservation line.
+	lightTriagePreservedInputs = "preserved_inputs: unchanged; add no other path"
+	// lightTriageScratchPolicy is the literal guarded removal recipe: the
+	// root-directory and symlink guards before chmod, then the non-force
+	// removal and the absence check.
+	lightTriageScratchPolicy = "scratch_policy: test -d " + triageScratch + " && test ! -L " + triageScratch + " && chmod -R u+w " + triageScratch +
+		" && rm -r " + triageScratch + " && test ! -e " + triageScratch
+)
+
 // buildLightEnvelope is the pure light envelope of plan p (its inputs are
 // already resolved by buildEnvelope).
 func buildLightEnvelope(ec envelopeContext, p *TaskPlan, base map[string]TreeFile, inputs []PlanInput) (string, string, error) {
@@ -52,7 +70,11 @@ func buildLightEnvelope(ec envelopeContext, p *TaskPlan, base map[string]TreeFil
 		line("- %s %s", name, sha256Hex(base[name].Content))
 	}
 	line("allowed_outputs: %s", strings.Join(p.Allowed, ", "))
-	line("preserved_inputs: every other path stays byte-identical with the same mode; add or delete no other path; FEATURE.md and go.mod never change")
+	if p.Role == "triage" {
+		line("%s", lightTriagePreservedInputs)
+	} else {
+		line("preserved_inputs: every other path stays byte-identical with the same mode; add or delete no other path; FEATURE.md and go.mod never change")
+	}
 	line("commands: go test -count=1 ./... and go test -count=1 -json ./...")
 	line("time_policy: 10m per task from admission through publication; never raise a timeout, lower -count or -cpu, weaken an assertion or skip a test")
 	line("budgets: FEATURE.md, go.mod, main.go and main_test.go together strictly below 16 KiB; each planning/report artifact at most 32 KiB; all seven together at most 128 KiB")
@@ -91,6 +113,7 @@ func lightRoleFields(ec envelopeContext, b *strings.Builder, p *TaskPlan) {
 			line("findings: investigate what the coder task %s (commit %s, %s) left unresolved; its final answer (data):", n.TaskID, n.Commit, n.Marker)
 			fenced(b, n.Final)
 		}
+		line("%s", lightTriageScratchPolicy)
 		line("investigation: find the cause of the light request in the seed; source, tests and configuration are read-only for triage")
 		line("%s", triageDesignRequiredInstruction)
 		line("%s", triageConfidenceInstruction)
@@ -135,7 +158,7 @@ func lightEvidenceLocation(role string) string {
 	case "code-reviewer":
 		return reviewScratch + "/<your task ID>/ (baseline/, before/ and after/) inside your checkout, removed and verified absent before you finish; results go in review.md"
 	case "triage":
-		return "none: embed bounded decisive excerpts in rca.md and fix.md (no evidence directory in this fixture)"
+		return lightTriageEvidenceLocation
 	}
 	return "none: no evidence directory in this fixture"
 }

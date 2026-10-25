@@ -49,7 +49,8 @@ type devAct struct {
 	designRequired string
 	// alter varies the task: publication (edit-main, scratch, bad-report,
 	// no-commit, missing-field, no-digest, replace-questions,
-	// blocker-mismatch, before-export, wrong-confidence), timing (timeout,
+	// blocker-mismatch, before-export, wrong-confidence; light triage's
+	// scratch-left, scratch-file, unrelated-path), timing (timeout,
 	// hang, late-wake)
 	// or wait evidence (no-wake, foreground, double-wait, deny, wait-exit).
 	alter string
