@@ -755,7 +755,7 @@ func TestDevFullFlow(t *testing.T) {
 		t.Fatalf("shipped flow is not the default\n%s\n%s", def, got)
 	}
 	want := [][4]string{{"designer", "codex", "gpt-6-astra", "low"}, {"design-reviewer", "claude", "claude-fable-5-1", "low"},
-		{"coder", "claude", "claude-opus-5-5", "high"}, {"code-reviewer", "codex", "gpt-6.1-sol", "high"}, {"triage", "grok", "grok-4.7", "xhigh"}}
+		{"coder", "claude", "claude-opus-5-5", "high"}, {"code-reviewer", "codex", "gpt-6.1-sol", "high"}, {"triage", "codex", "gpt-6.1-sol", "high"}}
 	for i, r := range DefaultDevFullFlow().Roles {
 		if [4]string{r.ID, r.Adapter, r.Model, r.Effort} != want[i] {
 			t.Fatalf("default row %d %+v", i, r)
@@ -764,11 +764,23 @@ func TestDevFullFlow(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := flow.CheckDevPosture("linux"); err != nil {
-		t.Fatal(err)
+	for i, r := range flow.Roles {
+		if [4]string{r.ID, r.Adapter, r.Model, r.Effort} != want[i] {
+			t.Fatalf("shipped row %d %+v", i, r)
+		}
 	}
-	if err := flow.CheckDevPosture("darwin"); err == nil {
-		t.Fatal("grok posture accepted off linux")
+	// Design 12a-codex-triage: the selected roles (Codex and Claude only)
+	// are eligible on Linux and Darwin; the live gate stays Linux-only.
+	for _, goos := range []string{"linux", "darwin"} {
+		if err := flow.CheckDevPosture(goos); err != nil {
+			t.Fatalf("%s: %v", goos, err)
+		}
+	}
+	if err := Gate("darwin", func(k string) string { return map[string]string{EnvOptIn: "1"}[k] }, func(string) (string, bool) { return "", false }); err != ErrPlatform {
+		t.Fatalf("the darwin posture bypassed the live gate: %v", err)
+	}
+	if err := (DevFullFlow{Schema: DevFullFlowSchema}).CheckDevPosture("linux"); err == nil {
+		t.Fatal("an invalid flow passed the posture check")
 	}
 	mutate := func(f func(m map[string]any)) []byte {
 		var m map[string]any
@@ -779,15 +791,21 @@ func TestDevFullFlow(t *testing.T) {
 	}
 	roles := func(m map[string]any) []any { return m["roles"].([]any) }
 	for name, b := range map[string][]byte{
-		"unknown_key":  mutate(func(m map[string]any) { m["extra"] = 1 }),
-		"role_key":     mutate(func(m map[string]any) { roles(m)[0].(map[string]any)["x"] = 1 }),
-		"schema":       mutate(func(m map[string]any) { m["schema"] = "callsheet-dev-full-flow/v2" }),
-		"order":        mutate(func(m map[string]any) { r := roles(m); r[0], r[1] = r[1], r[0] }),
-		"missing":      mutate(func(m map[string]any) { m["roles"] = roles(m)[:4] }),
-		"extra":        mutate(func(m map[string]any) { m["roles"] = append(roles(m), roles(m)[0]) }),
-		"duplicate":    mutate(func(m map[string]any) { roles(m)[1] = roles(m)[0] }),
-		"adapter":      mutate(func(m map[string]any) { roles(m)[0].(map[string]any)["adapter"] = "claude" }),
-		"effort":       mutate(func(m map[string]any) { roles(m)[4].(map[string]any)["effort"] = "max" }),
+		"unknown_key": mutate(func(m map[string]any) { m["extra"] = 1 }),
+		"role_key":    mutate(func(m map[string]any) { roles(m)[0].(map[string]any)["x"] = 1 }),
+		"schema":      mutate(func(m map[string]any) { m["schema"] = "callsheet-dev-full-flow/v2" }),
+		"order":       mutate(func(m map[string]any) { r := roles(m); r[0], r[1] = r[1], r[0] }),
+		"missing":     mutate(func(m map[string]any) { m["roles"] = roles(m)[:4] }),
+		"extra":       mutate(func(m map[string]any) { m["roles"] = append(roles(m), roles(m)[0]) }),
+		"duplicate":   mutate(func(m map[string]any) { roles(m)[1] = roles(m)[0] }),
+		"adapter":     mutate(func(m map[string]any) { roles(m)[0].(map[string]any)["adapter"] = "claude" }),
+		"effort":      mutate(func(m map[string]any) { roles(m)[4].(map[string]any)["effort"] = "minimal" }),
+		// The obsolete Grok-triage row is a fixed-adapter mismatch, never an
+		// override; so is a Grok adapter with the Codex model.
+		"grok_triage": mutate(func(m map[string]any) {
+			roles(m)[4] = map[string]any{"id": "triage", "adapter": "grok", "model": "grok-4.7", "effort": "xhigh"}
+		}),
+		"grok_adapter": mutate(func(m map[string]any) { roles(m)[4].(map[string]any)["adapter"] = "grok" }),
 		"dup_json_key": []byte(`{"schema":"callsheet-dev-full-flow/v1","schema":"callsheet-dev-full-flow/v1","roles":[]}`),
 		"oversize":     bytes.Repeat([]byte(" "), int(maxFlowBytes)+1),
 	} {
@@ -798,6 +816,12 @@ func TestDevFullFlow(t *testing.T) {
 	over, err := ParseDevFullFlow(mutate(func(m map[string]any) { roles(m)[0].(map[string]any)["effort"] = "medium" }))
 	if err != nil || over.Kind() != FlowOverride || over.Roles[0].Adapter != "codex" {
 		t.Fatalf("override %v", err)
+	}
+	// A supported Codex effort override of the triage row stays an
+	// override; the shipped flow itself is the default kind.
+	tri, err := ParseDevFullFlow(mutate(func(m map[string]any) { roles(m)[4].(map[string]any)["effort"] = "medium" }))
+	if err != nil || tri.Kind() != FlowOverride || tri.Roles[4].Adapter != adapter.CodexID || tri.Roles[4].Effort != "medium" {
+		t.Fatalf("triage override %+v %v", tri.Roles, err)
 	}
 	if _, ok := over.Role("nope"); ok {
 		t.Fatal("role lookup")
@@ -842,10 +866,11 @@ func TestDevFullPreflight(t *testing.T) {
 	if err := checkTriageTaskBudget("<>&", strings.Repeat("a", triageTaskCeiling-3)); err != nil {
 		t.Fatalf("HTML escaping is disabled: %v", err)
 	}
-	// The representative task encodes within the adapter's prompt bound.
+	// The representative task encodes within the product's triage prompt
+	// cap (design 12a-codex-triage), not a vendor adapter's bound.
 	goal, acc := strings.Repeat("g", 6000), strings.Repeat("a", 2192)
 	task, _ := json.Marshal(map[string]any{"goal": goal, "acceptance": acc, "payload": []string{}})
-	if len(in)+len(rb)+len(task)+devPromptReserve > adapter.MaxGrokPromptBytes {
+	if len(in)+len(rb)+len(task)+devPromptReserve > triagePromptCap {
 		t.Fatalf("representative triage prompt %d", len(in)+len(rb)+len(task))
 	}
 }

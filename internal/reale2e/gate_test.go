@@ -84,6 +84,18 @@ func TestGateUnits(t *testing.T) {
 	if err := Gate("plan9", on, func(string) (string, bool) { return "", true }); err != ErrCI {
 		t.Fatalf("order: %v", err)
 	}
+	// Design 12a-codex-triage: the platform refusal names the harness's
+	// Linux-qualified installations and sidecars, not a worker posture
+	// (an independent literal, never derived from ErrPlatform).
+	const wantPlatform = "reale2e run refused: live execution is linux only (the harness requires Linux-qualified vendor installations and sidecars)"
+	if ErrPlatform.Error() != wantPlatform {
+		t.Fatalf("ErrPlatform is %q", ErrPlatform)
+	}
+	for _, goos := range []string{"darwin", "windows"} {
+		if err := Gate(goos, on, none); err != ErrPlatform {
+			t.Fatalf("%s: %v", goos, err)
+		}
+	}
 	for _, args := range [][]string{nil, {"bogus"}, {"observe"}, {"observe", "--run", "/r", "--task", "bad", "--hop", HopDesigner},
 		{"observe", "--run", "/r", "--task", hexID("t_", 1), "--hop", "planner"}, {"finish"}, {"finish", "--run", "rel"}, {"wait"},
 		{"run", "--callsheet", "/c", "--claude", "/a", "--codex", "/b", "--grok", "/g", "--evidence", "/e", "--protect-root", "rel"},

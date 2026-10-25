@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"unicode/utf8"
 
-	"github.com/wedevwork/callsheet/internal/adapter"
 	"github.com/wedevwork/callsheet/internal/contract"
 )
 
@@ -18,6 +17,10 @@ const (
 	triageTaskCeiling  = 8192
 	devPromptReserve   = 4096
 	maxDispatchDocByte = 32 << 10
+	// triagePromptCap is the product's triage prompt cap (design
+	// 12a-codex-triage), independent of any vendor adapter's bound; the
+	// selected adapter's own final encoded-size check stays authoritative.
+	triagePromptCap = 32768
 )
 
 // errPromptBudget is the named refusal for an envelope that cannot fit.
@@ -56,10 +59,10 @@ func checkTriageManualBudget(instruction, runbook []byte) error {
 	if err != nil {
 		return err
 	}
-	if raw+triageTaskCeiling+devPromptReserve > adapter.MaxGrokPromptBytes {
+	if raw+triageTaskCeiling+devPromptReserve > triagePromptCap {
 		return fmt.Errorf("%w: raw triage envelope %d", errPromptBudget, raw+triageTaskCeiling+devPromptReserve)
 	}
-	if left+right+triageTaskCeiling+devPromptReserve > adapter.MaxGrokPromptBytes {
+	if left+right+triageTaskCeiling+devPromptReserve > triagePromptCap {
 		return fmt.Errorf("%w: encoded triage envelope %d", errPromptBudget, left+right+triageTaskCeiling+devPromptReserve)
 	}
 	return nil

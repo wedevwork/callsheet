@@ -17,7 +17,7 @@ callsheet role add designer --name designer --node <node-id> --adapter codex --i
 callsheet role add design-reviewer --name design-reviewer --node <node-id> --adapter claude --instruction /srv/manuals/dev-flow/design-reviewer-instruction.md --runbook /srv/manuals/dev-flow/design-reviewer-runbook.md --model claude-fable-5-1 --effort low --concurrency 1 --timeout 10m --plane <plane-url> --ca <ca-path>
 callsheet role add coder --name coder --node <node-id> --adapter claude --instruction /srv/manuals/dev-flow/coder-instruction.md --runbook /srv/manuals/dev-flow/coder-runbook.md --model claude-opus-5-5 --effort high --concurrency 1 --timeout 10m --plane <plane-url> --ca <ca-path>
 callsheet role add code-reviewer --name code-reviewer --node <node-id> --adapter codex --instruction /srv/manuals/dev-flow/code-reviewer-instruction.md --runbook /srv/manuals/dev-flow/code-reviewer-runbook.md --model gpt-6.1-sol --effort high --concurrency 1 --timeout 10m --plane <plane-url> --ca <ca-path>
-callsheet role add triage --name triage --node <node-id> --adapter grok --instruction /srv/manuals/dev-flow/triage-instruction.md --runbook /srv/manuals/dev-flow/triage-runbook.md --model grok-4.7 --effort xhigh --concurrency 1 --timeout 10m --plane <plane-url> --ca <ca-path>
+callsheet role add triage --name triage --node <node-id> --adapter codex --instruction /srv/manuals/dev-flow/triage-instruction.md --runbook /srv/manuals/dev-flow/triage-runbook.md --model gpt-6.1-sol --effort high --concurrency 1 --timeout 10m --plane <plane-url> --ca <ca-path>
 ```
 
 ## Role selection
@@ -28,7 +28,7 @@ callsheet role add triage --name triage --node <node-id> --adapter grok --instru
 | design-reviewer | claude | claude-fable-5-1 | low | 1 | 10m |
 | coder | claude | claude-opus-5-5 | high | 1 | 10m |
 | code-reviewer | codex | gpt-6.1-sol | high | 1 | 10m |
-| triage | grok | grok-4.7 | xhigh | 1 | 10m |
+| triage | codex | gpt-6.1-sol | high | 1 | 10m |
 
 Model and effort are the registered role configuration, not extra dispatch keys. Callsheet's accepted effort unions (`ValidateSelection` in `internal/adapter/vendor.go`) include these efforts. A union is not proof that a particular account can run the pair.
 
@@ -36,7 +36,7 @@ Model and effort are the registered role configuration, not extra dispatch keys.
 
 ## Prerequisites
 
-The triage role (grok) executes only on a Linux sidecar; a non-Linux worker is refused by the posture/readiness checks. `ValidateWorkerPosture` in `internal/adapter/vendor.go` returns nil for grok only when the worker OS is linux. A valid model and effort cannot override that. A coordinator or plane on another supported platform does not make a non-Linux triage worker eligible.
+The triage role (codex) is eligible on a Linux or macOS sidecar, like every other role of this selection: `ValidateWorkerPosture` in `internal/adapter/vendor.go` returns nil for codex and claude on both. A valid model and effort never override a posture refusal. The real end-to-end harness keeps its own, separate Linux prerequisite: its live execution is Linux only because it requires Linux-qualified vendor installations and sidecars ([real-e2e.md](../../real-e2e.md)). That harness prerequisite is not a triage posture.
 
 Other prerequisites are the owner's to fulfill: logged-in adapter CLIs on the sidecars, plane trust, and the CA. This example does not change agent-tool settings, login state, or profiles.
 
@@ -125,9 +125,9 @@ Each file in this directory is at most 32 KiB, the existing template bound used 
 
 Shared limits: task-text ceiling 8192 bytes; reserve 4096 bytes; manual-pair cap 20480 bytes; prompt cap 32768 bytes.
 
-Prompt budget: triage instruction bytes plus triage runbook bytes plus 8192 plus 4096 must be <= 32768, both as raw UTF-8 and as JSON-encoded string content with HTML escaping disabled, excluding surrounding quotes and the encoder LF. The 8192-byte ceiling covers goal plus acceptance; payload is omitted and encoded as an empty array. The two manuals together must be at most 20480 bytes. The 4096-byte reserve is not permission to exceed the adapter final encoded-size check. These are Callsheet product limits (adapter.MaxGrokPromptBytes), not a claimed vendor maximum. Bulky evidence goes to an authorized workspace path and a digest instead of inline text.
+Prompt budget: triage instruction bytes plus triage runbook bytes plus 8192 plus 4096 must be <= 32768, both as raw UTF-8 and as JSON-encoded string content with HTML escaping disabled, excluding surrounding quotes and the encoder LF. The 8192-byte ceiling covers goal plus acceptance; payload is omitted and encoded as an empty array. The two manuals together must be at most 20480 bytes. The 4096-byte reserve is not permission to exceed the adapter final encoded-size check. These are Callsheet product limits (the product triage prompt cap `triagePromptCap`), not a claimed vendor maximum. Bulky evidence goes to an authorized workspace path and a digest instead of inline text.
 
-`internal/adapter/vendor.go` defines `MaxGrokPromptBytes` as 32768. `internal/sidecar/tasks.go` JSON-encodes the instruction, the runbook, and the task with HTML escaping disabled and checks the final byte length. `internal/reale2e/hops.go` is the existing 4 KiB envelope-allowance precedent.
+`internal/reale2e/devfull_budget.go` defines the product cap `triagePromptCap` as 32768, independent of any vendor adapter's own bound; the selected adapter's final check stays authoritative. `internal/sidecar/tasks.go` JSON-encodes the instruction, the runbook, and the task with HTML escaping disabled and checks the final byte length. `internal/reale2e/hops.go` is the existing 4 KiB envelope-allowance precedent.
 
 Retain 10m/task, 90m/attempt, and 20m/owner decision inside that attempt. There is no token ceiling. These are ceilings, not a promise that every allowed round fits. Two design repair cycles and two code repair cycles allow 12 full-flow worker tasks before recovery dispatches; the 90-minute bound may stop earlier. Do not raise test timeouts or reduce test counts or CPU settings. A slow suite is a blocker for a separate owner decision.
 

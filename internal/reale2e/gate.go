@@ -20,7 +20,7 @@ const EnvCI = "CI"
 var (
 	ErrOptIn    = errors.New("reale2e run refused: set " + EnvOptIn + "=1 to start the paid real-worker exercise")
 	ErrCI       = errors.New("reale2e run refused: CI is set (even empty); the real-worker exercise never runs in CI")
-	ErrPlatform = errors.New("reale2e run refused: live execution is linux only (the grok worker posture is refused on other systems)")
+	ErrPlatform = errors.New("reale2e run refused: live execution is linux only (the harness requires Linux-qualified vendor installations and sidecars)")
 )
 
 // Gate decides live startup from injected inputs only.

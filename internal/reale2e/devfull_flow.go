@@ -19,8 +19,9 @@ const DevFullFlowSchema = "callsheet-dev-full-flow/v1"
 // DevFullRoleIDs are the five roles in canonical serialization order.
 var DevFullRoleIDs = []string{HopDesigner, HopDesignReviewer, HopCoder, HopCodeReviewer, "triage"}
 
-// devFullAdapters are each role's fixed adapter.
-var devFullAdapters = []string{adapter.CodexID, adapter.ClaudeID, adapter.ClaudeID, adapter.CodexID, adapter.GrokID}
+// devFullAdapters are each role's fixed adapter (design 12a-codex-triage:
+// triage runs on Codex, so an old Grok-triage flow is flow_invalid).
+var devFullAdapters = []string{adapter.CodexID, adapter.ClaudeID, adapter.ClaudeID, adapter.CodexID, adapter.CodexID}
 
 // DevFullFlow is the development selection manifest.
 type DevFullFlow struct {
@@ -35,7 +36,7 @@ func DefaultDevFullFlow() DevFullFlow {
 		{ID: HopDesignReviewer, Adapter: adapter.ClaudeID, Model: "claude-fable-5-1", Effort: "low"},
 		{ID: HopCoder, Adapter: adapter.ClaudeID, Model: "claude-opus-5-5", Effort: "high"},
 		{ID: HopCodeReviewer, Adapter: adapter.CodexID, Model: "gpt-6.1-sol", Effort: "high"},
-		{ID: "triage", Adapter: adapter.GrokID, Model: "grok-4.7", Effort: "xhigh"},
+		{ID: "triage", Adapter: adapter.CodexID, Model: "gpt-6.1-sol", Effort: "high"},
 	}}
 }
 
@@ -123,8 +124,10 @@ func (f DevFullFlow) SelectionCanonical() ([]byte, error) {
 	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
 }
 
-// CheckDevPosture applies adapter.ValidateWorkerPosture to every role.
-// Live execution, including the Grok worker, is Linux-only.
+// CheckDevPosture applies adapter.ValidateWorkerPosture to every selected
+// role. The shipped selection (Codex and Claude only) is eligible on Linux
+// and Darwin; that never bypasses the live Linux-only Gate, which the
+// harness's required vendor installations and sidecars keep.
 func (f DevFullFlow) CheckDevPosture(goos string) error {
 	if err := f.Validate(); err != nil {
 		return err
