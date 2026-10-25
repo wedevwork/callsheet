@@ -352,20 +352,60 @@ func MissingCmdPackages(listOut, profile string) []string {
 // round 5, owner-approved): its offline full-flow rig records and checks
 // complete attempts, which under the race detector need more than the
 // shared step's 180 seconds. That step is local-only (design r0.7, owner
-// decision 2026-10-19): in CI mode the package runs in the ordinary
+// decision 2026-10-19): in CI mode the package runs in its ordinary
 // step only, the development harness not justifying its CI race cost.
+// Since design 12a-linux-test-budget its ordinary tests also run alone, in
+// the 360-second "test reale2e" step on Linux and Darwin.
 const RaceReale2ePackage = "./internal/reale2e"
 
+// testFunctionPackage is the function test package: on Linux and Darwin
+// its ordinary tests run alone under 360 seconds and, on Linux, its race
+// tests alone under 300 seconds (design 12a-linux-test-budget).
+const testFunctionPackage = "./tests/function"
+
+// TestSharedPackages select every untagged package of the module except
+// RaceReale2ePackage and testFunctionPackage, in order, for the
+// 180-second ordinary "test" step on Linux and Darwin and the Linux shared
+// race step (design 12a-linux-test-budget). They are the
+// RaceSharedPackages patterns without the final ./tests/..., with no
+// replacement: tests/function is the only untagged package under tests/
+// (tests/container and tests/smoke are containeracceptance and
+// realadaptersmoke tagged). TestOrdinarySelectionCoversModule and
+// TestRaceSelectionCoversModule keep the planned selections equal to go
+// list ./..., so a new untagged package, tests/<new> included, fails
+// until it is listed here. Plans append a fresh copy; nothing mutates it.
+var TestSharedPackages = []string{
+	"./cmd/...",
+	"./internal/adapter/...",
+	"./internal/cicheck/...",
+	"./internal/cli/...",
+	"./internal/client/...",
+	"./internal/contract/...",
+	"./internal/devcheck/...",
+	"./internal/logging/...",
+	"./internal/mcp/...",
+	"./internal/mcpqual/...",
+	"./internal/plane/...",
+	"./internal/sidecar/...",
+	"./internal/spikes/...",
+	"./internal/taskpublication/...",
+	"./internal/taskworkspace/...",
+	"./internal/testkit/...",
+	"./internal/workspace/...",
+	"./internal/workspacetransfer/...",
+}
+
 // RaceSharedPackages select every package of the module except
-// RaceReale2ePackage for the shared race step (packages one at a time,
-// 180 seconds each, design 12a-ci-race-schedule). The go tool has no
-// exclusion pattern, so they are listed; TestRaceSelectionCoversModule
-// keeps them equal to go list ./... without that package, so a new
-// package cannot fall outside both race steps. Darwin native qualification
-// reuses a fresh copy of the same patterns, in order, for its first,
-// 300-second tagged command, internal/reale2e running alone in the second
-// (design 12a-native-reale2e-budget); TestNativeSelectionCoversModule keeps
-// that tagged pair equal to go list -tags=realadaptercheck ./....
+// RaceReale2ePackage. They are the legacy complement of that package,
+// once the shared race step's selection (design 12a-ci-race-schedule)
+// and still used, unchanged, by Darwin native qualification: a fresh copy
+// of the same patterns, in order, is its first, 300-second tagged command,
+// internal/reale2e running alone in the second (design
+// 12a-native-reale2e-budget); TestNativeSelectionCoversModule keeps that
+// tagged pair equal to go list -tags=realadaptercheck ./.... The Linux
+// shared race step uses a fresh copy of TestSharedPackages instead, its
+// function tests running in their own race step (design
+// 12a-linux-test-budget).
 var RaceSharedPackages = []string{
 	"./cmd/...",
 	"./internal/adapter/...",
@@ -395,15 +435,32 @@ func TestSteps(goos string) []Step { return testSteps(goos, false) }
 // testSteps is the test plan for goos in CI mode (ci) or local mode. It
 // reads no ambient environment: the driver passes the mode Run read once.
 // The only difference between the modes is the local-only dedicated
-// internal/reale2e race step on Linux.
+// internal/reale2e race step on Linux. Every call returns fresh argv and
+// environment slices.
 func testSteps(goos string, ci bool) []Step {
-	steps := []Step{{Name: "test", Argv: []string{"go", "test", "-count=1", "-timeout=180s", "./..."}}}
+	// Hosts other than the task platforms keep the single whole-module
+	// ordinary command.
+	if goos != "linux" && goos != "darwin" {
+		return []Step{{Name: "test", Argv: []string{"go", "test", "-count=1", "-timeout=180s", "./..."}}}
+	}
+	// Design 12a-linux-test-budget: the ordinary suite as three sequential
+	// commands whose selections partition the untagged module: every
+	// package but internal/reale2e and tests/function under the shared
+	// 180 s bound, then each of those two alone under 360 s.
+	steps := []Step{
+		{Name: "test", Argv: append([]string{"go", "test", "-count=1", "-timeout=180s"}, TestSharedPackages...)},
+		{Name: "test reale2e", Argv: []string{"go", "test", "-count=1", "-timeout=360s", RaceReale2ePackage}},
+		{Name: "test function", Argv: []string{"go", "test", "-count=1", "-timeout=360s", testFunctionPackage}},
+	}
 	if goos == "linux" {
-		// The race suite: every package but internal/reale2e serialized
-		// with -p=1 under the shared bound, then, locally, internal/reale2e
-		// alone under its own.
-		steps = append(steps, Step{Name: "test -race", Env: []string{"CGO_ENABLED=1"},
-			Argv: append([]string{"go", "test", "-race", "-p=1", "-count=1", "-timeout=180s"}, RaceSharedPackages...)})
+		// The race suite, packages one at a time: the shared packages under
+		// the shared 180 s bound, tests/function alone under 300 s, then,
+		// locally, internal/reale2e alone under its own 360 s.
+		steps = append(steps,
+			Step{Name: "test -race", Env: []string{"CGO_ENABLED=1"},
+				Argv: append([]string{"go", "test", "-race", "-p=1", "-count=1", "-timeout=180s"}, TestSharedPackages...)},
+			Step{Name: "test -race function", Env: []string{"CGO_ENABLED=1"},
+				Argv: []string{"go", "test", "-race", "-p=1", "-count=1", "-timeout=300s", testFunctionPackage}})
 		if !ci {
 			steps = append(steps, Step{Name: "test -race reale2e", Env: []string{"CGO_ENABLED=1"},
 				Argv: []string{"go", "test", "-race", "-count=1", "-timeout=360s", RaceReale2ePackage}})
@@ -412,9 +469,6 @@ func testSteps(goos string, ci bool) []Step {
 	// Iteration 08: the ordinary-only tagged sidecar contract, as its own
 	// step (and its race counterpart where the suite has one), on the task
 	// platforms only.
-	if goos != "linux" && goos != "darwin" {
-		return steps
-	}
 	tagged := []string{"-tags=" + RealAdapterTag, "./internal/sidecar", "-run=^TestRealAdapterLocal$", "-count=1"}
 	steps = append(steps, Step{Name: "test " + RealAdapterTag, Argv: append([]string{"go", "test"}, tagged...)})
 	if goos == "linux" {

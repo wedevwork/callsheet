@@ -10,14 +10,32 @@ import (
 // CI plan). They are compared against the plan functions, never derived
 // from them.
 const (
-	wantTestNative = "go test -count=1 -timeout=180s ./..."
+	// wantTestOrdinaryShared, wantTestOrdinaryReale2e and
+	// wantTestOrdinaryFunction are the three ordinary commands on Linux and
+	// Darwin in order (design 12a-linux-test-budget): the 18 shared
+	// patterns under 180 s, then internal/reale2e and tests/function each
+	// alone under 360 s; wantTestNative is the flattened ordinary plan.
+	wantTestOrdinaryShared = "go test -count=1 -timeout=180s ./cmd/... ./internal/adapter/... ./internal/cicheck/... ./internal/cli/... " +
+		"./internal/client/... ./internal/contract/... ./internal/devcheck/... ./internal/logging/... ./internal/mcp/... ./internal/mcpqual/... " +
+		"./internal/plane/... ./internal/sidecar/... ./internal/spikes/... ./internal/taskpublication/... ./internal/taskworkspace/... " +
+		"./internal/testkit/... ./internal/workspace/... ./internal/workspacetransfer/..."
+	wantTestOrdinaryReale2e  = "go test -count=1 -timeout=360s ./internal/reale2e"
+	wantTestOrdinaryFunction = "go test -count=1 -timeout=360s ./tests/function"
+	wantTestNative           = wantTestOrdinaryShared + "|" + wantTestOrdinaryReale2e + "|" + wantTestOrdinaryFunction
+	// wantTestOther is the single ordinary command of every other host.
+	wantTestOther = "go test -count=1 -timeout=180s ./..."
 	// wantTestRace is the shared race step: every package but
-	// internal/reale2e, one at a time (design 12a-ci-race-schedule; the
-	// exclusion since code review round 5 of design 12a-dev-flow-verify).
+	// internal/reale2e and tests/function, one at a time (design
+	// 12a-ci-race-schedule; reale2e's exclusion since code review round 5
+	// of design 12a-dev-flow-verify, tests/function's since design
+	// 12a-linux-test-budget).
 	wantTestRace = "go test -race -p=1 -count=1 -timeout=180s ./cmd/... ./internal/adapter/... ./internal/cicheck/... ./internal/cli/... " +
 		"./internal/client/... ./internal/contract/... ./internal/devcheck/... ./internal/logging/... ./internal/mcp/... ./internal/mcpqual/... " +
 		"./internal/plane/... ./internal/sidecar/... ./internal/spikes/... ./internal/taskpublication/... ./internal/taskworkspace/... " +
-		"./internal/testkit/... ./internal/workspace/... ./internal/workspacetransfer/... ./tests/..."
+		"./internal/testkit/... ./internal/workspace/... ./internal/workspacetransfer/..."
+	// wantTestRaceFunction is tests/function's own race step and bound
+	// (design 12a-linux-test-budget).
+	wantTestRaceFunction = "go test -race -p=1 -count=1 -timeout=300s ./tests/function"
 	// wantTestRaceReale2e is internal/reale2e's own race step and bound.
 	wantTestRaceReale2e = "go test -race -count=1 -timeout=360s ./internal/reale2e"
 	// wantNativeShared and wantNativeReale2e are Darwin's two native
@@ -72,8 +90,12 @@ const (
 	// ordinary sidecar contract steps (race on Linux only, like the suite).
 	wantTestTagged     = "go test -tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$ -count=1"
 	wantTestTaggedRace = "go test -race -tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$ -count=1"
-	// wantTestPlanLinux is the complete Linux test plan in order.
-	wantTestPlanLinux = wantTestNative + "|" + wantTestRace + "|" + wantTestRaceReale2e + "|" + wantTestTagged + "|" + wantTestTaggedRace
+	// wantTestPlanLinux is the complete local Linux test plan in order and
+	// wantTestPlanLinuxCI the CI one, without the reale2e race step;
+	// wantTestPlanDarwin is Darwin's in both modes.
+	wantTestPlanLinux   = wantTestNative + "|" + wantTestRace + "|" + wantTestRaceFunction + "|" + wantTestRaceReale2e + "|" + wantTestTagged + "|" + wantTestTaggedRace
+	wantTestPlanLinuxCI = wantTestNative + "|" + wantTestRace + "|" + wantTestRaceFunction + "|" + wantTestTagged + "|" + wantTestTaggedRace
+	wantTestPlanDarwin  = wantTestNative + "|" + wantTestTagged
 )
 
 func argvOf(steps []Step) []string {
@@ -93,6 +115,9 @@ func TestPlaneVerificationPolicyContract(t *testing.T) {
 	t.Run("linux", func(t *testing.T) {
 		if got := strings.Join(argvOf(TestSteps("linux")), "|"); got != wantTestPlanLinux {
 			t.Fatalf("test plan = %s", got)
+		}
+		if got := strings.Join(argvOf(testSteps("linux", true)), "|"); got != wantTestPlanLinuxCI {
+			t.Fatalf("ci test plan = %s", got)
 		}
 		if got := strings.Join(argvOf(BenchSteps()), "|"); got != wantBenchPlan {
 			t.Fatalf("bench plan = %s", got)
@@ -137,8 +162,11 @@ func TestPlaneVerificationPolicyContract(t *testing.T) {
 		if err != nil || strings.Join(argvOf(stress), "|") != wantStressPlan {
 			t.Fatalf("stress plan = %v %v", argvOf(stress), err)
 		}
-		if got := strings.Join(argvOf(TestSteps("darwin")), "|"); got != wantTestNative+"|"+wantTestTagged {
+		if got := strings.Join(argvOf(TestSteps("darwin")), "|"); got != wantTestPlanDarwin {
 			t.Fatalf("darwin test plan = %s", got)
+		}
+		if got := strings.Join(argvOf(testSteps("darwin", true)), "|"); got != wantTestPlanDarwin {
+			t.Fatalf("darwin ci test plan = %s", got)
 		}
 		req := NativeRequiredTests()
 		want := append([]string{fp6, fp6 + "/cooperative", fp6 + "/resistant", fp6 + "/leader-exits-first"}, planeNames()...)

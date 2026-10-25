@@ -2236,8 +2236,11 @@ func catalogVersionCI(t *testing.T, live func([]devcheck.Step) string) {
 		}
 	}
 	for _, goos := range []string{"linux", "darwin"} {
+		// The shared ordinary command selects the mcpqual and catalog
+		// packages (design 12a-linux-test-budget: listed patterns, no
+		// longer ./...).
 		steps := devcheck.TestSteps(goos)
-		if !slices.Contains(steps[0].Argv, "./...") || live(steps) != "" {
+		if !slices.Contains(steps[0].Argv, "./internal/mcpqual/...") || !slices.Contains(steps[0].Argv, "./internal/testkit/...") || live(steps) != "" {
 			t.Fatalf("%s test steps %+v", goos, steps)
 		}
 	}
