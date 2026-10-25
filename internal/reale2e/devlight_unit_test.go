@@ -275,6 +275,11 @@ func TestDevLightBriefAdmission(t *testing.T) {
 			if err := checkTriageTaskBudget(g[0], g[1]); err != nil {
 				t.Errorf("%s: %v", name, err)
 			}
+			// Design 12a-light-triage-scratch: the shortened literal
+			// fields, their splice and the unchanged acceptance.
+			if err := checkScratchEnvelope(g[0], g[1], name); err != nil {
+				t.Error(err)
+			}
 			enc, _ := json.Marshal(g[0] + g[1])
 			if len(g[0])+len(g[1]) > 8192 || len(enc) > 8192+2 {
 				t.Errorf("%s: %d raw bytes, %d encoded", name, len(g[0])+len(g[1]), len(enc))
@@ -289,6 +294,12 @@ func TestDevLightBriefAdmission(t *testing.T) {
 		if _, _, _, err := buildEnvelope(ec, step.Plan); err == nil || codeOf(err) != CodePromptBudget {
 			t.Fatalf("an oversized triage envelope: %v", err)
 		}
+	})
+	t.Run("scratch_budgets", func(t *testing.T) {
+		t.Parallel()
+		// Every measured workflow fixture keeps 200 encoded bytes spare;
+		// the admitted boundary and the overflow refusals are unchanged.
+		checkScratchBudgets(t)
 	})
 }
 

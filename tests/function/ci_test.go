@@ -436,13 +436,12 @@ func TestCIWorkflowContract(t *testing.T) {
 // approved) the whole module's race suite is two steps: every package but
 // internal/reale2e serialized under 180 s, then internal/reale2e alone
 // under 360 s (internal/devcheck's TestRaceSelectionCoversModule keeps the
-// two selections equal to ./...).
+// two selections equal to ./...). Design 12a-linux-test-budget: the
+// ordinary suite is three commands on Linux and Darwin, and tests/function
+// runs alone in a third, 300-second race step on Linux.
 func TestCILinuxBar(t *testing.T) {
-	const wantRace = "go test -race -p=1 -count=1 -timeout=180s ./cmd/... ./internal/adapter/... ./internal/cicheck/... ./internal/cli/... " +
-		"./internal/client/... ./internal/contract/... ./internal/devcheck/... ./internal/logging/... ./internal/mcp/... ./internal/mcpqual/... " +
-		"./internal/plane/... ./internal/sidecar/... ./internal/spikes/... ./internal/taskpublication/... ./internal/taskworkspace/... " +
-		"./internal/testkit/... ./internal/workspace/... ./internal/workspacetransfer/... ./tests/..."
-	const wantRaceReale2e = "go test -race -count=1 -timeout=360s ./internal/reale2e"
+	const wantRace = wantLinuxRace
+	const wantRaceReale2e = wantLinuxRaceReale2e
 	t.Run("race-schedule", func(t *testing.T) {
 		stages, err := cicheck.ExtractStages(ciWorkflow(t))
 		if err != nil {
@@ -452,37 +451,44 @@ func TestCILinuxBar(t *testing.T) {
 			t.Fatalf("linux stages = %q", got)
 		}
 		plan := devcheck.TestSteps("linux")
-		if len(plan) < 3 || plan[1].Name != "test -race" || strings.Join(plan[1].Argv, " ") != wantRace ||
-			strings.Join(plan[1].Env, " ") != "CGO_ENABLED=1" || strings.Contains(wantRace, "reale2e") ||
-			plan[2].Name != "test -race reale2e" || strings.Join(plan[2].Argv, " ") != wantRaceReale2e || strings.Join(plan[2].Env, " ") != "CGO_ENABLED=1" {
+		if len(plan) < 6 || plan[3].Name != "test -race" || strings.Join(plan[3].Argv, " ") != wantRace ||
+			strings.Join(plan[3].Env, " ") != "CGO_ENABLED=1" || strings.Contains(wantRace, "reale2e") || strings.Contains(wantRace, "./tests/") ||
+			plan[4].Name != "test -race function" || strings.Join(plan[4].Argv, " ") != wantLinuxRaceFunction || strings.Join(plan[4].Env, " ") != "CGO_ENABLED=1" ||
+			plan[5].Name != "test -race reale2e" || strings.Join(plan[5].Argv, " ") != wantRaceReale2e || strings.Join(plan[5].Env, " ") != "CGO_ENABLED=1" {
 			t.Fatalf("linux race steps = %+v", plan)
 		}
 	})
 	t.Run("race-stage-compatibility", func(t *testing.T) {
 		plan := devcheck.TestSteps("linux")
-		if len(plan) != 5 ||
-			plan[0].Name != "test" || strings.Join(plan[0].Argv, " ") != "go test -count=1 -timeout=180s ./..." || len(plan[0].Env) != 0 ||
-			plan[1].Name != "test -race" || strings.Join(plan[1].Argv, " ") != wantRace || strings.Join(plan[1].Env, " ") != "CGO_ENABLED=1" ||
-			plan[2].Name != "test -race reale2e" || strings.Join(plan[2].Argv, " ") != wantRaceReale2e || strings.Join(plan[2].Env, " ") != "CGO_ENABLED=1" ||
-			plan[3].Name != "test realadaptercheck" || strings.Join(plan[3].Argv, " ") != "go test -tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$ -count=1" || len(plan[3].Env) != 0 ||
-			plan[4].Name != "test realadaptercheck -race" || strings.Join(plan[4].Argv, " ") != "go test -race -tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$ -count=1" || strings.Join(plan[4].Env, " ") != "CGO_ENABLED=1" {
+		if len(plan) != 8 ||
+			plan[0].Name != "test" || strings.Join(plan[0].Argv, " ") != wantOrdinaryShared || len(plan[0].Env) != 0 ||
+			plan[1].Name != "test reale2e" || strings.Join(plan[1].Argv, " ") != wantOrdinaryReale2e || len(plan[1].Env) != 0 ||
+			plan[2].Name != "test function" || strings.Join(plan[2].Argv, " ") != wantOrdinaryFunction || len(plan[2].Env) != 0 ||
+			plan[3].Name != "test -race" || strings.Join(plan[3].Argv, " ") != wantRace || strings.Join(plan[3].Env, " ") != "CGO_ENABLED=1" ||
+			plan[4].Name != "test -race function" || strings.Join(plan[4].Argv, " ") != wantLinuxRaceFunction || strings.Join(plan[4].Env, " ") != "CGO_ENABLED=1" ||
+			plan[5].Name != "test -race reale2e" || strings.Join(plan[5].Argv, " ") != wantRaceReale2e || strings.Join(plan[5].Env, " ") != "CGO_ENABLED=1" ||
+			plan[6].Name != "test realadaptercheck" || strings.Join(plan[6].Argv, " ") != "go test -tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$ -count=1" || len(plan[6].Env) != 0 ||
+			plan[7].Name != "test realadaptercheck -race" || strings.Join(plan[7].Argv, " ") != "go test -race -tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$ -count=1" || strings.Join(plan[7].Env, " ") != "CGO_ENABLED=1" {
 			t.Fatalf("linux test plan = %+v", plan)
 		}
 		darwin := devcheck.TestSteps("darwin")
-		if len(darwin) != 2 ||
-			darwin[0].Name != "test" || strings.Join(darwin[0].Argv, " ") != "go test -count=1 -timeout=180s ./..." || len(darwin[0].Env) != 0 ||
-			darwin[1].Name != "test realadaptercheck" || strings.Join(darwin[1].Argv, " ") != "go test -tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$ -count=1" || len(darwin[1].Env) != 0 ||
-			strings.Contains(strings.Join(darwin[1].Argv, " "), "-race") {
+		if len(darwin) != 4 ||
+			darwin[0].Name != "test" || strings.Join(darwin[0].Argv, " ") != wantOrdinaryShared || len(darwin[0].Env) != 0 ||
+			darwin[1].Name != "test reale2e" || strings.Join(darwin[1].Argv, " ") != wantOrdinaryReale2e || len(darwin[1].Env) != 0 ||
+			darwin[2].Name != "test function" || strings.Join(darwin[2].Argv, " ") != wantOrdinaryFunction || len(darwin[2].Env) != 0 ||
+			darwin[3].Name != "test realadaptercheck" || strings.Join(darwin[3].Argv, " ") != "go test -tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$ -count=1" || len(darwin[3].Env) != 0 ||
+			strings.Contains(strings.Join(darwin[3].Argv, " "), "-race") {
 			t.Fatalf("darwin test plan = %+v", darwin)
 		}
 		// The host's test plan (m3-m4-container-e2e: plan-level; the Linux
 		// stage's added container operation is driven by internal/devcheck's
 		// container driver contract tests, never from here).
 		host := devcheck.TestSteps(runtime.GOOS)
-		if runtime.GOOS == "linux" && (len(host) != 5 || host[1].Argv[2] != "-race" || host[1].Argv[3] != "-p=1" || host[2].Argv[2] != "-race" || host[4].Argv[2] != "-race") {
+		if runtime.GOOS == "linux" && (len(host) != 8 || host[3].Argv[2] != "-race" || host[3].Argv[3] != "-p=1" || host[4].Argv[2] != "-race" || host[4].Argv[3] != "-p=1" ||
+			host[5].Argv[2] != "-race" || host[7].Argv[2] != "-race") {
 			t.Fatalf("linux must run test then race: %+v", host)
 		}
-		if runtime.GOOS == "darwin" && (len(host) != 2 || strings.Join(host[1].Argv, " ") != "go test -tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$ -count=1") {
+		if runtime.GOOS == "darwin" && (len(host) != 4 || strings.Join(host[3].Argv, " ") != "go test -tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$ -count=1") {
 			t.Fatalf("darwin test plan = %+v", host)
 		}
 		for _, s := range host {
@@ -499,7 +505,9 @@ func TestCILinuxBar(t *testing.T) {
 		r := &ciRunner{failOn: "-p=1"}
 		code, out, errOut := devcheckRun(t, r, "test")
 		want := []string{
-			"go test -count=1 -timeout=180s ./...",
+			wantOrdinaryShared,
+			wantOrdinaryReale2e,
+			wantOrdinaryFunction,
 			wantRace,
 		}
 		var got []string
@@ -507,7 +515,7 @@ func TestCILinuxBar(t *testing.T) {
 			got = append(got, strings.Join(c, " "))
 		}
 		if code != 1 || strings.Join(got, "|") != strings.Join(want, "|") ||
-			!strings.Contains(out, "devcheck: test -race: "+want[1]) ||
+			!strings.Contains(out, "devcheck: test -race: "+want[3]) ||
 			!strings.Contains(errOut, "injected child failure") {
 			t.Fatalf("race failure = %d calls=%v\n%s\n%s", code, got, out, errOut)
 		}
@@ -878,6 +886,257 @@ func TestCINativeSplitExecution(t *testing.T) {
 	contractRun(t, contractBinary(t, pkg), pkg, "^TestNativeSplitDriverContract$", os.Environ(),
 		"TestNativeSplitDriverContract", "TestNativeSplitDriverContract/first-child-failure", "TestNativeSplitDriverContract/second-child-failure",
 		"TestNativeSplitDriverContract/malformed-second-stream", "TestNativeSplitDriverContract/tail-suppression", "TestNativeSplitDriverContract/success")
+}
+
+// Design 12a-linux-test-budget literals, never derived from devcheck: the
+// three ordinary commands on Linux and Darwin (the 18 shared patterns under
+// 180 s, then internal/reale2e and tests/function each alone under 360 s),
+// and Linux's three race commands (the shared patterns under 180 s,
+// tests/function alone under 300 s, and the local-only internal/reale2e
+// under 360 s).
+const (
+	wantSharedPatterns = "./cmd/... ./internal/adapter/... ./internal/cicheck/... ./internal/cli/... " +
+		"./internal/client/... ./internal/contract/... ./internal/devcheck/... ./internal/logging/... ./internal/mcp/... ./internal/mcpqual/... " +
+		"./internal/plane/... ./internal/sidecar/... ./internal/spikes/... ./internal/taskpublication/... ./internal/taskworkspace/... " +
+		"./internal/testkit/... ./internal/workspace/... ./internal/workspacetransfer/..."
+	wantOrdinaryShared    = "go test -count=1 -timeout=180s " + wantSharedPatterns
+	wantOrdinaryReale2e   = "go test -count=1 -timeout=360s ./internal/reale2e"
+	wantOrdinaryFunction  = "go test -count=1 -timeout=360s ./tests/function"
+	wantLinuxRace         = "go test -race -p=1 -count=1 -timeout=180s " + wantSharedPatterns
+	wantLinuxRaceFunction = "go test -race -p=1 -count=1 -timeout=300s ./tests/function"
+	wantLinuxRaceReale2e  = "go test -race -count=1 -timeout=360s ./internal/reale2e"
+	wantTaggedCheck       = "go test -tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$ -count=1"
+	wantTaggedRaceCheck   = "go test -race -tags=realadaptercheck ./internal/sidecar -run=^TestRealAdapterLocal$ -count=1"
+)
+
+// FP-1 (design 12a-linux-test-budget): Linux and Darwin run the ordinary
+// suite as three commands, the 18 shared patterns under 180 s and
+// internal/reale2e and tests/function each alone under 360 s, the only
+// ordinary 360 s commands; other hosts keep the single ./... command. The
+// resolved proof that the three selections cover the module once each is
+// devcheck's TestOrdinarySelectionCoversModule, delegated by exact name.
+func TestCIOrdinaryBudget(t *testing.T) {
+	ordinary := []struct{ name, argv string }{{"test", wantOrdinaryShared}, {"test reale2e", wantOrdinaryReale2e}, {"test function", wantOrdinaryFunction}}
+	for _, goos := range []string{"linux", "darwin"} {
+		plan := devcheck.TestSteps(goos)
+		if len(plan) < len(ordinary) {
+			t.Fatalf("%s test plan = %+v", goos, plan)
+		}
+		for i, c := range ordinary {
+			if plan[i].Name != c.name || strings.Join(plan[i].Argv, " ") != c.argv || len(plan[i].Env) != 0 {
+				t.Fatalf("%s ordinary step %d = %+v, want %s: %s", goos, i, plan[i], c.name, c.argv)
+			}
+		}
+		for _, s := range plan[len(ordinary):] {
+			if !slices.Contains(s.Argv, "-race") && !slices.Contains(s.Argv, "-tags=realadaptercheck") {
+				t.Fatalf("%s: a fourth ordinary command %v", goos, s.Argv)
+			}
+		}
+		// The 180 s command selects neither dedicated package by its own
+		// pattern or an enclosing one.
+		for _, a := range plan[0].Argv {
+			if a == "./..." || a == "./internal/..." || a == "./tests/..." || strings.Contains(a, "reale2e") || strings.HasPrefix(a, "./tests/") || a == "-timeout=360s" {
+				t.Fatalf("%s: the 180s ordinary command selects or inherits %q: %v", goos, a, plan[0].Argv)
+			}
+		}
+	}
+	for _, goos := range []string{"windows", "freebsd"} {
+		if p := devcheck.TestSteps(goos); len(p) != 1 || strings.Join(p[0].Argv, " ") != "go test -count=1 -timeout=180s ./..." {
+			t.Fatalf("%s test plan = %+v", goos, p)
+		}
+	}
+	if got := strings.Join(devcheck.TestSharedPackages, " "); got != wantSharedPatterns || len(devcheck.TestSharedPackages) != 18 {
+		t.Fatalf("TestSharedPackages = %v", devcheck.TestSharedPackages)
+	}
+	const pkg = "./internal/devcheck"
+	contractRun(t, contractBinary(t, pkg), pkg, "^TestOrdinarySelectionCoversModule$", os.Environ(), "TestOrdinarySelectionCoversModule")
+}
+
+// FP-2 (design 12a-linux-test-budget): after the three ordinary commands
+// Linux runs the race suite as the shared 180 s command, tests/function
+// alone under 300 s and, in local mode only, internal/reale2e alone under
+// 360 s, each with exactly CGO_ENABLED=1, then the tagged checks; Darwin
+// runs no race command and its native selection is unchanged. The
+// resolved race proof and the mode pins are devcheck's
+// TestRaceSelectionCoversModule, TestTestPlanModes and
+// TestTestPlanModeDriver, with TestNativeSelectionCoversModule, delegated
+// by exact name.
+func TestCIRaceFunctionBudget(t *testing.T) {
+	plan := devcheck.TestSteps("linux")
+	want := []struct{ name, argv, env string }{
+		{"test", wantOrdinaryShared, ""}, {"test reale2e", wantOrdinaryReale2e, ""}, {"test function", wantOrdinaryFunction, ""},
+		{"test -race", wantLinuxRace, "CGO_ENABLED=1"}, {"test -race function", wantLinuxRaceFunction, "CGO_ENABLED=1"},
+		{"test -race reale2e", wantLinuxRaceReale2e, "CGO_ENABLED=1"},
+		{"test realadaptercheck", wantTaggedCheck, ""}, {"test realadaptercheck -race", wantTaggedRaceCheck, "CGO_ENABLED=1"},
+	}
+	if len(plan) != len(want) {
+		t.Fatalf("linux test plan = %+v", plan)
+	}
+	for i, w := range want {
+		if plan[i].Name != w.name || strings.Join(plan[i].Argv, " ") != w.argv || strings.Join(plan[i].Env, " ") != w.env {
+			t.Fatalf("linux step %d = %+v, want %s: %s [%s]", i, plan[i], w.name, w.argv, w.env)
+		}
+	}
+	// tests/function runs under the race detector only in its 300 s command.
+	for _, s := range plan {
+		if slices.Contains(s.Argv, "-race") && (slices.Contains(s.Argv, "./tests/function") || slices.Contains(s.Argv, "./tests/...")) &&
+			strings.Join(s.Argv, " ") != wantLinuxRaceFunction {
+			t.Fatalf("tests/function in another race command: %v", s.Argv)
+		}
+	}
+	// The mode distinction: CI mode omits only the dedicated reale2e race
+	// step, and says so.
+	if devcheck.TestPlanCILine != "devcheck: test plan: ci (CI is set) — dedicated internal/reale2e race step omitted" ||
+		devcheck.TestPlanLocalLine != "devcheck: test plan: local (CI unset)" {
+		t.Fatalf("mode lines %q %q", devcheck.TestPlanCILine, devcheck.TestPlanLocalLine)
+	}
+	for _, s := range devcheck.TestSteps("darwin") {
+		if slices.Contains(s.Argv, "-race") || len(s.Env) != 0 {
+			t.Fatalf("darwin test step %+v runs the race detector", s)
+		}
+	}
+	// Darwin native qualification is unchanged: its first command still
+	// selects tests/function through ./tests/....
+	native, err := devcheck.NativeSteps("darwin")
+	if err != nil || len(native) != 2 || strings.Join(native[0].Argv, " ") != wantNativeShared || strings.Join(native[1].Argv, " ") != wantNativeReale2e {
+		t.Fatalf("native plan = %+v %v", native, err)
+	}
+	const pkg = "./internal/devcheck"
+	contractRun(t, contractBinary(t, pkg), pkg, "^(TestRaceSelectionCoversModule|TestTestPlanModes|TestTestPlanModeDriver|TestNativeSelectionCoversModule)$", os.Environ(),
+		"TestRaceSelectionCoversModule", "TestTestPlanModes", "TestTestPlanModeDriver", "TestNativeSelectionCoversModule")
+}
+
+// FP-3 (design 12a-linux-test-budget): the revised plans run sequentially;
+// any child's failure stops every later child, the tagged checks, the
+// Linux container setup and the later stages of all, and success runs the
+// Linux container acceptance once after the whole plan. Proved on either
+// host for both platforms and modes, through test and all, by delegating
+// devcheck's injected-driver contract by exact name (no real child runs).
+func TestCITestBudgetExecution(t *testing.T) {
+	const pkg = "./internal/devcheck"
+	pass := []string{"TestTestBudgetDriverContract"}
+	for _, goos := range []string{"linux", "darwin"} {
+		for _, mode := range []string{"local", "ci"} {
+			for _, stage := range []string{"test", "all"} {
+				pass = append(pass, "TestTestBudgetDriverContract/"+goos+"-"+mode+"-"+stage)
+			}
+		}
+	}
+	contractRun(t, contractBinary(t, pkg), pkg, "^TestTestBudgetDriverContract$", os.Environ(), pass...)
+}
+
+// FP-4 (design 12a-linux-test-budget): docs/ci.md carries the dated Linux
+// test budget once, after the native reale2e budget and before iteration
+// 11, with its evidence, caps, scaled maxima and margins, the conditional
+// 2319-second projection and its assumptions; First remote run carries the
+// hosted checklist for pull request #68 with the pending rule; the
+// workflow keeps its 45- and 30-minute main jobs and stage topology.
+func TestCILinuxBudgetHandoff(t *testing.T) {
+	checks := docSection(t, "Checks")
+	const marker = "**Linux test budget (design 12a-linux-test-budget, 2026-10-25).**"
+	const nativeMarker = "**Native reale2e budget (design 12a-native-reale2e-budget, 2026-10-24).**"
+	start := strings.Index(checks, marker)
+	if start < 0 || strings.Count(checks, marker) != 1 || strings.Count(string(repoFile(t, "docs/ci.md")), marker) != 1 {
+		t.Fatal("docs/ci.md has no single dated Linux test budget explanation in Checks")
+	}
+	native := strings.Index(checks, nativeMarker)
+	end := strings.Index(checks[start:], "\n\nIteration 11 (real adapters, wave 2")
+	if native < 0 || native > start || end < 0 || strings.Contains(checks[native:start], "\n\nIteration 11 (real adapters, wave 2") {
+		t.Fatal("the Linux test budget does not follow the native reale2e budget immediately, before iteration 11")
+	}
+	budget := checks[start : start+end]
+	requireTerms(t, "Linux test budget", budget,
+		// The split, the caps and the selection proofs.
+		"run [40171568067](https://github.com/wedevwork/callsheet/actions/runs/40171568067)", "at the implementing base `2060f89`",
+		"`FAIL github.com/wedevwork/callsheet/internal/reale2e 180.044s`",
+		"three sequential commands whose selections partition the untagged module", "the 18 `TestSharedPackages` patterns",
+		"the former `./tests/...` dropped without replacement", "`tests/function` is the only untagged package under `tests/`",
+		"`test reale2e`, `internal/reale2e` alone under `-timeout=360s`", "`test function`, `tests/function` alone under `-timeout=360s`",
+		"Only those two dedicated commands get 360 seconds", "`go test -race -p=1 -count=1 -timeout=300s ./tests/function`",
+		"in local mode only, the unchanged `test -race reale2e` under 360 s", "`ci-macos` runs only `devcheck native`",
+		"8 children on Linux locally, 7 in CI and 4 on Darwin",
+		"`TestOrdinarySelectionCoversModule`", "`tests/<new>` included, fails until the explicit list is updated",
+		"Uniqueness applies to each untagged pass separately, not across qualification planes", "`TestRaceSelectionCoversModule`",
+		// The evidence table and its interpretation.
+		"| Run | Ordinary reale2e | Ordinary function | Race function | Source lines in raw log |",
+		"| 167.605s | 159.203s | 122.051s | `run-40116764068-ci-linux.log:279,293,324` |",
+		"attempt 1 | killed at 180.044s | 179.901s | not reached | `pr68-ci-linux.log:1842,1856` |",
+		"attempt 2, job 121128098181 | 138.872s | 140.420s | 110.464s | `pr68-ci-linux-attempt2.log:279,293,324` |",
+		"(older suite) | 133.655s | 151.609s | 130.091s | `run-40072740039-ci-linux.log:267,281,312` |",
+		"Both pull request #68 attempts measured the implementing base `2060f89`", "The attempt-2 rerun is baseline evidence, not verification of the split",
+		"`33.284 / 21.271 = 1.565`", "a **1.6** planning factor",
+		// Scaled maxima, caps and margins.
+		"`167.605 × 1.6 = 268.168` s; cap **360 s**, headroom **91.832 s (34.2%)**", "The 180.044 s failure is censored, not a completed maximum",
+		"`179.901 × 1.6 = 287.842` s; cap **360 s**, headroom **72.158 s (25.1%)**", "`159.203 × 1.6 = 254.725` s, the margin is 105.275 s",
+		"`130.091 × 1.6 = 208.146` s, exceeds 180 s; cap **300 s**, margin **91.854 s (44.1%)**", "`122.051 × 1.6 = 195.282`",
+		"`internal/testkit/containeracceptance`, 37.367 s ordinary", "leaving 120.213 s and 83.771 s",
+		"222.195 s (137.805 s below 360), 224.672 s (135.328 s below 360) and 176.742 s (123.258 s below 300)",
+		"“If a test binary runs longer than duration d, panic.”", "“The default is 10 minutes (10m).”",
+		// Job feasibility, the projection and its caveats.
+		"`ci-linux` has `timeout-minutes: 45`, 2700 seconds", "931 s (main 40133334715)", "1179 s (older 40072740039)",
+		"`180 + 360 + 360 = 900` seconds", "`180 + 300 = 480`", "neither sum is a job bound",
+		"**120 s build and launch reserve**", "`1179 + 360 + 360 + 300 + 120 = 2319` seconds", "**381 seconds below the 2700-second job limit**",
+		"ASSUMPTION (unverified)", "3026.4 s, above 2700 s", "a conditional projection requiring hosted validation, not a worst-case proof",
+		"Hosted verification is recorded on pull request #68", "pending is not passed")
+	// The ci-linux row states the current split, never the former single
+	// ordinary command.
+	requireTerms(t, "Checks", checks,
+		"native suite as three sequential ordinary commands whose selections partition the untagged module",
+		"`test -race function`, `go test -race -p=1 -count=1 -timeout=300s ./tests/function` alone",
+		"`internal/reale2e` runs in CI in its dedicated ordinary `test reale2e` step only")
+	if flat := strings.Join(strings.Fields(checks), " "); strings.Contains(flat, "in the ordinary `./...` step only") {
+		t.Fatal("Checks keeps the former single ordinary step")
+	}
+	// The hosted checklist: destination, two labelled SHAs, the evidence
+	// fields, the bars and the pending rule.
+	first := docSection(t, "First remote run")
+	requireTerms(t, "First remote run", first,
+		"for 12a-linux-test-budget (2026-10-25; owner-closed delivery verification, outside the implementation acceptance bar",
+		"the coordinator records on pull request #68", "(implemented on base `2060f89`)",
+		"two SHAs, each labelled as what it is: the pull request head SHA and the merge ref SHA the workflow checked out",
+		"the runner image and architecture, the Go version and the cache context",
+		"each ordinary command's wall time (`test`, `test reale2e`, `test function`)",
+		"its largest `ok  <package>  Ns` line with the full package path and the margin `180 - N`",
+		"`github.com/wedevwork/callsheet/internal/testkit/containeracceptance`, but record the actual maximum",
+		"`ok  github.com/wedevwork/callsheet/internal/reale2e  Ns` and `ok  github.com/wedevwork/callsheet/tests/function  Ns`, each with its margin `360 - N`",
+		"with its margin `300 - N`", "the shared race (`test -race`) wall time", "the coverage, tail and setup durations", "the whole-job duration",
+		"Require a successful job within 2700 seconds and positive package margins",
+		"A successful job above 2319 seconds invalidates the projection",
+		"never an automatic cap or budget increase or a weakened test", "Record the `ci-macos` success and its unchanged two-command native split",
+		"preserve failed attempts, and no repeat-until-green sampling", "Local argv and selection tests do not establish hosted timing",
+		"mark hosted verification pending and record the first post-merge run and its actual SHA on pull request #68",
+		"never relabel another SHA as the pull request sample",
+		"Pending hosted evidence does not block implementation review once its automated bar passes",
+		"only the owner closes hosted delivery verification")
+	local := docSection(t, "Local verification")
+	requireTerms(t, "Local verification", local, "the three ordinary commands of design 12a-linux-test-budget", "`test -race function` under 300 s",
+		"Their local timings are diagnostic only")
+	// The workflow: 45- and 30-minute main jobs, the unchanged stage
+	// topology and no step timeout in ci-linux.
+	data := ciWorkflow(t)
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if node(t, &doc, "jobs", "linux", "timeout-minutes").Value != "45" || node(t, &doc, "jobs", "macos", "timeout-minutes").Value != "30" ||
+		cicheck.Jobs()[0].ID != "linux" || cicheck.Jobs()[0].TimeoutMinutes != 45 || cicheck.Jobs()[1].TimeoutMinutes != 30 {
+		t.Fatal("the main jobs' timeouts changed")
+	}
+	stages, err := cicheck.ExtractStages(data)
+	if err != nil || strings.Join(stages["linux"], " ") != "test coverage bench cross" || strings.Join(stages["macos"], " ") != "native" {
+		t.Fatalf("stage topology = %v %v", stages, err)
+	}
+	steps := node(t, &doc, "jobs", "linux", "steps")
+	if len(steps.Content) != 8 || node(t, steps, 3, "run").Value != "go run ./cmd/devcheck test" {
+		t.Fatalf("ci-linux steps changed: %d", len(steps.Content))
+	}
+	for i, st := range steps.Content {
+		for j := 0; j+1 < len(st.Content); j += 2 {
+			if st.Content[j].Value == "timeout-minutes" {
+				t.Fatalf("ci-linux step %d has a step timeout", i)
+			}
+		}
+	}
 }
 
 // FP-6: offline structural and stage-drift validation of the real workflow.

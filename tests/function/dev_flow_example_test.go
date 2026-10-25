@@ -1204,6 +1204,179 @@ func TestDevFlowTriage(t *testing.T) {
 			t.Fatal("missing confidence row was accepted")
 		}
 	})
+	t.Run("workspace_scratch", func(t *testing.T) {
+		// Design 12a-light-triage-scratch, FP-3: the shipped runbook and
+		// docs/real-e2e.md carry the scratch lifecycle, the publication
+		// boundary, the no-fallback/invalid_marker policy and the owner
+		// probe 9 gate; each deletion or weakening is refused.
+		runbook := string(files["triage-runbook.md"])
+		e2e := string(repoFile(t, "docs/real-e2e.md"))
+		if err := checkTriageScratch(runbook, e2e); err != nil {
+			t.Fatal(err)
+		}
+		if n := len(files["triage-instruction.md"]) + len(runbook); n > 20480 {
+			t.Fatalf("the triage manuals are %d bytes", n)
+		}
+		guards := "test -d .callsheet-triage-scratch && test ! -L .callsheet-triage-scratch && chmod"
+		reordered := "chmod -R u+w .callsheet-triage-scratch && test -d .callsheet-triage-scratch && test ! -L .callsheet-triage-scratch"
+		recipeMutations := [][2]string{
+			{guards, "chmod"},
+			{"test -d .callsheet-triage-scratch && test ! -L .callsheet-triage-scratch && chmod -R u+w .callsheet-triage-scratch", reordered},
+			{"test ! -L .callsheet-triage-scratch && ", ""},
+			{"rm -r .callsheet-triage-scratch", "rm -rf .callsheet-triage-scratch"},
+			{" && test ! -e .callsheet-triage-scratch", ""},
+		}
+		mutations := map[string][][2]string{
+			"runbook": append([][2]string{
+				{"that directory inside the original checkout is the only temporary-write exception", "any directory may be used"},
+				{"There is no retained evidence directory: only rca.md and confidence-qualified fix.md may be published. ", ""},
+				{"Existing inputs remain byte/mode-identical; ", ""},
+				{"add no other path beyond allowed_outputs and this temporary scratch", "add what you need"},
+				{"After joining all reproduction children, return to the original checkout root and ", ""},
+				{"Scratch must be absent before the final answer. ", ""},
+				{"report TRIAGE_BLOCKED when the turn can continue", "try another way"},
+				{"; no permission fallback, retry with another tool or re-spelling of a denied command", ""},
+				{"Temporary scratch is never a published output.", ""},
+				{"is removed before the final answer and is never retained evidence", "is the retained evidence"},
+				{"A scratch-only link is not retained evidence.", ""},
+				{"retained evidence only where the envelope explicitly authorizes it as a published output", "any evidence you keep"},
+				{"never in an external temporary directory", "or in /tmp"},
+				{"If reproduction needs scratch and the envelope names no scratch path", "If you prefer"},
+				{"report the missing prerequisite as `TRIAGE_BLOCKED` rather than inventing an outside directory", "use /tmp"},
+				{"Resolve scratch relative to the initial checkout root", "Resolve scratch anywhere"},
+				{"Use only this directory for reproduction copies, raw temporary evidence, logs, and tool temporary or cache output", "Use it as you like"},
+				{"is stopped as `invalid_marker`", "is completed"},
+			}, recipeMutations...),
+			"e2e": append([][2]string{
+				{"reproduces only in `.callsheet-triage-scratch/` inside its own task checkout", "reproduces anywhere"},
+				{"never in an external temporary directory", "or in /tmp"},
+				{"`evidence_location: none; see triage-runbook.md`", "`evidence_location: anywhere`"},
+				{"`preserved_inputs: unchanged; add no other path`", "`preserved_inputs: unchanged`"},
+				{"Scratch is never published", "Scratch may be published"},
+				{"a leftover scratch file is a rejected publication (`publication_rejected`) before any coder dispatch", "leftover scratch is fine"},
+				{"There is no permission fallback", "A permission fallback is allowed"},
+				{"`TRIAGE_BLOCKED` when the turn can continue", "a retry"},
+				{"still stops with `invalid_marker`", "is retried"},
+				{"Full-flow triage names no scratch", "Full-flow triage has scratch"},
+				{"Requalification is pending", "Requalification is complete"},
+				{"Check an older light or probe bundle with the revision that produced it", "Check any bundle with this revision"},
+				{"owner probe 9: `probe-dev-full --scenario both`", "a later probe"},
+				{"a passing marker alone does not show that the scratch instruction was followed", "a passing marker is enough"},
+				{"Probe 8 remains failed evidence", "Probe 8 passed"},
+				{"No paid run is part of implementation or review automation", "Automation may run it"},
+			}, recipeMutations...),
+		}
+		for kind, list := range mutations {
+			for _, m := range list {
+				doc := map[string]string{"runbook": runbook, "e2e": e2e}
+				if !strings.Contains(doc[kind], m[0]) {
+					t.Fatalf("%s: the mutation target %q is not in the shipped document", kind, m[0])
+				}
+				doc[kind] = strings.ReplaceAll(doc[kind], m[0], m[1])
+				if err := checkTriageScratch(doc["runbook"], doc["e2e"]); err == nil {
+					t.Errorf("%s: the weakened contract was accepted after %q -> %q", kind, m[0], m[1])
+				}
+			}
+		}
+	})
+}
+
+// triageScratchRecipe is the light triage envelope's literal removal
+// recipe (design 12a-light-triage-scratch, Scratch envelope).
+const triageScratchRecipe = "test -d .callsheet-triage-scratch && test ! -L .callsheet-triage-scratch && chmod -R u+w .callsheet-triage-scratch && rm -r .callsheet-triage-scratch && test ! -e .callsheet-triage-scratch"
+
+// triageScratchParagraph is the runbook's required Reproductions
+// paragraph (design 12a-light-triage-scratch, Contract placement).
+const triageScratchParagraph = "For a light triage envelope naming .callsheet-triage-scratch in scratch_policy, that directory inside the original checkout is the only temporary-write exception. Existing inputs remain byte/mode-identical; add no other path beyond allowed_outputs and this temporary scratch. There is no retained evidence directory: only rca.md and confidence-qualified fix.md may be published. After joining all reproduction children, return to the original checkout root and execute the envelope's exact removal recipe only for scratch you created. Scratch must be absent before the final answer. If creation, reproduction, a guard or cleanup fails or is refused, report TRIAGE_BLOCKED when the turn can continue; no permission fallback, retry with another tool or re-spelling of a denied command."
+
+// mdSection is a markdown section's text, from its heading to the next
+// second-level heading ("" when absent).
+func mdSection(doc, heading string) string {
+	_, rest, ok := strings.Cut(doc, "\n"+heading+"\n")
+	if !ok {
+		return ""
+	}
+	if i := strings.Index(rest, "\n## "); i >= 0 {
+		rest = rest[:i]
+	}
+	return rest
+}
+
+// retainedScratchRE finds scratch presented as retained evidence.
+var retainedScratchRE = regexp.MustCompile(`(?i)scratch[^.]*\bis (?:the |a )?retained evidence`)
+
+// checkTriageScratch validates the light triage scratch contract of the
+// triage runbook and docs/real-e2e.md.
+func checkTriageScratch(runbook, e2e string) error {
+	if !strings.Contains(mdSection(runbook, "## Reproductions"), triageScratchParagraph) {
+		return fmt.Errorf("the runbook's Reproductions section lacks the scratch paragraph")
+	}
+	if err := requirePhrases(mdSection(runbook, "## Read-only project"), []string{
+		"retained evidence only where the envelope explicitly authorizes it as a published output",
+		"Temporary scratch is never a published output.",
+	}); err != nil {
+		return fmt.Errorf("runbook Read-only project: %w", err)
+	}
+	if err := requirePhrases(mdSection(runbook, "## Evidence directory"), []string{
+		"Retained evidence is explicitly authorized as a published output",
+		"is removed before the final answer and is never retained evidence",
+		"A scratch-only link is not retained evidence.",
+	}); err != nil {
+		return fmt.Errorf("runbook Evidence directory: %w", err)
+	}
+	if err := requirePhrases(mdSection(runbook, "## Reproductions"), []string{
+		"never in an external temporary directory",
+		"If reproduction needs scratch and the envelope names no scratch path, as in a full-flow envelope,",
+		"report the missing prerequisite as `TRIAGE_BLOCKED` rather than inventing an outside directory",
+		"Resolve scratch relative to the initial checkout root, even after changing directories.",
+		"Use only this directory for reproduction copies, raw temporary evidence, logs, and tool temporary or cache output",
+		"No `/tmp/triage-*`, external path, symlink escape, or writes into `.git` or adapter runtime directories.",
+		"an existing file, directory, or symlink at that name is a blocker",
+		"`TMPDIR`, `GOTMPDIR`, `GOCACHE`, and `GOMODCACHE` beneath the scratch root",
+		"Never use a recursive-force `rm` spelling.",
+	}); err != nil {
+		return fmt.Errorf("runbook Reproductions: %w", err)
+	}
+	if err := requirePhrases(mdSection(runbook, "## Marker"), []string{"is stopped as `invalid_marker`"}); err != nil {
+		return fmt.Errorf("runbook Marker: %w", err)
+	}
+	if err := requirePhrases(e2e, []string{
+		"reproduces only in `.callsheet-triage-scratch/` inside its own task checkout",
+		"never in an external temporary directory",
+		"`evidence_location: none; see triage-runbook.md`",
+		"`preserved_inputs: unchanged; add no other path`",
+		"Scratch is never published",
+		"a leftover scratch file is a rejected publication (`publication_rejected`) before any coder dispatch",
+		"There is no permission fallback",
+		"`TRIAGE_BLOCKED` when the turn can continue",
+		"still stops with `invalid_marker`",
+		"Full-flow triage names no scratch",
+		"Requalification is pending",
+		"Check an older light or probe bundle with the revision that produced it",
+		"owner probe 9: `probe-dev-full --scenario both`",
+		"a passing marker alone does not show that the scratch instruction was followed",
+		"Probe 8 remains failed evidence",
+		"No paid run is part of implementation or review automation",
+	}); err != nil {
+		return fmt.Errorf("docs/real-e2e.md: %w", err)
+	}
+	for name, doc := range map[string]string{"runbook": runbook, "docs/real-e2e.md": e2e} {
+		// The literal recipe, root guards before chmod, and no other
+		// spelling of the chain.
+		n := strings.Count(doc, "`"+triageScratchRecipe+"`")
+		if n == 0 || strings.Count(doc, "chmod -R u+w .callsheet-triage-scratch") != n || strings.Count(doc, "rm -r .callsheet-triage-scratch") != n {
+			return fmt.Errorf("%s: the literal removal recipe is missing or respelled", name)
+		}
+		for _, bad := range []string{"rm -rf", "rm -fr", "rm -r -f", "rm -f -r", "rm --recursive --force", "rm --force --recursive"} {
+			if strings.Contains(doc, bad) {
+				return fmt.Errorf("%s: a recursive-force removal %q", name, bad)
+			}
+		}
+		if m := retainedScratchRE.FindString(doc); m != "" {
+			return fmt.Errorf("%s: scratch presented as retained evidence: %q", name, m)
+		}
+	}
+	return nil
 }
 
 func TestDevFlowRouting(t *testing.T) {

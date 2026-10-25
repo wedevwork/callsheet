@@ -247,43 +247,33 @@ func TestContainerDriverContract(t *testing.T) {
 				t.Fatalf("darwin %s created the evidence directory", stage)
 			}
 		}
-		// Linux test: the four plan commands first, then the container
-		// operation. A failed plain command or a failed whole-module race
-		// command stops before any tagged step or container call and leaves
-		// the report "not started" with its failure phase.
-		for _, c := range []struct {
+		// Linux test: the plan commands first, then the container
+		// operation. A failed ordinary command (design 12a-linux-test-budget:
+		// three of them) or a failed whole-module race command stops before
+		// any later child, tagged step or container call and leaves the
+		// report "not started" with its failure phase.
+		untagged := []struct{ name, argv, log string }{
+			{"test", wantTestOrdinaryShared, "test.log"},
+			{"test reale2e", wantTestOrdinaryReale2e, "test-reale2e.log"},
+			{"test function", wantTestOrdinaryFunction, "test-function.log"},
+			{"test -race", wantTestRace, "test--race.log"},
+			{"test -race function", wantTestRaceFunction, "test--race-function.log"},
+			{"test -race reale2e", wantTestRaceReale2e, "test--race-reale2e.log"},
+		}
+		type failCase struct {
 			fail, phase, errSub, log string
 			prefix                   []string
-		}{
-			{
-				fail:   "go test -count=1 -timeout=180s ./...",
-				phase:  "failed before container setup: test",
-				errSub: "stage test FAILED: test failed: go test -count=1 -timeout=180s ./...",
-				prefix: []string{"go test -count=1 -timeout=180s ./..."},
-				log:    "test.log",
-			},
-			{
-				fail:   "-p=1",
-				phase:  "failed before container setup: test -race",
-				errSub: "stage test FAILED: test -race failed: " + wantTestRace,
-				prefix: []string{
-					"go test -count=1 -timeout=180s ./...",
-					wantTestRace,
-				},
-				log: "test--race.log",
-			},
-			{
-				fail:   "-timeout=360s",
-				phase:  "failed before container setup: test -race reale2e",
-				errSub: "stage test FAILED: test -race reale2e failed: " + wantTestRaceReale2e,
-				prefix: []string{
-					"go test -count=1 -timeout=180s ./...",
-					wantTestRace,
-					wantTestRaceReale2e,
-				},
-				log: "test--race-reale2e.log",
-			},
-		} {
+		}
+		var cases []failCase
+		for i, u := range untagged {
+			var prefix []string
+			for _, p := range untagged[:i+1] {
+				prefix = append(prefix, p.argv)
+			}
+			cases = append(cases, failCase{fail: u.argv, phase: "failed before container setup: " + u.name,
+				errSub: "stage test FAILED: " + u.name + " failed: " + u.argv, prefix: prefix, log: u.log})
+		}
+		for _, c := range cases {
 			f := &fakeRunner{fail: c.fail}
 			cr := newContainerRunnerFixture(t, f).(*containerRunner)
 			code, out, errOut, dir := runContainer(t, context.Background(), "linux", cr, "test")
