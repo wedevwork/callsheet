@@ -651,8 +651,10 @@ func TestCodexTriageFP3b(t *testing.T) {
 		if uses != 3 {
 			t.Fatalf("triagePromptCap appears %d times (one declaration, two comparisons)", uses)
 		}
-		// The shipped manuals: 9148 raw / 9221 encoded, 21436 / 21509 with
-		// the task ceiling and reserve, under the cap.
+		// The shipped manuals: 9228 raw / 9301 encoded, 21516 / 21589 with
+		// the task ceiling and reserve, under the cap (design
+		// 12a-triage-scratch-guard-wording, Unchanged budgets and measured
+		// headroom).
 		loaded, err := LoadDevMethod(repoRoot(t))
 		if err != nil {
 			t.Fatal(err)
@@ -663,7 +665,7 @@ func TestCodexTriageFP3b(t *testing.T) {
 		}
 		el, _ := jsonContentLen(in)
 		er, _ := jsonContentLen(rb)
-		if raw := len(in) + len(rb); raw != 9148 || el+er != 9221 || raw+8192+4096 != 21436 || el+er+8192+4096 != 21509 {
+		if raw := len(in) + len(rb); raw != 9228 || el+er != 9301 || raw+8192+4096 != 21516 || el+er+8192+4096 != 21589 {
 			t.Fatalf("the triage manuals are %d raw / %d encoded", raw, el+er)
 		}
 		if err := checkTriageManualBudget(in, rb); err != nil {

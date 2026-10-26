@@ -3279,7 +3279,9 @@ have under the new 480-second budget:
   `-timeout=6m`. The workload, the twenty-two commands and their order, the
   nine shards, the contract → mcpqual → workspace group order, the three
   concurrent CPU settings per group, `-count=20`, the 15-minute watchdog
-  and the twenty-two jobs with their 20-minute timeouts are unchanged. This
+  and the twenty-two jobs with their timeouts (20 minutes for each of the
+  eighteen stress workers, 45 minutes for `ci-linux`, 30 minutes for
+  `ci-macos` and 5 minutes for each of the two summaries) are unchanged. This
   supersedes only the mcpqual six-minute statement of the stress worker
   rebalance and the unchanged-timeout constraint of iteration
   12a-stress-sidecar-margin; the dated entries above keep the limits they

@@ -1885,6 +1885,7 @@ func TestStressShardHandoff(t *testing.T) {
 		t.Fatal("Stress checks keeps the split rule that gives an mcpqual binary a 6-minute timeout")
 	}
 	stressPackagesBudgetHandoff(t, stress, first)
+	mcpqualBudgetJobTimeouts(t, stress)
 	for _, stale := range []string{"conclusions of all eighteen jobs: all four checks", "stress evidence from the fourteen worker logs", "the actual job and step times of all eighteen jobs",
 		"conclusions of all twenty jobs", "sixteen worker logs (the summaries hold none)", "the actual job and step times of all twenty jobs"} {
 		if strings.Contains(strings.Join(strings.Fields(first), " "), stale) {
@@ -1925,6 +1926,34 @@ func TestStressShardHandoff(t *testing.T) {
 		if strings.Contains(wf, forbidden) {
 			t.Fatalf("workflow contains %q", forbidden)
 		}
+	}
+}
+
+// mcpqualBudgetJobTimeouts pins the post-final erratum to design
+// 12a-mcpqual-stress-budget's dated Stress checks block (owner decision
+// 2026-10-26, delivered with design 12a-triage-scratch-guard-wording): only
+// the eighteen stress workers have 20-minute job timeouts
+// (.github/workflows/ci.yml), so the block states each job's timeout as the
+// 12a-stress-packages-budget block does and no longer gives all twenty-two
+// jobs 20 minutes.
+func mcpqualBudgetJobTimeouts(t *testing.T, stress string) {
+	t.Helper()
+	flat := strings.Join(strings.Fields(stress), " ")
+	const heading = "Why the mcpqual stress binaries have eight minutes (design 12a-mcpqual-stress-budget, owner decision and sign-off 2026-10-21)."
+	start := strings.Index(flat, heading)
+	if start < 0 {
+		t.Fatalf("Stress checks lacks the dated block %q", heading)
+	}
+	block := flat[start:]
+	end := strings.Index(block, "Why the combined packages command has eight minutes")
+	if end < 0 {
+		t.Fatal("the 12a-mcpqual-stress-budget block does not end before the 12a-stress-packages-budget block")
+	}
+	block = block[:end]
+	requireTerms(t, "the 12a-mcpqual-stress-budget block", block,
+		"`-count=20`, the 15-minute watchdog and the twenty-two jobs with their timeouts (20 minutes for each of the eighteen stress workers, 45 minutes for `ci-linux`, 30 minutes for `ci-macos` and 5 minutes for each of the two summaries) are unchanged.")
+	if strings.Contains(block, "twenty-two jobs with their 20-minute timeouts") {
+		t.Fatal("the 12a-mcpqual-stress-budget block gives all twenty-two jobs 20-minute timeouts")
 	}
 }
 
