@@ -1217,9 +1217,10 @@ func TestDevFlowTriage(t *testing.T) {
 	t.Run("workspace_scratch", func(t *testing.T) {
 		// Design 12a-light-triage-scratch, FP-3: the shipped runbook and
 		// docs/real-e2e.md carry the scratch lifecycle, the publication
-		// boundary, the no-fallback/invalid_marker policy and the owner
-		// probe gate (probe 10 since design 12a-codex-triage); each
-		// deletion or weakening is refused. Design
+		// boundary, the no-fallback/invalid_marker policy, probe 11's
+		// recorded qualification and the generic owner requalification gate
+		// (design 12a-probe11-closeout, FP-1b and FP-1d); each deletion or
+		// weakening is refused. Design
 		// 12a-triage-scratch-guard-wording adds the checkout/export-mode
 		// split and the named removal-recipe guards in both documents.
 		runbook := string(files["triage-runbook.md"])
@@ -1274,9 +1275,12 @@ func TestDevFlowTriage(t *testing.T) {
 				{"`TRIAGE_BLOCKED` when the turn can continue", "a retry"},
 				{"still stops with `invalid_marker`", "is retried"},
 				{"Full-flow triage names no scratch", "Full-flow triage has scratch"},
-				{"Requalification is pending", "Requalification is complete"},
+				{scratchStatusSentence, "Requalification is pending."},
+				{"Probe 11 qualified the Codex triage selection", "Probe 11 is expected to qualify the Codex triage selection"},
 				{"Check an older light or probe bundle with the revision that produced it", "Check any bundle with this revision"},
-				{"owner probe 10: `probe-dev-full --scenario both`", "a later probe"},
+				{"The gate is an owner requalification: `probe-dev-full --scenario both`", "a later probe"},
+				{"The gate is an owner requalification: `probe-dev-full --scenario both`", "The gate is owner probe 10: `probe-dev-full --scenario both`"},
+				{"The gate is an owner requalification: `probe-dev-full --scenario both`", "The gate is an owner requalification: `probe-dev-full --scenario light`"},
 				{"a passing marker alone does not show that the scratch instruction was followed", "a passing marker is enough"},
 				{"Probe 8 remains failed evidence", "Probe 8 passed"},
 				{"No paid run is part of implementation or review automation", "Automation may run it"},
@@ -1382,9 +1386,9 @@ func checkTriageScratch(runbook, e2e string) error {
 		"`TRIAGE_BLOCKED` when the turn can continue",
 		"still stops with `invalid_marker`",
 		"Full-flow triage names no scratch",
-		"Requalification is pending",
+		scratchStatusSentence,
 		"Check an older light or probe bundle with the revision that produced it",
-		"owner probe 10: `probe-dev-full --scenario both`",
+		"The gate is an owner requalification: `probe-dev-full --scenario both`",
 		"a passing marker alone does not show that the scratch instruction was followed",
 		"Probe 8 remains failed evidence",
 		"No paid run is part of implementation or review automation",

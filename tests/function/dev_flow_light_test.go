@@ -1,6 +1,7 @@
 // Light development-flow delivery contracts (slice 2d.4, design
 // 12a-dev-flow-light, Delivery): the runbook's scope, commands, costs,
-// helper clause, current selection and live-pending text, the examples'
+// helper clause, current selection and observed live status (design
+// 12a-probe11-closeout, FP-1c), the examples'
 // links and the light scenario's prompt size. The checks read shipped
 // documentation only; they do not read design/, touch a vendor home or run
 // a vendor CLI.
@@ -121,13 +122,37 @@ func TestDevFlowLightDelivery(t *testing.T) {
 			t.Fatalf("the light roles' current selection %v", want)
 		}
 	})
-	t.Run("live_pending", func(t *testing.T) {
-		if err := requirePhrases(e2e, []string{
-			"Live status: pending.", "The light attempt and the combined exercise have no recorded live run either.",
-			"A full-only historical pass does not complete roadmap 12a", "a current `--scenario both` qualification",
-		}); err != nil {
-			t.Fatal(err)
-		}
+	t.Run("live_observed", func(t *testing.T) {
+		const report = "`design/real-e2e-runs/20261026-exercise/report.txt`"
+		const fullAudit = "`design/real-e2e-runs/20261026-exercise/attempts/full/audit-review.md`"
+		mutateExpect(t, map[string]string{"e2e": e2e}, checkLiveCloseout, "e2e", append(deletions(liveCloseoutClauses...),
+			// The live paragraph: status, MET, qualification, exercise, audits.
+			[2]string{"Live status: observed;", "Live status: pending;"},
+			[2]string{"roadmap 12a's live condition is MET", "roadmap 12a's live condition is pending"},
+			[2]string{"Probe 11 is QUALIFIED with `--scenario both` at main `387759a`.", "Probe 11 is QUALIFIED with `--scenario full` at main `387759a`."},
+			[2]string{"Probe 11 is QUALIFIED with `--scenario both` at main `387759a`.", "Probe 11 is BLOCKED with `--scenario both` at main `387759a`."},
+			[2]string{"Combined exercise `20261026T102944Z-d3827a6b` is PASS", "Combined exercise `20261026T102944Z-d3827a6b` is FAIL"},
+			[2]string{"with both full and light children mechanical PASS", "with the full child mechanical PASS"},
+			[2]string{"judgment audits are complete: all applicable child judgment rows are correct", "judgment audits are pending"},
+			[2]string{"in the owner evidence under `design/`, not here", "here"},
+			// Obsolete pending claims appended beside the correct paragraph.
+			[2]string{liveStatusParagraph, liveStatusParagraph + " Live status: pending."},
+			[2]string{"\n\n## Prerequisites\n", "\n\nNo owner-run qualification probe or full live attempt of this method has been recorded yet.\n\n## Prerequisites\n"},
+			[2]string{"\n\n## Prerequisites\n", "\n\nThe light attempt and the combined exercise have no recorded live run either.\n\n## Prerequisites\n"},
+			[2]string{"\n\n## Prerequisites\n", "\n\nThis runbook documents a checked, offline-tested harness, not a demonstrated live PASS.\n\n## Prerequisites\n"},
+			// The exercise and audit citations.
+			[2]string{report, "`design/real-e2e-runs/20261026-exercise/report.json`"},
+			[2]string{"full judgment audit " + fullAudit + " and ", "full judgment audit and "},
+			[2]string{" and light judgment audit `design/real-e2e-runs/20261026-exercise/attempts/light/audit-review.md`", ""},
+			[2]string{"are complete and record all four judgment rows in each child as correct", "are pending review"},
+			[2]string{"the mechanical report alone does not approve model judgment", "the mechanical report approves model judgment"},
+			[2]string{"passed on main `387759a`", "passed on main `f2ee9d2`"},
+			[2]string{observationParagraph + "\n\n" + exerciseParagraph, exerciseParagraph + "\n\n" + observationParagraph},
+			// Citations converted to links, or links appended beside them.
+			[2]string{report, "[report.txt](../design/real-e2e-runs/20261026-exercise/report.txt)"},
+			[2]string{fullAudit, fullAudit + " ([audit](../design/real-e2e-runs/20261026-exercise/attempts/full/audit-review.md))"},
+			[2]string{"\n\n## Prerequisites\n", "\n\nSee [the exercise report](../design/real-e2e-runs/20261026-exercise/report.txt).\n\n## Prerequisites\n"},
+		))
 	})
 	t.Run("links", func(t *testing.T) {
 		if err := localAnchors(e2e); err != nil {
@@ -176,4 +201,56 @@ func TestDevFlowLightDelivery(t *testing.T) {
 			}
 		}
 	})
+}
+
+// liveStatusParagraph is the runbook's opening live status (design
+// 12a-probe11-closeout, FP-1c: the owner's 2026-10-26 MET decision).
+const liveStatusParagraph = "Live status: observed; roadmap 12a's live condition is MET. Probe 11 is QUALIFIED with `--scenario both` at main `387759a`. Combined exercise `20261026T102944Z-d3827a6b` is PASS, with both full and light children mechanical PASS. The owner's external coordinator judgment audits are complete: all applicable child judgment rows are correct. A full-only historical pass does not complete roadmap 12a: that needs a current `--scenario both` qualification, then one owner-run combined exercise whose full and light children both pass mechanically, and the owner's external judgment audit of every applicable child row. The owner records the live command, the merged revision, the qualification scope, the exercise and child paths and every paid call in the owner evidence under `design/`, not here. See [Codex triage qualification](#codex-triage-qualification) for the observed qualification and exercise records; historical evidence paths are not reusable output paths."
+
+// exerciseParagraph cites the combined exercise and its two completed
+// judgment audits, immediately after the observed qualification (FP-1c).
+const exerciseParagraph = "Combined exercise `20261026T102944Z-d3827a6b` passed on main `387759a`: its report `design/real-e2e-runs/20261026-exercise/report.txt` records PASS with both children mechanical PASS. The owner's external coordinator full judgment audit `design/real-e2e-runs/20261026-exercise/attempts/full/audit-review.md` and light judgment audit `design/real-e2e-runs/20261026-exercise/attempts/light/audit-review.md` are complete and record all four judgment rows in each child as correct. These owner records stay under `design/`; the mechanical report alone does not approve model judgment."
+
+// liveCloseoutClauses are the live paragraph's and the exercise
+// paragraph's sentences, each deleted by a mutation.
+var liveCloseoutClauses = []string{
+	"Live status: observed; roadmap 12a's live condition is MET.",
+	"Probe 11 is QUALIFIED with `--scenario both` at main `387759a`.",
+	"Combined exercise `20261026T102944Z-d3827a6b` is PASS, with both full and light children mechanical PASS.",
+	"The owner's external coordinator judgment audits are complete: all applicable child judgment rows are correct.",
+	"A full-only historical pass does not complete roadmap 12a: that needs a current `--scenario both` qualification, then one owner-run combined exercise whose full and light children both pass mechanically, and the owner's external judgment audit of every applicable child row.",
+	"The owner records the live command, the merged revision, the qualification scope, the exercise and child paths and every paid call in the owner evidence under `design/`, not here.",
+	"See [Codex triage qualification](#codex-triage-qualification) for the observed qualification and exercise records; historical evidence paths are not reusable output paths.",
+	"Combined exercise `20261026T102944Z-d3827a6b` passed on main `387759a`: its report `design/real-e2e-runs/20261026-exercise/report.txt` records PASS with both children mechanical PASS.",
+	"The owner's external coordinator full judgment audit `design/real-e2e-runs/20261026-exercise/attempts/full/audit-review.md` and light judgment audit `design/real-e2e-runs/20261026-exercise/attempts/light/audit-review.md` are complete and record all four judgment rows in each child as correct.",
+	"These owner records stay under `design/`; the mechanical report alone does not approve model judgment.",
+}
+
+// staleLiveStatus are the pre-closeout live-pending claims, refused anywhere
+// in the runbook even beside the correct paragraph.
+var staleLiveStatus = []string{
+	"Live status: pending", "No owner-run qualification probe or full live attempt of this method has been recorded yet",
+	"The light attempt and the combined exercise have no recorded live run either.", "not a demonstrated live PASS",
+}
+
+// checkLiveCloseout validates FP-1c in docs/real-e2e.md: the exact opening
+// live status, the exercise and audit citation paragraph right after the
+// observed qualification, and no obsolete pending claim or evidence link.
+func checkLiveCloseout(docs map[string]string) error {
+	e2e := docs["e2e"]
+	intro, _, _ := strings.Cut(e2e, "\n## ")
+	if strings.TrimSuffix(paragraphWith(intro, "Live status:"), "\n") != liveStatusParagraph || strings.Count(e2e, "Live status:") != 1 {
+		return fmt.Errorf("the opening live status is missing or changed")
+	}
+	sec := mdSubsection(e2e, "#### Owner requalification")
+	if !strings.Contains(sec, "\n\n"+observationParagraph+"\n\n"+exerciseParagraph+"\n") || strings.Count(e2e, exerciseParagraph) != 1 {
+		return fmt.Errorf("the exercise paragraph does not follow the observed qualification")
+	}
+	// The two exact paragraphs carry every liveCloseoutClauses entry.
+	for _, s := range staleLiveStatus {
+		if strings.Contains(e2e, s) {
+			return fmt.Errorf("the runbook still carries %q", s)
+		}
+	}
+	return checkNoEvidenceLink(e2e)
 }

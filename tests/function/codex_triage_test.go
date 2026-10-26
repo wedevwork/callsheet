@@ -1,5 +1,7 @@
 // Codex triage documentation contracts (design 12a-codex-triage, FP-2c,
-// FP-4, FP-5a, FP-5b and FP-6). The checks read shipped documentation and
+// FP-4, FP-5a, FP-5b and FP-6), with design 12a-probe11-closeout's failed
+// probe 10 history (FP-1a), probe 11's observed qualification (FP-1b) and
+// the generic owner requalification gate (FP-1d). The checks read shipped documentation and
 // in-memory mutations of those bytes, plus the adapter's own Codex recipe.
 // They do not read design/, touch a vendor home or run a vendor CLI; the
 // documented owner smoke is only syntax-checked, never executed.
@@ -91,14 +93,21 @@ func codexDocs(t *testing.T) map[string]string {
 	}
 }
 
-// historicalRecordClauses are FP-2c's required clauses.
+// historicalRecordClauses are FP-2c's required clauses (the last two as
+// generalized by design 12a-probe11-closeout, FP-1d replacements 1 and 2:
+// the scope is the Grok-selection records, and the operator prerequisite is
+// a generic owner requalification).
 var historicalRecordClauses = []string{
 	"Bundles and qualification records produced with the Grok triage selection are kept as they are, with no migration; the harness never rewrites them.",
 	"Check each with the revision that produced it: this revision adds no cross-revision decoder and does not accept their old selection.",
 	"A historical `callsheet-dev-full-qualification/v1` record keeps its full-only meaning.",
-	"No historical qualification, including an old PASS or QUALIFIED record, qualifies the Codex triage selection.",
-	"A fresh owner probe 10 is an operator prerequisite you record yourself; the harness does not look up a qualification file at startup.",
+	"No historical qualification produced with the Grok triage selection, including an old PASS or QUALIFIED record, qualifies the Codex triage selection.",
+	"A fresh owner requalification is an operator prerequisite you record yourself when requalification is needed; the harness does not look up a qualification file at startup.",
 }
+
+// numberedOwnerProbeRE finds a numbered owner probe in the historical-record
+// policy, where only the generic owner requalification is current.
+var numberedOwnerProbeRE = regexp.MustCompile(`(?i)\bowner probe \d`)
 
 // checkHistoricalRecords validates FP-2c in docs/real-e2e.md.
 func checkHistoricalRecords(docs map[string]string) error {
@@ -114,6 +123,9 @@ func checkHistoricalRecords(docs map[string]string) error {
 			return fmt.Errorf("the historical-record policy says %q", bad)
 		}
 	}
+	if m := numberedOwnerProbeRE.FindString(sec); m != "" {
+		return fmt.Errorf("the historical-record policy names a numbered %q", m)
+	}
 	return nil
 }
 
@@ -122,8 +134,13 @@ func TestCodexTriageFP2c(t *testing.T) {
 	mutateExpect(t, docs, checkHistoricalRecords, "e2e", append(deletions(historicalRecordClauses...),
 		[2]string{"with no migration", "migrated to the new selection"},
 		[2]string{"Check each with the revision that produced it", "Check each with this revision"},
-		[2]string{"No historical qualification, including an old PASS or QUALIFIED record, qualifies", "An old PASS or QUALIFIED record still qualifies"},
+		[2]string{"No historical qualification produced with the Grok triage selection, including an old PASS or QUALIFIED record, qualifies", "An old PASS or QUALIFIED record still qualifies"},
+		// The unscoped pre-closeout clause would contradict probe 11.
+		[2]string{"No historical qualification produced with the Grok triage selection, including", "No historical qualification, including"},
 		[2]string{"the harness does not look up a qualification file at startup", "the harness looks up the latest qualification file at startup"},
+		[2]string{"A fresh owner requalification is an operator prerequisite", "A fresh owner probe 10 is an operator prerequisite"},
+		[2]string{"A fresh owner requalification is an operator prerequisite", "A fresh owner probe 12 is an operator prerequisite. A fresh owner requalification is an operator prerequisite"},
+		[2]string{" when requalification is needed;", ";"},
 		[2]string{"#### Historical records", "#### Old records"},
 	))
 	// No new runtime qualification lookup: no live command takes a
@@ -281,10 +298,44 @@ var failedProbeClauses = []string{
 	"A path outside the workspace did not by itself cause probe 8",
 	"probe 9b failed the same way inside `.callsheet-triage-scratch/`",
 	"it does not show that Codex triage succeeds",
+	// Probe 10 (design 12a-probe11-closeout, FP-1a): failed history too.
+	"Probe 10, with Codex triage, also remains failed history: qualification record `design/real-e2e-runs/20261025-probe10/qualification.json`, produced by revision `f2ee9d21760ca1c78c78b7bbddb663b73ebd8a4c`.",
+	"Its result is `BLOCKED`: `triage_evidence` failed with `probe_triage_unqualified`, and `light_reviewer_evidence` was `not_reached`.",
+	"The triage final text `design/real-e2e-runs/20261025-probe10/probe/triage/01/final.txt` reports an unnecessary export-mode guard failure and `STATUS: TRIAGE_BLOCKED`.",
+	"Design 12a-triage-scratch-guard-wording subsequently corrected that instruction; probe 10 is not qualified.",
 }
 
 // qualifiedRE finds a qualification claim.
 var qualifiedRE = regexp.MustCompile(`(?i)\bqualif(?:ied|ies|y)\b|\bpass(?:ed)?\b`)
+
+// numberedGateRE finds a numbered current owner gate (design
+// 12a-probe11-closeout, FP-1d): the live gate, the smoke's lead-in and stop
+// rule, the gate heading and its introduction are generic owner
+// requalification. Historical citations of numbered probes stay allowed.
+var numberedGateRE = regexp.MustCompile(`The gate is (?:an )?owner probe \d|Before probe \d|[Ss]top before probe \d|#### Owner probe \d|[Rr]un owner probe \d|probe \d+ still settles`)
+
+// checkNoNumberedGate refuses a numbered current owner gate anywhere in the
+// runbook.
+func checkNoNumberedGate(e2e string) error {
+	if m := numberedGateRE.FindString(e2e); m != "" {
+		return fmt.Errorf("the runbook carries a numbered current gate %q", m)
+	}
+	return nil
+}
+
+// evidenceLinkRE finds a Markdown link into the ignored evidence tree.
+var evidenceLinkRE = regexp.MustCompile(`]\([^)\s]*(?:design/|real-e2e-runs)[^)\s]*\)`)
+
+// checkNoEvidenceLink refuses a Markdown link to an evidence artifact: the
+// runbook cites the ignored design/ tree only by backticked
+// repository-relative path (design 12a-probe11-closeout, Qualification
+// closeout).
+func checkNoEvidenceLink(e2e string) error {
+	if m := evidenceLinkRE.FindString(e2e); m != "" {
+		return fmt.Errorf("the runbook links the ignored evidence tree: %q", m)
+	}
+	return nil
+}
 
 // checkFailedProbes validates FP-5a in docs/real-e2e.md.
 func checkFailedProbes(docs map[string]string) error {
@@ -296,7 +347,7 @@ func checkFailedProbes(docs map[string]string) error {
 	if err := requirePhrases(sec, failedProbeClauses); err != nil {
 		return err
 	}
-	// Neither bundle is relabeled: every sentence claiming a pass or
+	// No bundle is relabeled: every sentence claiming a pass or
 	// qualification is negated or is the reviewer stage's own pass.
 	for _, s := range regexp.MustCompile(`\.\s+`).Split(sec, -1) {
 		if !qualifiedRE.MatchString(s) {
@@ -306,78 +357,220 @@ func checkFailedProbes(docs map[string]string) error {
 			return fmt.Errorf("a failed probe is relabeled: %q", s)
 		}
 	}
-	// The pending probe 9 gate is gone.
+	// The pending probe 9 gate is gone, as is every numbered gate.
 	for _, gone := range []string{"owner probe 9:", "A probe 9 failure", "The gate is owner probe 9"} {
 		if strings.Contains(e2e, gone) {
 			return fmt.Errorf("the runbook still carries %q", gone)
 		}
 	}
-	return nil
+	if err := checkNoNumberedGate(e2e); err != nil {
+		return err
+	}
+	return checkNoEvidenceLink(e2e)
 }
 
 func TestCodexTriageFP5a(t *testing.T) {
 	docs := codexDocs(t)
+	const probe10Record = "`design/real-e2e-runs/20261025-probe10/qualification.json`"
 	mutateExpect(t, docs, checkFailedProbes, "e2e", append(deletions(failedProbeClauses...),
 		[2]string{"neither bundle is relabeled as qualified", "both bundles are relabeled as qualified"},
 		[2]string{"it does not show that Codex triage succeeds.", "it does not show that Codex triage succeeds. Probe 9b is QUALIFIED."},
 		[2]string{"`94ee4fc6209b21ec998617af4d2a5aeb3c243018`", "`25a770797f69612df1c21e325afa527445677609`"},
 		[2]string{"(`light_reviewer_evidence/not_reached`)", "(`light_reviewer_evidence/pass`)"},
 		[2]string{"#### Failed probe history", "#### Probe history"},
-		[2]string{"The gate is owner probe 10:", "The gate is owner probe 9: `probe-dev-full --scenario both`. The gate is owner probe 10:"},
+		// Probe 10: false qualification appended or substituted, a wrong
+		// producing revision or result, and a linked evidence citation.
+		[2]string{"probe 10 is not qualified.", "probe 10 is not qualified. Probe 10 is QUALIFIED."},
+		[2]string{"probe 10 is not qualified.", "probe 10 is not qualified. Probe 10 passed."},
+		[2]string{"probe 10 is not qualified.", "probe 10 is qualified."},
+		[2]string{"Its result is `BLOCKED`", "Its result is `QUALIFIED`"},
+		[2]string{"`f2ee9d21760ca1c78c78b7bbddb663b73ebd8a4c`", "`387759a78caa62dc93723d42039dccb508776ca6`"},
+		[2]string{"`light_reviewer_evidence` was `not_reached`", "`light_reviewer_evidence` passed"},
+		[2]string{probe10Record, "[qualification.json](../design/real-e2e-runs/20261025-probe10/qualification.json)"},
+		[2]string{probe10Record, probe10Record + " ([record](../design/real-e2e-runs/20261025-probe10/qualification.json))"},
+		[2]string{"probe 10 is not qualified.", "probe 10 is not qualified. See [the record](../design/real-e2e-runs/20261025-probe10/qualification.json)."},
+		// Stale numbered gates inserted beside the generic one.
+		[2]string{"The gate is an owner requalification:", "The gate is owner probe 9: `probe-dev-full --scenario both`. The gate is an owner requalification:"},
+		[2]string{"The gate is an owner requalification:", "The gate is owner probe 10: `probe-dev-full --scenario both`. The gate is an owner requalification:"},
+		[2]string{"The gate is an owner requalification:", "The gate is owner probe 11: `probe-dev-full --scenario both`. The gate is an owner requalification:"},
 	))
+	t.Run("historical_mentions", func(t *testing.T) {
+		// Numbered probes and dates in historical citations stay accepted.
+		e2e := docs["e2e"]
+		if !strings.Contains(mdSubsection(e2e, "#### Failed probe history"), "Probe 10, with Codex triage") || !strings.Contains(e2e, "Probe 11 qualified the Codex triage selection on 2026-10-26") {
+			t.Fatal("the runbook does not cite probes 10 and 11 historically")
+		}
+		changed := map[string]string{"e2e": strings.Replace(e2e, "probe 10 is not qualified.", "probe 10 is not qualified. Probe 10 ran on 2026-10-25 before probe 11.", 1), "flow": docs["flow"]}
+		for name, check := range map[string]func(map[string]string) error{"failed": checkFailedProbes, "requalification": checkOwnerRequalification, "smoke": checkSmoke} {
+			if err := check(changed); err != nil {
+				t.Errorf("%s refuses a historical mention: %v", name, err)
+			}
+		}
+	})
 }
 
-// probe10Command is the documented owner probe 10 command.
-const probe10Command = "CALLSHEET_REAL_E2E=1 /abs/reale2e probe-dev-full --scenario both --callsheet /abs/callsheet --claude /abs/claude --codex /abs/codex --grok /abs/grok --protect-root /abs/projects --evidence /abs/callsheet/design/real-e2e-runs/20261025-probe10"
+// ownerRequalificationCommand is the documented generic owner
+// requalification command (design 12a-probe11-closeout, FP-1d): no fixed or
+// dated evidence path.
+const ownerRequalificationCommand = `CALLSHEET_REAL_E2E=1 /abs/reale2e probe-dev-full --scenario both --callsheet /abs/callsheet --claude /abs/claude --codex /abs/codex --grok /abs/grok --protect-root /abs/projects --evidence "$PROBE_EVIDENCE"`
 
-// probe10Clauses are FP-5b's required clauses.
-var probe10Clauses = []string{
-	"Run owner probe 10 only after the pre-probe smoke passed, on the implementation revision with the actual built binaries:",
-	"Use a fresh evidence path if that one exists.",
+// probeEvidenceSentences are FP-1d replacement 8: a new evidence directory
+// for every invocation, set immediately after the command.
+const probeEvidenceSentences = "Before each invocation, set `PROBE_EVIDENCE` to a new absolute, nonexistent evidence directory. There is no default evidence path; never reuse an earlier bundle."
+
+// ownerGateSentence is the Light triage scratch gate (FP-1d replacement 3).
+const ownerGateSentence = "The gate is an owner requalification: `probe-dev-full --scenario both` on the revision being qualified, after the [pre-probe smoke](#pre-probe-smoke), without configuration changes or fallback (see [Codex triage qualification](#codex-triage-qualification))."
+
+// ownerRequalificationClauses are FP-5b's required gate clauses.
+var ownerRequalificationClauses = []string{
+	"Run owner requalification only after the pre-probe smoke passed, on the revision being qualified with the actual built binaries:",
+	"Before each invocation, set `PROBE_EVIDENCE` to a new absolute, nonexistent evidence directory.",
+	"There is no default evidence path; never reuse an earlier bundle.",
 	"The operator prerequisites stay: Linux, the opt-in, no CI, a quiescent protected environment, supported authenticated Claude and Codex selections, the required eligible Grok executable, and Go and Git, at the current minimum versions; the harness performs no login and no vendor-home change.",
 	"Record in the owner evidence the exact command and SHA, the versions, the new selection digest and registered roles, the actual Codex argv and effective effort, the reproduction's tool execution, the scratch paths and the literal cleanup, the valid triage marker, the admitted report-only tree, the light reviewer's execution evidence and every stage verdict.",
 	"Claim qualification only when all six stages (`models`, `resume_wake`, `print_notification`, `reviewer_evidence`, `triage_evidence` and `light_reviewer_evidence`) pass and the probe's offline qualification check of its written record agrees.",
 	"Inspect the logs for the reproduction and its cleanup, not just the final marker: a passing marker alone does not show that the scratch instruction was followed.",
 	"On a failure, keep the evidence and return to investigation; no retry around a refusal, timeout increase or permission substitution.",
-	"**ASSUMPTION (unverified):** this installed Codex recipe reproduces and cleans up under the triage envelope.",
-	"Probe 10 settles that deployment prerequisite.",
+}
+
+// checkOwnerRequalification validates FP-5b's generic gate in
+// docs/real-e2e.md (design 12a-probe11-closeout, FP-1d).
+func checkOwnerRequalification(docs map[string]string) error {
+	e2e := docs["e2e"]
+	sec := mdSubsection(e2e, "#### Owner requalification")
+	if sec == "" || !strings.Contains(mdSubsection(e2e, "### Codex triage qualification"), sec) {
+		return fmt.Errorf("no Owner requalification section under Codex triage qualification")
+	}
+	if strings.Count(sec, "```sh\n") != 1 || !strings.Contains(sec, "```sh\n"+ownerRequalificationCommand+"\n```\n\n"+probeEvidenceSentences+" The operator prerequisites stay:") {
+		return fmt.Errorf("the both-scope requalification command or its fresh-evidence rule is missing or changed")
+	}
+	if err := requirePhrases(sec, ownerRequalificationClauses); err != nil {
+		return err
+	}
+	if strings.Contains(sec, "Use a fresh evidence path if that one exists") {
+		return fmt.Errorf("the requalification keeps a fixed evidence path")
+	}
+	// The gate in the scratch section is the generic requalification.
+	if err := requirePhrases(mdSubsection(e2e, "### Light triage scratch"), []string{ownerGateSentence, "Offline success does not qualify the live recipe."}); err != nil {
+		return err
+	}
+	return checkNoNumberedGate(e2e)
+}
+
+// scratchStatusSentence replaces the pending requalification in Light
+// triage scratch (design 12a-probe11-closeout, FP-1b).
+const scratchStatusSentence = "Probe 11 qualified the Codex triage selection on 2026-10-26 at main `387759a` (qualification record `design/real-e2e-runs/20261026-probe11/qualification.json`)."
+
+// observationParagraph replaces the recipe ASSUMPTION under Owner
+// requalification (design 12a-probe11-closeout, FP-1b).
+const observationParagraph = "**Observed on 2026-10-26:** this installed Codex recipe reproduced and cleaned up under the triage envelope. Probe 11 is `QUALIFIED` with `--scenario both` at main `387759a78caa62dc93723d42039dccb508776ca6`; all six stages passed in its qualification record `design/real-e2e-runs/20261026-probe11/qualification.json`. Its triage execution log `design/real-e2e-runs/20261026-probe11/probe/triage/01/logs.txt` records reproduction in `item_5`, the literal guarded cleanup completing with exit 0 in `item_9`, and scratch absence and unchanged original input bytes/modes in `item_10`; its final text `design/real-e2e-runs/20261026-probe11/probe/triage/01/final.txt` ends `STATUS: TRIAGE_CONFIRMED`. A pass proves only that this selection and these fixtures completed on that installation with the recorded policy; it does not prove that all prompts are approved, general confinement, future vendor behavior, recovery paths it did not execute, or a complete owner-authorized `run-dev-exercise`. Codex can differ from Grok in prompt interpretation and permission behavior. The combined exercise has separate evidence below. Offline tests cannot qualify a paid vendor."
+
+// observedQualificationClauses are the observation paragraph's sentences,
+// each deleted by a mutation (the limit and vendor-difference sentences
+// are the earlier exact pins, kept).
+var observedQualificationClauses = []string{
+	"this installed Codex recipe reproduced and cleaned up under the triage envelope.",
+	"Probe 11 is `QUALIFIED` with `--scenario both` at main `387759a78caa62dc93723d42039dccb508776ca6`; all six stages passed in its qualification record `design/real-e2e-runs/20261026-probe11/qualification.json`.",
+	"Its triage execution log `design/real-e2e-runs/20261026-probe11/probe/triage/01/logs.txt` records reproduction in `item_5`, the literal guarded cleanup completing with exit 0 in `item_9`, and scratch absence and unchanged original input bytes/modes in `item_10`;",
+	"its final text `design/real-e2e-runs/20261026-probe11/probe/triage/01/final.txt` ends `STATUS: TRIAGE_CONFIRMED`.",
 	"A pass proves only that this selection and these fixtures completed on that installation with the recorded policy; it does not prove that all prompts are approved, general confinement, future vendor behavior, recovery paths it did not execute, or a complete owner-authorized `run-dev-exercise`.",
 	"Codex can differ from Grok in prompt interpretation and permission behavior.",
-	"The later combined real attempt remains separately required.",
+	"The combined exercise has separate evidence below.",
 	"Offline tests cannot qualify a paid vendor.",
 }
 
-// checkProbe10 validates FP-5b in docs/real-e2e.md.
-func checkProbe10(docs map[string]string) error {
+// oldAssumptionParagraph is the pre-closeout recipe ASSUMPTION, never
+// accepted again.
+const oldAssumptionParagraph = "**ASSUMPTION (unverified):** this installed Codex recipe reproduces and cleans up under the triage envelope. Probe 10 settles that deployment prerequisite. A pass proves only that this selection and these fixtures completed on that installation with the recorded policy; it does not prove that all prompts are approved, general confinement, future vendor behavior, recovery paths it did not execute, or a complete owner-authorized `run-dev-exercise`. Codex can differ from Grok in prompt interpretation and permission behavior. The later combined real attempt remains separately required. Offline tests cannot qualify a paid vendor."
+
+// staleObservation are pre-closeout pending and assumption claims, refused
+// anywhere in the runbook even beside the correct text.
+var staleObservation = []string{
+	"Requalification is pending", "**ASSUMPTION (unverified):** this installed Codex recipe", "this installed Codex recipe reproduces and cleans up",
+	"Probe 10 settles that deployment prerequisite", "The later combined real attempt remains separately required",
+}
+
+// checkObservedQualification validates FP-1b: probe 11's observed
+// qualification in the scratch status and under Owner requalification.
+func checkObservedQualification(docs map[string]string) error {
 	e2e := docs["e2e"]
-	sec := mdSubsection(e2e, "#### Owner probe 10")
+	if !strings.Contains(mdSubsection(e2e, "### Light triage scratch"), "\n\n"+scratchStatusSentence+" The scratch envelope binds new bundles only") {
+		return fmt.Errorf("the scratch status does not record probe 11's qualification")
+	}
+	sec := mdSubsection(e2e, "#### Owner requalification")
 	if sec == "" || !strings.Contains(mdSubsection(e2e, "### Codex triage qualification"), sec) {
-		return fmt.Errorf("no Owner probe 10 section under Codex triage qualification")
+		return fmt.Errorf("no Owner requalification section under Codex triage qualification")
 	}
-	if !strings.Contains(sec, "```sh\n"+probe10Command+"\n```\n") {
-		return fmt.Errorf("the both-scope probe 10 command is missing or changed")
+	// The exact paragraph carries every observedQualificationClauses entry.
+	if paragraphWith(sec, "**Observed on 2026-10-26:**") != observationParagraph || strings.Count(e2e, "**Observed on") != 1 {
+		return fmt.Errorf("the observed-qualification paragraph is missing or changed")
 	}
-	if err := requirePhrases(sec, probe10Clauses); err != nil {
-		return err
+	for _, s := range staleObservation {
+		if strings.Contains(e2e, s) {
+			return fmt.Errorf("the runbook still carries %q", s)
+		}
 	}
-	// The pending gate in the scratch section points at probe 10.
-	return requirePhrases(mdSubsection(e2e, "### Light triage scratch"), []string{
-		"Requalification is pending.",
-		"The gate is owner probe 10: `probe-dev-full --scenario both` on the Codex triage revision, after the [pre-probe smoke](#pre-probe-smoke), without configuration changes or fallback",
-		"Offline success does not qualify the live recipe.",
-	})
+	return checkNoEvidenceLink(e2e)
 }
 
 func TestCodexTriageFP5b(t *testing.T) {
 	docs := codexDocs(t)
-	mutateExpect(t, docs, checkProbe10, "e2e", append(deletions(append(slices.Clone(probe10Clauses), "Requalification is pending.", "Offline success does not qualify the live recipe.")...),
-		[2]string{probe10Command, strings.Replace(probe10Command, "--scenario both", "--scenario light", 1)},
-		[2]string{probe10Command, strings.Replace(probe10Command, "--scenario both ", "", 1)},
-		[2]string{"all six stages", "the triage stage"},
-		[2]string{"**ASSUMPTION (unverified):**", "**Proven:**"},
-		[2]string{"The gate is owner probe 10:", "The gate is owner probe 9:"},
-		[2]string{"#### Owner probe 10", "#### Probe"},
-	))
+	t.Run("requalification", func(t *testing.T) {
+		mutateExpect(t, docs, checkOwnerRequalification, "e2e", append(deletions(append(slices.Clone(ownerRequalificationClauses), ownerGateSentence, "Offline success does not qualify the live recipe.")...),
+			// A light-only or omitted scenario.
+			[2]string{ownerRequalificationCommand, strings.Replace(ownerRequalificationCommand, "--scenario both", "--scenario light", 1)},
+			[2]string{ownerRequalificationCommand, strings.Replace(ownerRequalificationCommand, "--scenario both ", "", 1)},
+			[2]string{"The gate is an owner requalification: `probe-dev-full --scenario both`", "The gate is an owner requalification: `probe-dev-full --scenario light`"},
+			// A fixed, dated or reused evidence path.
+			[2]string{`--evidence "$PROBE_EVIDENCE"`, "--evidence /abs/callsheet/design/real-e2e-runs/20261027-probe12"},
+			[2]string{`--evidence "$PROBE_EVIDENCE"`, "--evidence /abs/callsheet/design/real-e2e-runs/20261026-probe11"},
+			[2]string{ownerRequalificationCommand, "PROBE_EVIDENCE=/abs/callsheet/design/real-e2e-runs/NEW-PROBE " + ownerRequalificationCommand},
+			[2]string{probeEvidenceSentences, "Use a fresh evidence path if that one exists."},
+			[2]string{probeEvidenceSentences, probeEvidenceSentences + " Use a fresh evidence path if that one exists."},
+			[2]string{"\n```\n\n" + probeEvidenceSentences, "\n```\n\nUse an earlier bundle when convenient. " + probeEvidenceSentences},
+			[2]string{"and every stage verdict.", "and every stage verdict. Use a fresh evidence path if that one exists."},
+			// Weakened six-stage, execution or failure rules.
+			[2]string{"all six stages", "the triage stage"},
+			[2]string{"not just the final marker", "or just the final marker"},
+			// Numbered gates, substituted or inserted beside the generic one.
+			[2]string{"The gate is an owner requalification:", "The gate is owner probe 10:"},
+			[2]string{"The gate is an owner requalification:", "The gate is owner probe 11:"},
+			[2]string{"Run owner requalification only after", "Run owner probe 11 only after"},
+			[2]string{"#### Owner requalification", "#### Owner probe 10"},
+			[2]string{"#### Owner requalification", "#### Owner probe 10\n\n#### Owner requalification"},
+			[2]string{"#### Owner requalification", "#### Probe"},
+		))
+	})
+	t.Run("observed", func(t *testing.T) {
+		const probe11Log = "`design/real-e2e-runs/20261026-probe11/probe/triage/01/logs.txt`"
+		mutateExpect(t, docs, checkObservedQualification, "e2e", append(deletions(append(slices.Clone(observedQualificationClauses), scratchStatusSentence)...),
+			// The old assumption, by prefix, by paragraph and appended.
+			[2]string{"**Observed on 2026-10-26:** ", ""},
+			[2]string{"**Observed on 2026-10-26:**", "**ASSUMPTION (unverified):**"},
+			[2]string{observationParagraph, oldAssumptionParagraph},
+			[2]string{"Offline tests cannot qualify a paid vendor.", "Offline tests cannot qualify a paid vendor.\n\n" + oldAssumptionParagraph},
+			[2]string{"No paid run is part of implementation or review automation.", "No paid run is part of implementation or review automation. Probe 10 settles that deployment prerequisite."},
+			[2]string{"No paid run is part of implementation or review automation.", "No paid run is part of implementation or review automation. The later combined real attempt remains separately required."},
+			// The old pending status, substituted or appended.
+			[2]string{scratchStatusSentence, "Requalification is pending."},
+			[2]string{"No paid run is part of implementation or review automation.", "No paid run is part of implementation or review automation. Requalification is pending."},
+			// A wrong qualification result, revision, scope or record.
+			[2]string{"Probe 11 is `QUALIFIED`", "Probe 11 is `BLOCKED`"},
+			[2]string{"at main `387759a78caa62dc93723d42039dccb508776ca6`", "at main `f2ee9d21760ca1c78c78b7bbddb663b73ebd8a4c`"},
+			[2]string{"at main `387759a` (qualification record", "at main `f2ee9d2` (qualification record"},
+			[2]string{"Probe 11 is `QUALIFIED` with `--scenario both`", "Probe 11 is `QUALIFIED` with `--scenario full`"},
+			[2]string{"`design/real-e2e-runs/20261026-probe11/qualification.json`)", "`design/real-e2e-runs/20261025-probe10/qualification.json`)"},
+			[2]string{"in `item_9`", "in `item_8`"},
+			[2]string{"ends `STATUS: TRIAGE_CONFIRMED`", "ends `STATUS: TRIAGE_BLOCKED`"},
+			// Weakened qualification limits.
+			[2]string{"it does not prove that all prompts are approved, ", "it proves "},
+			[2]string{", or a complete owner-authorized `run-dev-exercise`", ""},
+			// Evidence citations converted to links, or links appended.
+			[2]string{probe11Log, "[logs.txt](../design/real-e2e-runs/20261026-probe11/probe/triage/01/logs.txt)"},
+			[2]string{"#### Owner requalification", "#### Owner record"},
+			[2]string{"No paid run is part of implementation or review automation.", "No paid run is part of implementation or review automation. See [probe 11](../design/real-e2e-runs/20261026-probe11/qualification.json)."},
+		))
+	})
 }
 
 // The FP-6 smoke's pinned parts (design 12a-codex-triage, Pre-probe
@@ -398,7 +591,7 @@ const (
 
 // smokeClauses are the smoke's required prose.
 var smokeClauses = []string{
-	"Before probe 10, run this owner-run paid smoke once. It is non-qualifying, and neither CI, the implementation tests nor review automation runs it.",
+	"Before owner requalification, run this owner-run paid smoke once. It is non-qualifying, and neither CI, the implementation tests nor review automation runs it.",
 	"Run it from any directory on the owner installation, with Codex installed at `$HOME/.local/bin/codex`.",
 	"Set `CALLSHEET_REPO` to the absolute repository root if needed; it defaults to `/opt/gitspace/callsheet`.",
 	"That repository-root variable is the only operator-adjustable part of the command: keep the recipe and every other field unchanged.",
@@ -413,11 +606,11 @@ var smokeClauses = []string{
 	"Inspect `codex.jsonl` for completed command execution creating the scratch, the scratch-local cache and temporary environment, a successful `go test -count=1 ./...` (package `example.com/greeting`, exit 0) and the literal cleanup chain completing with exit 0.",
 	"A marker or wrapper PASS without that execution evidence is a failed smoke, not a successful check.",
 	"Stop rule: any startup failure, refusal, nonzero command, wrong or missing final text, missing execution evidence or residual scratch fails the smoke.",
-	"Stop before probe 10 and return to triage, without flag or configuration changes, alternative commands or retry workarounds.",
+	"Stop before owner requalification and return to triage, without flag or configuration changes, alternative commands or retry workarounds.",
 	"a failure of the form `go: ... requires go >= ...` under `GOTOOLCHAIN=local` means the installed Go is older than the repository's go.mod `go` directive",
 	"That is an environment prerequisite failure to fix on your machine, not a Codex finding, and not a return to triage.",
 	"Even a successful smoke is non-qualifying: no qualification record may cite it as qualification or as a substitute for any probe stage.",
-	"probe 10 still settles the complete triage-envelope assumption.",
+	"It only reduces uncertainty about these commands on this installation; owner requalification still checks the complete triage envelope for the installation and revision being qualified.",
 }
 
 // shellWords splits a simple shell word list: single and double quotes
@@ -475,8 +668,11 @@ func checkSmoke(docs map[string]string) error {
 	if sec == "" || !strings.Contains(mdSubsection(e2e, "### Codex triage qualification"), sec) || !strings.Contains(e2e, "](#pre-probe-smoke)") {
 		return fmt.Errorf("no Pre-probe smoke section under Codex triage qualification")
 	}
-	if strings.Index(e2e, "#### Pre-probe smoke") > strings.Index(e2e, "#### Owner probe 10") {
-		return fmt.Errorf("the smoke is not documented before probe 10")
+	if strings.Index(e2e, "#### Pre-probe smoke") > strings.Index(e2e, "#### Owner requalification") {
+		return fmt.Errorf("the smoke is not documented before owner requalification")
+	}
+	if err := checkNoNumberedGate(e2e); err != nil {
+		return err
 	}
 	if err := requirePhrases(sec, smokeClauses); err != nil {
 		return err
@@ -626,7 +822,14 @@ func TestCodexTriageFP6(t *testing.T) {
 			[2]string{"final answer exactly SMOKE_OK", "final answer SMOKE_OK when done"},
 			// Weakened toolchain exception, stop rule or non-qualification.
 			[2]string{"not a Codex finding, and not a return to triage", "a Codex finding to triage"},
-			[2]string{"Stop before probe 10 and return to triage", "Continue to probe 10"},
+			[2]string{"Stop before owner requalification and return to triage", "Continue to owner requalification"},
+			// Numbered gates (design 12a-probe11-closeout, FP-1d), substituted
+			// or inserted beside the generic wording, and the smoke's order.
+			[2]string{"Before owner requalification, run", "Before probe 10, run"},
+			[2]string{"Stop before owner requalification and return to triage", "Stop before probe 10 and return to triage. Stop before owner requalification and return to triage"},
+			[2]string{"owner requalification still checks the complete triage envelope for the installation and revision being qualified.", "probe 10 still settles the complete triage-envelope assumption."},
+			[2]string{"owner requalification still checks the complete triage envelope for the installation and revision being qualified.", "owner requalification still checks the complete triage envelope for the installation and revision being qualified; probe 11 still settles it."},
+			[2]string{"#### Pre-probe smoke\n", "#### Owner requalification\n\n#### Pre-probe smoke\n"},
 			[2]string{"Even a successful smoke is non-qualifying", "A successful smoke qualifies"},
 		))
 	})

@@ -689,7 +689,7 @@ func TestDevFullMigration(t *testing.T) {
 	t.Run("docs_contract", func(t *testing.T) {
 		t.Parallel()
 		doc := string(mustRead(t, filepath.Join(root, "docs", "real-e2e.md")))
-		for _, want := range []string{"reale2e run", "run-dev-full", "Live status: pending", "dev-review-verify", "probe-dev-full",
+		for _, want := range []string{"reale2e run", "run-dev-full", "\n\n" + liveStatusParagraph + "\n\n", "dev-review-verify", "probe-dev-full",
 			"exit 0", "callsheet-dev-full-evidence/v1"} {
 			if !strings.Contains(doc, want) {
 				t.Errorf("docs/real-e2e.md does not say %q", want)

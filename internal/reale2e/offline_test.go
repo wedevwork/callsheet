@@ -43,6 +43,13 @@ func funcBody(t *testing.T, fset *token.FileSet, f *ast.File, name string) []str
 	return nil
 }
 
+// liveStatusParagraph is docs/real-e2e.md's complete opening live status
+// (design 12a-probe11-closeout, FP-1b and FP-1c: probe 11's qualification,
+// the combined exercise, its completed judgment audits and the owner's MET
+// decision), pinned whole by TestOfflineBoundary and
+// TestDevFullMigration/docs_contract.
+const liveStatusParagraph = "Live status: observed; roadmap 12a's live condition is MET. Probe 11 is QUALIFIED with `--scenario both` at main `387759a`. Combined exercise `20261026T102944Z-d3827a6b` is PASS, with both full and light children mechanical PASS. The owner's external coordinator judgment audits are complete: all applicable child judgment rows are correct. A full-only historical pass does not complete roadmap 12a: that needs a current `--scenario both` qualification, then one owner-run combined exercise whose full and light children both pass mechanically, and the owner's external judgment audit of every applicable child row. The owner records the live command, the merged revision, the qualification scope, the exercise and child paths and every paid call in the owner evidence under `design/`, not here. See [Codex triage qualification](#codex-triage-qualification) for the observed qualification and exercise records; historical evidence paths are not reusable output paths."
+
 // TestOfflineBoundary (FP-9): the default entry and the checker run with
 // no vendor access; the reale2e-tagged command only forwards host inputs
 // (the seventh platform wrapper) and builds; every new untagged file is a
@@ -333,14 +340,14 @@ func shippedRunbook(t *testing.T, root string) {
 		"`Reviewer run sha256: <64 lowercase hex>`", "`review.md`", "Legacy-runtime compatibility helpers",
 		"tool-maintained", "`environment/diff.json`", "| `~/.codex` | root `AGENTS*.md`, `instructions.md`, `prompts/` |",
 		"| `~/.claude` | `CLAUDE.md`, root `settings*.json`, `agents/`, `skills/`, `commands/`, `hooks/`, `plugins/installed_plugins.json`, `plugins/blocklist.json`, `plugins/config.json` |",
-		"never repairs, moves, restores or deletes", "probe-dev-full", "QUALIFIED or BLOCKED", "up to 28 worker calls", "Live status: pending"} {
+		"never repairs, moves, restores or deletes", "probe-dev-full", "QUALIFIED or BLOCKED", "up to 28 worker calls", "\n\n" + liveStatusParagraph + "\n\n"} {
 		if !strings.Contains(string(doc), want) {
 			t.Errorf("docs/real-e2e.md lacks %q", want)
 		}
 	}
 	for _, gone := range []string{"capture-wait", `"$?"`, "16 rules", "exactly the 15 rules", "exactly two session-only flags",
 		"| `config.toml`, root `AGENTS*.md`", "`plugins/known_marketplaces.json`, `plugins/blocklist.json`", "[yes/no]",
-		"exactly `R wait-task --run D --task TASK_ID --hop H`", "EXECUTED", "exit 3"} {
+		"exactly `R wait-task --run D --task TASK_ID --hop H`", "EXECUTED", "exit 3", "Live status: pending"} {
 		if strings.Contains(string(doc), gone) {
 			t.Errorf("docs/real-e2e.md still carries %q", gone)
 		}
