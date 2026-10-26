@@ -21,8 +21,9 @@ const (
 	// follow-up ./internal/sidecar is in the sidecar shard, not this
 	// invocation, and since the contract headroom fix ./internal/contract
 	// and later ./internal/mcpqual and ./internal/workspace are in the
-	// packages shard's per-CPU groups.
-	wantRoleStressPackages = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/workspacetransfer ./internal/taskworkspace ./internal/taskpublication"
+	// packages shard's per-CPU groups. Design 12a-stress-packages-budget
+	// gives this combined invocation's binaries -timeout=8m.
+	wantRoleStressPackages = "go test -race -count=20 -cpu=1,2,4 -timeout=8m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/workspacetransfer ./internal/taskworkspace ./internal/taskpublication"
 	wantRoleBenchPlan      = "go test ./internal/spikes/gittransport -run ^$ -bench . -benchmem -benchtime=3x -count=1 -timeout=180s|" +
 		"go test ./internal/plane -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s|" +
 		"go test ./internal/contract -run=^$ -bench=. -benchmem -benchtime=3x -count=1 -timeout=180s|" +

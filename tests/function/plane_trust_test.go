@@ -980,8 +980,9 @@ func TestPlanePlatform(t *testing.T) {
 	// The headroom fixes moved ./internal/contract, ./internal/mcpqual and
 	// ./internal/workspace to the packages shard's per-CPU groups, the
 	// packages-cpu shard's since the stress worker rebalance (StressSteps
-	// indexes 1-9 either way).
-	const stressPkgs = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/workspacetransfer ./internal/taskworkspace ./internal/taskpublication"
+	// indexes 1-9 either way). The combined command's binaries have
+	// -timeout=8m since design 12a-stress-packages-budget.
+	const stressPkgs = "go test -race -count=20 -cpu=1,2,4 -timeout=8m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/workspacetransfer ./internal/taskworkspace ./internal/taskpublication"
 	stressPlane := []string{
 		"go test -race -count=20 -cpu=1 -timeout=6m ./internal/plane",
 		"go test -race -count=20 -cpu=2 -timeout=6m ./internal/plane",

@@ -51,12 +51,14 @@ const (
 // TestWave2Invocation/cursor-boundaries and TestWave2Dispatch/auto-cursor
 // in place), the stress plan's argv on both hosts (since design
 // 12a-mcpqual-stress-budget with -timeout=8m on the three mcpqual
-// commands: the SHA-256 of the twenty-two commands listed in docs/ci.md,
-// Stress checks, joined by newlines) and the CI workflow's bytes.
+// commands, and since design 12a-stress-packages-budget on the combined
+// packages command too: the SHA-256 of the twenty-two commands listed in
+// docs/ci.md, Stress checks, joined by newlines) and the CI workflow's
+// bytes.
 const (
 	enrollmentIndexSHA256 = "c0f28d31dc24401977037c9e0b27a44810ea19984518a8bc46ab62c8b6ea7e61"
 	nativeInventorySHA256 = "60a8fb205c088e7e255527234f4bd5edac0cd0cb9d0951caacd7b4564f235172"
-	stressArgvSHA256      = "3e4c77cf04e8f943febc22fd4b4c2e8de61ade8aa42b4f7ff626547168bc0687"
+	stressArgvSHA256      = "bca38232935c7ff16473fc3c9e61b45bf6125e106dd7705c4a60f8a287bc8a9c"
 	ciWorkflowSHA256      = "8085e548196267a9db8401d32814bc57bb713a51e250a2a44b285a5285bdba53"
 )
 

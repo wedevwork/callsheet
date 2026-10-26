@@ -1228,14 +1228,18 @@ nine-package invocation, and the new packages-cpu shard
 workspace per-CPU groups. packages-cpu contains all three per-CPU groups
 at CPU 1, 2 and 4; unlike plane-cpu1 and sidecar-cpu1 it is not a
 CPU1-only shard, and there is no `packages-cpu1` stage.
-`internal/workspacetransfer` stays in the combined invocation. Design
-12a-mcpqual-stress-budget (2026-10-21) changed one flag of three commands
-only: the `internal/mcpqual` CPU 1, 2 and 4 commands carry `-timeout=8m`,
-and every other command keeps `-timeout=6m` (see Budgets). The
+`internal/workspacetransfer` stays in the combined invocation. Each test
+binary: `-timeout=6m`, except the combined `stress packages` command's
+binaries and `internal/mcpqual` stress binaries: `-timeout=8m` (see
+Budgets). Design 12a-mcpqual-stress-budget (2026-10-21) changed one flag
+of three commands, the `internal/mcpqual` CPU 1, 2 and 4 commands, and
+design 12a-stress-packages-budget (2026-10-25) changed the same flag of
+one more, the combined `stress packages` command, for all nine of its
+binaries; the other eighteen commands carry `-timeout=6m`. The
 twenty-two commands, in flattened order:
 
 ```
-go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/workspacetransfer ./internal/taskworkspace ./internal/taskpublication
+go test -race -count=20 -cpu=1,2,4 -timeout=8m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/workspacetransfer ./internal/taskworkspace ./internal/taskpublication
 go test -race -count=20 -cpu=1 -timeout=6m ./internal/contract
 go test -race -count=20 -cpu=2 -timeout=6m ./internal/contract
 go test -race -count=20 -cpu=4 -timeout=6m ./internal/contract
@@ -1901,11 +1905,21 @@ repeated 60 times on both platforms.
 
 Budgets:
 
-- Each test binary: `-timeout=6m`, except `internal/mcpqual` stress binaries: `-timeout=8m`.
-  The exception is a static plan decision of design 12a-mcpqual-stress-budget
-  (2026-10-21; see "Why the mcpqual stress binaries have eight minutes"
-  below), not configuration: no option or environment variable changes
-  either value.
+- Each test binary: `-timeout=6m`, except the combined `stress packages`
+  command's binaries and `internal/mcpqual` stress binaries: `-timeout=8m`.
+  The two exceptions are two separate static constants in
+  `internal/devcheck/stress.go`, plan decisions and not configuration: no
+  option or environment variable changes any value.
+  `stressPackagesTestTimeout` (design 12a-stress-packages-budget,
+  2026-10-25; see "Why the combined packages command has eight minutes"
+  below) applies to the one combined `stress packages` command, to all nine
+  of its binaries, because `go test` takes one `-timeout` per invocation;
+  it belongs to that command, not to a package, so `internal/workspacetransfer`
+  or any other of its packages considered alone keeps six minutes.
+  `stressMcpqualTestTimeout` (design 12a-mcpqual-stress-budget,
+  2026-10-21; see "Why the mcpqual stress binaries have eight minutes"
+  below) applies to the three `internal/mcpqual` per-CPU binaries.
+  `stressTestTimeout` keeps `-timeout=6m` for every other binary.
 - Each stress command: a 15-minute watchdog (or the caller's earlier
   deadline) bounds compilation as well as test execution; when it expires
   the command fails and no further step or shard starts. Each shard stage,
@@ -2050,7 +2064,10 @@ the cap; no Linux timeout fix or hosted speedup is claimed.
   command. The stress worker rebalance (2026-10-07), by design revision and
   owner sign-off, moved the contract, mcpqual and workspace per-CPU groups
   to the packages-cpu shard and a worker of its own per platform, changing
-  no command.
+  no command. This default-budget split rule excludes the combined
+  `stress packages` command and the `internal/mcpqual` stress binaries; a
+  combined packages budget breach requires investigation/design revision,
+  not an automatic transfer split.
 - Function-binary remedy (pre-authorized by design 02): if a function
   step, measured from its `ok  ./tests/function <N>s` line, reaches 5
   minutes on either supported host or hits its 6-minute timeout, it splits
@@ -3300,6 +3317,127 @@ have under the new 480-second budget:
   workspace and is not a full-stage result. The hosted samples recorded
   under First remote run settle the projections.
 
+Why the combined packages command has eight minutes (design
+12a-stress-packages-budget, owner decision and sign-off 2026-10-25). Main
+run [40224728895](https://github.com/wedevwork/callsheet/actions/runs/40224728895)
+attempt 1 failed `ci-macos-stress-packages` on macos-15 (job 121263572346,
+main `f2ee9d2`) when the `internal/workspacetransfer` binary of the
+combined `stress packages` command hit its six-minute alarm
+(`panic: test timed out after 6m0s`, `FAIL` at 360.050 s), with
+`internal/taskworkspace` at 304.360 s and `internal/taskpublication` at
+309.822 s completing beside it. The package trees were identical to the
+completed samples below, so this was a slow runner, not a package cost
+regression. The evidence is the triage bundle
+`/tmp/triage/20261025-203310-main-macos-stress-workspacetransfer/`
+(`MANIFEST.md`, `notes.md`, `raw/margin-calc.txt`,
+`raw/main-f2ee9d2-ci-macos-stress-packages.log`, `raw/jobs/40224728895.json`).
+The five completed samples are the coordinator-supplied historical package
+observations recorded in `raw/margin-calc.txt`, not newly fetched logs.
+Package seconds; the last column is 480 minus the slowest completed
+package shown:
+
+| Run / sample | workspacetransfer seconds | taskworkspace seconds | taskpublication seconds | 480 minus slowest completed package shown |
+|---|---:|---:|---:|---:|
+| 40131356740 | 169.165 | 144.140 | 139.131 | 310.835 |
+| 40215191666 | 197.284 | 159.284 | 173.018 | 282.716 |
+| 40193461322 | 216.828 | 172.276 | 182.334 | 263.172 |
+| 40190954022 | 240.519 | 200.576 | 196.813 | 239.481 |
+| 40133334715 | 292.704 | 247.343 | 246.274 | 187.296 |
+| 40224728895 attempt 1 | FAIL 360.050, censored | 304.360 | 309.822 | 170.178 (siblings only) |
+| 40224728895 attempt 2, coordinator supplement | 223.049 | 184.572 | 193.481 | 256.951 |
+
+- The combined `stress packages` command's binaries, all nine of them
+  (`go test` takes one `-timeout` per invocation), get `-timeout=8m`
+  (480 s) on Linux and macOS alike, through their own static constant
+  `stressPackagesTestTimeout`. The nine packages and their order,
+  `-count=20`, `-cpu=1,2,4`, the twenty-two commands and their order, the
+  nine shards, the 15-minute watchdog (one per stage, one shared by the
+  aggregate), the twenty-two jobs with their timeouts (20 minutes for each
+  of the eighteen stress workers, 45 minutes for `ci-linux`, 30 minutes
+  for `ci-macos` and 5 minutes for each of the two summaries) and the
+  required contexts are unchanged. No single-package step gets the
+  exception: `internal/workspacetransfer` considered alone keeps six
+  minutes. This supersedes the mcpqual block’s statement ‘every other stress binary keeps `-timeout=6m`’ for the combined `stress packages` command only.
+  It supersedes only the combined packages timeout of the stress worker
+  rebalance (its shard plan, execution boundaries, binary comparison and
+  its exclusion of raising any timeout); that design's exclusion of a
+  per-CPU `internal/workspacetransfer` split stays in force. The dated
+  entries above keep the limits they had at the time; the 198.4 s
+  (about 300 s at 1.5×) transfer figures of the headroom fix are
+  historical.
+- Provenance caveat. ASSUMPTION (unverified provenance): the attempt-2
+  figures are the coordinator's supplement, said to be the three `ok`
+  package lines of job 121269084389 at `f2ee9d2`. The bundle's manifest and
+  notes predate the supplement and record that this log was not downloaded,
+  and the bundle holds no matching lines. Before it is published as
+  independently verified evidence, the coordinator's saved log is attached
+  to the implementing pull request and its job, SHA and those lines are
+  matched. Its 394-second stage is not package seconds and is never
+  substituted for them. The supplement leaves the completed maximum
+  unchanged and is not needed to select the cap.
+- Margins. The completed `internal/workspacetransfer` maximum, 292.704 s,
+  leaves 187.296 s under 480. The failed alarm is censored:
+  480 - 360.050 = 119.950 s is the distance from an alarm endpoint, not a
+  measured completion margin. `raw/margin-calc.txt` estimates the failed
+  transfer binary from its siblings' ratios at 368.478–369.054 s, leaving
+  111.522–110.946 s, and its high taskworkspace-scaled estimate,
+  383.070 s, leaves 96.930 s. These are planning allowances, not observed
+  completion times or bounds; the rerun does not measure the failed
+  runner's missing tail. Seven minutes would leave only 36.930 s above that
+  high estimate; the owner's eight minutes follow the mcpqual margin shape.
+- Qualification threshold: 390.000 package seconds for each of
+  `internal/workspacetransfer`, `internal/taskworkspace` and
+  `internal/taskpublication` on both platforms, at least 90 s (18.75% of
+  480) of measured margin in an accepted sample. It is a chosen
+  planning and verification target, sourced to the mcpqual precedent, not
+  a prediction and not a new CI gate. The largest of all nine package
+  results is recorded as well, and all nine must be `ok` below 480. No
+  finite cap guarantees runner speed, and 292.704 s is only the sampled
+  maximum, not every hosted run's maximum.
+- Package seconds, not devcheck command wall time. `go help testflag`:
+  "If a test binary runs longer than duration d, panic." The 8-minute cap
+  bounds each binary, not the whole invocation, its compilation or the
+  staggered package starts.
+- Stage and job fit (conditional projections, not measured bounds). The
+  failed command wall was 614.1 s (attempt-1 log); the conservative rounded
+  residual 614.1 - 360 = 254.1 s keeps the build, the scheduling and the
+  other packages' work. The attempt-1 job took 843 s, so
+  843 - 614.1 = 228.9 s lay outside the stage (checkout, Go and cache
+  setup, module download, launcher and cleanup). The packages worker runs
+  no other devcheck stage (`linux-stress-packages` and
+  `macos-stress-packages` in `ci.yml`); packages-cpu and the other shards
+  are separate jobs, not added to its 20-minute budget. Substituting the
+  critical binary:
+
+  | Scenario | Conditional packages stage | Margin under 900s | Whole job, adding 228.9s outside stage | Margin under 1200s |
+  |---|---:|---:|---:|---:|
+  | Estimated 369s transfer | 623.1 | 276.9 | 852.0 | 348.0 |
+  | 390s qualification target | 644.1 | 255.9 | 873.0 | 327.0 |
+  | Full 480s critical binary allowance | 734.1 | 165.9 | 963.0 | 237.0 |
+
+  ASSUMPTION (unverified): the critical-path substitution holds, the other
+  packages, build and scheduling stay within the 254.1 s residual and setup
+  and tail within 228.9 s; this conservative envelope applies to both
+  platforms pending hosted observations. 734.1 s and 963.0 s are the worst
+  listed planning scenario, not a mathematical worst-case bound: several
+  later binaries could each use 480 s, and compilation is not bounded by
+  the flag. All binary caps are not promised to fit at once; the unchanged
+  watchdog enforces termination, and no extra contingency is credited. A
+  stage or job above its projection invalidates that projection for owner
+  review even when the hard limits pass. The stress worker rebalance's
+  675-second stage target stays diagnostic; 734.1 s deliberately exceeds
+  it, as the mcpqual projections did. For context only, successful macOS
+  packages stage walls were 323–553 s and the same-SHA Linux stage 381 s.
+- Aggregate `devcheck stress` behavior is unchanged: one shared 15-minute
+  (900 s) watchdog across all nine shards. This change may use up to 120 s
+  more binary allowance on its first command, and no full-aggregate
+  worst-case fit is promised. The recorded three-core aggregate expiry
+  (Budgets, iteration 12a-stress-sidecar-margin) remains a failed,
+  incomplete run, not hosted-worker evidence; a new aggregate regression on
+  a previously completing host is not waived.
+- The hosted verification checklist is under First remote run; until it
+  is recorded hosted verification is pending, not passed.
+
 Race and CPU scope: the top-level test packages are race-built, so the
 process-group package's self-executed helper (its own test binary) is
 instrumented. Helper binaries built by `testkit.BuildBinary` and
@@ -3786,6 +3924,7 @@ handoff:
 - for 12a-mcpqual-stress-budget (2026-10-21; owner-closed delivery gate, outside the implementation acceptance bar; the evidence and projections are in Stress checks, "Why the mcpqual stress binaries have eight minutes"): Mcpqual qualification requires two samples on separate macos-15 allocations of the same implementation SHA, with CPU1/2/4 each reporting an ok package result at or below 390.000 seconds, leaving at least 90 seconds of margin. Use package seconds, not devcheck command wall time, which includes the build; obtain sample two by re-running the PR's ci-macos-stress-packages-cpu job with gh run rerun --job and record both attempts here. The normal pull request workflow supplies sample one, running the unchanged `go run ./cmd/devcheck stress-packages-cpu` with unchanged setup; preserve its evidence before the re-run. Resolve the job's ID with `gh run view <run-id> --repo wedevwork/callsheet --json jobs --jq '.jobs[] | {name, databaseId}'`, select `ci-macos-stress-packages-cpu`, and re-run it with `gh run rerun <run-id> --job <databaseId> --repo wedevwork/callsheet` (`gh run rerun --help`: "You will need to use databaseId field for triggering job re-runs"); no workflow edit. Verify that both attempts' recorded SHA is the same pull request implementation SHA; a post-merge run at a different SHA is not sample two. For each macOS sample read the `ok` package line of `stress mcpqual cpu1`, `cpu2` and `cpu4` from the CPU-labelled replay, require exit success and at most 390.000 seconds, and record `480 - seconds`; a missing, cached, cancelled, failed or timed-out result does not qualify, and a passing result above 390 blocks the margin claim. Record per sample the run and job URLs, attempt number, revision, OS image, core count, Go version, cache state, the three command wall times separately, the contract and workspace group durations, the complete packages-cpu stage duration (below 900 seconds) and the complete job duration including setup (below 1200 seconds). Record the Linux package, group, stage and job times as context with its unchanged correctness gates and outer limits, without a Linux 390-second gate. At least one complete normal workflow must pass on both platforms. Retain every attempt, failed ones included, with distinct attempt numbers and job and log links; the repeat is planned sampling, not a retry until green. The 15-minute watchdog and 20-minute job timeout stay unchanged: the conditional stage projection is 824.0 seconds, or 734.0 seconds at the qualification threshold, and the conservative job projection including observed setup is 855 seconds. Report a breach for owner disposition or design revision; never raise a budget or weaken an assertion automatically. Hosted qualification is pending until both samples are recorded; pending evidence does not withhold REVIEW_APPROVED, the owner closes the gate at delivery sign-off, and a threshold breach or non-ok result reopens the design, not the implementation review. Samples (owner closed the gate 2026-10-21 at delivery sign-off): sample one, PR #59 run 39570149352 attempt 1, job 119121992381, SHA 7bde6054c0e4, macos-15, all ok: mcpqual cpu1 287.655 s (192.345 s under 480), cpu2 269.763 s (210.237 s), cpu4 266.135 s (213.865 s); sample two, same run re-run with `gh run rerun 39570149352 --job 119121992381`, attempt 2, job 119208230032, SHA 7bde6054c0e4, macos-15, all ok: mcpqual cpu1 271.835 s (208.165 s under 480), cpu2 258.352 s (221.648 s), cpu4 254.346 s (225.654 s). Both samples meet the 390-second threshold; the qualification is passed.
 - for 12a-native-reale2e-budget (2026-10-24; owner-closed delivery verification, outside the implementation acceptance bar; the evidence, caps and the 1592-second projection are in Checks, "Native reale2e budget"): the coordinator records in pull request #67 (or the implementing pull request) the first completed implementation `ci-macos` result: the run, job and attempt links and the SHA, the runner image and architecture, the Go version and the cache context. From the native stream extract the dedicated `internal/reale2e` package-level JSON event (`Package` exactly `github.com/wedevwork/callsheet/internal/reale2e`, no `Test` field, `Action` `pass`) and its `Elapsed`, and record `600 - Elapsed` as the observed margin under the 600-second cap. Separately extract the coverage child's `ok  github.com/wedevwork/callsheet/internal/reale2e  Ns` line (within coverage, before the benchmarks; do not confuse it with the later reale2e benchmark result), record `N` and `600 - N` against its implicit 10m (600 s) bound, and compare `N` with the 209.197 s main baseline. Require positive margins for both executions, the `devcheck: native qualification passed on darwin/<arch>` line from the combined qualification and a successful whole job within 1800 seconds. Record both native command wall times (command wall is not package `Elapsed`), the coverage and tail wall time, setup and the whole-job duration, and check them against the 1592-second projection. A failed, cancelled, missing or skipped result never qualifies; preserve failed attempts. If pull request evidence is unavailable at review, mark hosted verification pending and perform the same check on the first post-merge run, recording its actual SHA in the pull request; never label another SHA as the pull request sample. Pending hosted evidence does not block implementation review when its test bar is met; until recorded it is pending, not passed, and the owner closes delivery verification from the recorded run. A timeout, a non-positive margin or an outer-limit breach requires investigation or design revision, never an automatic budget increase or a weakened test; a successful job above 1592 seconds invalidates the projection and the owner reviews the reserve using the observed components. No local macOS measurement is assumed and no repeat-until-green sampling is prescribed. Hosted verification: pending.
 - for 12a-linux-test-budget (2026-10-25; owner-closed delivery verification, outside the implementation acceptance bar; the evidence, caps and the 2319-second projection are in Checks, "Linux test budget"): the coordinator records on pull request #68, the implementing pull request (implemented on base `2060f89`), the first completed hosted `ci-linux` run containing this implementation: the run, job and attempt links; two SHAs, each labelled as what it is: the pull request head SHA and the merge ref SHA the workflow checked out; the runner image and architecture, the Go version and the cache context. Record each ordinary command's wall time (`test`, `test reale2e`, `test function`); from the shared 180-second `test` child, its largest `ok  <package>  Ns` line with the full package path and the margin `180 - N` (expected `github.com/wedevwork/callsheet/internal/testkit/containeracceptance`, but record the actual maximum); the dedicated ordinary results `ok  github.com/wedevwork/callsheet/internal/reale2e  Ns` and `ok  github.com/wedevwork/callsheet/tests/function  Ns`, each with its margin `360 - N`; the function race result (`test -race function`, `ok  github.com/wedevwork/callsheet/tests/function  Ns`) with its margin `300 - N`; the shared race (`test -race`) wall time; the coverage, tail and setup durations; and the whole-job duration. Require a successful job within 2700 seconds and positive package margins. A successful job above 2319 seconds invalidates the projection and the owner reviews the observed components; a timeout or a non-positive margin requires investigation or design revision, never an automatic cap or budget increase or a weakened test. Record the `ci-macos` success and its unchanged two-command native split alongside the Linux results. A failed, cancelled, missing or skipped result never qualifies; preserve failed attempts, and no repeat-until-green sampling. Local argv and selection tests do not establish hosted timing. If pull request evidence is unavailable at review, mark hosted verification pending and record the first post-merge run and its actual SHA on pull request #68; never relabel another SHA as the pull request sample. Pending hosted evidence does not block implementation review once its automated bar passes; until recorded it is pending, not passed, and only the owner closes hosted delivery verification. Hosted verification: pending.
+- for 12a-stress-packages-budget (2026-10-25; owner-closed delivery verification, outside the implementation acceptance bar; the evidence, the 390.000-second threshold and the projections are in Stress checks, "Why the combined packages command has eight minutes"): the implementer or coordinator records on the implementing pull request the first completed implementation run's `ci-macos-stress-packages` (macos-15) and `ci-linux-stress-packages` (ubuntu-24.04): the run, job and attempt links; the pull request head SHA and the actual checked-out SHA, recorded separately; the runner image, architecture and core count, the Go version and the cache context. From each job's log extract the `ok ... Ns` line of `internal/workspacetransfer`, `internal/taskworkspace` and `internal/taskpublication`, record `N` and `480 - N` for each, and require each `N` at or below 390.000 seconds; record that all nine packages succeeded and the actual maximum package result with its margin. Use package seconds, not devcheck command wall time. Record the command wall, the whole stage, the setup and tail and the whole-job durations separately; require the stage below 900 seconds and the job below 1200 seconds, and compare them with the 734.1-second stage and 963.0-second job projections. Preserve failed attempts. Missing, cached, skipped, cancelled, failed or timed-out output never qualifies. Record the complete workflow's success and both summaries' success. No repeat-until-green sampling and no new workflow gate. If the coordinator's attempt-2 supplement of main run 40224728895 is to be published as verified evidence, attach its saved log here and match job 121269084389, SHA `f2ee9d2` and its three package lines first. Pending hosted evidence does not block implementation review once its automated bar passes; until recorded it is pending, not passed. If pull request evidence is unavailable, record the first post-merge run with its actual SHA on that pull request; never relabel another SHA as the pull request sample. The owner closes delivery verification. A threshold breach, a non-ok result or an outer-limit breach requires investigation and owner design disposition, never an automatic budget increase or a weakened test; a successful sample above a projection invalidates that projection and requires review of its observed components. Local exact-argv tests cannot prove hosted margin. Hosted verification: pending.
 
 The local validator checks action identity and full-SHA format only, not that
 a SHA exists or matches its release comment. Confirm each pin against its
