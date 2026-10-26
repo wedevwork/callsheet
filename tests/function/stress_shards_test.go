@@ -2074,8 +2074,12 @@ func stressPackagesBudgetHandoff(t *testing.T, stress, first string) {
 		"Pending hosted evidence does not block implementation review once its automated bar passes; until recorded it is pending, not passed",
 		"record the first post-merge run with its actual SHA on that pull request", "The owner closes delivery verification",
 		"never an automatic budget increase or a weakened test", "a successful sample above a projection invalidates that projection",
-		"Local exact-argv tests cannot prove hosted margin", "Hosted verification: pending.")
+		"Local exact-argv tests cannot prove hosted margin")
 	if strings.Contains(strings.Join(strings.Fields(checklist), " "), "Hosted verification: passed") {
 		t.Fatal("the 12a-stress-packages-budget checklist records pending evidence as passed")
 	}
+	// The owner's 2026-10-26 closure of both stress-packages jobs (design
+	// 12a-probe11-closeout), scoped to this entry; closure is an attributed
+	// record, never a bare passed claim.
+	requireHostedClosure(t, first, stressPackagesClosure)
 }

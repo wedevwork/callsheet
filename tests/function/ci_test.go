@@ -333,6 +333,194 @@ func requireTerms(t *testing.T, where, text string, terms ...string) {
 	}
 }
 
+// hostedClosure is one First remote run entry whose hosted verification
+// the owner closed (design 12a-probe11-closeout, Hosted closeout): the
+// entry's opening, its exact terminal closure sentence, the pieces of that
+// sentence the mutations alter, and the entry's retained pending/no-pass
+// clauses.
+type hostedClosure struct {
+	entry, closure string
+	pr, comment    string
+	run            string
+	jobs           []string    // job display names and workflow job ids
+	shas           [][2]string // label, SHA
+	protected      []string
+}
+
+var (
+	nativeClosure = hostedClosure{
+		entry:   "- for 12a-native-reale2e-budget (2026-10-24;",
+		closure: "Hosted verification: closed by the owner on 2026-10-26; [PR #67 owner record](https://github.com/wedevwork/callsheet/pull/67#issuecomment-6389587128); workflow run 40131356740; job ci-macos (workflow job id macos); PR head 4cc89f2.",
+		pr:      "67", comment: "6389587128", run: "40131356740",
+		jobs: []string{"job ci-macos", "(workflow job id macos)"},
+		shas: [][2]string{{"PR head", "4cc89f2"}},
+		protected: []string{
+			"mark hosted verification pending and perform the same check on the first post-merge run, recording its actual SHA",
+			"never label another SHA as the pull request sample",
+			"Pending hosted evidence does not block implementation review when its test bar is met",
+			"until recorded it is pending, not passed, and the owner closes delivery verification from the recorded run",
+			"A failed, cancelled, missing or skipped result never qualifies; preserve failed attempts",
+		},
+	}
+	linuxClosure = hostedClosure{
+		entry:   "- for 12a-linux-test-budget (2026-10-25;",
+		closure: "Hosted verification: closed by the owner on 2026-10-26; [PR #68 owner record](https://github.com/wedevwork/callsheet/pull/68#issuecomment-6397649594); workflow run 40190954022; job ci-linux (workflow job id linux); PR head c5797d0; merge ref 1c0783f.",
+		pr:      "68", comment: "6397649594", run: "40190954022",
+		jobs: []string{"job ci-linux", "(workflow job id linux)"},
+		shas: [][2]string{{"PR head", "c5797d0"}, {"merge ref", "1c0783f"}},
+		protected: []string{
+			"mark hosted verification pending and record the first post-merge run and its actual SHA on pull request #68",
+			"never relabel another SHA as the pull request sample",
+			"Pending hosted evidence does not block implementation review once its automated bar passes",
+			"until recorded it is pending, not passed, and only the owner closes hosted delivery verification",
+			"A failed, cancelled, missing or skipped result never qualifies",
+		},
+	}
+	stressPackagesClosure = hostedClosure{
+		entry:   "- for 12a-stress-packages-budget (2026-10-25;",
+		closure: "Hosted verification: closed by the owner on 2026-10-26; [PR #70 owner record](https://github.com/wedevwork/callsheet/pull/70#issuecomment-6412268540); workflow run 40293491289; jobs ci-macos-stress-packages (workflow job id macos-stress-packages) and ci-linux-stress-packages (workflow job id linux-stress-packages); PR head 882f880; merge ref dfe1258.",
+		pr:      "70", comment: "6412268540", run: "40293491289",
+		jobs: []string{"ci-macos-stress-packages (workflow job id macos-stress-packages)", "ci-linux-stress-packages (workflow job id linux-stress-packages)"},
+		shas: [][2]string{{"PR head", "882f880"}, {"merge ref", "dfe1258"}},
+		protected: []string{
+			"Pending hosted evidence does not block implementation review once its automated bar passes; until recorded it is pending, not passed",
+			"never relabel another SHA as the pull request sample",
+			"Missing, cached, skipped, cancelled, failed or timed-out output never qualifies",
+			"The owner closes delivery verification",
+		},
+	}
+	hostedClosures = []hostedClosure{nativeClosure, linuxClosure, stressPackagesClosure}
+)
+
+// remoteRunEntry is first's single bullet opening with entry, up to the next
+// bullet or blank line ("" when absent or repeated).
+func remoteRunEntry(first, entry string) string {
+	i := strings.Index(first, entry)
+	if i < 0 || strings.Count(first, entry) != 1 {
+		return ""
+	}
+	bullet := first[i:]
+	if j := strings.Index(bullet[2:], "\n- "); j >= 0 {
+		bullet = bullet[:j+2]
+	}
+	if j := strings.Index(bullet, "\n\n"); j >= 0 {
+		bullet = bullet[:j]
+	}
+	return bullet
+}
+
+// checkHostedClosure validates c in the First remote run text: its own
+// bullet ends with exactly its closure sentence, carries no other hosted
+// verification status (pending, passed or another entry's closure) and keeps
+// its pending/no-pass clauses; the closure sentence appears nowhere else.
+// The pieces' table-driven mutations are closureMutations.
+func checkHostedClosure(first string, c hostedClosure) error {
+	bullet := remoteRunEntry(first, c.entry)
+	if bullet == "" {
+		return fmt.Errorf("First remote run has no single entry %q", c.entry)
+	}
+	flat := strings.Join(strings.Fields(bullet), " ")
+	if !strings.HasSuffix(flat, " "+c.closure) || strings.Count(first, c.closure) != 1 {
+		return fmt.Errorf("%s does not end with its exact owner closure", c.entry)
+	}
+	// Its closure is its only status: no pending, passed or other entry's
+	// status beside it.
+	if n := strings.Count(flat, "Hosted verification:"); n != 1 {
+		return fmt.Errorf("%s carries %d hosted verification statuses", c.entry, n)
+	}
+	for _, p := range c.protected {
+		if !strings.Contains(flat, strings.Join(strings.Fields(p), " ")) {
+			return fmt.Errorf("%s lacks %q", c.entry, p)
+		}
+	}
+	return nil
+}
+
+// closureMutations are c's table-driven closure mutations: a missing or
+// wrong owner, date, URL, run, job, SHA or SHA label, a pending or bare
+// passed status, another entry's closure, appended statuses, and deleted
+// pending/no-pass clauses. Each source text exists in c's own bullet.
+func closureMutations(c hostedClosure) [][2]string {
+	url := "https://github.com/wedevwork/callsheet/pull/" + c.pr + "#issuecomment-" + c.comment
+	link := "[PR #" + c.pr + " owner record](" + url + ")"
+	m := [][2]string{
+		{c.entry, "- for another entry (2026-10-26;"},
+		{"Pending hosted evidence", "Hosted verification: pending. Pending hosted evidence"},
+		{"Pending hosted evidence", "Hosted verification: passed. Pending hosted evidence"},
+		{"Pending hosted evidence", strings.TrimSuffix(c.closure, ".") + ". Pending hosted evidence"},
+		{"closed by the owner on", "closed by the coordinator on"},
+		{"closed by the owner on", "closed on"},
+		{"on 2026-10-26;", "on 2026-10-25;"},
+		{"on 2026-10-26;", ";"},
+		{link, "PR #" + c.pr + " owner record"},
+		{link + "; ", ""},
+		{"#issuecomment-" + c.comment, "#issuecomment-1" + c.comment},
+		{"/pull/" + c.pr + "#", "/pull/69#"},
+		{"[PR #" + c.pr + " owner record]", "[PR #69 owner record]"},
+		{"https://github.com/wedevwork/callsheet/", "https://github.com/someone/callsheet/"},
+		{"workflow run " + c.run, "workflow run 40224728895"},
+		{"workflow run " + c.run + "; ", ""},
+		{c.closure, "Hosted verification: pending."},
+		{c.closure, "Hosted verification: passed."},
+		{c.closure, c.closure + " Hosted verification: pending."},
+		{c.closure, c.closure + " Hosted verification: passed."},
+		{c.closure, strings.TrimSuffix(c.closure, ".")},
+	}
+	for _, j := range c.jobs {
+		m = append(m, [2]string{j, strings.ReplaceAll(strings.ReplaceAll(j, "macos", "windows"), "linux", "windows")}, [2]string{j, ""})
+	}
+	for _, s := range c.shas {
+		other := map[string]string{"PR head": "merge ref", "merge ref": "PR head"}[s[0]]
+		m = append(m,
+			[2]string{s[0] + " " + s[1], s[0] + " 0000000"},
+			[2]string{s[0] + " " + s[1], other + " " + s[1]},
+			[2]string{s[0] + " " + s[1], s[1]},
+			[2]string{"; " + s[0] + " " + s[1], ""})
+	}
+	for _, o := range hostedClosures {
+		if o.entry != c.entry {
+			m = append(m, [2]string{c.closure, o.closure}, [2]string{c.closure, c.closure + " " + o.closure},
+				[2]string{"Pending hosted evidence", o.closure + " Pending hosted evidence"})
+		}
+	}
+	for _, p := range c.protected {
+		m = append(m, [2]string{p, ""})
+	}
+	return m
+}
+
+// requireHostedClosure checks c's closure in First remote run and that
+// every closure mutation, applied to c's own bullet only, is refused;
+// moving c's closure into another entry never satisfies c.
+func requireHostedClosure(t *testing.T, first string, c hostedClosure) {
+	t.Helper()
+	if err := checkHostedClosure(first, c); err != nil {
+		t.Fatal(err)
+	}
+	bullet := remoteRunEntry(first, c.entry)
+	for _, m := range closureMutations(c) {
+		if !strings.Contains(bullet, m[0]) {
+			t.Fatalf("%s: the mutation target %q is not in the entry", c.entry, m[0])
+		}
+		changed := strings.Replace(first, bullet, strings.Replace(bullet, m[0], m[1], 1), 1)
+		if err := checkHostedClosure(changed, c); err == nil {
+			t.Errorf("%s: the mutation %q -> %q was accepted", c.entry, m[0], m[1])
+		}
+	}
+	for _, o := range hostedClosures {
+		if o.entry == c.entry {
+			continue
+		}
+		// c's closure removed from its own entry and appended to another.
+		moved := strings.Replace(first, bullet, strings.Replace(bullet, " "+c.closure, " Hosted verification: pending.", 1), 1)
+		ob := remoteRunEntry(moved, o.entry)
+		moved = strings.Replace(moved, ob, ob+" "+c.closure, 1)
+		if err := checkHostedClosure(moved, c); err == nil {
+			t.Errorf("%s: its closure in %s was accepted", c.entry, o.entry)
+		}
+	}
+}
+
 // FP-1: triggers, the stable required checks (four since iteration 02b,
 // two of them summaries since 02c), pinned setup, budget and permissions.
 func TestCIWorkflowContract(t *testing.T) {
@@ -851,7 +1039,10 @@ func TestCINativeBudgetHandoff(t *testing.T) {
 		"mark hosted verification pending and perform the same check on the first post-merge run, recording its actual SHA",
 		"never label another SHA as the pull request sample", "Pending hosted evidence does not block implementation review when its test bar is met",
 		"until recorded it is pending, not passed", "never an automatic budget increase or a weakened test", "a successful job above 1592 seconds invalidates the projection",
-		"no repeat-until-green sampling", "Hosted verification: pending.")
+		"no repeat-until-green sampling")
+	// The owner's 2026-10-26 closure (design 12a-probe11-closeout), scoped
+	// to this entry; its pending/no-pass clauses stay.
+	requireHostedClosure(t, first, nativeClosure)
 	// The workflow: the 30-minute macOS job, its four steps, no step
 	// timeout, no budget raised.
 	data := ciWorkflow(t)
@@ -1108,6 +1299,10 @@ func TestCILinuxBudgetHandoff(t *testing.T) {
 		"never relabel another SHA as the pull request sample",
 		"Pending hosted evidence does not block implementation review once its automated bar passes",
 		"only the owner closes hosted delivery verification")
+	// The owner's 2026-10-26 closure (design 12a-probe11-closeout), scoped
+	// to this entry, with both labelled SHAs; its pending/no-pass clauses
+	// stay.
+	requireHostedClosure(t, first, linuxClosure)
 	local := docSection(t, "Local verification")
 	requireTerms(t, "Local verification", local, "the three ordinary commands of design 12a-linux-test-budget", "`test -race function` under 300 s",
 		"Their local timings are diagnostic only")
