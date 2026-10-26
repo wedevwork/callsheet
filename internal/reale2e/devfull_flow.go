@@ -23,6 +23,23 @@ var DevFullRoleIDs = []string{HopDesigner, HopDesignReviewer, HopCoder, HopCodeR
 // triage runs on Codex, so an old Grok-triage flow is flow_invalid).
 var devFullAdapters = []string{adapter.CodexID, adapter.ClaudeID, adapter.ClaudeID, adapter.CodexID, adapter.CodexID}
 
+// coderAlternative is the one alternative adapter a development flow may
+// select, for the coder only (design 12a-3-cursor-worker, slice 3a FP-1):
+// Cursor. Every other role keeps its fixed adapter.
+const coderAlternative = adapter.CursorID
+
+// adapterAllowed reports whether role i may use adapter a: its fixed
+// adapter, or Cursor for the coder.
+func adapterAllowed(i int, a string) bool {
+	return a == devFullAdapters[i] || DevFullRoleIDs[i] == HopCoder && a == coderAlternative
+}
+
+// CursorCoder reports a flow whose coder row selects the Cursor adapter.
+func (f DevFullFlow) CursorCoder() bool {
+	r, ok := f.Role(HopCoder)
+	return ok && r.Adapter == adapter.CursorID
+}
+
 // DevFullFlow is the development selection manifest.
 type DevFullFlow struct {
 	Schema string     `json:"schema"`
@@ -59,7 +76,7 @@ func ParseDevFullFlow(data []byte) (DevFullFlow, error) {
 }
 
 // Validate checks the schema, the canonical role order, the fixed
-// adapters, and each model/effort pair.
+// adapters (the coder: Claude or Cursor), and each model/effort pair.
 func (f DevFullFlow) Validate() error {
 	if f.Schema != DevFullFlowSchema {
 		return fmt.Errorf("flow: unknown schema %q", contract.SafeText(f.Schema, 64))
@@ -74,7 +91,9 @@ func (f DevFullFlow) Validate() error {
 			return fmt.Errorf("flow: role %d must be %s (roles and order are fixed)", i+1, DevFullRoleIDs[i])
 		case seen[r.ID]:
 			return fmt.Errorf("flow: duplicate role %s", r.ID)
-		case r.Adapter != devFullAdapters[i]:
+		case !adapterAllowed(i, r.Adapter) && DevFullRoleIDs[i] == HopCoder:
+			return fmt.Errorf("flow: role %s must use adapter %s or %s", r.ID, devFullAdapters[i], coderAlternative)
+		case !adapterAllowed(i, r.Adapter):
 			return fmt.Errorf("flow: role %s must use adapter %s", r.ID, devFullAdapters[i])
 		}
 		seen[r.ID] = true

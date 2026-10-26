@@ -547,6 +547,12 @@ func (d *devSupervisor) writeProbeLightRepository() {
 // writeRefRepo writes a bare evidence repository at rel holding refs'
 // object closure, HEAD at refs/heads/seed.
 func (d *devSupervisor) writeRefRepo(rel string, refs map[string]plumbing.Hash) bool {
+	return d.writeRefRepoHead(rel, refs, "refs/heads/seed")
+}
+
+// writeRefRepoHead is writeRefRepo with HEAD at head (the Cursor probe's
+// coder repository points at its input).
+func (d *devSupervisor) writeRefRepoHead(rel string, refs map[string]plumbing.Hash, head string) bool {
 	r, err := git.PlainInit(filepath.Join(d.s.ev.root, filepath.FromSlash(rel)), true)
 	if err != nil {
 		d.stop("evidence_write_failed", err.Error())
@@ -566,7 +572,7 @@ func (d *devSupervisor) writeRefRepo(rel string, refs map[string]plumbing.Hash) 
 			return false
 		}
 	}
-	if err := r.Storer.SetReference(plumbing.NewSymbolicReference(plumbing.HEAD, "refs/heads/seed")); err != nil {
+	if err := r.Storer.SetReference(plumbing.NewSymbolicReference(plumbing.HEAD, plumbing.ReferenceName(head))); err != nil {
 		d.stop("evidence_write_failed", err.Error())
 		return false
 	}

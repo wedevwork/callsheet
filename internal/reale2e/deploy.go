@@ -24,7 +24,9 @@ import (
 // at the final registry state. Children are started from argv slices and
 // tracked by their captured handles.
 
-// sidecarAdapters are the three sidecars in start order.
+// sidecarAdapters are the three sidecars in start order (the default;
+// a Cursor probe's supervisor carries its own four-element list, design
+// 12a-3-cursor-worker FP-2, and this one is never mutated).
 var sidecarAdapters = []string{"codex", "claude", "grok"}
 
 // lineLog is a child's bounded combined output with a wake-up per write.
@@ -165,7 +167,7 @@ func (d *deployment) startPlane() error {
 // executable path.
 func (d *deployment) startSidecars() error {
 	d.sidecars, d.nodes = map[string]*child{}, map[string]string{}
-	for _, a := range sidecarAdapters {
+	for _, a := range d.s.sidecarList() {
 		state := filepath.Join(d.s.runtime, "n-"+a)
 		out, err := d.short("sidecar enroll "+a, "sidecar", "enroll", "--plane", d.url, "--ca", d.caPath, "--state-dir", state)
 		if err != nil {

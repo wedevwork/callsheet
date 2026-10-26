@@ -21,6 +21,7 @@ import (
 
 	"github.com/wedevwork/callsheet/internal/client"
 	"github.com/wedevwork/callsheet/internal/contract"
+	"github.com/wedevwork/callsheet/internal/workspacetransfer"
 )
 
 // The live supervisor (design 12a-real-e2e): a foreground process with
@@ -68,7 +69,12 @@ type World struct {
 	LookPath   func(string) (string, error)
 	Probe      func(ctx context.Context, vendor, exe, dir string) error
 	Connect    func(url string, caPEM []byte) (Plane, Puller, func(), error)
-	Poll       time.Duration
+	// Push is the supervisor's own workspace push (design
+	// 12a-3-cursor-worker, DS3: the Cursor probe's coder input), over the
+	// plane Connect returned; the live world requires that plane to be the
+	// verified client. Tests inject it.
+	Push func(ctx context.Context, plane Plane, req workspacetransfer.PushRequest) (contract.WorkspacePushResult, error)
+	Poll time.Duration
 	// Terminal is the operator's decision terminal (read only while the
 	// owner prompt is open); Git runs the environment's read-only probes.
 	Terminal Terminal
@@ -111,6 +117,10 @@ type runArgs struct {
 	// probeScope is probe-dev-full's --scenario (design 12a-dev-flow-light;
 	// "" is the historical full scope).
 	probeScope string
+	// cursor is probe-dev-full's --cursor executable (design
+	// 12a-3-cursor-worker, slice 3a FP-2; "" none): only a Cursor-coder
+	// selection's diagnostic probe takes it.
+	cursor string
 }
 
 func (a runArgs) vendor(id string) string {
@@ -119,8 +129,18 @@ func (a runArgs) vendor(id string) string {
 		return a.claude
 	case "codex":
 		return a.codex
+	case "cursor":
+		return a.cursor
 	}
 	return a.grok
+}
+
+// sidecarList is this run's sidecar list in start order.
+func (s *supervisor) sidecarList() []string {
+	if s.sidecars != nil {
+		return s.sidecars
+	}
+	return sidecarAdapters
 }
 
 // codedError is a failure with its fixed evidence code.
@@ -211,6 +231,10 @@ type supervisor struct {
 	puller     Puller
 	closePlane func()
 	dep        *deployment
+	// sidecars is this run's immutable sidecar list in start order (nil:
+	// the package's three sidecarAdapters; a Cursor probe's four, design
+	// 12a-3-cursor-worker FP-2). The package list is never mutated.
+	sidecars   []string
 	mu         sync.Mutex
 	children   []*child
 	started    []StartedProc
@@ -596,7 +620,7 @@ func (s *supervisor) deploy() error {
 		return failure("role_registration_failed", err)
 	}
 	s.ev.event(Event{Type: EvRolesRegistered})
-	for _, a := range sidecarAdapters {
+	for _, a := range s.sidecarList() {
 		if err := s.dep.restart(a); err != nil {
 			return failure("sidecar_reconnect_failed", err)
 		}

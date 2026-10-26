@@ -203,6 +203,9 @@ func deriveDevCost(b *DevBundle, runID string) DevCost {
 	for _, n := range b.ordinalsOf("tasks") {
 		workflow(taskDir(n), workflowLabel(n))
 	}
+	// A Cursor diagnostic probe's one supervisor-owned coder task (design
+	// 12a-3-cursor-worker; only its closed layout admits the directory).
+	workflow(probeCoderDir, probeCoderLabel)
 	// A qualification record's workflow calls: its wakes, then its
 	// reviewer probe.
 	for _, n := range b.ordinalsOf("probe/wake") {
@@ -221,7 +224,7 @@ func deriveDevCost(b *DevBundle, runID string) DevCost {
 			// hidden).
 			isWorkflow := strings.HasPrefix(s.Label, "workflow-") || strings.HasPrefix(s.Label, probeWakeNamespace+"-") ||
 				strings.HasPrefix(s.Label, probeReviewNamespace+"-") || strings.HasPrefix(s.Label, probeTriageNamespace+"-") ||
-				strings.HasPrefix(s.Label, probeLightReviewNamespace+"-")
+				strings.HasPrefix(s.Label, probeLightReviewNamespace+"-") || s.Label == probeCoderLabel
 			if isWorkflow && !slices.Contains(c.WorkflowTasks, s.Task) {
 				c.WorkflowTasks = append(c.WorkflowTasks, s.Task)
 				c.Tasks = append(c.Tasks, DevTaskCost{Task: s.Task, Kind: "workflow", Label: s.Label, State: s.State, DurationMS: s.DurationMS})

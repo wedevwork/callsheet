@@ -106,6 +106,11 @@ type devProbe struct {
 	// light and both scopes' second workspace (design 12a-dev-flow-light).
 	scope string
 	light *probeLight
+	// cursor, when set, makes this the slice 3a Cursor-coder diagnostic
+	// probe (design 12a-3-cursor-worker): the coder stage before the
+	// coordinator phases, report-only cache/tmp samples and a
+	// non-qualifying observation receipt instead of qualification.json.
+	cursor *cursorProbe
 }
 
 // DevProbeStage is one qualification stage's result.
@@ -193,6 +198,12 @@ func runProbeLive(h Host, a runArgs) int {
 	d := &devSupervisor{s: s, manuals: map[string][2]string{}, receiptBytes: map[int][]byte{}, trees: map[string]map[string]TreeFile{},
 		finals: map[string]string{}, sweeps: sweepRecorder{clock: w.Clock}}
 	d.probe = &devProbe{d: d, prompts: map[int][]byte{}, scope: cmpOr(a.probeScope, probeScopeFull)}
+	if a.cursor != "" {
+		// The command bound the Cursor selection and executable before this
+		// world existed (MainWith): this run's own immutable lists.
+		d.probe.cursor = newCursorProbe(w)
+		s.sidecars = slices.Clone(cursorSidecars)
+	}
 	if h.observeProbe != nil {
 		h.observeProbe(d.probe)
 	}
@@ -208,6 +219,13 @@ func (d *devSupervisor) probeStart() error {
 	steps := []func() error{d.s.printPermissionTemplate, d.hashExecutable, d.s.protectedRoots, d.s.baselineSnapshot, d.loadSelection,
 		d.versionProbes, d.s.createRuntime, d.s.renderPermissions, d.extraDirs, d.deployDev, d.preflightDev, d.probe.models, d.probe.fixtureDev,
 		d.probe.lightFixture, d.probe.openControl, d.activateTerminal, d.probe.firstPlan, d.launchPhase}
+	if d.probe.cursor != nil {
+		// The Cursor diagnostic probe: the report-only shallow sample right
+		// after the baseline fingerprint (before any executable), and the
+		// coder stage after the models stage, before the fixture and any
+		// coordinator phase.
+		steps = slices.Concat(steps[:4], []func() error{d.cursorActivityBefore}, steps[4:12], []func() error{d.cursorCoderStage}, steps[12:])
+	}
 	for _, f := range steps {
 		switch {
 		case d.s.ctx.Err() != nil:
@@ -743,25 +761,7 @@ func (d *devSupervisor) planLabel(plan *TaskPlan) string {
 func (d *devSupervisor) probeFinish(cost DevCost) bool {
 	p := d.probe
 	stages := probeStagesFor(p.scope)
-	failed := false
-	for _, s := range p.stages {
-		failed = failed || s.Result == stageFail
-	}
-	for _, name := range stages {
-		result, code := stageUnreached, d.stopCode
-		switch {
-		case d.stopCode == "":
-			result, code = stageFail, "stage_unobserved"
-		case !failed && !p.hasStage(name):
-			// The first stage the stop left unpassed is the failed one;
-			// its successors are not reached.
-			result, failed = stageFail, true
-		}
-		if name == "models" && len(d.s.preflight) < len(DevFullRoleIDs) {
-			result = stageFail
-		}
-		p.setStage(name, result, code)
-	}
+	p.completeStages(stages)
 	q := DevQualification{Schema: devKind(DevQualificationKind), RunID: d.s.runID, Result: ResultBlocked, Revision: d.manifest.Revision,
 		CallsheetVersion: d.manifest.CallsheetVersion, GOOS: d.s.goos, GOARCH: d.s.goarch, Gate: d.manifest.Gate, Versions: d.manifest.Versions,
 		FlowLabel: d.flowLabel, SelectionSHA256: d.manifest.SelectionSHA256, Roles: d.manifest.Roles, Executable: d.manifest.Executable,
@@ -810,6 +810,33 @@ func (d *devSupervisor) probeFinish(cost DevCost) bool {
 		d.s.say("probe stage %s: %s %s", s.Name, s.Result, s.Code)
 	}
 	return q.Result == ResultQualified
+}
+
+// completeStages records every stage of names not yet recorded: after a
+// stop the first unpassed stage failed and its successors were not
+// reached; without a stop an unrecorded stage is unobserved; a models
+// stage without every preflight failed.
+func (p *devProbe) completeStages(names []string) {
+	d := p.d
+	failed := false
+	for _, s := range p.stages {
+		failed = failed || s.Result == stageFail
+	}
+	for _, name := range names {
+		result, code := stageUnreached, d.stopCode
+		switch {
+		case d.stopCode == "":
+			result, code = stageFail, "stage_unobserved"
+		case !failed && !p.hasStage(name):
+			// The first stage the stop left unpassed is the failed one;
+			// its successors are not reached.
+			result, failed = stageFail, true
+		}
+		if name == "models" && len(d.s.preflight) < len(DevFullRoleIDs) {
+			result = stageFail
+		}
+		p.setStage(name, result, code)
+	}
 }
 
 // hasStage reports a recorded stage.

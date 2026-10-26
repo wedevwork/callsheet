@@ -661,8 +661,10 @@ func (p *fakePlane) CreateWorkspace(_ context.Context, name string) (contract.Wo
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.ws != nil {
-		// A further workspace has its own instance and refs.
+	if p.ws != nil || strings.HasPrefix(name, "e2e-"+probeCoderNamespace+"-") {
+		// A further workspace has its own instance and refs (a Cursor
+		// probe's coder workspace, created before the probe fixture's, is
+		// never the primary one).
 		w := &contract.WorkspaceView{Name: name, Instance: hexID("", 0xabc+len(p.others)+1)}
 		p.others = append(p.others, w)
 		if p.otherRefs == nil {
@@ -1840,7 +1842,7 @@ func (f *fakeWorld) base(s ProcSpec) behavior {
 	case s.Path == fakeCallsheet && len(a) > 1 && a[0] == "plane" && a[1] == "run":
 		return behavior{long: true, stderr: `{"time":"t","level":"INFO","msg":"listening","bind":"127.0.0.1:43210"}` + "\n"}
 	case s.Path == fakeCallsheet && len(a) > 1 && a[0] == "sidecar" && a[1] == "enroll":
-		n := map[string]int{"n-codex": 1, "n-claude": 2, "n-grok": 3}[filepath.Base(a[len(a)-1])]
+		n := map[string]int{"n-codex": 1, "n-claude": 2, "n-grok": 3, "n-cursor": 4}[filepath.Base(a[len(a)-1])]
 		return behavior{stdout: "node_id: " + hexID("n_", n) + "\n"}
 	case s.Path == fakeCallsheet && len(a) > 1 && a[0] == "sidecar" && a[1] == "run":
 		return behavior{long: true, stderr: `{"msg":"heartbeat acknowledged","session":1}` + "\n"}
