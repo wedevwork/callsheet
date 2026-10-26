@@ -49,14 +49,20 @@ const Usage = `usage:
       then a full attempt and a light attempt run as independent children under attempts/full and attempts/light;
       exit 0 only when both children PASS, 1 otherwise, 2 usage, gate or schema error
   reale2e probe-dev-full --callsheet ABS --claude ABS --codex ABS --grok ABS --evidence ABS [--flow ABS] [--protect-root ABS ...] [--protect-depth N]
-      [--scenario full|light|both]
+      [--scenario full|light|both] [--cursor ABS]
       (owner-only qualification probe, same gate as run; prints QUALIFIED or BLOCKED, never a workflow PASS;
       --scenario light or both adds the triage and light reviewer stages (identical coverage), default full;
       exit 0 qualified, 1 blocked, 2 usage or gate error)
+      a --flow whose coder is cursor (docs/examples/real-e2e/dev-full/flow-cursor-coder.json) needs --cursor ABS and no
+      ` + EnvCursorConfigDir + ` or ` + EnvXDGConfigHome + ` variable: the slice 3a Cursor diagnostic probe (Linux only, no jail or
+      confinement claim): one supervisor-owned Cursor coder fixture task before the stages, report-only shallow cache/tmp
+      samples, cursor-probe-observation.json instead of qualification.json; it is never QUALIFIED and exits 1 even when
+      every stage was observed (BLOCKED, ` + CodeCursorQualificationPending + `: independent Cursor evidence checking is
+      slice 3b), 2 usage or gate error; run, run-dev-light and run-dev-exercise refuse a Cursor flow (` + CodeCursorPending3b + `)
   reale2e check --evidence ABS
       (a development evidence/v2 bundle (full or light), a combined exercise root, a full-flow evidence/v1 bundle or
       a legacy callsheet-real-e2e/v3 bundle, each with its own scope; exit 0 PASS, 1 failed or incomplete evidence,
-      2 malformed or unsupported evidence)
+      2 malformed or unsupported evidence; a Cursor diagnostic observation is refused, exit 2 ` + CodeDiagnosticNotQualification + `)
   reale2e dev-next --run ABS
   reale2e dev-observe --run ABS --ordinal N --task ID
   reale2e dev-wait-task --run ABS --ordinal N --task ID
@@ -149,6 +155,33 @@ func usageError(h Host, msg string) int {
 // set, and no positional argument is allowed. A non-nil roots collects
 // the repeatable --protect-root values (each must be absolute).
 func flags(h Host, sub string, names []string, optional map[string]bool, abs map[string]bool, roots *[]string) (map[string]string, bool) {
+	return flagsWith(h, sub, names, optional, abs, roots, nil)
+}
+
+// onceAbsFlag is an optional flag given at most once, with an absolute
+// nonempty value (probe-dev-full's --cursor); bad records a refused value.
+type onceAbsFlag struct {
+	val      string
+	set, bad bool
+}
+
+func (f *onceAbsFlag) String() string { return "" }
+
+func (f *onceAbsFlag) Set(v string) error {
+	switch {
+	case f.set:
+		f.bad = true
+		return errors.New("duplicate")
+	case v == "" || !filepath.IsAbs(v):
+		f.bad = true
+		return errors.New("not absolute")
+	}
+	f.val, f.set = v, true
+	return nil
+}
+
+// flagsWith is flags with an optional --cursor flag.
+func flagsWith(h Host, sub string, names []string, optional map[string]bool, abs map[string]bool, roots *[]string, cursor *onceAbsFlag) (map[string]string, bool) {
 	fs := flag.NewFlagSet("reale2e "+sub, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	vals := map[string]*string{}
@@ -157,6 +190,9 @@ func flags(h Host, sub string, names []string, optional map[string]bool, abs map
 	}
 	if roots != nil {
 		fs.Var(collectRoots{vals: roots}, "protect-root", "")
+	}
+	if cursor != nil {
+		fs.Var(cursor, "cursor", "")
 	}
 	if err := fs.Parse(h.Args[1:]); err != nil || fs.NArg() != 0 {
 		return nil, false
@@ -200,6 +236,9 @@ func MainWith(h Host) int {
 		switch h.Args[0] {
 		case "probe-dev-full":
 			bounds = ProbeBoundsFor(scenarioArg(h.Args[1:]))
+			if cursorArgPresent(h.Args[1:]) {
+				bounds = CursorProbeBoundsFor(scenarioArg(h.Args[1:]))
+			}
 		case "run-dev-light":
 			bounds = LightBounds
 		case "run-dev-exercise":
@@ -222,7 +261,16 @@ func MainWith(h Host) int {
 			names = append(names, "scenario")
 		}
 		var roots []string
-		v, ok := flags(h, "run", names, all("flow", "protect-depth", "scenario"), all("callsheet", "claude", "codex", "grok", "evidence", "flow"), &roots)
+		// Only the diagnostic probe takes --cursor in slice 3a: absolute,
+		// nonempty and at most once (design 12a-3-cursor-worker FP-2).
+		var cursor *onceAbsFlag
+		if h.Args[0] == "probe-dev-full" {
+			cursor = &onceAbsFlag{}
+		}
+		v, ok := flagsWith(h, "run", names, all("flow", "protect-depth", "scenario"), all("callsheet", "claude", "codex", "grok", "evidence", "flow"), &roots, cursor)
+		if !ok && cursor != nil && cursor.bad {
+			return usageError(h, "probe-dev-full takes at most one --cursor, an absolute path to the Cursor executable")
+		}
 		if ok && v["scenario"] != "" && !probeScopeOK(v["scenario"]) {
 			return usageError(h, "probe-dev-full takes an optional --scenario of full, light or both")
 		}
@@ -238,6 +286,14 @@ func MainWith(h Host) int {
 		}
 		args := runArgs{callsheet: v["callsheet"], claude: v["claude"], codex: v["codex"], grok: v["grok"], evidence: v["evidence"], flow: v["flow"],
 			protectRoots: roots, protectDepth: depth, probeScope: v["scenario"]}
+		if cursor != nil {
+			args.cursor = cursor.val
+		}
+		// The selection is read (read-only) and the Cursor binding decided
+		// before any capability exists: no vendor or paid work on refusal.
+		if code := cursorBinding(h, args); code != 0 {
+			return code
+		}
 		switch {
 		case h.Args[0] == "probe-dev-full":
 			return runProbeLive(h, args)
@@ -328,8 +384,8 @@ func LiveWorld(h Host) (*World, func(), error) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	environ := os.Environ()
 	return &World{Context: ctx, Launcher: ExecLauncher{}, Clock: realClock{}, Environ: environ, Cwd: cwd, Executable: exe, Home: home,
-		TempRoot: "/tmp", Rand: liveRand, LookPath: exec.LookPath, Probe: probeVendor, Connect: connectFor(h.GOOS, environ), Poll: 2 * time.Second,
-		Terminal: &readerTerminal{r: h.Stdin}, Git: execGit(ExecLauncher{}, realClock{}, exec.LookPath, environ)}, stop, nil
+		TempRoot: "/tmp", Rand: liveRand, LookPath: exec.LookPath, Probe: probeVendor, Connect: connectFor(h.GOOS, environ), Push: pushFor(h.GOOS, environ),
+		Poll: 2 * time.Second, Terminal: &readerTerminal{r: h.Stdin}, Git: execGit(ExecLauncher{}, realClock{}, exec.LookPath, environ)}, stop, nil
 }
 
 // gitProbeTimeout bounds one read-only git probe.
@@ -379,6 +435,10 @@ func probeVendor(ctx context.Context, vendor, exe, dir string) error {
 		a = adapter.NewCodex(dir)
 	case adapter.GrokID:
 		a = adapter.NewGrok(dir)
+	case adapter.CursorID:
+		// Design 12a-3-cursor-worker FP-2: the adapter's own minimum
+		// version and posture check, unchanged.
+		a = adapter.NewCursor(dir)
 	default:
 		return errors.New("unknown vendor")
 	}
@@ -395,6 +455,21 @@ func connectFor(goos string, environ []string) func(url string, caPEM []byte) (P
 		}
 		return c, transferPuller{resolve: c.ResolveTaskResult, plane: workspacetransfer.ClientPlane(c), goos: goos,
 			env: workspacetransfer.ProcessEnv(isolatedGitEnv(environ))}, c.Close, nil
+	}
+}
+
+// pushFor is the live supervisor push (design 12a-3-cursor-worker, DS3):
+// over the verified client Connect returned (a checked assertion, never a
+// panic), with the product's own workspace transfer and the same isolated
+// Git environment as the supervisor's pulls.
+func pushFor(goos string, environ []string) func(ctx context.Context, plane Plane, req workspacetransfer.PushRequest) (contract.WorkspacePushResult, error) {
+	return func(ctx context.Context, plane Plane, req workspacetransfer.PushRequest) (contract.WorkspacePushResult, error) {
+		c, ok := plane.(*client.Client)
+		if !ok || c == nil {
+			return contract.WorkspacePushResult{}, errors.New("the supervisor push needs the live plane client")
+		}
+		return workspacetransfer.Push(ctx, workspacetransfer.Options{GOOS: goos, Env: workspacetransfer.ProcessEnv(isolatedGitEnv(environ)), Cwd: req.Path,
+			Plane: workspacetransfer.ClientPlane(c)}, req)
 	}
 }
 

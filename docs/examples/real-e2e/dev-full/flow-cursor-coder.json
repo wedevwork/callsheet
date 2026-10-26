@@ -1,0 +1,10 @@
+{
+  "schema": "callsheet-dev-full-flow/v1",
+  "roles": [
+    {"id": "designer", "adapter": "codex", "model": "gpt-6-astra", "effort": "low"},
+    {"id": "design-reviewer", "adapter": "claude", "model": "claude-fable-5-1", "effort": "low"},
+    {"id": "coder", "adapter": "cursor", "model": "grok-4.7", "effort": "high"},
+    {"id": "code-reviewer", "adapter": "codex", "model": "gpt-6.1-sol", "effort": "high"},
+    {"id": "triage", "adapter": "codex", "model": "gpt-6.1-sol", "effort": "high"}
+  ]
+}

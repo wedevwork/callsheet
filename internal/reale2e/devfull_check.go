@@ -432,6 +432,16 @@ func bundleProtocol(root string) (string, string, error) {
 // means only legacy PASS), a callsheet-dev-full-evidence/v1 bundle to the
 // full-flow checker. It writes nothing to the bundle and executes nothing.
 func CheckEvidence(root string, out, errOut io.Writer) int {
+	// Design 12a-3-cursor-worker (FP-6, post-final DS1): on the root
+	// safeEvidenceRoot resolves, before bundleProtocol and every version
+	// list check, a Cursor diagnostic observation is refused
+	// (diagnostic_not_qualification). An unsafe root keeps its existing
+	// error, which bundleProtocol reports.
+	if resolved, err := safeEvidenceRoot(root); err == nil {
+		if code, handled := checkDiagnosticObservation(resolved, out, errOut); handled {
+			return code
+		}
+	}
 	proto, _, err := bundleProtocol(root)
 	if err != nil {
 		data, _ := encodeJSON(devSchemaReport())

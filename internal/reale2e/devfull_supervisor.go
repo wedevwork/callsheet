@@ -165,6 +165,9 @@ func runDevLive(h Host, a runArgs) int {
 
 func (d *devSupervisor) run() int {
 	switch {
+	case d.probe != nil && d.probe.cursor != nil:
+		fmt.Fprint(d.s.stdout, CursorProbeBoundsFor(d.probe.scope))
+		fmt.Fprintln(d.s.stdout, cursorProbeDisclosure)
 	case d.probe != nil:
 		fmt.Fprint(d.s.stdout, ProbeBoundsFor(d.probe.scope))
 		fmt.Fprintln(d.s.stdout, "qualification probe: prints QUALIFIED or BLOCKED, never a workflow PASS; exit 0 qualified, 1 blocked, 2 usage or gate error")
@@ -324,6 +327,11 @@ func (d *devSupervisor) loadSelection() error {
 	if err := flow.CheckDevPosture(d.s.goos); err != nil {
 		return failure("posture_refused", err)
 	}
+	// The frozen selection must still be the one the command bound before
+	// any capability existed (design 12a-3-cursor-worker FP-2).
+	if err := d.cursorSelectionBinding(flow); err != nil {
+		return err
+	}
 	instr, runbook, err := loaded.ManualPair("triage")
 	if err != nil {
 		return failure("templates_missing", err)
@@ -407,7 +415,7 @@ func (d *devSupervisor) versionProbes() error {
 		return failure("version_preflight_failed", err)
 	}
 	d.manifest.CallsheetVersion, d.manifest.Revision = ver, checkoutRevision(d.s.checkout)
-	for _, v := range []string{"claude", "codex", "grok"} {
+	for _, v := range d.versionVendors() {
 		exe := d.s.args.vendor(v)
 		rec := VersionRecord{Tool: v, Path: d.s.tok(exe)}
 		out, err := d.s.probeOutput(exe, "--version")
@@ -479,7 +487,7 @@ func (d *devSupervisor) deployDev() error {
 		return err
 	}
 	d.s.ev.event(Event{Type: EvRolesRegistered})
-	for _, a := range sidecarAdapters {
+	for _, a := range d.s.sidecarList() {
 		if err := d.s.dep.restart(a); err != nil {
 			return failure("sidecar_restart_failed", err)
 		}
@@ -850,6 +858,9 @@ func devLaunchArgv(phase int, prompt, mcpPath, system, session string) []string 
 // attempt whose own checker fails, and any collection or write failure,
 // is 1.
 func (d *devSupervisor) exitCode() int {
+	if d.probe != nil && d.probe.cursor != nil {
+		return d.cursorProbeExit()
+	}
 	if d.probe != nil {
 		if d.passed {
 			fmt.Fprintln(d.s.stdout, "qualification probe: "+ResultQualified)
@@ -897,6 +908,7 @@ func (d *devSupervisor) finish() {
 	d.collectSlotWait()
 	if d.probe != nil {
 		d.writeProbeRepository()
+		d.writeCursorCoderRepository()
 	} else {
 		d.writeRepository()
 	}
@@ -947,9 +959,13 @@ func (d *devSupervisor) finish() {
 	if d.s.before != nil {
 		// A protected change, or a final fingerprint that could not be
 		// compared completely, is never a clean execution.
-		if diff := d.s.environmentDiff(); diff == nil || len(diff.Protected) > 0 || !diff.Complete || len(diff.Codes) > 0 {
+		diff := d.s.environmentDiff()
+		if diff == nil || len(diff.Protected) > 0 || !diff.Complete || len(diff.Codes) > 0 {
 			d.protected = true
 		}
+		// A Cursor probe's report-only shallow cache/tmp sample, alongside
+		// the after-cleanup fingerprint (it never changes d.protected).
+		d.cursorEnvironment(diff)
 	}
 	if d.probe == nil {
 		d.s.ev.writeJSON(devLedgerFile, envelope("ledger", d.s.runID, normalizeState(d.state)))
@@ -959,6 +975,13 @@ func (d *devSupervisor) finish() {
 		fmt.Fprintf(d.s.stderr, "reale2e run: evidence is incomplete: %v\n", err)
 	}
 	d.s.ev.close()
+	if d.probe != nil && d.probe.cursor != nil {
+		// The Cursor diagnostic finalization, factored out before the
+		// qualified-record finalizer: never a qualification, never passed.
+		d.passed = false
+		d.collectCursorProbe()
+		return
+	}
 	if d.probe != nil {
 		d.passed = d.collectProbe() && d.s.ev.failure() == nil
 		return
@@ -1051,6 +1074,10 @@ func (d *devSupervisor) stopRunningPhase() {
 func (d *devSupervisor) ownedTasks() ([]string, error) {
 	var ids []string
 	ids = append(ids, d.s.preflight...)
+	if p := d.probe; p != nil && p.cursor != nil && p.cursor.task != "" {
+		// The Cursor probe's one supervisor-owned coder task.
+		ids = append(ids, p.cursor.task)
+	}
 	for _, t := range d.state.Tasks {
 		ids = append(ids, t.TaskID)
 	}

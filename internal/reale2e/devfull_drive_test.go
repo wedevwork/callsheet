@@ -235,6 +235,10 @@ type devRig struct {
 	helperOut  map[string]string
 	receipts   map[string]DevReviewRun
 	reviewLogs map[string][]byte
+	// worldHook edits the built world (a Cursor probe's injected push) and
+	// probeHook sees the new probe before it runs (its sample roots).
+	worldHook func(w *World)
+	probeHook func(p *devProbe)
 }
 
 // offsetClock runs real time from a fake clock's instant (a real helper
@@ -383,9 +387,15 @@ func (r *devRig) host() Host {
 			d.light.prompted = r.answerIntake
 		}
 	}
+	if r.probeHook != nil {
+		h.observeProbe = r.probeHook
+	}
 	world := h.NewWorld
 	h.NewWorld = func(h Host) (*World, func(), error) {
 		w, release, err := world(h)
+		if err == nil && r.worldHook != nil {
+			r.worldHook(w)
+		}
 		if err == nil {
 			conn := w.Connect
 			w.Connect = func(url string, ca []byte) (Plane, Puller, func(), error) {

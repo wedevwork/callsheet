@@ -198,7 +198,7 @@ func (s *supervisor) dispatchOwn(req contract.DispatchRequest, deadline time.Tim
 			if serr != nil {
 				return "", failure("dispatch_lost_ambiguous", errors.Join(err, serr))
 			}
-			if len(v.Request.Payload) > 0 && v.Request.Payload[0] == req.Payload[0] {
+			if sameOwnRequest(v.Request, req) {
 				matches = append(matches, t.TaskID)
 			}
 		}
@@ -211,6 +211,17 @@ func (s *supervisor) dispatchOwn(req contract.DispatchRequest, deadline time.Tim
 		return "", failure("dispatch_lost_ambiguous", err)
 	}
 	return matches[0], nil
+}
+
+// sameOwnRequest reports whether a listed task's request is the lost
+// dispatch's: its run marker (the first payload element) when it has one;
+// a payload-less supervisor task (the Cursor probe's coder, design
+// 12a-3-cursor-worker) by its exact run-unique goal and acceptance.
+func sameOwnRequest(got, want contract.DispatchRequest) bool {
+	if len(want.Payload) > 0 {
+		return len(got.Payload) > 0 && got.Payload[0] == want.Payload[0]
+	}
+	return len(got.Payload) == 0 && got.Goal == want.Goal && got.Acceptance == want.Acceptance
 }
 
 // preflightOne runs preflight i against hop's role.
