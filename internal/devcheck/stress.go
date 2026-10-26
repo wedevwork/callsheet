@@ -105,12 +105,14 @@ var (
 	//     236.6 s and 273.3 s inside the combined invocation on a normal
 	//     hosted Linux runner, about 355 s and 410 s at the observed 1.5x
 	//     slow-runner factor.
-	// ./internal/workspacetransfer (198.4 s, about 300 s at 1.5x) stays in
-	// the combined invocation, after mcp and before taskworkspace and
-	// taskpublication: iteration 10b's r0.5 schedule ran it as a fourth
-	// group, and its hosted remeasure returned it here (r0.6), since the
-	// later per-CPU waves were already full and the overlap inside the
-	// combined invocation was the saving.
+	// ./internal/workspacetransfer stays in the combined invocation, after
+	// mcp and before taskworkspace and taskpublication: iteration 10b's
+	// r0.5 schedule ran it as a fourth group, and its hosted remeasure
+	// returned it here (r0.6), since the later per-CPU waves were already
+	// full and the overlap inside the combined invocation was the saving.
+	// Historical: its 198.4 s (about 300 s at 1.5x) was measured then; for
+	// the current budget rationale see stressPackagesTestTimeout (design
+	// 12a-stress-packages-budget).
 	stressSplitPackages = []string{"./internal/contract", "./internal/mcpqual", "./internal/workspace"}
 	// stressPlanePackage is the internal/plane package of the plane shards,
 	// distinct from the plane function-test selector in the functions shard
@@ -180,8 +182,18 @@ var (
 
 const (
 	// stressTestTimeout bounds each test binary (go test -timeout) except
-	// the mcpqual per-CPU binaries (stressMcpqualTestTimeout).
+	// the combined packages command's binaries (stressPackagesTestTimeout)
+	// and the mcpqual per-CPU binaries (stressMcpqualTestTimeout).
 	stressTestTimeout = "6m"
+	// stressPackagesTestTimeout bounds each test binary of the combined
+	// "stress packages" command, all nine of its packages (design
+	// 12a-stress-packages-budget): its macOS workspacetransfer binary hit
+	// the 6-minute limit at 360.050 s (main run 40224728895, attempt 1)
+	// with completed hosted samples up to 292.704 s. The exception belongs
+	// to the combined command, not to a package: stressPackageTimeout
+	// keeps 6 minutes for every single-package step but mcpqual's. It is a
+	// static plan decision: no option or environment overrides it.
+	stressPackagesTestTimeout = "8m"
 	// stressMcpqualTestTimeout bounds each ./internal/mcpqual per-CPU stress
 	// binary (design 12a-mcpqual-stress-budget): its macOS CPU1 binary hit
 	// the 6-minute limit at 360.2 s with CPU2 and CPU4 at 346.0 s and
@@ -314,7 +326,7 @@ func StressShards(goos string) ([]StressShard, error) {
 	}
 	return []StressShard{
 		{Name: "packages", Steps: []Step{
-			{Name: "stress packages", Env: env(), Argv: append(stressFlags(stressCPUList(), stressTestTimeout), stressPackages...)},
+			{Name: "stress packages", Env: env(), Argv: append(stressFlags(stressCPUList(), stressPackagesTestTimeout), stressPackages...)},
 		}},
 		{Name: "packages-cpu", CPUGroups: groups},
 		{Name: "plane-cpu1", Parallel: true, Steps: perCPU("plane", stressPlanePackage, []int{1})},

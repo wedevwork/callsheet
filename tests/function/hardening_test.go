@@ -38,11 +38,12 @@ import (
 // ./internal/workspace into per-CPU groups of their own after it; the
 // stress worker rebalance moved the three groups into the packages-cpu
 // shard, leaving this flattened order unchanged. Design
-// 12a-mcpqual-stress-budget gives only the three mcpqual binaries
-// -timeout=8m; every other binary keeps -timeout=6m.
+// 12a-mcpqual-stress-budget gives the three mcpqual binaries -timeout=8m,
+// and design 12a-stress-packages-budget the combined packages command's
+// binaries; every other binary keeps -timeout=6m.
 const (
 	hardeningStressCount     = 20
-	hardeningStressPackages  = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/workspacetransfer ./internal/taskworkspace ./internal/taskpublication"
+	hardeningStressPackages  = "go test -race -count=20 -cpu=1,2,4 -timeout=8m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/workspacetransfer ./internal/taskworkspace ./internal/taskpublication"
 	hardeningStressContract1 = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/contract"
 	hardeningStressContract2 = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/contract"
 	hardeningStressContract4 = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/contract"

@@ -90,14 +90,15 @@ func TestRunWrapper(t *testing.T) {
 			t.Fatalf("%s = %d, calls %q, %s", stage, code, calls, errOut.String())
 		}
 	}
-	// stress-packages runs the combined invocation alone, and
+	// stress-packages runs the combined invocation alone (its binaries at
+	// -timeout=8m since design 12a-stress-packages-budget), and
 	// stress-packages-cpu its nine per-CPU invocations (three groups of
 	// three, in group order; the calls within a group are concurrent).
 	calls = nil
 	out.Reset()
 	errOut.Reset()
 	if code := run([]string{"stress-packages"}, &out, &errOut, fake, opts); code != 0 || len(calls) != 1 ||
-		strings.Join(calls[0], " ") != "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/workspacetransfer ./internal/taskworkspace ./internal/taskpublication" {
+		strings.Join(calls[0], " ") != "go test -race -count=20 -cpu=1,2,4 -timeout=8m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/workspacetransfer ./internal/taskworkspace ./internal/taskpublication" {
 		t.Fatalf("stress-packages = %d, calls %q, %s", code, calls, errOut.String())
 	}
 	calls = nil

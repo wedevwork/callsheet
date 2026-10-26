@@ -63,8 +63,9 @@ const (
 	// contracts) to the sidecar shard likewise; the contract headroom fix
 	// moved ./internal/contract, and the workspace and mcpqual headroom fix
 	// ./internal/mcpqual and ./internal/workspace, to the packages shard's
-	// per-CPU groups.
-	wantNodeStressPackages = "go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/workspacetransfer ./internal/taskworkspace ./internal/taskpublication"
+	// per-CPU groups. Design 12a-stress-packages-budget gives this
+	// combined invocation's binaries -timeout=8m.
+	wantNodeStressPackages = "go test -race -count=20 -cpu=1,2,4 -timeout=8m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/workspacetransfer ./internal/taskworkspace ./internal/taskpublication"
 	wantNodeStressFunction = "go test -race -count=20 -cpu=1,2,4 -timeout=6m -run=^(TestNodeEnrollment|TestNodeReconnect)$/^(locking|shutdown)$ ./tests/function"
 )
 

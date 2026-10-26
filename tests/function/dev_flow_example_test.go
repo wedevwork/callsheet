@@ -1219,7 +1219,9 @@ func TestDevFlowTriage(t *testing.T) {
 		// docs/real-e2e.md carry the scratch lifecycle, the publication
 		// boundary, the no-fallback/invalid_marker policy and the owner
 		// probe gate (probe 10 since design 12a-codex-triage); each
-		// deletion or weakening is refused.
+		// deletion or weakening is refused. Design
+		// 12a-triage-scratch-guard-wording adds the checkout/export-mode
+		// split and the named removal-recipe guards in both documents.
 		runbook := string(files["triage-runbook.md"])
 		e2e := string(repoFile(t, "docs/real-e2e.md"))
 		if err := checkTriageScratch(runbook, e2e); err != nil {
@@ -1241,7 +1243,10 @@ func TestDevFlowTriage(t *testing.T) {
 			"runbook": append([][2]string{
 				{"that directory inside the original checkout is the only temporary-write exception", "any directory may be used"},
 				{"There is no retained evidence directory: only rca.md and confidence-qualified fix.md may be published. ", ""},
-				{"Existing inputs remain byte/mode-identical; ", ""},
+				{"Existing checkout inputs remain byte/mode-identical; ", ""},
+				{"scratch export modes may differ; ", ""},
+				{"a removal-recipe guard (test -d or test ! -L)", ""},
+				{"a removal-recipe guard (test -d or test ! -L)", "a guard"},
 				{"add no other path beyond allowed_outputs and this temporary scratch", "add what you need"},
 				{"After joining all reproduction children, return to the original checkout root and ", ""},
 				{"Scratch must be absent before the final answer. ", ""},
@@ -1275,6 +1280,12 @@ func TestDevFlowTriage(t *testing.T) {
 				{"a passing marker alone does not show that the scratch instruction was followed", "a passing marker is enough"},
 				{"Probe 8 remains failed evidence", "Probe 8 passed"},
 				{"No paid run is part of implementation or review automation", "Automation may run it"},
+				// Design 12a-triage-scratch-guard-wording: the blocking
+				// sentence, its named recipe guards and their qualifier.
+				{triageScratchBlockedSentence, ""},
+				{" (test -d or test ! -L)", ""},
+				{"removal-recipe ", ""},
+				{"reproduction, a removal-recipe guard (test -d or test ! -L) or cleanup", "reproduction, guard or cleanup"},
 			}, recipeMutations...),
 		}
 		for kind, list := range mutations {
@@ -1297,8 +1308,17 @@ func TestDevFlowTriage(t *testing.T) {
 const triageScratchRecipe = "test -d .callsheet-triage-scratch && test ! -L .callsheet-triage-scratch && chmod -R u+w .callsheet-triage-scratch && rm -r .callsheet-triage-scratch && test ! -e .callsheet-triage-scratch"
 
 // triageScratchParagraph is the runbook's required Reproductions
-// paragraph (design 12a-light-triage-scratch, Contract placement).
-const triageScratchParagraph = "For a light triage envelope naming .callsheet-triage-scratch in scratch_policy, that directory inside the original checkout is the only temporary-write exception. Existing inputs remain byte/mode-identical; add no other path beyond allowed_outputs and this temporary scratch. There is no retained evidence directory: only rca.md and confidence-qualified fix.md may be published. After joining all reproduction children, return to the original checkout root and execute the envelope's exact removal recipe only for scratch you created. Scratch must be absent before the final answer. If creation, reproduction, a guard or cleanup fails or is refused, report TRIAGE_BLOCKED when the turn can continue; no permission fallback, retry with another tool or re-spelling of a denied command."
+// paragraph (design 12a-light-triage-scratch, Contract placement, as
+// amended by design 12a-triage-scratch-guard-wording, Exact wording and
+// implementation pins: checkout inputs keep bytes and modes, scratch export
+// modes may differ, and the named blocking guards are the removal recipe's
+// test -d and test ! -L).
+const triageScratchParagraph = "For a light triage envelope naming .callsheet-triage-scratch in scratch_policy, that directory inside the original checkout is the only temporary-write exception. Existing checkout inputs remain byte/mode-identical; scratch export modes may differ; add no other path beyond allowed_outputs and this temporary scratch. There is no retained evidence directory: only rca.md and confidence-qualified fix.md may be published. After joining all reproduction children, return to the original checkout root and execute the envelope's exact removal recipe only for scratch you created. Scratch must be absent before the final answer. If creation, reproduction, a removal-recipe guard (test -d or test ! -L) or cleanup fails or is refused, report TRIAGE_BLOCKED when the turn can continue; no permission fallback, retry with another tool or re-spelling of a denied command."
+
+// triageScratchBlockedSentence is docs/real-e2e.md's Light triage scratch
+// sentence naming the blocking failures (design
+// 12a-triage-scratch-guard-wording, Exact wording and implementation pins).
+const triageScratchBlockedSentence = "A refused or failed scratch creation, reproduction, a removal-recipe guard (test -d or test ! -L) or cleanup is reported as `TRIAGE_BLOCKED` when the turn can continue."
 
 // mdSection is a markdown section's text, from its heading to the next
 // second-level heading ("" when absent).
@@ -1370,6 +1390,9 @@ func checkTriageScratch(runbook, e2e string) error {
 		"No paid run is part of implementation or review automation",
 	}); err != nil {
 		return fmt.Errorf("docs/real-e2e.md: %w", err)
+	}
+	if !strings.Contains(e2e, triageScratchBlockedSentence) {
+		return fmt.Errorf("docs/real-e2e.md lacks the scratch blocking sentence")
 	}
 	for name, doc := range map[string]string{"runbook": runbook, "docs/real-e2e.md": e2e} {
 		// The literal recipe, root guards before chmod, and no other
