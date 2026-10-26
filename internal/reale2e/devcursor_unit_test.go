@@ -160,6 +160,40 @@ func TestCursorBindingUnit(t *testing.T) {
 	}
 }
 
+func TestCursorProbeCacheTokenSymlinkHome(t *testing.T) {
+	t.Parallel()
+	// A home reached through a symlink still tokens its cache root as
+	// $HOME/.cache (the macOS runner's /home is a symlink): an ancestor
+	// symlink above a missing user, and an existing home that is itself a
+	// symlink. The sampled Path stays the spelled one.
+	base := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(base, "Data", "home"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(base, "Data", "home"), filepath.Join(base, "home")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(base, "real-user", ".cache"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(base, "real-user"), filepath.Join(base, "link-user")); err != nil {
+		t.Fatal(err)
+	}
+	for _, home := range []string{filepath.Join(base, "home", "u"), filepath.Join(base, "link-user")} {
+		c := newCursorProbe(&World{Home: home})
+		if len(c.roots) != 3 {
+			t.Fatalf("%s: roots %+v", home, c.roots)
+		}
+		r := c.roots[0]
+		if r.Scope != activityScopeCache || r.Path != filepath.Join(home, ".cache") || r.Token != "$HOME/.cache" || strings.Contains(r.Token, base) {
+			t.Errorf("%s: cache root %+v", home, r)
+		}
+		if c.roots[1].Token != "/tmp" || c.roots[2].Token != "/var/tmp" || c.roots[1].Path != "/tmp" || c.roots[2].Path != "/var/tmp" {
+			t.Errorf("%s: tmp roots %+v", home, c.roots[1:])
+		}
+	}
+}
+
 func TestCursorDispatchOwnPayloadless(t *testing.T) {
 	t.Parallel()
 	// UT-A4: a lost answer of the payload-less coder dispatch is adopted by

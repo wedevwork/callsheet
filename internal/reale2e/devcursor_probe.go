@@ -187,13 +187,17 @@ type cursorProbe struct {
 }
 
 // newCursorProbe is a Cursor probe over w: the three named roots
-// (~/.cache, /tmp, /var/tmp) and the live filesystem.
+// (~/.cache, /tmp, /var/tmp) and the live filesystem. Each Path is the
+// spelled root the observer lstats; the cache root is tokened in the
+// tokenizer's canonical home spelling (a home reached through a symlink
+// stays $HOME/.cache), never by resolving .cache itself.
 func newCursorProbe(w *World) *cursorProbe {
 	tok := pathTokenizer{home: w.Home}.canonical()
 	var roots []activityRootSpec
-	for _, r := range []struct{ scope, path string }{
-		{activityScopeCache, filepath.Join(w.Home, ".cache")}, {activityScopeTmp, "/tmp"}, {activityScopeVarTmp, "/var/tmp"}} {
-		roots = append(roots, activityRootSpec{Scope: r.scope, Path: r.path, Token: tok.token(r.path)})
+	for _, r := range []struct{ scope, path, token string }{
+		{activityScopeCache, filepath.Join(w.Home, ".cache"), filepath.Join(tok.home, ".cache")}, {activityScopeTmp, "/tmp", "/tmp"},
+		{activityScopeVarTmp, "/var/tmp", "/var/tmp"}} {
+		roots = append(roots, activityRootSpec{Scope: r.scope, Path: r.path, Token: tok.token(r.token)})
 	}
 	return &cursorProbe{roots: roots, fs: liveActivityFS{}, uid: uint32(os.Getuid())}
 }
