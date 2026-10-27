@@ -1,13 +1,16 @@
 package reale2e
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	git "github.com/go-git/go-git/v5"
@@ -19,12 +22,11 @@ import (
 	"github.com/wedevwork/callsheet/internal/workspacetransfer"
 )
 
-// The Cursor diagnostic probe's offline rig (design 12a-3-cursor-worker,
-// 3a.md Function tests): the existing probe rig with the alternate
-// cursor-coder flow and --cursor, an injected World.Push into the fake
-// plane's hub, a scripted Cursor coder worker answering the supervisor's
-// coder dispatch, and hermetic shallow-sample roots. One small rig is
-// reused by every 3a function test; no attempt or exercise rig is added.
+// The Cursor probe's offline rig (design 12a-3-cursor-worker, 3a.md
+// Function tests, reused by slice 3b): the existing probe rig with the
+// alternate cursor-coder flow and --cursor, an injected World.Push into
+// the fake plane's hub, a scripted Cursor coder worker answering the
+// supervisor's coder dispatch, and hermetic shallow-sample roots.
 
 const (
 	fakeCursor        = "/fake/bin/cursor-agent"
@@ -70,6 +72,10 @@ type cursorRig struct {
 	roots      []activityRootSpec
 	activityFS activityFS
 	output     int
+	// uid, when set, is the observer's own UID (a synthetic filesystem's).
+	uid *uint32
+	// exe is the rig's stub Cursor executable.
+	exe string
 }
 
 // newCursorRig is the Cursor probe of scope ("" full) on the probe rig.
@@ -82,12 +88,16 @@ func newCursorRig(t testing.TB, scope string) *cursorRig {
 	r.command = "probe-dev-full"
 	r.owner = []string{"continue 1", "continue 2"}
 	r.f.flow = filepath.Join(r.f.checkout, filepath.FromSlash(DevFullDir), "flow-cursor-coder.json")
-	r.extraArgs = []string{"--cursor", fakeCursor}
+	// A real stub file: the run hashes its explicit Cursor executable
+	// before any vendor and after cleanup (its --version stays scripted).
+	exe := stubFile(t, t.TempDir(), "cursor-agent")
+	r.extraArgs = []string{"--cursor", exe}
 	if scope != "" {
 		r.extraArgs = append(r.extraArgs, "--scenario", scope)
 	}
-	r.f.versions[fakeCursor] = fakeCursorVersion
-	cr := &cursorRig{devRig: r}
+	r.f.versions[exe] = fakeCursorVersion
+	eligibleVersions(r.f)
+	cr := &cursorRig{devRig: r, exe: exe}
 	base := shortTemp(t)
 	cache, tmp := filepath.Join(r.f.home, ".cache"), filepath.Join(base, "tmp")
 	for _, d := range []string{filepath.Join(cache, "vendor"), filepath.Join(tmp, "build")} {
@@ -96,20 +106,28 @@ func newCursorRig(t testing.TB, scope string) *cursorRig {
 		}
 	}
 	os.WriteFile(filepath.Join(cache, "vendor", "state.bin"), []byte("x"), 0o600)
-	cr.roots = []activityRootSpec{{Scope: activityScopeCache, Path: cache, Token: "$HOME/.cache"}, {Scope: activityScopeTmp, Path: tmp, Token: tmp},
-		{Scope: activityScopeVarTmp, Path: filepath.Join(base, "var-tmp"), Token: filepath.Join(base, "var-tmp")}}
+	// Hermetic sample roots under the live token spellings the checker
+	// requires (a token is a label, never opened).
+	cr.roots = []activityRootSpec{{Scope: activityScopeCache, Path: cache, Token: "$HOME/.cache"}, {Scope: activityScopeTmp, Path: tmp, Token: "/tmp"},
+		{Scope: activityScopeVarTmp, Path: filepath.Join(base, "var-tmp"), Token: "/var/tmp"}}
 	r.worldHook = func(w *World) { w.Push = cr.push }
-	r.probeHook = func(p *devProbe) {
-		if p.cursor != nil {
-			p.cursor.roots = cr.roots
-			p.cursor.output = cr.output
-			if cr.activityFS != nil {
-				p.cursor.fs = cr.activityFS
-			}
-		}
-	}
+	r.devHook = cr.hookRun
 	r.f.plane.afterDispatch = cr.afterDispatch
 	return cr
+}
+
+// hookRun points a Cursor run's observer at the rig's hermetic roots.
+func (cr *cursorRig) hookRun(d *devSupervisor) {
+	if d.cursor == nil {
+		return
+	}
+	d.cursor.roots, d.cursor.output = cr.roots, cr.output
+	if cr.activityFS != nil {
+		d.cursor.fs = cr.activityFS
+	}
+	if cr.uid != nil {
+		d.cursor.uid = *cr.uid
+	}
 }
 
 // push is the injected supervisor push: the source repository's HEAD
@@ -222,14 +240,58 @@ func failingCollect(t testing.TB, r *git.Repository) *git.Repository {
 	return f
 }
 
-// observation reads the probe's receipt.
-func (cr *cursorRig) observation() CursorProbeObservation {
+// cursorQual reads the probe's Cursor qualification record.
+func (cr *cursorRig) cursorQual() DevQualification {
 	cr.t.Helper()
-	var o CursorProbeObservation
-	if err := json.Unmarshal(cr.evidence(cursorObservationFile), &o); err != nil {
+	var q DevQualification
+	if err := json.Unmarshal(cr.evidence(devQualificationFile), &q); err != nil {
 		cr.t.Fatal(err)
 	}
-	return o
+	if q.Schema != DevCursorQualificationSchema || q.Cursor == nil {
+		cr.t.Fatalf("not a Cursor qualification record: %s", q.Schema)
+	}
+	return q
+}
+
+// cursorCost reads the probe's cost record.
+func (cr *cursorRig) cursorCost() DevCost {
+	cr.t.Helper()
+	var c DevCost
+	if err := json.Unmarshal(cr.evidence(devCostFile), &c); err != nil {
+		cr.t.Fatal(err)
+	}
+	return c
+}
+
+// coderVerdict reads the coder stage's stored verdict.
+func (cr *cursorRig) coderVerdict() cursorCoderVerdict {
+	cr.t.Helper()
+	var v cursorCoderVerdict
+	if err := cr.data(probeCoderDir+"/verdict.json", &v); err != nil {
+		cr.t.Fatal(err)
+	}
+	return v
+}
+
+// stageOf is the record's named stage.
+func stageOf(q DevQualification, name string) DevProbeStage {
+	for _, s := range q.Stages {
+		if s.Name == name {
+			return s
+		}
+	}
+	return DevProbeStage{}
+}
+
+// qualifiedCheck runs the offline check of the rig's evidence: its exit,
+// report and stderr.
+func (cr *cursorRig) qualifiedCheck() (int, DevCursorQualificationReport, string) {
+	cr.t.Helper()
+	var out, errb bytes.Buffer
+	code := CheckEvidence(cr.f.bundle(), &out, &errb)
+	var rep DevCursorQualificationReport
+	json.Unmarshal(out.Bytes(), &rep)
+	return code, rep, errb.String()
 }
 
 // activity reads one phase's shallow sample.
@@ -246,28 +308,27 @@ func (cr *cursorRig) activity(phase string) ActivityAggregate {
 	return a
 }
 
-// stage is the receipt's named stage.
-func stageNamed(o CursorProbeObservation, name string) DevProbeStage {
-	for _, s := range o.Stages {
-		if s.Name == name {
-			return s
-		}
-	}
-	return DevProbeStage{}
-}
-
-// noQualification fails when the probe wrote a qualification record.
-func (cr *cursorRig) noQualification() {
+// blocked asserts a BLOCKED Cursor probe: never passed or QUALIFIED, its
+// printed cause, and its record's independent check BLOCKED too (the
+// command and the collector agree). It returns the record.
+func (cr *cursorRig) blocked(cause string) DevQualification {
 	cr.t.Helper()
-	if _, err := os.Stat(filepath.Join(cr.f.evidence, devQualificationFile)); err == nil || cr.d.passed {
-		cr.t.Fatalf("a Cursor probe wrote %s or passed", devQualificationFile)
+	out := cr.f.stdout.String()
+	if cr.d.passed || strings.Contains(out, "qualification probe: "+ResultQualified) ||
+		!strings.Contains(out, "qualification probe: "+ResultBlocked+" ("+cause) {
+		cr.t.Fatalf("a blocked Cursor probe printed %s", out)
 	}
+	q := cr.cursorQual()
+	if code, rep, _ := cr.qualifiedCheck(); code != 1 || rep.Result != ResultBlocked || len(rep.Codes) == 0 {
+		cr.t.Fatalf("offline check of a blocked record %d %+v", code, rep)
+	}
+	return q
 }
 
 // coderStopped asserts a coder-stage stop: code, no coordinator phase,
 // one coder dispatch (no fallback), retained task artifacts, complete
-// cleanup and a BLOCKED receipt naming the primary code.
-func (cr *cursorRig) coderStopped(code string, artifacts ...string) CursorProbeObservation {
+// cleanup and a BLOCKED record naming the primary code.
+func (cr *cursorRig) coderStopped(code string, artifacts ...string) DevQualification {
 	cr.t.Helper()
 	cr.expect(1, code)
 	if n := len(cr.f.launcher.phaseSpecs()); n != 0 {
@@ -279,17 +340,176 @@ func (cr *cursorRig) coderStopped(code string, artifacts ...string) CursorProbeO
 	for _, a := range artifacts {
 		cr.evidence(probeCoderDir + "/" + a)
 	}
-	o := cr.observation()
-	if o.Result != ResultBlocked || o.Blocker != code || o.Qualification || stageNamed(o, stageCoderEvidence).Result != stageFail ||
-		stageNamed(o, stageCoderEvidence).Code != code || stageNamed(o, "resume_wake").Result != stageUnreached || !o.Cleanup.Complete {
-		cr.t.Fatalf("receipt %+v", o)
+	q := cr.blocked(code)
+	if q.Result != ResultBlocked || q.StopCode == nil || *q.StopCode != code || stageOf(q, stageCoderEvidence).Result != stageFail ||
+		stageOf(q, stageCoderEvidence).Code != code || stageOf(q, "resume_wake").Result != stageUnreached || !cr.cleanupRecord().Complete {
+		cr.t.Fatalf("record %+v", q)
 	}
-	out := cr.f.stdout.String()
-	if !strings.Contains(out, "Cursor probe observations: BLOCKED ("+code+")") || strings.Contains(out, "qualification probe: "+ResultQualified) {
-		cr.t.Fatalf("stdout %s", out)
+	return q
+}
+
+// ---- Slice 3b: attempts, the combined exercise and cached bundles ----
+
+// cursorAttempt makes r a Cursor-selected attempt of the rig's own world:
+// the shipped Cursor flow, a stub --cursor executable with its scripted
+// version, and hermetic sample roots under the live token spellings. It
+// returns the executable.
+func cursorAttempt(t testing.TB, r *devRig) string {
+	t.Helper()
+	r.f.flow = filepath.Join(r.f.checkout, filepath.FromSlash(DevFullDir), "flow-cursor-coder.json")
+	exe := stubFile(t, t.TempDir(), "cursor-agent")
+	r.extraArgs = append(r.extraArgs, "--cursor", exe)
+	r.f.versions[exe] = fakeCursorVersion
+	eligibleVersions(r.f)
+	base := shortTemp(t)
+	cache := filepath.Join(r.f.home, ".cache")
+	for _, d := range []string{filepath.Join(cache, "vendor"), filepath.Join(base, "tmp", "build")} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
 	}
-	cr.noQualification()
-	return o
+	roots := []activityRootSpec{{Scope: activityScopeCache, Path: cache, Token: "$HOME/.cache"}, {Scope: activityScopeTmp, Path: filepath.Join(base, "tmp"), Token: "/tmp"},
+		{Scope: activityScopeVarTmp, Path: filepath.Join(base, "var-tmp"), Token: "/var/tmp"}}
+	prev := r.devHook
+	r.devHook = func(d *devSupervisor) {
+		if prev != nil {
+			prev(d)
+		}
+		if d.cursor != nil {
+			d.cursor.roots = roots
+		}
+	}
+	return exe
+}
+
+// eligibleVersions scripts vendor versions at the adapters' current
+// minimums: a Cursor format's checker re-applies the version policy to the
+// recorded lines offline.
+func eligibleVersions(f *fakeWorld) {
+	f.versions[fakeClaude], f.versions[fakeCodex], f.versions[fakeGrok] = "2.1.299 (Claude Code)", "codex-cli 0.162.1",
+		"grok 1.0.52 (0920c8169e27) [stable]"
+}
+
+// newCursorFullRig is a Cursor full attempt over steps.
+func newCursorFullRig(t testing.TB, steps []devAct) *devRig {
+	t.Helper()
+	r := newDevRig(t, steps)
+	r.owner = []string{"yes 1"}
+	cursorAttempt(t, r)
+	return r
+}
+
+// newCursorLightRig is a Cursor light attempt over steps.
+func newCursorLightRig(t testing.TB, steps []devAct) *devRig {
+	t.Helper()
+	r := newLightRig(t, steps)
+	cursorAttempt(t, r)
+	return r
+}
+
+// newCursorExerciseRig is a Cursor combined exercise over full and light
+// scripts: both children share the root's frozen Cursor selection and
+// bound executable. It returns the rig and the executable.
+func newCursorExerciseRig(t testing.TB, fullSteps, lightSteps []devAct) (*exerciseRig, string) {
+	t.Helper()
+	x := newExerciseRig(t, fullSteps, lightSteps)
+	exe := cursorAttempt(t, x.full)
+	x.light.devHook = x.full.devHook
+	return x, exe
+}
+
+// cursorCache is one cached immutable Cursor bundle: a qualified probe of
+// a scope or a passing attempt, produced once per test binary by the live
+// collector and copied for every mutation.
+type cursorCache struct {
+	sync.Once
+	dir string
+	err error
+}
+
+var (
+	cursorQualifiedCache = map[string]*cursorCache{probeScopeFull: {}, probeScopeBoth: {}}
+	cursorAttemptCache   = map[string]*cursorCache{scenarioFull: {}, scenarioLight: {}}
+)
+
+// cachedCopy builds c once with build and returns a fresh copy.
+func (c *cursorCache) cachedCopy(t testing.TB, name string, build func() (string, error)) string {
+	t.Helper()
+	c.Do(func() {
+		src, err := build()
+		if err != nil {
+			c.err = err
+			return
+		}
+		c.dir = filepath.Join(bundleCacheRoot, name)
+		c.err = copyTree(src, c.dir)
+	})
+	if c.err != nil {
+		t.Fatal(c.err)
+	}
+	dst := filepath.Join(t.TempDir(), "bundle")
+	if err := copyTree(c.dir, dst); err != nil {
+		t.Fatal(err)
+	}
+	return dst
+}
+
+// cursorQualifiedBundle is a fresh copy of the cached QUALIFIED Cursor
+// probe of scope.
+func cursorQualifiedBundle(t testing.TB, scope string) string {
+	t.Helper()
+	return cursorQualifiedCache[scope].cachedCopy(t, "cursor-qualified-"+scope, func() (string, error) {
+		cr := newCursorRig(t, scope)
+		if code := cr.run(); code != 0 || !cr.d.passed {
+			return "", fmt.Errorf("the shared Cursor probe failed (%d): %s\n%s\n%s", code, cr.d.stopCode, cr.f.stderr.String(), cr.f.stdout.String())
+		}
+		return cr.f.bundle(), nil
+	})
+}
+
+// cursorAttemptBundle is a fresh copy of the cached passing Cursor attempt
+// of scenario.
+func cursorAttemptBundle(t testing.TB, scenario string) string {
+	t.Helper()
+	return cursorAttemptCache[scenario].cachedCopy(t, "cursor-attempt-"+scenario, func() (string, error) {
+		r := newCursorFullRig(t, happy())
+		if scenario == scenarioLight {
+			r = newCursorLightRig(t, lightHappy())
+		}
+		if code := r.run(); code != 0 || !r.d.passed {
+			detail, _ := os.ReadFile(filepath.Join(r.f.evidence, "report.txt"))
+			return "", fmt.Errorf("the shared Cursor %s attempt failed (%d): %s\n%s\n%s", scenario, code, r.d.stopCode, r.f.stderr.String(), detail)
+		}
+		return r.f.bundle(), nil
+	})
+}
+
+// cursorExerciseCache is the cached passing Cursor combined exercise.
+var cursorExerciseCache = &cursorCache{}
+
+// cursorExerciseRoot is a fresh copy of the cached passing Cursor
+// combined exercise root.
+func cursorExerciseRoot(t testing.TB) string {
+	t.Helper()
+	return cursorExerciseCache.cachedCopy(t, "cursor-exercise", func() (string, error) {
+		x, _ := newCursorExerciseRig(t, happy(), lightHappy())
+		if code := x.run(); code != 0 {
+			return "", fmt.Errorf("the shared Cursor exercise failed (%d): %s", code, x.stdout())
+		}
+		return x.root(), nil
+	})
+}
+
+// cursorCheck runs the offline Cursor qualification check of dir.
+func cursorCheck(t testing.TB, dir string) (int, DevCursorQualificationReport, string) {
+	t.Helper()
+	var out, errb bytes.Buffer
+	code := CheckEvidence(dir, &out, &errb)
+	var rep DevCursorQualificationReport
+	if err := json.Unmarshal(out.Bytes(), &rep); err != nil {
+		t.Fatalf("check printed no report: %v\n%s", err, out.String())
+	}
+	return code, rep, errb.String()
 }
 
 // roleOnNode reports the registered role's node and adapter.

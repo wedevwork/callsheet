@@ -117,10 +117,18 @@ type runArgs struct {
 	// probeScope is probe-dev-full's --scenario (design 12a-dev-flow-light;
 	// "" is the historical full scope).
 	probeScope string
-	// cursor is probe-dev-full's --cursor executable (design
-	// 12a-3-cursor-worker, slice 3a FP-2; "" none): only a Cursor-coder
-	// selection's diagnostic probe takes it.
+	// cursor is the --cursor executable of any live command (design
+	// 12a-3-cursor-worker, slice 3b FP-3; "" none): exactly a Cursor-coder
+	// selection takes it.
 	cursor string
+	// frozenFlow, when set, is a combined exercise's frozen selection bytes
+	// (read once before the owner's authorization): its children capture
+	// these bytes instead of reading the --flow path again.
+	frozenFlow []byte
+	// cursorExpect, when set, is a combined exercise's root binding hash of
+	// the Cursor executable (taken before the owner's authorization): each
+	// child's pre-vendor binding must equal it.
+	cursorExpect string
 }
 
 func (a runArgs) vendor(id string) string {

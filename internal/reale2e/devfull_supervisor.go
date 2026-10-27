@@ -88,6 +88,11 @@ type devSupervisor struct {
 	// light, when set, runs the light scenario instead of the full flow
 	// (devlight_*.go).
 	light *devLight
+	// cursor, when set, is a Cursor-selected run's own executable binding
+	// and shallow samples (design 12a-3-cursor-worker, slice 3b;
+	// devcursor_execution.go): a probe, a standalone attempt or one
+	// exercise child.
+	cursor *cursorRun
 	// exerciseChild is a combined exercise's child attempt: its 2m cleanup
 	// tail bounds its collection and check too (finalizeExpired when it
 	// did not fit).
@@ -153,10 +158,7 @@ func runDevLive(h Host, a runArgs) int {
 		return 1
 	}
 	defer release()
-	s := &supervisor{stdout: h.Stdout, stderr: h.Stderr, goos: h.GOOS, goarch: h.GOARCH, w: w, args: a, ctx: w.Context,
-		known: map[string]string{}, stoppedSet: map[*child]bool{}, reqs: make(chan ctrlMsg), loopDone: make(chan struct{}), envPolicy: envPolicyDev}
-	d := &devSupervisor{s: s, manuals: map[string][2]string{}, receiptBytes: map[int][]byte{}, trees: map[string]map[string]TreeFile{},
-		finals: map[string]string{}, sweeps: sweepRecorder{clock: w.Clock}}
+	d := newDevSupervisor(h, w, a)
 	if h.observeDev != nil {
 		h.observeDev(d)
 	}
@@ -172,10 +174,13 @@ func (d *devSupervisor) run() int {
 		fmt.Fprint(d.s.stdout, ProbeBoundsFor(d.probe.scope))
 		fmt.Fprintln(d.s.stdout, "qualification probe: prints QUALIFIED or BLOCKED, never a workflow PASS; exit 0 qualified, 1 blocked, 2 usage or gate error")
 	case d.light != nil:
-		fmt.Fprintln(d.s.stdout, "light development flow: checked "+DevBundleSchema+" (scenario light) evidence; exit 0 mechanical PASS, 1 executed failure or incomplete evidence, 2 usage, gate or schema error")
+		fmt.Fprintln(d.s.stdout, "light development flow: checked "+d.manifestSchema()+" (scenario light) evidence; exit 0 mechanical PASS, 1 executed failure or incomplete evidence, 2 usage, gate or schema error")
 	default:
 		fmt.Fprint(d.s.stdout, DevBounds)
-		fmt.Fprintln(d.s.stdout, "full development flow: checked "+DevBundleSchema+" evidence; exit 0 mechanical PASS, 1 executed failure or incomplete evidence, 2 usage, gate or schema error")
+		fmt.Fprintln(d.s.stdout, "full development flow: checked "+d.manifestSchema()+" evidence; exit 0 mechanical PASS, 1 executed failure or incomplete evidence, 2 usage, gate or schema error")
+	}
+	if d.cursor != nil && d.probe == nil {
+		fmt.Fprintln(d.s.stdout, cursorAttemptDisclosure)
 	}
 	if err := d.s.locate(); err != nil {
 		fmt.Fprintf(d.s.stderr, "reale2e run: %v\n", err)
@@ -193,7 +198,7 @@ func (d *devSupervisor) run() int {
 		return 1
 	}
 	d.s.manifest = Manifest{RunID: id, ProtectedRoots: []string{}}
-	d.manifest = DevManifest{Schema: DevBundleSchema, RunID: id, Scenario: d.scenario(), GOOS: d.s.goos, GOARCH: d.s.goarch,
+	d.manifest = DevManifest{Schema: d.manifestSchema(), RunID: id, Scenario: d.scenario(), GOOS: d.s.goos, GOARCH: d.s.goarch,
 		Gate: GateRecord{OptIn: true, CIAbsent: true, Platform: d.s.goos}, Versions: []VersionRecord{}, Roles: []FlowRole{}, ProtectedRoots: []string{},
 		Render: map[string]string{}, Inventory: []InventoryEntry{}}
 	d.s.ev.event(Event{Type: EvRunStarted})
@@ -283,9 +288,9 @@ func (d *devSupervisor) writeEvidenceJSON(rel string, v any) bool {
 // start runs setup to the first coordinator phase. Every step first
 // checks the interrupt and the attempt deadline (now >= deadline).
 func (d *devSupervisor) start() error {
-	for _, f := range []func() error{d.s.printPermissionTemplate, d.hashExecutable, d.s.protectedRoots, d.s.baselineSnapshot, d.loadSelection,
+	for _, f := range d.cursorSteps([]func() error{d.s.printPermissionTemplate, d.hashExecutable, d.s.protectedRoots, d.s.baselineSnapshot, d.loadSelection,
 		d.versionProbes, d.s.createRuntime, d.s.renderPermissions, d.extraDirs, d.deployDev, d.preflightDev, d.seedDev, d.openControl,
-		d.activateTerminal, d.initialPlan, d.launchPhase} {
+		d.activateTerminal, d.initialPlan, d.launchPhase}) {
 		switch {
 		case d.s.ctx.Err() != nil:
 			return failure("interrupted", d.s.ctx.Err())
@@ -316,7 +321,15 @@ func (d *devSupervisor) loadSelection() error {
 		return failure("flow_invalid", err)
 	}
 	flowRaw := loaded.FlowRaw
-	if d.s.args.flow != "" {
+	switch {
+	case d.s.args.frozenFlow != nil:
+		// A combined exercise child captures the selection bytes the root
+		// froze before the owner's authorization, never the path again.
+		flowRaw = d.s.args.frozenFlow
+		if flow, err = ParseDevFullFlow(flowRaw); err != nil {
+			return failure("flow_invalid", err)
+		}
+	case d.s.args.flow != "":
 		if flowRaw, err = readBounded(d.s.args.flow, maxFlowBytes); err != nil {
 			return failure("flow_invalid", err)
 		}
@@ -859,7 +872,7 @@ func devLaunchArgv(phase int, prompt, mcpPath, system, session string) []string 
 // is 1.
 func (d *devSupervisor) exitCode() int {
 	if d.probe != nil && d.probe.cursor != nil {
-		return d.cursorProbeExit()
+		return d.cursorQualificationExit()
 	}
 	if d.probe != nil {
 		if d.passed {
@@ -963,10 +976,12 @@ func (d *devSupervisor) finish() {
 		if diff == nil || len(diff.Protected) > 0 || !diff.Complete || len(diff.Codes) > 0 {
 			d.protected = true
 		}
-		// A Cursor probe's report-only shallow cache/tmp sample, alongside
-		// the after-cleanup fingerprint (it never changes d.protected).
-		d.cursorEnvironment(diff)
+		// A Cursor run's report-only shallow cache/tmp sample, alongside the
+		// after-cleanup fingerprint (it never changes d.protected).
+		d.cursorEnvironment()
 	}
+	// A Cursor run's executable is hashed again after cleanup.
+	d.cursorBindAfter()
 	if d.probe == nil {
 		d.s.ev.writeJSON(devLedgerFile, envelope("ledger", d.s.runID, normalizeState(d.state)))
 	}
@@ -975,14 +990,9 @@ func (d *devSupervisor) finish() {
 		fmt.Fprintf(d.s.stderr, "reale2e run: evidence is incomplete: %v\n", err)
 	}
 	d.s.ev.close()
-	if d.probe != nil && d.probe.cursor != nil {
-		// The Cursor diagnostic finalization, factored out before the
-		// qualified-record finalizer: never a qualification, never passed.
-		d.passed = false
-		d.collectCursorProbe()
-		return
-	}
 	if d.probe != nil {
+		// A Cursor probe's qualification is decided by the same reload and
+		// independent check as the offline command (devfull_probe.go).
 		d.passed = d.collectProbe() && d.s.ev.failure() == nil
 		return
 	}
@@ -1003,7 +1013,7 @@ func (d *devSupervisor) collect() bool {
 	// judgment: each record written after it (the session map, the cost,
 	// the manifest) is written and then ingested from the same bytes, as
 	// the loader would decode them.
-	b, err := loadDevBundleAs(d.s.ev.root, devBundleV2, d.scenario())
+	b, err := loadDevLayout(d.s.ev.root, d.attemptLayout())
 	put := func(rel string, v any) error {
 		data, err := encodeJSON(v)
 		if err != nil {
@@ -1036,9 +1046,14 @@ func (d *devSupervisor) collect() bool {
 }
 
 // collectProbe writes the probe's cost and its qualification record and
-// decides the result.
+// decides the result (a Cursor probe's collection loads its evidence under
+// the strict Cursor layout).
 func (d *devSupervisor) collectProbe() bool {
-	b, err := loadDevQualificationAs(d.s.ev.root, devBundleV2, d.probe.scope)
+	load := func() (*DevBundle, error) { return loadDevQualificationAs(d.s.ev.root, devBundleV2, d.probe.scope) }
+	if d.probe.cursor != nil {
+		load = func() (*DevBundle, error) { return loadCursorQualification(d.s.ev.root, d.probe.scope) }
+	}
+	b, err := load()
 	var cost DevCost
 	if err == nil {
 		cost = deriveDevCost(b, d.s.runID)

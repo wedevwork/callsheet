@@ -344,6 +344,31 @@ configuration and no proof of all-tool containment. What a later
 qualification must record to change either limit is in the catalog's
 qualification handoff.
 
+### Optional Cursor coder in the development flow
+
+The real end-to-end development flow can select Cursor for its coder only,
+through `docs/examples/real-e2e/dev-full/flow-cursor-coder.json`: adapter
+`cursor`, model `grok-4.7`, effort `high` (model argument `grok-4.7-high`).
+The default flow is unchanged, with its Claude coder; the designer, the code
+reviewer and triage stay on Codex and the design reviewer on Claude, and no
+Cursor reviewer or triage selection ships. The separate four-hop sample in
+which Cursor reviews code is a different scenario, not exercised by this
+selection. Live execution is Linux-only. The recipe above, the minimum
+version `2026.10.01-e373342` and the posture checks are unchanged: no
+`--force`, `--yolo`, `--approve-mcps`, `--sandbox` or permission fallback,
+no jail and no confinement claim. The Cursor sidecar runs with its user's
+ordinary access, so run it under a dedicated OS user. Expected vendor state,
+cache and temporary-file activity is observed report-only: the harness's
+shallow samples of `~/.cache`, `/tmp` and `/var/tmp` miss deep or transient
+writes, reads, network and other home paths, and cannot attribute a change
+to Cursor; only the strict protected snapshots gate the owner environment.
+The owner's 2026-10-27 slice 3a diagnostic observed `grok-4.7-high`
+authenticate and complete one fixture repair on Cursor `2026.10.14-0f9edde`;
+that observation is not qualification, and headless approval behaviour
+remains unexercised. A fresh qualification probe and its independent check
+are an operator prerequisite before any Cursor attempt; see
+[Cursor coder qualification](real-e2e.md#cursor-coder-qualification).
+
 ## Offline proof in CI
 
 CI never runs a vendor CLI or a model. The function tests replay the

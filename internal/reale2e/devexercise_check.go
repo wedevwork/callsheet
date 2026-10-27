@@ -171,14 +171,25 @@ func checkExerciseRootData(root string, record []byte, initial bool) (exerciseCh
 	if !ok {
 		return res, schemaErr("%s is missing", devExerciseFile)
 	}
-	if schema, err := manifestSchema(data); err != nil || schema != DevExerciseSchema {
+	schema, err := manifestSchema(data)
+	if err != nil || schema != DevExerciseSchema && schema != DevCursorExerciseSchema {
 		return res, schemaErr("%s: unsupported schema", devExerciseFile)
+	}
+	// A Cursor root is distinguished at the loader by its own schema, never
+	// guessed from its children (design 12a-3-cursor-worker, slice 3b).
+	cursorRoot := schema == DevCursorExerciseSchema
+	if err := checkCursorField(data, cursorRoot); err != nil {
+		return res, schemaErr("%s: %v", devExerciseFile, err)
 	}
 	var ex DevExercise
 	if err := decodeStrict(data, &ex); err != nil {
 		return res, schemaErr("%s: %v", devExerciseFile, err)
 	}
-	rep := DevExerciseReport{Schema: devExerciseReportSchema, ExerciseID: ex.ExerciseID, Result: ResultFail, Judgments: PendingReview,
+	reportSchema, auditSchema := devExerciseReportSchema, devExerciseAuditSchema
+	if cursorRoot {
+		reportSchema, auditSchema = devCursorExerciseReportSchema, devCursorExerciseAuditSchema
+	}
+	rep := DevExerciseReport{Schema: reportSchema, ExerciseID: ex.ExerciseID, Result: ResultFail, Judgments: PendingReview,
 		Children: []DevExerciseChildResult{}, Codes: []string{}, Inventory: []InventoryEntry{{Path: devExerciseFile, Bytes: int64(len(data)), SHA256: sha256Hex(data)}},
 		Accounting: DevExerciseAccounting{MaxWorkerCalls: exerciseMaxCalls, HappyPathCalls: exerciseHappyCalls, ProviderUsage: usageUnknown}}
 	bad := func(code string) {
@@ -245,6 +256,11 @@ func checkExerciseRootData(root string, record []byte, initial bool) (exerciseCh
 		}
 		if b.Scenario != c.Scenario || b.ver != devBundleV2 || b.Manifest == nil {
 			return res, schemaErr("%s: the child is not a %s v2 bundle", c.Dir, c.Scenario)
+		}
+		if b.cursor != cursorRoot {
+			// A default child under a Cursor root or a Cursor child under a
+			// default root: never one combined result, whatever each says.
+			crow.bad(CodeCursorSelectionMismatch)
 		}
 		m := b.Manifest
 		chk := checkDevBundle(b, false)
@@ -345,6 +361,20 @@ func checkExerciseRootData(root string, record []byte, initial bool) (exerciseCh
 			hrow.bad("selection_mismatch")
 		}
 		sel = m.SelectionSHA256
+		// Each Cursor child ran the root's bound executable, unchanged.
+		if cursorRoot && (ex.Cursor == nil || m.Cursor == nil || m.Cursor.Path != ex.Cursor.Path || m.Cursor.BeforeSHA256 != ex.Cursor.BeforeSHA256 ||
+			m.Cursor.AfterSHA256 != ex.Cursor.BeforeSHA256) {
+			hrow.bad(CodeCursorExecutableMismatch)
+		}
+	}
+	if cursorRoot {
+		// The root binding: hashed before the authorization and after the
+		// last reached child, unchanged.
+		if ex.Cursor == nil || ex.Cursor.Path == "" || !hex64RE.MatchString(ex.Cursor.BeforeSHA256) || ex.Cursor.AfterSHA256 != ex.Cursor.BeforeSHA256 {
+			hrow.bad(CodeCursorExecutableMismatch)
+		} else {
+			hrow.see("Cursor executable %s sha256 %s (root before and after)", auditText(ex.Cursor.Path, 120), ex.Cursor.BeforeSHA256)
+		}
 	}
 	hrow.done(bad)
 	crow := rows.add("exercise/accounting", "The root's accounting is the sum of the children's actual derived accounting (failed, late and recovered calls included once), at most 33 worker calls, with unknown monetary cost")
@@ -375,7 +405,7 @@ func checkExerciseRootData(root string, record []byte, initial bool) (exerciseCh
 	res.report = rep
 	res.reportJSON, _ = encodeJSON(rep)
 	res.reportText = renderExerciseReport(rep)
-	a := DevExerciseAudit{Schema: devExerciseAuditSchema, ExerciseID: ex.ExerciseID, ReportSHA256: sha256Hex(res.reportJSON), Mechanical: rep.Result,
+	a := DevExerciseAudit{Schema: auditSchema, ExerciseID: ex.ExerciseID, ReportSHA256: sha256Hex(res.reportJSON), Mechanical: rep.Result,
 		Judgments: PendingReview, Rows: rows.rows}
 	res.audit = a
 	res.auditJSON, _ = encodeJSON(a)

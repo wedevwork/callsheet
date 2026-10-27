@@ -759,3 +759,201 @@ func TestCursorActivityCompare(t *testing.T) {
 		t.Error("flags text")
 	}
 }
+
+// ---- Slice 3b: offline sample reconstruction (UT-B2) ----
+
+// sampleOf observes three synthetic roots under the live scopes and
+// token spellings (a token is a label; the paths are synthetic), through
+// a JSON round trip as the checker reads it.
+func sampleOf(t *testing.T, f *synthFS, clock Clock, output int, c, tm, v string) *ActivityAggregate {
+	t.Helper()
+	if clock == nil {
+		clock = newTickClock(0)
+	}
+	o := activityObserver{fs: f, clock: clock, uid: 1000, output: output, exclude: []string{"/c/excluded", "/t/excluded"}}
+	agg := o.observe("run", "before", []activityRootSpec{{Scope: activityScopeCache, Path: c, Token: "$HOME/.cache"},
+		{Scope: activityScopeTmp, Path: tm, Token: "/tmp"}, {Scope: activityScopeVarTmp, Path: v, Token: "/var/tmp"}}, clock.Now().Add(activityScanBudget))
+	b, err := json.Marshal(agg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out ActivityAggregate
+	if err := decodeStrict(b, &out); err != nil {
+		t.Fatal(err)
+	}
+	return &out
+}
+
+// statusTree is a root holding every observed entry kind: owned, foreign,
+// looping, denied, swapped, vanished and unreadable directories, a fifo,
+// saturating files, an unrecordable name and an excluded entry.
+func statusTree() *synthNode {
+	file := func(size int64) *synthNode { return &synthNode{typ: actFile, uid: 1000, size: size, mtime: 5} }
+	dir := func(uid uint32, kids ...synthKid) *synthNode {
+		return &synthNode{typ: actDir, uid: uid, ino: 9, kids: kids}
+	}
+	return dir(0, synthKid{"own", dir(1000, synthKid{"a", file(3)}, synthKid{"b", file(4)}, synthKid{"sub", dir(1000)},
+		synthKid{"link", &synthNode{typ: actSymlink, uid: 1000}}, synthKid{"gone", &synthNode{typ: actFile, lstatErr: syscall.ENOENT}},
+		synthKid{"locked", &synthNode{typ: actFile, lstatErr: syscall.EACCES}}, synthKid{"root-file", &synthNode{typ: actFile, uid: 0, size: 1}})},
+		synthKid{"theirs", dir(0, synthKid{"secret", file(1)})},
+		synthKid{"loop", &synthNode{typ: actDir, uid: 1000, openErr: unix.ELOOP}},
+		synthKid{"denied", &synthNode{typ: actDir, uid: 1000, openErr: syscall.EACCES}},
+		synthKid{"swapped", &synthNode{typ: actDir, uid: 1000, ino: 1, fstatIno: 2}},
+		synthKid{"vanished", &synthNode{typ: actDir, lstatErr: syscall.ENOENT}},
+		synthKid{"unknown", &synthNode{typ: actOther, lstatErr: syscall.EIO}},
+		synthKid{"fifo", &synthNode{typ: actOther, uid: 1000}},
+		synthKid{"big", file(math.MaxInt64)}, synthKid{"big2", file(math.MaxInt64)},
+		synthKid{strings.Repeat("\xff", 400), file(1)}, synthKid{"excluded", dir(1000)}, synthKid{"b64:x", dir(1000, synthKid{"z", file(2)})})
+}
+
+func TestCursorActivityValidation(t *testing.T) {
+	t.Parallel()
+	// Every valid sample the observer can produce, limited, foreign,
+	// unreadable, raced, saturated, output- or time-limited, stays
+	// mechanically eligible: sample quality is never a problem.
+	valid := map[string]func(t *testing.T) *ActivityAggregate{
+		"big": func(t *testing.T) *ActivityAggregate {
+			return sampleOf(t, &synthFS{t: t, roots: map[string]*synthNode{"/c": bigDir(1_000_000, 1_000_000), "/t": bigDir(100, 3)}}, nil, 0, "/c", "/t", "/v")
+		},
+		"statuses": func(t *testing.T) *ActivityAggregate {
+			return sampleOf(t, &synthFS{t: t, roots: map[string]*synthNode{"/c": statusTree(), "/t": {typ: actSymlink, uid: 1000},
+				"/v": {typ: actDir, uid: 1000, openErr: syscall.EACCES}}}, nil, 0, "/c", "/t", "/v")
+		},
+		"raced_roots": func(t *testing.T) *ActivityAggregate {
+			return sampleOf(t, &synthFS{t: t, roots: map[string]*synthNode{"/c": {typ: actDir, uid: 1000, ino: 3, fstatIno: 4},
+				"/t": {typ: actDir, lstatErr: syscall.EACCES}}}, nil, 0, "/c", "/t", "/v")
+		},
+		"output": func(t *testing.T) *ActivityAggregate {
+			return sampleOf(t, &synthFS{t: t, roots: map[string]*synthNode{"/c": bigDir(100, 3), "/t": bigDir(100, 3)}}, nil, activitySkeleton+2000, "/c", "/t", "/v")
+		},
+		"time": func(t *testing.T) *ActivityAggregate {
+			clock := newTickClock(100 * time.Millisecond)
+			return sampleOf(t, &synthFS{t: t, roots: map[string]*synthNode{"/c": bigDir(1000, 1000), "/t": bigDir(10, 10)}, clock: clock}, clock, 0, "/c", "/t", "/v")
+		},
+	}
+	for name, mk := range valid {
+		t.Run("valid/"+name, func(t *testing.T) {
+			t.Parallel()
+			if p := activityProblems(mk(t), "run", "before"); len(p) != 0 {
+				t.Fatalf("a valid sample refused: %v", p)
+			}
+		})
+	}
+	// A valid output-limited sample whose root totals exceed the retained
+	// rows (rows can be missing) is never refused for that.
+	t.Run("valid/omitted_rows", func(t *testing.T) {
+		t.Parallel()
+		a := valid["output"](t)
+		r := &a.Roots[0]
+		r.ObservedCounts.Children.Directory += 7
+		r.ObservedFileBytes.Children += 9
+		if p := activityProblems(a, "run", "before"); len(p) != 0 {
+			t.Fatalf("an output-limited sample refused: %v", p)
+		}
+	})
+	sum := func(s string) *string { return &s }
+	mtime := func(n int64) *int64 { return &n }
+	// Each contradiction of the observer's rules is an evidence problem.
+	for name, edit := range map[string]func(a *ActivityAggregate){
+		"run":         func(a *ActivityAggregate) { a.RunID = "other" },
+		"phase":       func(a *ActivityAggregate) { a.Phase = "after" },
+		"sampling":    func(a *ActivityAggregate) { a.Sampling = "recursive" },
+		"depth":       func(a *ActivityAggregate) { a.MaxDepth = 3 },
+		"limits":      func(a *ActivityAggregate) { a.Limits.ChildEntries = 65 },
+		"two_roots":   func(a *ActivityAggregate) { a.Roots = a.Roots[:2] },
+		"root_order":  func(a *ActivityAggregate) { a.Roots[0], a.Roots[1] = a.Roots[1], a.Roots[0] },
+		"root_token":  func(a *ActivityAggregate) { a.Roots[1].Path = "/private/tmp" },
+		"root_status": func(a *ActivityAggregate) { a.Roots[0].Status = "missing" },
+		"absent_rows": func(a *ActivityAggregate) {
+			a.Roots[2] = ActivityRoot{Scope: activityScopeVarTmp, Path: "/var/tmp", Status: actAbsent, Rows: a.Roots[0].Rows}
+		},
+		"unread_rows": func(a *ActivityAggregate) { a.Roots[1].Rows = a.Roots[0].Rows[:1] },
+		"absent_flags": func(a *ActivityAggregate) {
+			a.Roots[2] = ActivityRoot{Scope: activityScopeVarTmp, Path: "/var/tmp", Status: actAbsent, Exhaustive: true, TopLevelExhaustive: true,
+				Rows: []ActivityRow{}, Flags: ActivityFlags{TimeLimited: true}}
+		},
+		"top_and_limit":  func(a *ActivityAggregate) { a.Roots[0].TopLevelExhaustive, a.Roots[0].Flags.EntryLimited = true, true },
+		"exhaustive":     func(a *ActivityAggregate) { a.Roots[0].Exhaustive = true },
+		"unsorted":       func(a *ActivityAggregate) { r := a.Roots[0].Rows; r[0], r[1] = r[1], r[0] },
+		"duplicate_name": func(a *ActivityAggregate) { a.Roots[0].Rows[1].Name = a.Roots[0].Rows[0].Name },
+		"slash_name":     func(a *ActivityAggregate) { a.Roots[0].Rows[0].Name = "a/b" },
+		"dotdot_name":    func(a *ActivityAggregate) { a.Roots[0].Rows[0].Name = ".." },
+		"bad_b64":        func(a *ActivityAggregate) { a.Roots[0].Rows[0].Name = "b64:***" },
+		"plain_as_b64":   func(a *ActivityAggregate) { a.Roots[0].Rows[0].Name = "b64:" + "YQ==" },
+		"long_name":      func(a *ActivityAggregate) { a.Roots[0].Rows[0].Name = strings.Repeat("a", activityMaxName+1) },
+		"row_type":       func(a *ActivityAggregate) { a.Roots[0].Rows[0].Type = actFile },
+		"row_status":     func(a *ActivityAggregate) { a.Roots[0].Rows[0].Status = actAbsent },
+		"unknown_digest": func(a *ActivityAggregate) { sampleRow(a, "unknown").MetadataSHA256 = sum(zeros64) },
+		"dir_no_digest":  func(a *ActivityAggregate) { sampleRow(a, "own").MetadataSHA256 = nil },
+		"upper_digest": func(a *ActivityAggregate) {
+			d := strings.ToUpper(*sampleRow(a, "own").MetadataSHA256)
+			sampleRow(a, "own").MetadataSHA256 = &d
+		},
+		"foreign_sample": func(a *ActivityAggregate) {
+			r := sampleRow(a, "theirs")
+			r.ObservedCounts.File, r.NewestMtimeNS = 1, mtime(1)
+			a.Roots[0].ObservedCounts.Children.File++
+		},
+		"complete_limited": func(a *ActivityAggregate) { sampleRow(a, "own").Flags.EntryLimited = true },
+		"row_bound": func(a *ActivityAggregate) {
+			sampleRow(a, "own").ObservedCounts.File += 100
+			a.Roots[0].ObservedCounts.Children.File += 100
+		},
+		"mtime_missing": func(a *ActivityAggregate) { sampleRow(a, "own").NewestMtimeNS = nil },
+		"mtime_empty":   func(a *ActivityAggregate) { sampleRow(a, "theirs").NewestMtimeNS = mtime(1) },
+		"depth_no_dir": func(a *ActivityAggregate) {
+			r := sampleRow(a, "own")
+			r.ObservedCounts.Directory, r.ObservedCounts.File = 0, r.ObservedCounts.File+1
+		},
+		"bytes_no_file": func(a *ActivityAggregate) {
+			r := sampleRow(a, "loop")
+			r.ObservedFileBytes = 3
+			a.Roots[0].ObservedFileBytes.Children += 3
+		},
+		"child_subtotal": func(a *ActivityAggregate) {
+			// No row omitted (no output limit or unrecorded name): exact.
+			a.Roots[0].Flags.NameUnrecorded = 0
+			a.Roots[0].ObservedCounts.Children.Symlink++
+		},
+		"child_bytes":    func(a *ActivityAggregate) { a.Roots[0].ObservedFileBytes.Children = 1 },
+		"direct_dirs":    func(a *ActivityAggregate) { a.Roots[0].ObservedCounts.Direct.Directory = 1 },
+		"direct_unknown": func(a *ActivityAggregate) { a.Roots[0].ObservedCounts.Direct.Unknown = 0 },
+		"direct_overcount": func(a *ActivityAggregate) {
+			a.Roots[0].ObservedCounts.Direct.Other, a.Roots[0].Flags.NumericOverflow = 100, false
+		},
+		"direct_bytes": func(a *ActivityAggregate) {
+			a.Roots[0].ObservedCounts.Direct.File, a.Roots[0].ObservedFileBytes.Direct = 0, 5
+		},
+	} {
+		t.Run("refused/"+name, func(t *testing.T) {
+			t.Parallel()
+			a := valid["statuses"](t)
+			edit(a)
+			if p := activityProblems(a, "run", "before"); len(p) == 0 {
+				t.Fatalf("a contradictory sample was accepted")
+			}
+		})
+	}
+	// Omitted rows still need root totals at least the retained subtotal.
+	t.Run("refused/omitted_below", func(t *testing.T) {
+		t.Parallel()
+		a := valid["output"](t)
+		a.Roots[0].ObservedCounts.Children.Directory = 0
+		if p := activityProblems(a, "run", "before"); len(p) == 0 {
+			t.Fatal("totals below the retained rows were accepted")
+		}
+	})
+	if !validActivityName(encodePath("\xff\xfe")) || validActivityName("") || validActivityName("b64:"+"Lg==") || countsAtLeast(ActivityCounts{}, ActivityCounts{File: 1}) {
+		t.Fatal("name and count helpers")
+	}
+}
+
+// rowNamed is a sample's cache-root row of name.
+func sampleRow(a *ActivityAggregate, name string) *ActivityRow {
+	for i := range a.Roots[0].Rows {
+		if a.Roots[0].Rows[i].Name == name {
+			return &a.Roots[0].Rows[i]
+		}
+	}
+	panic("no row " + name)
+}

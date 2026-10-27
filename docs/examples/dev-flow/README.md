@@ -32,6 +32,8 @@ callsheet role add triage --name triage --node <node-id> --adapter codex --instr
 
 Model and effort are the registered role configuration, not extra dispatch keys. Callsheet's accepted effort unions (`ValidateSelection` in `internal/adapter/vendor.go`) include these efforts. A union is not proof that a particular account can run the pair.
 
+**Optional Cursor coder.** An owner may select the coder alone on the `cursor` adapter with its Grok model at effort `high`, exactly as the real end-to-end exercise ships it in `docs/examples/real-e2e/dev-full/flow-cursor-coder.json`; the default table above is unchanged and the code reviewer and triage stay on Codex. Register it on a Linux sidecar enrolled with `--cursor-adapter`: the unchanged `--trust --auto-review` recipe is no jail and no confinement claim, and the sidecar keeps its user's ordinary access. It stays cross-family: the GPT code reviewer and triage judge a Grok implementation; Cursor is the tool, not the model family. The four-hop sample in which Cursor reviews code is a separate scenario, not exercised by this selection.
+
 **ASSUMPTION (unverified):** all five requested pairs execute successfully on the owner's installation. Qualification probe: the later live harness must probe every distinct pair through its adapter with authentication and effective-selection evidence before dispatching workflow tasks. A rejection stops the attempt. There is no model fallback.
 
 ## Prerequisites

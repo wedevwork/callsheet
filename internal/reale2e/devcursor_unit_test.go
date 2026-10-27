@@ -113,18 +113,27 @@ func TestCursorBindingUnit(t *testing.T) {
 			t.Errorf("value %q accepted", v)
 		}
 	}
-	cursor := DevFullFlow{Roles: []FlowRole{{ID: HopCoder, Adapter: adapter.CursorID}}}
+	cursor, err := ParseDevFullFlow(cursorFlowBytes(t))
+	if err != nil {
+		t.Fatal(err)
+	}
 	plain := DefaultDevFullFlow()
+	maxed := DefaultDevFullFlow()
+	maxed.Roles = append([]FlowRole{}, maxed.Roles...)
+	maxed.Roles[2] = FlowRole{ID: HopCoder, Adapter: adapter.CursorID, Model: "grok-4.7", Effort: "max"}
 	for name, c := range map[string]struct {
 		d    *devSupervisor
 		flow DevFullFlow
 		code string
 	}{
-		"attempt":      {&devSupervisor{}, cursor, CodeCursorPending3b},
-		"probe_nobind": {&devSupervisor{probe: &devProbe{}}, cursor, CodeCursorAdapterRequired},
-		"probe_unused": {&devSupervisor{probe: &devProbe{cursor: &cursorProbe{}}}, plain, CodeCursorAdapterUnused},
-		"probe_ok":     {&devSupervisor{probe: &devProbe{cursor: &cursorProbe{}}}, cursor, ""},
-		"default_ok":   {&devSupervisor{}, plain, ""},
+		// Slice 3b: an attempt binds a Cursor flow as the probe does.
+		"attempt_nobind": {&devSupervisor{}, cursor, CodeCursorAdapterRequired},
+		"attempt_ok":     {&devSupervisor{cursor: &cursorRun{}}, cursor, ""},
+		"probe_nobind":   {&devSupervisor{probe: &devProbe{}}, cursor, CodeCursorAdapterRequired},
+		"probe_unused":   {&devSupervisor{cursor: &cursorRun{}, probe: &devProbe{cursor: &cursorProbe{}}}, plain, CodeCursorAdapterUnused},
+		"probe_ok":       {&devSupervisor{cursor: &cursorRun{}, probe: &devProbe{cursor: &cursorProbe{}}}, cursor, ""},
+		"not_shipped":    {&devSupervisor{cursor: &cursorRun{}}, maxed, CodeCursorSelectionMismatch},
+		"default_ok":     {&devSupervisor{}, plain, ""},
 	} {
 		err := c.d.cursorSelectionBinding(c.flow)
 		if c.code == "" && err != nil || c.code != "" && codeOf(err) != c.code {
@@ -134,7 +143,7 @@ func TestCursorBindingUnit(t *testing.T) {
 	if v := (&devSupervisor{}).versionVendors(); strings.Join(v, ",") != "claude,codex,grok" {
 		t.Error(v)
 	}
-	if v := (&devSupervisor{probe: &devProbe{cursor: &cursorProbe{}}}).versionVendors(); strings.Join(v, ",") != "claude,codex,grok,cursor" {
+	if v := (&devSupervisor{cursor: &cursorRun{}}).versionVendors(); strings.Join(v, ",") != "claude,codex,grok,cursor" {
 		t.Error(v)
 	}
 	if (&supervisor{}).sidecarList()[2] != "grok" || len((&supervisor{sidecars: cursorSidecars}).sidecarList()) != 4 {
@@ -152,8 +161,8 @@ func TestCursorBindingUnit(t *testing.T) {
 	if err := probeVendor(context.Background(), "unknown", "/x", t.TempDir()); err == nil {
 		t.Fatal("an unknown vendor probed")
 	}
-	// A new world's Cursor probe samples the three named roots.
-	c := newCursorProbe(&World{Home: "/home/u"})
+	// A new world's Cursor run samples the three named roots.
+	c := newCursorRun(&World{Home: "/home/u"}, "/c")
 	if len(c.roots) != 3 || c.roots[0].Path != "/home/u/.cache" || c.roots[0].Token != "$HOME/.cache" || c.roots[1].Path != "/tmp" ||
 		c.roots[2].Path != "/var/tmp" || c.roots[2].Scope != activityScopeVarTmp {
 		t.Fatalf("roots %+v", c.roots)
@@ -180,7 +189,7 @@ func TestCursorProbeCacheTokenSymlinkHome(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, home := range []string{filepath.Join(base, "home", "u"), filepath.Join(base, "link-user")} {
-		c := newCursorProbe(&World{Home: home})
+		c := newCursorRun(&World{Home: home}, "/c")
 		if len(c.roots) != 3 {
 			t.Fatalf("%s: roots %+v", home, c.roots)
 		}
@@ -424,22 +433,37 @@ func TestCursorObservationUnit(t *testing.T) {
 	if code, rep, _ := run(link); code != 2 || rep.Error != CodeDiagnosticNotQualification {
 		t.Fatalf("linked root %d %s", code, rep.Error)
 	}
-	// The receipt text and exit lines of a blocked probe.
-	o := CursorProbeObservation{Result: ResultBlocked, Blocker: CodeProbeCoderUnqualified, Slice: "3a", Activity: CursorActivitySummary{Changes: []ActivityChange{
-		{Scope: "tmp", Name: "x", Mark: markNewlyObserved}}}}
-	text := renderCursorObservation(o, &ActivityAggregate{Phase: "before", Roots: []ActivityRoot{{Scope: "tmp", Path: "/tmp", Status: actForeign}}}, nil)
-	for _, s := range []string{"Cursor probe observations: BLOCKED (probe_coder_unqualified)", "qualification probe: BLOCKED (probe_coder_unqualified)",
-		"before tmp /tmp: status foreign", "tmp x: newly_observed", "not attribution to Cursor", "A2", ".local/bin"} {
-		if !strings.Contains(text, s) {
-			t.Fatalf("text lacks %q:\n%s", s, text)
+	// A Cursor probe's exit lines (slice 3b replaced the diagnostic ones):
+	// BLOCKED names its primary live cause first, then the independent
+	// check; QUALIFIED only for a passed, checked record.
+	for name, c := range map[string]struct {
+		d    *devSupervisor
+		rep  *DevCursorQualificationReport
+		code int
+		want []string
+	}{
+		"stopped":    {&devSupervisor{stopCode: CodeProbeCoderUnqualified}, &DevCursorQualificationReport{Result: ResultBlocked, Codes: []string{"not_qualified"}}, 1, []string{"qualification probe: BLOCKED (probe_coder_unqualified)", "independent check: BLOCKED (not_qualified)"}},
+		"protected":  {&devSupervisor{protected: true, cleanupOK: true}, &DevCursorQualificationReport{Result: ResultBlocked, Codes: []string{"x"}}, 1, []string{"BLOCKED (" + CodeEnvModified + ")"}},
+		"cleanup":    {&devSupervisor{}, &DevCursorQualificationReport{Result: ResultBlocked, Codes: []string{"x"}}, 1, []string{"BLOCKED (cleanup_incomplete)"}},
+		"no_report":  {&devSupervisor{cleanupOK: true}, nil, 1, []string{"BLOCKED (evidence_collection_failed)"}},
+		"check_only": {&devSupervisor{cleanupOK: true}, &DevCursorQualificationReport{Result: ResultBlocked, Codes: []string{CodeCursorFixtureMismatch}}, 1, []string{"BLOCKED (" + CodeCursorFixtureMismatch + ")"}},
+		"schema":     {&devSupervisor{cleanupOK: true}, &DevCursorQualificationReport{Result: ResultBlocked, Codes: []string{}, Error: "evidence_schema_error"}, 1, []string{"BLOCKED (evidence_schema_error)"}},
+		"unchecked":  {&devSupervisor{cleanupOK: true, passed: true}, &DevCursorQualificationReport{Result: ResultBlocked, Codes: []string{"x"}}, 1, []string{"BLOCKED (x)"}},
+		"qualified":  {&devSupervisor{cleanupOK: true, passed: true}, &DevCursorQualificationReport{Result: ResultQualified, Codes: []string{}}, 0, []string{"qualification probe: QUALIFIED"}},
+	} {
+		var stdout bytes.Buffer
+		c.d.s = &supervisor{stdout: &stdout}
+		c.d.probe = &devProbe{cursor: &cursorProbe{report: c.rep}}
+		if got := c.d.cursorQualificationExit(); got != c.code {
+			t.Errorf("%s: exit %d", name, got)
+		}
+		for _, s := range c.want {
+			if !strings.Contains(stdout.String(), s) {
+				t.Errorf("%s: %q lacks %q", name, stdout.String(), s)
+			}
 		}
 	}
-	var stdout bytes.Buffer
-	d := &devSupervisor{s: &supervisor{stdout: &stdout}, probe: &devProbe{cursor: &cursorProbe{}}}
-	if d.cursorProbeExit() != 1 || !strings.Contains(stdout.String(), "Cursor probe observations: BLOCKED (stage_unobserved)") {
-		t.Fatalf("exit lines %s", stdout.String())
-	}
-	if firstOf(nil) != "" || firstOf([]string{"a", "b"}) != "a" || hashOrEmpty([20]byte{}) != "" {
+	if firstCode(nil) != "" || firstCode([]string{"a", "b"}) != "a" || hashOrEmpty([20]byte{}) != "" {
 		t.Fatal("helpers")
 	}
 }

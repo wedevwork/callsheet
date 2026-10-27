@@ -869,7 +869,7 @@ func TestDevExerciseAccounting(t *testing.T) {
 
 // rewriteExerciseDerived recomputes a mutated root's derived files (a
 // capable forger).
-func rewriteExerciseDerived(t *testing.T, root string) {
+func rewriteExerciseDerived(t testing.TB, root string) {
 	t.Helper()
 	for _, n := range []string{"report.json", "report.txt", "audit.json", "audit.md"} {
 		os.Remove(filepath.Join(root, n))

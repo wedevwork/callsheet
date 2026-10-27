@@ -37,25 +37,11 @@ func (c *devChecker) checkProvenance() {
 		return
 	}
 	rb.ref("setup/sources.json", nil, "", "")
-	names := DevMethodNamesFor(c.b.Scenario)
-	loaded := DevLoaded{Files: map[string][]byte{}, Scenario: c.b.Scenario}
-	var want []SourceRecord
-	for _, name := range names {
-		rel := devSourceRel(name)
-		data, ok := c.b.captured("setup/sources/" + rel)
-		if !ok {
-			rb.bad("source_missing")
-			continue
-		}
-		loaded.Files[name] = data
-		rec := SourceRecord{Path: rel, Bytes: len(data), SHA256: sha256Hex(data)}
-		if c.b.ver == devBundleV2 {
-			// The computed storage path, never one a record supplies.
-			rec.StoragePath = capturedPath("setup/sources/" + rel)
-		}
-		want = append(want, rec)
+	loaded, want, missing := capturedMethodSources(c.b, c.b.Scenario)
+	if missing {
+		rb.bad("source_missing")
 	}
-	if len(names) != 15 || !bytes.Equal(mustJSON(want), mustJSON(srcs.Data)) {
+	if len(DevMethodNamesFor(c.b.Scenario)) != 15 || !bytes.Equal(mustJSON(want), mustJSON(srcs.Data)) {
 		rb.bad("source_inventory_mismatch")
 	}
 	if ins, run, err := loaded.ManualPair("triage"); err != nil || checkTriageManualBudget(ins, run) != nil {
@@ -76,6 +62,14 @@ func (c *devChecker) checkProvenance() {
 		label.Selection != string(sel) || m.FlowSHA256 != label.FlowSHA256 || m.SelectionSHA256 != label.SelectionSHA256:
 		rb.bad("flow_label_mismatch")
 	}
+	// Design 12a-3-cursor-worker, slice 3b: the Cursor format admits exactly
+	// the shipped coder-only Cursor selection (the four other rows the
+	// unchanged default); a historical or default bundle claiming a Cursor
+	// coder is refused, never retrospectively qualified.
+	if parsed, err := ParseDevFullFlow(flowRaw); c.b.cursor && (!c.flowOK || !cursorSelectionOK(c.flow) || m.FlowLabel != FlowOverride) ||
+		!c.b.cursor && (rolesSelectCursor(m.Roles) || err == nil && parsed.CursorCoder()) {
+		rb.bad(CodeCursorSelectionMismatch)
+	}
 	if !c.isLight() {
 		// The full scenario's generated FEATURE.md (a light request is the
 		// committed fixture's, recorded by setup/light-scenario.json).
@@ -90,14 +84,7 @@ func (c *devChecker) checkProvenance() {
 	}
 	installed := doc[devEnvelope[[]SourceRecord]](c.b, "setup/installed-manuals.json")
 	if installed != nil || c.reached(typeIs(EvRolesRegistered)) {
-		var wantInst []SourceRecord
-		for _, role := range DevFullRoleIDs {
-			for _, kind := range []string{"instruction", "runbook"} {
-				name := manualName(role, kind)
-				wantInst = append(wantInst, SourceRecord{Path: "manuals/" + name, Bytes: len(loaded.Files[name]), SHA256: sha256Hex(loaded.Files[name])})
-			}
-		}
-		if installed == nil || !bytes.Equal(mustJSON(installed.Data), mustJSON(wantInst)) {
+		if installed == nil || !bytes.Equal(mustJSON(installed.Data), mustJSON(installedManualRecords(loaded))) {
 			rb.bad("installed_manuals_mismatch")
 		}
 	}
@@ -121,6 +108,45 @@ func (c *devChecker) checkProvenance() {
 		rb.ref(f, nil, "", "")
 	}
 	rb.see("%d sources, label %s", len(srcs.Data), m.FlowLabel)
+}
+
+// capturedMethodSources reconstructs scenario's shared method sources from
+// b's inert captures: the loaded files by name, their expected source
+// records (each with its computed storage path, never one a record
+// supplies) and whether any capture is missing. The full-flow provenance
+// criterion and the Cursor qualification checker share it.
+func capturedMethodSources(b *DevBundle, scenario string) (DevLoaded, []SourceRecord, bool) {
+	loaded := DevLoaded{Files: map[string][]byte{}, Scenario: scenario}
+	var want []SourceRecord
+	missing := false
+	for _, name := range DevMethodNamesFor(scenario) {
+		rel := devSourceRel(name)
+		data, ok := b.captured("setup/sources/" + rel)
+		if !ok {
+			missing = true
+			continue
+		}
+		loaded.Files[name] = data
+		rec := SourceRecord{Path: rel, Bytes: len(data), SHA256: sha256Hex(data)}
+		if b.ver == devBundleV2 {
+			rec.StoragePath = capturedPath("setup/sources/" + rel)
+		}
+		want = append(want, rec)
+	}
+	return loaded, want, missing
+}
+
+// installedManualRecords are the five roles' installed manuals' expected
+// records: exactly the captured bytes.
+func installedManualRecords(loaded DevLoaded) []SourceRecord {
+	var out []SourceRecord
+	for _, role := range DevFullRoleIDs {
+		for _, kind := range []string{"instruction", "runbook"} {
+			name := manualName(role, kind)
+			out = append(out, SourceRecord{Path: "manuals/" + name, Bytes: len(loaded.Files[name]), SHA256: sha256Hex(loaded.Files[name])})
+		}
+	}
+	return out
 }
 
 // mcpConfigOK reports whether data is exactly the session-local MCP
@@ -188,6 +214,14 @@ func (c *devChecker) checkRoles() {
 	}
 	if e, ok := c.event(typeIs(EvRolesReady)); !ok || e.Time != r.ReadyAt {
 		rb.bad("ready_at_mismatch")
+	}
+	if c.b.cursor {
+		// The coder alone on the Cursor node, and the four sidecars' lifecycle
+		// (the idle Grok node included) reconciled with cleanup.
+		if slices.Contains(cursorRoleCodes(c.b, c.flow, c.flowOK), CodeCursorNodesMismatch) || !cursorSidecarsOK(c.b) {
+			rb.bad(CodeCursorNodesMismatch)
+		}
+		rb.ref(devCleanupFile, nil, "", "")
 	}
 	rb.see("%d roles ready at %s", len(r.Roles), auditText(r.ReadyAt, 40))
 }
@@ -861,7 +895,9 @@ func testRunCode(t *TestRun, commit, tree string, files map[string]TreeFile) str
 		return "test_binding_mismatch"
 	case t.ExitCode != 0 || t.Signal != "" || t.TimedOut || strings.TrimSpace(t.Toolchain) == "":
 		return "tests_failed"
-	case t.DurationMS < 0 || time.Duration(t.DurationMS)*time.Millisecond > FinalTestBound:
+	case t.DurationMS < 0 || t.DurationMS > FinalTestBound.Milliseconds():
+		// Compared as integers: a recorded value must never wrap through
+		// time.Duration into an accepted one.
 		return "test_deadline_exceeded"
 	}
 	return ""
@@ -926,6 +962,17 @@ func (c *devChecker) checkCleanup() {
 	e, ok2 := parseTime(d.FinishedAt)
 	if !ok1 || !ok2 || e.Before(s) || !e.Before(s.Add(CleanupBound)) {
 		rb.bad("cleanup_deadline_exceeded")
+	}
+	if c.b.cursor {
+		// A Cursor attempt also reconciles the record's timestamps with the
+		// collection and cleanup events and the attempt's own window.
+		start, deadline := "", ""
+		if c.m != nil {
+			start, deadline = c.m.AttemptStart, c.m.AttemptDeadline
+		}
+		for _, code := range cursorCleanupCodes(c.b, start, deadline) {
+			rb.bad(code)
+		}
 	}
 	started := []StartedProc{}
 	for _, ev := range c.b.Events {
@@ -1027,6 +1074,38 @@ func (c *devChecker) checkEnvironment() {
 		}
 	}
 	rb.see("%d protected roots at depth %d", len(m.ProtectedRoots), m.ProtectDepth)
+	rb.done()
+	if c.b.cursor {
+		c.checkCursorActivity()
+	}
+}
+
+// checkCursorActivity is a Cursor attempt's owner_environment row for its
+// two shallow samples (design 12a-3-cursor-worker, slice 3b): both present
+// once their fingerprints were reached, well-formed and internally
+// consistent under the observer's rules. Their quality flags, truncation
+// and every activity delta are report-only observations of all processes:
+// never a gate, never confinement or absence of activity. They cannot
+// excuse the strict protected comparison above.
+func (c *devChecker) checkCursorActivity() {
+	rb := c.newRow("environment/cursor-activity", "owner_environment",
+		"The report-only shallow cache/tmp samples beside the before and after fingerprints are present, bounded and internally consistent bounded observations of all processes; their quality flags, truncation and activity are reported, never a gate, and show neither confinement nor absence of activity",
+		groupTail)
+	f := cursorActivityOf(c.b, c.runID)
+	for _, phase := range f.missing {
+		rb.miss(CodeCursorActivityMissing, c.reached(func(e Event) bool { return e.Type == EvSnapshotTaken && e.Code == phase }))
+	}
+	if len(f.contradictions) > 0 {
+		rb.bad(CodeCursorActivityMismatch)
+		rb.see("contradictions: %s", auditText(strings.Join(f.contradictions, "; "), 400))
+	}
+	for _, rel := range cursorActivityFiles {
+		rb.ref(rel, nil, "", "")
+	}
+	for _, l := range f.lines {
+		rb.see("%s", l)
+	}
+	rb.see("%d compared rows marked (newly observed or no longer observed, never proven created or deleted)", len(f.summary.Changes))
 	rb.done()
 }
 

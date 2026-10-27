@@ -22,7 +22,12 @@ import (
 
 // Function tests of design 12a-3-cursor-worker, slice 3a (3a.md
 // traceability table): one per local FP, on the one shared probe rig with
-// injected clock, vendors, plane, push and filesystem.
+// injected clock, vendors, plane, push and filesystem. Slice 3b replaced
+// the probe's live diagnostic finalization with checked qualification:
+// only the obsolete assertions that every Cursor probe stays diagnostic
+// changed (a fresh probe now writes a Cursor qualification record and
+// exits 0 only when its independent check qualifies it); the diagnostic
+// receipt's refusal is kept as a historical-fixture test.
 
 // stubVersion is an executable printing line for --version.
 func stubVersion(t *testing.T, line string) string {
@@ -71,9 +76,9 @@ func TestCursor3aFP1(t *testing.T) {
 	// The live probe labels the selection override-flow with its exact
 	// canonical selection hash.
 	cr := newCursorRig(t, "")
-	cr.expect(1, "")
-	if o := cr.observation(); o.FlowLabel != FlowOverride || o.SelectionSHA256 != sha256Hex(sel) || !slices.Equal(o.Roles, flow.Roles) {
-		t.Fatalf("receipt selection %s %s", o.FlowLabel, o.SelectionSHA256)
+	cr.expect(0, "")
+	if q := cr.cursorQual(); q.FlowLabel != FlowOverride || q.SelectionSHA256 != sha256Hex(sel) || !slices.Equal(q.Roles, flow.Roles) {
+		t.Fatalf("record selection %s %s", q.FlowLabel, q.SelectionSHA256)
 	}
 	t.Run("recipe_posture_unchanged", func(t *testing.T) {
 		t.Parallel()
@@ -133,12 +138,12 @@ func TestCursor3aFP2(t *testing.T) {
 	t.Run("four_node_probe", func(t *testing.T) {
 		t.Parallel()
 		cr := newCursorRig(t, "")
-		cr.expect(1, "")
+		cr.expect(0, "")
 		var sc []string
 		for _, a := range sidecarArgs(cr.f) {
 			sc = append(sc, strings.Join(a[4:], " "))
 		}
-		want := []string{"--codex-adapter " + fakeCodex, "--claude-adapter " + fakeClaude, "--grok-adapter " + fakeGrok, "--cursor-adapter " + fakeCursor}
+		want := []string{"--codex-adapter " + fakeCodex, "--claude-adapter " + fakeClaude, "--grok-adapter " + fakeGrok, "--cursor-adapter " + cr.exe}
 		if !slices.Equal(sc, want) {
 			t.Fatalf("sidecars %q", sc)
 		}
@@ -169,7 +174,7 @@ func TestCursor3aFP2(t *testing.T) {
 			t.Fatalf("coder preflight %+v %v", pf, err)
 		}
 		var tools []string
-		for _, v := range cr.observation().Versions {
+		for _, v := range cr.cursorQual().Versions {
 			tools = append(tools, v.Tool)
 		}
 		if !slices.Equal(tools, []string{"claude", "codex", "grok", "cursor", "go", "git"}) {
@@ -206,8 +211,10 @@ func TestCursor3aFP2(t *testing.T) {
 			t.Fatalf("default qualification %+v", q.Versions)
 		}
 	})
-	// Refusals before any world: binding, redirected configuration homes,
-	// and the future Cursor attempts.
+	// Refusals before any world: binding and redirected configuration
+	// homes. Slice 3b superseded the attempt commands' pending refusal:
+	// they bind a Cursor flow exactly as the probe does (the complete
+	// entrypoint matrix is TestCursorExecutionBindingUnit).
 	type refusal struct {
 		cmd  string
 		flow bool
@@ -226,11 +233,11 @@ func TestCursor3aFP2(t *testing.T) {
 		"duplicate_cursor":  {cmd: "probe-dev-full", flow: true, args: []string{"--cursor", fakeCursor, "--cursor", fakeCursor}, code: 2, token: "at most one --cursor"},
 		"cursor_config_dir": {cmd: "probe-dev-full", flow: true, args: []string{"--cursor", fakeCursor}, env: map[string]string{EnvCursorConfigDir: ""}, code: 2, token: "cursor_config_dir_unsupported: CURSOR_CONFIG_DIR is set"},
 		"xdg_config_home":   {cmd: "probe-dev-full", flow: true, args: []string{"--cursor", fakeCursor}, env: map[string]string{EnvXDGConfigHome: "/secret/value"}, code: 2, token: "cursor_config_dir_unsupported: XDG_CONFIG_HOME is set"},
-		"run":               {cmd: "run", flow: true, code: 2, token: CodeCursorPending3b},
-		"run_dev_full":      {cmd: "run-dev-full", flow: true, code: 2, token: CodeCursorPending3b},
-		"run_dev_light":     {cmd: "run-dev-light", flow: true, code: 2, token: CodeCursorPending3b},
-		"run_dev_exercise":  {cmd: "run-dev-exercise", flow: true, code: 2, token: CodeCursorPending3b},
-		"run_cursor_flag":   {cmd: "run", flow: true, args: []string{"--cursor", fakeCursor}, code: 2, token: "run needs absolute"},
+		"run":               {cmd: "run", flow: true, code: 2, token: CodeCursorAdapterRequired},
+		"run_dev_full":      {cmd: "run-dev-full", flow: true, code: 2, token: CodeCursorAdapterRequired},
+		"run_dev_light":     {cmd: "run-dev-light", flow: true, code: 2, token: CodeCursorAdapterRequired},
+		"run_dev_exercise":  {cmd: "run-dev-exercise", flow: true, code: 2, token: CodeCursorAdapterRequired},
+		"run_cursor_flag":   {cmd: "run", args: []string{"--cursor", fakeCursor}, code: 2, token: CodeCursorAdapterUnused},
 		// W2 (review round 1): an unreadable or malformed --flow with --cursor
 		// is the flow's own error, never an unused adapter.
 		"malformed_flow_cursor": {cmd: "probe-dev-full", badFlow: "malformed", args: []string{"--cursor", fakeCursor}, code: 2, token: "refused: flow_invalid: "},
@@ -282,7 +289,7 @@ func TestCursor3aFP2(t *testing.T) {
 		h := Host{GOOS: "linux", Args: []string{"probe-dev-full", "--cursor", "relative", "--evidence", "/e"},
 			Getenv: func(k string) string { return map[string]string{EnvOptIn: "1"}[k] }, LookupEnv: func(k string) (string, bool) { return "", k == EnvCI },
 			Stdout: &out, Stderr: &errb, NewWorld: func(Host) (*World, func(), error) { t.Error("built a world"); return nil, nil, nil }}
-		if code := MainWith(h); code != 2 || !strings.Contains(errb.String(), ErrCI.Error()) || !strings.Contains(errb.String(), "Cursor diagnostic probe") {
+		if code := MainWith(h); code != 2 || !strings.Contains(errb.String(), ErrCI.Error()) || !strings.Contains(errb.String(), "Cursor coder qualification probe") {
 			t.Fatalf("CI gate %d %s", code, errb.String())
 		}
 	})
@@ -301,13 +308,12 @@ func TestCursor3aFP3(t *testing.T) {
 			{"locked", &synthNode{typ: actDir, uid: 1000, ino: 4, openErr: syscall.EACCES}}, {"gone", &synthNode{typ: actDir, lstatErr: syscall.ENOENT}}}}
 		fsys := &synthFS{t: t, roots: map[string]*synthNode{cr.roots[0].Path: cache, cr.roots[1].Path: tmp}}
 		cr.activityFS = fsys
-		cr.probeHook = func(p *devProbe) {
-			p.cursor.roots, p.cursor.fs, p.cursor.uid = cr.roots, fsys, 1000
-		}
-		cr.expect(1, "")
-		o := cr.observation()
-		if o.Result != ResultObserved || o.Blocker != CodeCursorQualificationPending {
-			t.Fatalf("receipt %s %s", o.Result, o.Blocker)
+		uid := uint32(1000)
+		cr.uid = &uid
+		// Sample quality is report-only: the probe still qualifies.
+		cr.expect(0, "")
+		if q := cr.cursorQual(); q.Result != ResultQualified {
+			t.Fatalf("record %s", q.Result)
 		}
 		if c := fsys.consumed.Load(); c > 2*3*(65+64*65) {
 			t.Fatalf("consumed %d", c)
@@ -319,17 +325,19 @@ func TestCursor3aFP3(t *testing.T) {
 				tm.Flags.ForeignEntries != 1 || tm.Flags.UnreadableEntries != 1 || tm.Flags.RacedEntries != 1 || v.Status != actAbsent {
 				t.Fatalf("%s %+v / %+v / %+v", phase, c.Flags, tm, v.Status)
 			}
-		}
-		text := string(cr.evidence(cursorObservationText))
-		// W1 (review round 1): a sampled directory of more than 64 children
-		// discloses its own row-level flags in the text.
-		row := "before cache $HOME/.cache row e0000000: type directory, status ok; sampled children file=0 directory=64 symlink=0 other=0 unknown=0 bytes 0; " +
-			"children exhaustive false; flags entry_limited,depth_limited"
-		for _, s := range []string{row, "entry_limited", "foreign_entries=1", "not attribution to Cursor", "no confinement claim", "status absent",
-			"row theirs: type directory, status foreign"} {
-			if !strings.Contains(text, s) {
-				t.Fatalf("text lacks %q:\n%s", s, text)
+			// W1 (review round 1): a sampled directory of more than 64
+			// children keeps its own row-level flags.
+			row := c.Rows[0]
+			if row.Name != "e0000000" || !row.Flags.EntryLimited || !row.Flags.DepthLimited || row.ChildrenExhaustive || row.ObservedCounts.Directory != 64 {
+				t.Fatalf("%s row %+v", phase, row)
 			}
+			if !slices.ContainsFunc(tm.Rows, func(r ActivityRow) bool { return r.Name == "theirs" && r.Status == actForeign }) {
+				t.Fatalf("%s tmp rows %+v", phase, tm.Rows)
+			}
+		}
+		// The checked report keeps the samples report-only.
+		if code, rep, _ := cr.qualifiedCheck(); code != 0 || rep.Result != ResultQualified || rep.Activity.Before != cursorActivityFiles[0] {
+			t.Fatalf("check %d %+v", code, rep)
 		}
 	})
 	// protected_changes_still_fail: each protected owner change made while
@@ -373,9 +381,8 @@ func TestCursor3aFP3(t *testing.T) {
 				}
 			}
 			cr.expect(1, "")
-			o := cr.observation()
-			if o.Result != ResultBlocked || o.Blocker != CodeEnvModified || o.Environment.ProtectedChanges == 0 || !cr.d.protected {
-				t.Fatalf("receipt %s %s %+v", o.Result, o.Blocker, o.Environment)
+			if q := cr.blocked(CodeEnvModified); q.Result != ResultBlocked || !cr.d.protected {
+				t.Fatalf("record %s protected %t", q.Result, cr.d.protected)
 			}
 			var diff EnvDiff
 			json.Unmarshal(cr.evidence("environment/diff.json"), &diff)
@@ -386,10 +393,6 @@ func TestCursor3aFP3(t *testing.T) {
 			if !found {
 				t.Fatalf("%s not a protected change: %+v", want, diff.Protected)
 			}
-			if !strings.Contains(cr.f.stdout.String(), "Cursor probe observations: BLOCKED ("+CodeEnvModified+")") {
-				t.Fatalf("stdout %s", cr.f.stdout.String())
-			}
-			cr.noQualification()
 		})
 	}
 }
@@ -399,7 +402,7 @@ func TestCursor3aFP4(t *testing.T) {
 	t.Run("repair_observed", func(t *testing.T) {
 		t.Parallel()
 		cr := newCursorRig(t, "")
-		cr.expect(1, "")
+		cr.expect(0, "")
 		c := cr.d.probe.cursor
 		if len(cr.coderReqs) != 1 {
 			t.Fatalf("coder dispatches %d", len(cr.coderReqs))
@@ -437,10 +440,10 @@ func TestCursor3aFP4(t *testing.T) {
 		if cov.Coverage == nil || !cov.Coverage.Pass || cov.Commit != pub.Commit || len(cases.Cases) != len(FeatureCases) {
 			t.Fatalf("validation %+v %d", cov, len(cases.Cases))
 		}
-		o := cr.observation()
-		if !o.Coder.PublicationAdmitted || !o.Coder.ValidationPassed || o.Coder.Marker != markerImplComplete || stageNamed(o, stageCoderEvidence).Result != stagePass ||
-			o.Coder.ResultCommit != pub.Commit {
-			t.Fatalf("coder observation %+v", o.Coder)
+		q, v := cr.cursorQual(), cr.coderVerdict()
+		if !v.PublicationAdmitted || !v.ValidationPassed || v.Marker != markerImplComplete || stageOf(q, stageCoderEvidence).Result != stagePass ||
+			q.Cursor.ResultCommit != pub.Commit || v.ResultCommit != pub.Commit {
+			t.Fatalf("coder verdict %+v record %+v", v, q.Cursor)
 		}
 		if len(cr.pushes) != 1 || cr.pushes[0].Branch != "main" || !cr.pushes[0].PathSet || cr.pushes[0].Name != c.ws.Name ||
 			!filepath.IsAbs(cr.pushes[0].Path) || !contract.ValidWorkspaceName(c.ws.Name) || !strings.HasPrefix(c.ws.Name, "e2e-probe-coder-") {
@@ -466,9 +469,9 @@ func TestCursor3aFP4(t *testing.T) {
 			t.Parallel()
 			cr := newCursorRig(t, "")
 			cr.act = c.act
-			o := cr.coderStopped(c.code, "task.json", "final.txt", "logs.txt", "verdict.json")
-			if o.Coder.PublicationAdmitted || o.Coder.ValidationPassed {
-				t.Fatalf("admitted %+v", o.Coder)
+			cr.coderStopped(c.code, "task.json", "final.txt", "logs.txt", "verdict.json")
+			if v := cr.coderVerdict(); v.PublicationAdmitted || v.ValidationPassed {
+				t.Fatalf("admitted %+v", v)
 			}
 		})
 	}
@@ -476,9 +479,9 @@ func TestCursor3aFP4(t *testing.T) {
 		t.Parallel()
 		cr := newCursorRig(t, "")
 		cr.f.testActions["name"] = "fail"
-		o := cr.coderStopped(CodeProbeCoderValidation, "publication.json", "validation/requirements.json", "validation/tests.jsonl")
-		if !o.Coder.PublicationAdmitted || o.Coder.ValidationPassed {
-			t.Fatalf("coder %+v", o.Coder)
+		cr.coderStopped(CodeProbeCoderValidation, "publication.json", "validation/requirements.json", "validation/tests.jsonl")
+		if v := cr.coderVerdict(); !v.PublicationAdmitted || v.ValidationPassed {
+			t.Fatalf("coder %+v", v)
 		}
 	})
 	t.Run("push_lost", func(t *testing.T) {
@@ -503,11 +506,10 @@ func TestCursor3aFP4(t *testing.T) {
 		// error, never an observation without its Git evidence.
 		cr := newCursorRig(t, "")
 		cr.act.during = func(cr *cursorRig) { cr.d.s.collect = failingCollect(t, cr.d.s.collect) }
-		o := cr.coderStopped("evidence_write_failed", "task.json", "final.txt", "verdict.json")
-		var v cursorCoderVerdict
-		if err := cr.data(probeCoderDir+"/verdict.json", &v); err != nil || !strings.Contains(v.Reason, errInjectedStore.Error()) ||
-			!strings.Contains(cr.d.stopReason, errInjectedStore.Error()) || o.Coder.ValidationPassed || o.Coder.PublicationAdmitted {
-			t.Fatalf("verdict %+v stop %q coder %+v", v, cr.d.stopReason, o.Coder)
+		cr.coderStopped("evidence_write_failed", "task.json", "final.txt", "verdict.json")
+		if v := cr.coderVerdict(); !strings.Contains(v.Reason, errInjectedStore.Error()) || !strings.Contains(cr.d.stopReason, errInjectedStore.Error()) ||
+			v.ValidationPassed || v.PublicationAdmitted {
+			t.Fatalf("verdict %+v stop %q", v, cr.d.stopReason)
 		}
 		if _, err := os.Stat(filepath.Join(cr.f.evidence, filepath.FromSlash(probeCoderRepoDir), "refs", "heads", "result")); err == nil {
 			t.Fatal("a result ref without its retained objects")
@@ -537,7 +539,7 @@ func TestCursor3aFP5(t *testing.T) {
 			t.Parallel()
 			cr := newCursorRig(t, "")
 			cr.act = c.act
-			o := cr.coderStopped(c.code, c.artifacts...)
+			q := cr.coderStopped(c.code, c.artifacts...)
 			if name == "pending_deadline" {
 				// Cancelled through the plane, settled, never answered.
 				if !slices.Contains(cr.f.plane.cancels, cr.coderTasks[0]) || cr.terminalState(cr.coderTasks[0]) != contract.TaskCancelled {
@@ -550,8 +552,15 @@ func TestCursor3aFP5(t *testing.T) {
 					t.Fatalf("verdict %+v %v", v, err)
 				}
 			}
-			if o.Calls.Coder != 1 || o.Calls.Preflights != 5 || o.Calls.WorkerCalls != 6 {
-				t.Fatalf("calls %+v", o.Calls)
+			// Failed calls count: five preflights and the one coder call.
+			cost, coder := cr.cursorCost(), 0
+			for _, task := range cost.Tasks {
+				if task.Label == probeCoderLabel {
+					coder++
+				}
+			}
+			if coder != 1 || len(cost.PreflightTasks) != 5 || cost.WorkerCalls != 6 || q.WorkerCalls != 6 {
+				t.Fatalf("calls %+v", cost)
 			}
 		})
 	}
@@ -562,47 +571,61 @@ func TestCursor3aFP5(t *testing.T) {
 		for i := 0; i < 70; i++ {
 			os.MkdirAll(filepath.Join(cr.roots[1].Path, "d"+itoa(i)), 0o700)
 		}
-		cr.expect(1, "")
+		cr.expect(0, "")
 		a := cr.activity("before")
-		if o := cr.observation(); o.Result != ResultObserved || !a.Roots[0].Flags.OutputLimited || !a.Roots[1].Flags.EntryLimited {
+		if q := cr.cursorQual(); q.Result != ResultQualified || !a.Roots[0].Flags.OutputLimited || !a.Roots[1].Flags.EntryLimited {
 			t.Fatalf("partial sample %+v %+v", a.Roots[0].Flags, a.Roots[1].Flags)
 		}
 	})
 }
 
+// cursorDocSections splits docs/real-e2e.md's Cursor section: its current
+// procedure (from "## Cursor coder qualification" to its historical
+// subsection) and the "### Historical slice 3a diagnostic observation"
+// subsection (to the next level-two heading).
+func cursorDocSections(t testing.TB, doc string) (string, string) {
+	t.Helper()
+	const head, hist = "\n## Cursor coder qualification\n", "\n### Historical slice 3a diagnostic observation\n"
+	i, j := strings.Index(doc, head), strings.Index(doc, hist)
+	if i < 0 || j < i || strings.Count(doc, head) != 1 || strings.Count(doc, hist) != 1 {
+		t.Fatal("docs/real-e2e.md lacks its single Cursor section and historical subsection")
+	}
+	rest := doc[j+len(hist):]
+	if k := strings.Index(rest, "\n## "); k >= 0 {
+		rest = rest[:k]
+	}
+	return doc[i:j], rest
+}
+
+// historicalReceipt writes a slice 3a diagnostic receipt shaped like the
+// owner's 2026-10-27 D1 observation (OBSERVED, never qualification) into
+// dir: a historical fixture, never produced by the 3b probe.
+func historicalReceipt(t *testing.T, dir string) CursorProbeObservation {
+	t.Helper()
+	versions := []VersionRecord{{Tool: "claude"}, {Tool: "codex"}, {Tool: "grok"}, {Tool: "cursor", Version: fakeCursorVersion}, {Tool: "go"}, {Tool: "git"}}
+	o := CursorProbeObservation{Schema: CursorObservationSchema, RunID: "20261027T000000Z-00000000", Slice: "3a", Result: ResultObserved,
+		Blocker: CodeCursorQualificationPending, Revision: "dc1522cb82603602098657537238396dc96fce62", Versions: versions, Scope: probeScopeBoth,
+		Calls: CursorProbeCalls{WorkerCalls: 12, MaxWorkerCalls: 12, Preflights: 5, Coder: 1, Coordinator: 6}, Phases: 3,
+		Coder:       CursorCoderObservation{Marker: markerImplComplete, PublicationAdmitted: true, ValidationPassed: true, ChangedCoverage: "100.0% (15/15)"},
+		Environment: CursorEnvObservation{Complete: true, Codes: []string{}}, Cleanup: CursorCleanupStatus{Complete: true, RuntimeRemoved: true},
+		Activity: CursorActivitySummary{Changes: []ActivityChange{}}, Artifacts: []string{}}
+	b, err := encodeJSON(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.MkdirAll(dir, 0o700)
+	write(t, filepath.Join(dir, cursorObservationFile), string(b))
+	write(t, filepath.Join(dir, cursorObservationText), "Cursor probe observations: OBSERVED\n")
+	return o
+}
+
 func TestCursor3aFP6(t *testing.T) {
 	t.Parallel()
-	cr := newCursorRig(t, probeScopeBoth)
-	cr.expect(1, "")
-	cr.noQualification()
-	o := cr.observation()
-	if o.Schema != CursorObservationSchema || o.Slice != "3a" || o.Result != ResultObserved || o.Qualification || o.Blocker != CodeCursorQualificationPending ||
-		!qualifiedStages(o.Stages, cursorProbeStagesFor(probeScopeBoth)) || len(o.Stages) != 7 || o.Calls.WorkerCalls != 12 || o.Calls.MaxWorkerCalls != 12 ||
-		o.Calls.Preflights != 5 || o.Calls.Coder != 1 || o.Calls.Coordinator != 6 || o.Phases != 3 || !o.Cleanup.Complete || o.StopCode != nil ||
-		!o.Environment.Complete || o.Environment.ProtectedChanges != 0 || o.Scope != probeScopeBoth {
-		t.Fatalf("receipt %+v", o)
-	}
-	out := cr.f.stdout.String()
-	lines := strings.Split(strings.TrimSpace(out), "\n")
-	if lines[len(lines)-2] != "Cursor probe observations: OBSERVED" ||
-		lines[len(lines)-1] != "qualification probe: BLOCKED (cursor_qualification_pending: independent Cursor evidence checking is deferred to slice 3b)" ||
-		strings.Contains(out, "qualification probe: "+ResultQualified) {
-		t.Fatalf("stdout tail %q", lines[len(lines)-2:])
-	}
-	for _, a := range []string{cursorObservationText, cursorActivityFiles[0], cursorActivityFiles[1], "cost.json", probeCoderRepoDir + "/refs/heads/result"} {
-		cr.evidence(a)
-		if !slices.Contains(o.Artifacts, a) && a != cursorObservationText {
-			t.Fatalf("receipt does not reference %s", a)
-		}
-	}
-	for _, a := range o.Artifacts {
-		if filepath.IsAbs(a) || strings.Contains(a, "..") {
-			t.Fatalf("unsafe artifact reference %s", a)
-		}
-	}
-	// The offline check refuses the diagnostic before routing, criteria,
-	// the missing qualification/manifest and the Cursor-inclusive version
-	// list, in the report and on stderr, exit 2.
+	// A historical slice 3a receipt (the live diagnostic finalizer was
+	// replaced by checked qualification in slice 3b; its refusal stays):
+	// the offline check refuses it before routing, criteria, the missing
+	// qualification/manifest and the Cursor-inclusive version list, in the
+	// report and on stderr, exit 2.
 	check := func(dir string) (int, DevReport, string) {
 		var out, errb bytes.Buffer
 		code := CheckEvidence(dir, &out, &errb)
@@ -610,27 +633,32 @@ func TestCursor3aFP6(t *testing.T) {
 		json.Unmarshal(out.Bytes(), &rep)
 		return code, rep, errb.String()
 	}
-	if _, err := os.Stat(filepath.Join(cr.f.evidence, devManifestFile)); err == nil {
-		t.Fatal("a diagnostic wrote a manifest")
-	}
-	code, rep, errOut := check(cr.f.bundle())
+	hist := filepath.Join(t.TempDir(), "d1")
+	o := historicalReceipt(t, hist)
+	code, rep, errOut := check(hist)
 	if code != 2 || rep.Error != CodeDiagnosticNotQualification || len(rep.Criteria) != 0 ||
 		errOut != "reale2e check: diagnostic_not_qualification: slice 3a observations are not qualification evidence\n" {
 		t.Fatalf("check %d %+v %q", code, rep.Error, errOut)
 	}
-	// Even next to a (forged) qualification record and manifest whose
-	// version lists include cursor, the refusal comes first.
-	forged := filepath.Join(t.TempDir(), "forged")
-	if err := copyTree(cr.f.bundle(), forged); err != nil {
-		t.Fatal(err)
-	}
-	q := DevQualification{Schema: devQualificationSchema, Result: ResultQualified, Versions: o.Versions}
-	b, _ := encodeJSON(q)
-	os.WriteFile(filepath.Join(forged, devQualificationFile), b, 0o600)
-	m, _ := encodeJSON(DevManifest{Schema: DevBundleSchema, Scenario: scenarioFull, Versions: o.Versions})
-	os.WriteFile(filepath.Join(forged, devManifestFile), m, 0o600)
-	if code, rep, _ := check(forged); code != 2 || rep.Error != CodeDiagnosticNotQualification || len(rep.Criteria) != 0 {
-		t.Fatalf("forged check %d %s", code, rep.Error)
+	// Even next to a (forged) default or Cursor qualification record and a
+	// manifest whose version lists include cursor, the refusal comes first,
+	// in the command and in the library loader alike.
+	for _, schema := range []string{devQualificationSchema, DevCursorQualificationSchema} {
+		forged := filepath.Join(t.TempDir(), "forged")
+		if err := copyTree(hist, forged); err != nil {
+			t.Fatal(err)
+		}
+		q := DevQualification{Schema: schema, Result: ResultQualified, Versions: o.Versions, Scope: probeScopeBoth}
+		b, _ := encodeJSON(q)
+		os.WriteFile(filepath.Join(forged, devQualificationFile), b, 0o600)
+		m, _ := encodeJSON(DevManifest{Schema: DevBundleSchema, Scenario: scenarioFull, Versions: o.Versions})
+		os.WriteFile(filepath.Join(forged, devManifestFile), m, 0o600)
+		if code, rep, _ := check(forged); code != 2 || rep.Error != CodeDiagnosticNotQualification || len(rep.Criteria) != 0 {
+			t.Fatalf("%s: forged check %d %s", schema, code, rep.Error)
+		}
+		if _, err := LoadDevQualification(forged); err == nil || !strings.Contains(err.Error(), CodeDiagnosticNotQualification) {
+			t.Fatalf("%s: the library loader accepted a diagnostic bundle: %v", schema, err)
+		}
 	}
 	// The default gate is intact: the default probe still qualifies and
 	// its record is still refused by check as before.
@@ -653,20 +681,52 @@ func TestCursor3aFP6(t *testing.T) {
 	})
 	t.Run("help_and_docs", func(t *testing.T) {
 		t.Parallel()
-		for _, s := range []string{"[--cursor ABS]", "flow-cursor-coder.json", CodeCursorQualificationPending, CodeCursorPending3b, CodeDiagnosticNotQualification,
-			"no jail or\n      confinement claim", "never QUALIFIED and exits 1"} {
+		// The retained pins and slice 3b's replacements of the current-live
+		// ones (3b.md, Superseded shipped 3a help and documentation pins).
+		for _, s := range []string{"[--cursor ABS]", "flow-cursor-coder.json", CodeDiagnosticNotQualification, "no jail or\n      confinement claim",
+			"Optional Cursor coder: --flow ABS/flow-cursor-coder.json --cursor ABS.",
+			"Cursor probe: QUALIFIED only after independent evidence checking; BLOCKED otherwise.", "Exit 0 qualified, 1 blocked, 2 usage/gate error.",
+			"Historical slice 3a observations are not qualification."} {
 			if !strings.Contains(Usage, s) {
 				t.Fatalf("Usage lacks %q", s)
 			}
 		}
-		doc := string(mustRead(t, filepath.Join(repoRoot(t), "docs", "real-e2e.md")))
-		for _, s := range []string{"### Cursor coder diagnostic probe (slice 3a)", "diagnostic-only disclosure", "There is no jail and no confinement claim",
-			"`cursor_execution_pending_3b`", "`cursor_adapter_required`", "`cursor_config_dir_unsupported`", "never `qualification.json`, and always exits 1",
-			"`diagnostic_not_qualification`", "report-only observations of all processes, not attribution to Cursor", "slice 3b requires a fresh complete probe",
-			"at most ten worker calls for `--scenario full`, twelve for `light` or `both`"} {
-			if !strings.Contains(doc, s) {
-				t.Fatalf("docs/real-e2e.md lacks %q", s)
+		for _, s := range []string{CodeCursorPending3b, CodeCursorQualificationPending, "never QUALIFIED and exits 1"} {
+			if strings.Contains(Usage, s) {
+				t.Fatalf("Usage keeps the obsolete current-live %q", s)
 			}
+		}
+		doc := string(mustRead(t, filepath.Join(repoRoot(t), "docs", "real-e2e.md")))
+		current, historical := cursorDocSections(t, doc)
+		if strings.Contains(doc, "### Cursor coder diagnostic probe (slice 3a)") {
+			t.Fatal("docs/real-e2e.md keeps the slice 3a heading")
+		}
+		for _, s := range []string{"There is no jail and no confinement claim", "`cursor_adapter_required`", "`cursor_config_dir_unsupported`",
+			"`diagnostic_not_qualification`", "report-only observations of all processes, not attribution to Cursor",
+			"at most ten worker calls for `--scenario full`, twelve for `light` or `both`",
+			"The Cursor selection is accepted by run, run-dev-full, run-dev-light and run-dev-exercise only with an explicit --cursor executable.",
+			"A fresh Cursor probe writes qualification.json and exits 0 only after its independent check qualifies it.",
+			"A slice 3a observation cannot qualify Cursor; a fresh complete probe and its independent checker are required before any Cursor attempt."} {
+			if !strings.Contains(current, s) {
+				t.Fatalf("the current Cursor procedure lacks %q", s)
+			}
+		}
+		for _, s := range []string{"The 2026-10-27 slice 3a receipt was a diagnostic-only observation, not qualification.",
+			"The historical slice 3a probe wrote cursor-probe-observation.json, never qualification.json, and exited 1 even when all stages were observed."} {
+			if !strings.Contains(historical, s) {
+				t.Fatalf("the historical slice 3a subsection lacks %q", s)
+			}
+		}
+		// No obsolete current-live claim survives in the current procedure,
+		// and the retired refusal code nowhere in the section.
+		for _, s := range []string{"diagnostic-only disclosure", "never `qualification.json`, and always exits 1", "slice 3b requires a fresh complete probe",
+			"`cursor_execution_pending_3b`", "cursor_execution_pending_3b", "refuse a Cursor flow before anything starts"} {
+			if strings.Contains(current, s) {
+				t.Fatalf("the current Cursor procedure keeps the obsolete %q", s)
+			}
+		}
+		if strings.Contains(historical, "cursor_execution_pending_3b") {
+			t.Fatal("the historical subsection keeps the retired refusal code")
 		}
 	})
 }
