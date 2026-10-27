@@ -32,7 +32,7 @@ func rewriteFile(t *testing.T, dir, rel, old, new string) {
 }
 
 // bundleDoc decodes one bundle JSON file.
-func bundleDoc[T any](t *testing.T, dir, rel string) T {
+func bundleDoc[T any](t testing.TB, dir, rel string) T {
 	t.Helper()
 	var v T
 	if err := json.Unmarshal(mustRead(t, filepath.Join(dir, filepath.FromSlash(rel))), &v); err != nil {

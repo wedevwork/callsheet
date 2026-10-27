@@ -2273,7 +2273,10 @@ func sidecarCPU1BudgetHandoff(t *testing.T, stress, first string) {
 		"record the first post-merge workflow and its planned macOS repeat with their actual SHA on that pull request",
 		"never combine pre-merge and post-merge macOS samples from different checked-out revisions", "The owner closes delivery verification",
 		"never an automatic budget increase or a weakened test", "a successful sample above a projection invalidates that projection",
-		"Local exact-argv tests cannot prove hosted headroom", "Hosted verification: pending.")
+		// Design 12a-3-cursor-worker, slice 3b FP-6: the owner's closure, its
+		// recorded package seconds immediately before it, replaces the pending
+		// status.
+		"Local exact-argv tests cannot prove hosted headroom", sidecarCPU1Timings, sidecarCPU1Closure.closure)
 	if strings.Contains(strings.Join(strings.Fields(checklist), " "), "Hosted verification: passed") {
 		t.Fatal("the 12a-stress-sidecar-cpu1-budget checklist records pending evidence as passed")
 	}

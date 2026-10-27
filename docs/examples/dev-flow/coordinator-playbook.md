@@ -134,6 +134,8 @@ Register every role before dispatch, with `--concurrency 1 --timeout 10m`. Verif
 
 Pairings are cross-family where one role judges another's work: triage (GPT) diagnoses for the coder (Opus), and the code reviewer (GPT) checks the Opus implementation. Triage and the code reviewer may both be GPT: they judge different work, and the executing code reviewer, not triage, checks the implementation.
 
+An owner's optional selection may put the coder alone on the `cursor` adapter with its Grok model at effort `high`; the other four rows stay as shown, and the code reviewer (GPT) then checks a Grok implementation, still cross-family.
+
 ## Waits and recovery
 
 Dispatch asynchronously. Persist the admitted ID. When the coordinator harness has a qualified wake, start `callsheet task wait ID --until-done --json --plane URL --ca CA` as that harness's background command, and consume its captured exit and output when notified. Use the lifecycle and error handling in [coordinator.md](../../coordinator.md#coordinator-runbook-example): no detached shell operators, no polling loop holding a turn open, and no fabricated wake. If the wake is unqualified, use a short MCP `task_wait` on the next externally initiated turn. Do not claim this makes a headless one-shot session persistent.

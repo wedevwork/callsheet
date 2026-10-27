@@ -98,6 +98,11 @@ type DevExercise struct {
 	Start         string                   `json:"start"`
 	End           string                   `json:"end"`
 	Children      []DevExerciseChild       `json:"children"`
+	// Cursor is a Cursor exercise's root executable binding (design
+	// 12a-3-cursor-worker, slice 3b): hashed before the authorization and
+	// after the last reached child; required, non-null, on the
+	// callsheet-dev-cursor-exercise/v1 schema only.
+	Cursor *DevCursorBinding `json:"cursor,omitempty"`
 }
 
 // devExerciseRun is one live combined exercise.
@@ -115,6 +120,8 @@ type devExerciseRun struct {
 	aggregating func(stage string)
 	lines       <-chan ownerInput
 	eof         bool
+	// tok tokenizes a path as the children's evidence does.
+	tok func(string) string
 }
 
 // runExerciseLive runs the combined exercise.
@@ -144,10 +151,27 @@ func (e *devExerciseRun) run() int {
 		fmt.Fprintf(e.h.Stderr, "reale2e run-dev-exercise: %v\n", err)
 		return 1
 	}
-	e.ex = DevExercise{Schema: DevExerciseSchema, ExerciseID: id, FlowSHA256: e.ex.FlowSHA256, Start: formatTime(now), Children: []DevExerciseChild{
+	schema := DevExerciseSchema
+	if e.a.cursor != "" {
+		schema = DevCursorExerciseSchema
+	}
+	e.ex = DevExercise{Schema: schema, ExerciseID: id, FlowSHA256: e.ex.FlowSHA256, Start: formatTime(now), Children: []DevExerciseChild{
 		{Dir: exerciseFullDir, Scenario: scenarioFull, Status: childNotRun}, {Dir: exerciseLightDir, Scenario: scenarioLight, Status: childNotRun}}}
 	if b, err := readBounded(e.w.Executable, 1<<30); err == nil {
 		e.ex.Executable = DevExecutableRecord{Path: e.w.Executable, Before: sha256Hex(b), After: sha256Hex(b)}
+	}
+	if e.a.cursor != "" {
+		// The resolved Cursor executable is bound before the owner's
+		// authorization, with the frozen selection (locateRoot); both
+		// children compare their own pre-vendor binding with this hash. An
+		// unreadable executable stops here: nothing is authorized or run.
+		h, err := cursorExecutableHash(e.a.cursor)
+		if err != nil {
+			fmt.Fprintf(e.h.Stderr, "reale2e run-dev-exercise refused: %s: the Cursor executable could not be hashed: %v\n", CodeCursorExecutableMismatch, err)
+			return 2
+		}
+		e.ex.Cursor = &DevCursorBinding{Path: e.tok(e.a.cursor), BeforeSHA256: h}
+		e.a.cursorExpect = h
 	}
 	if err := os.Mkdir(root, 0o700); err != nil {
 		fmt.Fprintf(e.h.Stderr, "reale2e run-dev-exercise: %v\n", err)
@@ -162,6 +186,7 @@ func (e *devExerciseRun) run() int {
 		for i := range e.ex.Children {
 			e.ex.Children[i].Stop = "owner_" + e.ex.Authorization.Kind
 		}
+		e.cursorAfter()
 		return e.finishRoot(nil)
 	}
 	full := e.child(0, func(h Host, w *World, a runArgs) *devSupervisor {
@@ -173,10 +198,41 @@ func (e *devExerciseRun) run() int {
 	})
 	if cause := continueCause(full); cause != "" {
 		e.ex.Children[1].Stop = cause
+		e.cursorAfter()
+		return e.finishRoot(full)
+	}
+	if !e.cursorUnchanged() {
+		// A Cursor executable changed after the full child: nothing of the
+		// light child runs, no paid work (design 12a-3-cursor-worker, 3b).
+		e.ex.Children[1].Stop = CodeCursorExecutableMismatch
+		e.cursorAfter()
 		return e.finishRoot(full)
 	}
 	light := e.child(1, newDevLightSupervisor)
+	e.cursorAfter()
 	return e.finishRoot(light)
+}
+
+// cursorUnchanged reports a default exercise, or a Cursor executable
+// whose bytes still hash to the root binding (checked again before the
+// light child; each child also compares its own pre-vendor binding).
+func (e *devExerciseRun) cursorUnchanged() bool {
+	if e.ex.Cursor == nil {
+		return true
+	}
+	h, err := cursorExecutableHash(e.a.cursor)
+	return err == nil && h == e.ex.Cursor.BeforeSHA256
+}
+
+// cursorAfter records a Cursor exercise's root binding after the last
+// reached child (empty when unreadable: incomplete, never a pass).
+func (e *devExerciseRun) cursorAfter() {
+	if e.ex.Cursor == nil {
+		return
+	}
+	if h, err := cursorExecutableHash(e.a.cursor); err == nil {
+		e.ex.Cursor.AfterSHA256 = h
+	}
 }
 
 // locateRoot validates the exercise root as run validates an attempt's
@@ -186,13 +242,24 @@ func (e *devExerciseRun) locateRoot() (string, error) {
 	if err := s.locate(); err != nil {
 		return "", err
 	}
+	e.tok = s.tok
 	// The selected flow: the explicit --flow file, or the shipped one.
 	flow := e.a.flow
 	if flow == "" {
 		flow = filepath.Join(s.checkout, filepath.FromSlash(DevFullDir), FlowFile)
 	}
-	if b, err := readBounded(flow, maxFlowBytes); err == nil {
+	b, err := readBounded(flow, maxFlowBytes)
+	if err == nil {
 		e.ex.FlowSHA256 = sha256Hex(b)
+	}
+	if e.a.cursor != "" {
+		// A Cursor selection is frozen as bytes before the owner's
+		// authorization: both children capture exactly these bytes, never a
+		// second read of the path (design 12a-3-cursor-worker, slice 3b).
+		if err != nil {
+			return "", fmt.Errorf("flow: %w", err)
+		}
+		e.a.frozenFlow = b
 	}
 	return s.evidenceDir, nil
 }

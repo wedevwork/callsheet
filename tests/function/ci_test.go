@@ -345,6 +345,9 @@ type hostedClosure struct {
 	jobs           []string    // job display names and workflow job ids
 	shas           [][2]string // label, SHA
 	protected      []string
+	// date is the closure's own date (design 12a-3-cursor-worker, slice 3b
+	// FP-6): both date mutations target "on <date>;".
+	date string
 }
 
 var (
@@ -361,6 +364,7 @@ var (
 			"until recorded it is pending, not passed, and the owner closes delivery verification from the recorded run",
 			"A failed, cancelled, missing or skipped result never qualifies; preserve failed attempts",
 		},
+		date: "2026-10-26",
 	}
 	linuxClosure = hostedClosure{
 		entry:   "- for 12a-linux-test-budget (2026-10-25;",
@@ -375,6 +379,7 @@ var (
 			"until recorded it is pending, not passed, and only the owner closes hosted delivery verification",
 			"A failed, cancelled, missing or skipped result never qualifies",
 		},
+		date: "2026-10-26",
 	}
 	stressPackagesClosure = hostedClosure{
 		entry:   "- for 12a-stress-packages-budget (2026-10-25;",
@@ -388,9 +393,38 @@ var (
 			"Missing, cached, skipped, cancelled, failed or timed-out output never qualifies",
 			"The owner closes delivery verification",
 		},
+		date: "2026-10-26",
 	}
-	hostedClosures = []hostedClosure{nativeClosure, linuxClosure, stressPackagesClosure}
+	// sidecarCPU1Closure is design 12a-3-cursor-worker's slice 3b FP-6: the
+	// owner's 2026-10-27 closure of the 12a-stress-sidecar-cpu1-budget
+	// hosted verification (PR #73 owner record), its recorded package
+	// seconds immediately before it.
+	sidecarCPU1Closure = hostedClosure{
+		entry:   "- for 12a-stress-sidecar-cpu1-budget (2026-10-27;",
+		closure: "Hosted verification: closed by the owner on 2026-10-27; [PR #73 owner record](https://github.com/wedevwork/callsheet/pull/73#issuecomment-6438962747); workflow run 40480294342; jobs ci-macos-stress-sidecar-cpu1 (workflow job id macos-stress-sidecar-cpu1) and ci-linux-stress-sidecar-cpu1 (workflow job id linux-stress-sidecar-cpu1); PR head 01f0ebd; merge ref 11ad1db.",
+		pr:      "73", comment: "6438962747", run: "40480294342",
+		jobs: []string{"ci-macos-stress-sidecar-cpu1 (workflow job id macos-stress-sidecar-cpu1)", "ci-linux-stress-sidecar-cpu1 (workflow job id linux-stress-sidecar-cpu1)"},
+		shas: [][2]string{{"PR head", "01f0ebd"}, {"merge ref", "11ad1db"}},
+		protected: []string{
+			"plus a planned second macOS allocation at the same checked-out implementation SHA: two macOS samples and one Linux sample",
+			"Verify the same checked-out SHA, distinct allocations and attempts, and unchanged setup and workload",
+			"Missing, cached, skipped, cancelled, failed or timed-out output never qualifies",
+			"Pending hosted evidence does not block implementation review once its automated bar passes; until recorded it is pending, not passed",
+			"The owner closes delivery verification",
+			"never an automatic budget increase or a weakened test",
+			sidecarCPU1Timings,
+		},
+		date: "2026-10-27",
+	}
+	hostedClosures = []hostedClosure{nativeClosure, linuxClosure, stressPackagesClosure, sidecarCPU1Closure}
 )
+
+// sidecarCPU1Timings is the recorded package-seconds sentence immediately
+// before the sidecar CPU1 closure, and sidecarCPU1Samples its observations
+// (supplied hosted observations, not a performance promise).
+const sidecarCPU1Timings = "Recorded package seconds: macOS 327.168 s and 262.707 s; Linux 184.824 s; all at or below 390.000 s."
+
+var sidecarCPU1Samples = []string{"327.168", "262.707", "184.824"}
 
 // remoteRunEntry is first's single bullet opening with entry, up to the next
 // bullet or blank line ("" when absent or repeated).
@@ -450,8 +484,8 @@ func closureMutations(c hostedClosure) [][2]string {
 		{"Pending hosted evidence", strings.TrimSuffix(c.closure, ".") + ". Pending hosted evidence"},
 		{"closed by the owner on", "closed by the coordinator on"},
 		{"closed by the owner on", "closed on"},
-		{"on 2026-10-26;", "on 2026-10-25;"},
-		{"on 2026-10-26;", ";"},
+		{"on " + c.date + ";", "on 2026-10-25;"},
+		{"on " + c.date + ";", ";"},
 		{link, "PR #" + c.pr + " owner record"},
 		{link + "; ", ""},
 		{"#issuecomment-" + c.comment, "#issuecomment-1" + c.comment},
@@ -1530,4 +1564,82 @@ func TestCIPRProcedure(t *testing.T) {
 	}
 	local := docSection(t, "Local verification")
 	requireTerms(t, "Local verification", local, "go run ./cmd/devcheck all", "go run ./cmd/devcheck stress", "actionlint", "not a required dependency")
+}
+
+// TestCursor3bFP6SidecarCPU1Closure is design 12a-3-cursor-worker's slice
+// 3b FP-6 (parent FP-12): the owner's 2026-10-27 sidecar CPU1 hosted
+// closure and its recorded package seconds pass the independent closure
+// validator and the sidecar CPU1 handoff validator; closure, date and
+// timing mutations fail, and the three prior closure records stay valid.
+// It changes no stress argv, timeout or workflow.
+func TestCursor3bFP6SidecarCPU1Closure(t *testing.T) {
+	first := docSection(t, "First remote run")
+	stress := docSection(t, "Stress checks")
+	requireHostedClosure(t, first, sidecarCPU1Closure)
+	sidecarCPU1BudgetHandoff(t, stress, first)
+	for _, c := range []hostedClosure{nativeClosure, linuxClosure, stressPackagesClosure} {
+		if err := checkHostedClosure(first, c); err != nil {
+			t.Fatalf("a prior closure record: %v", err)
+		}
+	}
+	// Both parameterized date targets exist in every entry, and both date
+	// mutations fail for all four; the wrong date is none of theirs.
+	for _, c := range hostedClosures {
+		bullet := remoteRunEntry(first, c.entry)
+		if c.date == "" || c.date == "2026-10-25" || !strings.Contains(bullet, "on "+c.date+";") {
+			t.Fatalf("%s: date target %q", c.entry, c.date)
+		}
+		for _, to := range []string{"on 2026-10-25;", ";"} {
+			changed := strings.Replace(first, bullet, strings.Replace(bullet, "on "+c.date+";", to, 1), 1)
+			if checkHostedClosure(changed, c) == nil {
+				t.Errorf("%s: the date mutation to %q was accepted", c.entry, to)
+			}
+		}
+	}
+	// The recorded package seconds: each at or below 390, immediately
+	// before the closure, which stays last; each timing and the bound are
+	// pinned.
+	bullet := remoteRunEntry(first, sidecarCPU1Closure.entry)
+	flat := strings.Join(strings.Fields(bullet), " ")
+	if !strings.HasSuffix(flat, " "+sidecarCPU1Timings+" "+sidecarCPU1Closure.closure) {
+		t.Fatal("the recorded package seconds are not immediately before the closure")
+	}
+	for _, s := range sidecarCPU1Samples {
+		var v float64
+		if _, err := fmt.Sscanf(s, "%f", &v); err != nil || v > 390 || !strings.Contains(sidecarCPU1Timings, s+" s") {
+			t.Fatalf("sample %s exceeds 390 s or is not recorded", s)
+		}
+	}
+	mutations := [][2]string{{"all at or below 390.000 s.", "all at or below 480.000 s."}, {"all at or below 390.000 s.", "all above 390.000 s."},
+		{sidecarCPU1Timings + " ", ""}, {sidecarCPU1Timings + " " + sidecarCPU1Closure.closure, sidecarCPU1Closure.closure + " " + sidecarCPU1Timings}}
+	for _, s := range sidecarCPU1Samples {
+		mutations = append(mutations, [2]string{s + " s", "391.000 s"}, [2]string{s + " s", s + "1 s"})
+	}
+	for _, m := range mutations {
+		if !strings.Contains(bullet, m[0]) {
+			t.Fatalf("the mutation target %q is not in the entry", m[0])
+		}
+		changed := strings.Replace(first, bullet, strings.Replace(bullet, m[0], m[1], 1), 1)
+		if checkHostedClosure(changed, sidecarCPU1Closure) == nil {
+			t.Errorf("the timing mutation %q -> %q was accepted", m[0], m[1])
+		}
+	}
+	// The pending status beside the closure and a duplicated entry fail.
+	for _, changed := range []string{strings.Replace(first, sidecarCPU1Timings, "Hosted verification: pending. "+sidecarCPU1Timings, 1),
+		strings.Replace(first, bullet, bullet+"\n"+bullet, 1)} {
+		if checkHostedClosure(changed, sidecarCPU1Closure) == nil {
+			t.Error("a pending status or duplicated entry was accepted")
+		}
+	}
+	// No stress argv, timeout or workflow change.
+	for _, goos := range []string{"linux", "darwin"} {
+		shards, err := devcheck.StressShards(goos)
+		if err != nil || len(shards) < 5 || shards[4].Name != "sidecar-cpu1" || len(shards[4].Steps) != 1 ||
+			strings.Join(shards[4].Steps[0].Argv, " ") != "go test -race -count=20 -cpu=1 -timeout=8m ./internal/sidecar" {
+			t.Fatalf("%s: the sidecar CPU1 stress command changed: %v", goos, err)
+		}
+	}
+	if err := cicheck.ValidateWorkflow(ciWorkflow(t)); err != nil {
+		t.Fatalf("workflow: %v", err)
+	}
 }

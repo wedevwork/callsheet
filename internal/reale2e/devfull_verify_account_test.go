@@ -482,7 +482,7 @@ func devProbeBundle(t *testing.T) string {
 }
 
 // requalify recomputes a mutated record's inventory (a capable forger).
-func requalify(t *testing.T, dir string) {
+func requalify(t testing.TB, dir string) {
 	t.Helper()
 	inv, err := diskInventory(dir)
 	if err != nil {

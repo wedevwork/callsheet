@@ -1,6 +1,10 @@
 package adapter
 
-import "strings"
+import (
+	"errors"
+	"fmt"
+	"strings"
+)
 
 // The worker version policy: a vendor's --version output is eligible when
 // it is a complete, orderable version line of that vendor at or above the
@@ -54,6 +58,23 @@ const (
 type workerVersion struct {
 	core [3]uint32
 	pre  []string
+}
+
+// CheckRecordedVersion applies the auto-mode minimum-version policy (the
+// probe predicate, workerMinimumVersions as the baseline) to an already
+// recorded version line of adapter id, executing nothing: nil when that
+// line is an eligible version of this vendor (an offline evidence checker
+// re-derives eligibility instead of trusting a stored verdict). An
+// adapter without a minimum refuses every line.
+func CheckRecordedVersion(id, version string) error {
+	baseline, ok := workerMinimumVersions[id]
+	if !ok {
+		return fmt.Errorf("adapter %q has no minimum version", id)
+	}
+	if reason := checkWorkerVersion(id, baseline, version); reason != "" {
+		return errors.New("the recorded version " + reason)
+	}
+	return nil
 }
 
 // checkWorkerVersion is the vendor probe predicate for adapter id with the

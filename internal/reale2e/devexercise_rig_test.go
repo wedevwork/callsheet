@@ -18,6 +18,9 @@ type exerciseRig struct {
 	plane map[string]*fakePlane
 	// aggregating runs during the root's check and writing.
 	aggregating func(stage string)
+	// prompted, when set, runs right after the authorization answer is
+	// typed, before any child starts.
+	prompted func()
 }
 
 // newExerciseRig is a combined exercise over full and light scripts.
@@ -54,6 +57,9 @@ func (x *exerciseRig) run() int {
 			x.full.term.typeLine("exercise 20990101T000000Z-00000000")
 			x.full.term.typeLine("exercise " + id)
 		}
+		if x.prompted != nil {
+			x.prompted()
+		}
 	}
 	h.observeDev = func(d *devSupervisor) {
 		r := x.full
@@ -64,6 +70,9 @@ func (x *exerciseRig) run() int {
 			f.plane = newFakePlane(x.t, f.clock)
 		}
 		r.d = d
+		if r.devHook != nil {
+			r.devHook(d)
+		}
 		x.plane[d.scenario()] = f.plane
 		rig := r
 		f.plane.onList = func() {

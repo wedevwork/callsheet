@@ -59,6 +59,9 @@ func (d *devSupervisor) writeDevManifest(put func(string, any) error) error {
 	if b, err := readBounded(d.s.w.Executable, 1<<30); err == nil {
 		m.Executable.After = sha256Hex(b)
 	}
+	// A Cursor attempt's executable binding (before any vendor execution,
+	// after cleanup); a default manifest never carries the field.
+	m.Cursor = d.cursorManifestBinding()
 	if d.stopCode != "" {
 		code, seq := d.stopCode, d.stopSeq
 		m.StopCode, m.StopSeq = &code, &seq

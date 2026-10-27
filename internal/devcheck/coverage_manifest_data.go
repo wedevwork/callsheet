@@ -381,6 +381,10 @@ var WorkspaceCoverageManifest = []CoverageEntry{
 	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devcursor_activity.go"},
 	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devcursor_observation.go"},
 	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devcursor_probe.go"},
+	// Design 12a-3-cursor-worker, slice 3b: the independent Cursor evidence
+	// checker and the Cursor run wiring, new untagged files, whole.
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devcursor_check.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/reale2e/devcursor_execution.go"},
 	// The server's per-tool argument rules, shared by the MCP handlers and
 	// the checker's call judges, whole.
 	{Group: GroupChanged, File: modulePath + "/internal/contract/toolargs.go"},

@@ -165,6 +165,11 @@ type DevManifest struct {
 	Helper             reviewHelperSpec    `json:"helper"`
 	Render             map[string]string   `json:"render"`
 	Inventory          []InventoryEntry    `json:"inventory"`
+	// Cursor is a Cursor attempt's executable binding (design
+	// 12a-3-cursor-worker, slice 3b): required, non-null, on the
+	// callsheet-dev-cursor-evidence/v1 schema only; a historical or default
+	// manifest never carries the key.
+	Cursor *DevCursorBinding `json:"cursor,omitempty"`
 }
 
 // DevObservation is tasks/NN/observation.json: the coordinator's accepted
@@ -465,6 +470,11 @@ type DevBundle struct {
 	// Scenario the layout's scenario (full, light or probe).
 	ver      int
 	Scenario string
+	// cursor is set only from a recognized Cursor outer discriminator (its
+	// layout), never from a role, file name, missing record or version
+	// list (design 12a-3-cursor-worker, slice 3b); ver stays 2 for its
+	// inherited nested records.
+	cursor bool
 }
 
 // derivedEventMap is one event-map derivation and its render inputs.
@@ -487,6 +497,8 @@ type devLayout struct {
 	// workspace/repo.git with ref and HEAD at the seed). Several
 	// repositories share the Git byte and object budgets.
 	repos []devRepoSpec
+	// cursor marks a Cursor outer format's layout (devcursor_check.go).
+	cursor bool
 }
 
 // devRepoSpec is one evidence repository of a layout: its directory, ref
@@ -532,46 +544,46 @@ func LoadDevBundle(root string) (*DevBundle, error) {
 	if err != nil {
 		return nil, err
 	}
-	ver, scenario, err := peekDevManifest(resolved)
+	ver, scenario, cursor, err := peekDevManifest(resolved)
 	if err != nil {
 		return nil, err
 	}
+	if cursor {
+		return loadDevLayout(root, cursorAttemptLayout(scenario))
+	}
 	return loadDevLayout(root, devLayoutFor(ver, scenario))
 }
 
-// loadDevBundleAs loads root under version ver and scenario's layout (the
-// collector's load of its own evidence before the manifest exists).
-func loadDevBundleAs(root string, ver int, scenario string) (*DevBundle, error) {
-	return loadDevLayout(root, devLayoutFor(ver, scenario))
-}
-
-// peekDevManifest reads a development bundle's version and scenario from
-// its manifest discriminator: v1 is full only; v2 is full or light.
-func peekDevManifest(resolved string) (int, string, error) {
+// peekDevManifest reads a development bundle's version, scenario and
+// Cursor outer format from its manifest discriminator: v1 is full only;
+// v2 and the Cursor evidence/v1 format (whose nested records are v2) are
+// full or light.
+func peekDevManifest(resolved string) (int, string, bool, error) {
 	data, err := lstatRegular(resolved, devManifestFile)
 	if errors.Is(err, fs.ErrNotExist) {
-		return devBundleV2, scenarioFull, nil
+		return devBundleV2, scenarioFull, false, nil
 	}
 	if err != nil {
-		return 0, "", errDevSchema("manifest.json: %v", err)
+		return 0, "", false, errDevSchema("manifest.json: %v", err)
 	}
 	schema, err := manifestSchema(data)
 	if err != nil {
-		return 0, "", errDevSchema("manifest.json: %v", err)
+		return 0, "", false, errDevSchema("manifest.json: %v", err)
 	}
 	var head struct {
 		Scenario string `json:"scenario"`
 	}
 	_ = json.Unmarshal(data, &head)
+	scenarioOK := head.Scenario == scenarioFull || head.Scenario == scenarioLight
 	switch {
 	case schema == DevBundleSchemaV1:
-		return devBundleV1, scenarioFull, nil
-	case schema == DevBundleSchema && (head.Scenario == scenarioFull || head.Scenario == scenarioLight):
-		return devBundleV2, head.Scenario, nil
-	case schema == DevBundleSchema:
-		return 0, "", errDevSchema("manifest.json: unsupported scenario %q", contract.SafeText(head.Scenario, 32))
+		return devBundleV1, scenarioFull, false, nil
+	case (schema == DevBundleSchema || schema == DevCursorBundleSchema) && scenarioOK:
+		return devBundleV2, head.Scenario, schema == DevCursorBundleSchema, nil
+	case schema == DevBundleSchema || schema == DevCursorBundleSchema:
+		return 0, "", false, errDevSchema("manifest.json: unsupported scenario %q", contract.SafeText(head.Scenario, 32))
 	}
-	return 0, "", errDevSchema("manifest.json: unsupported schema %q", contract.SafeText(schema, 80))
+	return 0, "", false, errDevSchema("manifest.json: unsupported schema %q", contract.SafeText(schema, 80))
 }
 
 // loadDevLayout loads an evidence directory under a closed layout.
@@ -584,7 +596,8 @@ func loadDevLayout(root string, layout devLayout) (*DevBundle, error) {
 	if err != nil || !st.IsDir() {
 		return nil, errDevSchema("evidence root is not a directory")
 	}
-	b := &DevBundle{Root: resolved, Files: map[string][]byte{}, docs: map[string]any{}, layout: layout, ver: layout.ver, Scenario: layout.scenario}
+	b := &DevBundle{Root: resolved, Files: map[string][]byte{}, docs: map[string]any{}, layout: layout, ver: layout.ver, Scenario: layout.scenario,
+		cursor: layout.cursor}
 	if err := b.readFiles(); err != nil {
 		return nil, err
 	}
@@ -699,6 +712,10 @@ func (b *DevBundle) readFiles() error {
 			return errDevSchema("evidence file %s is not part of the layout", rel)
 		case st.Size() > maxTextFile:
 			return errDevSchema("evidence file %s exceeds 8 MiB", rel)
+		case slices.Contains(cursorActivityFiles, rel) && st.Size() > activityMaxOutput:
+			// Each shallow sample keeps its own 256 KiB bound within the
+			// shared environment budgets (design 12a-3-cursor-worker, 3b).
+			return errDevSchema("evidence file %s exceeds %d bytes", rel, activityMaxOutput)
 		}
 		total += st.Size()
 		if isEnvironmentFile(rel) {
@@ -915,6 +932,11 @@ func (b *DevBundle) decodeOne(rel string, data []byte) error {
 	v, want := b.layout.doc(rel)
 	if v == nil {
 		return nil
+	}
+	if cursorFieldFile(rel) {
+		if err := checkCursorField(data, b.cursor); err != nil {
+			return errDevSchema("%s: %v", rel, err)
+		}
 	}
 	if got := peekSchema(data); got != "" && got != want {
 		return errDevSchema("%s: unsupported schema %q", rel, contract.SafeText(got, 80))

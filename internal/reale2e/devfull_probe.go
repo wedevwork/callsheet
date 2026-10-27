@@ -171,6 +171,11 @@ type DevQualification struct {
 	Scope         string         `json:"scope,omitempty"`
 	StageCoverage []string       `json:"stage_coverage,omitempty"`
 	Light         *DevProbeLight `json:"light,omitempty"`
+	// Cursor is a Cursor qualification's own object (design
+	// 12a-3-cursor-worker, slice 3b): required, non-null, on the
+	// callsheet-dev-cursor-qualification/v1 schema only; a historical or
+	// default record never carries the key.
+	Cursor *DevCursorQualification `json:"cursor,omitempty"`
 }
 
 // Probe results.
@@ -193,16 +198,14 @@ func runProbeLive(h Host, a runArgs) int {
 		return 1
 	}
 	defer release()
-	s := &supervisor{stdout: h.Stdout, stderr: h.Stderr, goos: h.GOOS, goarch: h.GOARCH, w: w, args: a, ctx: w.Context,
-		known: map[string]string{}, stoppedSet: map[*child]bool{}, reqs: make(chan ctrlMsg), loopDone: make(chan struct{}), envPolicy: envPolicyDev}
-	d := &devSupervisor{s: s, manuals: map[string][2]string{}, receiptBytes: map[int][]byte{}, trees: map[string]map[string]TreeFile{},
-		finals: map[string]string{}, sweeps: sweepRecorder{clock: w.Clock}}
+	// The command bound the Cursor selection and executable before this
+	// world existed (MainWith): a Cursor probe's supervisor carries its own
+	// run state and immutable lists (newDevSupervisor), its probe the coder
+	// fixture stage.
+	d := newDevSupervisor(h, w, a)
 	d.probe = &devProbe{d: d, prompts: map[int][]byte{}, scope: cmpOr(a.probeScope, probeScopeFull)}
-	if a.cursor != "" {
-		// The command bound the Cursor selection and executable before this
-		// world existed (MainWith): this run's own immutable lists.
-		d.probe.cursor = newCursorProbe(w)
-		s.sidecars = slices.Clone(cursorSidecars)
+	if d.cursor != nil {
+		d.probe.cursor = &cursorProbe{}
 	}
 	if h.observeProbe != nil {
 		h.observeProbe(d.probe)
@@ -216,15 +219,16 @@ func runProbeLive(h Host, a runArgs) int {
 // probeStart is the probe's setup through its first phase: the models
 // stage, then the fixture, prompts and control.
 func (d *devSupervisor) probeStart() error {
-	steps := []func() error{d.s.printPermissionTemplate, d.hashExecutable, d.s.protectedRoots, d.s.baselineSnapshot, d.loadSelection,
-		d.versionProbes, d.s.createRuntime, d.s.renderPermissions, d.extraDirs, d.deployDev, d.preflightDev, d.probe.models, d.probe.fixtureDev,
-		d.probe.lightFixture, d.probe.openControl, d.activateTerminal, d.probe.firstPlan, d.launchPhase}
+	setup := []func() error{d.s.printPermissionTemplate, d.hashExecutable, d.s.protectedRoots, d.s.baselineSnapshot, d.loadSelection,
+		d.versionProbes, d.s.createRuntime, d.s.renderPermissions, d.extraDirs, d.deployDev, d.preflightDev, d.probe.models}
+	phases := []func() error{d.probe.fixtureDev, d.probe.lightFixture, d.probe.openControl, d.activateTerminal, d.probe.firstPlan, d.launchPhase}
+	steps := slices.Concat(setup, phases)
 	if d.probe.cursor != nil {
-		// The Cursor diagnostic probe: the report-only shallow sample right
-		// after the baseline fingerprint (before any executable), and the
-		// coder stage after the models stage, before the fixture and any
-		// coordinator phase.
-		steps = slices.Concat(steps[:4], []func() error{d.cursorActivityBefore}, steps[4:12], []func() error{d.cursorCoderStage}, steps[12:])
+		// The Cursor probe: the executable binding before any vendor, the
+		// report-only shallow sample right after the baseline fingerprint,
+		// and the coder stage after the models stage, before the fixture and
+		// any coordinator phase.
+		steps = slices.Concat(d.cursorSteps(setup), []func() error{d.cursorCoderStage}, phases)
 	}
 	for _, f := range steps {
 		switch {
@@ -760,9 +764,12 @@ func (d *devSupervisor) planLabel(plan *TaskPlan) string {
 // admissions and settlements (failed and interrupted calls included).
 func (d *devSupervisor) probeFinish(cost DevCost) bool {
 	p := d.probe
-	stages := probeStagesFor(p.scope)
+	stages, maxCalls, schema := probeStagesFor(p.scope), probeMaxCalls(p.scope), devKind(DevQualificationKind)
+	if p.cursor != nil {
+		stages, maxCalls, schema = cursorProbeStagesFor(p.scope), cursorProbeMaxCalls(p.scope), DevCursorQualificationSchema
+	}
 	p.completeStages(stages)
-	q := DevQualification{Schema: devKind(DevQualificationKind), RunID: d.s.runID, Result: ResultBlocked, Revision: d.manifest.Revision,
+	q := DevQualification{Schema: schema, RunID: d.s.runID, Result: ResultBlocked, Revision: d.manifest.Revision,
 		CallsheetVersion: d.manifest.CallsheetVersion, GOOS: d.s.goos, GOARCH: d.s.goarch, Gate: d.manifest.Gate, Versions: d.manifest.Versions,
 		FlowLabel: d.flowLabel, SelectionSHA256: d.manifest.SelectionSHA256, Roles: d.manifest.Roles, Executable: d.manifest.Executable,
 		Helper: d.helper, SessionID: d.sessionID, Workspace: d.s.workspace, Candidate: p.cand.String(), ReviewCommit: p.reviewC,
@@ -781,7 +788,15 @@ func (d *devSupervisor) probeFinish(cost DevCost) bool {
 		code, seq := d.stopCode, d.stopSeq
 		q.StopCode, q.StopSeq = &code, &seq
 	}
-	if qualifiedStages(q.Stages, stages) && d.cleanupOK && !d.protected && d.stopCode == "" && d.executed && cost.WorkerCalls <= probeMaxCalls(p.scope) {
+	bound := true
+	if c := p.cursor; c != nil {
+		// The Cursor record's own object: the executable binding (before
+		// any vendor, after cleanup), the coder workspace, task and commits.
+		q.Cursor = &DevCursorQualification{Binding: d.cursor.binding, Workspace: c.ws, Task: c.task, InputCommit: hashOrEmpty(c.inputCommit),
+			ResultCommit: c.resultCommit}
+		bound = d.cursor.binding.BeforeSHA256 != "" && d.cursor.binding.BeforeSHA256 == d.cursor.binding.AfterSHA256
+	}
+	if qualifiedStages(q.Stages, stages) && d.cleanupOK && !d.protected && d.stopCode == "" && d.executed && cost.WorkerCalls <= maxCalls && bound {
 		q.Result = ResultQualified
 	}
 	inv, err := diskInventory(d.s.ev.root)
@@ -793,6 +808,20 @@ func (d *devSupervisor) probeFinish(cost DevCost) bool {
 	if err := d.s.ev.writeJSON(devQualificationFile, q); err != nil {
 		fmt.Fprintf(d.s.stderr, "reale2e probe-dev-full: %s not written: %v\n", devQualificationFile, err)
 		return false
+	}
+	if p.cursor != nil {
+		// A Cursor record is reloaded under its strict layout and checked by
+		// the offline command's own pure result, QUALIFIED or not: no
+		// optimistic pass before the reload and the independent check.
+		for _, s := range q.Stages {
+			d.s.say("probe stage %s: %s %s", s.Name, s.Result, s.Code)
+		}
+		rep := cursorQualificationReportAt(d.s.ev.root)
+		p.cursor.report = &rep
+		if rep.Result != ResultQualified {
+			fmt.Fprintf(d.s.stderr, "reale2e probe-dev-full: the Cursor qualification record is BLOCKED by its independent check: %v %s\n", rep.Codes, rep.Error)
+		}
+		return rep.Result == ResultQualified
 	}
 	// Fail closed: the written record must pass its own offline check.
 	if q.Result == ResultQualified {
@@ -1083,7 +1112,17 @@ func LoadDevQualification(root string) (*DevBundle, error) {
 	if err != nil {
 		return nil, err
 	}
-	ver, scope := devBundleV2, probeScopeFull
+	// A slice 3a diagnostic receipt is never qualification evidence, alone
+	// or beside other records: refused before any qualification routing,
+	// so direct library use cannot bypass the check command's refusal
+	// (design 12a-3-cursor-worker, slice 3b).
+	if present, err := diagnosticReceipt(resolved); present {
+		if err != nil {
+			return nil, err
+		}
+		return nil, schemaErr("%s: %s", cursorObservationFile, CodeDiagnosticNotQualification)
+	}
+	ver, scope, cursor := devBundleV2, probeScopeFull, false
 	data, err := lstatRegular(resolved, devQualificationFile)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
@@ -1100,13 +1139,16 @@ func LoadDevQualification(root string) (*DevBundle, error) {
 			return nil, errDevSchema("%s: %v", devQualificationFile, err)
 		case schema == devQualificationSchemaV1:
 			ver = devBundleV1
-		case schema != devQualificationSchema:
+		case schema != devQualificationSchema && schema != DevCursorQualificationSchema:
 			return nil, errDevSchema("%s: unsupported schema %q", devQualificationFile, contract.SafeText(schema, 80))
 		case !probeScopeOK(head.Scope):
 			return nil, errDevSchema("%s: unsupported scope %q", devQualificationFile, contract.SafeText(head.Scope, 32))
 		default:
-			scope = head.Scope
+			scope, cursor = head.Scope, schema == DevCursorQualificationSchema
 		}
+	}
+	if cursor {
+		return loadCursorQualification(root, scope)
 	}
 	return loadDevQualificationAs(root, ver, scope)
 }
@@ -1135,6 +1177,23 @@ func CheckDevQualification(b *DevBundle) []string {
 	if q == nil {
 		return []string{"qualification_missing"}
 	}
+	// A Cursor record's stage and call sets are its own (the recognized
+	// Cursor format only); its selection, bindings, nodes, coder stage and
+	// samples are reconstructed independently first (devcursor_check.go).
+	// A historical or default record claiming a Cursor coder is refused,
+	// never retrospectively qualified.
+	stagesFor, maxCalls := probeStagesFor, probeMaxCalls
+	if b.cursor {
+		stagesFor, maxCalls = cursorProbeStagesFor, cursorProbeMaxCalls
+		for _, code := range checkCursorQualification(b, q) {
+			bad(code)
+		}
+		for _, code := range checkCursorCoder(b, q) {
+			bad(code)
+		}
+	} else if rolesSelectCursor(q.Roles) || probeFlowSelectsCursor(b) {
+		bad(CodeCursorSelectionMismatch)
+	}
 	// The record's scope: a v1 record is full only (it has no scope); a
 	// v2 record names its scope and exactly that scope's stage coverage
 	// (design 12a-dev-flow-light).
@@ -1146,15 +1205,15 @@ func CheckDevQualification(b *DevBundle) []string {
 		bad("scope_invalid")
 	case b.ver == devBundleV2:
 		scope = q.Scope
-		if !slices.Equal(q.StageCoverage, probeStagesFor(scope)) || (q.Light != nil) != probeLightScope(scope) ||
+		if !slices.Equal(q.StageCoverage, stagesFor(scope)) || (q.Light != nil) != probeLightScope(scope) ||
 			(q.Render["PROBE_SCOPE"] != "") != probeLightScope(scope) || probeLightScope(scope) && q.Render["PROBE_SCOPE"] != scope {
 			bad("scope_invalid")
 		}
 	}
-	if q.Result != ResultQualified || !qualifiedStages(q.Stages, probeStagesFor(scope)) || q.StopCode != nil {
+	if q.Result != ResultQualified || !qualifiedStages(q.Stages, stagesFor(scope)) || q.StopCode != nil {
 		bad("not_qualified")
 	}
-	if q.WorkerCalls > probeMaxCalls(scope) {
+	if q.WorkerCalls > maxCalls(scope) {
 		bad("cost_bound_exceeded")
 	}
 	if !bytes.Equal(mustJSON(b.inventory()), mustJSON(q.Inventory)) {

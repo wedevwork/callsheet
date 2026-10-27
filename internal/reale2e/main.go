@@ -34,17 +34,20 @@ import (
 
 // Usage is the command's usage text, with the bounds shown before opt-in.
 const Usage = `usage:
-  reale2e run --callsheet ABS --claude ABS --codex ABS --grok ABS --evidence ABS [--flow ABS] [--protect-root ABS ...] [--protect-depth N]
+  reale2e run --callsheet ABS --claude ABS --codex ABS --grok ABS --evidence ABS [--flow ABS] [--cursor ABS] [--protect-root ABS ...]
+      [--protect-depth N]
       (requires ` + EnvOptIn + `=1, no CI and no CLAUDE_CONFIG_DIR variable; linux only; calls paid models)
       runs the checked full development flow (` + DevBundleSchema + `): exit 0 mechanical PASS,
       1 executed failure or incomplete evidence, 2 usage, gate or schema error; --flow takes only the five-role
       development flow (callsheet-dev-full-flow/v1), labelled override-flow when it differs from the default
   reale2e run-dev-full ...
       (deprecated alias of run: the same checked full flow, arguments and exits 0/1/2; it no longer exits 3)
-  reale2e run-dev-light --callsheet ABS --claude ABS --codex ABS --grok ABS --evidence ABS [--flow ABS] [--protect-root ABS ...] [--protect-depth N]
+  reale2e run-dev-light --callsheet ABS --claude ABS --codex ABS --grok ABS --evidence ABS [--flow ABS] [--cursor ABS] [--protect-root ABS ...]
+      [--protect-depth N]
       (same gate as run) one checked light attempt (` + DevBundleSchema + `, scenario light): the owner types
       light <attempt-id> after the seed is prepared, before any paid call; exits as run
-  reale2e run-dev-exercise --callsheet ABS --claude ABS --codex ABS --grok ABS --evidence ABS [--flow ABS] [--protect-root ABS ...] [--protect-depth N]
+  reale2e run-dev-exercise --callsheet ABS --claude ABS --codex ABS --grok ABS --evidence ABS [--flow ABS] [--cursor ABS] [--protect-root ABS ...]
+      [--protect-depth N]
       (same gate as run) the combined exercise (` + DevExerciseSchema + `): the owner types exercise <exercise-id> once,
       then a full attempt and a light attempt run as independent children under attempts/full and attempts/light;
       exit 0 only when both children PASS, 1 otherwise, 2 usage, gate or schema error
@@ -53,16 +56,21 @@ const Usage = `usage:
       (owner-only qualification probe, same gate as run; prints QUALIFIED or BLOCKED, never a workflow PASS;
       --scenario light or both adds the triage and light reviewer stages (identical coverage), default full;
       exit 0 qualified, 1 blocked, 2 usage or gate error)
-      a --flow whose coder is cursor (docs/examples/real-e2e/dev-full/flow-cursor-coder.json) needs --cursor ABS and no
-      ` + EnvCursorConfigDir + ` or ` + EnvXDGConfigHome + ` variable: the slice 3a Cursor diagnostic probe (Linux only, no jail or
-      confinement claim): one supervisor-owned Cursor coder fixture task before the stages, report-only shallow cache/tmp
-      samples, cursor-probe-observation.json instead of qualification.json; it is never QUALIFIED and exits 1 even when
-      every stage was observed (BLOCKED, ` + CodeCursorQualificationPending + `: independent Cursor evidence checking is
-      slice 3b), 2 usage or gate error; run, run-dev-light and run-dev-exercise refuse a Cursor flow (` + CodeCursorPending3b + `)
+  Optional Cursor coder: --flow ABS/flow-cursor-coder.json --cursor ABS. Linux only; unchanged --trust --auto-review recipe; no jail or
+      confinement claim. Cache/tmp samples are report-only. Fresh qualification is an operator prerequisite, not a startup file lookup.
+      run, run-dev-full, run-dev-light, run-dev-exercise and probe-dev-full take one absolute --cursor exactly when the --flow coder is
+      cursor (docs/examples/real-e2e/dev-full/flow-cursor-coder.json), and refuse an inherited ` + EnvCursorConfigDir + ` or ` + EnvXDGConfigHome + `
+      variable; evidence is ` + DevCursorBundleSchema + ` (` + DevCursorExerciseSchema + ` for the combined exercise).
+      Cursor probe: QUALIFIED only after independent evidence checking; BLOCKED otherwise. Exit 0 qualified, 1 blocked, 2 usage/gate error.
+      Historical slice 3a observations are not qualification. The Cursor probe adds one supervisor-owned coder fixture task: at most
+      10 worker calls for --scenario full, 12 for light or both; its record is ` + DevCursorQualificationSchema + `.
   reale2e check --evidence ABS
       (a development evidence/v2 bundle (full or light), a combined exercise root, a full-flow evidence/v1 bundle or
       a legacy callsheet-real-e2e/v3 bundle, each with its own scope; exit 0 PASS, 1 failed or incomplete evidence,
-      2 malformed or unsupported evidence; a Cursor diagnostic observation is refused, exit 2 ` + CodeDiagnosticNotQualification + `)
+      2 malformed or unsupported evidence; a Cursor full or light attempt (` + DevCursorBundleSchema + `) or Cursor
+      combined exercise root (` + DevCursorExerciseSchema + `) with the same exits; a Cursor qualification
+      (` + DevCursorQualificationSchema + `): QUALIFIED or BLOCKED, never a workflow PASS, exit 0 qualified,
+      1 blocked, 2 malformed or unsupported; a historical slice 3a Cursor diagnostic observation is refused, exit 2 ` + CodeDiagnosticNotQualification + `)
   reale2e dev-next --run ABS
   reale2e dev-observe --run ABS --ordinal N --task ID
   reale2e dev-wait-task --run ABS --ordinal N --task ID
@@ -261,15 +269,12 @@ func MainWith(h Host) int {
 			names = append(names, "scenario")
 		}
 		var roots []string
-		// Only the diagnostic probe takes --cursor in slice 3a: absolute,
-		// nonempty and at most once (design 12a-3-cursor-worker FP-2).
-		var cursor *onceAbsFlag
-		if h.Args[0] == "probe-dev-full" {
-			cursor = &onceAbsFlag{}
-		}
+		// Every live command takes an optional --cursor: absolute, nonempty
+		// and at most once (design 12a-3-cursor-worker, slice 3b FP-3).
+		cursor := &onceAbsFlag{}
 		v, ok := flagsWith(h, "run", names, all("flow", "protect-depth", "scenario"), all("callsheet", "claude", "codex", "grok", "evidence", "flow"), &roots, cursor)
-		if !ok && cursor != nil && cursor.bad {
-			return usageError(h, "probe-dev-full takes at most one --cursor, an absolute path to the Cursor executable")
+		if !ok && cursor.bad {
+			return usageError(h, h.Args[0]+" takes at most one --cursor, an absolute path to the Cursor executable")
 		}
 		if ok && v["scenario"] != "" && !probeScopeOK(v["scenario"]) {
 			return usageError(h, "probe-dev-full takes an optional --scenario of full, light or both")
@@ -285,10 +290,7 @@ func MainWith(h Host) int {
 				"optional absolute --protect-root directories and an optional --protect-depth from 0 to 64 (default 3)")
 		}
 		args := runArgs{callsheet: v["callsheet"], claude: v["claude"], codex: v["codex"], grok: v["grok"], evidence: v["evidence"], flow: v["flow"],
-			protectRoots: roots, protectDepth: depth, probeScope: v["scenario"]}
-		if cursor != nil {
-			args.cursor = cursor.val
-		}
+			protectRoots: roots, protectDepth: depth, probeScope: v["scenario"], cursor: cursor.val}
 		// The selection is read (read-only) and the Cursor binding decided
 		// before any capability exists: no vendor or paid work on refusal.
 		if code := cursorBinding(h, args); code != 0 {

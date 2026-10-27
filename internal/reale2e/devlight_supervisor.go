@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -180,12 +181,21 @@ func runDevLightLive(h Host, a runArgs) int {
 	return newDevLightSupervisor(h, w, a).run()
 }
 
-// newDevSupervisor is a fresh development supervisor over w.
+// newDevSupervisor is a fresh development supervisor over w. A validated
+// --cursor (the command bound the Cursor selection and executable before
+// this world existed) allocates the run's own Cursor state and its
+// immutable four-sidecar list (design 12a-3-cursor-worker, slice 3b): a
+// standalone attempt, a probe and each exercise child alike.
 func newDevSupervisor(h Host, w *World, a runArgs) *devSupervisor {
 	s := &supervisor{stdout: h.Stdout, stderr: h.Stderr, goos: h.GOOS, goarch: h.GOARCH, w: w, args: a, ctx: w.Context,
 		known: map[string]string{}, stoppedSet: map[*child]bool{}, reqs: make(chan ctrlMsg), loopDone: make(chan struct{}), envPolicy: envPolicyDev}
-	return &devSupervisor{s: s, manuals: map[string][2]string{}, receiptBytes: map[int][]byte{}, trees: map[string]map[string]TreeFile{},
+	d := &devSupervisor{s: s, manuals: map[string][2]string{}, receiptBytes: map[int][]byte{}, trees: map[string]map[string]TreeFile{},
 		finals: map[string]string{}, sweeps: sweepRecorder{clock: w.Clock}}
+	if a.cursor != "" {
+		d.cursor = newCursorRun(w, a.cursor)
+		s.sidecars = slices.Clone(cursorSidecars)
+	}
+	return d
 }
 
 // newDevLightSupervisor is a light attempt's supervisor (observed by the
@@ -204,9 +214,9 @@ func newDevLightSupervisor(h Host, w *World, a runArgs) *devSupervisor {
 // then deployment and the paid preflights.
 func (d *devSupervisor) lightStart() error {
 	l := d.light
-	steps := []func() error{d.s.printPermissionTemplate, d.hashExecutable, d.s.protectedRoots, d.s.baselineSnapshot, d.loadSelection,
+	steps := d.cursorSteps([]func() error{d.s.printPermissionTemplate, d.hashExecutable, d.s.protectedRoots, d.s.baselineSnapshot, d.loadSelection,
 		d.versionProbes, d.s.createRuntime, d.s.renderPermissions, d.extraDirs, l.seed, d.activateTerminal, l.intake, d.deployDev, d.preflightDev,
-		l.workspace, d.openControl, d.initialPlan, d.launchPhase}
+		l.workspace, d.openControl, d.initialPlan, d.launchPhase})
 	for _, f := range steps {
 		switch {
 		case d.s.ctx.Err() != nil:

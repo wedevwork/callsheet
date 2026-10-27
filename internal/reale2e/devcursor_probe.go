@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -22,19 +21,20 @@ import (
 	"github.com/wedevwork/callsheet/internal/workspacetransfer"
 )
 
-// The slice 3a Cursor-coder diagnostic probe (design 12a-3-cursor-worker,
-// 3a.md). The optional cursor / grok-4.7 / high coder selection runs only
-// through probe-dev-full with an explicit --cursor executable: the probe
-// deploys a fourth sidecar (n-cursor, the coder's node), keeps five
-// authentication preflights (the coder's on Cursor), executes one
-// supervisor-owned coder fixture task after the models stage and before
-// any coordinator phase, then the existing wake, print-notification,
-// reviewer and (light/both) triage and light-review stages unchanged. It
-// is diagnostic: it never prints QUALIFIED, writes no qualification.json
-// and always exits 1 (devcursor_observation.go). The Cursor recipe,
-// minimum version and posture are the adapter's, unchanged: no jail, no
-// sandbox, force, yolo or approve-mcps flag, no canary and no
-// configuration write.
+// The Cursor-coder qualification probe (design 12a-3-cursor-worker,
+// 3a.md, completed by slice 3b). The optional cursor / grok-4.7 / high
+// coder selection takes an explicit --cursor executable: the probe deploys
+// a fourth sidecar (n-cursor, the coder's node), keeps five authentication
+// preflights (the coder's on Cursor), executes one supervisor-owned coder
+// fixture task after the models stage and before any coordinator phase,
+// then the existing wake, print-notification, reviewer and (light/both)
+// triage and light-review stages unchanged. Since slice 3b it writes
+// qualification.json under callsheet-dev-cursor-qualification/v1 and is
+// QUALIFIED (exit 0) only when that written record passes the independent
+// Cursor checker (devcursor_check.go); a slice 3a diagnostic receipt never
+// qualifies. The Cursor recipe, minimum version and posture are the
+// adapter's, unchanged: no jail, no sandbox, force, yolo or approve-mcps
+// flag, no canary and no configuration write.
 
 // Cursor probe names, codes and bounds.
 const (
@@ -53,9 +53,12 @@ const (
 	EnvCursorConfigDir = "CURSOR_CONFIG_DIR"
 	EnvXDGConfigHome   = "XDG_CONFIG_HOME"
 
-	CodeCursorAdapterRequired      = "cursor_adapter_required"
-	CodeCursorAdapterUnused        = "cursor_adapter_unused"
-	CodeCursorConfigDir            = "cursor_config_dir_unsupported"
+	CodeCursorAdapterRequired = "cursor_adapter_required"
+	CodeCursorAdapterUnused   = "cursor_adapter_unused"
+	CodeCursorConfigDir       = "cursor_config_dir_unsupported"
+	// CodeCursorPending3b and CodeCursorQualificationPending are the slice
+	// 3a refusal and diagnostic-blocker names, retired by slice 3b: no
+	// command emits them any more (historical receipts keep theirs).
 	CodeCursorPending3b            = "cursor_execution_pending_3b"
 	CodeCursorQualificationPending = "cursor_qualification_pending"
 	CodeProbeCoderUnqualified      = "probe_coder_unqualified"
@@ -96,7 +99,7 @@ var probeCoderFixtureFiles = []string{"FEATURE.md", "design.md", "go.mod", "main
 // ProbeCursorBounds and ProbeCursorLightBounds are the Cursor probe's
 // cost and time disclosure.
 const (
-	ProbeCursorBounds = `Cost and time bounds of the slice 3a Cursor diagnostic probe, --scenario full (policy, not measurements):
+	ProbeCursorBounds = `Cost and time bounds of the Cursor coder qualification probe, --scenario full (policy, not measurements):
   - five paid authentication preflight tasks (the coder's on Cursor), each at most 2m; one
     supervisor-owned Cursor coder fixture task, at most 10m from admission through publication,
     no retry, then its independent validation within one shared 60s budget; three harmless
@@ -105,10 +108,10 @@ const (
   - the headless Claude Code coordinator adds vendor-dependent turns in up to three phases;
   - each owner continuation window at most 20m; the probe at most 90m from preflight start
     (the first owner-environment fingerprint included), then at most 2m of cleanup;
-  - a failed stage stops the probe; no token-price ceiling is claimed; the probe is diagnostic,
-    never QUALIFIED, and exits 1 even when every stage was observed.
+  - a failed stage stops the probe; no token-price ceiling is claimed; QUALIFIED only after the
+    written record passes the independent Cursor evidence check, BLOCKED otherwise.
 `
-	ProbeCursorLightBounds = `Cost and time bounds of the slice 3a Cursor diagnostic probe, --scenario light or both (policy, not measurements):
+	ProbeCursorLightBounds = `Cost and time bounds of the Cursor coder qualification probe, --scenario light or both (policy, not measurements):
   - five paid authentication preflight tasks (the coder's on Cursor), each at most 2m; one
     supervisor-owned Cursor coder fixture task, at most 10m from admission through publication,
     no retry, then its independent validation within one shared 60s budget; three harmless
@@ -118,12 +121,16 @@ const (
   - the headless Claude Code coordinator adds vendor-dependent turns in up to three phases;
   - each owner continuation window at most 20m; the probe at most 90m from preflight start
     (the first owner-environment fingerprint included), then at most 2m of cleanup;
-  - a failed stage stops the probe; no token-price ceiling is claimed; the probe is diagnostic,
-    never QUALIFIED, and exits 1 even when every stage was observed.
+  - a failed stage stops the probe; no token-price ceiling is claimed; QUALIFIED only after the
+    written record passes the independent Cursor evidence check, BLOCKED otherwise.
 `
-	cursorProbeDisclosure = "Cursor diagnostic probe (slice 3a): prints \"Cursor probe observations: OBSERVED\" or \"BLOCKED\" and \"qualification probe: BLOCKED\", " +
-		"never QUALIFIED; exit 1 even when every stage was observed, 2 usage or gate error. No jail and no confinement claim: Cursor runs " +
-		"--trust --auto-review with the sidecar user's access; shallow cache/tmp samples are report-only observations of all processes."
+	cursorProbeDisclosure = "Cursor probe: QUALIFIED only after independent evidence checking; BLOCKED otherwise. Exit 0 qualified, 1 blocked, 2 usage/gate error. " +
+		"No jail and no confinement claim: Cursor runs --trust --auto-review with the sidecar user's access; shallow cache/tmp samples are " +
+		"report-only observations of all processes. Historical slice 3a observations are not qualification."
+	// cursorAttemptDisclosure is a Cursor attempt's added disclosure.
+	cursorAttemptDisclosure = "Optional Cursor coder (cursor grok-4.7/high, coder only): checked " + DevCursorBundleSchema + " evidence; Linux only; " +
+		"unchanged --trust --auto-review recipe; no jail or confinement claim; cache/tmp samples are report-only observations of all processes. " +
+		"Fresh qualification is an operator prerequisite, not a startup file lookup."
 )
 
 // CursorProbeBoundsFor is a Cursor probe scope's disclosure.
@@ -149,23 +156,9 @@ func cursorProbeMaxCalls(scope string) int {
 	return probeMaxCallsCursorFull
 }
 
-// cursorProbe is the Cursor diagnostic probe's state.
+// cursorProbe is the Cursor qualification probe's coder fixture state (the
+// run's binding and samples are the supervisor's cursorRun).
 type cursorProbe struct {
-	// roots, fs and uid are the shallow observer's inputs (tests replace
-	// them); before and after are its two records.
-	roots  []activityRootSpec
-	fs     activityFS
-	uid    uint32
-	output int
-	before *ActivityAggregate
-	after  *ActivityAggregate
-	// envProtected, envComplete and envCodes summarize the strict
-	// after-cleanup comparison, unchanged by the samples.
-	envProtected int
-	envComplete  bool
-	envCodes     []string
-
-	// The coder stage.
 	input, expected map[string][]byte
 	repoPath        string
 	inputCommit     plumbing.Hash
@@ -181,25 +174,9 @@ type cursorProbe struct {
 	validated       bool
 	coverage        *DevCoverage
 	reason          string
-
-	// The receipt's outcome (devcursor_observation.go).
-	result, blocker string
-}
-
-// newCursorProbe is a Cursor probe over w: the three named roots
-// (~/.cache, /tmp, /var/tmp) and the live filesystem. Each Path is the
-// spelled root the observer lstats; the cache root is tokened in the
-// tokenizer's canonical home spelling (a home reached through a symlink
-// stays $HOME/.cache), never by resolving .cache itself.
-func newCursorProbe(w *World) *cursorProbe {
-	tok := pathTokenizer{home: w.Home}.canonical()
-	var roots []activityRootSpec
-	for _, r := range []struct{ scope, path, token string }{
-		{activityScopeCache, filepath.Join(w.Home, ".cache"), filepath.Join(tok.home, ".cache")}, {activityScopeTmp, "/tmp", "/tmp"},
-		{activityScopeVarTmp, "/var/tmp", "/var/tmp"}} {
-		roots = append(roots, activityRootSpec{Scope: r.scope, Path: r.path, Token: tok.token(r.token)})
-	}
-	return &cursorProbe{roots: roots, fs: liveActivityFS{}, uid: uint32(os.Getuid())}
+	// report is the written record's independent check (the offline
+	// command's own pure result).
+	report *DevCursorQualificationReport
 }
 
 // cursorArgPresent reports a --cursor flag among args (read before the
@@ -232,11 +209,14 @@ func peekCursorSelection(flowPath string) (bool, error) {
 }
 
 // cursorBinding decides the Cursor selection's command binding before any
-// capability exists (after the gate and the CLAUDE_CONFIG_DIR refusal):
-// other live commands refuse a Cursor flow (cursor_execution_pending_3b);
-// the probe requires --cursor for a Cursor flow and refuses it otherwise,
-// and refuses an inherited CURSOR_CONFIG_DIR or XDG_CONFIG_HOME, even
-// empty, naming the variable but never its value. 0 continues; 2 refuses.
+// capability exists (after the gate and the CLAUDE_CONFIG_DIR refusal),
+// for run, run-dev-full, run-dev-light, run-dev-exercise and
+// probe-dev-full alike (design 12a-3-cursor-worker, slice 3b FP-3): a
+// --cursor beside a flow that does not read or parse is that flow's own
+// error (flow_invalid); a Cursor flow requires --cursor and any other flow
+// refuses it; a Cursor flow refuses an inherited CURSOR_CONFIG_DIR or
+// XDG_CONFIG_HOME, even empty, naming the variable but never its value.
+// 0 continues; 2 refuses.
 func cursorBinding(h Host, a runArgs) int {
 	cmd := h.Args[0]
 	sel, perr := peekCursorSelection(a.flow)
@@ -245,17 +225,12 @@ func cursorBinding(h Host, a runArgs) int {
 		return 2
 	}
 	switch {
-	case perr != nil && cmd == "probe-dev-full" && a.cursor != "":
+	case perr != nil && a.cursor != "":
 		// The --cursor binding cannot be decided on a flow that does not
 		// read or parse: its own error, not an unused adapter. Without
 		// --cursor the run's selection loading reports it as before.
 		return refuse("flow_invalid", "the --flow selection could not be read as a development flow, so the --cursor binding is undecided: "+
 			contract.SafeText(perr.Error(), 300))
-	case cmd != "probe-dev-full" && sel:
-		return refuse(CodeCursorPending3b, "a Cursor-coder selection is not executable by "+cmd+" until independent Cursor evidence checking (slice 3b) exists; "+
-			"observe it with the diagnostic reale2e probe-dev-full --cursor ABS instead (nothing was started)")
-	case cmd != "probe-dev-full":
-		return 0
 	case sel && a.cursor == "":
 		return refuse(CodeCursorAdapterRequired, "the selected coder uses the cursor adapter; pass --cursor with the absolute path of the Cursor executable")
 	case !sel && a.cursor != "":
@@ -270,30 +245,6 @@ func cursorBinding(h Host, a runArgs) int {
 		}
 	}
 	return 0
-}
-
-// cursorSelectionBinding rechecks the frozen selection against the bound
-// command: the flow read again must be the one the command bound.
-func (d *devSupervisor) cursorSelectionBinding(flow DevFullFlow) error {
-	bound := d.probe != nil && d.probe.cursor != nil
-	switch {
-	case flow.CursorCoder() && d.probe == nil:
-		return failure(CodeCursorPending3b, errors.New("a Cursor-coder selection runs only in the slice 3a diagnostic probe"))
-	case flow.CursorCoder() && !bound:
-		return failure(CodeCursorAdapterRequired, errors.New("the selected coder uses the cursor adapter but no --cursor executable is bound"))
-	case !flow.CursorCoder() && bound:
-		return failure(CodeCursorAdapterUnused, errors.New("--cursor is bound but the selected coder does not use the cursor adapter"))
-	}
-	return nil
-}
-
-// versionVendors are the vendor version records in order: the Cursor
-// probe's four, otherwise the existing three.
-func (d *devSupervisor) versionVendors() []string {
-	if d.probe != nil && d.probe.cursor != nil {
-		return cursorVersionVendors
-	}
-	return defaultVersionVendor
 }
 
 // ---- Coder stage ----
@@ -323,7 +274,7 @@ func (d *devSupervisor) cursorCoderStage() error {
 		return failure(d.stopCode, errors.New(d.stopReason))
 	}
 	d.probe.setStage(stageCoderEvidence, stagePass, "")
-	d.s.say("probe stage %s observed: task %s published the exact repair and passed independent validation (diagnostic, not qualification)",
+	d.s.say("probe stage %s observed: task %s published the exact repair and passed independent validation (qualification still needs the record's independent check)",
 		stageCoderEvidence, c.task)
 	return nil
 }
@@ -887,11 +838,12 @@ func cursorProbeCaptures() map[string]bool {
 	return m
 }
 
-// cursorProbeLayout is the Cursor probe's closed collection layout: the
-// current qualification layout of its scope plus the coder stage's
-// records, captures and evidence repository and the two shallow samples.
-// It is the diagnostic collector's own load; no checker accepts it as
-// qualification evidence.
+// cursorProbeLayout is the Cursor probe's closed file set: the current
+// qualification layout of its scope plus the coder stage's records,
+// captures and evidence repository and the two shallow samples. Its
+// document dispatch is the base layout's permissive one; only
+// cursorEvidenceLayout (devcursor_check.go), which types every added JSON
+// record, admits Cursor qualification evidence.
 func cursorProbeLayout(scope string) devLayout {
 	l := probeLayoutFor(devBundleV2, scope)
 	file, dir := l.file, l.dir

@@ -71,7 +71,13 @@ type DevReport struct {
 	StopSeq         int              `json:"stop_seq"`
 	Artifacts       []InventoryEntry `json:"artifacts"`
 	Error           string           `json:"error"`
-	tool            toolReport
+	// Activity is a Cursor report's recomputed shallow-sample summary
+	// (design 12a-3-cursor-worker, slice 3b): required on
+	// callsheet-dev-cursor-report/v1 only, never emitted otherwise.
+	Activity *CursorActivitySummary `json:"activity,omitempty"`
+	tool     toolReport
+	// activity are the samples' per-root lines for report.txt.
+	activity []string
 }
 
 // Dev report scope and statements.
@@ -227,7 +233,7 @@ func (c *devChecker) absent(crit, code string, reached bool) bool {
 
 // buildReport derives the report from the criteria.
 func (c *devChecker) buildReport() DevReport {
-	r := DevReport{Schema: c.b.kind("report"), Result: ResultFail, Scope: c.scope(), Judgments: PendingReview, Versions: []VersionRecord{},
+	r := DevReport{Schema: c.b.reportSchema(), Result: ResultFail, Scope: c.scope(), Judgments: PendingReview, Versions: []VersionRecord{},
 		ProtectedRoots: []string{}, Criteria: []DevCriterion{}, Protected: []EnvChange{}, OversizedConfig: []string{}, Artifacts: []InventoryEntry{}}
 	red := Redactor{}
 	pass := true
@@ -294,6 +300,12 @@ func (c *devChecker) buildReport() DevReport {
 	r.Phases = len(c.phaseNumbers())
 	r.WorkerCalls = cost.WorkerCalls
 	r.Artifacts = c.b.inventory()
+	if c.b.cursor {
+		// A Cursor report's recomputed report-only activity summary (never on
+		// a historical or default report).
+		f := cursorActivityOf(c.b, c.runID)
+		r.Activity, r.activity = &f.summary, f.lines
+	}
 	if pass && complete {
 		r.Result = ResultPass
 	}
@@ -363,6 +375,20 @@ func renderDevReport(r DevReport) string {
 				row.Deleted, row.Total)
 		}
 	}
+	if a := r.Activity; a != nil {
+		b.WriteString("cursor activity (report-only shallow samples of all processes at depth 2, not attribution to Cursor; no recursive total, " +
+			"no complete diff and no confinement claim; quality flags are observations, never a gate):\n")
+		for _, l := range r.activity {
+			fmt.Fprintf(&b, "  %s\n", l)
+		}
+		if len(a.Changes) == 0 {
+			b.WriteString("  compared rows: no marker\n")
+		}
+		for _, ch := range a.Changes {
+			fmt.Fprintf(&b, "  compared %s %s: %s\n", ch.Scope, ch.Name, ch.Mark)
+		}
+		b.WriteString("cursor activity not covered: deep or transient writes, other home paths (.local/bin, .npm), reads and network\n")
+	}
 	fmt.Fprintf(&b, "artifacts: %d files (names and SHA-256 in report.json)\n", len(r.Artifacts))
 	return b.String()
 }
@@ -381,6 +407,9 @@ const (
 	protocolDevFull   = "dev-full"
 	protocolExecution = "execution-only"
 	protocolExercise  = "exercise"
+	// protocolCursorQualification is a callsheet-dev-cursor-qualification/v1
+	// record's independent check (design 12a-3-cursor-worker, slice 3b).
+	protocolCursorQualification = "cursor-qualification"
 )
 
 // bundleProtocol decides a bundle's protocol from a safely read, strictly
@@ -397,7 +426,13 @@ func bundleProtocol(root string) (string, string, error) {
 	if _, err := lstatRegular(resolved, DevExecutionFile); err == nil {
 		return protocolExecution, resolved, schemaErr("%s: an execution-only bundle (%s) is unsupported", DevExecutionFile, DevExecutionSchema)
 	}
-	if _, err := lstatRegular(resolved, devQualificationFile); err == nil {
+	if data, err := lstatRegular(resolved, devQualificationFile); err == nil {
+		// Only the new Cursor qualification format has an offline check
+		// route (design 12a-3-cursor-worker, slice 3b); every other
+		// qualification record is refused as before.
+		if schema, serr := manifestSchema(data); serr == nil && schema == DevCursorQualificationSchema {
+			return protocolCursorQualification, resolved, nil
+		}
 		return "", resolved, schemaErr("%s is a qualification record, not a full-flow run", devQualificationFile)
 	}
 	if exerciseRootExists(resolved) {
@@ -419,7 +454,7 @@ func bundleProtocol(root string) (string, string, error) {
 	switch schema {
 	case ManifestSchema:
 		return protocolLegacy, resolved, nil
-	case DevBundleSchema, DevBundleSchemaV1:
+	case DevBundleSchema, DevBundleSchemaV1, DevCursorBundleSchema:
 		return protocolDevFull, resolved, nil
 	}
 	return "", resolved, schemaErr("manifest.json: unsupported schema %q", contract.SafeText(schema, 80))
@@ -454,6 +489,8 @@ func CheckEvidence(root string, out, errOut io.Writer) int {
 		return checkLegacyEvidence(root, out, errOut)
 	case protocolExercise:
 		return CheckExercise(root, out, errOut)
+	case protocolCursorQualification:
+		return checkCursorQualificationEvidence(root, out, errOut)
 	}
 	b, err := LoadDevBundle(root)
 	if err != nil {
@@ -643,8 +680,32 @@ func (c *devChecker) checkManifest() {
 				c.fail("manifest", "version_not_eligible")
 			}
 		}
-		if !slices.Equal(tools, []string{"claude", "codex", "grok", "go", "git"}) {
+		want := []string{"claude", "codex", "grok", "go", "git"}
+		if c.b.cursor {
+			// Only the recognized Cursor format carries the cursor tool.
+			want = cursorVersionTools
+		}
+		if !slices.Equal(tools, want) {
 			c.fail("manifest", "versions_incomplete")
+		}
+		if c.b.cursor {
+			// A Cursor attempt's recorded vendor versions are re-checked
+			// against the adapter minimums offline (historical and default
+			// admission is unchanged).
+			for _, code := range cursorVersionCodes(m.Versions) {
+				c.fail("manifest", code)
+			}
+		}
+	}
+	if c.b.cursor {
+		// The vendor binding: hashed before any vendor execution and after
+		// cleanup, unchanged, at the Cursor version record's path.
+		bind := m.Cursor
+		switch {
+		case bind == nil || !hex64RE.MatchString(bind.BeforeSHA256) || bind.BeforeSHA256 != bind.AfterSHA256:
+			c.fail("manifest", CodeCursorExecutableMismatch)
+		case c.seqOf(func(e Event) bool { return e.Type == EvVersionsChecked }) > 0 && bind.Path != cursorVersionPath(m.Versions):
+			c.fail("manifest", CodeCursorExecutableMismatch)
 		}
 	}
 	start, ok1 := parseTime(m.AttemptStart)
