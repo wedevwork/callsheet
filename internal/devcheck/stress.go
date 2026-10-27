@@ -182,8 +182,10 @@ var (
 
 const (
 	// stressTestTimeout bounds each test binary (go test -timeout) except
-	// the combined packages command's binaries (stressPackagesTestTimeout)
-	// and the mcpqual per-CPU binaries (stressMcpqualTestTimeout).
+	// the combined packages command's binaries (stressPackagesTestTimeout),
+	// the mcpqual per-CPU binaries (stressMcpqualTestTimeout) and the
+	// sidecar CPU1 binary (stressSidecarCPU1TestTimeout). Sidecar CPU2 and
+	// CPU4 keep it.
 	stressTestTimeout = "6m"
 	// stressPackagesTestTimeout bounds each test binary of the combined
 	// "stress packages" command, all nine of its packages (design
@@ -200,6 +202,16 @@ const (
 	// 342.0 s (main run 39546490440), without a package cost regression.
 	// It is a static plan decision: no option or environment overrides it.
 	stressMcpqualTestTimeout = "8m"
+	// stressSidecarCPU1TestTimeout bounds the one sidecar CPU1 stress
+	// binary, "stress sidecar cpu1" of the sidecar-cpu1 shard (design
+	// 12a-stress-sidecar-cpu1-budget, owner decision 2026-10-27): its macOS
+	// binary hit the 6-minute limit at 360.214 s (main run 40412993068,
+	// attempt 1) with archived completed package samples up to 280.364 s and
+	// no sidecar change. The exception belongs to that command, not to the
+	// package: stressPackageTimeout keeps 6 minutes for ./internal/sidecar,
+	// and sidecar CPU2 and CPU4 keep stressTestTimeout. It is a static plan
+	// decision: no option or environment overrides it.
+	stressSidecarCPU1TestTimeout = "8m"
 	// stressWatchdog bounds one stress command, compilation included: each
 	// shard stage has its own, and "stress" shares one across all shards.
 	stressWatchdog = 15 * time.Minute
@@ -269,9 +281,12 @@ func stressFlags(cpus, timeout string) []string {
 	return []string{"go", "test", "-race", "-count=" + strconv.Itoa(StressCount), "-cpu=" + cpus, "-timeout=" + timeout}
 }
 
-// stressPackageTimeout is the test-binary timeout of a single-package
-// stress step: stressMcpqualTestTimeout for exactly ./internal/mcpqual,
-// stressTestTimeout for every other package.
+// stressPackageTimeout is the package-only test-binary timeout of a
+// single-package stress step built by perCPU: stressMcpqualTestTimeout for
+// exactly ./internal/mcpqual, stressTestTimeout for every other package,
+// ./internal/sidecar included. It is not the sidecar CPU1 command's policy:
+// that shard builds its one step with stressSidecarCPU1TestTimeout directly
+// (design 12a-stress-sidecar-cpu1-budget), so CPU2 and CPU4 keep 6 minutes.
 func stressPackageTimeout(pkg string) string {
 	if pkg == "./internal/mcpqual" {
 		return stressMcpqualTestTimeout
@@ -293,7 +308,8 @@ func stressSupported(goos string) error {
 // one concurrent group per package), plane-cpu1 (Parallel: plane's CPU 1
 // invocation alone, design 06a-perf), plane (Parallel: CPU 2 and 4,
 // iteration 05b), sidecar-cpu1 (Parallel: sidecar's CPU 1 alone, design
-// 06a-perf), sidecar (Parallel: sidecar's CPU 2 alone, design
+// 06a-perf, with its own 8-minute binary timeout since design
+// 12a-stress-sidecar-cpu1-budget), sidecar (Parallel: sidecar's CPU 2 alone, design
 // 12a-stress-sidecar-margin), sidecar-cpu4 (Parallel: sidecar's CPU 4
 // alone, the same design), processgroup (Parallel: CPU 1, 2 and 4,
 // iteration 02c) and functions (sequential). Their disjoint union is exactly the iteration 02b
@@ -331,7 +347,12 @@ func StressShards(goos string) ([]StressShard, error) {
 		{Name: "packages-cpu", CPUGroups: groups},
 		{Name: "plane-cpu1", Parallel: true, Steps: perCPU("plane", stressPlanePackage, []int{1})},
 		{Name: "plane", Parallel: true, Steps: perCPU("plane", stressPlanePackage, []int{2, 4})},
-		{Name: "sidecar-cpu1", Parallel: true, Steps: perCPU("sidecar", stressSidecarPackage, []int{1})},
+		// Design 12a-stress-sidecar-cpu1-budget: the sidecar CPU1 singleton
+		// is built explicitly with its own 8-minute binary timeout; perCPU
+		// and stressPackageTimeout stay package-only.
+		{Name: "sidecar-cpu1", Parallel: true, Steps: []Step{
+			{Name: "stress sidecar cpu1", Env: env(), Argv: append(stressFlags("1", stressSidecarCPU1TestTimeout), stressSidecarPackage)},
+		}},
 		{Name: "sidecar", Parallel: true, Steps: perCPU("sidecar", stressSidecarPackage, []int{2})},
 		{Name: "sidecar-cpu4", Parallel: true, Steps: perCPU("sidecar", stressSidecarPackage, []int{4})},
 		{Name: "processgroup", Parallel: true, Steps: perCPU("processgroup", stressProcessGroupPackage, stressCPUs)},

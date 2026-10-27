@@ -75,10 +75,12 @@ func TestRunWrapper(t *testing.T) {
 		}
 	}
 	// The singleton stages dispatch exactly their one invocation: plane and
-	// sidecar CPU1, and sidecar CPU2 and CPU4 (design 12a-stress-sidecar-margin).
+	// sidecar CPU1 (its binary at -timeout=8m since design
+	// 12a-stress-sidecar-cpu1-budget), and sidecar CPU2 and CPU4 (design
+	// 12a-stress-sidecar-margin), still at -timeout=6m.
 	for stage, want := range map[string]string{
 		"stress-plane-cpu1":   "go test -race -count=20 -cpu=1 -timeout=6m ./internal/plane",
-		"stress-sidecar-cpu1": "go test -race -count=20 -cpu=1 -timeout=6m ./internal/sidecar",
+		"stress-sidecar-cpu1": "go test -race -count=20 -cpu=1 -timeout=8m ./internal/sidecar",
 		"stress-sidecar":      "go test -race -count=20 -cpu=2 -timeout=6m ./internal/sidecar",
 		"stress-sidecar-cpu4": "go test -race -count=20 -cpu=4 -timeout=6m ./internal/sidecar",
 	} {
