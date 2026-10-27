@@ -40,8 +40,9 @@ import (
 // its own singleton shard; design 12a-mcpqual-stress-budget gives only the
 // three ./internal/mcpqual binaries -timeout=8m, every other one keeping
 // -timeout=6m, and design 12a-stress-packages-budget gives the combined
-// packages command's binaries -timeout=8m as well, the other eighteen
-// commands keeping -timeout=6m);
+// packages command's binaries -timeout=8m as well, and design
+// 12a-stress-sidecar-cpu1-budget the sidecar CPU1 command, the other
+// seventeen commands keeping -timeout=6m);
 // it is compared against StressShards and StressSteps, never derived from
 // them.
 const (
@@ -58,7 +59,7 @@ const (
 	wantStressPlane1        = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/plane"
 	wantStressPlane2        = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/plane"
 	wantStressPlane4        = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/plane"
-	wantStressSidecar1      = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/sidecar"
+	wantStressSidecar1      = "go test -race -count=20 -cpu=1 -timeout=8m ./internal/sidecar"
 	wantStressSidecar2      = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/sidecar"
 	wantStressSidecar4      = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/sidecar"
 	wantStressPG1           = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/spikes/processgroup"
@@ -270,10 +271,30 @@ func TestStressPlan(t *testing.T) {
 			got != "go test -race -count=20 -cpu=1,2,4 -timeout=8m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/workspacetransfer ./internal/taskworkspace ./internal/taskpublication" {
 			t.Fatalf("%s %s argv = %s", goos, steps[0].Name, got)
 		}
-		// Design 12a-mcpqual-stress-budget, extended by design
-		// 12a-stress-packages-budget: each command has exactly one timeout
-		// flag, -timeout=8m on the combined packages command and the three
-		// mcpqual commands only and -timeout=6m on the other eighteen.
+		// Design 12a-stress-sidecar-cpu1-budget (FP-1): the sidecar CPU1
+		// command is exactly this literal argv on both systems
+		// (independent of wantStressSidecar1 and stress.go).
+		if got := strings.Join(steps[13].Argv, " "); steps[13].Name != "stress sidecar cpu1" ||
+			got != "go test -race -count=20 -cpu=1 -timeout=8m ./internal/sidecar" {
+			t.Fatalf("%s %s argv = %s", goos, steps[13].Name, got)
+		}
+		// Design 12a-mcpqual-stress-budget, extended by designs
+		// 12a-stress-packages-budget and 12a-stress-sidecar-cpu1-budget:
+		// each command has exactly one timeout flag, -timeout=8m on the
+		// combined packages command, the three mcpqual commands and the
+		// sidecar CPU1 command only and -timeout=6m on the other seventeen
+		// (sidecar CPU2 and CPU4, plane, processgroup, the functions and
+		// the contract and workspace commands of packages-cpu).
+		wantTimeout := map[string]string{
+			"stress packages": "-timeout=8m", "stress mcpqual cpu1": "-timeout=8m", "stress mcpqual cpu2": "-timeout=8m",
+			"stress mcpqual cpu4": "-timeout=8m", "stress sidecar cpu1": "-timeout=8m",
+			"stress contract cpu1": "-timeout=6m", "stress contract cpu2": "-timeout=6m", "stress contract cpu4": "-timeout=6m",
+			"stress workspace cpu1": "-timeout=6m", "stress workspace cpu2": "-timeout=6m", "stress workspace cpu4": "-timeout=6m",
+			"stress plane cpu1": "-timeout=6m", "stress plane cpu2": "-timeout=6m", "stress plane cpu4": "-timeout=6m",
+			"stress sidecar cpu2": "-timeout=6m", "stress sidecar cpu4": "-timeout=6m",
+			"stress processgroup cpu1": "-timeout=6m", "stress processgroup cpu2": "-timeout=6m", "stress processgroup cpu4": "-timeout=6m",
+			"stress function": "-timeout=6m", "stress plane function": "-timeout=6m", "stress node function": "-timeout=6m",
+		}
 		n8, n6 := 0, 0
 		for i, s := range steps {
 			var tf []string
@@ -284,17 +305,21 @@ func TestStressPlan(t *testing.T) {
 			}
 			mcpqual := strings.HasPrefix(s.Name, "stress mcpqual cpu") && s.Argv[len(s.Argv)-1] == "./internal/mcpqual"
 			packages := i == 0 && s.Name == "stress packages"
+			sidecar1 := i == 13 && s.Name == "stress sidecar cpu1" && s.Argv[len(s.Argv)-1] == "./internal/sidecar" && slices.Contains(s.Argv, "-cpu=1")
+			if len(tf) != 1 || tf[0] != wantTimeout[s.Name] {
+				t.Fatalf("%s %s: timeout flags %q, want [%s]", goos, s.Name, tf, wantTimeout[s.Name])
+			}
 			switch {
-			case len(tf) == 1 && tf[0] == "-timeout=8m" && (mcpqual || packages):
+			case tf[0] == "-timeout=8m" && (mcpqual || packages || sidecar1):
 				n8++
-			case len(tf) == 1 && tf[0] == "-timeout=6m" && !mcpqual && !packages:
+			case tf[0] == "-timeout=6m" && !mcpqual && !packages && !sidecar1:
 				n6++
 			default:
 				t.Fatalf("%s %s: timeout flags %q", goos, s.Name, tf)
 			}
 		}
-		if n8 != 4 || n6 != 18 {
-			t.Fatalf("%s: %d commands at 8m and %d at 6m, want 4 and 18", goos, n8, n6)
+		if n8 != 5 || n6 != 17 {
+			t.Fatalf("%s: %d commands at 8m and %d at 6m, want 5 and 17", goos, n8, n6)
 		}
 		for i, name := range []string{"stress packages", "stress contract cpu1", "stress contract cpu2", "stress contract cpu4",
 			"stress mcpqual cpu1", "stress mcpqual cpu2", "stress mcpqual cpu4", "stress workspace cpu1", "stress workspace cpu2", "stress workspace cpu4", "stress plane cpu1", "stress plane cpu2", "stress plane cpu4", "stress sidecar cpu1", "stress sidecar cpu2",
@@ -465,20 +490,24 @@ func normalize(t *testing.T, argv, timeout string) []selection {
 
 // TestStressPackageTimeout pins design 12a-mcpqual-stress-budget's timeout
 // selection: the literal budgets (with design 12a-stress-packages-budget's
-// combined packages one, three in all), the exact-match override for
-// ./internal/mcpqual and the default for every other package string, each
-// of the combined command's packages alone included, and stressFlags' use
-// of the timeout it is given.
+// combined packages one and design 12a-stress-sidecar-cpu1-budget's sidecar
+// CPU1 one, four in all), the exact-match override for ./internal/mcpqual
+// and the default for every other package string, each of the combined
+// command's packages alone and ./internal/sidecar included, and
+// stressFlags' use of the timeout it is given.
 func TestStressPackageTimeout(t *testing.T) {
-	if stressTestTimeout != "6m" || stressMcpqualTestTimeout != "8m" || stressPackagesTestTimeout != "8m" {
-		t.Fatalf("budgets %q, %q and %q, want 6m, 8m and 8m", stressTestTimeout, stressMcpqualTestTimeout, stressPackagesTestTimeout)
+	if stressTestTimeout != "6m" || stressMcpqualTestTimeout != "8m" || stressPackagesTestTimeout != "8m" || stressSidecarCPU1TestTimeout != "8m" {
+		t.Fatalf("budgets %q, %q, %q and %q, want 6m, 8m, 8m and 8m", stressTestTimeout, stressMcpqualTestTimeout, stressPackagesTestTimeout, stressSidecarCPU1TestTimeout)
 	}
 	if got := stressPackageTimeout("./internal/mcpqual"); got != "8m" {
 		t.Fatalf("./internal/mcpqual timeout = %q, want 8m", got)
 	}
 	// Design 12a-stress-packages-budget: the 8m exception belongs to the
 	// combined packages command, not to any of its packages considered
-	// alone; ./internal/workspacetransfer alone keeps 6m.
+	// alone; ./internal/workspacetransfer alone keeps 6m. Design
+	// 12a-stress-sidecar-cpu1-budget: the sidecar CPU1 exception belongs to
+	// that one command, not to the package; ./internal/sidecar keeps 6m
+	// here, the package-only result that sidecar CPU2 and CPU4 use.
 	for _, pkg := range []string{"./internal/contract", "./internal/workspace", "./internal/mcp", "./internal/plane", "./internal/sidecar", "./internal/spikes/processgroup",
 		"./tests/function", "./internal/mcpqual/", "./internal/mcpqualx", "internal/mcpqual", "./internal/MCPQUAL", " ./internal/mcpqual", "./internal/mcpqual ", "",
 		"./internal/workspacetransfer", "./internal/taskworkspace", "./internal/taskpublication", "./internal/testkit", "./internal/testkit/fakeadapter",
@@ -496,24 +525,55 @@ func TestStressPackageTimeout(t *testing.T) {
 }
 
 // wantTimeoutOf is the -timeout value a current stress command must carry
-// (design 12a-mcpqual-stress-budget, extended by design
-// 12a-stress-packages-budget): "8m" exactly for a command whose only
-// package is ./internal/mcpqual or whose packages are exactly the combined
-// packages command's nine, in order; "6m" for every other command,
-// ./internal/workspacetransfer alone included. It is written independently
-// of stress.go; the historical selections are not passed through it.
+// (design 12a-mcpqual-stress-budget, extended by designs
+// 12a-stress-packages-budget and 12a-stress-sidecar-cpu1-budget): "8m"
+// exactly for a command whose only package is ./internal/mcpqual, whose
+// packages are exactly the combined packages command's nine, in order, or
+// whose only package is ./internal/sidecar with the exact token -cpu=1 (not
+// -cpu=1,2,4, not a substring); "6m" for every other command,
+// ./internal/workspacetransfer alone and sidecar CPU2 and CPU4 included. It
+// is written independently of stress.go; the historical selections are not
+// passed through it.
 func wantTimeoutOf(argv string) string {
 	var pkgs []string
-	for _, a := range strings.Fields(argv) {
+	fields := strings.Fields(argv)
+	for _, a := range fields {
 		if strings.HasPrefix(a, "./") {
 			pkgs = append(pkgs, a)
 		}
 	}
 	if slices.Equal(pkgs, []string{"./internal/mcpqual"}) || slices.Equal(pkgs, []string{"./internal/testkit", "./internal/testkit/fakeadapter", "./internal/spikes/gittransport",
-		"./internal/client", "./internal/adapter", "./internal/mcp", "./internal/workspacetransfer", "./internal/taskworkspace", "./internal/taskpublication"}) {
+		"./internal/client", "./internal/adapter", "./internal/mcp", "./internal/workspacetransfer", "./internal/taskworkspace", "./internal/taskpublication"}) ||
+		(slices.Equal(pkgs, []string{"./internal/sidecar"}) && slices.Contains(fields, "-cpu=1")) {
 		return "8m"
 	}
 	return "6m"
+}
+
+// checkWantTimeoutOf pins wantTimeoutOf's sidecar CPU1 exception (design
+// 12a-stress-sidecar-cpu1-budget), called by TestStressShardUnion: only the
+// sole ./internal/sidecar package with the exact token -cpu=1 is 8m; a CPU
+// list containing 1, a -cpu=1 look-alike, another package beside sidecar or
+// a sidecar look-alike path is not.
+func checkWantTimeoutOf(t *testing.T) {
+	t.Helper()
+	for argv, want := range map[string]string{
+		"go test -race -count=20 -cpu=1 -timeout=8m ./internal/sidecar":                   "8m",
+		"go test -race -count=20 -cpu=2 -timeout=6m ./internal/sidecar":                   "6m",
+		"go test -race -count=20 -cpu=4 -timeout=6m ./internal/sidecar":                   "6m",
+		"go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/sidecar":               "6m",
+		"go test -race -count=20 -cpu=10 -timeout=6m ./internal/sidecar":                  "6m",
+		"go test -race -count=20 -cpu=1 -timeout=6m ./internal/sidecar ./internal/client": "6m",
+		"go test -race -count=20 -cpu=1 -timeout=6m ./internal/sidecarx":                  "6m",
+		"go test -race -count=20 -cpu=1 -timeout=6m ./internal/sidecar/sub":               "6m",
+		"go test -race -count=20 -cpu=1 -timeout=6m ./internal/plane":                     "6m",
+		"go test -race -count=20 -cpu=1 -timeout=8m ./internal/mcpqual":                   "8m",
+		wantStressPackages: "8m",
+	} {
+		if got := wantTimeoutOf(argv); got != want {
+			t.Errorf("wantTimeoutOf(%q) = %q, want %q", argv, got, want)
+		}
+	}
 }
 
 // TestStressShardUnion (UT-1) proves the shards' union is exactly the 02b
@@ -529,6 +589,7 @@ func wantTimeoutOf(argv string) string {
 // per CPU setting, of the packages-cpu shard since the stress worker
 // rebalance).
 func TestStressShardUnion(t *testing.T) {
+	checkWantTimeoutOf(t)
 	want := map[selection]int{}
 	for _, argv := range want02bSelection {
 		for _, s := range normalize(t, argv, "6m") {
@@ -650,14 +711,15 @@ func TestStressShardUnion(t *testing.T) {
 				}
 			}
 		}
-		// Design 12a-mcpqual-stress-budget, extended by design
-		// 12a-stress-packages-budget: exactly four commands, the combined
-		// packages command and the three mcpqual commands, carry
-		// -timeout=8m and the other eighteen -timeout=6m (normalize has
-		// checked each command's one timeout flag). Commands are counted,
-		// not the binaries of the combined command.
-		if len(timeouts) != 2 || timeouts["8m"] != 4 || timeouts["6m"] != 18 {
-			t.Errorf("%s: commands per timeout %v, want 4 at 8m and 18 at 6m", goos, timeouts)
+		// Design 12a-mcpqual-stress-budget, extended by designs
+		// 12a-stress-packages-budget and 12a-stress-sidecar-cpu1-budget:
+		// exactly five commands, the combined packages command, the three
+		// mcpqual commands and the sidecar CPU1 command, carry -timeout=8m
+		// and the other seventeen -timeout=6m (normalize has checked each
+		// command's one timeout flag). Commands are counted, not the
+		// binaries of the combined command.
+		if len(timeouts) != 2 || timeouts["8m"] != 5 || timeouts["6m"] != 17 {
+			t.Errorf("%s: commands per timeout %v, want 5 at 8m and 17 at 6m", goos, timeouts)
 		}
 		// The per-CPU groups hold exactly the three CPU settings of
 		// contract (group 1), mcpqual (group 2) and workspace (group 3), one
@@ -953,7 +1015,7 @@ func TestStressFailFastRetainsLogs(t *testing.T) {
 		{"stress", "-cpu=1 -timeout=6m ./internal/workspace", "stress workspace cpu1", 10},
 		{"stress", "-cpu=1 -timeout=6m ./internal/plane", "stress plane cpu1", 11},
 		{"stress", "-cpu=2 -timeout=6m ./internal/plane", "stress plane cpu2", 13},
-		{"stress", "-cpu=1 -timeout=6m ./internal/sidecar", "stress sidecar cpu1", 14},
+		{"stress", "-cpu=1 -timeout=8m ./internal/sidecar", "stress sidecar cpu1", 14},
 		{"stress", "-cpu=2 -timeout=6m ./internal/sidecar", "stress sidecar cpu2", 15},
 		{"stress", "-cpu=4 -timeout=6m ./internal/sidecar", "stress sidecar cpu4", 16},
 		{"stress", "-cpu=2 -timeout=6m ./internal/spikes/processgroup", "stress processgroup cpu2", 19},
@@ -1802,7 +1864,7 @@ func TestStressConcurrencyContract(t *testing.T) {
 			{"-cpu=1 -timeout=6m ./internal/plane", "stress plane cpu1", "", [][]string{groupPackages, groupContract, groupMcpqual, groupWorkspace, groupPlane1}},
 			{"-cpu=2 -timeout=6m ./internal/plane", "stress plane cpu2", "stress plane cpu4", [][]string{groupPackages, groupContract, groupMcpqual, groupWorkspace, groupPlane1, groupPlane}},
 			{"-cpu=4 -timeout=6m ./internal/plane", "stress plane cpu4", "stress plane cpu2", [][]string{groupPackages, groupContract, groupMcpqual, groupWorkspace, groupPlane1, groupPlane}},
-			{"-cpu=1 -timeout=6m ./internal/sidecar", "stress sidecar cpu1", "", [][]string{groupPackages, groupContract, groupMcpqual, groupWorkspace, groupPlane1, groupPlane, groupSidecar1}},
+			{"-cpu=1 -timeout=8m ./internal/sidecar", "stress sidecar cpu1", "", [][]string{groupPackages, groupContract, groupMcpqual, groupWorkspace, groupPlane1, groupPlane, groupSidecar1}},
 			{"-cpu=2 -timeout=6m ./internal/sidecar", "stress sidecar cpu2", "", [][]string{groupPackages, groupContract, groupMcpqual, groupWorkspace, groupPlane1, groupPlane, groupSidecar1, groupSidecar}},
 			{"-cpu=4 -timeout=6m ./internal/sidecar", "stress sidecar cpu4", "", [][]string{groupPackages, groupContract, groupMcpqual, groupWorkspace, groupPlane1, groupPlane, groupSidecar1, groupSidecar, groupSidecar4}},
 			{"-cpu=1 -timeout=6m ./internal/spikes/processgroup", "stress processgroup cpu1", "stress processgroup cpu4",

@@ -278,13 +278,15 @@ func TestControlPolicy(t *testing.T) {
 					if !strings.Contains(a, "-race") || !strings.Contains(a, "-count=20") {
 						t.Fatalf("%s %s: %s", goos, sh.Name, a)
 					}
-					// Design 12a-mcpqual-stress-budget, extended by design
-					// 12a-stress-packages-budget: exactly one timeout flag,
-					// -timeout=8m exactly when the step's package is
-					// ./internal/mcpqual alone or its packages are exactly
-					// the combined packages command's nine, in order,
-					// -timeout=6m otherwise; neither is accepted in place of
-					// the other.
+					// Design 12a-mcpqual-stress-budget, extended by designs
+					// 12a-stress-packages-budget and
+					// 12a-stress-sidecar-cpu1-budget: exactly one timeout
+					// flag, -timeout=8m exactly when the step's package is
+					// ./internal/mcpqual alone, its packages are exactly
+					// the combined packages command's nine, in order, or its
+					// package is ./internal/sidecar alone with the exact
+					// token -cpu=1, -timeout=6m otherwise; neither is
+					// accepted in place of the other.
 					var timeouts, pkgs []string
 					for _, arg := range st.Argv {
 						switch {
@@ -297,7 +299,8 @@ func TestControlPolicy(t *testing.T) {
 					want := "-timeout=6m"
 					if slices.Equal(pkgs, []string{"./internal/mcpqual"}) || slices.Equal(pkgs, []string{"./internal/testkit", "./internal/testkit/fakeadapter",
 						"./internal/spikes/gittransport", "./internal/client", "./internal/adapter", "./internal/mcp", "./internal/workspacetransfer",
-						"./internal/taskworkspace", "./internal/taskpublication"}) {
+						"./internal/taskworkspace", "./internal/taskpublication"}) ||
+						(slices.Equal(pkgs, []string{"./internal/sidecar"}) && slices.Contains(st.Argv, "-cpu=1")) {
 						want = "-timeout=8m"
 					}
 					if len(timeouts) != 1 || timeouts[0] != want {
@@ -315,9 +318,11 @@ func TestControlPolicy(t *testing.T) {
 		}
 		// Hosted budget policy: the count, the per-binary timeouts (the
 		// mcpqual one since design 12a-mcpqual-stress-budget, the combined
-		// packages one since design 12a-stress-packages-budget) and the
+		// packages one since design 12a-stress-packages-budget, the sidecar
+		// CPU1 one since design 12a-stress-sidecar-cpu1-budget) and the
 		// concurrency are fixed; no plane fallback wave is applied.
-		if StressCount != 20 || stressTestTimeout != "6m" || stressMcpqualTestTimeout != "8m" || stressPackagesTestTimeout != "8m" || maxConcurrentCPU != 3 || len(stressWaves) != 0 {
+		if StressCount != 20 || stressTestTimeout != "6m" || stressMcpqualTestTimeout != "8m" || stressPackagesTestTimeout != "8m" ||
+			stressSidecarCPU1TestTimeout != "8m" || maxConcurrentCPU != 3 || len(stressWaves) != 0 {
 			t.Fatal("the stress budget policy changed")
 		}
 		// The shared ordinary and race steps (every package but

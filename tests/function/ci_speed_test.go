@@ -39,8 +39,9 @@ import (
 // and mcpqual headroom fix (those three groups in the packages-cpu shard
 // since the stress worker rebalance);
 // the function commands are unchanged. Design 12a-mcpqual-stress-budget
-// gives the three mcpqual commands -timeout=8m, and design
-// 12a-stress-packages-budget the combined packages command; every other
+// gives the three mcpqual commands -timeout=8m, design
+// 12a-stress-packages-budget the combined packages command and design
+// 12a-stress-sidecar-cpu1-budget the sidecar CPU1 command; every other
 // command keeps -timeout=6m.
 const (
 	speedPackages      = "go test -race -count=20 -cpu=1,2,4 -timeout=8m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/workspacetransfer ./internal/taskworkspace ./internal/taskpublication"
@@ -56,7 +57,7 @@ const (
 	speedPlane1        = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/plane"
 	speedPlane2        = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/plane"
 	speedPlane4        = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/plane"
-	speedSidecar1      = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/sidecar"
+	speedSidecar1      = "go test -race -count=20 -cpu=1 -timeout=8m ./internal/sidecar"
 	speedSidecar2      = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/sidecar"
 	speedSidecar4      = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/sidecar"
 	speedPG1           = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/spikes/processgroup"

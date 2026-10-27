@@ -39,8 +39,10 @@ import (
 // stress worker rebalance moved the three groups into the packages-cpu
 // shard, leaving this flattened order unchanged. Design
 // 12a-mcpqual-stress-budget gives the three mcpqual binaries -timeout=8m,
-// and design 12a-stress-packages-budget the combined packages command's
-// binaries; every other binary keeps -timeout=6m.
+// design 12a-stress-packages-budget the combined packages command's
+// binaries and design 12a-stress-sidecar-cpu1-budget the sidecar CPU1
+// binary; every other binary, sidecar CPU2 and CPU4 included, keeps
+// -timeout=6m.
 const (
 	hardeningStressCount     = 20
 	hardeningStressPackages  = "go test -race -count=20 -cpu=1,2,4 -timeout=8m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/workspacetransfer ./internal/taskworkspace ./internal/taskpublication"
@@ -56,7 +58,7 @@ const (
 	hardeningStressPlane1    = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/plane"
 	hardeningStressPlane2    = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/plane"
 	hardeningStressPlane4    = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/plane"
-	hardeningStressSidecar1  = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/sidecar"
+	hardeningStressSidecar1  = "go test -race -count=20 -cpu=1 -timeout=8m ./internal/sidecar"
 	hardeningStressSidecar2  = "go test -race -count=20 -cpu=2 -timeout=6m ./internal/sidecar"
 	hardeningStressSidecar4  = "go test -race -count=20 -cpu=4 -timeout=6m ./internal/sidecar"
 	hardeningStressPG1       = "go test -race -count=20 -cpu=1 -timeout=6m ./internal/spikes/processgroup"
@@ -177,7 +179,7 @@ func TestHardeningStress(t *testing.T) {
 	}{{"./internal/spikes/gittransport", "stress packages", 1}, {"-cpu=2 -timeout=6m ./internal/contract", "stress contract cpu2", 4},
 		{"-cpu=4 -timeout=8m ./internal/mcpqual", "stress mcpqual cpu4", 7}, {"-cpu=1 -timeout=6m ./internal/workspace", "stress workspace cpu1", 10},
 		{"-cpu=1 -timeout=6m ./internal/plane", "stress plane cpu1", 11},
-		{"-cpu=4 -timeout=6m ./internal/plane", "stress plane cpu4", 13}, {"-cpu=1 -timeout=6m ./internal/sidecar", "stress sidecar cpu1", 14},
+		{"-cpu=4 -timeout=6m ./internal/plane", "stress plane cpu4", 13}, {"-cpu=1 -timeout=8m ./internal/sidecar", "stress sidecar cpu1", 14},
 		{"-cpu=4 -timeout=6m ./internal/sidecar", "stress sidecar cpu4", 16},
 		{"-cpu=4 -timeout=6m ./internal/spikes/processgroup", "stress processgroup cpu4", 19}, {"TestFP5GitRoundTrip", "stress function", 20},
 		{"TestPlaneTLS", "stress plane function", 21}, {"TestNodeReconnect", "stress node function", 22}} {

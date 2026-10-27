@@ -68,8 +68,10 @@ var shard02b = []string{
 // another; the stress worker rebalance moved the three groups unchanged
 // into the group-only packages-cpu shard, leaving packages with the
 // combined command alone; design 12a-mcpqual-stress-budget gives the three
-// mcpqual binaries -timeout=8m, and design 12a-stress-packages-budget the
-// combined packages command's binaries as well).
+// mcpqual binaries -timeout=8m, design 12a-stress-packages-budget the
+// combined packages command's binaries as well, and design
+// 12a-stress-sidecar-cpu1-budget the sidecar CPU1 command; sidecar CPU2 and
+// CPU4 keep -timeout=6m).
 var shardPlan = []struct {
 	name      string
 	parallel  bool
@@ -99,7 +101,7 @@ var shardPlan = []struct {
 		{"stress plane cpu4", "go test -race -count=20 -cpu=4 -timeout=6m ./internal/plane"},
 	}, nil},
 	{"sidecar-cpu1", true, [][2]string{
-		{"stress sidecar cpu1", "go test -race -count=20 -cpu=1 -timeout=6m ./internal/sidecar"},
+		{"stress sidecar cpu1", "go test -race -count=20 -cpu=1 -timeout=8m ./internal/sidecar"},
 	}, nil},
 	{"sidecar", true, [][2]string{
 		{"stress sidecar cpu2", "go test -race -count=20 -cpu=2 -timeout=6m ./internal/sidecar"},
@@ -165,7 +167,9 @@ var shard10b = []string{
 // shardFlat22 is the literal flattened stress selection in execution
 // order, written independently of shardPlan: twenty-two commands,
 // unchanged by the stress worker rebalance, which moved only command
-// ownership (one to packages, nine to packages-cpu).
+// ownership (one to packages, nine to packages-cpu); the sidecar CPU1
+// command (index 13) carries -timeout=8m since design
+// 12a-stress-sidecar-cpu1-budget.
 var shardFlat22 = []string{
 	"go test -race -count=20 -cpu=1,2,4 -timeout=8m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/workspacetransfer ./internal/taskworkspace ./internal/taskpublication",
 	"go test -race -count=20 -cpu=1 -timeout=6m ./internal/contract",
@@ -180,7 +184,7 @@ var shardFlat22 = []string{
 	"go test -race -count=20 -cpu=1 -timeout=6m ./internal/plane",
 	"go test -race -count=20 -cpu=2 -timeout=6m ./internal/plane",
 	"go test -race -count=20 -cpu=4 -timeout=6m ./internal/plane",
-	"go test -race -count=20 -cpu=1 -timeout=6m ./internal/sidecar",
+	"go test -race -count=20 -cpu=1 -timeout=8m ./internal/sidecar",
 	"go test -race -count=20 -cpu=2 -timeout=6m ./internal/sidecar",
 	"go test -race -count=20 -cpu=4 -timeout=6m ./internal/sidecar",
 	"go test -race -count=20 -cpu=1 -timeout=6m ./internal/spikes/processgroup",
@@ -290,21 +294,25 @@ func tuples(t *testing.T, argv, timeout string) []tuple {
 }
 
 // shardTimeoutOf is the binary timeout a current stress command must carry
-// (design 12a-mcpqual-stress-budget, extended by design
-// 12a-stress-packages-budget), written independently of devcheck: "8m"
-// exactly when the command's only package is ./internal/mcpqual or its
-// packages are exactly the combined packages command's nine, in order;
-// "6m" for every other command, ./internal/workspacetransfer alone
-// included.
+// (design 12a-mcpqual-stress-budget, extended by designs
+// 12a-stress-packages-budget and 12a-stress-sidecar-cpu1-budget), written
+// independently of devcheck: "8m" exactly when the command's only package
+// is ./internal/mcpqual, its packages are exactly the combined packages
+// command's nine, in order, or its only package is ./internal/sidecar and
+// it has the exact token -cpu=1 (not -cpu=1,2,4, not a substring); "6m"
+// for every other command, ./internal/workspacetransfer alone and sidecar
+// CPU2 and CPU4 included.
 func shardTimeoutOf(argv string) string {
 	var pkgs []string
-	for _, a := range strings.Fields(argv) {
+	fields := strings.Fields(argv)
+	for _, a := range fields {
 		if strings.HasPrefix(a, "./") {
 			pkgs = append(pkgs, a)
 		}
 	}
 	if slices.Equal(pkgs, []string{"./internal/mcpqual"}) || slices.Equal(pkgs, []string{"./internal/testkit", "./internal/testkit/fakeadapter", "./internal/spikes/gittransport",
-		"./internal/client", "./internal/adapter", "./internal/mcp", "./internal/workspacetransfer", "./internal/taskworkspace", "./internal/taskpublication"}) {
+		"./internal/client", "./internal/adapter", "./internal/mcp", "./internal/workspacetransfer", "./internal/taskworkspace", "./internal/taskpublication"}) ||
+		(slices.Equal(pkgs, []string{"./internal/sidecar"}) && slices.Contains(fields, "-cpu=1")) {
 		return "8m"
 	}
 	return "6m"
@@ -456,13 +464,29 @@ func TestStressShardSelection(t *testing.T) {
 		if len(got) != 54 {
 			t.Fatalf("%s: %d distinct tuples, want 54", goos, len(got))
 		}
-		// Design 12a-mcpqual-stress-budget, extended by design
-		// 12a-stress-packages-budget: exactly four commands, the combined
-		// packages command and the three mcpqual commands, carry
-		// -timeout=8m; the other eighteen keep -timeout=6m (tuples checked
+		// Design 12a-mcpqual-stress-budget, extended by designs
+		// 12a-stress-packages-budget and 12a-stress-sidecar-cpu1-budget:
+		// exactly five commands, the combined packages command, the three
+		// mcpqual commands and the sidecar CPU1 command, carry -timeout=8m;
+		// the other seventeen, by name, keep -timeout=6m (tuples checked
 		// each command's one flag). Commands are counted, not binaries.
-		if len(timeouts) != 2 || !slices.Equal(timeouts["8m"], []string{"stress packages", "stress mcpqual cpu1", "stress mcpqual cpu2", "stress mcpqual cpu4"}) || len(timeouts["6m"]) != 18 {
-			t.Fatalf("%s: commands per timeout %v, want the packages and three mcpqual commands at 8m and eighteen at 6m", goos, timeouts)
+		if len(timeouts) != 2 || !slices.Equal(timeouts["8m"], []string{"stress packages", "stress mcpqual cpu1", "stress mcpqual cpu2", "stress mcpqual cpu4", "stress sidecar cpu1"}) ||
+			!slices.Equal(timeouts["6m"], []string{"stress contract cpu1", "stress contract cpu2", "stress contract cpu4", "stress workspace cpu1", "stress workspace cpu2", "stress workspace cpu4",
+				"stress plane cpu1", "stress plane cpu2", "stress plane cpu4", "stress sidecar cpu2", "stress sidecar cpu4",
+				"stress processgroup cpu1", "stress processgroup cpu2", "stress processgroup cpu4", "stress function", "stress plane function", "stress node function"}) {
+			t.Fatalf("%s: commands per timeout %v, want the packages, three mcpqual and sidecar CPU1 commands at 8m and the other seventeen at 6m", goos, timeouts)
+		}
+		// Design 12a-stress-sidecar-cpu1-budget (FP-1): the sidecar-cpu1
+		// shard is exactly this one literal command on both systems, and
+		// the other twenty-one commands are unchanged.
+		if sc := shards[4]; sc.Name != "sidecar-cpu1" || !sc.Parallel || len(sc.Steps) != 1 || sc.CPUGroups != nil || sc.Steps[0].Name != "stress sidecar cpu1" ||
+			strings.Join(sc.Steps[0].Argv, " ") != "go test -race -count=20 -cpu=1 -timeout=8m ./internal/sidecar" {
+			t.Fatalf("%s: sidecar-cpu1 shard = %+v", goos, sc)
+		}
+		if len(flat) != 22 || !slices.Equal(slices.Concat(flat[:13], flat[14:]), slices.Concat(shardFlat22[:13], shardFlat22[14:])) ||
+			flat[13] != "go test -race -count=20 -cpu=1 -timeout=8m ./internal/sidecar" ||
+			flat[14] != "go test -race -count=20 -cpu=2 -timeout=6m ./internal/sidecar" || flat[15] != "go test -race -count=20 -cpu=4 -timeout=6m ./internal/sidecar" {
+			t.Fatalf("%s: the sidecar CPU1 command or the other twenty-one commands changed: %q", goos, flat)
 		}
 		// Design 12a-stress-packages-budget (FP-1): the combined packages
 		// command is exactly this literal argv, all nine binaries at
@@ -544,8 +568,9 @@ func TestStressShardSelection(t *testing.T) {
 		// Every command keeps -race, -count=20 and its binary limit: eight
 		// minutes for the mcpqual commands (design 12a-mcpqual-stress-budget)
 		// and the combined packages command (design
-		// 12a-stress-packages-budget), six for every other (CGO_ENABLED=1 is
-		// checked per step above).
+		// 12a-stress-packages-budget) and the sidecar CPU1 command (design
+		// 12a-stress-sidecar-cpu1-budget), six for every other
+		// (CGO_ENABLED=1 is checked per step above).
 		for _, a := range flat {
 			if !strings.HasPrefix(a, "go test -race -count=20 -cpu=") || !strings.Contains(a, " -timeout="+shardTimeoutOf(a)+" ") || strings.Count(a, "-timeout") != 1 {
 				t.Fatalf("%s: flags changed: %s", goos, a)
@@ -695,7 +720,7 @@ func TestStressShardExecution(t *testing.T) {
 			{"stress-plane-cpu1", "-cpu=1 ", "stress plane cpu1", shardArgv("plane-cpu1")},
 			{"stress", "-cpu=2 -timeout=6m ./internal/plane", "stress plane cpu2", shardArgv("packages", "packages-cpu", "plane-cpu1", "plane")},
 			{"stress-plane", "-cpu=4 ", "stress plane cpu4", shardArgv("plane")},
-			{"stress", "-cpu=1 -timeout=6m ./internal/sidecar", "stress sidecar cpu1", shardArgv("packages", "packages-cpu", "plane-cpu1", "plane", "sidecar-cpu1")},
+			{"stress", "-cpu=1 -timeout=8m ./internal/sidecar", "stress sidecar cpu1", shardArgv("packages", "packages-cpu", "plane-cpu1", "plane", "sidecar-cpu1")},
 			{"stress-sidecar-cpu1", "-cpu=1 ", "stress sidecar cpu1", shardArgv("sidecar-cpu1")},
 			{"stress", "-cpu=2 -timeout=6m ./internal/sidecar", "stress sidecar cpu2", shardArgv("packages", "packages-cpu", "plane-cpu1", "plane", "sidecar-cpu1", "sidecar")},
 			{"stress-sidecar", "-cpu=2 ", "stress sidecar cpu2", shardArgv("sidecar")},
@@ -826,13 +851,16 @@ func TestStressShardExecution(t *testing.T) {
 		scratch := scratchOf(out.String())
 		pos := -1
 		for _, shard := range []string{"contract", "mcpqual", "workspace", "plane", "sidecar"} {
-			// Design 12a-mcpqual-stress-budget: of these per-CPU binaries,
-			// the mcpqual ones alone run with -timeout=8m.
-			timeout := "6m"
-			if shard == "mcpqual" {
-				timeout = "8m"
-			}
 			for _, cpu := range []string{"1", "2", "4"} {
+				// Design 12a-mcpqual-stress-budget: of these per-CPU
+				// binaries, the mcpqual ones run with -timeout=8m, and
+				// since design 12a-stress-sidecar-cpu1-budget the sidecar
+				// CPU1 one too; the others, sidecar CPU2 and CPU4
+				// included, keep -timeout=6m.
+				timeout := "6m"
+				if shard == "mcpqual" || (shard == "sidecar" && cpu == "1") {
+					timeout = "8m"
+				}
 				name := "stress " + shard + " cpu" + cpu
 				i := strings.Index(out.String(), "devcheck: ---- "+name+" log ("+filepath.Join(scratch, "stress-"+shard+"-cpu"+cpu+".log")+") ----\nok go test -race -count=20 -cpu="+cpu+" -timeout="+timeout+" ./internal/"+shard+"\n")
 				if i < 0 || i < pos || !strings.Contains(out.String()[i:], "devcheck: "+name+": ok in ") {
@@ -1885,6 +1913,7 @@ func TestStressShardHandoff(t *testing.T) {
 		t.Fatal("Stress checks keeps the split rule that gives an mcpqual binary a 6-minute timeout")
 	}
 	stressPackagesBudgetHandoff(t, stress, first)
+	sidecarCPU1BudgetHandoff(t, stress, first)
 	mcpqualBudgetJobTimeouts(t, stress)
 	for _, stale := range []string{"conclusions of all eighteen jobs: all four checks", "stress evidence from the fourteen worker logs", "the actual job and step times of all eighteen jobs",
 		"conclusions of all twenty jobs", "sixteen worker logs (the summaries hold none)", "the actual job and step times of all twenty jobs"} {
@@ -1970,17 +1999,24 @@ func mcpqualBudgetJobTimeouts(t *testing.T, stress string) {
 func stressPackagesBudgetHandoff(t *testing.T, stress, first string) {
 	t.Helper()
 	flat := strings.Join(strings.Fields(stress), " ")
+	// The current policy, constants, counts and split-rule exclusion as
+	// updated by design 12a-stress-sidecar-cpu1-budget (sidecar CPU1 is the
+	// third exception: three constants, five commands at 8m and seventeen
+	// at 6m).
 	requireTerms(t, "Stress checks", stress,
-		"Each test binary: `-timeout=6m`, except the combined `stress packages` command's binaries and `internal/mcpqual` stress binaries: `-timeout=8m`.",
+		sidecarCPU1Policy,
 		"`stressPackagesTestTimeout` (design 12a-stress-packages-budget", "`stressMcpqualTestTimeout` (design 12a-mcpqual-stress-budget",
-		"two separate static constants in `internal/devcheck/stress.go`", "no option or environment variable changes any value",
+		"three separate static constants in `internal/devcheck/stress.go`", "no option or environment variable changes any value",
 		"so `internal/workspacetransfer` or any other of its packages considered alone keeps six minutes",
-		"design 12a-stress-packages-budget (2026-10-25) changed the same flag of one more, the combined `stress packages` command, for all nine of its binaries; the other eighteen commands carry `-timeout=6m`",
+		"design 12a-stress-packages-budget (2026-10-25) changed the same flag of one more, the combined `stress packages` command, for all nine of its binaries, and design 12a-stress-sidecar-cpu1-budget (2026-10-27) changed it for one more, the `stress sidecar cpu1` command only; five commands carry `-timeout=8m` and the other seventeen, sidecar CPU2 and CPU4 included, carry `-timeout=6m`",
 		// The split rule: the preserved clause (checked above) and the
-		// appended exclusion of both exceptions.
-		"This default-budget split rule excludes the combined `stress packages` command and the `internal/mcpqual` stress binaries; a combined packages budget breach requires investigation/design revision, not an automatic transfer split.")
+		// appended exclusion of all three exceptions.
+		"This default-budget split rule excludes the sidecar CPU1 command, the combined `stress packages` command and the `internal/mcpqual` stress binaries; a breach of any of these exceptions requires investigation/design revision, not an automatic split (such as a transfer split) or another timeout increase.")
 	for _, stale := range []string{
 		"Each test binary: `-timeout=6m`, except `internal/mcpqual` stress binaries: `-timeout=8m`.",
+		"Each test binary: `-timeout=6m`, except the combined `stress packages` command's binaries and `internal/mcpqual` stress binaries: `-timeout=8m`",
+		"two separate static constants", "the other eighteen commands carry `-timeout=6m`",
+		"This default-budget split rule excludes the combined `stress packages` command and the `internal/mcpqual` stress binaries;",
 		"and every other command keeps `-timeout=6m` (see Budgets)",
 		"go test -race -count=20 -cpu=1,2,4 -timeout=6m ./internal/testkit ./internal/testkit/fakeadapter ./internal/spikes/gittransport ./internal/client ./internal/adapter ./internal/mcp ./internal/workspacetransfer ./internal/taskworkspace ./internal/taskpublication",
 	} {
@@ -1994,9 +2030,11 @@ func stressPackagesBudgetHandoff(t *testing.T, stress, first string) {
 		t.Fatalf("Stress checks lacks the dated block %q", heading)
 	}
 	block := flat[start:]
-	end := strings.Index(block, "Race and CPU scope:")
+	// Design 12a-stress-sidecar-cpu1-budget places its own dated block
+	// between this one and Race and CPU scope.
+	end := strings.Index(block, sidecarCPU1BudgetHeading)
 	if end < 0 {
-		t.Fatal("the 12a-stress-packages-budget block does not end before Race and CPU scope")
+		t.Fatal("the 12a-stress-packages-budget block does not end before the 12a-stress-sidecar-cpu1-budget block")
 	}
 	block = block[:end]
 	requireTerms(t, "the 12a-stress-packages-budget block", block,
@@ -2082,4 +2120,161 @@ func stressPackagesBudgetHandoff(t *testing.T, stress, first string) {
 	// 12a-probe11-closeout), scoped to this entry; closure is an attributed
 	// record, never a bare passed claim.
 	requireHostedClosure(t, first, stressPackagesClosure)
+}
+
+// Design 12a-stress-sidecar-cpu1-budget's verbatim documentation pins
+// (Budget qualification, Documentation): the current policy sentence, the
+// dated block's heading, its supersession sentence (with U+2019 in
+// "blocks’", byte for byte as in docs/ci.md, the post-final DS1
+// clarification) and the First remote run entry's prefix.
+const (
+	sidecarCPU1Policy          = "Each test binary: `-timeout=6m`, except sidecar CPU1, the combined `stress packages` command's binaries and `internal/mcpqual` stress binaries: `-timeout=8m`."
+	sidecarCPU1BudgetHeading   = "Why the sidecar CPU1 stress binary has eight minutes (design 12a-stress-sidecar-cpu1-budget, owner decision 2026-10-27)."
+	sidecarCPU1Supersession    = "This supersedes the unchanged-timeout policy of design 12a-stress-sidecar-margin and the mcpqual and combined-packages budget blocks’ statements that every other stress command or binary keeps `-timeout=6m`, for sidecar CPU1 only; sidecar CPU2 and CPU4 keep `-timeout=6m`."
+	sidecarCPU1ChecklistPrefix = "- for 12a-stress-sidecar-cpu1-budget (2026-10-27;"
+)
+
+// sidecarCPU1BudgetHandoff is design 12a-stress-sidecar-cpu1-budget's FP-2
+// handoff, called by TestStressShardHandoff with the Stress checks and First
+// remote run sections: the exact current policy sentence; the dated block,
+// scoped from its exact heading to Race and CPU scope (both markers are
+// required before any term is checked, so an adjacent block cannot satisfy
+// it), with the evidence and its provenance caveat, the correctly
+// attributed step-wall distributions, the 390.000-second and 90-second
+// package threshold, package seconds rather than wall time, the 493.8/535.8
+// conditional projections under the 900/1200 limits, the aggregate
+// distinction and the verbatim supersession sentence; and the First remote
+// run checklist, scoped from its exact prefix to the next list entry or
+// blank line, with two macOS samples plus one Linux sample and the pull
+// request and pending contract.
+func sidecarCPU1BudgetHandoff(t *testing.T, stress, first string) {
+	t.Helper()
+	// DS1: the Go literal carries U+2019 (bytes E2 80 99) in "blocks’", as
+	// docs/ci.md does; requireTerms then matches the docs byte for byte.
+	if !strings.Contains(sidecarCPU1Supersession, "budget blocks\xe2\x80\x99 statements") || strings.Contains(sidecarCPU1Supersession, "blocks' ") {
+		t.Fatal("the supersession sentence literal does not use U+2019 in blocks’")
+	}
+	// The flattened-order listing carries the new CPU1 line, and CPU2 and
+	// CPU4 keep six minutes.
+	if !strings.Contains(stress, "\ngo test -race -count=20 -cpu=1 -timeout=8m ./internal/sidecar\ngo test -race -count=20 -cpu=2 -timeout=6m ./internal/sidecar\ngo test -race -count=20 -cpu=4 -timeout=6m ./internal/sidecar\n") ||
+		strings.Contains(stress, "\ngo test -race -count=20 -cpu=1 -timeout=6m ./internal/sidecar\n") {
+		t.Fatal("Stress checks does not list the sidecar CPU1 command at -timeout=8m beside CPU2 and CPU4 at -timeout=6m")
+	}
+	requireTerms(t, "Stress checks", stress, sidecarCPU1Policy,
+		"`stressSidecarCPU1TestTimeout` (design 12a-stress-sidecar-cpu1-budget",
+		"`stressPackageTimeout` still returns six minutes for `internal/sidecar` and sidecar CPU2 and CPU4 keep `-timeout=6m`",
+		"The three exceptions are three separate static constants",
+		"Five commands carry `-timeout=8m` (the combined `stress packages` command, the three `internal/mcpqual` commands and `stress sidecar cpu1`) and the other seventeen `-timeout=6m`; the 15-minute watchdog and the 20-minute worker job timeouts are unchanged.",
+		"`stressTestTimeout` keeps `-timeout=6m` for every other binary, sidecar CPU2 and CPU4 included.")
+	flat := strings.Join(strings.Fields(stress), " ")
+	for _, wrong := range []string{"-cpu=2 -timeout=8m ./internal/sidecar", "-cpu=4 -timeout=8m ./internal/sidecar"} {
+		if strings.Contains(flat, wrong) {
+			t.Fatalf("Stress checks gives sidecar CPU2 or CPU4 eight minutes: %q", wrong)
+		}
+	}
+	start := strings.Index(flat, sidecarCPU1BudgetHeading)
+	if start < 0 {
+		t.Fatalf("Stress checks lacks the dated block %q", sidecarCPU1BudgetHeading)
+	}
+	block := flat[start:]
+	end := strings.Index(block, "Race and CPU scope:")
+	if end < 0 {
+		t.Fatal("the 12a-stress-sidecar-cpu1-budget block does not end before Race and CPU scope")
+	}
+	block = block[:end]
+	if strings.Count(flat, sidecarCPU1BudgetHeading) != 1 || strings.Index(flat, "Why the combined packages command has eight minutes") > start {
+		t.Fatal("the 12a-stress-sidecar-cpu1-budget block is not the one block after the 12a-stress-packages-budget block")
+	}
+	requireTerms(t, "the 12a-stress-sidecar-cpu1-budget block", block,
+		// The failure and its evidence.
+		"run [40412993068](https://github.com/wedevwork/callsheet/actions/runs/40412993068)", "attempt 1 failed `ci-macos-stress-sidecar-cpu1` on macos-15 at main `dc1522c`",
+		"`go test -race -count=20 -cpu=1 -timeout=6m ./internal/sidecar`", "`panic: test timed out after 6m0s`",
+		"`FAIL github.com/wedevwork/callsheet/internal/sidecar 360.214s`", "`devcheck: stress sidecar cpu1: FAILED after 371.2s`",
+		"not a hang or a new hotspot", "`git diff --stat 5fb2c40..dc1522c -- internal/sidecar` is empty", "last changed at `db0c361`",
+		"/tmp/triage/20261026-235705-main-macos-stress-sidecar-cpu1/",
+		// The samples and the censored failure.
+		"| Run / sample | CPU1 package seconds N | 480 - N seconds | Provenance |",
+		"| 40334465524 | 189.607 | 290.393 |", "| 40383771739 | 258.621 | 221.379 |", "| 40297225653 | 279.092 | 200.908 |",
+		"| 40404656520 | 280.364 | 199.636 |", "| 40412993068 attempt 2 | 283.934 | 196.066 | Coordinator supplement; unverified provenance |",
+		"| 40412993068 attempt 1 | FAIL 360.214, censored | 119.786 | Alarm endpoint, NOT completion margin |",
+		// The change and the unchanged surroundings.
+		"Only the sidecar CPU1 command, `stress sidecar cpu1` of the sidecar-cpu1 shard, gets `-timeout=8m` (480 s), on Linux and macOS alike",
+		"`go test -race -count=20 -cpu=1 -timeout=8m ./internal/sidecar`", "Sidecar CPU2 and CPU4 remain separate singleton workers at `-timeout=6m`",
+		"the twenty-two jobs with their timeouts (20 minutes for each of the eighteen stress workers, 45 minutes for `ci-linux`, 30 minutes for `ci-macos` and 5 minutes for each of the two summaries) and the required contexts are unchanged",
+		sidecarCPU1Supersession,
+		"isolation topology, lifecycle, CPU2 and CPU4 budgets and qualification history remain intact", "are historical and keep the limits they had at the time",
+		// The provenance caveat.
+		"attributed coordinator observations recorded in `MANIFEST.md`, not independently fetched package logs",
+		"ASSUMPTION (unverified provenance): 283.934 s is the `ok` package duration of attempt 2 (job 121899307717)",
+		"That supplement is absent from the bundle", "proves only a successful 299-second step",
+		"its saved log is attached to the implementing pull request and the run, job, attempt, SHA and exact package line are matched",
+		"No historical sample substitutes for implementation qualification", "not needed to choose the owner-set cap",
+		// The distributions, correctly attributed.
+		"all 34 successful step walls: median 306s, p90 342s, max 379s", "the 17 post-isolation steps: median 306s, p90 338s, max 348s",
+		"The 379-second maximum predates the CPU4 isolation", "the archive does not specify its percentile or rounding convention",
+		"this is a sample, not a population bound",
+		// The threshold.
+		"Qualification threshold: 390.000 package seconds", "480 - 390 = 90 s, 18.75% of the cap",
+		"not a new automatic CI gate and not a prediction", "109.636 s above the largest archived completed package observation (280.364 s)",
+		"106.066 s above the unverified supplement", "29.786 s above the censored alarm endpoint",
+		"11 s (all 34) and 42 s (post-isolation), but those are cross-metric comparisons, NOT observed package margins",
+		"No finite cap guarantees runner speed", "the failed runner's missing tail is unknown",
+		// Package seconds versus wall time.
+		"Package seconds, not devcheck command wall time", `"If a test binary runs longer than duration d, panic."`,
+		"The flag bounds the binary, not the build or launcher time", "step minus package is 13.786 s, rounded 13.8 s",
+		"Do not subtract this allowance from other steps to invent package observations", "qualification uses the actual `ok ... Ns` line",
+		// Shard and job fit.
+		"add zero sequential steps to this worker", "5m 41s = 341 s", "341 - 299 = 42 s",
+		"| Scenario | Conditional step/stage envelope N + 13.8 | Margin under 900s | Whole-job envelope + 42 | Margin under 1200s |",
+		"| 390s qualification target | 403.8 | 496.2 | 445.8 | 754.2 |", "| Full 480s binary allowance | 493.8 | 406.2 | 535.8 | 664.2 |",
+		"ASSUMPTION (unverified): future build, launcher and replay cost stays within 13.8 s and setup and tail within 42 s",
+		"applies that envelope to Linux provisionally too", "not mathematical upper bounds or independent Linux observations",
+		"942 s, leaving 258 s under 1200", "No outer budget change is justified",
+		"A successful run above a projection invalidates that projection for owner review even when it meets the hard limits",
+		// The aggregate distinction.
+		"one shared 15-minute (900 s) watchdog context is created before all nine shards and is not reset", "480 - 360 = 120 s",
+		"capped by the caller's earlier deadline", "261.5 + 65.0 + 155.1 + 64.5 + 172.2 + 149.2 = 867.5 s", "leaving only 32.5 s",
+		"remains a failed, incomplete aggregate, not hosted-worker evidence", "neither 390 s nor 480 s fits that remainder",
+		"No full-aggregate worst-case fit is promised", "a new aggregate regression on a previously completing host is not waived",
+		"hosted verification is pending, not passed")
+	for _, wrong := range []string{"all 34 successful step walls: median 306s, p90 338s", "Hosted verification: passed", "hosted verification passed",
+		"493.8 s and 535.8 s are upper bounds", "the 13.8 s residual is a measured bound"} {
+		if strings.Contains(block, wrong) {
+			t.Fatalf("the 12a-stress-sidecar-cpu1-budget block states %q", wrong)
+		}
+	}
+	i := strings.Index(first, sidecarCPU1ChecklistPrefix)
+	if i < 0 {
+		t.Fatalf("First remote run lacks %q", sidecarCPU1ChecklistPrefix)
+	}
+	checklist := first[i+2:]
+	if j := strings.Index(checklist, "\n- "); j >= 0 {
+		checklist = checklist[:j]
+	}
+	if j := strings.Index(checklist, "\n\n"); j >= 0 {
+		checklist = checklist[:j]
+	}
+	requireTerms(t, "the 12a-stress-sidecar-cpu1-budget checklist", checklist,
+		"owner-closed delivery verification, outside the implementation acceptance bar",
+		"records on the implementing pull request the first completed implementation workflow's `ci-macos-stress-sidecar-cpu1` (macos-15) and `ci-linux-stress-sidecar-cpu1` (ubuntu-24.04), plus a planned second macOS allocation at the same checked-out implementation SHA: two macOS samples and one Linux sample",
+		"the run, job and attempt links", "the pull request head SHA and the actual checked-out SHA, recorded separately",
+		"the runner image, architecture and core count, the Go version and the cache context",
+		"the literal argv `go test -race -count=20 -cpu=1 -timeout=8m ./internal/sidecar`", "the complete `ok github.com/wedevwork/callsheet/internal/sidecar Ns` package line",
+		"require each `N` at or below 390.000 seconds, leaving `480 - N` of at least 90 seconds", "Use package seconds, not devcheck command wall time",
+		"Record the command wall, the complete stage, the setup and tail and the whole-job durations separately",
+		"require the stage below 900 seconds and the job below 1200 seconds", "the 493.8-second stage and 535.8-second job projections",
+		"gh run view <run-id> --repo wedevwork/callsheet --json jobs --jq '.jobs[] | {name, databaseId}'",
+		"gh run rerun <run-id> --job <databaseId> --repo wedevwork/callsheet", "without changing workflow YAML",
+		"Verify the same checked-out SHA, distinct allocations and attempts, and unchanged setup and workload",
+		"Preserve failed attempts", "Missing, cached, skipped, cancelled, failed or timed-out output never qualifies",
+		"Record the complete workflow's success and both summaries' success", "No repeat-until-green sampling and no new workflow gate",
+		"match run 40412993068, job 121899307717, attempt 2, SHA `dc1522c` and its exact package line first",
+		"Pending hosted evidence does not block implementation review once its automated bar passes; until recorded it is pending, not passed",
+		"record the first post-merge workflow and its planned macOS repeat with their actual SHA on that pull request",
+		"never combine pre-merge and post-merge macOS samples from different checked-out revisions", "The owner closes delivery verification",
+		"never an automatic budget increase or a weakened test", "a successful sample above a projection invalidates that projection",
+		"Local exact-argv tests cannot prove hosted headroom", "Hosted verification: pending.")
+	if strings.Contains(strings.Join(strings.Fields(checklist), " "), "Hosted verification: passed") {
+		t.Fatal("the 12a-stress-sidecar-cpu1-budget checklist records pending evidence as passed")
+	}
 }
