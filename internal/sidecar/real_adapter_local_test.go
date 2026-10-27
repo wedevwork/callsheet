@@ -547,6 +547,7 @@ func TestRealAdapterLocal(t *testing.T) {
 			}
 			first := s.resultAck(t, st, false)
 			if err := vr.clk.AwaitWaiter(testWait, testkit.HasTimer(resultRetry)); err != nil {
+				dumpGoroutines(t)
 				t.Fatal(err)
 			}
 			vr.clk.Advance(resultRetry)
@@ -571,6 +572,7 @@ func TestRealAdapterLocal(t *testing.T) {
 			case err := <-vr.run.done:
 				vr.run.done <- err // the helper's cleanup joins it again
 			case <-time.After(testWait):
+				dumpGoroutines(t)
 				t.Fatal("the first Run did not stop")
 			}
 			root := vr.root

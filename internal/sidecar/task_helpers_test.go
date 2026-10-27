@@ -402,6 +402,7 @@ func (c *fakeChild) prompt(t *testing.T) []byte {
 	case b := <-c.stdin:
 		return b
 	case <-time.After(testWait):
+		dumpGoroutines(t)
 		t.Fatal("the child never read its stdin to EOF")
 		return nil
 	}
@@ -517,6 +518,7 @@ func (g *fakeGroups) awaitSignal(t *testing.T, pgid int) []int {
 		select {
 		case <-ch:
 		case <-deadline:
+			dumpGoroutines(t)
 			t.Fatalf("the guardian of group %d was never stopped (stopped %v)", pgid, sig)
 		}
 	}
@@ -543,6 +545,7 @@ func (g *fakeGroups) awaitGone(t *testing.T, pgid int) {
 		select {
 		case <-ch:
 		case <-deadline:
+			dumpGoroutines(t)
 			t.Fatalf("group %d's disappearance was never checked (checked %v)", pgid, cleaned)
 		}
 	}
@@ -702,6 +705,7 @@ func (tr *taskRun) child(t *testing.T) *fakeChild {
 	case c := <-tr.ledger.children:
 		return c
 	case <-time.After(testWait):
+		dumpGoroutines(t)
 		t.Fatal("no task child started")
 		return nil
 	}
@@ -916,6 +920,7 @@ func (e *events) awaitCollected(t *testing.T, id string) {
 		case ev := <-e.collected:
 			e.gone[ev.id] = true
 		case <-deadline:
+			dumpGoroutines(t)
 			t.Fatalf("task %s's worker was never collected", id)
 		}
 	}
@@ -932,6 +937,7 @@ func (e *events) awaitAll(t *testing.T, preds ...func(event) bool) {
 		case ev := <-e.ch:
 			left = slices.DeleteFunc(left, func(p func(event) bool) bool { return p(ev) })
 		case <-deadline:
+			dumpGoroutines(t)
 			t.Fatalf("%d awaited events never arrived", len(left))
 		}
 	}
@@ -1149,6 +1155,7 @@ func (tr *taskRun) super(t *testing.T) *taskSupervisor {
 		select {
 		case tr.cur = <-tr.sup:
 		case <-time.After(testWait):
+			dumpGoroutines(t)
 			t.Fatal("no task supervisor")
 		}
 	}
@@ -1240,6 +1247,7 @@ func (c *fakeCommands) await(t *testing.T, n int) []string {
 		select {
 		case <-ch:
 		case <-deadline:
+			dumpGoroutines(t)
 			t.Fatalf("%d commands never sent (sent %v)", n, sent)
 		}
 	}

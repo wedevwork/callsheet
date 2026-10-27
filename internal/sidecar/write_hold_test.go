@@ -64,16 +64,27 @@ func (h *writeHold) wait(t testing.TB) {
 }
 
 // waitBy returns once a write is held unless timeout fires first; at the
-// timeout h.held is rechecked before t fails.
+// timeout h.held is rechecked before t fails (as testkit.WithinBy does),
+// with a goroutine dump logged first.
 func (h *writeHold) waitBy(t testing.TB, timeout <-chan time.Time) {
 	t.Helper()
-	testkit.WithinBy(t, h.held, timeout, "a sidecar write held after its delivery")
+	select {
+	case <-h.held:
+	case <-timeout:
+		select {
+		case <-h.held:
+		default:
+			dumpGoroutines(t)
+			t.Fatal("a sidecar write held after its delivery did not happen within the test bound")
+		}
+	}
 }
 
 // TestWriteHoldWaitAtBound is the C14 regression for writeHold.wait
 // (iteration 10b review r6): a write held and the wait's bound both ready
 // must never fail the wait, whichever the select takes; each attempt
-// leaves both ready. With nothing held, the expired bound still fails it.
+// leaves both ready. With nothing held, the expired bound still fails it,
+// after logging a goroutine dump; a wait that succeeds logs nothing.
 func TestWriteHoldWaitAtBound(t *testing.T) {
 	t.Parallel()
 	t.Run("both-ready", func(t *testing.T) {
@@ -81,16 +92,32 @@ func TestWriteHoldWaitAtBound(t *testing.T) {
 		for i := range 100 {
 			h := newWriteHold(nil)
 			close(h.held)
-			if testkit.Fails(func(tb testing.TB) { h.waitBy(tb, testkit.Fired()) }) {
-				t.Fatalf("attempt %d: the wait failed although the write was held", i+1)
+			if r := recordFailure(func(tb testing.TB) { h.waitBy(tb, testkit.Fired()) }); r.failed || len(r.logs) != 0 {
+				t.Fatalf("attempt %d: the wait failed (%v) or logged %d records although the write was held", i+1, r.failed, len(r.logs))
 			}
+		}
+	})
+	t.Run("held", func(t *testing.T) {
+		t.Parallel()
+		h := newWriteHold(nil)
+		close(h.held)
+		if r := recordFailure(func(tb testing.TB) { h.waitBy(tb, nil) }); r.failed || len(r.logs) != 0 {
+			t.Fatalf("a held write's wait failed (%v) or logged %d records", r.failed, len(r.logs))
 		}
 	})
 	t.Run("timeout", func(t *testing.T) {
 		t.Parallel()
 		h := newWriteHold(nil)
-		if !testkit.Fails(func(tb testing.TB) { h.waitBy(tb, testkit.Fired()) }) {
+		r := recordFailure(func(tb testing.TB) { h.waitBy(tb, testkit.Fired()) })
+		if !r.failed {
 			t.Fatal("the wait passed with no write held")
+		}
+		if r.msg != "a sidecar write held after its delivery did not happen within the test bound" {
+			t.Fatalf("failure %q", r.msg)
+		}
+		if len(r.logs) != 1 || !strings.HasPrefix(r.logs[0], "goroutine dump at the testWait expiry:\n") ||
+			!strings.Contains(r.logs[0], "sidecar.(*writeHold).waitBy") {
+			t.Fatalf("the expired wait did not log one goroutine dump holding its own stack: %q", r.logs)
 		}
 	})
 }

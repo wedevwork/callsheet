@@ -79,6 +79,7 @@ func (p *guardianPipes) status(t *testing.T) contract.GuardianStatus {
 		}
 		return r.s
 	case <-time.After(testWait):
+		dumpGoroutines(t)
 		t.Fatal("no guardian status")
 		return contract.GuardianStatus{}
 	}
@@ -194,6 +195,7 @@ func (r *guardianRig) exit(t *testing.T) int {
 	case c := <-r.code:
 		return c
 	case <-time.After(testWait):
+		dumpGoroutines(t)
 		t.Fatal("the guardian did not return")
 		return -1
 	}
@@ -927,6 +929,7 @@ func journalCrashWindows(t *testing.T) {
 					tr.run.done <- err
 					t.Fatalf("the restarted Run ended: %v", err)
 				case <-deadline:
+					dumpGoroutines(t)
 					t.Fatal("no recovery-done event")
 				}
 			}

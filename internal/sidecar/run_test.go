@@ -59,6 +59,7 @@ func (f *fakeRun) advanceBackoff(t testing.TB, want time.Duration) {
 		t.Fatalf("backoff %v, want %v", ev.delay, want)
 	}
 	if err := f.clk.AwaitWaiter(testWait, testkit.HasTimer(want)); err != nil {
+		dumpGoroutines(t)
 		t.Fatal(err)
 	}
 	f.clk.Advance(want)
@@ -81,6 +82,7 @@ func (f *fakeRun) awaitReply(t testing.TB, acks int) {
 func (f *fakeRun) tick(t testing.TB) {
 	t.Helper()
 	if err := f.clk.AwaitWaiter(testWait, testkit.HasTimer(heartbeatInterval)); err != nil {
+		dumpGoroutines(t)
 		t.Fatal(err)
 	}
 	f.clk.Advance(heartbeatInterval)
@@ -236,6 +238,7 @@ func TestHeartbeatsCoalesce(t *testing.T) {
 	f.ev.await(t, evAck)
 	c.reconcileEmpty()
 	if err := f.clk.AwaitWaiter(testWait, testkit.HasTimer(heartbeatInterval)); err != nil {
+		dumpGoroutines(t)
 		t.Fatal(err)
 	}
 	f.clk.Advance(4 * heartbeatInterval) // four intervals, one heartbeat
@@ -243,6 +246,7 @@ func TestHeartbeatsCoalesce(t *testing.T) {
 	f.ev.await(t, evAck)
 	// The next heartbeat is due a full interval after b2, not at once.
 	if err := f.clk.AwaitWaiter(testWait, testkit.HasTimer(heartbeatInterval)); err != nil {
+		dumpGoroutines(t)
 		t.Fatal(err)
 	}
 	f.clk.Advance(heartbeatInterval - time.Nanosecond)
@@ -405,6 +409,7 @@ func TestReconnectTimeouts(t *testing.T) {
 	// The reply wait, not the hello write's own 5 s bound.
 	f.awaitReply(t, 0)
 	if err := f.clk.AwaitWaiter(testWait, testkit.HasTimer(stepTimeout)); err != nil {
+		dumpGoroutines(t)
 		t.Fatal(err)
 	}
 	f.clk.Advance(stepTimeout)
@@ -415,6 +420,7 @@ func TestReconnectTimeouts(t *testing.T) {
 	c.expect(contract.FrameHeartbeat, "b1") // blackhole: never acknowledged
 	f.awaitReply(t, 1)
 	if err := f.clk.AwaitWaiter(testWait, testkit.HasTimer(stepTimeout)); err != nil {
+		dumpGoroutines(t)
 		t.Fatal(err)
 	}
 	f.clk.Advance(stepTimeout)
@@ -445,6 +451,7 @@ func TestRunCancellation(t *testing.T) {
 		case c := <-accepted:
 			defer c.Close()
 		case <-time.After(testWait):
+			dumpGoroutines(t)
 			t.Fatal("no dial")
 		}
 		f.stopped(t)
@@ -488,6 +495,7 @@ func TestRunCancellation(t *testing.T) {
 		done := make(chan error, 1)
 		go func() { done <- s.write(ctx, contract.FrameHeartbeat, "b1", contract.HeartbeatBody{}) }()
 		if err := clk.AwaitWaiter(testWait, testkit.HasTimer(stepTimeout)); err != nil {
+			dumpGoroutines(t)
 			t.Fatal(err)
 		}
 		cancel()
@@ -501,6 +509,7 @@ func TestRunCancellation(t *testing.T) {
 		s2 := d.newSessionConn(ws2)
 		go func() { done <- s2.write(bg, contract.FrameHeartbeat, "b1", contract.HeartbeatBody{}) }()
 		if err := clk.AwaitWaiter(testWait, testkit.HasTimer(stepTimeout)); err != nil {
+			dumpGoroutines(t)
 			t.Fatal(err)
 		}
 		clk.Advance(stepTimeout)
@@ -535,6 +544,9 @@ func pipeStream(t testing.TB) (*websocket.Conn, func()) {
 	defer cancel()
 	ws, _, err := websocket.Dial(ctx, "ws://pipe/", &websocket.DialOptions{HTTPClient: hc})
 	if err != nil {
+		if ctx.Err() != nil {
+			dumpGoroutines(t)
+		}
 		t.Fatal(err)
 	}
 	return ws, func() { close(release); c1.Close(); c2.Close(); srv.Close() }

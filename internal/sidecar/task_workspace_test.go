@@ -783,6 +783,7 @@ func TestTaskWorkspaceLifecycle(t *testing.T) {
 		})
 		eventually(t, "the node blocked", func() bool { return tr.super(t).nodeBlocked() })
 		if err := tr.clk.AwaitWaiter(testWait, testkit.HasTimer(journalRetry)); err != nil {
+			dumpGoroutines(t)
 			t.Fatal(err)
 		}
 		tr.clk.Advance(journalRetry)
@@ -918,6 +919,7 @@ func eventually(t *testing.T, what string, cond func() bool) {
 			if cond() {
 				return
 			}
+			dumpGoroutines(t)
 			t.Fatalf("%s never held", what)
 		}
 		time.Sleep(5 * time.Millisecond)

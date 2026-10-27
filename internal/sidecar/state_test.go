@@ -319,6 +319,7 @@ func startLockHolder(t testing.TB, root string) (release, kill func()) {
 			select {
 			case <-done:
 			case <-time.After(testWait):
+				dumpGoroutines(t)
 				t.Error("lock helper not reaped")
 			}
 		})

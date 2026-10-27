@@ -222,6 +222,7 @@ func TestRoleValidationContract(t *testing.T) {
 		c.validate("p1", roleConfig("a", ins, run))
 		rr.script.awaitProbe(t)
 		if err := rr.clk.AwaitWaiter(testWait, testkit.HasTimer(validationBudget)); err != nil {
+			dumpGoroutines(t)
 			t.Fatal(err)
 		}
 		rr.clk.Advance(validationBudget)
@@ -272,6 +273,7 @@ func TestRoleValidationContract(t *testing.T) {
 		rr.clk.Advance(time.Second) // T0+5s: b2 is written and blocks (unread)
 		rr.ev.awaitMatch(t, evValidating, nil)
 		if err := rr.clk.AwaitWaiter(testWait, testkit.HasTimer(stepTimeout)); err != nil {
+			dumpGoroutines(t)
 			t.Fatal(err)
 		}
 		close(block)

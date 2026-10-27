@@ -68,6 +68,7 @@ func (e *gEvents) await(t *testing.T, s string) {
 			if e.seen(s) {
 				return
 			}
+			dumpGoroutines(t)
 			t.Fatalf("no guardian event %q in %v", s, e.all)
 		}
 	}
@@ -119,6 +120,7 @@ func (r *timeoutRig) launch(t *testing.T) {
 func (r *timeoutRig) awaitTimer(t *testing.T, d time.Duration) {
 	t.Helper()
 	if err := r.fc.AwaitWaiter(testWait, testkit.HasTimer(d)); err != nil {
+		dumpGoroutines(t)
 		t.Fatal(err)
 	}
 }
@@ -134,6 +136,7 @@ func (r *timeoutRig) finishGrace(t *testing.T) int {
 		case c := <-r.code:
 			return c
 		case <-deadline:
+			dumpGoroutines(t)
 			t.Fatalf("the guardian did not return (waiters %v)", r.fc.Waiters())
 		default:
 		}
@@ -162,6 +165,7 @@ func (r *timeoutRig) awaitSignal(t *testing.T, sig syscall.Signal) {
 	for !slices.Contains(r.group.signals(), sig) {
 		select {
 		case <-deadline:
+			dumpGoroutines(t)
 			t.Fatalf("the group never got %v (got %v)", sig, r.group.signals())
 		case <-r.ev.sig:
 		case <-time.After(time.Millisecond):

@@ -151,6 +151,7 @@ func TestControlCancel(t *testing.T) {
 						t.Fatalf("attempt %d: guardian cancel %s", attempt, got)
 					}
 				case <-time.After(testWait):
+					dumpGoroutines(t)
 					t.Fatalf("attempt %d: the failed guardian delivery was never retried", attempt)
 				}
 				if attempt == 3 {
@@ -356,6 +357,7 @@ func preparingCancel(t *testing.T, unconfirmed bool) {
 				t.Fatalf("spawned %s", id)
 			}
 		case <-time.After(testWait):
+			dumpGoroutines(t)
 			t.Fatal("no guardian was spawned")
 		}
 	}

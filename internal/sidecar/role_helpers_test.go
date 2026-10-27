@@ -99,6 +99,7 @@ func (a *scriptAdapter) awaitProbe(t testing.TB) string {
 	case exe := <-a.started:
 		return exe
 	case <-time.After(testWait):
+		dumpGoroutines(t)
 		t.Fatal("no probe started")
 		return ""
 	}
@@ -209,6 +210,7 @@ func startRunOpts(t testing.TB, d *deps, o RunOptions) *running {
 		select {
 		case <-r.done:
 		case <-time.After(testWait):
+			dumpGoroutines(t)
 			t.Error("run did not stop")
 		}
 	})
@@ -227,6 +229,7 @@ func (e *events) awaitMatch(t testing.TB, kind eventKind, match func(event) bool
 				return ev
 			}
 		case <-deadline:
+			dumpGoroutines(t)
 			t.Fatalf("no matching %s event", kind)
 		}
 	}
@@ -428,6 +431,7 @@ func (p *pipePlane) accept(t testing.TB) *pipeConn {
 		t.Cleanup(c.release)
 		return c
 	case <-time.After(testWait):
+		dumpGoroutines(t)
 		t.Fatal("the sidecar did not dial")
 		return nil
 	}
@@ -439,6 +443,9 @@ func (c *pipeConn) read(t testing.TB) contract.NodeFrame {
 	defer cancel()
 	_, b, err := c.ws.Read(ctx)
 	if err != nil {
+		if ctx.Err() != nil {
+			dumpGoroutines(t)
+		}
 		t.Fatalf("pipe read: %v", err)
 	}
 	f, err := contract.DecodeFrame(b, contract.FromSidecar)
@@ -457,6 +464,9 @@ func (c *pipeConn) send(t testing.TB, typ, rid string, body any) {
 	ctx, cancel := context.WithTimeout(bg, testWait)
 	defer cancel()
 	if err := c.ws.Write(ctx, websocket.MessageText, b); err != nil {
+		if ctx.Err() != nil {
+			dumpGoroutines(t)
+		}
 		t.Fatalf("pipe write: %v", err)
 	}
 }

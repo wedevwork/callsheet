@@ -642,6 +642,7 @@ func wave2Retry(t *testing.T) {
 		}
 		first := s.resultAck(t, st, false)
 		if err := vr.clk.AwaitWaiter(testWait, testkit.HasTimer(resultRetry)); err != nil {
+			dumpGoroutines(t)
 			t.Fatal(err)
 		}
 		vr.clk.Advance(resultRetry)
@@ -662,6 +663,7 @@ func wave2Retry(t *testing.T) {
 		case err := <-vr.run.done:
 			vr.run.done <- err
 		case <-time.After(testWait):
+			dumpGoroutines(t)
 			t.Fatal("the first Run did not stop")
 		}
 		n := &atomic.Int32{}

@@ -78,6 +78,7 @@ func (g *sessionHold) wait(t *testing.T) event {
 	select {
 	case <-hit:
 	case <-time.After(testWait):
+		dumpGoroutines(t)
 		t.Fatalf("the session never reached %s", kind)
 	}
 	g.mu.Lock()
@@ -419,6 +420,7 @@ func TestTaskStream(t *testing.T) {
 			select {
 			case <-collected:
 			case <-time.After(testWait):
+				dumpGoroutines(t)
 				t.Fatal("worker collection never completed")
 			}
 			ch.exitCode(0)
@@ -533,6 +535,7 @@ func TestTaskStream(t *testing.T) {
 			select {
 			case <-paused:
 			case <-time.After(testWait):
+				dumpGoroutines(t)
 				t.Fatal("the completion collector never took its snapshot")
 			}
 			// Collector B: the session applies the acknowledgement and
@@ -559,6 +562,7 @@ func TestTaskStream(t *testing.T) {
 						releaseA() // B finished; now A may finish too
 					}
 				case <-deadline:
+					dumpGoroutines(t)
 					t.Fatalf("acknowledged %v, collected %v", acked, collected)
 				}
 			}

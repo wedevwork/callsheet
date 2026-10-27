@@ -126,6 +126,7 @@ func TestRolePlatformContract(t *testing.T) {
 				t.Fatalf("swapped FIFO: %q", r)
 			}
 		case <-time.After(testWait):
+			dumpGoroutines(t)
 			t.Fatal("a swapped FIFO blocked the check")
 		}
 		// An injected EACCES is a deterministic oracle.

@@ -318,6 +318,7 @@ func TestGuardianFastCompletion(t *testing.T) {
 		select {
 		case <-held:
 		case <-time.After(testWait):
+			dumpGoroutines(t)
 			t.Fatal("the escalation never sent its TERM")
 		}
 		// To the deadline's final flush (the claim), the observer's next
@@ -337,6 +338,7 @@ func TestGuardianFastCompletion(t *testing.T) {
 				break
 			}
 			if time.Now().After(deadline) {
+				dumpGoroutines(t)
 				t.Fatalf("no probe after the claim: %v", r.ev.all)
 			}
 			time.Sleep(time.Millisecond)
@@ -408,6 +410,7 @@ func TestGuardianFastCompletion(t *testing.T) {
 		select {
 		case <-parked:
 		case <-time.After(testWait):
+			dumpGoroutines(t)
 			t.Fatal("the observer never parked in its probe event")
 		}
 		b, err := contract.EncodeGuardianCommand(contract.GuardianCommand{TaskID: r.inv.TaskID, Execution: r.inv.Execution, Nonce: ctlNonce,
@@ -484,6 +487,7 @@ func TestGuardianFastReturnJoins(t *testing.T) {
 			return
 		}
 		if time.Now().After(deadline) {
+			dumpGoroutines(t)
 			t.Fatalf("guardian goroutines survived its return:\n%s", strings.Join(left, "\n\n"))
 		}
 		time.Sleep(time.Millisecond)
@@ -645,6 +649,7 @@ func TestGuardianLifetimeAdoption(t *testing.T) {
 			t.Fatalf("read ended with %v, want os.ErrClosed", err)
 		}
 	case <-time.After(testWait):
+		dumpGoroutines(t)
 		t.Fatal("Close did not unblock the lifetime reader")
 	}
 	// Another descriptor is adopted as inherited (never made nonblocking).
