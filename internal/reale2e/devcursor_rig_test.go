@@ -74,12 +74,102 @@ type cursorRig struct {
 	output     int
 	// uid, when set, is the observer's own UID (a synthetic filesystem's).
 	uid *uint32
-	// exe is the rig's stub Cursor executable.
+	// exe is the rig's Cursor executable (the --cursor path) and fx its
+	// fixture.
 	exe string
+	fx  cursorExeFixture
+}
+
+// cursorExeKind selects the rigs' Cursor executable fixture (design
+// 12a-3c-cursor-binding, Function tests).
+type cursorExeKind int
+
+const (
+	// cursorExeStub is the plain stub file passed directly as --cursor.
+	cursorExeStub cursorExeKind = iota
+	// cursorExeLinked is an installation: versions/A/cursor-agent and
+	// versions/B/cursor-agent with identical stub bytes, and a
+	// bin/cursor-agent symlink, initially targeting A, passed as --cursor.
+	cursorExeLinked
+)
+
+// cursorExeFixture is one rig's Cursor executable: exe is the --cursor
+// invocation path (the scripted version answers it); a and b are the two
+// version trees' wrappers of the linked kind ("" for the stub).
+type cursorExeFixture struct {
+	t         testing.TB
+	exe, a, b string
+}
+
+// newCursorExeFixture creates kind's executable in a fresh temporary
+// directory.
+func newCursorExeFixture(t testing.TB, kind cursorExeKind) cursorExeFixture {
+	t.Helper()
+	dir := t.TempDir()
+	if kind == cursorExeStub {
+		// A real stub file: the run hashes its explicit Cursor executable
+		// before any vendor and after cleanup (its --version stays scripted).
+		return cursorExeFixture{t: t, exe: stubFile(t, dir, "cursor-agent")}
+	}
+	fx := cursorExeFixture{t: t, exe: filepath.Join(dir, "bin", "cursor-agent")}
+	for _, v := range []struct {
+		name string
+		p    *string
+	}{{"A", &fx.a}, {"B", &fx.b}} {
+		tree := filepath.Join(dir, "versions", v.name)
+		if err := os.MkdirAll(tree, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		*v.p = stubFile(t, tree, "cursor-agent")
+	}
+	if err := os.MkdirAll(filepath.Dir(fx.exe), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fx.retarget(fx.a)
+	return fx
+}
+
+// retarget points the linked fixture's bin/cursor-agent at target the way
+// an updater does: a fresh link renamed over the old one (deterministic,
+// usable from any rig hook).
+func (fx cursorExeFixture) retarget(target string) {
+	tmp := fx.exe + ".next"
+	os.Remove(tmp)
+	if err := os.Symlink(target, tmp); err != nil {
+		fx.t.Errorf("retarget: %v", err)
+		return
+	}
+	if err := os.Rename(tmp, fx.exe); err != nil {
+		fx.t.Errorf("retarget: %v", err)
+	}
+}
+
+// resolved is p's strict filepath.EvalSymlinks spelling: the identity's
+// expected raw path (macOS reaches temporary directories through a link).
+func (fx cursorExeFixture) resolved(p string) string {
+	fx.t.Helper()
+	r, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		fx.t.Fatal(err)
+	}
+	return r
+}
+
+// identity is p's expected identity: its resolved spelling and the SHA-256
+// of its bytes.
+func (fx cursorExeFixture) identity(p string) cursorIdentity {
+	fx.t.Helper()
+	r := fx.resolved(p)
+	return cursorIdentity{path: r, sha256: sha256Hex(mustRead(fx.t, r))}
 }
 
 // newCursorRig is the Cursor probe of scope ("" full) on the probe rig.
 func newCursorRig(t testing.TB, scope string) *cursorRig {
+	return newCursorRigWith(t, scope, cursorExeStub)
+}
+
+// newCursorRigWith is newCursorRig with kind's Cursor executable.
+func newCursorRigWith(t testing.TB, scope string, kind cursorExeKind) *cursorRig {
 	steps := []devAct{{}, {}, {}, {marker: markerReviewApproved}}
 	if probeLightScope(scope) {
 		steps = append(steps, devAct{marker: markerTriageConf, designRequired: designRequiredNo}, devAct{marker: markerReviewApproved})
@@ -88,16 +178,15 @@ func newCursorRig(t testing.TB, scope string) *cursorRig {
 	r.command = "probe-dev-full"
 	r.owner = []string{"continue 1", "continue 2"}
 	r.f.flow = filepath.Join(r.f.checkout, filepath.FromSlash(DevFullDir), "flow-cursor-coder.json")
-	// A real stub file: the run hashes its explicit Cursor executable
-	// before any vendor and after cleanup (its --version stays scripted).
-	exe := stubFile(t, t.TempDir(), "cursor-agent")
+	fx := newCursorExeFixture(t, kind)
+	exe := fx.exe
 	r.extraArgs = []string{"--cursor", exe}
 	if scope != "" {
 		r.extraArgs = append(r.extraArgs, "--scenario", scope)
 	}
 	r.f.versions[exe] = fakeCursorVersion
 	eligibleVersions(r.f)
-	cr := &cursorRig{devRig: r, exe: exe}
+	cr := &cursorRig{devRig: r, exe: exe, fx: fx}
 	base := shortTemp(t)
 	cache, tmp := filepath.Join(r.f.home, ".cache"), filepath.Join(base, "tmp")
 	for _, d := range []string{filepath.Join(cache, "vendor"), filepath.Join(tmp, "build")} {
@@ -356,8 +445,16 @@ func (cr *cursorRig) coderStopped(code string, artifacts ...string) DevQualifica
 // returns the executable.
 func cursorAttempt(t testing.TB, r *devRig) string {
 	t.Helper()
+	return cursorAttemptWith(t, r, cursorExeStub).exe
+}
+
+// cursorAttemptWith is cursorAttempt with kind's Cursor executable; it
+// returns the fixture.
+func cursorAttemptWith(t testing.TB, r *devRig, kind cursorExeKind) cursorExeFixture {
+	t.Helper()
 	r.f.flow = filepath.Join(r.f.checkout, filepath.FromSlash(DevFullDir), "flow-cursor-coder.json")
-	exe := stubFile(t, t.TempDir(), "cursor-agent")
+	fx := newCursorExeFixture(t, kind)
+	exe := fx.exe
 	r.extraArgs = append(r.extraArgs, "--cursor", exe)
 	r.f.versions[exe] = fakeCursorVersion
 	eligibleVersions(r.f)
@@ -379,7 +476,7 @@ func cursorAttempt(t testing.TB, r *devRig) string {
 			d.cursor.roots = roots
 		}
 	}
-	return exe
+	return fx
 }
 
 // eligibleVersions scripts vendor versions at the adapters' current
@@ -393,18 +490,31 @@ func eligibleVersions(f *fakeWorld) {
 // newCursorFullRig is a Cursor full attempt over steps.
 func newCursorFullRig(t testing.TB, steps []devAct) *devRig {
 	t.Helper()
+	r, _ := newCursorFullRigWith(t, steps, cursorExeStub)
+	return r
+}
+
+// newCursorFullRigWith is newCursorFullRig with kind's Cursor executable.
+func newCursorFullRigWith(t testing.TB, steps []devAct, kind cursorExeKind) (*devRig, cursorExeFixture) {
+	t.Helper()
 	r := newDevRig(t, steps)
 	r.owner = []string{"yes 1"}
-	cursorAttempt(t, r)
-	return r
+	return r, cursorAttemptWith(t, r, kind)
 }
 
 // newCursorLightRig is a Cursor light attempt over steps.
 func newCursorLightRig(t testing.TB, steps []devAct) *devRig {
 	t.Helper()
-	r := newLightRig(t, steps)
-	cursorAttempt(t, r)
+	r, _ := newCursorLightRigWith(t, steps, cursorExeStub)
 	return r
+}
+
+// newCursorLightRigWith is newCursorLightRig with kind's Cursor
+// executable.
+func newCursorLightRigWith(t testing.TB, steps []devAct, kind cursorExeKind) (*devRig, cursorExeFixture) {
+	t.Helper()
+	r := newLightRig(t, steps)
+	return r, cursorAttemptWith(t, r, kind)
 }
 
 // newCursorExerciseRig is a Cursor combined exercise over full and light
@@ -412,10 +522,18 @@ func newCursorLightRig(t testing.TB, steps []devAct) *devRig {
 // bound executable. It returns the rig and the executable.
 func newCursorExerciseRig(t testing.TB, fullSteps, lightSteps []devAct) (*exerciseRig, string) {
 	t.Helper()
+	x, fx := newCursorExerciseRigWith(t, fullSteps, lightSteps, cursorExeStub)
+	return x, fx.exe
+}
+
+// newCursorExerciseRigWith is newCursorExerciseRig with kind's Cursor
+// executable; it returns the fixture.
+func newCursorExerciseRigWith(t testing.TB, fullSteps, lightSteps []devAct, kind cursorExeKind) (*exerciseRig, cursorExeFixture) {
+	t.Helper()
 	x := newExerciseRig(t, fullSteps, lightSteps)
-	exe := cursorAttempt(t, x.full)
+	fx := cursorAttemptWith(t, x.full, kind)
 	x.light.devHook = x.full.devHook
-	return x, exe
+	return x, fx
 }
 
 // cursorCache is one cached immutable Cursor bundle: a qualified probe of

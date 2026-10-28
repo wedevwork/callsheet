@@ -194,6 +194,50 @@ func BenchmarkDevFullCursorAttempt(b *testing.B) {
 	}
 }
 
+// BenchmarkDevFullCursorBinding (design 12a-3c-cursor-binding) is one
+// identity read of the Cursor executable: strict resolution, the bounded
+// SHA-256 and the re-resolution, over a direct wrapper file and through a
+// chained (two-hop) symlink, as each live gate performs it. Setup is
+// outside the timed loop; every iteration asserts the identity derived
+// from filepath.EvalSymlinks. No vendor, payload-tree scan or latency
+// threshold; the 1 GiB bound is unchanged.
+func BenchmarkDevFullCursorBinding(b *testing.B) {
+	dir := b.TempDir()
+	tree := filepath.Join(dir, "versions", "2026.10.14-0f9edde")
+	if err := os.MkdirAll(tree, 0o700); err != nil {
+		b.Fatal(err)
+	}
+	// A wrapper of the observed size (1096 bytes).
+	wrapper := filepath.Join(tree, "cursor-agent")
+	data := []byte("#!/usr/bin/env sh\n" + strings.Repeat("# wrapper\n", 107) + "exit 0\n")
+	data = append(data, bytes.Repeat([]byte{'\n'}, 1096-len(data))...)
+	if err := os.WriteFile(wrapper, data, 0o700); err != nil {
+		b.Fatal(err)
+	}
+	hop := filepath.Join(dir, "current")
+	link := filepath.Join(dir, "cursor-agent")
+	if os.Symlink(wrapper, hop) != nil || os.Symlink(hop, link) != nil {
+		b.Fatal("symlinks")
+	}
+	resolved, err := filepath.EvalSymlinks(wrapper)
+	if err != nil {
+		b.Fatal(err)
+	}
+	want := cursorIdentity{path: resolved, sha256: sha256Hex(data)}
+	for _, c := range []struct{ name, exe string }{{"direct", wrapper}, {"chained_symlink", link}} {
+		b.Run(c.name, func(b *testing.B) {
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				id, err := readCursorIdentity(c.exe)
+				if err != nil || id != want {
+					b.Fatalf("%+v %v, want %+v", id, err, want)
+				}
+			}
+		})
+	}
+}
+
 // maxSampleRows asserts that dir's two samples are maximum legal ones:
 // every root at its 64-row entry bound.
 func maxSampleRows(tb testing.TB, dir string) {

@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/wedevwork/callsheet/internal/adapter"
 )
 
 // The combined exercise root's offline check (design 12a-dev-flow-light,
@@ -375,6 +377,29 @@ func checkExerciseRootData(root string, record []byte, initial bool) (exerciseCh
 		} else {
 			hrow.see("Cursor executable %s sha256 %s (root before and after)", auditText(ex.Cursor.Path, 120), ex.Cursor.BeforeSHA256)
 		}
+		// The reached children that recorded versions_checked ran one
+		// Cursor build: each stored exactly one nonempty Cursor version and
+		// all are byte-equal (design 12a-3c-cursor-binding). The root has
+		// no version of its own; a child without the event is left to its
+		// own failure and incompleteness codes.
+		var versions []string
+		for k, b := range reached {
+			if b == nil || manifests[k] == nil || countEvents(b, func(e Event) bool { return e.Type == EvVersionsChecked }) == 0 {
+				continue
+			}
+			v, ok := cursorStoredVersion(manifests[k].Versions)
+			if !ok {
+				hrow.bad(CodeCursorExecutableMismatch)
+				continue
+			}
+			if len(versions) > 0 && v != versions[0] {
+				hrow.bad(CodeCursorExecutableMismatch)
+			}
+			versions = append(versions, v)
+		}
+		if len(versions) > 0 {
+			hrow.see("Cursor version %s (%d reached children that checked versions)", auditText(versions[0], 120), len(versions))
+		}
 	}
 	hrow.done(bad)
 	crow := rows.add("exercise/accounting", "The root's accounting is the sum of the children's actual derived accounting (failed, late and recovered calls included once), at most 33 worker calls, with unknown monetary cost")
@@ -427,8 +452,23 @@ func checkExerciseRootData(root string, record []byte, initial bool) (exerciseCh
 			break
 		}
 	}
-	_ = reached
 	return res, nil
+}
+
+// cursorStoredVersion is the complete stored Cursor version of a version
+// list, exactly as written (no parsing or normalization): false when the
+// list holds no Cursor entry, more than one, or an empty one.
+func cursorStoredVersion(versions []VersionRecord) (string, bool) {
+	var found []string
+	for _, v := range versions {
+		if v.Tool == adapter.CursorID {
+			found = append(found, v.Version)
+		}
+	}
+	if len(found) != 1 || strings.TrimSpace(found[0]) == "" {
+		return "", false
+	}
+	return found[0], true
 }
 
 // exerciseClaim states what a combined result demonstrates.

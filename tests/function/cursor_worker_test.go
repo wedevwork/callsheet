@@ -163,7 +163,9 @@ func TestCursor3bFP4OwnerProcedure(t *testing.T) {
 		{"fresh absolute nonexistent directory", "directory"},
 		{"A fresh Cursor probe writes qualification.json and exits 0 only after its independent check qualifies it.", "A Cursor probe writes qualification.json."},
 		{"A slice 3a observation cannot qualify Cursor;", "A slice 3a observation qualifies Cursor;"},
-		{"not a startup file lookup", "a startup file lookup"},
+		// The required clause itself (design 12a-3c-cursor-binding's second
+		// binding paragraph also says "not a startup file lookup").
+		{"Fresh qualification is an operator prerequisite, not a startup file lookup", "Fresh qualification is an operator prerequisite, a startup file lookup"},
 		{"The owner stops unless the fresh both qualification and its offline check agree", "The owner continues"},
 		{"keep the evidence and stop: no retry around a refusal", "keep the evidence and stop: a retry around a refusal"},
 		{"at most 12 worker calls", "at most 24 worker calls"},
@@ -191,6 +193,116 @@ func TestCursor3bFP4OwnerProcedure(t *testing.T) {
 	for _, claim := range []string{"The harness looks up a qualification file at startup.", "A probe-11 pass is qualified automatically for Cursor.",
 		"Cursor coder status: observed.", "Commands refuse a Cursor flow with cursor_execution_pending_3b."} {
 		if checkCursorProcedure(strings.Replace(doc, cursorStatusPin, cursorStatusPin+" "+claim, 1)) == nil {
+			t.Errorf("the claim %q was accepted", claim)
+		}
+	}
+}
+
+// cursorBindingParagraphs are design 12a-3c-cursor-binding's three
+// normative paragraphs, in order, right after the status pin.
+var cursorBindingParagraphs = []string{
+	"Cursor identity is the symlink-resolved target of the explicit --cursor path plus that file's SHA-256. The harness rechecks the original path before vendor execution, after cleanup and before starting the light child. A changed target fails even when the wrapper bytes are identical (`cursor_executable_mismatch`); a change observed during the full attempt also prevents that attempt from passing. A between-children mismatch leaves the light child unstarted.",
+	"The offline exercise check compares stored bindings and the complete stored Cursor version strings of reached children that recorded `versions_checked`. The root stores a binding, not a version; qualification is still an owner prerequisite, not a startup file lookup. Stored paths are labels and are never opened offline. Check historical bundles with the revision recorded in their manifest or qualification record (for an exercise, its reached child manifests); do not rewrite them to claim the stronger binding.",
+	"After this binding fix, requalify with a fresh probe and combined exercise on one unchanged Cursor version. This check detects changes at its observation boundaries; it does not hash the wrapper's dependencies or provide confinement.",
+}
+
+// cursorBindingClauses are the two rewritten binding clauses, and
+// cursorHashOnlyClauses the hash-only claims they replace.
+var (
+	cursorBindingClauses = []string{
+		"binds the explicit executable by its resolved target and file SHA-256 before any vendor runs and rechecks that identity after cleanup (a changed or unreadable identity is `cursor_executable_mismatch`)",
+		"the selection bytes and the executable identity are frozen before the cost authorization, both children capture those bytes and must carry the root's binding, and a changed identity or previously observed binding failure stops before the light child starts",
+	}
+	cursorHashOnlyClauses = []string{
+		"binds the explicit executable by its SHA-256 before any vendor runs and again after cleanup",
+		"a changed or unreadable executable is `cursor_executable_mismatch`",
+		"the selection bytes and the executable are frozen before the cost authorization",
+		"a changed executable stops before the light child's paid work",
+	}
+)
+
+// checkCursorBinding is the binding documentation's validator: the owner
+// procedure still validates, the three paragraphs follow the status pin in
+// order before the optional-selection paragraph, the rewritten clauses are
+// present and no hash-only claim remains.
+func checkCursorBinding(doc string) error {
+	if err := checkCursorProcedure(doc); err != nil {
+		return err
+	}
+	current, _, err := cursorSections(doc)
+	if err != nil {
+		return err
+	}
+	flat := flatText(current)
+	at := strings.Index(flat, cursorStatusPin)
+	for _, p := range cursorBindingParagraphs {
+		i := strings.Index(flat, flatText(p))
+		if i < 0 || i < at || strings.Count(flat, flatText(p)) != 1 {
+			return fmt.Errorf("the binding paragraph %.60q is missing, repeated or out of order", p)
+		}
+		at = i
+	}
+	if sel := strings.Index(flat, "The optional coder-only selection"); sel < at {
+		return fmt.Errorf("the binding paragraphs are not before the optional-selection paragraph")
+	}
+	for _, c := range cursorBindingClauses {
+		if !strings.Contains(flat, flatText(c)) {
+			return fmt.Errorf("the procedure lacks %q", c)
+		}
+	}
+	for _, c := range cursorHashOnlyClauses {
+		if strings.Contains(flat, flatText(c)) {
+			return fmt.Errorf("the procedure keeps the hash-only claim %q", c)
+		}
+	}
+	return nil
+}
+
+func TestCursorBindingFP5(t *testing.T) {
+	doc := string(repoFile(t, "docs/real-e2e.md"))
+	if err := checkCursorBinding(doc); err != nil {
+		t.Fatal(err)
+	}
+	// UT-5: deleting or weakening each new clause, restoring a hash-only
+	// claim, reordering the paragraphs or adding a promoting claim is
+	// refused; the existing procedure pins still apply.
+	var mutations [][2]string
+	for _, p := range cursorBindingParagraphs {
+		mutations = append(mutations, [2]string{p + "\n\n", ""})
+	}
+	for _, c := range cursorBindingClauses {
+		mutations = append(mutations, [2]string{c, ""})
+	}
+	mutations = append(mutations,
+		[2]string{"symlink-resolved target of the explicit --cursor path plus", "SHA-256 of the explicit --cursor path plus"},
+		[2]string{"A changed target fails even when the wrapper bytes are identical", "A changed target passes when the wrapper bytes are identical"},
+		[2]string{"leaves the light child unstarted", "lets the light child start"},
+		[2]string{"the complete stored Cursor version strings", "the stored Cursor version dates"},
+		[2]string{"Stored paths are labels and are never opened offline.", "Stored paths are opened offline."},
+		[2]string{"with the revision recorded in their manifest or qualification record", "with the current checkout"},
+		[2]string{"requalify with a fresh probe and combined exercise on one unchanged Cursor version", "keep the earlier qualification"},
+		[2]string{"it does not hash the wrapper's dependencies or provide confinement", "it hashes the wrapper's dependencies"},
+		[2]string{cursorBindingClauses[0], "binds the explicit executable by its SHA-256 before any vendor runs and again after cleanup (a changed or unreadable executable is `cursor_executable_mismatch`)"},
+		[2]string{cursorBindingClauses[1], "the selection bytes and the executable are frozen before the cost authorization, both children capture those bytes and must carry the root's binding, a changed executable stops before the light child's paid work"},
+		[2]string{cursorBindingParagraphs[0] + "\n\n" + cursorBindingParagraphs[1], cursorBindingParagraphs[1] + "\n\n" + cursorBindingParagraphs[0]},
+		[2]string{cursorStatusPin, strings.Replace(cursorStatusPin, "pending.", "complete.", 1)},
+	)
+	for _, m := range mutations {
+		if !strings.Contains(doc, m[0]) {
+			t.Fatalf("the mutation target %q is not in docs/real-e2e.md", m[0])
+		}
+		if checkCursorBinding(strings.Replace(doc, m[0], m[1], 1)) == nil {
+			t.Errorf("the binding mutation %.80q -> %.80q was accepted", m[0], m[1])
+		}
+	}
+	// A paragraph moved after the optional-selection paragraph is refused.
+	moved := strings.Replace(doc, cursorBindingParagraphs[2]+"\n\n", "", 1)
+	moved = strings.Replace(moved, "### Cursor owner procedure", cursorBindingParagraphs[2]+"\n\n### Cursor owner procedure", 1)
+	if checkCursorBinding(moved) == nil {
+		t.Error("a binding paragraph after the optional-selection paragraph was accepted")
+	}
+	for _, claim := range []string{"Cursor coder status: qualified.", "The harness looks up a qualification file at startup."} {
+		if checkCursorBinding(strings.Replace(doc, cursorBindingParagraphs[2], cursorBindingParagraphs[2]+" "+claim, 1)) == nil {
 			t.Errorf("the claim %q was accepted", claim)
 		}
 	}

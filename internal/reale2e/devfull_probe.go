@@ -794,7 +794,7 @@ func (d *devSupervisor) probeFinish(cost DevCost) bool {
 		// any vendor, after cleanup), the coder workspace, task and commits.
 		q.Cursor = &DevCursorQualification{Binding: d.cursor.binding, Workspace: c.ws, Task: c.task, InputCommit: hashOrEmpty(c.inputCommit),
 			ResultCommit: c.resultCommit}
-		bound = d.cursor.binding.BeforeSHA256 != "" && d.cursor.binding.BeforeSHA256 == d.cursor.binding.AfterSHA256
+		bound = d.cursor.binding.BeforeSHA256 != "" && d.cursor.binding.BeforeSHA256 == d.cursor.binding.AfterSHA256 && !d.cursorBindingFailed()
 	}
 	if qualifiedStages(q.Stages, stages) && d.cleanupOK && !d.protected && d.stopCode == "" && d.executed && cost.WorkerCalls <= maxCalls && bound {
 		q.Result = ResultQualified

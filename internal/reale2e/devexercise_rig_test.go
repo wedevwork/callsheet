@@ -1,6 +1,8 @@
 package reale2e
 
 import (
+	"io"
+	"strings"
 	"testing"
 )
 
@@ -21,6 +23,28 @@ type exerciseRig struct {
 	// prompted, when set, runs right after the authorization answer is
 	// typed, before any child starts.
 	prompted func()
+	// childDone, when set, runs once a child has printed its own result
+	// line (after its cleanup, binding recheck, collection and check),
+	// before the root decides whether the light child starts.
+	childDone func(scenario string)
+}
+
+// resultHook is the exercise's stdout with childDone called on each
+// child's own result line.
+type resultHook struct {
+	w    io.Writer
+	done func(scenario string)
+}
+
+func (h resultHook) Write(p []byte) (int, error) {
+	n, err := h.w.Write(p)
+	for _, s := range []string{scenarioFull, scenarioLight} {
+		line := string(p)
+		if strings.HasPrefix(line, s+" development flow: PASS") || strings.HasPrefix(line, s+" development flow: FAIL") {
+			h.done(s)
+		}
+	}
+	return n, err
 }
 
 // newExerciseRig is a combined exercise over full and light scripts.
@@ -43,6 +67,9 @@ func (x *exerciseRig) run() int {
 	h := x.full.host()
 	h.Args[0] = "run-dev-exercise"
 	h.exerciseAggregating = x.aggregating
+	if x.childDone != nil {
+		h.Stdout = resultHook{w: h.Stdout, done: x.childDone}
+	}
 	h.exercisePrompted = func(id string) {
 		switch x.auth {
 		case authExercise:

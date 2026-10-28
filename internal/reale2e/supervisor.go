@@ -125,10 +125,13 @@ type runArgs struct {
 	// (read once before the owner's authorization): its children capture
 	// these bytes instead of reading the --flow path again.
 	frozenFlow []byte
-	// cursorExpect, when set, is a combined exercise's root binding hash of
-	// the Cursor executable (taken before the owner's authorization): each
-	// child's pre-vendor binding must equal it.
-	cursorExpect string
+	// cursorExpect, when set, is a combined exercise's root identity of the
+	// Cursor executable, frozen before the owner's authorization (design
+	// 12a-3c-cursor-binding): its symlink-resolved absolute target and that
+	// file's SHA-256, passed by value to both children, whose pre-vendor
+	// identity must equal both components. Unset (the zero value) outside a
+	// Cursor exercise.
+	cursorExpect cursorIdentity
 }
 
 func (a runArgs) vendor(id string) string {

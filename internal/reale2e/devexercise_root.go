@@ -99,9 +99,10 @@ type DevExercise struct {
 	End           string                   `json:"end"`
 	Children      []DevExerciseChild       `json:"children"`
 	// Cursor is a Cursor exercise's root executable binding (design
-	// 12a-3-cursor-worker, slice 3b): hashed before the authorization and
-	// after the last reached child; required, non-null, on the
-	// callsheet-dev-cursor-exercise/v1 schema only.
+	// 12a-3-cursor-worker, slice 3b): its identity (resolved target and
+	// file SHA-256; design 12a-3c-cursor-binding) frozen before the
+	// authorization and rechecked after the last reached child; required,
+	// non-null, on the callsheet-dev-cursor-exercise/v1 schema only.
 	Cursor *DevCursorBinding `json:"cursor,omitempty"`
 }
 
@@ -122,6 +123,10 @@ type devExerciseRun struct {
 	eof         bool
 	// tok tokenizes a path as the children's evidence does.
 	tok func(string) string
+	// cursorFailed latches a Cursor binding failure observed anywhere in
+	// the exercise (a child's own gate or the root's): sticky for the run,
+	// never cleared by a later observation (design 12a-3c-cursor-binding).
+	cursorFailed bool
 }
 
 // runExerciseLive runs the combined exercise.
@@ -161,17 +166,18 @@ func (e *devExerciseRun) run() int {
 		e.ex.Executable = DevExecutableRecord{Path: e.w.Executable, Before: sha256Hex(b), After: sha256Hex(b)}
 	}
 	if e.a.cursor != "" {
-		// The resolved Cursor executable is bound before the owner's
-		// authorization, with the frozen selection (locateRoot); both
-		// children compare their own pre-vendor binding with this hash. An
-		// unreadable executable stops here: nothing is authorized or run.
-		h, err := cursorExecutableHash(e.a.cursor)
+		// The Cursor executable's identity (resolved target and file
+		// SHA-256) is frozen before the owner's authorization, with the
+		// frozen selection (locateRoot); both children compare their own
+		// pre-vendor identity with it. An unresolvable or unreadable
+		// identity stops here: nothing is authorized or run.
+		id, err := readCursorIdentity(e.a.cursor)
 		if err != nil {
-			fmt.Fprintf(e.h.Stderr, "reale2e run-dev-exercise refused: %s: the Cursor executable could not be hashed: %v\n", CodeCursorExecutableMismatch, err)
+			fmt.Fprintf(e.h.Stderr, "reale2e run-dev-exercise refused: %s: the Cursor executable's identity could not be read: %v\n", CodeCursorExecutableMismatch, err)
 			return 2
 		}
-		e.ex.Cursor = &DevCursorBinding{Path: e.tok(e.a.cursor), BeforeSHA256: h}
-		e.a.cursorExpect = h
+		e.ex.Cursor = &DevCursorBinding{Path: e.tok(id.path), BeforeSHA256: id.sha256}
+		e.a.cursorExpect = id
 	}
 	if err := os.Mkdir(root, 0o700); err != nil {
 		fmt.Fprintf(e.h.Stderr, "reale2e run-dev-exercise: %v\n", err)
@@ -196,43 +202,63 @@ func (e *devExerciseRun) run() int {
 		}
 		return d
 	})
+	e.cursorObserved(full)
 	if cause := continueCause(full); cause != "" {
+		// A higher-priority stop keeps its cause; an observed binding
+		// failure still fails the root binding (cursorAfter).
 		e.ex.Children[1].Stop = cause
 		e.cursorAfter()
 		return e.finishRoot(full)
 	}
 	if !e.cursorUnchanged() {
-		// A Cursor executable changed after the full child: nothing of the
-		// light child runs, no paid work (design 12a-3-cursor-worker, 3b).
+		// A changed Cursor identity, or a binding failure the full child
+		// observed: nothing of the light child runs, no evidence directory,
+		// plane or paid work (design 12a-3c-cursor-binding).
 		e.ex.Children[1].Stop = CodeCursorExecutableMismatch
 		e.cursorAfter()
 		return e.finishRoot(full)
 	}
 	light := e.child(1, newDevLightSupervisor)
+	e.cursorObserved(light)
 	e.cursorAfter()
 	return e.finishRoot(light)
 }
 
-// cursorUnchanged reports a default exercise, or a Cursor executable
-// whose bytes still hash to the root binding (checked again before the
-// light child; each child also compares its own pre-vendor binding).
+// cursorObserved latches a binding failure child d observed.
+func (e *devExerciseRun) cursorObserved(d *devSupervisor) {
+	if d.cursorBindingFailed() {
+		e.cursorFailed = true
+	}
+}
+
+// cursorUnchanged reports a default exercise, or a Cursor exercise with no
+// observed binding failure whose original --cursor path still resolves to
+// the root's frozen target with the same bytes (checked again before the
+// light child; each child also compares its own pre-vendor identity). A
+// failure here is latched too.
 func (e *devExerciseRun) cursorUnchanged() bool {
 	if e.ex.Cursor == nil {
 		return true
 	}
-	h, err := cursorExecutableHash(e.a.cursor)
-	return err == nil && h == e.ex.Cursor.BeforeSHA256
+	if !e.cursorFailed {
+		now, err := readCursorIdentity(e.a.cursor)
+		e.cursorFailed = err != nil || !now.equal(e.a.cursorExpect)
+	}
+	return !e.cursorFailed
 }
 
 // cursorAfter records a Cursor exercise's root binding after the last
-// reached child (empty when unreadable: incomplete, never a pass).
+// reached child: the actual digest while the original path still resolves
+// to the frozen target, empty for a changed target, an unreadable identity
+// or a latched failure a restored digest would hide (incomplete or
+// changed, never a pass).
 func (e *devExerciseRun) cursorAfter() {
 	if e.ex.Cursor == nil {
 		return
 	}
-	if h, err := cursorExecutableHash(e.a.cursor); err == nil {
-		e.ex.Cursor.AfterSHA256 = h
-	}
+	after, failed := cursorAfterDigest(e.a.cursor, e.a.cursorExpect, e.cursorFailed)
+	e.ex.Cursor.AfterSHA256 = after
+	e.cursorFailed = e.cursorFailed || failed
 }
 
 // locateRoot validates the exercise root as run validates an attempt's

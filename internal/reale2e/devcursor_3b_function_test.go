@@ -31,7 +31,7 @@ func TestCursor3bFP1Qualification(t *testing.T) {
 		t.Fatalf("record %+v", q)
 	}
 	bind := q.Cursor.Binding
-	if bind.Path != cr.d.s.tok(cr.exe) || bind.BeforeSHA256 != sha256Hex(mustRead(t, cr.exe)) || bind.AfterSHA256 != bind.BeforeSHA256 ||
+	if bind.Path != cr.d.s.tok(cr.fx.resolved(cr.exe)) || bind.BeforeSHA256 != sha256Hex(mustRead(t, cr.exe)) || bind.AfterSHA256 != bind.BeforeSHA256 ||
 		q.Cursor.Task != cr.coderTasks[0] || q.Cursor.InputCommit != q.Cursor.Workspace.SeedCommit || q.Cursor.ResultCommit == "" {
 		t.Fatalf("cursor object %+v", q.Cursor)
 	}
