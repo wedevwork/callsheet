@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -43,6 +44,41 @@ const lockHelperEnv = "CALLSHEET_SIDECAR_LOCK_HELPER"
 // testWait bounds how long a test waits for an event (real time); product
 // timing in these tests runs on the fake clock.
 const testWait = 30 * time.Second
+
+// goroutineDumpLimit bounds the goroutine dump dumpGoroutines logs.
+const goroutineDumpLimit = 16 << 20
+
+// dumpGoroutines logs every goroutine's stack through t. A real-time
+// testWait expiry calls it just before it fails the test, so the failure
+// shows where the awaited work stood (a slow step, a stuck product
+// goroutine or a stalled harness delivery). It is diagnostics only: no
+// bound or assertion depends on it.
+func dumpGoroutines(t testing.TB) {
+	t.Helper()
+	s, truncated := goroutineStacks(1<<20, goroutineDumpLimit)
+	if truncated {
+		s += fmt.Sprintf("\n(goroutine dump truncated at %d bytes)", len(s))
+	}
+	t.Logf("goroutine dump at the testWait expiry:\n%s", s)
+}
+
+// goroutineStacks returns every goroutine's stack (the caller's first),
+// read into a buffer of size bytes doubled as needed up to limit;
+// truncated reports that the dump filled limit.
+func goroutineStacks(size, limit int) (dump string, truncated bool) {
+	size = min(size, limit)
+	for {
+		buf := make([]byte, size)
+		n := runtime.Stack(buf, true)
+		if n < size {
+			return string(buf[:n]), false
+		}
+		if size >= limit {
+			return string(buf[:n]), true
+		}
+		size = min(2*size, limit)
+	}
+}
 
 var bg = context.Background()
 
@@ -187,6 +223,7 @@ func (l *syncLog) await(t testing.TB, what string, pred func(string) bool) strin
 			if s := l.String(); pred(s) {
 				return s
 			}
+			dumpGoroutines(t)
 			t.Fatalf("no %s in:\n%s", what, l.String())
 		}
 	}
@@ -238,6 +275,7 @@ func (p *inPlane) stop(t testing.TB) {
 	case <-p.done:
 		p.done <- nil
 	case <-time.After(testWait):
+		dumpGoroutines(t)
 		t.Error("plane did not stop")
 	}
 }
@@ -408,6 +446,7 @@ func (fp *fakePlane) accept(t testing.TB) *fakeConn {
 		}
 		return c
 	case <-time.After(testWait):
+		dumpGoroutines(t)
 		t.Fatal("the sidecar did not connect")
 		return nil
 	}
@@ -420,6 +459,7 @@ func (c *fakeConn) next() readResult {
 	case r := <-c.in:
 		return r
 	case <-time.After(testWait):
+		dumpGoroutines(c.t)
 		c.t.Fatal("no message from the sidecar")
 		return readResult{}
 	}
@@ -460,6 +500,9 @@ func (c *fakeConn) sendRaw(b []byte) {
 	ctx, cancel := context.WithTimeout(bg, testWait)
 	defer cancel()
 	if err := c.ws.Write(ctx, websocket.MessageText, b); err != nil {
+		if ctx.Err() != nil {
+			dumpGoroutines(c.t)
+		}
 		c.t.Fatalf("fake plane write: %v", err)
 	}
 }
@@ -554,6 +597,7 @@ func (c *fakeConn) nextBeat() beatObs {
 	case b := <-c.beats:
 		return b
 	case <-time.After(testWait):
+		dumpGoroutines(c.t)
 		c.t.Fatal("no heartbeat from the sidecar")
 		return beatObs{}
 	}
@@ -580,6 +624,7 @@ func (c *fakeConn) awaitBeat(pred func(beatObs) bool) beatObs {
 				return b
 			}
 		case <-deadline:
+			dumpGoroutines(c.t)
 			c.t.Fatal("no matching heartbeat from the sidecar")
 			return beatObs{}
 		}
@@ -607,6 +652,7 @@ func (c *fakeConn) awaitLatest(pred func(beatObs) bool) beatObs {
 		case b := <-c.beats:
 			latest = &b
 		case <-deadline:
+			dumpGoroutines(c.t)
 			c.t.Fatalf("no heartbeat in the expected state (latest %+v)", latest)
 			return beatObs{}
 		}
@@ -777,6 +823,7 @@ func (e *events) awaitStartReplied(t testing.TB, id string) {
 			if done {
 				return
 			}
+			dumpGoroutines(t)
 			t.Fatalf("the start reply write of %s did not return", id)
 		}
 	}
@@ -795,6 +842,7 @@ func (e *events) awaitWritten(t testing.TB, kind eventKind, id string) {
 				return
 			}
 		case <-deadline:
+			dumpGoroutines(t)
 			t.Fatalf("the %s write of %s did not return", kind, id)
 		}
 	}
@@ -862,6 +910,7 @@ func (e *events) awaitAck(t testing.TB, minSession, k int) {
 			e.noteAck(ev)
 			e.amu.Unlock()
 		case <-deadline:
+			dumpGoroutines(t)
 			t.Fatalf("the acknowledgement of heartbeat b%d was never processed", k)
 		}
 	}
@@ -887,6 +936,7 @@ func (e *events) awaitArmedAfter(t testing.TB, minSession, k int, at time.Time) 
 		select {
 		case <-sig:
 		case <-deadline:
+			dumpGoroutines(t)
 			t.Fatalf("no heartbeat after b%d armed its timer for %v", k, at)
 		}
 	}
@@ -924,6 +974,7 @@ func (e *events) awaitHeartbeatArmed(t testing.TB, minSession, k int, at time.Ti
 				}
 			}
 			e.armMu.Unlock()
+			dumpGoroutines(t)
 			t.Fatalf("the heartbeat timer was never armed for %v after b%d (latest armings %+v)", at, k, latest)
 		}
 	}
@@ -941,6 +992,7 @@ func (e *events) awaitCycleSince(t testing.TB, rev int, since time.Time) event {
 				return ev
 			}
 		case <-deadline:
+			dumpGoroutines(t)
 			t.Fatalf("no ready-check cycle of revision %d since %v", rev, since)
 		}
 	}
@@ -969,6 +1021,7 @@ func (e *events) await(t testing.TB, kind eventKind) event {
 				return ev
 			}
 		case <-deadline:
+			dumpGoroutines(t)
 			t.Fatalf("no %s event", kind)
 		}
 	}
@@ -990,6 +1043,7 @@ func startRun(t testing.TB, d *deps, root string, logger *slog.Logger) *running 
 		select {
 		case <-r.done:
 		case <-time.After(testWait):
+			dumpGoroutines(t)
 			t.Error("run did not stop")
 		}
 	})
@@ -1004,6 +1058,7 @@ func (r *running) result(t testing.TB) error {
 		r.done <- err
 		return err
 	case <-time.After(testWait):
+		dumpGoroutines(t)
 		t.Fatal("run did not return")
 		return nil
 	}
@@ -1021,7 +1076,103 @@ func readLine(t testing.TB, r io.Reader) string {
 	case s := <-line:
 		return s
 	case <-time.After(testWait):
+		dumpGoroutines(t)
 		t.Fatal("no line")
 		return ""
 	}
+}
+
+// logRecorder is a testing.TB recording what is logged through it with
+// Logf; Helper is a no-op. Every other method is the embedded TB's (nil:
+// unused).
+type logRecorder struct {
+	testing.TB
+	logs []string
+}
+
+func (r *logRecorder) Helper() {}
+
+func (r *logRecorder) Logf(format string, args ...any) {
+	r.logs = append(r.logs, fmt.Sprintf(format, args...))
+}
+
+// failRecorder is a logRecorder whose Fatal and Fatalf record the failure
+// and its message, then end the calling goroutine (run the helper through
+// recordFailure). Unlike testkit.FatalTB it supports Logf, so a helper that
+// logs a goroutine dump before failing can run through it.
+type failRecorder struct {
+	logRecorder
+	failed bool
+	msg    string
+}
+
+func (r *failRecorder) Fatal(args ...any) {
+	r.failed, r.msg = true, fmt.Sprint(args...)
+	runtime.Goexit()
+}
+
+func (r *failRecorder) Fatalf(format string, args ...any) {
+	r.failed, r.msg = true, fmt.Sprintf(format, args...)
+	runtime.Goexit()
+}
+
+// recordFailure runs f with a failRecorder on its own goroutine, joins it
+// and returns the recorder.
+func recordFailure(f func(t testing.TB)) *failRecorder {
+	r := &failRecorder{}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		f(r)
+	}()
+	<-done
+	return r
+}
+
+// parkForDump runs on a goroutine of its own until release is closed, so
+// a goroutine dump taken meanwhile holds its frame.
+func parkForDump(started chan<- struct{}, release <-chan struct{}) {
+	close(started)
+	<-release
+}
+
+// TestDumpGoroutines: dumpGoroutines logs, in one record, every
+// goroutine's stack, its caller's own goroutine first and running, and
+// another goroutine's too; goroutineStacks grows its buffer as needed and
+// reports a dump cut at its limit.
+func TestDumpGoroutines(t *testing.T) {
+	started, release := make(chan struct{}), make(chan struct{})
+	go parkForDump(started, release)
+	defer close(release)
+	<-started
+	rec := &logRecorder{}
+	dumpGoroutines(rec)
+	if len(rec.logs) != 1 {
+		t.Fatalf("%d records logged, want 1", len(rec.logs))
+	}
+	header, dump, _ := strings.Cut(rec.logs[0], "\n")
+	if header != "goroutine dump at the testWait expiry:" {
+		t.Fatalf("header %q", header)
+	}
+	own, _, _ := strings.Cut(dump, "\n\n")
+	if !strings.HasPrefix(own, "goroutine ") || !strings.Contains(own, " [running]:") ||
+		!strings.Contains(own, "sidecar.dumpGoroutines") || !strings.Contains(own, "sidecar.TestDumpGoroutines") {
+		t.Fatalf("the dump does not begin with the caller's own goroutine:\n%s", own)
+	}
+	if !strings.Contains(dump, "sidecar.parkForDump") {
+		t.Fatalf("the dump lacks the parked goroutine:\n%s", dump)
+	}
+	if strings.Contains(dump, "truncated") {
+		t.Fatalf("a small dump was truncated:\n%s", dump)
+	}
+	t.Run("bounded", func(t *testing.T) {
+		grown, truncated := goroutineStacks(16, 1<<20)
+		if truncated || len(grown) <= 16 || !strings.Contains(grown, "sidecar.goroutineStacks") {
+			t.Fatalf("grown from 16 bytes: %d bytes, truncated %v", len(grown), truncated)
+		}
+		cut, truncated := goroutineStacks(16, 64)
+		if !truncated || len(cut) != 64 || !strings.HasPrefix(cut, "goroutine ") {
+			t.Fatalf("cut at 64 bytes: %q, truncated %v", cut, truncated)
+		}
+	})
 }

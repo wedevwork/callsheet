@@ -299,6 +299,7 @@ func TestRoleStreamContract(t *testing.T) {
 			// The next heartbeat's due timer and the result write's bound are
 			// both 5 s; advance only once the write registered its own.
 			if err := rr.clk.AwaitWaiter(testWait, timers(stepTimeout, 2)); err != nil {
+				dumpGoroutines(t)
 				t.Fatal(err)
 			}
 			rr.clk.Advance(stepTimeout)
@@ -380,6 +381,7 @@ func TestRoleStreamContract(t *testing.T) {
 				}
 				select {
 				case <-deadline:
+					dumpGoroutines(t)
 					t.Fatal("second put never published")
 				case <-time.After(time.Millisecond):
 				}

@@ -146,6 +146,7 @@ func awaitRecoveryDone(t *testing.T, tr *taskRun, root, taskID string) {
 			}
 			t.Fatalf("the restarted Run ended before recovery-done: %v\n%s", err, recoveryDiagnostics(tr, root, taskID, kinds))
 		case <-deadline:
+			dumpGoroutines(t)
 			t.Fatalf("no recovery-done event\n%s", recoveryDiagnostics(tr, root, taskID, kinds))
 		}
 	}
@@ -770,6 +771,7 @@ func TestControlLaunch(t *testing.T) {
 				s.c.sendStart(rid, st)
 				tr.ev.awaitMatch(t, evTaskPreparing, func(ev event) bool { return ev.id == st.TaskID })
 				if err := tr.clk.AwaitWaiter(testWait, testkit.HasTimer(prepBudget)); err != nil {
+					dumpGoroutines(t)
 					t.Fatal(err)
 				}
 				// The reserved slot's report, then the periodic heartbeat.
@@ -1205,6 +1207,7 @@ func TestControlRestart(t *testing.T) {
 		tr := startTaskRun(t, fp, taskOpts{root: root, adjust: func(d *deps) { d.fail = fc.fail }})
 		for i := 0; i < 2; i++ {
 			if err := tr.clk.AwaitWaiter(testWait, testkit.HasTimer(journalRetry)); err != nil {
+				dumpGoroutines(t)
 				t.Fatal(err)
 			}
 			if !tr.super(t).nodeBlocked() {
@@ -1276,6 +1279,7 @@ func TestControlRestart(t *testing.T) {
 		// the node accepts again.
 		fc.set("", "", 0)
 		if err := tr.clk.AwaitWaiter(testWait, testkit.HasTimer(journalRetry)); err != nil {
+			dumpGoroutines(t)
 			t.Fatal(err)
 		}
 		tr.clk.Advance(journalRetry)
@@ -1423,6 +1427,7 @@ func TestControlPlaneRestart(t *testing.T) {
 			t.Fatalf("capped backoff %v with the maximal jitter sample", ev.delay)
 		}
 		if err := tr.clk.AwaitWaiter(testWait, testkit.HasTimer(30*time.Second)); err != nil {
+			dumpGoroutines(t)
 			t.Fatal(err)
 		}
 		armed := tr.clk.Now()

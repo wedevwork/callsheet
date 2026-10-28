@@ -45,6 +45,7 @@ func (e *events) scan(t *testing.T, match func(event) bool) event {
 				return ev
 			}
 		case <-deadline:
+			dumpGoroutines(t)
 			t.Fatal("an awaited event never arrived")
 			return event{}
 		}
@@ -167,6 +168,7 @@ func TestPromptReadinessContract(t *testing.T) {
 			}
 			return false
 		}); err != nil {
+			dumpGoroutines(t)
 			t.Fatalf("no periodic heartbeat armed at %v: %v", doneAt.Add(heartbeatInterval), err)
 		}
 		rr.clk.Advance(heartbeatInterval - time.Second) // T+5s: the cycle
@@ -324,6 +326,7 @@ func TestPromptReadinessContract(t *testing.T) {
 		deadline := time.Now().Add(testWait)
 		for len(w.ring.retained()) < 3*contract.MaxLogChunkBytes {
 			if time.Now().After(deadline) {
+				dumpGoroutines(t)
 				t.Fatal("the output never reached the ring")
 			}
 			time.Sleep(time.Millisecond)
@@ -376,6 +379,7 @@ func awaitRecorded(b *testing.B, recorded <-chan int, rev int) {
 				return
 			}
 		case <-deadline:
+			dumpGoroutines(b)
 			b.Fatalf("revision %d's report was never recorded", rev)
 		}
 	}

@@ -58,6 +58,7 @@ func runPlane(t *testing.T, root string) (*planeProc, bool) {
 		select {
 		case <-p.done:
 		case <-time.After(testWait):
+			dumpGoroutines(t)
 			t.Errorf("plane %d not reaped", p.cmd.Process.Pid)
 		}
 	})
@@ -79,6 +80,7 @@ func runPlane(t *testing.T, root string) (*planeProc, bool) {
 			if p.addr = listenAddr(p.logs.String()); p.addr != "" {
 				return p, true
 			}
+			dumpGoroutines(t)
 			t.Fatalf("plane not ready:\n%s", p.logs.String())
 		}
 	}
@@ -91,6 +93,7 @@ func (p *planeProc) stop(t *testing.T) {
 	select {
 	case <-p.done:
 	case <-time.After(testWait):
+		dumpGoroutines(t)
 		t.Fatal("plane ignored SIGTERM")
 	}
 	var ee *exec.ExitError
@@ -120,6 +123,7 @@ func reservedPlane(t *testing.T) (root string, p *planeProc) {
 			return root, p
 		}
 	}
+	dumpGoroutines(t)
 	t.Fatal("could not reserve a loopback port for the plane")
 	return "", nil
 }
@@ -134,6 +138,7 @@ func restart(t *testing.T, root string) *planeProc {
 			return p
 		}
 	}
+	dumpGoroutines(t)
 	t.Fatal("the plane could not rebind its port")
 	return nil
 }
@@ -169,6 +174,7 @@ func untilConnected(t *testing.T, clk *testkit.FakeClock, ev *events, after int)
 			}
 		case evBackoff:
 			if err := clk.AwaitWaiter(testWait, testkit.HasTimer(e.delay)); err != nil {
+				dumpGoroutines(t)
 				t.Fatal(err)
 			}
 			clk.Advance(e.delay)
@@ -199,6 +205,7 @@ func untilConnected(t *testing.T, clk *testkit.FakeClock, ev *events, after int)
 					continue
 				default:
 				}
+				dumpGoroutines(t)
 				t.Fatal("the sidecar did not reconnect")
 			}
 		}
@@ -243,6 +250,7 @@ func TestNodeReconnectContract(t *testing.T) {
 		// The retry waits on the injected clock while the plane is down.
 		b := ev.await(t, evBackoff)
 		if err := clk.AwaitWaiter(testWait, testkit.HasTimer(b.delay)); err != nil {
+			dumpGoroutines(t)
 			t.Fatal(err)
 		}
 		p = restart(t, root)

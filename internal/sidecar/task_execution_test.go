@@ -617,6 +617,7 @@ func TestTaskExecutionProbeClock(t *testing.T) {
 	case ev := <-tr.ev.cycles:
 		failed(ev)
 	case <-time.After(testWait):
+		dumpGoroutines(t)
 		t.Fatal("the probe child never reached the gate")
 	}
 	// The probe's deadline is pending on the injected clock. The waiter is
@@ -655,6 +656,7 @@ func TestTaskExecutionProbeClock(t *testing.T) {
 	case err := <-pending:
 		joined = true
 		if err != nil {
+			dumpGoroutines(t)
 			t.Fatalf("the probe deadline is not on the injected clock: %v; %v", err, trace.Last())
 		}
 	case ev := <-tr.ev.cycles:
@@ -676,6 +678,7 @@ func TestTaskExecutionProbeClock(t *testing.T) {
 			t.Fatalf("the released child did not pass its ready probe: probes %d, probe error: %v; %v", ca.count(), ca.lastErr(), trace.Last())
 		}
 	case <-time.After(testWait):
+		dumpGoroutines(t)
 		t.Fatal("no cycle-done after the gate opened")
 	}
 	if ca.count() != 1 {

@@ -189,6 +189,7 @@ func TestTaskOutput(t *testing.T) {
 		tr.ev.awaitMatch(t, evChildExited, func(ev event) bool { return ev.id == st2.TaskID })
 		// No write is in flight: the bound is the only new timer.
 		if err := tr.clk.AwaitWaiter(testWait, testkit.HasTimer(drainBound)); err != nil {
+			dumpGoroutines(t)
 			t.Fatal(err)
 		}
 		tr.clk.Advance(drainBound)
