@@ -69,7 +69,11 @@ const (
 // DevCursorBinding is the explicit Cursor executable's binding: its
 // tokenized path (the Cursor version record's path) and its SHA-256
 // before any vendor execution and after cleanup. It is never the
-// harness's DevExecutableRecord.
+// harness's DevExecutableRecord. Since design 12a-3c-cursor-binding the
+// writer stores the frozen symlink-resolved target as the path and leaves
+// the after hash empty when that target changed, became unreadable or an
+// earlier binding failure was latched; older writers stored the unresolved
+// --cursor path, an inert label either way.
 type DevCursorBinding struct {
 	Path         string `json:"path"`
 	BeforeSHA256 string `json:"before_sha256"`

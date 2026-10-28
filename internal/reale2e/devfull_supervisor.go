@@ -431,6 +431,12 @@ func (d *devSupervisor) versionProbes() error {
 	for _, v := range d.versionVendors() {
 		exe := d.s.args.vendor(v)
 		rec := VersionRecord{Tool: v, Path: d.s.tok(exe)}
+		if v == "cursor" && d.cursor != nil {
+			// Cursor's record names the tokenized frozen target its binding
+			// names (design 12a-3c-cursor-binding); the probe still invokes
+			// the explicit --cursor path.
+			rec.Path = d.cursor.binding.Path
+		}
 		out, err := d.s.probeOutput(exe, "--version")
 		if err == nil {
 			err = d.s.w.Probe(d.s.ctx, v, exe, d.s.w.TempRoot)
