@@ -577,7 +577,7 @@ func TestCodexTriageFP5b(t *testing.T) {
 // smoke, with the post-final DS1 clarification: the older-toolchain
 // exception names the go.mod directive, never a version number).
 const (
-	smokeRepoAssignment = "(set -eu; smoke_repo=${CALLSHEET_REPO:-/opt/gitspace/callsheet}; "
+	smokeRepoAssignment = "(set -eu; smoke_repo=${CALLSHEET_REPO:?set CALLSHEET_REPO to the absolute repository root}; "
 	smokeMktemp         = `smoke_dir=$(mktemp -d /tmp/callsheet-triage-smoke.XXXXXXXX); printf "SMOKE_DIR=%s\n" "$smoke_dir"; mkdir "$smoke_dir/work"; `
 	smokeSeedCopy       = `cp "$smoke_repo/internal/reale2e/testdata/devlight-seed/FEATURE.md" "$smoke_repo/internal/reale2e/testdata/devlight-seed/main.go" "$smoke_repo/internal/reale2e/testdata/devlight-seed/main_test.go" "$smoke_dir/work/"; `
 	smokeAwk            = `awk '$1 == "go" && NF == 2 { print "module example.com/greeting\n\ngo " $2; found=1; exit } END { if (!found) exit 1 }' "$smoke_repo/go.mod" > "$smoke_dir/work/go.mod"; `
@@ -587,13 +587,16 @@ const (
 	smokeRedirects      = ` > "$smoke_dir/codex.jsonl" 2> "$smoke_dir/codex.stderr"; `
 	smokeTail           = `test "$(cat "$smoke_dir/callsheet-final.txt")" = SMOKE_OK; test ! -e .callsheet-triage-scratch; test ! -L .callsheet-triage-scratch; printf "SMOKE_PASS\n")`
 	smokeFinal          = `$smoke_dir/callsheet-final.txt`
+	// smokeRepoRequired is the smoke's required-input sentence (design
+	// 12a-3-cursor-closeout, FP-8): no private repository default.
+	smokeRepoRequired = "Set `CALLSHEET_REPO` to the absolute repository root before running the smoke; it is required and has no default."
 )
 
 // smokeClauses are the smoke's required prose.
 var smokeClauses = []string{
 	"Before owner requalification, run this owner-run paid smoke once. It is non-qualifying, and neither CI, the implementation tests nor review automation runs it.",
 	"Run it from any directory on the owner installation, with Codex installed at `$HOME/.local/bin/codex`.",
-	"Set `CALLSHEET_REPO` to the absolute repository root if needed; it defaults to `/opt/gitspace/callsheet`.",
+	smokeRepoRequired,
 	"That repository-root variable is the only operator-adjustable part of the command: keep the recipe and every other field unchanged.",
 	"creates a fresh private `/tmp/callsheet-triage-smoke.XXXXXXXX` directory outside the repository and every evidence bundle, and runs Codex with the copied seed as its working directory.",
 	"Do not redirect it into a bundle.",
@@ -681,14 +684,16 @@ func checkSmoke(docs map[string]string) error {
 	if err != nil {
 		return err
 	}
-	// The fixed prefix: the repository variable and its default, the
+	// The fixed prefix: the required repository variable (no default), the
 	// external mktemp, the literal seed copy, the two-field go directive
 	// and the copied seed as CWD.
 	prefix := smokeRepoAssignment + smokeMktemp + smokeSeedCopy + smokeAwk + smokeCwd
 	if !strings.HasPrefix(line, prefix) {
 		return fmt.Errorf("the smoke's setup prefix changed")
 	}
-	if strings.Count(line, "/opt/gitspace/callsheet") != 1 || strings.Count(line, "smoke_repo=") != 1 || strings.Count(line, "CALLSHEET_REPO") != 1 {
+	// One assignment and one expansion; the variable's two occurrences are
+	// the expansion and its error message.
+	if strings.Count(line, "smoke_repo=") != 1 || strings.Count(line, "${CALLSHEET_REPO:") != 1 || strings.Count(line, "CALLSHEET_REPO") != 2 {
 		return fmt.Errorf("the repository is hardcoded beside its variable")
 	}
 	// The prompt, the Codex argv and the checks after it.
@@ -791,7 +796,8 @@ func TestCodexTriageFP6(t *testing.T) {
 		}
 	})
 	t.Run("mutations", func(t *testing.T) {
-		mutateExpect(t, docs, checkSmoke, "e2e", append(deletions(smokeClauses...),
+		const required = "smoke_repo=${CALLSHEET_REPO:?set CALLSHEET_REPO to the absolute repository root};"
+		mutateExpect(t, docs, checkSmoke, "e2e", cursorChanged(t, append(deletions(smokeClauses...),
 			// Extra or substituted approval flags.
 			[2]string{"exec --approve-for-me --model", "exec --approve-for-me --sandbox workspace-write --model"},
 			[2]string{"exec --approve-for-me --model", "exec --yolo --model"},
@@ -810,11 +816,15 @@ func TestCodexTriageFP6(t *testing.T) {
 			// Changed removal chain.
 			[2]string{"BEGIN test -d .callsheet-triage-scratch && test ! -L .callsheet-triage-scratch && chmod", "BEGIN test -d .callsheet-triage-scratch && chmod"},
 			[2]string{"rm -r .callsheet-triage-scratch && test ! -e .callsheet-triage-scratch END", "rm -rf .callsheet-triage-scratch && test ! -e .callsheet-triage-scratch END"},
-			// Hardcoded or wrong repository variable or default.
-			[2]string{"smoke_repo=${CALLSHEET_REPO:-/opt/gitspace/callsheet};", "smoke_repo=/opt/gitspace/callsheet;"},
-			[2]string{"smoke_repo=${CALLSHEET_REPO:-/opt/gitspace/callsheet};", "smoke_repo=${REPO:-/opt/gitspace/callsheet};"},
-			[2]string{"smoke_repo=${CALLSHEET_REPO:-/opt/gitspace/callsheet};", "smoke_repo=${CALLSHEET_REPO:-/opt/callsheet};"},
+			// Hardcoded or wrong repository variable or default, and the
+			// old private default restored in the command or the prose
+			// (design 12a-3-cursor-closeout, FP-8).
+			[2]string{required, "smoke_repo=/opt/gitspace/callsheet;"},
+			[2]string{required, "smoke_repo=${REPO:-/opt/gitspace/callsheet};"},
+			[2]string{required, "smoke_repo=${CALLSHEET_REPO:-/opt/callsheet};"},
 			[2]string{`cp "$smoke_repo/internal/reale2e/testdata/devlight-seed/FEATURE.md"`, `cp "/opt/gitspace/callsheet/internal/reale2e/testdata/devlight-seed/FEATURE.md"`},
+			[2]string{required, "smoke_repo=${CALLSHEET_REPO:-/opt/gitspace/callsheet};"},
+			[2]string{smokeRepoRequired, "Set `CALLSHEET_REPO` to the absolute repository root if needed; it defaults to `/opt/gitspace/callsheet`."},
 			// Missing two-field awk guard.
 			[2]string{`awk '$1 == "go" && NF == 2 {`, `awk '$1 == "go" {`},
 			// Missing final checks.
@@ -831,7 +841,7 @@ func TestCodexTriageFP6(t *testing.T) {
 			[2]string{"owner requalification still checks the complete triage envelope for the installation and revision being qualified.", "owner requalification still checks the complete triage envelope for the installation and revision being qualified; probe 11 still settles it."},
 			[2]string{"#### Pre-probe smoke\n", "#### Owner requalification\n\n#### Pre-probe smoke\n"},
 			[2]string{"Even a successful smoke is non-qualifying", "A successful smoke qualifies"},
-		))
+		)))
 	})
 	t.Run("version_not_pinned", func(t *testing.T) {
 		// The older-toolchain exception pins its wording, never the go.mod
@@ -848,5 +858,126 @@ func TestCodexTriageFP6(t *testing.T) {
 		if err := checkSmoke(changed); err != nil {
 			t.Fatalf("the validator pins the version number: %v", err)
 		}
+	})
+}
+
+// The neutral operator paths of design 12a-3-cursor-closeout, FP-8 (review
+// W1): the Run example's placeholder roots and their explanation.
+const (
+	runProtectRootsLine = "  --protect-root /abs/projects --protect-root /abs/other-projects \\"
+	runProtectRootsNote = "The two `--protect-root` values are placeholders; substitute your own roots or omit both flags for vendor-home-only protection."
+)
+
+// checkCursorCloseoutPaths validates FP-8 in docs/real-e2e.md: the smoke's
+// required repository assignment and required-input prose, the Run
+// example's placeholder roots line and explanation once, and no
+// /opt/gitspace or /opt/gospace anywhere (a bounded W1 regression guard,
+// not a general private-path classifier). It calls neither checkSmoke nor
+// the closeout aggregate.
+func checkCursorCloseoutPaths(doc string) error {
+	sec := mdSubsection(doc, "#### Pre-probe smoke")
+	line, err := smokeLine(sec)
+	if err != nil {
+		return err
+	}
+	if !strings.HasPrefix(line, smokeRepoAssignment) {
+		return fmt.Errorf("the smoke does not require CALLSHEET_REPO without a default")
+	}
+	if strings.Count(flatText(sec), flatText(smokeRepoRequired)) != 1 {
+		return fmt.Errorf("the smoke lacks its required-input sentence")
+	}
+	run := mdSubsection(doc, "## Run")
+	roots := 0
+	for _, l := range strings.Split(run, "\n") {
+		if l == runProtectRootsLine {
+			roots++
+		}
+	}
+	if roots != 1 {
+		return fmt.Errorf("the Run example's placeholder roots line is not there once")
+	}
+	if strings.Count(flatText(run), flatText(runProtectRootsNote)) != 1 {
+		return fmt.Errorf("the Run example's placeholder explanation is not there once")
+	}
+	for _, private := range []string{"/opt/gitspace", "/opt/gospace"} {
+		if strings.Contains(doc, private) {
+			return fmt.Errorf("the runbook names the private path %s", private)
+		}
+	}
+	return nil
+}
+
+func TestCursorCloseoutFP8(t *testing.T) {
+	docs := codexDocs(t)
+	e2e := docs["e2e"]
+	// Positive control through both entry points: the generic /tmp
+	// template and the $HOME-relative Codex stay.
+	line, err := smokeLine(mdSubsection(e2e, "#### Pre-probe smoke"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(line, "mktemp -d /tmp/callsheet-triage-smoke.XXXXXXXX") || !strings.Contains(line, `"$HOME/.local/bin/codex"`) {
+		t.Fatal("the smoke lost its /tmp template or $HOME-relative Codex")
+	}
+	combined := func(docs map[string]string) error {
+		if err := checkSmoke(docs); err != nil {
+			return err
+		}
+		return checkCursorCloseoutPaths(docs["e2e"])
+	}
+	for name, check := range map[string]func(map[string]string) error{"helper": onCursorRunbook(checkCursorCloseoutPaths), "combined": combined} {
+		if err := check(docs); err != nil {
+			t.Fatalf("%s: the shipped runbook fails: %v", name, err)
+		}
+	}
+	const (
+		required     = "smoke_repo=${CALLSHEET_REPO:?set CALLSHEET_REPO to the absolute repository root};"
+		oldRoots     = "  --protect-root /opt/gitspace --protect-root /opt/gospace \\"
+		oldNote      = "The two `--protect-root` values are an example (the owner's); substitute your own roots or omit both flags for vendor-home-only protection."
+		oldProse     = "Set `CALLSHEET_REPO` to the absolute repository root if needed; it defaults to `/opt/gitspace/callsheet`."
+		closingFence = "printf \"SMOKE_PASS\\n\")\n```\n"
+	)
+	if n := strings.Count(e2e, closingFence); n != 1 {
+		t.Fatalf("the smoke's anchored closing fence occurs %d times, want 1", n)
+	}
+	muts := [][2]string{
+		// smokeLine errors: a sh fence, a two-line command, no closing fence.
+		{"```bash\n(set -eu; smoke_repo=", "```sh\n(set -eu; smoke_repo="},
+		{"; smoke_dir=$(mktemp -d", ";\nsmoke_dir=$(mktemp -d"},
+		{"printf \"SMOKE_PASS\\n\")\n```\n", "printf \"SMOKE_PASS\\n\")\n"},
+		// The required assignment prefix.
+		{required, "smoke_repo=/abs/projects;"},
+		{"${CALLSHEET_REPO:?set", "${OTHER_REPO:?set"},
+		{"${CALLSHEET_REPO:?set", "${CALLSHEET_REPO:-set"},
+		{required + " ", ""},
+		// The required-input prose.
+		{smokeRepoRequired, ""},
+		{smokeRepoRequired, "Set `CALLSHEET_REPO` if needed."},
+		// The Run roots line, once.
+		{runProtectRootsLine, "  --protect-root /abs/other-projects \\"},
+		{runProtectRootsLine, "  --protect-root /abs/projects \\"},
+		{runProtectRootsLine, "  --protect-root /abs/different-projects --protect-root /abs/other-projects \\"},
+		{runProtectRootsLine + "\n", runProtectRootsLine + "\n" + runProtectRootsLine + "\n"},
+		// The Run explanation, once.
+		{runProtectRootsNote, ""},
+		{runProtectRootsNote, oldNote},
+		{runProtectRootsNote + "\n", runProtectRootsNote + "\n\n" + runProtectRootsNote + "\n"},
+		// Each private prefix alone, outside the smoke and Run sections.
+		{"\n## Sign-off\n", "\nSee /opt/gitspace for an example.\n\n## Sign-off\n"},
+		{"\n## Sign-off\n", "\nSee /opt/gospace for an example.\n\n## Sign-off\n"},
+		// Overlapping restorations of the old private defaults.
+		{runProtectRootsLine, "  --protect-root /opt/gitspace --protect-root /abs/other-projects \\"},
+		{runProtectRootsLine, "  --protect-root /abs/projects --protect-root /opt/gospace \\"},
+		{runProtectRootsLine, oldRoots},
+		{required, "smoke_repo=${CALLSHEET_REPO:-/opt/gitspace/callsheet};"},
+		{smokeRepoRequired, oldProse},
+		{smokeRepoRequired, smokeRepoRequired + " " + oldProse},
+		{runProtectRootsLine + "\n", runProtectRootsLine + "\n" + oldRoots + "\n"},
+	}
+	t.Run("helper", func(t *testing.T) {
+		mutateExpect(t, codexDocs(t), onCursorRunbook(checkCursorCloseoutPaths), "e2e", cursorChanged(t, muts))
+	})
+	t.Run("combined", func(t *testing.T) {
+		mutateExpect(t, codexDocs(t), combined, "e2e", cursorChanged(t, muts))
 	})
 }

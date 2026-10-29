@@ -8,13 +8,17 @@ import (
 
 // Function and unit tests of design 12a-3-cursor-worker, slice 3b FP-4
 // (parent FP-10, the owner procedure) and FP-5 (parent FP-11, the Cursor
-// catalog, posture and delivery documentation). The validators are pure
-// functions over the documentation text; each table-driven mutation must
-// make its validator refuse. They validate the procedure and the pending
-// claims, never a paid result.
+// catalog, posture and delivery documentation), and of design
+// 12a-3-cursor-closeout FP-1 to FP-7 (the owner's recorded completion of
+// slice 3; its FP-8 neutral operator paths are in codex_triage_test.go). The validators are pure functions over the documentation text;
+// each table-driven mutation must make its validator refuse. They validate
+// the procedure and the recorded documentary claims, never a paid result,
+// and never read the cited evidence.
 
-// cursorStatusPin is the current Cursor status, verbatim.
-const cursorStatusPin = "Cursor coder status: diagnostic observed; fresh qualification, combined full/light execution and external child judgment audits pending. The 2026-10-27 slice 3a receipt is not qualification. Default-selection probe 11 and its combined exercise do not qualify Cursor."
+// cursorStatusPin is the current Cursor status, verbatim: complete for the
+// recorded binary identity and selection (design 12a-3-cursor-closeout,
+// FP-1).
+const cursorStatusPin = "Cursor coder status: complete for the recorded binary identity and selection; roadmap 12a slice 3, the optional Cursor coder, was closed by the owner on 2026-10-28. Completion rests on the fresh QUALIFIED both-scope Cursor probe and audited combined full/light exercise recorded below, all using Cursor `2026.10.22-27dcf5f` after the binding fix in #76. A2 remains unobserved: no approval-needing action occurred under `--auto-review`. There is no jail and no confinement claim; activity samples are report-only. A changed relevant binary identity, version or selection requires owner-authorized requalification before a later live run; this is not a permanent vendor qualification. The 2026-10-27 slice 3a receipt is not qualification. Default-selection probe 11 and its combined exercise do not qualify Cursor."
 
 // cursorCommandTemplates are the procedure's literal command templates,
 // in order.
@@ -55,10 +59,12 @@ var cursorProcedureClauses = []string{
 }
 
 // cursorProcedureForbidden are claims the current procedure must never
-// make: an automatic or startup qualification, a promoted diagnostic, a
-// completed or observed Cursor status, or the retired 3a refusal.
+// make: an automatic or startup qualification, a promoted diagnostic, an
+// observed or qualified alternative Cursor status label, or the retired 3a
+// refusal. (The scoped complete status is pinned instead; design
+// 12a-3-cursor-closeout, Offline validators.)
 var cursorProcedureForbidden = []string{
-	"Cursor coder status: observed", "Cursor coder status: qualified", "Cursor coder status: complete", "qualified automatically",
+	"Cursor coder status: observed", "Cursor coder status: qualified", "qualified automatically",
 	"looks up a qualification", "startup lookup of", "receipt qualifies", "observation qualifies", "cursor_execution_pending_3b",
 	"20261027-cursor-probe1\"", "--evidence /abs/callsheet/design/real-e2e-runs/20261027-cursor-probe1", "retry the probe",
 }
@@ -87,10 +93,10 @@ func cursorSections(doc string) (string, string, error) {
 func flatText(s string) string { return strings.Join(strings.Fields(s), " ") }
 
 // checkCursorProcedure is the owner procedure's independent validator: the
-// verbatim pending status, the six literal command templates in one shell
+// verbatim scoped status, the six literal command templates in one shell
 // block with one selection and one executable throughout, every required
-// clause, no forbidden claim, and the historical subsection's past-tense
-// diagnostic record.
+// clause, no forbidden claim, the historical subsection's past-tense
+// diagnostic record and the closeout validators (checkCursorCloseout).
 func checkCursorProcedure(doc string) error {
 	current, historical, err := cursorSections(doc)
 	if err != nil {
@@ -134,7 +140,7 @@ func checkCursorProcedure(doc string) error {
 	if strings.Contains(hflat, "cursor_execution_pending_3b") || strings.Contains(strings.ToLower(hflat), "is qualified") {
 		return fmt.Errorf("the historical subsection keeps a retired or promoting claim")
 	}
-	return nil
+	return checkCursorCloseout(doc)
 }
 
 func TestCursor3bFP4OwnerProcedure(t *testing.T) {
@@ -147,7 +153,7 @@ func TestCursor3bFP4OwnerProcedure(t *testing.T) {
 	// and every promoting claim, is refused.
 	probe, exercise := cursorCommandTemplates[0], cursorCommandTemplates[2]
 	mutations := [][2]string{
-		{cursorStatusPin, strings.Replace(cursorStatusPin, "pending.", "complete.", 1)},
+		{cursorStatusPin, strings.Replace(cursorStatusPin, "Cursor coder status: complete for", "Cursor coder status: pending for", 1)},
 		{cursorStatusPin, strings.Replace(cursorStatusPin, "The 2026-10-27 slice 3a receipt is not qualification. ", "", 1)},
 		{probe + "\n", ""},
 		{probe, strings.Replace(probe, "--scenario both", "--scenario full", 1)},
@@ -181,6 +187,9 @@ func TestCursor3bFP4OwnerProcedure(t *testing.T) {
 		{"never rewritten or promoted", "promoted"},
 	}
 	for _, m := range mutations {
+		if m[0] == m[1] {
+			t.Fatalf("the mutation of %.80q is a no-op", m[0])
+		}
 		if !strings.Contains(doc, m[0]) {
 			t.Fatalf("the mutation target %q is not in docs/real-e2e.md", m[0])
 		}
@@ -285,9 +294,12 @@ func TestCursorBindingFP5(t *testing.T) {
 		[2]string{cursorBindingClauses[0], "binds the explicit executable by its SHA-256 before any vendor runs and again after cleanup (a changed or unreadable executable is `cursor_executable_mismatch`)"},
 		[2]string{cursorBindingClauses[1], "the selection bytes and the executable are frozen before the cost authorization, both children capture those bytes and must carry the root's binding, a changed executable stops before the light child's paid work"},
 		[2]string{cursorBindingParagraphs[0] + "\n\n" + cursorBindingParagraphs[1], cursorBindingParagraphs[1] + "\n\n" + cursorBindingParagraphs[0]},
-		[2]string{cursorStatusPin, strings.Replace(cursorStatusPin, "pending.", "complete.", 1)},
+		[2]string{cursorStatusPin, strings.Replace(cursorStatusPin, "complete for the recorded binary identity and selection;", "pending fresh qualification;", 1)},
 	)
 	for _, m := range mutations {
+		if m[0] == m[1] {
+			t.Fatalf("the mutation of %.80q is a no-op", m[0])
+		}
 		if !strings.Contains(doc, m[0]) {
 			t.Fatalf("the mutation target %q is not in docs/real-e2e.md", m[0])
 		}
@@ -454,6 +466,639 @@ func TestCursor3bFP5Delivery(t *testing.T) {
 		mutated["docs/examples/real-e2e/README.md"] += "\n" + claim + ".\n"
 		if checkCursorCatalog(mutated) == nil {
 			t.Errorf("the claim %q was accepted", claim)
+		}
+	}
+}
+
+// Design 12a-3-cursor-closeout: the literal pins of its qualification
+// wording (FP-1 to FP-5), its status consistency (FP-6) and its citation
+// form (FP-7). Paths in the pins are documentary citation labels; no
+// validator opens them.
+
+// cursorNavigationPin is FP-1's navigation paragraph in the introduction,
+// after the unchanged default live status.
+const cursorNavigationPin = "The default-selection observations above remain separate from the optional Cursor coder. Roadmap 12a slice 3 is complete for the recorded Cursor binary identity and selection; see [Cursor coder qualification](#cursor-coder-qualification) for its 2026-10-28 requalification, audited combined exercise, limits and future requalification procedure."
+
+// cursorProbePin is FP-2's qualified-probe paragraph, after #76's three
+// binding paragraphs.
+const cursorProbePin = "The requalification required after #76 is recorded on 2026-10-28: probe `20261028T201303Z-b2fcc67a` is `QUALIFIED` with `--scenario both` at revision `6e57006ad5a7bbe01fff4e4476650bdff6e1c47e`, using Cursor `2026.10.22-27dcf5f` and coder `cursor / grok-4.7 / high`. Its `callsheet-dev-cursor-qualification/v1` record is `design/real-e2e-runs/20261028-cursor-qual2/qualification.json`; all seven stages passed. Its recorded Cursor identity is the resolved target ending `versions/2026.10.22-27dcf5f/cursor-agent` and file SHA-256 `2ccc9a8e167797641448b5e5c936f006ba137a2555f117f38c5eb76a5238a233`, equal before and after. The external coordinator's record `design/real-e2e-runs/20261028-cursor-exercise2/attempts/full/audit-review.md` also records this probe's offline check as QUALIFIED with codes `[]`."
+
+// cursorExercisePin is FP-3's audited-exercise paragraph, right after the
+// qualified probe.
+const cursorExercisePin = "Combined Cursor exercise `20261028T203540Z-11107d40` is `PASS`, recorded in `design/real-e2e-runs/20261028-cursor-exercise2/exercise.json`, `design/real-e2e-runs/20261028-cursor-exercise2/report.txt` and `design/real-e2e-runs/20261028-cursor-exercise2/report.json`, with 17 worker calls. Full child `20261028T203547Z-d9d43e67` is mechanical PASS with 9 calls; light child `20261028T204730Z-d51eefed` is mechanical PASS with 8 calls. Their manifests `design/real-e2e-runs/20261028-cursor-exercise2/attempts/full/manifest.json` and `design/real-e2e-runs/20261028-cursor-exercise2/attempts/light/manifest.json` record the same revision `6e57006ad5a7bbe01fff4e4476650bdff6e1c47e` and Cursor version `2026.10.22-27dcf5f` as the probe; the probe, root and both children carry the same resolved-target binding and equal before/after file hashes. The external coordinator's 2026-10-28 judgment audits `design/real-e2e-runs/20261028-cursor-exercise2/attempts/full/audit-review.md` and `design/real-e2e-runs/20261028-cursor-exercise2/attempts/light/audit-review.md` each record all four judgment rows as correct and no disputed mechanical row. Those audit records also state that offline checks of the root and both children exited 0 and matched their canonical report.json. The mechanical reports alone do not approve model judgment; the separate child audits satisfy that requirement without rewriting the canonical reports."
+
+// cursorSupersededHeading and cursorSupersededPin are FP-4's superseded
+// history, the subsection between the owner procedure and the slice 3a
+// history.
+const (
+	cursorSupersededHeading = "### Superseded first Cursor qualification and exercise"
+	cursorSupersededPin     = "The earlier probe `design/real-e2e-runs/20261028-cursor-qual1/qualification.json` recorded QUALIFIED for Cursor `2026.10.14-0f9edde` at revision `167d38f508421035d54db4b72cd5549133db0ba5`. The first combined exercise `20261028T074203Z-f6ae17b1`, recorded in `design/real-e2e-runs/20261028-cursor-exercise/report.txt`, recorded mechanical PASS but does not complete slice 3. Cursor self-updated to `2026.10.22-27dcf5f` during the full child's coder run (task started 07:52:08Z on the qualified `2026.10.14-0f9edde`; the new version directory appeared 07:52:30Z). The light child then ran the unqualified version. The former shim-hash binding missed that change because the wrapper bytes were unchanged; #76 fixed that gap with resolved-target binding and child-version comparison as described above. The dated 2026-10-28 addenda in `design/real-e2e-runs/20261028-cursor-exercise/attempts/full/audit-review.md` and `design/real-e2e-runs/20261028-cursor-exercise/attempts/light/audit-review.md` record the owner's decision to fix the binding and requalify. Qual1 and the first exercise are superseded history, never completion evidence. Keep their original records unchanged and use their producing revision for historical checking; a historical mechanical PASS does not establish the stronger binding or completion."
+)
+
+// cursorCompletionRulePin is FP-5's completion rule, the owner procedure's
+// final sentences, and cursorInvalidationSentence the existing full
+// invalidation sentence that the scoped status does not narrow.
+const (
+	cursorCompletionRulePin    = "For any Cursor closeout, completion requires the fresh qualification, the combined exercise with both children and the root passing, and both external child judgment audits to be recorded; a probe alone, a full child alone or an unaudited exercise is not completion. The qual2 and exercise2 records above meet that rule for their recorded binary identity and selection; future requalification follows this same owner procedure."
+	cursorInvalidationSentence = "Any changed relevant binary/version, manual, policy, account context or selection invalidates use of this qualification for a later live run; owner disposition is required rather than silently spending another probe."
+)
+
+// cursorOptionalSelection opens the optional-selection paragraph that the
+// closeout evidence precedes.
+const cursorOptionalSelection = "The optional coder-only selection"
+
+// cursorStaleStatus are the replaced pending status's prefix and clause,
+// refused anywhere in the runbook (FP-6).
+var cursorStaleStatus = []string{"Cursor coder status: diagnostic observed", "fresh qualification, combined full/light execution and external child judgment audits pending"}
+
+// cursorSupersededOnly are FP-6's exclusive-occurrence strings: the
+// superseded run IDs, bundle directories and revision, allowed only inside
+// the superseded history. Version strings are deliberately not in the set.
+var cursorSupersededOnly = []string{"20261028T065706Z-4f7cb8ea", "20261028T074203Z-f6ae17b1", "20261028T074210Z-70dc1229", "20261028T075929Z-560a5bdc",
+	"20261028-cursor-qual1/", "20261028-cursor-exercise/", "167d38f508421035d54db4b72cd5549133db0ba5"}
+
+// cursorCitation is one FP-7 evidence citation: the closeout part citing
+// it ("cursor" for the Cursor section before its owner procedure,
+// "superseded" for the superseded history), its repository-relative path
+// and how many times that part cites it.
+type cursorCitation struct {
+	part, path string
+	count      int
+}
+
+// cursorCitations are every new and historical evidence citation of the
+// closeout wording.
+var cursorCitations = []cursorCitation{
+	{"cursor", "design/real-e2e-runs/20261028-cursor-qual2/qualification.json", 1},
+	{"cursor", "design/real-e2e-runs/20261028-cursor-exercise2/exercise.json", 1},
+	{"cursor", "design/real-e2e-runs/20261028-cursor-exercise2/report.txt", 1},
+	{"cursor", "design/real-e2e-runs/20261028-cursor-exercise2/report.json", 1},
+	{"cursor", "design/real-e2e-runs/20261028-cursor-exercise2/attempts/full/manifest.json", 1},
+	{"cursor", "design/real-e2e-runs/20261028-cursor-exercise2/attempts/light/manifest.json", 1},
+	{"cursor", "design/real-e2e-runs/20261028-cursor-exercise2/attempts/full/audit-review.md", 2},
+	{"cursor", "design/real-e2e-runs/20261028-cursor-exercise2/attempts/light/audit-review.md", 1},
+	{"superseded", "design/real-e2e-runs/20261028-cursor-qual1/qualification.json", 1},
+	{"superseded", "design/real-e2e-runs/20261028-cursor-exercise/report.txt", 1},
+	{"superseded", "design/real-e2e-runs/20261028-cursor-exercise/attempts/full/audit-review.md", 1},
+	{"superseded", "design/real-e2e-runs/20261028-cursor-exercise/attempts/light/audit-review.md", 1},
+}
+
+// cursorCloseoutParts are the runbook parts the closeout validators read.
+type cursorCloseoutParts struct {
+	intro      string // before the first level-two heading
+	cursor     string // the Cursor section up to its owner procedure
+	procedure  string // the owner procedure, up to the superseded history
+	superseded string // the superseded history, up to the slice 3a history
+}
+
+// cursorCloseoutSections splits the runbook into its closeout parts; the
+// superseded-history heading occurs once, after the owner procedure and
+// before the slice 3a history (cursorSections' boundaries are unchanged).
+func cursorCloseoutSections(doc string) (cursorCloseoutParts, error) {
+	var p cursorCloseoutParts
+	current, _, err := cursorSections(doc)
+	if err != nil {
+		return p, err
+	}
+	const proc, sup = "\n### Cursor owner procedure\n", "\n" + cursorSupersededHeading + "\n"
+	i, j := strings.Index(current, proc), strings.Index(current, sup)
+	if i < 0 || strings.Count(doc, proc) != 1 {
+		return p, fmt.Errorf("the Cursor section lacks its single owner procedure")
+	}
+	if j < i || strings.Count(doc, sup) != 1 {
+		return p, fmt.Errorf("the superseded history is not one subsection between the owner procedure and the slice 3a history")
+	}
+	p.intro, _, _ = strings.Cut(doc, "\n## ")
+	p.cursor, p.procedure, p.superseded = current[:i], current[i+len(proc):j], current[j+len(sup):]
+	return p, nil
+}
+
+// cursorPinOnce requires pin once in part and once in the whole runbook,
+// comparing whitespace-flattened text on both sides.
+func cursorPinOnce(doc, part, pin, what string) error {
+	if p := flatText(pin); strings.Count(flatText(part), p) != 1 || strings.Count(flatText(doc), p) != 1 {
+		return fmt.Errorf("the %s is not pinned verbatim once in its section", what)
+	}
+	return nil
+}
+
+// cursorInOrder requires each text to occur in flat after the end of the
+// previous one.
+func cursorInOrder(flat string, texts ...string) error {
+	at := 0
+	for _, s := range texts {
+		f := flatText(s)
+		i := strings.Index(flat[at:], f)
+		if i < 0 {
+			return fmt.Errorf("%.60q is missing or out of order", s)
+		}
+		at += i + len(f)
+	}
+	return nil
+}
+
+// checkCursorCloseoutStatus validates FP-1: the scoped status once in the
+// Cursor section, and the navigation paragraph once in the introduction
+// after the default live status.
+func checkCursorCloseoutStatus(doc string) error {
+	p, err := cursorCloseoutSections(doc)
+	if err != nil {
+		return err
+	}
+	if err := cursorPinOnce(doc, p.cursor, cursorStatusPin, "scoped Cursor status"); err != nil {
+		return err
+	}
+	if err := cursorPinOnce(doc, p.intro, cursorNavigationPin, "Cursor navigation paragraph"); err != nil {
+		return err
+	}
+	return cursorInOrder(flatText(p.intro), "Live status:", cursorNavigationPin)
+}
+
+// checkCursorCloseoutProbe validates FP-2: the qualified-probe paragraph
+// once, after the binding paragraphs and before the optional selection.
+func checkCursorCloseoutProbe(doc string) error {
+	p, err := cursorCloseoutSections(doc)
+	if err != nil {
+		return err
+	}
+	if err := cursorPinOnce(doc, p.cursor, cursorProbePin, "qualified-probe paragraph"); err != nil {
+		return err
+	}
+	return cursorInOrder(flatText(p.cursor), cursorBindingParagraphs[2], cursorProbePin, cursorOptionalSelection)
+}
+
+// checkCursorCloseoutExercise validates FP-3: the audited-exercise
+// paragraph once, after the qualified probe and before the optional
+// selection.
+func checkCursorCloseoutExercise(doc string) error {
+	p, err := cursorCloseoutSections(doc)
+	if err != nil {
+		return err
+	}
+	if err := cursorPinOnce(doc, p.cursor, cursorExercisePin, "audited-exercise paragraph"); err != nil {
+		return err
+	}
+	return cursorInOrder(flatText(p.cursor), cursorBindingParagraphs[2], cursorProbePin, cursorExercisePin, cursorOptionalSelection)
+}
+
+// checkCursorCloseoutHistory validates FP-4: one superseded-history
+// heading bounded by the slice 3a history, holding its paragraph once.
+func checkCursorCloseoutHistory(doc string) error {
+	p, err := cursorCloseoutSections(doc)
+	if err != nil {
+		return err
+	}
+	return cursorPinOnce(doc, p.superseded, cursorSupersededPin, "superseded-history paragraph")
+}
+
+// checkCursorCloseoutRule validates FP-5: the completion rule and the full
+// invalidation sentence once in the owner procedure, and no replaced
+// completion sentence.
+func checkCursorCloseoutRule(doc string) error {
+	p, err := cursorCloseoutSections(doc)
+	if err != nil {
+		return err
+	}
+	if err := cursorPinOnce(doc, p.procedure, cursorCompletionRulePin, "completion rule"); err != nil {
+		return err
+	}
+	if err := cursorPinOnce(doc, p.procedure, cursorInvalidationSentence, "invalidation sentence"); err != nil {
+		return err
+	}
+	if strings.Contains(flatText(doc), "Cursor is complete only when") {
+		return fmt.Errorf("the replaced completion sentence remains")
+	}
+	return nil
+}
+
+// checkCursorCloseoutConsistency validates FP-6: exactly one Cursor coder
+// status, no stale pending status anywhere, the superseded history holding
+// only its paragraph, and the superseded IDs, directories and revision
+// nowhere else.
+func checkCursorCloseoutConsistency(doc string) error {
+	lower := strings.ToLower(flatText(doc))
+	if n := strings.Count(lower, "cursor coder status:"); n != 1 {
+		return fmt.Errorf("the runbook states %d Cursor coder statuses, not one", n)
+	}
+	for _, s := range cursorStaleStatus {
+		if strings.Contains(lower, strings.ToLower(s)) {
+			return fmt.Errorf("the runbook keeps the stale status %q", s)
+		}
+	}
+	p, err := cursorCloseoutSections(doc)
+	if err != nil {
+		return err
+	}
+	if flatText(p.superseded) != flatText(cursorSupersededPin) {
+		return fmt.Errorf("the superseded history holds more than its paragraph")
+	}
+	for _, s := range cursorSupersededOnly {
+		if strings.Count(doc, s) != strings.Count(p.superseded, s) {
+			return fmt.Errorf("%q occurs outside the superseded history", s)
+		}
+	}
+	return nil
+}
+
+// checkCursorCloseoutCitations validates FP-7: no Markdown evidence link
+// (the existing checkNoEvidenceLink), and every closeout citation an
+// exact backticked repository-relative path, cited only that way and as
+// often as its section's wording cites it.
+func checkCursorCloseoutCitations(doc string) error {
+	if err := checkNoEvidenceLink(doc); err != nil {
+		return err
+	}
+	p, err := cursorCloseoutSections(doc)
+	if err != nil {
+		return err
+	}
+	parts := map[string]string{"cursor": flatText(p.cursor), "superseded": flatText(p.superseded)}
+	for _, c := range cursorCitations {
+		sec := parts[c.part]
+		if strings.Count(sec, "`"+c.path+"`") != c.count || strings.Count(sec, c.path) != c.count {
+			return fmt.Errorf("%s is not cited %d time(s) as a backticked repository-relative path in its section", c.path, c.count)
+		}
+	}
+	return nil
+}
+
+// checkCursorCloseout is the closeout's aggregate validator over its eight
+// helpers (FP-8's checkCursorCloseoutPaths is in codex_triage_test.go). It
+// calls neither checkCursorProcedure (which calls it) nor
+// checkCursorBinding.
+func checkCursorCloseout(doc string) error {
+	for _, check := range []func(string) error{checkCursorCloseoutStatus, checkCursorCloseoutProbe, checkCursorCloseoutExercise,
+		checkCursorCloseoutHistory, checkCursorCloseoutRule, checkCursorCloseoutConsistency, checkCursorCloseoutCitations, checkCursorCloseoutPaths} {
+		if err := check(doc); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// cursorRunbook is the one-entry document map mutateExpect reads.
+func cursorRunbook(t *testing.T) map[string]string {
+	t.Helper()
+	return map[string]string{"e2e": string(repoFile(t, "docs/real-e2e.md"))}
+}
+
+// onCursorRunbook adapts a runbook validator to mutateExpect.
+func onCursorRunbook(check func(string) error) func(map[string]string) error {
+	return func(docs map[string]string) error { return check(docs["e2e"]) }
+}
+
+// cursorEdits are mutations of pin, each replacing its first from with to.
+func cursorEdits(pin string, edits ...[2]string) [][2]string {
+	out := make([][2]string, len(edits))
+	for i, e := range edits {
+		out[i] = [2]string{pin, strings.Replace(pin, e[0], e[1], 1)}
+	}
+	return out
+}
+
+// cursorChanged asserts that every assembled mutation changes its target.
+func cursorChanged(t *testing.T, muts [][2]string) [][2]string {
+	t.Helper()
+	for _, m := range muts {
+		if m[0] == m[1] {
+			t.Fatalf("the mutation of %.80q is a no-op", m[0])
+		}
+	}
+	return muts
+}
+
+// cursorRefused requires check to refuse mutated, a composite mutation of
+// doc that a single replacement cannot express.
+func cursorRefused(t *testing.T, check func(string) error, what, doc, mutated string) {
+	t.Helper()
+	if mutated == doc {
+		t.Fatalf("%s: the mutation is a no-op", what)
+	}
+	if check(mutated) == nil {
+		t.Errorf("%s was accepted", what)
+	}
+}
+
+// cursorCloseoutPositive validates the shipped runbook with the aggregate
+// and the retained procedure and binding validators.
+func cursorCloseoutPositive(t *testing.T, doc string) {
+	t.Helper()
+	for name, check := range map[string]func(string) error{"closeout": checkCursorCloseout, "procedure": checkCursorProcedure, "binding": checkCursorBinding} {
+		if err := check(doc); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+}
+
+func TestCursorCloseoutFP1(t *testing.T) {
+	docs := cursorRunbook(t)
+	cursorCloseoutPositive(t, docs["e2e"])
+	sentences := []string{
+		"Cursor coder status: complete for the recorded binary identity and selection; roadmap 12a slice 3, the optional Cursor coder, was closed by the owner on 2026-10-28.",
+		"Completion rests on the fresh QUALIFIED both-scope Cursor probe and audited combined full/light exercise recorded below, all using Cursor `2026.10.22-27dcf5f` after the binding fix in #76.",
+		"A2 remains unobserved: no approval-needing action occurred under `--auto-review`.",
+		"There is no jail and no confinement claim; activity samples are report-only.",
+		"A changed relevant binary identity, version or selection requires owner-authorized requalification before a later live run; this is not a permanent vendor qualification.",
+		"The 2026-10-27 slice 3a receipt is not qualification.",
+		"Default-selection probe 11 and its combined exercise do not qualify Cursor.",
+	}
+	if strings.Join(sentences, " ") != cursorStatusPin {
+		t.Fatal("the status sentences do not compose the status pin")
+	}
+	// Each status sentence dropped, then each substituted or with one
+	// caveat removed; the navigation paragraph dropped, substituted,
+	// weakened or moved out of the introduction.
+	var muts [][2]string
+	for _, s := range sentences {
+		muts = append(muts, [2]string{cursorStatusPin, strings.Replace(cursorStatusPin, s, "", 1)})
+	}
+	muts = append(muts, cursorEdits(cursorStatusPin,
+		[2]string{"complete for the recorded binary identity and selection", "complete"},
+		[2]string{"was closed by the owner on 2026-10-28", "was closed automatically"},
+		[2]string{"fresh QUALIFIED both-scope Cursor probe", "QUALIFIED full-scope Cursor probe"},
+		[2]string{"audited combined full/light exercise", "combined full exercise"},
+		[2]string{"`2026.10.22-27dcf5f`", "`2026.10.14-0f9edde`"},
+		[2]string{"after the binding fix in #76", "before the binding fix"},
+		[2]string{"A2 remains unobserved: no approval-needing action occurred under `--auto-review`. ", ""},
+		[2]string{"A2 remains unobserved", "A2 was observed"},
+		[2]string{"There is no jail and no confinement claim; ", ""},
+		[2]string{"no jail and no confinement claim", "a jail that confines the coder"},
+		[2]string{"; activity samples are report-only", ""},
+		[2]string{"activity samples are report-only", "activity samples are enforced"},
+		[2]string{"A changed relevant binary identity, version or selection requires owner-authorized requalification before a later live run; ", ""},
+		[2]string{"requires owner-authorized requalification before a later live run", "needs no requalification"},
+		[2]string{"this is not a permanent vendor qualification", "this is a permanent vendor qualification"},
+		[2]string{"The 2026-10-27 slice 3a receipt is not qualification.", "The 2026-10-27 slice 3a receipt also qualifies."},
+		[2]string{"Default-selection probe 11 and its combined exercise do not qualify Cursor.", "Default-selection probe 11 also qualifies the coder."},
+	)...)
+	muts = append(muts,
+		[2]string{cursorStatusPin + "\n\n", ""},
+		[2]string{cursorNavigationPin + "\n\n", ""},
+		[2]string{cursorNavigationPin, "Roadmap 12a slice 3 is complete; see [Cursor coder qualification](#cursor-coder-qualification)."},
+		[2]string{"\n\n" + cursorNavigationPin + "\n\n## Prerequisites\n", "\n\n## Prerequisites\n\n" + cursorNavigationPin + "\n"},
+	)
+	muts = append(muts, cursorEdits(cursorNavigationPin,
+		[2]string{"remain separate from the optional Cursor coder", "include the optional Cursor coder"},
+		[2]string{"is complete for the recorded Cursor binary identity and selection", "is complete for every Cursor installation"},
+		[2]string{"(#cursor-coder-qualification)", "(#cursor-owner-procedure)"},
+		[2]string{"its 2026-10-28 requalification", "its 2026-10-27 requalification"},
+		[2]string{", limits and future requalification procedure", ""},
+	)...)
+	mutateExpect(t, docs, onCursorRunbook(checkCursorCloseoutStatus), "e2e", cursorChanged(t, muts))
+}
+
+func TestCursorCloseoutFP2(t *testing.T) {
+	docs := cursorRunbook(t)
+	cursorCloseoutPositive(t, docs["e2e"])
+	qual1 := strings.NewReplacer("20261028-cursor-qual2/", "20261028-cursor-qual1/", "20261028T201303Z-b2fcc67a", "20261028T065706Z-4f7cb8ea",
+		"6e57006ad5a7bbe01fff4e4476650bdff6e1c47e", "167d38f508421035d54db4b72cd5549133db0ba5", "2026.10.22-27dcf5f", "2026.10.14-0f9edde").Replace(cursorProbePin)
+	muts := [][2]string{
+		{cursorProbePin + "\n\n", ""},
+		{cursorProbePin, qual1},
+		// Moved before the third binding paragraph.
+		{cursorBindingParagraphs[2] + "\n\n" + cursorProbePin, cursorProbePin + "\n\n" + cursorBindingParagraphs[2]},
+	}
+	muts = append(muts, cursorEdits(cursorProbePin,
+		[2]string{"`20261028T201303Z-b2fcc67a`", "`20261028T201303Z-b2fcc67b`"},
+		[2]string{"is `QUALIFIED`", "is `BLOCKED`"},
+		[2]string{"`--scenario both`", "`--scenario full`"},
+		[2]string{"`callsheet-dev-cursor-qualification/v1`", "`callsheet-dev-qualification/v1`"},
+		[2]string{"revision `6e57006ad5a7bbe01fff4e4476650bdff6e1c47e`", "revision `167d38f508421035d54db4b72cd5549133db0ba5`"},
+		[2]string{"using Cursor `2026.10.22-27dcf5f`", "using Cursor `2026.10.14-0f9edde`"},
+		[2]string{"`cursor / grok-4.7 / high`", "`cursor / grok-4.7 / xhigh`"},
+		[2]string{"all seven stages passed", "all six stages passed"},
+		[2]string{"all seven stages passed", "the stages were observed"},
+		[2]string{"`versions/2026.10.22-27dcf5f/cursor-agent`", "`cursor-agent`"},
+		[2]string{"`2ccc9a8e167797641448b5e5c936f006ba137a2555f117f38c5eb76a5238a233`", "`2ccc9a8e167797641448b5e5c936f006ba137a2555f117f38c5eb76a5238a234`"},
+		[2]string{"equal before and after", "changed after cleanup"},
+		[2]string{"`design/real-e2e-runs/20261028-cursor-exercise2/attempts/full/audit-review.md` also records", "`design/real-e2e-runs/20261028-cursor-exercise2/attempts/light/audit-review.md` also records"},
+		[2]string{" The external coordinator's record `design/real-e2e-runs/20261028-cursor-exercise2/attempts/full/audit-review.md` also records this probe's offline check as QUALIFIED with codes `[]`.", ""},
+		[2]string{"offline check as QUALIFIED", "offline check as BLOCKED"},
+		[2]string{"with codes `[]`", "with codes `[cursor_executable_mismatch]`"},
+		[2]string{"20261028-cursor-qual2/", "20261028-cursor-qual1/"},
+	)...)
+	mutateExpect(t, docs, onCursorRunbook(checkCursorCloseoutProbe), "e2e", cursorChanged(t, muts))
+}
+
+func TestCursorCloseoutFP3(t *testing.T) {
+	docs := cursorRunbook(t)
+	cursorCloseoutPositive(t, docs["e2e"])
+	first := strings.NewReplacer("20261028-cursor-exercise2/", "20261028-cursor-exercise/", "20261028T203540Z-11107d40", "20261028T074203Z-f6ae17b1",
+		"20261028T203547Z-d9d43e67", "20261028T074210Z-70dc1229", "20261028T204730Z-d51eefed", "20261028T075929Z-560a5bdc").Replace(cursorExercisePin)
+	muts := [][2]string{
+		{cursorExercisePin + "\n\n", ""},
+		{cursorExercisePin, first},
+		// Swapped before the qualified probe.
+		{cursorProbePin + "\n\n" + cursorExercisePin, cursorExercisePin + "\n\n" + cursorProbePin},
+	}
+	muts = append(muts, cursorEdits(cursorExercisePin,
+		[2]string{"`design/real-e2e-runs/20261028-cursor-exercise2/attempts/full/audit-review.md` and ", ""},
+		[2]string{" and `design/real-e2e-runs/20261028-cursor-exercise2/attempts/light/audit-review.md`", ""},
+		[2]string{"`20261028T203540Z-11107d40`", "`20261028T203540Z-11107d41`"},
+		[2]string{"`20261028T203547Z-d9d43e67`", "`20261028T203547Z-d9d43e68`"},
+		[2]string{"`20261028T204730Z-d51eefed`", "`20261028T204730Z-d51eefee`"},
+		[2]string{"with 17 worker calls", "with 18 worker calls"},
+		[2]string{"PASS with 9 calls", "PASS with 10 calls"},
+		[2]string{"PASS with 8 calls", "PASS with 7 calls"},
+		[2]string{"is `PASS`", "is `FAIL`"},
+		[2]string{"`20261028T203547Z-d9d43e67` is mechanical PASS", "`20261028T203547Z-d9d43e67` is mechanical FAIL"},
+		[2]string{"`20261028T204730Z-d51eefed` is mechanical PASS", "`20261028T204730Z-d51eefed` is mechanical FAIL"},
+		[2]string{"same revision `6e57006ad5a7bbe01fff4e4476650bdff6e1c47e`", "same revision `167d38f508421035d54db4b72cd5549133db0ba5`"},
+		[2]string{"Cursor version `2026.10.22-27dcf5f`", "Cursor version `2026.10.14-0f9edde`"},
+		[2]string{"carry the same resolved-target binding and equal before/after file hashes", "carry their own bindings"},
+		[2]string{"equal before/after file hashes", "changed file hashes"},
+		[2]string{"2026-10-28 judgment audits", "2026-10-27 judgment audits"},
+		[2]string{"all four judgment rows as correct", "three of four judgment rows as correct"},
+		[2]string{"no disputed mechanical row", "one disputed mechanical row"},
+		[2]string{"offline checks of the root and both children exited 0", "offline checks of the root exited 0"},
+		[2]string{"exited 0 and matched their canonical report.json", "exited 1"},
+		[2]string{" Those audit records also state that offline checks of the root and both children exited 0 and matched their canonical report.json.", ""},
+		[2]string{"The mechanical reports alone do not approve model judgment", "The mechanical reports approve model judgment"},
+		[2]string{"without rewriting the canonical reports", "by rewriting the canonical reports"},
+	)...)
+	mutateExpect(t, docs, onCursorRunbook(checkCursorCloseoutExercise), "e2e", cursorChanged(t, muts))
+	// The status retained while the exercise is removed or replaced fails
+	// the aggregate, and the procedure validator that calls it.
+	for _, check := range []func(string) error{checkCursorCloseout, checkCursorProcedure} {
+		mutateExpect(t, docs, onCursorRunbook(check), "e2e", cursorChanged(t, [][2]string{{cursorExercisePin + "\n\n", ""}, {cursorExercisePin, first}}))
+	}
+}
+
+func TestCursorCloseoutFP4(t *testing.T) {
+	docs := cursorRunbook(t)
+	cursorCloseoutPositive(t, docs["e2e"])
+	muts := [][2]string{
+		{cursorSupersededHeading + "\n\n", ""},
+		{cursorSupersededHeading, "### First Cursor qualification and exercise"},
+		{cursorSupersededHeading, "#### Superseded first Cursor qualification and exercise"},
+		{cursorSupersededPin, ""},
+		{"### Historical slice 3a diagnostic observation", "### Cursor coder diagnostic probe (slice 3a)"},
+	}
+	muts = append(muts, cursorEdits(cursorSupersededPin,
+		[2]string{"QUALIFIED for Cursor `2026.10.14-0f9edde`", "QUALIFIED for Cursor `2026.10.22-27dcf5f`"},
+		[2]string{"on the qualified `2026.10.14-0f9edde`", "on the qualified `2026.10.22-27dcf5f`"},
+		[2]string{"self-updated to `2026.10.22-27dcf5f`", "self-updated to `2026.10.14-0f9edde`"},
+		[2]string{"`167d38f508421035d54db4b72cd5549133db0ba5`", "`6e57006ad5a7bbe01fff4e4476650bdff6e1c47e`"},
+		[2]string{"`20261028T074203Z-f6ae17b1`", "`20261028T203540Z-11107d40`"},
+		[2]string{"Cursor self-updated to", "The owner updated Cursor to"},
+		[2]string{"task started 07:52:08Z", "task started 07:42:08Z"},
+		[2]string{"the new version directory appeared 07:52:30Z", "the new version directory appeared 07:59:30Z"},
+		[2]string{"The light child then ran the unqualified version.", "The light child then ran the qualified version."},
+		[2]string{"The former shim-hash binding missed that change because the wrapper bytes were unchanged", "The former shim-hash binding detected that change"},
+		[2]string{"#76 fixed that gap", "a later change may fix that gap"},
+		[2]string{"`design/real-e2e-runs/20261028-cursor-exercise/attempts/full/audit-review.md`", "`design/real-e2e-runs/20261028-cursor-exercise/attempts/full/audit.md`"},
+		[2]string{"`design/real-e2e-runs/20261028-cursor-exercise/attempts/light/audit-review.md`", "`design/real-e2e-runs/20261028-cursor-exercise/attempts/light/audit.md`"},
+		[2]string{"The dated 2026-10-28 addenda", "The addenda"},
+		[2]string{"record the owner's decision to fix the binding and requalify", "record the owner's acceptance of the drift"},
+		[2]string{"but does not complete slice 3", "and completes slice 3"},
+		[2]string{" Qual1 and the first exercise are superseded history, never completion evidence.", ""},
+		[2]string{"never completion evidence", "completion evidence"},
+		[2]string{"does not establish the stronger binding or completion", "establishes completion"},
+	)...)
+	mutateExpect(t, docs, onCursorRunbook(checkCursorCloseoutHistory), "e2e", cursorChanged(t, muts))
+	// The retained slice 3a disclaimer through the existing history
+	// mutations of the owner-procedure validator.
+	mutateExpect(t, docs, onCursorRunbook(checkCursorProcedure), "e2e", cursorChanged(t, [][2]string{
+		{"The 2026-10-27 slice 3a receipt was a diagnostic-only observation, not qualification.", "The 2026-10-27 slice 3a receipt is qualified."},
+		{"### Historical slice 3a diagnostic observation", "### Cursor coder diagnostic probe (slice 3a)"},
+		{"never rewritten or promoted", "promoted"},
+	}))
+}
+
+func TestCursorCloseoutFP5(t *testing.T) {
+	docs := cursorRunbook(t)
+	cursorCloseoutPositive(t, docs["e2e"])
+	const notCompletion = "a probe alone, a full child alone or an unaudited exercise is not completion"
+	muts := [][2]string{
+		{" " + cursorCompletionRulePin, ""},
+		{cursorCompletionRulePin, "Cursor is complete only when the fresh qualification, the combined exercise with both children and the root passing, and both external child judgment audits are recorded; " + notCompletion + "."},
+		// Moved out of the owner procedure into the superseded history.
+		{" " + cursorCompletionRulePin + "\n\n" + cursorSupersededHeading + "\n\n", "\n\n" + cursorSupersededHeading + "\n\n" + cursorCompletionRulePin + " "},
+		{" " + cursorInvalidationSentence, ""},
+	}
+	muts = append(muts, cursorEdits(cursorCompletionRulePin,
+		[2]string{"; " + notCompletion, ""},
+		[2]string{notCompletion, "a probe alone is completion"},
+		[2]string{notCompletion, "a full child alone is completion"},
+		[2]string{notCompletion, "an unaudited exercise is completion"},
+		[2]string{"the combined exercise with both children and the root passing", "the full child passing"},
+		[2]string{", and both external child judgment audits to be recorded", ""},
+		[2]string{"both external child judgment audits", "the root audit"},
+		[2]string{"For any Cursor closeout, completion requires", "This closeout's completion required"},
+		[2]string{"for their recorded binary identity and selection", "for every Cursor version"},
+		[2]string{"future requalification follows this same owner procedure", "future requalification is automatic"},
+	)...)
+	muts = append(muts, cursorEdits(cursorInvalidationSentence,
+		[2]string{"binary/version, ", ""},
+		[2]string{"manual, ", ""},
+		[2]string{"policy, ", ""},
+		[2]string{"account context ", ""},
+		[2]string{" or selection", ""},
+		[2]string{"Any changed relevant binary/version, manual, policy, account context or selection", "Any changed binary identity"},
+		[2]string{"invalidates use of this qualification", "keeps this qualification usable"},
+	)...)
+	mutateExpect(t, docs, onCursorRunbook(checkCursorCloseoutRule), "e2e", cursorChanged(t, muts))
+	// Fresh-output safety: either command variable replaced by a recorded
+	// bundle (qual2, exercise2, qual1, the first exercise or the slice 3a
+	// bundle) is refused by the exact command templates.
+	var outputs [][2]string
+	for _, v := range []string{`"$CURSOR_PROBE_EVIDENCE"`, `"$CURSOR_EXERCISE_EVIDENCE"`} {
+		for _, b := range []string{"20261028-cursor-qual2", "20261028-cursor-exercise2", "20261028-cursor-qual1", "20261028-cursor-exercise", "20261027-cursor-probe1"} {
+			outputs = append(outputs, [2]string{v, "/abs/callsheet/design/real-e2e-runs/" + b})
+		}
+	}
+	mutateExpect(t, docs, onCursorRunbook(checkCursorProcedure), "e2e", cursorChanged(t, outputs))
+}
+
+func TestCursorCloseoutFP6(t *testing.T) {
+	docs := cursorRunbook(t)
+	doc := docs["e2e"]
+	cursorCloseoutPositive(t, doc)
+	p, err := cursorCloseoutSections(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Positive control: the slice 3a paragraph's legitimate old version
+	// outside the superseded history stays accepted.
+	if _, historical, _ := cursorSections(doc); !strings.Contains(historical, "Cursor `2026.10.14-0f9edde`") || strings.Count(doc, "2026.10.14-0f9edde") <= strings.Count(p.superseded, "2026.10.14-0f9edde") {
+		t.Fatal("the positive control (the slice 3a version outside the superseded history) is absent")
+	}
+	muts := [][2]string{
+		{cursorStatusPin, cursorStatusPin + " Cursor coder status: diagnostic observed; fresh qualification, combined full/light execution and external child judgment audits pending."},
+		{cursorStatusPin, cursorStatusPin + " Fresh qualification, combined full/light execution and external child judgment audits pending."},
+		{cursorBindingParagraphs[2], cursorBindingParagraphs[2] + " Still pending: fresh qualification, combined full/light execution and external child judgment audits pending."},
+		{"\n## Sign-off\n", "\nCursor coder status: diagnostic observed.\n\n## Sign-off\n"},
+		{cursorStatusPin, cursorStatusPin + " Cursor coder status: complete."},
+		{cursorNavigationPin, cursorNavigationPin + " Cursor coder status: complete."},
+		{cursorStatusPin, cursorStatusPin + " Cursor coder status: observed."},
+		{cursorStatusPin, cursorStatusPin + " Cursor coder status: qualified."},
+		// A promotion appended inside the superseded history.
+		{cursorSupersededPin, cursorSupersededPin + " The first exercise completes slice 3."},
+		{cursorSupersededPin + "\n", cursorSupersededPin + "\n\nQual1 remains the current qualification.\n"},
+	}
+	for _, s := range cursorSupersededOnly {
+		muts = append(muts,
+			[2]string{cursorStatusPin, cursorStatusPin + " " + s},
+			[2]string{cursorExercisePin, cursorExercisePin + " See `" + s + "`."},
+			[2]string{cursorNavigationPin, cursorNavigationPin + " " + s},
+			[2]string{"### Historical slice 3a diagnostic observation\n\n", "### Historical slice 3a diagnostic observation\n\n" + s + " "},
+		)
+	}
+	mutateExpect(t, docs, onCursorRunbook(checkCursorCloseoutConsistency), "e2e", cursorChanged(t, muts))
+	// Each present superseded string moved out of the superseded history
+	// into the current status.
+	moved := 0
+	for _, s := range cursorSupersededOnly {
+		if !strings.Contains(p.superseded, s) {
+			continue
+		}
+		moved++
+		m := strings.Replace(doc, s, "", 1)
+		m = strings.Replace(m, cursorStatusPin, cursorStatusPin+" "+s, 1)
+		cursorRefused(t, checkCursorCloseoutConsistency, "moving "+s+" out of the superseded history", doc, m)
+	}
+	if moved != 4 {
+		t.Fatalf("%d superseded strings are in the superseded history, want 4", moved)
+	}
+}
+
+func TestCursorCloseoutFP7(t *testing.T) {
+	docs := cursorRunbook(t)
+	doc := docs["e2e"]
+	cursorCloseoutPositive(t, doc)
+	check := onCursorRunbook(checkCursorCloseoutCitations)
+	// forms are a citation's wrong forms: no backticks, a wrong or private
+	// absolute path, an inline evidence link instead, and such a link
+	// appended beside the correct citation.
+	forms := func(c string) []string {
+		return []string{c, "`" + strings.Replace(c, "design/real-e2e-runs/", "design/real-e2e-run/", 1) + "`", "`/home/owner/callsheet/" + c + "`",
+			"[" + c + "](../" + c + ")", "`" + c + "` ([record](../" + c + "))"}
+	}
+	var muts [][2]string
+	for _, c := range cursorCitations {
+		for _, f := range forms(c.path) {
+			muts = append(muts, [2]string{"`" + c.path + "`", f})
+		}
+	}
+	mutateExpect(t, docs, check, "e2e", cursorChanged(t, muts))
+	// A citation cited twice: every wrong form at its second occurrence.
+	for _, c := range cursorCitations {
+		cited := "`" + c.path + "`"
+		for n := 1; n < c.count; n++ {
+			at := 0
+			for k := 0; k <= n; k++ {
+				i := strings.Index(doc[at:], cited)
+				if i < 0 {
+					t.Fatalf("%s is cited fewer than %d times", c.path, n+1)
+				}
+				at += i
+				if k < n {
+					at += len(cited)
+				}
+			}
+			for _, f := range forms(c.path) {
+				cursorRefused(t, checkCursorCloseoutCitations, fmt.Sprintf("citation %d of %s as %q", n+1, c.path, f), doc, doc[:at]+f+doc[at+len(cited):])
+			}
 		}
 	}
 }
