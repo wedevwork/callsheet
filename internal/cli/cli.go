@@ -151,7 +151,7 @@ func NewTree(goos string) *Command {
 		wsTree(),
 		{Name: "mcp", Summary: "Run the local MCP server (stdio)", usage: mcpUsage, details: mcpDetails, runIO: mcpServe},
 	}
-	return node("callsheet", "Callsheet coordinates AI coding agents across machines", children...)
+	return node("callsheet", "Callsheet is a distributed AI agent dispatcher.", children...)
 }
 
 // Run executes args (without the program name) against the tree for the
