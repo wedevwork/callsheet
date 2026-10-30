@@ -70,25 +70,46 @@ func TestNewTreeSelection(t *testing.T) {
 	}
 }
 
+// rootSummary is the canonical positioning sentence, also the README's
+// first sentence (design 12-1-readme FP-4).
+const rootSummary = "Callsheet is a distributed AI agent dispatcher."
+
 func TestRootHelpForms(t *testing.T) {
-	for _, args := range [][]string{nil, {"help"}, {"--help"}, {"-h"}} {
-		code, out, errOut := exec(t, "linux", args...)
-		if code != 0 || errOut != "" {
-			t.Fatalf("%v: code=%d err=%q", args, code, errOut)
+	// UT-1 (12-1 FP-4): the exact canonical summary in all four root
+	// forms on Linux and macOS, never the old one, with unchanged exit,
+	// stderr and layout, identical across forms and platforms.
+	for _, goos := range []string{"linux", "darwin"} {
+		if got := NewTree(goos).Summary; got != rootSummary {
+			t.Fatalf("%s root summary = %q", goos, got)
 		}
-		if !strings.HasPrefix(out, "Usage: callsheet <command>") || !strings.Contains(out, "future stub") {
-			t.Fatalf("%v: out=%q", args, out)
-		}
-		for _, n := range []string{"version", "plane", "sidecar", "role", "node", "dispatch", "task", "ws", "mcp"} {
-			if !strings.Contains(out, "\n  "+n+" ") {
-				t.Fatalf("%v: missing child %s in %q", args, n, out)
+	}
+	_, first, _ := exec(t, "linux")
+	for _, goos := range []string{"linux", "darwin"} {
+		for _, args := range [][]string{nil, {"help"}, {"--help"}, {"-h"}} {
+			code, out, errOut := exec(t, goos, args...)
+			if code != 0 || errOut != "" {
+				t.Fatalf("%s %v: code=%d err=%q", goos, args, code, errOut)
+			}
+			if !strings.HasPrefix(out, "Usage: callsheet <command>\n\n"+rootSummary+"\n\nCommands:\n") || !strings.Contains(out, "future stub") {
+				t.Fatalf("%s %v: out=%q", goos, args, out)
+			}
+			if strings.Contains(out, "Callsheet coordinates AI coding agents across machines") {
+				t.Fatalf("%s %v: old summary in %q", goos, args, out)
+			}
+			for _, n := range []string{"version", "plane", "sidecar", "role", "node", "dispatch", "task", "ws", "mcp"} {
+				if !strings.Contains(out, "\n  "+n+" ") {
+					t.Fatalf("%s %v: missing child %s in %q", goos, args, n, out)
+				}
+			}
+			if out != first {
+				t.Fatalf("%s %v: root help differs from linux's:\n%s\n---\n%s", goos, args, out, first)
 			}
 		}
 	}
 	// Deterministic output.
 	_, a, _ := exec(t, "linux")
 	_, b, _ := exec(t, "linux", "help")
-	if a != b {
+	if a != b || a != first {
 		t.Fatal("help output not deterministic")
 	}
 }
