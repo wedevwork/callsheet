@@ -1,4 +1,4 @@
-# CI for callsheet. Twenty-two fixed jobs (see docs/ci.md). The four required
+# CI for callsheet. Twenty-two fixed jobs (see docs/maintainers/ci.md). The four required
 # status check contexts on main are ci-linux, ci-macos, ci-linux-stress and
 # ci-macos-stress. The main jobs and the eighteen stress workers (nine
 # shards per platform: iteration 02c, plus the plane shard of iteration 05b,

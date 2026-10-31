@@ -579,7 +579,7 @@ func TestCursor3aFP5(t *testing.T) {
 	})
 }
 
-// cursorDocSections splits docs/real-e2e.md's Cursor section: its current
+// cursorDocSections splits docs/maintainers/real-e2e.md's Cursor section: its current
 // procedure (from "## Cursor coder qualification" to its historical
 // subsection) and the "### Historical slice 3a diagnostic observation"
 // subsection (to the next level-two heading).
@@ -588,7 +588,7 @@ func cursorDocSections(t testing.TB, doc string) (string, string) {
 	const head, hist = "\n## Cursor coder qualification\n", "\n### Historical slice 3a diagnostic observation\n"
 	i, j := strings.Index(doc, head), strings.Index(doc, hist)
 	if i < 0 || j < i || strings.Count(doc, head) != 1 || strings.Count(doc, hist) != 1 {
-		t.Fatal("docs/real-e2e.md lacks its single Cursor section and historical subsection")
+		t.Fatal("docs/maintainers/real-e2e.md lacks its single Cursor section and historical subsection")
 	}
 	rest := doc[j+len(hist):]
 	if k := strings.Index(rest, "\n## "); k >= 0 {
@@ -696,10 +696,10 @@ func TestCursor3aFP6(t *testing.T) {
 				t.Fatalf("Usage keeps the obsolete current-live %q", s)
 			}
 		}
-		doc := string(mustRead(t, filepath.Join(repoRoot(t), "docs", "real-e2e.md")))
+		doc := string(mustRead(t, filepath.Join(repoRoot(t), "docs", "maintainers", "real-e2e.md")))
 		current, historical := cursorDocSections(t, doc)
 		if strings.Contains(doc, "### Cursor coder diagnostic probe (slice 3a)") {
-			t.Fatal("docs/real-e2e.md keeps the slice 3a heading")
+			t.Fatal("docs/maintainers/real-e2e.md keeps the slice 3a heading")
 		}
 		for _, s := range []string{"There is no jail and no confinement claim", "`cursor_adapter_required`", "`cursor_config_dir_unsupported`",
 			"`diagnostic_not_qualification`", "report-only observations of all processes, not attribution to Cursor",

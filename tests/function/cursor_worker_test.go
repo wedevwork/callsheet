@@ -75,7 +75,7 @@ func cursorSections(doc string) (string, string, error) {
 	const head, hist = "\n## Cursor coder qualification\n", "\n### Historical slice 3a diagnostic observation\n"
 	i, j := strings.Index(doc, head), strings.Index(doc, hist)
 	if i < 0 || j < i || strings.Count(doc, head) != 1 || strings.Count(doc, hist) != 1 {
-		return "", "", fmt.Errorf("docs/real-e2e.md lacks its single Cursor section and historical subsection")
+		return "", "", fmt.Errorf("docs/maintainers/real-e2e.md lacks its single Cursor section and historical subsection")
 	}
 	rest := doc[j+len(hist):]
 	if k := strings.Index(rest, "\n## "); k >= 0 {
@@ -144,7 +144,7 @@ func checkCursorProcedure(doc string) error {
 }
 
 func TestCursor3bFP4OwnerProcedure(t *testing.T) {
-	doc := string(repoFile(t, "docs/real-e2e.md"))
+	doc := string(repoFile(t, "docs/maintainers/real-e2e.md"))
 	if err := checkCursorProcedure(doc); err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +191,7 @@ func TestCursor3bFP4OwnerProcedure(t *testing.T) {
 			t.Fatalf("the mutation of %.80q is a no-op", m[0])
 		}
 		if !strings.Contains(doc, m[0]) {
-			t.Fatalf("the mutation target %q is not in docs/real-e2e.md", m[0])
+			t.Fatalf("the mutation target %q is not in docs/maintainers/real-e2e.md", m[0])
 		}
 		if checkCursorProcedure(strings.Replace(doc, m[0], m[1], 1)) == nil {
 			t.Errorf("the procedure mutation %q -> %q was accepted", m[0], m[1])
@@ -268,7 +268,7 @@ func checkCursorBinding(doc string) error {
 }
 
 func TestCursorBindingFP5(t *testing.T) {
-	doc := string(repoFile(t, "docs/real-e2e.md"))
+	doc := string(repoFile(t, "docs/maintainers/real-e2e.md"))
 	if err := checkCursorBinding(doc); err != nil {
 		t.Fatal(err)
 	}
@@ -301,7 +301,7 @@ func TestCursorBindingFP5(t *testing.T) {
 			t.Fatalf("the mutation of %.80q is a no-op", m[0])
 		}
 		if !strings.Contains(doc, m[0]) {
-			t.Fatalf("the mutation target %q is not in docs/real-e2e.md", m[0])
+			t.Fatalf("the mutation target %q is not in docs/maintainers/real-e2e.md", m[0])
 		}
 		if checkCursorBinding(strings.Replace(doc, m[0], m[1], 1)) == nil {
 			t.Errorf("the binding mutation %.80q -> %.80q was accepted", m[0], m[1])
@@ -338,9 +338,9 @@ var cursorCatalogClauses = map[string][]string{
 		"that observation is not qualification, and headless approval behaviour remains unexercised",
 		"A fresh qualification probe and its independent check are an operator prerequisite before any Cursor attempt",
 	},
-	"docs/real-e2e.md": {
+	"docs/maintainers/real-e2e.md": {
 		"For the optional Cursor coder only: an eligible Cursor executable (`cursor-agent`) at an absolute `--cursor` path on Linux, deployed as a fourth sidecar beside the idle Grok node",
-		"The optional coder-only Cursor selection [examples/real-e2e/dev-full/flow-cursor-coder.json](examples/real-e2e/dev-full/flow-cursor-coder.json) is described in [Cursor coder qualification](#cursor-coder-qualification).",
+		"The optional coder-only Cursor selection [examples/real-e2e/dev-full/flow-cursor-coder.json](../examples/real-e2e/dev-full/flow-cursor-coder.json) is described in [Cursor coder qualification](#cursor-coder-qualification).",
 		"The default flow, the Claude design reviewer, the Codex code reviewer and triage, the minimum versions and every gate are unchanged; the run is labelled `override-flow`, and its PASS never demonstrates the default pairs or approves model judgment.",
 		"Cursor runs the unchanged recipe `-p --trust --auto-review --output-format json --model grok-4.7-high <prompt>` with the sidecar user's ordinary access; run the sidecars under a dedicated OS user.",
 		"No `--force`, `--yolo`, `--approve-mcps`, `--sandbox`, canary, permission fallback or configuration write is added",
@@ -444,7 +444,7 @@ func TestCursor3bFP5Delivery(t *testing.T) {
 		{"docs/real-adapters.md", "no jail and no confinement claim", "a jail"},
 		{"docs/examples/dev-flow/README.md", "not exercised by this selection", "exercised by this selection"},
 		{"docs/examples/real-e2e/README.md", "report-only", "enforced"},
-		{"docs/real-e2e.md", "Probes 8 and 9b, both with Grok triage, failed", "Probes 8 and 9b, both with Grok triage, passed"},
+		{"docs/maintainers/real-e2e.md", "Probes 8 and 9b, both with Grok triage, failed", "Probes 8 and 9b, both with Grok triage, passed"},
 	} {
 		mutated := map[string]string{}
 		for k, v := range docs {
@@ -739,7 +739,7 @@ func checkCursorCloseout(doc string) error {
 // cursorRunbook is the one-entry document map mutateExpect reads.
 func cursorRunbook(t *testing.T) map[string]string {
 	t.Helper()
-	return map[string]string{"e2e": string(repoFile(t, "docs/real-e2e.md"))}
+	return map[string]string{"e2e": string(repoFile(t, "docs/maintainers/real-e2e.md"))}
 }
 
 // onCursorRunbook adapts a runbook validator to mutateExpect.

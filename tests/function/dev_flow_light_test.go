@@ -52,7 +52,7 @@ func localAnchors(md string) error {
 
 func TestDevFlowLightDelivery(t *testing.T) {
 	root := testkit.MustRepoRoot(t)
-	e2e := string(repoFile(t, "docs/real-e2e.md"))
+	e2e := string(repoFile(t, "docs/maintainers/real-e2e.md"))
 	t.Run("scope_and_commands", func(t *testing.T) {
 		if err := requirePhrases(e2e, []string{
 			"`reale2e run-dev-light`", "`reale2e run-dev-exercise`", "/abs/path/reale2e run-dev-light", "/abs/path/reale2e run-dev-exercise",
@@ -233,7 +233,7 @@ var staleLiveStatus = []string{
 	"The light attempt and the combined exercise have no recorded live run either.", "not a demonstrated live PASS",
 }
 
-// checkLiveCloseout validates FP-1c in docs/real-e2e.md: the exact opening
+// checkLiveCloseout validates FP-1c in docs/maintainers/real-e2e.md: the exact opening
 // live status, the exercise and audit citation paragraph right after the
 // observed qualification, and no obsolete pending claim or evidence link.
 func checkLiveCloseout(docs map[string]string) error {

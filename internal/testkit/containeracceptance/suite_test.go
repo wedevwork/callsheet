@@ -102,7 +102,7 @@ func makeBundle() error {
 		return err
 	}
 	for _, d := range claimDocs {
-		b, err := os.ReadFile(filepath.Join(repo, "docs", d))
+		b, err := os.ReadFile(filepath.Join(repo, filepath.FromSlash(claimDocSource(d))))
 		if err != nil {
 			return err
 		}
@@ -913,6 +913,41 @@ type errWriter struct{}
 
 func (errWriter) Write([]byte) (int, error) { return 0, errors.New("closed") }
 
+// claimDocSource is the repository source path of a bundled claim
+// document alias (design 12-1b-maintainer-docs): the flat bundle keeps
+// alias ci.md, whose source moved to docs/maintainers/ci.md; the user
+// documents still read docs/<alias>.
+func claimDocSource(alias string) string {
+	if alias == "ci.md" {
+		return "docs/maintainers/ci.md"
+	}
+	return "docs/" + alias
+}
+
+// TestClaimDocSource pins each claim document alias to its source path.
+func TestClaimDocSource(t *testing.T) {
+	want := map[string]string{
+		"ci.md":            "docs/maintainers/ci.md",
+		"real-adapters.md": "docs/real-adapters.md",
+		"workspaces.md":    "docs/workspaces.md",
+	}
+	if len(claimDocs) != len(want) {
+		t.Fatalf("claimDocs = %v", claimDocs)
+	}
+	for _, d := range claimDocs {
+		src, ok := want[d]
+		if !ok {
+			t.Fatalf("unexpected claim document alias %q", d)
+		}
+		if got := claimDocSource(d); got != src {
+			t.Fatalf("claimDocSource(%q) = %q, want %q", d, got, src)
+		}
+		if _, err := os.Lstat(filepath.Join(testkit.MustRepoRoot(t), filepath.FromSlash(src))); err != nil {
+			t.Fatalf("%s: %v", src, err)
+		}
+	}
+}
+
 // TestClaims checks the working tree's milestone documents and rejects
 // each removed mapping, statement or bundle file and each superseded
 // claim.
@@ -920,7 +955,7 @@ func TestClaims(t *testing.T) {
 	repo := testkit.MustRepoRoot(t)
 	docs := map[string][]byte{}
 	for _, d := range claimDocs {
-		b, err := os.ReadFile(filepath.Join(repo, "docs", d))
+		b, err := os.ReadFile(filepath.Join(repo, filepath.FromSlash(claimDocSource(d))))
 		if err != nil {
 			t.Fatal(err)
 		}

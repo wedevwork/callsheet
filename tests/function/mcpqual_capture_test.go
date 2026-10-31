@@ -1529,11 +1529,11 @@ func TestMCPEnrollmentCIPolicy(t *testing.T) {
 					t.Fatalf("B2 or B3 file %s is not a whole-file changed entry", f)
 				}
 			}
-			doc := string(repoFile(t, "docs/ci.md"))
+			doc := string(repoFile(t, "docs/maintainers/ci.md"))
 			for _, w := range append(append(append(append(append([]string{"Decoder enrollment: baseline is main run 37523901881 (ff8058f)", "9 more names, 412 in all", "(9 ordinary calls)", "CI stays 18 jobs",
 				"4 more names, 416 in all", "3 more names, 419 in all", "5 more names, 424 in all", "5 more names, 429 in all"}, nine...), four...), three...), five...), b3...) {
 				if !strings.Contains(strings.Join(strings.Fields(doc), " "), w) {
-					t.Fatalf("docs/ci.md lacks %q", w)
+					t.Fatalf("docs/maintainers/ci.md lacks %q", w)
 				}
 			}
 		}},

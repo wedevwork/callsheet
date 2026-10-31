@@ -463,10 +463,10 @@ const taskWorkspaceBudget = "10b: place all new lifecycle matrices outside plane
 	"Unit coverage execution growth allowance is 20 s Linux / 30 s macOS per coverage command, reported separately from stress. " +
 	"Preserve 18 jobs, four required checks and all existing timeouts. An allocation miss requires investigation and fixture reduction or design revision, never weaker tests."
 
-// UT-B9 (iteration 10b): docs/ci.md carries the exact 10b budgets policy
+// UT-B9 (iteration 10b): docs/maintainers/ci.md carries the exact 10b budgets policy
 // once, as a planning allocation in Budgets (before its measurements).
 func TestTaskWorkspaceBudgets(t *testing.T) {
-	doc, err := os.ReadFile(filepath.Join(testkit.MustRepoRoot(t), "docs", "ci.md"))
+	doc, err := os.ReadFile(filepath.Join(testkit.MustRepoRoot(t), "docs", "maintainers", "ci.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -475,7 +475,7 @@ func TestTaskWorkspaceBudgets(t *testing.T) {
 	budgets, measured := strings.Index(s, "\nBudgets:\n"), strings.Index(s, "\nMeasurements, newest first.")
 	switch {
 	case at < 0 || strings.Count(s, taskWorkspaceBudget) != 1:
-		t.Fatal("docs/ci.md does not carry the 10b budgets entry exactly once")
+		t.Fatal("docs/maintainers/ci.md does not carry the 10b budgets entry exactly once")
 	case budgets < 0 || measured < 0 || at < budgets || at > measured:
 		t.Fatal("the 10b budgets entry is not a Budgets allocation before the measurements")
 	case !strings.Contains(s[:at], "Iteration 10b allocation (design 10b r0.2 Budgets; planning allowances"):
@@ -495,10 +495,10 @@ const workerSelectionBudget = "12a worker selection: against the pre-12a impleme
 	"design revision, never weakened assertions, skipped cases, reduced counts or raised timeouts."
 
 // TestWorkerSelectionBudgets (design 12a-worker-selection, sign-off fold):
-// docs/ci.md carries the exact 12a allocation once, as a Budgets planning
+// docs/maintainers/ci.md carries the exact 12a allocation once, as a Budgets planning
 // allocation before the measurements; the native inventory stays 429.
 func TestWorkerSelectionBudgets(t *testing.T) {
-	doc, err := os.ReadFile(filepath.Join(testkit.MustRepoRoot(t), "docs", "ci.md"))
+	doc, err := os.ReadFile(filepath.Join(testkit.MustRepoRoot(t), "docs", "maintainers", "ci.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -507,7 +507,7 @@ func TestWorkerSelectionBudgets(t *testing.T) {
 	budgets, measured := strings.Index(s, "\nBudgets:\n"), strings.Index(s, "\nMeasurements, newest first.")
 	switch {
 	case at < 0 || strings.Count(s, workerSelectionBudget) != 1:
-		t.Fatal("docs/ci.md does not carry the 12a budgets entry exactly once")
+		t.Fatal("docs/maintainers/ci.md does not carry the 12a budgets entry exactly once")
 	case budgets < 0 || measured < 0 || at < budgets || at > measured:
 		t.Fatal("the 12a budgets entry is not a Budgets allocation before the measurements")
 	case !strings.Contains(s[:at], "- Iteration 12a worker-selection allocation (design 12a-worker-selection\n  r0.3, Coverage and budget allocation; planning allowances, not\n  measurements or pass/fail timing gates"):
@@ -547,11 +547,11 @@ const taskDeliveryBudget = "10c: plane/sidecar stress workload unchanged; packag
 	"An allocation miss requires investigation and fixture reduction or design revision, never weaker tests. " +
 	"The owner specifically retains 18 jobs despite the historical 06b split trigger: no automatic expansion to 22 jobs in this iteration."
 
-// UT-C6 (iteration 10c): docs/ci.md carries the exact 10c budgets policy
+// UT-C6 (iteration 10c): docs/maintainers/ci.md carries the exact 10c budgets policy
 // once, as a planning allocation in Budgets (before its measurements), and
 // Checks names the six 10c function tests and the 353-name inventory.
 func TestTaskDeliveryBudgets(t *testing.T) {
-	doc, err := os.ReadFile(filepath.Join(testkit.MustRepoRoot(t), "docs", "ci.md"))
+	doc, err := os.ReadFile(filepath.Join(testkit.MustRepoRoot(t), "docs", "maintainers", "ci.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -560,26 +560,26 @@ func TestTaskDeliveryBudgets(t *testing.T) {
 	budgets, measured := strings.Index(s, "\nBudgets:\n"), strings.Index(s, "\nMeasurements, newest first.")
 	switch {
 	case at < 0 || strings.Count(s, taskDeliveryBudget) != 1:
-		t.Fatal("docs/ci.md does not carry the 10c budgets entry exactly once")
+		t.Fatal("docs/maintainers/ci.md does not carry the 10c budgets entry exactly once")
 	case budgets < 0 || measured < 0 || at < budgets || at > measured:
 		t.Fatal("the 10c budgets entry is not a Budgets allocation before the measurements")
 	case !strings.Contains(s[:at], "Iteration 10c allocation (design 10c r0.4 CI plan and the parent design's\n  10c Budgets entry; planning allowances"):
 		t.Fatal("the 10c budgets entry is not labelled as planning allowances")
 	case !strings.Contains(s, "6 more names, 353 in all"):
-		t.Fatal("docs/ci.md Checks does not count 353 native names")
+		t.Fatal("docs/maintainers/ci.md Checks does not count 353 native names")
 	}
 	for _, n := range wsDoorNames() {
 		if !strings.Contains(s, "`"+n+"`") {
-			t.Fatalf("docs/ci.md does not name %s", n)
+			t.Fatalf("docs/maintainers/ci.md does not name %s", n)
 		}
 	}
 }
 
-// TestWave2NativeDocs (iteration 11): docs/ci.md's Checks names every
+// TestWave2NativeDocs (iteration 11): docs/maintainers/ci.md's Checks names every
 // wave-2 function name and tagged sidecar subtest with the new counts, and
 // keeps every earlier count.
 func TestWave2NativeDocs(t *testing.T) {
-	doc, err := os.ReadFile(filepath.Join(testkit.MustRepoRoot(t), "docs", "ci.md"))
+	doc, err := os.ReadFile(filepath.Join(testkit.MustRepoRoot(t), "docs", "maintainers", "ci.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -587,12 +587,12 @@ func TestWave2NativeDocs(t *testing.T) {
 	for _, w := range []string{"42 more names, 395 in all", "with the 353 earlier names unchanged and first", "(12\nnames in all)",
 		"6 more names, 353 in all", "39 more names, 312 in all", "CI stays 18 jobs"} {
 		if !strings.Contains(s, w) {
-			t.Fatalf("docs/ci.md lacks %q", w)
+			t.Fatalf("docs/maintainers/ci.md lacks %q", w)
 		}
 	}
 	for _, n := range append(wave2Names(), realLocal[len(realLocal)-4:]...) {
 		if !strings.Contains(s, "`"+n+"`") {
-			t.Fatalf("docs/ci.md does not name %s", n)
+			t.Fatalf("docs/maintainers/ci.md does not name %s", n)
 		}
 	}
 	if len(NativeRequiredTests()) != 436 || len(NativeTaskProcessTests()) != 12 {
@@ -614,12 +614,12 @@ const nonblockingWaitBudget = "Nonblocking waits: preserve 18 jobs, four require
 	"An allocation miss requires investigation or design revision, never weakened assertions, skips, changed repetition counts or timeout increases."
 
 // TestNonblockingWaitDocs (design nonblocking-coordinator-waits):
-// docs/ci.md carries the exact Budgets entry once, as a labelled planning
+// docs/maintainers/ci.md carries the exact Budgets entry once, as a labelled planning
 // allocation before the measurements, and Checks names the eight function
 // parents with the 403-name inventory, the client wait benchmark step and
 // the container's background_wait subtest.
 func TestNonblockingWaitDocs(t *testing.T) {
-	doc, err := os.ReadFile(filepath.Join(testkit.MustRepoRoot(t), "docs", "ci.md"))
+	doc, err := os.ReadFile(filepath.Join(testkit.MustRepoRoot(t), "docs", "maintainers", "ci.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -628,7 +628,7 @@ func TestNonblockingWaitDocs(t *testing.T) {
 	budgets, measured := strings.Index(s, "\nBudgets:\n"), strings.Index(s, "\nMeasurements, newest first.")
 	switch {
 	case at < 0 || strings.Count(s, nonblockingWaitBudget) != 1:
-		t.Fatal("docs/ci.md does not carry the non-blocking waits budgets entry exactly once")
+		t.Fatal("docs/maintainers/ci.md does not carry the non-blocking waits budgets entry exactly once")
 	case budgets < 0 || measured < 0 || at < budgets || at > measured:
 		t.Fatal("the budgets entry is not a Budgets allocation before the measurements")
 	case !strings.Contains(s[:at], "Non-blocking coordinator waits allocation (design\n  nonblocking-coordinator-waits r0.2 Budgets; planning allocations, not\n  measured deltas"):
@@ -637,12 +637,12 @@ func TestNonblockingWaitDocs(t *testing.T) {
 	for _, w := range []string{"8 more names,\n403 in all", "with the 395 earlier names unchanged and first", "`bench client wait`", "(13 steps; Linux `all`\nmakes 32 ordinary calls)",
 		"(8 ordinary calls)", "`background_wait` subtest", "CI stays 18 jobs", "the client wait benchmark step (non-blocking coordinator waits)", "`BenchmarkWaitUntilDone`"} {
 		if !strings.Contains(s, w) {
-			t.Fatalf("docs/ci.md lacks %q", w)
+			t.Fatalf("docs/maintainers/ci.md lacks %q", w)
 		}
 	}
 	for _, n := range nbwNames() {
 		if !strings.Contains(s, "`"+n+"`") {
-			t.Fatalf("docs/ci.md does not name %s", n)
+			t.Fatalf("docs/maintainers/ci.md does not name %s", n)
 		}
 	}
 }
@@ -656,12 +656,12 @@ const decoderEnrollmentBudget = "Decoder enrollment: baseline is main run 375239
 	"Keep all eighteen jobs, four required checks and existing watchdogs. Compare binary, command and job times separately against run 37523901881, retain failed first-run evidence, " +
 	"and investigate an allocation miss without reducing counts, skipping cases, weakening assertions or increasing timeouts."
 
-// TestDecoderEnrollmentDocs (design decoder-enrollment, UT-9): docs/ci.md
+// TestDecoderEnrollmentDocs (design decoder-enrollment, UT-9): docs/maintainers/ci.md
 // carries the exact Budgets entry once, as a labelled planning allocation
 // before the measurements, and Checks names the nine function parents with
 // the 412-name inventory and the native mcpqual benchmark step.
 func TestDecoderEnrollmentDocs(t *testing.T) {
-	doc, err := os.ReadFile(filepath.Join(testkit.MustRepoRoot(t), "docs", "ci.md"))
+	doc, err := os.ReadFile(filepath.Join(testkit.MustRepoRoot(t), "docs", "maintainers", "ci.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -670,7 +670,7 @@ func TestDecoderEnrollmentDocs(t *testing.T) {
 	budgets, measured := strings.Index(s, "\nBudgets:\n"), strings.Index(s, "\nMeasurements, newest first.")
 	switch {
 	case at < 0 || strings.Count(s, decoderEnrollmentBudget) != 1:
-		t.Fatal("docs/ci.md does not carry the decoder enrollment budgets entry exactly once")
+		t.Fatal("docs/maintainers/ci.md does not carry the decoder enrollment budgets entry exactly once")
 	case budgets < 0 || measured < 0 || at < budgets || at > measured:
 		t.Fatal("the budgets entry is not a Budgets allocation before the measurements")
 	case !strings.Contains(s[:at], "Decoder enrollment allocation (design decoder-enrollment r0.2 Budgets;\n  planning allowances, not measured deltas or pass/fail timing gates"):
@@ -679,22 +679,22 @@ func TestDecoderEnrollmentDocs(t *testing.T) {
 	for _, w := range []string{"9 more names, 412 in all", "with the 403 earlier names\nunchanged and first", "(9 ordinary calls)", "13 steps (Linux `all` still makes 32 ordinary calls)",
 		"`BenchmarkMCPCaptureEvidence`", "CI stays 18 jobs"} {
 		if !strings.Contains(s, w) {
-			t.Fatalf("docs/ci.md lacks %q", w)
+			t.Fatalf("docs/maintainers/ci.md lacks %q", w)
 		}
 	}
 	for _, n := range dceNames() {
 		if !strings.Contains(s, "`"+n+"`") {
-			t.Fatalf("docs/ci.md does not name %s", n)
+			t.Fatalf("docs/maintainers/ci.md does not name %s", n)
 		}
 	}
 }
 
 // TestDecoderEnrollmentB1Docs (design decoder-enrollment B1, CI plan):
-// docs/ci.md's Checks names the four B1 function parents with the
+// docs/maintainers/ci.md's Checks names the four B1 function parents with the
 // 416-name inventory, the unchanged native call, benchmark and twenty-job
 // counts, and no new budget allocation.
 func TestDecoderEnrollmentB1Docs(t *testing.T) {
-	doc, err := os.ReadFile(filepath.Join(testkit.MustRepoRoot(t), "docs", "ci.md"))
+	doc, err := os.ReadFile(filepath.Join(testkit.MustRepoRoot(t), "docs", "maintainers", "ci.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -703,23 +703,23 @@ func TestDecoderEnrollmentB1Docs(t *testing.T) {
 		"`devcheck native` still makes 9 ordinary calls", "`devcheck bench` keeps 13 steps", "The workflow keeps its twenty jobs", "no new budget allocation",
 		"`stress-packages-cpu`"} {
 		if !strings.Contains(strings.Join(strings.Fields(s), " "), w) {
-			t.Fatalf("docs/ci.md lacks %q", w)
+			t.Fatalf("docs/maintainers/ci.md lacks %q", w)
 		}
 	}
 	for _, n := range b1Names() {
 		if !strings.Contains(s, "`"+n+"`") {
-			t.Fatalf("docs/ci.md does not name %s", n)
+			t.Fatalf("docs/maintainers/ci.md does not name %s", n)
 		}
 	}
 }
 
 // TestDecoderEnrollmentB15Docs (design decoder-enrollment B1.5, CI plan):
-// docs/ci.md's Checks names the three B1.5 function parents with the
+// docs/maintainers/ci.md's Checks names the three B1.5 function parents with the
 // 419-name inventory and its ranges, the unchanged native call, benchmark,
 // cross and twenty-job counts, the new whole-file entry and no new budget
 // allocation or stress workload.
 func TestDecoderEnrollmentB15Docs(t *testing.T) {
-	doc, err := os.ReadFile(filepath.Join(testkit.MustRepoRoot(t), "docs", "ci.md"))
+	doc, err := os.ReadFile(filepath.Join(testkit.MustRepoRoot(t), "docs", "maintainers", "ci.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -729,12 +729,12 @@ func TestDecoderEnrollmentB15Docs(t *testing.T) {
 		"Linux `all` still makes 32 ordinary calls", "`internal/mcpqual/probe_observation.go`", "The workflow keeps its twenty jobs", "B1.5 makes no new budget allocation",
 		"no new stress selector or workload"} {
 		if !strings.Contains(s, w) {
-			t.Fatalf("docs/ci.md lacks %q", w)
+			t.Fatalf("docs/maintainers/ci.md lacks %q", w)
 		}
 	}
 	for _, n := range b15Names() {
 		if !strings.Contains(s, "`"+n+"`") {
-			t.Fatalf("docs/ci.md does not name %s", n)
+			t.Fatalf("docs/maintainers/ci.md does not name %s", n)
 		}
 	}
 }
@@ -764,12 +764,12 @@ func TestDecoderEnrollmentB2CoverageManifest(t *testing.T) {
 }
 
 // TestDecoderEnrollmentB2Docs (design decoder-enrollment B2, CI plan):
-// docs/ci.md's Checks names the five B2 function parents with the 424-name
+// docs/maintainers/ci.md's Checks names the five B2 function parents with the 424-name
 // inventory and its ranges, the new offline cases and benchmark subcases,
 // the unchanged native call, benchmark, cross and twenty-job counts, the
 // new whole-file entries and no new budget allocation or stress workload.
 func TestDecoderEnrollmentB2Docs(t *testing.T) {
-	doc, err := os.ReadFile(filepath.Join(testkit.MustRepoRoot(t), "docs", "ci.md"))
+	doc, err := os.ReadFile(filepath.Join(testkit.MustRepoRoot(t), "docs", "maintainers", "ci.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -780,12 +780,12 @@ func TestDecoderEnrollmentB2Docs(t *testing.T) {
 		"separating decode CPU from replay and `ValidateEnrollment` I/O", "The workflow keeps its twenty jobs", "B2 makes no new budget allocation",
 		"B2 adds no new stress selector or workload", "not a hosted step or cross artifact"} {
 		if !strings.Contains(s, w) {
-			t.Fatalf("docs/ci.md lacks %q", w)
+			t.Fatalf("docs/maintainers/ci.md lacks %q", w)
 		}
 	}
 	for _, n := range b2Names() {
 		if !strings.Contains(s, "`"+n+"`") {
-			t.Fatalf("docs/ci.md does not name %s", n)
+			t.Fatalf("docs/maintainers/ci.md does not name %s", n)
 		}
 	}
 }
@@ -818,13 +818,13 @@ func TestDecoderEnrollmentB3CoverageManifest(t *testing.T) {
 }
 
 // TestDecoderEnrollmentB3Docs (design decoder-enrollment B3, CI impact):
-// docs/ci.md's Checks names the five B3 function parents with the 429-name
+// docs/maintainers/ci.md's Checks names the five B3 function parents with the 429-name
 // inventory and its ranges, the four real fixture replays, the per-case
 // preparation and residue offline cases and benchmark subcases, the
 // unchanged native call, benchmark, cross and twenty-job counts, the new
 // whole-file entries and no new budget allocation or stress workload.
 func TestDecoderEnrollmentB3Docs(t *testing.T) {
-	doc, err := os.ReadFile(filepath.Join(testkit.MustRepoRoot(t), "docs", "ci.md"))
+	doc, err := os.ReadFile(filepath.Join(testkit.MustRepoRoot(t), "docs", "maintainers", "ci.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -835,12 +835,12 @@ func TestDecoderEnrollmentB3Docs(t *testing.T) {
 		"`devcheck native` still makes 9 ordinary calls", "`devcheck bench` keeps 13 steps", "cross keeps 12 artifacts", "Linux `all` still makes 32 ordinary calls",
 		"The workflow keeps its twenty jobs"} {
 		if !strings.Contains(s, w) {
-			t.Fatalf("docs/ci.md lacks %q", w)
+			t.Fatalf("docs/maintainers/ci.md lacks %q", w)
 		}
 	}
 	for _, n := range b3Names() {
 		if !strings.Contains(s, "`"+n+"`") {
-			t.Fatalf("docs/ci.md does not name %s", n)
+			t.Fatalf("docs/maintainers/ci.md does not name %s", n)
 		}
 	}
 }
@@ -883,11 +883,11 @@ func TestCatalogVersionCoverageManifest(t *testing.T) {
 	}
 }
 
-// TestCatalogVersionDocs (design catalog-version, CI plan): docs/ci.md
+// TestCatalogVersionDocs (design catalog-version, CI plan): docs/maintainers/ci.md
 // records the catalog version change, its whole-file entries and the
 // unchanged inventory, stages, budget and stress policy.
 func TestCatalogVersionDocs(t *testing.T) {
-	doc, err := os.ReadFile(filepath.Join(testkit.MustRepoRoot(t), "docs", "ci.md"))
+	doc, err := os.ReadFile(filepath.Join(testkit.MustRepoRoot(t), "docs", "maintainers", "ci.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -903,7 +903,7 @@ func TestCatalogVersionDocs(t *testing.T) {
 		"Amendment A1 (catalog-version r0.3)", "`internal/testkit/catalog/publication_baseline.go` and `internal/mcpqual/setupdoc.go`",
 		"`a1-baseline`, `a1-generated-publication` and `a1-hand-edits`", "A1 adds no new function parent", "the later evidence pull request edits no code, test, guide or constant"} {
 		if !strings.Contains(s, w) {
-			t.Fatalf("docs/ci.md lacks %q", w)
+			t.Fatalf("docs/maintainers/ci.md lacks %q", w)
 		}
 	}
 }

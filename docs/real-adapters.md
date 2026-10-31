@@ -367,7 +367,7 @@ authenticate and complete one fixture repair on Cursor `2026.10.14-0f9edde`;
 that observation is not qualification, and headless approval behaviour
 remains unexercised. A fresh qualification probe and its independent check
 are an operator prerequisite before any Cursor attempt; see
-[Cursor coder qualification](real-e2e.md#cursor-coder-qualification).
+[Cursor coder qualification](maintainers/real-e2e.md#cursor-coder-qualification).
 
 ## Offline proof in CI
 

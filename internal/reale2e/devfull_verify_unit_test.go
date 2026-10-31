@@ -688,11 +688,11 @@ func TestDevFullMigration(t *testing.T) {
 	})
 	t.Run("docs_contract", func(t *testing.T) {
 		t.Parallel()
-		doc := string(mustRead(t, filepath.Join(root, "docs", "real-e2e.md")))
+		doc := string(mustRead(t, filepath.Join(root, "docs", "maintainers", "real-e2e.md")))
 		for _, want := range []string{"reale2e run", "run-dev-full", "\n\n" + liveStatusParagraph + "\n\n", "dev-review-verify", "probe-dev-full",
 			"exit 0", "callsheet-dev-full-evidence/v1"} {
 			if !strings.Contains(doc, want) {
-				t.Errorf("docs/real-e2e.md does not say %q", want)
+				t.Errorf("docs/maintainers/real-e2e.md does not say %q", want)
 			}
 		}
 		readme := string(mustRead(t, filepath.Join(root, filepath.FromSlash(ExamplesDir), "README.md")))
@@ -700,8 +700,8 @@ func TestDevFullMigration(t *testing.T) {
 			t.Fatalf("the examples README %q", readme)
 		}
 		for _, p := range devExerciseFiles() {
-			if !strings.Contains(doc, strings.TrimPrefix(p, "docs/")) {
-				t.Errorf("docs/real-e2e.md does not link %s", p)
+			if !strings.Contains(doc, "](../"+strings.TrimPrefix(p, "docs/")+")") {
+				t.Errorf("docs/maintainers/real-e2e.md does not link %s", p)
 			}
 		}
 	})

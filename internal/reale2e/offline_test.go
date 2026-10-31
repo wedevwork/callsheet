@@ -43,7 +43,7 @@ func funcBody(t *testing.T, fset *token.FileSet, f *ast.File, name string) []str
 	return nil
 }
 
-// liveStatusParagraph is docs/real-e2e.md's complete opening live status
+// liveStatusParagraph is docs/maintainers/real-e2e.md's complete opening live status
 // (design 12a-probe11-closeout, FP-1b and FP-1c: probe 11's qualification,
 // the combined exercise, its completed judgment audits and the owner's MET
 // decision), pinned whole by TestOfflineBoundary and
@@ -298,20 +298,20 @@ func retired(t *testing.T, name string, b []byte) {
 	}
 }
 
-// shippedRunbook checks docs/real-e2e.md, the single entry point of the
+// shippedRunbook checks docs/maintainers/real-e2e.md, the single entry point of the
 // current exercise (design 12a-dev-flow-verify, Default and documentation
 // migration).
 func shippedRunbook(t *testing.T, root string) {
 	t.Helper()
-	doc, err := os.ReadFile(filepath.Join(root, "docs", "real-e2e.md"))
+	doc, err := os.ReadFile(filepath.Join(root, "docs", "maintainers", "real-e2e.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	retired(t, "docs/real-e2e.md", bytes.ReplaceAll(doc, []byte("reale2e wait-task"), nil))
+	retired(t, "docs/maintainers/real-e2e.md", bytes.ReplaceAll(doc, []byte("reale2e wait-task"), nil))
 	// It links every shared-method and exercise input at its source path.
 	for _, n := range DevMethodNames() {
-		if !bytes.Contains(doc, []byte("("+strings.TrimPrefix(devSourceRel(n), "docs/")+")")) {
-			t.Errorf("docs/real-e2e.md does not link %s", devSourceRel(n))
+		if !bytes.Contains(doc, []byte("(../"+strings.TrimPrefix(devSourceRel(n), "docs/")+")")) {
+			t.Errorf("docs/maintainers/real-e2e.md does not link %s", devSourceRel(n))
 		}
 	}
 	gen := "Approve design generation N and start coding? Type exactly \"yes N\" or \"no N\"."
@@ -320,7 +320,7 @@ func shippedRunbook(t *testing.T, root string) {
 		"~/.claude.json", "No repository root was protected", NestedRepoLimitation, "--protect-depth", JudgmentReportLine,
 		`--settings '{"sandbox":{"enabled":false}}'`, "reale2e check --evidence"} {
 		if !bytes.Contains(doc, []byte(want)) {
-			t.Errorf("docs/real-e2e.md lacks %q", want)
+			t.Errorf("docs/maintainers/real-e2e.md lacks %q", want)
 		}
 	}
 	// The renewed receipt's prompt is the supervisor's own template.
@@ -342,14 +342,14 @@ func shippedRunbook(t *testing.T, root string) {
 		"| `~/.claude` | `CLAUDE.md`, root `settings*.json`, `agents/`, `skills/`, `commands/`, `hooks/`, `plugins/installed_plugins.json`, `plugins/blocklist.json`, `plugins/config.json` |",
 		"never repairs, moves, restores or deletes", "probe-dev-full", "QUALIFIED or BLOCKED", "up to 28 worker calls", "\n\n" + liveStatusParagraph + "\n\n"} {
 		if !strings.Contains(string(doc), want) {
-			t.Errorf("docs/real-e2e.md lacks %q", want)
+			t.Errorf("docs/maintainers/real-e2e.md lacks %q", want)
 		}
 	}
 	for _, gone := range []string{"capture-wait", `"$?"`, "16 rules", "exactly the 15 rules", "exactly two session-only flags",
 		"| `config.toml`, root `AGENTS*.md`", "`plugins/known_marketplaces.json`, `plugins/blocklist.json`", "[yes/no]",
 		"exactly `R wait-task --run D --task TASK_ID --hop H`", "EXECUTED", "exit 3", "Live status: pending"} {
 		if strings.Contains(string(doc), gone) {
-			t.Errorf("docs/real-e2e.md still carries %q", gone)
+			t.Errorf("docs/maintainers/real-e2e.md still carries %q", gone)
 		}
 	}
 	coord, err := os.ReadFile(filepath.Join(root, "docs", "coordinator.md"))

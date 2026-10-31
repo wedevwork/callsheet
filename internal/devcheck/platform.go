@@ -16,7 +16,7 @@ import (
 	"strings"
 )
 
-// The platform seam convention (docs/ci.md, "Platform code"): host wrappers
+// The platform seam convention (docs/maintainers/ci.md, "Platform code"): host wrappers
 // may supply runtime.GOOS; every decision and OS-dependent formatting takes
 // an explicit goos argument, so tests exercise linux and darwin on any host.
 // CheckPlatformSources enforces it on the repository's non-test Go source.
@@ -131,7 +131,7 @@ type PlatformGuardError struct {
 
 func (e *PlatformGuardError) Error() string {
 	return "devcheck: platform guard: " + strconv.Itoa(len(e.Violations)) + " violation(s) of the platform seam convention " +
-		"(decisions take an explicit goos parameter; only the approved wrappers read runtime.GOOS; see docs/ci.md, Platform code):\n  " +
+		"(decisions take an explicit goos parameter; only the approved wrappers read runtime.GOOS; see docs/maintainers/ci.md, Platform code):\n  " +
 		strings.Join(e.Violations, "\n  ")
 }
 

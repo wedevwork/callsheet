@@ -932,8 +932,8 @@ func TestDevFlowPackage(t *testing.T) {
 		t.Fatal(err)
 	}
 	coord := string(repoFile(t, "docs/coordinator.md"))
-	e2e := string(repoFile(t, "docs/real-e2e.md"))
-	if !strings.Contains(coord, "examples/dev-flow/README.md") || !strings.Contains(e2e, "examples/dev-flow/README.md") {
+	e2e := string(repoFile(t, "docs/maintainers/real-e2e.md"))
+	if !strings.Contains(coord, "examples/dev-flow/README.md") || !strings.Contains(e2e, "](../examples/dev-flow/README.md)") {
 		t.Fatal("coordinator or real-e2e entry link missing")
 	}
 	// Design 12a-dev-flow-verify migrated the exercise: run selects the
@@ -947,12 +947,12 @@ func TestDevFlowPackage(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := resolveDocLinks(filepath.Join(root, "docs", "real-e2e.md"), e2e); err != nil {
+	if err := resolveDocLinks(filepath.Join(root, "docs", "maintainers", "real-e2e.md"), e2e); err != nil {
 		t.Fatal(err)
 	}
 	for _, target := range append([]string{"examples/dev-flow/README.md", "examples/real-e2e/README.md"}, devFullExerciseLinks...) {
-		if !strings.Contains(e2e, "]("+target+")") {
-			t.Fatalf("docs/real-e2e.md does not link %s", target)
+		if !strings.Contains(e2e, "](../"+target+")") {
+			t.Fatalf("docs/maintainers/real-e2e.md does not link %s", target)
 		}
 	}
 	exercise := filepath.Join(root, "docs", "examples", "real-e2e", "README.md")
@@ -1216,7 +1216,7 @@ func TestDevFlowTriage(t *testing.T) {
 	})
 	t.Run("workspace_scratch", func(t *testing.T) {
 		// Design 12a-light-triage-scratch, FP-3: the shipped runbook and
-		// docs/real-e2e.md carry the scratch lifecycle, the publication
+		// docs/maintainers/real-e2e.md carry the scratch lifecycle, the publication
 		// boundary, the no-fallback/invalid_marker policy, probe 11's
 		// recorded qualification and the generic owner requalification gate
 		// (design 12a-probe11-closeout, FP-1b and FP-1d); each deletion or
@@ -1224,7 +1224,7 @@ func TestDevFlowTriage(t *testing.T) {
 		// 12a-triage-scratch-guard-wording adds the checkout/export-mode
 		// split and the named removal-recipe guards in both documents.
 		runbook := string(files["triage-runbook.md"])
-		e2e := string(repoFile(t, "docs/real-e2e.md"))
+		e2e := string(repoFile(t, "docs/maintainers/real-e2e.md"))
 		if err := checkTriageScratch(runbook, e2e); err != nil {
 			t.Fatal(err)
 		}
@@ -1319,7 +1319,7 @@ const triageScratchRecipe = "test -d .callsheet-triage-scratch && test ! -L .cal
 // test -d and test ! -L).
 const triageScratchParagraph = "For a light triage envelope naming .callsheet-triage-scratch in scratch_policy, that directory inside the original checkout is the only temporary-write exception. Existing checkout inputs remain byte/mode-identical; scratch export modes may differ; add no other path beyond allowed_outputs and this temporary scratch. There is no retained evidence directory: only rca.md and confidence-qualified fix.md may be published. After joining all reproduction children, return to the original checkout root and execute the envelope's exact removal recipe only for scratch you created. Scratch must be absent before the final answer. If creation, reproduction, a removal-recipe guard (test -d or test ! -L) or cleanup fails or is refused, report TRIAGE_BLOCKED when the turn can continue; no permission fallback, retry with another tool or re-spelling of a denied command."
 
-// triageScratchBlockedSentence is docs/real-e2e.md's Light triage scratch
+// triageScratchBlockedSentence is docs/maintainers/real-e2e.md's Light triage scratch
 // sentence naming the blocking failures (design
 // 12a-triage-scratch-guard-wording, Exact wording and implementation pins).
 const triageScratchBlockedSentence = "A refused or failed scratch creation, reproduction, a removal-recipe guard (test -d or test ! -L) or cleanup is reported as `TRIAGE_BLOCKED` when the turn can continue."
@@ -1341,7 +1341,7 @@ func mdSection(doc, heading string) string {
 var retainedScratchRE = regexp.MustCompile(`(?i)scratch[^.]*\bis (?:the |a )?retained evidence`)
 
 // checkTriageScratch validates the light triage scratch contract of the
-// triage runbook and docs/real-e2e.md.
+// triage runbook and docs/maintainers/real-e2e.md.
 func checkTriageScratch(runbook, e2e string) error {
 	if !strings.Contains(mdSection(runbook, "## Reproductions"), triageScratchParagraph) {
 		return fmt.Errorf("the runbook's Reproductions section lacks the scratch paragraph")
@@ -1393,12 +1393,12 @@ func checkTriageScratch(runbook, e2e string) error {
 		"Probe 8 remains failed evidence",
 		"No paid run is part of implementation or review automation",
 	}); err != nil {
-		return fmt.Errorf("docs/real-e2e.md: %w", err)
+		return fmt.Errorf("docs/maintainers/real-e2e.md: %w", err)
 	}
 	if !strings.Contains(e2e, triageScratchBlockedSentence) {
-		return fmt.Errorf("docs/real-e2e.md lacks the scratch blocking sentence")
+		return fmt.Errorf("docs/maintainers/real-e2e.md lacks the scratch blocking sentence")
 	}
-	for name, doc := range map[string]string{"runbook": runbook, "docs/real-e2e.md": e2e} {
+	for name, doc := range map[string]string{"runbook": runbook, "docs/maintainers/real-e2e.md": e2e} {
 		// The literal recipe, root guards before chmod, and no other
 		// spelling of the chain. The chain also appears verbatim, not as
 		// inline code, inside the owner's pre-probe smoke (design
