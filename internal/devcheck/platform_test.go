@@ -199,7 +199,7 @@ func guardViolations(t *testing.T, root string) []string {
 	if !errors.As(err, &ge) {
 		t.Fatalf("error type %T: %v", err, err)
 	}
-	if !strings.Contains(err.Error(), "docs/ci.md, Platform code") || !strings.Contains(err.Error(), "explicit goos parameter") {
+	if !strings.Contains(err.Error(), "docs/maintainers/ci.md, Platform code") || !strings.Contains(err.Error(), "explicit goos parameter") {
 		t.Fatalf("diagnostic lacks the convention: %v", err)
 	}
 	return ge.Violations

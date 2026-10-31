@@ -70,7 +70,7 @@ type toolReport struct {
 }
 
 // ClaudeStateExclusions are the owner-accepted coverage exclusions
-// (A3.6), printed adjacently in report.txt and docs/real-e2e.md.
+// (A3.6), printed adjacently in report.txt and docs/maintainers/real-e2e.md.
 var ClaudeStateExclusions = []string{
 	"not covered: ~/.claude.json",
 	"not covered: ~/.claude/.config.json (Claude state file; holds per-project tool grants, MCP-server lists and trust flags)",
@@ -78,7 +78,7 @@ var ClaudeStateExclusions = []string{
 }
 
 // OwnerAcceptedExclusions are A3.7's and A3.9's owner-accepted coverage
-// exclusions, printed in report.txt and docs/real-e2e.md after
+// exclusions, printed in report.txt and docs/maintainers/real-e2e.md after
 // ClaudeStateExclusions.
 var OwnerAcceptedExclusions = []string{
 	"not covered: ~/.codex/config.toml (Codex records a trust entry per working folder)",

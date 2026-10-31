@@ -57,8 +57,8 @@ Use a trusted network and a dedicated OS user: TLS protects transport but provid
 
 ## For maintainers
 
-- [CI](docs/ci.md): the CI checks, their commands and budgets.
-- [Real end-to-end exercise](docs/real-e2e.md): the opt-in real-CLI qualification gate.
+- [CI](docs/maintainers/ci.md): the CI checks, their commands and budgets.
+- [Real end-to-end exercise](docs/maintainers/real-e2e.md): the opt-in real-CLI qualification gate.
 - [Exercise files](docs/examples/real-e2e/README.md): the exercise's scenario and mechanics assets.
 
 The real-e2e harness is for maintainers and is not a prerequisite for ordinary use.

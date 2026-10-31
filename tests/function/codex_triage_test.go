@@ -86,7 +86,7 @@ func deletions(phrases ...string) [][2]string {
 func codexDocs(t *testing.T) map[string]string {
 	t.Helper()
 	return map[string]string{
-		"e2e":      string(repoFile(t, "docs/real-e2e.md")),
+		"e2e":      string(repoFile(t, "docs/maintainers/real-e2e.md")),
 		"readme":   string(repoFile(t, "docs/examples/dev-flow/README.md")),
 		"playbook": string(repoFile(t, "docs/examples/dev-flow/coordinator-playbook.md")),
 		"flow":     string(repoFile(t, "docs/examples/real-e2e/dev-full/flow.json")),
@@ -109,7 +109,7 @@ var historicalRecordClauses = []string{
 // policy, where only the generic owner requalification is current.
 var numberedOwnerProbeRE = regexp.MustCompile(`(?i)\bowner probe \d`)
 
-// checkHistoricalRecords validates FP-2c in docs/real-e2e.md.
+// checkHistoricalRecords validates FP-2c in docs/maintainers/real-e2e.md.
 func checkHistoricalRecords(docs map[string]string) error {
 	sec := mdSubsection(docs["e2e"], "#### Historical records")
 	if sec == "" {
@@ -158,7 +158,7 @@ var staleTriageCatalog = []string{
 	"Grok configuration change", "the Grok and Cursor worker postures are Linux only", "the grok worker posture",
 }
 
-// retainedGrokClauses are docs/real-e2e.md's harness prerequisite and
+// retainedGrokClauses are docs/maintainers/real-e2e.md's harness prerequisite and
 // selection-change clauses.
 var retainedGrokClauses = []string{
 	"the harness requires Linux-qualified vendor installations and sidecars",
@@ -337,7 +337,7 @@ func checkNoEvidenceLink(e2e string) error {
 	return nil
 }
 
-// checkFailedProbes validates FP-5a in docs/real-e2e.md.
+// checkFailedProbes validates FP-5a in docs/maintainers/real-e2e.md.
 func checkFailedProbes(docs map[string]string) error {
 	e2e := docs["e2e"]
 	sec := mdSubsection(e2e, "#### Failed probe history")
@@ -434,7 +434,7 @@ var ownerRequalificationClauses = []string{
 }
 
 // checkOwnerRequalification validates FP-5b's generic gate in
-// docs/real-e2e.md (design 12a-probe11-closeout, FP-1d).
+// docs/maintainers/real-e2e.md (design 12a-probe11-closeout, FP-1d).
 func checkOwnerRequalification(docs map[string]string) error {
 	e2e := docs["e2e"]
 	sec := mdSubsection(e2e, "#### Owner requalification")
@@ -868,7 +868,7 @@ const (
 	runProtectRootsNote = "The two `--protect-root` values are placeholders; substitute your own roots or omit both flags for vendor-home-only protection."
 )
 
-// checkCursorCloseoutPaths validates FP-8 in docs/real-e2e.md: the smoke's
+// checkCursorCloseoutPaths validates FP-8 in docs/maintainers/real-e2e.md: the smoke's
 // required repository assignment and required-input prose, the Run
 // example's placeholder roots line and explanation once, and no
 // /opt/gitspace or /opt/gospace anywhere (a bounded W1 regression guard,

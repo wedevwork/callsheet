@@ -1020,7 +1020,7 @@ var containerBinaries = []containerBinary{
 }
 
 // containerFixtureDocs are the bundled milestone documents.
-var containerFixtureDocs = []string{"docs/real-adapters.md", "docs/workspaces.md", "docs/ci.md"}
+var containerFixtureDocs = []string{"docs/real-adapters.md", "docs/workspaces.md", "docs/maintainers/ci.md"}
 
 // containerBuildEnv is the static, offline build environment.
 func containerBuildEnv(arch string) []string {

@@ -79,7 +79,7 @@ legacy-runtime compatibility helpers (legacy run files only, never the current w
   reale2e observe --run ABS --task ID --hop designer|design-reviewer|coder|code-reviewer
   reale2e wait-task --run ABS --task ID --hop designer|design-reviewer|coder|code-reviewer
   reale2e review-material --run ABS
-See docs/real-e2e.md.
+See docs/maintainers/real-e2e.md.
 ` + DevBounds
 
 // EnvClaudeConfigDir present in any form refuses a live run: the

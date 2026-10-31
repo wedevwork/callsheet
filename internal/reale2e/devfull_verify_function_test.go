@@ -1099,12 +1099,12 @@ func TestDevFullVerifyFP7(t *testing.T) {
 		if len(sources) != 15 {
 			t.Fatalf("sources %d", len(sources))
 		}
-		doc := string(mustRead(t, filepath.Join(root, "docs", "real-e2e.md")))
+		doc := string(mustRead(t, filepath.Join(root, "docs", "maintainers", "real-e2e.md")))
 		for _, s := range sources {
 			if sha256Hex(mustRead(t, filepath.Join(root, filepath.FromSlash(s.Path)))) != s.SHA256 {
 				t.Fatalf("%s is not the shipped method", s.Path)
 			}
-			if !strings.Contains(doc, "("+strings.TrimPrefix(s.Path, "docs/")+")") {
+			if !strings.Contains(doc, "(../"+strings.TrimPrefix(s.Path, "docs/")+")") {
 				t.Fatalf("the runbook does not link %s", s.Path)
 			}
 		}

@@ -1045,7 +1045,7 @@ func TestPlanePlatform(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "TestPlaneStatus/expiry-warnings has no run event") {
 		t.Fatalf("fixture-only evidence: %v", err)
 	}
-	// docs/ci.md states the executed policy.
+	// docs/maintainers/ci.md states the executed policy.
 	stress := docSection(t, "Stress checks")
 	for _, cmd := range []string{stressPkgs, stressFn, stressPlaneFn} {
 		if !strings.Contains(stress, "\n"+cmd+"\n") {

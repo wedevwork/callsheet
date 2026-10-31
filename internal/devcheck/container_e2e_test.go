@@ -42,6 +42,33 @@ func readEvidence(t *testing.T, dir, name string) string {
 	return string(b)
 }
 
+// checkBundledDocs requires every bundled milestone document, keyed by its
+// flat archive name fixtures/docs/<base>, to equal its repository source
+// under root byte for byte.
+func checkBundledDocs(bundle map[string][]byte, root string) error {
+	var errs []error
+	for _, doc := range containerFixtureDocs {
+		name := "fixtures/docs/" + filepath.Base(doc)
+		got, ok := bundle[name]
+		if !ok {
+			errs = append(errs, fmt.Errorf("bundled %s is missing", name))
+			continue
+		}
+		want, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(doc)))
+		if err != nil {
+			errs = append(errs, fmt.Errorf("source %s of %s: %w", doc, name, err))
+			continue
+		}
+		if !bytes.Equal(got, want) {
+			errs = append(errs, fmt.Errorf("bundled %s differs from %s", name, doc))
+		}
+	}
+	if len(bundle) != len(containerFixtureDocs) {
+		errs = append(errs, fmt.Errorf("bundle has %d documents, want %d", len(bundle), len(containerFixtureDocs)))
+	}
+	return errors.Join(errs...)
+}
+
 // TestContainerDriverContract (FP-1 host contract): the planned Docker
 // build, run and cleanup argv and environment, Linux-only routing, the
 // count bounds, child failures, the deadline's explicit container
@@ -169,6 +196,33 @@ func TestContainerDriverContract(t *testing.T) {
 					"fixtures/manuals/proof-code/instruction.md fixtures/manuals/proof-code/runbook.md fixtures/manuals/proof-code-review/instruction.md fixtures/manuals/proof-code-review/runbook.md" {
 					t.Fatalf("build context = %v", names)
 				}
+			}
+		}
+		// Design 12-1b-maintainer-docs: the flat bundle keeps archive name
+		// fixtures/docs/ci.md, whose bytes are the relocated
+		// docs/maintainers/ci.md; a mutated or missing bundled document fails.
+		root := repoRoot(t)
+		if err := checkBundledDocs(cr.docs, root); err != nil {
+			t.Fatal(err)
+		}
+		ci, err := os.ReadFile(filepath.Join(root, "docs", "maintainers", "ci.md"))
+		if err != nil || !bytes.Equal(cr.docs["fixtures/docs/ci.md"], ci) {
+			t.Fatalf("fixtures/docs/ci.md is not docs/maintainers/ci.md (%v)", err)
+		}
+		for name, edit := range map[string]func(m map[string][]byte){
+			"mutated": func(m map[string][]byte) {
+				m["fixtures/docs/ci.md"] = append(bytes.Clone(m["fixtures/docs/ci.md"]), '\n')
+			},
+			"missing": func(m map[string][]byte) { delete(m, "fixtures/docs/ci.md") },
+			"other":   func(m map[string][]byte) { m["fixtures/docs/ci.md"] = m["fixtures/docs/workspaces.md"] },
+		} {
+			m := map[string][]byte{}
+			for k, v := range cr.docs {
+				m[k] = v
+			}
+			edit(m)
+			if err := checkBundledDocs(m, root); err == nil || !strings.Contains(err.Error(), "fixtures/docs/ci.md") {
+				t.Fatalf("%s bundled ci.md: %v", name, err)
 			}
 		}
 		report := readEvidence(t, dir, evidenceReportFile)

@@ -1520,7 +1520,7 @@ func TestStressShardPolicy(t *testing.T) {
 }
 
 // FP-4 of iteration 12a-stress-sidecar-margin (historically FP-5, and FP-3
-// of the stress worker rebalance): docs/ci.md documents the four required
+// of the stress worker rebalance): docs/maintainers/ci.md documents the four required
 // contexts versus the eighteen workers, the nine shards with their exact
 // commands (twenty-two since the headroom fixes, still the iteration 02b
 // selection) and command ownership (packages one, packages-cpu nine,
@@ -2125,7 +2125,7 @@ func stressPackagesBudgetHandoff(t *testing.T, stress, first string) {
 // Design 12a-stress-sidecar-cpu1-budget's verbatim documentation pins
 // (Budget qualification, Documentation): the current policy sentence, the
 // dated block's heading, its supersession sentence (with U+2019 in
-// "blocks’", byte for byte as in docs/ci.md, the post-final DS1
+// "blocks’", byte for byte as in docs/maintainers/ci.md, the post-final DS1
 // clarification) and the First remote run entry's prefix.
 const (
 	sidecarCPU1Policy          = "Each test binary: `-timeout=6m`, except sidecar CPU1, the combined `stress packages` command's binaries and `internal/mcpqual` stress binaries: `-timeout=8m`."
@@ -2150,7 +2150,7 @@ const (
 func sidecarCPU1BudgetHandoff(t *testing.T, stress, first string) {
 	t.Helper()
 	// DS1: the Go literal carries U+2019 (bytes E2 80 99) in "blocks’", as
-	// docs/ci.md does; requireTerms then matches the docs byte for byte.
+	// docs/maintainers/ci.md does; requireTerms then matches the docs byte for byte.
 	if !strings.Contains(sidecarCPU1Supersession, "budget blocks\xe2\x80\x99 statements") || strings.Contains(sidecarCPU1Supersession, "blocks' ") {
 		t.Fatal("the supersession sentence literal does not use U+2019 in blocks’")
 	}
