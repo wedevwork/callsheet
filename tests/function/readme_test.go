@@ -80,12 +80,12 @@ var readmeSupportRows = [][2]string{
 
 var (
 	readmeUserMap     = []string{"docs/coordinator.md", "docs/coordinator.md#coordinator-runbook-example", "docs/real-adapters.md", "docs/workspaces.md", "docs/support-catalog.md", "docs/examples/dev-flow/README.md"}
-	readmeMaintainers = []string{"docs/ci.md", "docs/real-e2e.md", "docs/examples/real-e2e/README.md"}
+	readmeMaintainers = []string{"docs/maintainers/ci.md", "docs/maintainers/real-e2e.md", "docs/examples/real-e2e/README.md"}
 	readmePlanned     = []string{"docs/quickstart.md", "docs/guide/index.md", "docs/deploy.md"}
 	// readmeExisting are the eight existing documentation entry paths
-	// this slice keeps in place (their relocation is slice 12-1b).
+	// with maintainer documents under docs/maintainers/.
 	readmeExisting = []string{"docs/coordinator.md", "docs/real-adapters.md", "docs/workspaces.md", "docs/support-catalog.md",
-		"docs/examples/dev-flow/README.md", "docs/ci.md", "docs/real-e2e.md", "docs/examples/real-e2e/README.md"}
+		"docs/examples/dev-flow/README.md", "docs/maintainers/ci.md", "docs/maintainers/real-e2e.md", "docs/examples/real-e2e/README.md"}
 	readmePrivate = []string{"/home/", "/Users/", "/opt/gitspace/", "file:"}
 )
 
@@ -830,8 +830,12 @@ func TestReadmeDocumentationMap(t *testing.T) {
 		ms = append(ms, readmeMutation{"delete-" + l, inSectionRe("For maintainers", `\[([^\]]*)\]\(`+regexp.QuoteMeta(l)+`\)`, "$1"), "for maintainers: missing link " + l})
 	}
 	ms = append(ms,
-		readmeMutation{"maintainer-in-user-map", appendToSection("Documentation", "- [CI](docs/ci.md): checks."), "Documentation: maintainer link docs/ci.md outside For maintainers"},
-		readmeMutation{"maintainer-in-quickstart", appendToSection("Quickstart summary", "See the [exercise](docs/real-e2e.md#run)."), "Quickstart summary: maintainer link docs/real-e2e.md"},
+		readmeMutation{"maintainer-in-user-map", appendToSection("Documentation", "- [CI](docs/maintainers/ci.md): checks."), "Documentation: maintainer link docs/maintainers/ci.md outside For maintainers"},
+		readmeMutation{"maintainer-in-quickstart", appendToSection("Quickstart summary", "See the [exercise](docs/maintainers/real-e2e.md#run)."), "Quickstart summary: maintainer link docs/maintainers/real-e2e.md"},
+		// Design 12-1b-maintainer-docs: a link restored to a removed
+		// pre-relocation path no longer resolves.
+		readmeMutation{"old-ci-path", inSection("For maintainers", "](docs/maintainers/ci.md)", "](docs/ci.md)"), "destination docs/ci.md does not exist"},
+		readmeMutation{"old-real-e2e-path", inSection("For maintainers", "](docs/maintainers/real-e2e.md)", "](docs/real-e2e.md)"), "destination docs/real-e2e.md does not exist"},
 		readmeMutation{"no-harness-note", replaceOnce(readmeHarnessNote, ""), "for maintainers: lacks"},
 		readmeMutation{"planned-quickstart-link", inSection("Documentation", "`docs/quickstart.md`", "[docs/quickstart.md](docs/quickstart.md)"), "documentation: planned docs/quickstart.md is a link"},
 		readmeMutation{"planned-guide-link", appendToSection("For maintainers", "[guide](docs/guide/index.md)"), "documentation: planned docs/guide/index.md is a link"},
@@ -871,12 +875,12 @@ func TestReadmeDocumentationMap(t *testing.T) {
 		t.Errorf("placeholder: err = %v", err)
 	}
 	withoutCI := func(rel string) ([]byte, bool) {
-		if rel == "docs/ci.md" {
+		if rel == "docs/maintainers/ci.md" {
 			return nil, false
 		}
 		return look(rel)
 	}
-	if err := checkDocMap(md, withoutCI); err == nil || !strings.Contains(err.Error(), "existing entry docs/ci.md is missing") {
+	if err := checkDocMap(md, withoutCI); err == nil || !strings.Contains(err.Error(), "existing entry docs/maintainers/ci.md is missing") {
 		t.Errorf("missing entry: err = %v", err)
 	}
 }

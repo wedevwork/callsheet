@@ -1784,7 +1784,7 @@ func autoContract(t *testing.T, root string, byID map[string]catalog.Entry, doc 
 	t.Helper()
 	ra := string(repoFile(t, "docs/real-adapters.md"))
 	coord := string(repoFile(t, "docs/coordinator.md"))
-	e2e := string(repoFile(t, "docs/real-e2e.md"))
+	e2e := string(repoFile(t, "docs/maintainers/real-e2e.md"))
 	for _, vendor := range []string{"claude", "codex", "grok", "cursor"} {
 		min, ok := adapter.MinimumVersion(vendor)
 		if !ok || byID[vendor].Version != qualification(vendor).Version || byID[vendor].Version == min && vendor != "cursor" {

@@ -54,14 +54,14 @@ const (
 // commands, since design 12a-stress-packages-budget on the combined
 // packages command too, and since design 12a-stress-sidecar-cpu1-budget on
 // the sidecar CPU1 command only, sidecar CPU2 and CPU4 keeping -timeout=6m:
-// the SHA-256 of the twenty-two commands listed in docs/ci.md, Stress
+// the SHA-256 of the twenty-two commands listed in docs/maintainers/ci.md, Stress
 // checks, joined by newlines with no final newline) and the CI workflow's
 // bytes.
 const (
 	enrollmentIndexSHA256 = "c0f28d31dc24401977037c9e0b27a44810ea19984518a8bc46ab62c8b6ea7e61"
 	nativeInventorySHA256 = "60a8fb205c088e7e255527234f4bd5edac0cd0cb9d0951caacd7b4564f235172"
 	stressArgvSHA256      = "506e184e87524b6ab9b3112a69db82f6d5e4a8ef4e981c1e10587759ef331923"
-	ciWorkflowSHA256      = "8085e548196267a9db8401d32814bc57bb713a51e250a2a44b285a5285bdba53"
+	ciWorkflowSHA256      = "47ee3c8fd4ce7c3daa37237fbbf4d08e1659facc4a3505456163982b08cff57a"
 )
 
 // catalogIdentities are the migrated catalog's exact worker and
@@ -2285,11 +2285,11 @@ func catalogVersionCI(t *testing.T, live func([]devcheck.Step) string) {
 		!strings.Contains(b, "wave2SourceRoot            = \""+design+"iterations/11-real-adapters/design-check\"") {
 		t.Fatal("real_adapters_test.go names a design path beyond the manifest's recorded source root")
 	}
-	doc := strings.Join(strings.Fields(string(repoFile(t, "docs/ci.md"))), " ")
+	doc := strings.Join(strings.Fields(string(repoFile(t, "docs/maintainers/ci.md"))), " ")
 	for _, w := range []string{"Catalog version (design catalog-version)", "the whole-file coverage manifest adds `internal/testkit/catalog/catalog.go`",
 		"catalog-version adds no new stress selector or workload"} {
 		if !strings.Contains(doc, w) {
-			t.Fatalf("docs/ci.md lacks %q", w)
+			t.Fatalf("docs/maintainers/ci.md lacks %q", w)
 		}
 	}
 }

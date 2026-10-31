@@ -2,7 +2,7 @@
 
 This directory is a reusable Callsheet example of a full design flow and a light defect flow. Each role is an ordinary instruction and runbook pair registered with `callsheet role add`. The coordinator is the owner's own client, following [coordinator-playbook.md](coordinator-playbook.md). Callsheet does not load that playbook as a role or a daemon.
 
-The real end-to-end exercise ([real-e2e.md](../../real-e2e.md)) loads these shared manuals and this playbook directly: `reale2e run` runs the checked full development flow with them, `reale2e run-dev-light` runs the light defect flow on a seeded whitespace defect, `reale2e run-dev-exercise` runs both as independent attempts, and the exercise directory [../real-e2e/](../real-e2e/README.md) adds only its scenario and mechanics. The retired four-hop role manuals are no longer shipped. A mechanical PASS of the exercise is not a judgment of the method's outputs, and its live qualification stays pending until the owner-run attempt is recorded. Exercise constraints, when they exist, supplement this method. They do not waive its gates.
+The real end-to-end exercise ([maintainers/real-e2e.md](../../maintainers/real-e2e.md)) loads these shared manuals and this playbook directly: `reale2e run` runs the checked full development flow with them, `reale2e run-dev-light` runs the light defect flow on a seeded whitespace defect, `reale2e run-dev-exercise` runs both as independent attempts, and the exercise directory [../real-e2e/](../real-e2e/README.md) adds only its scenario and mechanics. The retired four-hop role manuals are no longer shipped. A mechanical PASS of the exercise is not a judgment of the method's outputs, and its live qualification stays pending until the owner-run attempt is recorded. Exercise constraints, when they exist, supplement this method. They do not waive its gates.
 
 ## Installation
 
@@ -38,7 +38,7 @@ Model and effort are the registered role configuration, not extra dispatch keys.
 
 ## Prerequisites
 
-The triage role (codex) is eligible on a Linux or macOS sidecar, like every other role of this selection: `ValidateWorkerPosture` in `internal/adapter/vendor.go` returns nil for codex and claude on both. A valid model and effort never override a posture refusal. The real end-to-end harness keeps its own, separate Linux prerequisite: its live execution is Linux only because it requires Linux-qualified vendor installations and sidecars ([real-e2e.md](../../real-e2e.md)). That harness prerequisite is not a triage posture.
+The triage role (codex) is eligible on a Linux or macOS sidecar, like every other role of this selection: `ValidateWorkerPosture` in `internal/adapter/vendor.go` returns nil for codex and claude on both. A valid model and effort never override a posture refusal. The real end-to-end harness keeps its own, separate Linux prerequisite: its live execution is Linux only because it requires Linux-qualified vendor installations and sidecars ([maintainers/real-e2e.md](../../maintainers/real-e2e.md)). That harness prerequisite is not a triage posture.
 
 Other prerequisites are the owner's to fulfill: logged-in adapter CLIs on the sidecars, plane trust, and the CA. This example does not change agent-tool settings, login state, or profiles.
 

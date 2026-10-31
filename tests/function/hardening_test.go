@@ -478,7 +478,7 @@ func yamlScalars(n *yaml.Node) []string {
 
 var repeatCountRE = regexp.MustCompile(`The project's declared repeat count is (\d+) per CPU setting \((\d+(?:, \d+)*)\)\.`)
 
-// FP-7: docs/ci.md states the policy StressSteps/StressCount implement, the
+// FP-7: docs/maintainers/ci.md states the policy StressSteps/StressCount implement, the
 // platform convention with its guard and exceptions, and the PR #1 narrative.
 func TestHardeningDeveloperContract(t *testing.T) {
 	stress := docSection(t, "Stress checks")
@@ -574,7 +574,7 @@ func TestHardeningDeveloperContract(t *testing.T) {
 	}
 	platform := docSection(t, "Platform code")
 	requireTerms(t, "Platform code", platform, "explicit `goos` argument",
-		"[internal/devcheck/platform.go](../internal/devcheck/platform.go)", "`TestPlatformSourceGuard`",
+		"[internal/devcheck/platform.go](../../internal/devcheck/platform.go)", "`TestPlatformSourceGuard`",
 		"irrespective of build constraints", "never proof of foreign kernel behavior",
 		"Exempt files are not scanned for `runtime.GOOS`", "`internal/testkit/fakeadapter/signals_unix.go` must not grow a host branch",
 		"compiled for both `linux` and `darwin`",

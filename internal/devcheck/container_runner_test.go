@@ -36,6 +36,8 @@ type containerRunner struct {
 	all []string
 	// context lists the image build context's files at build time.
 	context []string
+	// docs holds the bundled fixtures/docs/ files' bytes at build time.
+	docs map[string][]byte
 
 	// Failure scripts (all zero: a complete passing run).
 	missingDocker bool   // docker context inspect: executable not found
@@ -147,8 +149,17 @@ func (c *containerRunner) run(ctx context.Context, argv, env []string, dir strin
 		filepath.Walk(dir, func(p string, info os.FileInfo, err error) error {
 			if err == nil && !info.IsDir() {
 				rel, _ := filepath.Rel(dir, p)
+				rel = filepath.ToSlash(rel)
 				c.mu.Lock()
-				c.context = append(c.context, filepath.ToSlash(rel))
+				c.context = append(c.context, rel)
+				if strings.HasPrefix(rel, "fixtures/docs/") {
+					if b, rerr := os.ReadFile(p); rerr == nil {
+						if c.docs == nil {
+							c.docs = map[string][]byte{}
+						}
+						c.docs[rel] = b
+					}
+				}
 				c.mu.Unlock()
 			}
 			return nil

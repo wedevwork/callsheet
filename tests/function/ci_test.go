@@ -25,7 +25,7 @@ import (
 )
 
 // Iteration 01b function tests: one top-level TestCI* per FP. They read the
-// committed workflow and docs/ci.md only, mutate parsed copies in memory,
+// committed workflow and docs/maintainers/ci.md only, mutate parsed copies in memory,
 // and never contact GitHub or run devcheck recursively.
 
 const (
@@ -275,14 +275,14 @@ func sharedQualifyingEvents(drop, skip string) string {
 	return events(append(evs, taskProcessEvents("")...)...)
 }
 
-// --- docs/ci.md helpers ---
+// --- docs/maintainers/ci.md helpers ---
 
 func docSection(t *testing.T, heading string) string {
 	t.Helper()
-	doc := string(repoFile(t, "docs/ci.md"))
+	doc := string(repoFile(t, "docs/maintainers/ci.md"))
 	start := strings.Index(doc, "\n## "+heading+"\n")
 	if start < 0 {
-		t.Fatalf("docs/ci.md has no section %q", heading)
+		t.Fatalf("docs/maintainers/ci.md has no section %q", heading)
 	}
 	body := doc[start+len("\n## "+heading+"\n"):]
 	if end := strings.Index(body, "\n## "); end >= 0 {
@@ -879,8 +879,8 @@ func TestCIPlatformScope(t *testing.T) {
 			t.Fatalf("host %s %s = %+v", runtime.GOOS, g, r)
 		}
 	}
-	doc := string(repoFile(t, "docs/ci.md"))
-	requireTerms(t, "docs/ci.md", doc, "all v1 components are Linux/macOS only", "Windows coordinator support is backlog E9, lowest priority")
+	doc := string(repoFile(t, "docs/maintainers/ci.md"))
+	requireTerms(t, "docs/maintainers/ci.md", doc, "all v1 components are Linux/macOS only", "Windows coordinator support is backlog E9, lowest priority")
 }
 
 // FP-5: the native driver stage accepts only complete, passing evidence.
@@ -1003,7 +1003,7 @@ func TestCINativeSplitQualification(t *testing.T) {
 	}
 }
 
-// FP-3 (design 12a-native-reale2e-budget): docs/ci.md carries the split
+// FP-3 (design 12a-native-reale2e-budget): docs/maintainers/ci.md carries the split
 // policy, the evidence-based provisional cap, the job-budget projection
 // with its assumption and the hosted verification procedure, distinguishing
 // pending measurements from passed tests; the workflow keeps its 30-minute
@@ -1250,7 +1250,7 @@ func TestCITestBudgetExecution(t *testing.T) {
 	contractRun(t, contractBinary(t, pkg), pkg, "^TestTestBudgetDriverContract$", os.Environ(), pass...)
 }
 
-// FP-4 (design 12a-linux-test-budget): docs/ci.md carries the dated Linux
+// FP-4 (design 12a-linux-test-budget): docs/maintainers/ci.md carries the dated Linux
 // test budget once, after the native reale2e budget and before iteration
 // 11, with its evidence, caps, scaled maxima and margins, the conditional
 // 2319-second projection and its assumptions; First remote run carries the
@@ -1261,8 +1261,8 @@ func TestCILinuxBudgetHandoff(t *testing.T) {
 	const marker = "**Linux test budget (design 12a-linux-test-budget, 2026-10-25).**"
 	const nativeMarker = "**Native reale2e budget (design 12a-native-reale2e-budget, 2026-10-24).**"
 	start := strings.Index(checks, marker)
-	if start < 0 || strings.Count(checks, marker) != 1 || strings.Count(string(repoFile(t, "docs/ci.md")), marker) != 1 {
-		t.Fatal("docs/ci.md has no single dated Linux test budget explanation in Checks")
+	if start < 0 || strings.Count(checks, marker) != 1 || strings.Count(string(repoFile(t, "docs/maintainers/ci.md")), marker) != 1 {
+		t.Fatal("docs/maintainers/ci.md has no single dated Linux test budget explanation in Checks")
 	}
 	native := strings.Index(checks, nativeMarker)
 	end := strings.Index(checks[start:], "\n\nIteration 11 (real adapters, wave 2")
@@ -1446,7 +1446,7 @@ func TestCIWorkflowDrift(t *testing.T) {
 	}
 }
 
-// ownerAddContexts is the only repository mutation docs/ci.md may contain:
+// ownerAddContexts is the only repository mutation docs/maintainers/ci.md may contain:
 // the owner-only additive request adding the two stress contexts
 // (iteration 02b). Nothing executes it.
 const ownerAddContexts = "gh api --method POST \\\n" +
@@ -1496,13 +1496,13 @@ func TestCIProtectionHandoff(t *testing.T) {
 	// The documented owner handoff is the only mutating request: exactly one
 	// POST, inside the exact additive command in Branch protection, and no
 	// other method that could replace or remove protection.
-	doc := string(repoFile(t, "docs/ci.md"))
+	doc := string(repoFile(t, "docs/maintainers/ci.md"))
 	if strings.Count(doc, "--method POST") != 1 || strings.Count(doc, ownerAddContexts) != 1 || !strings.Contains(bp, "\n"+ownerAddContexts) {
-		t.Fatalf("docs/ci.md must contain exactly one POST, the owner handoff in Branch protection:\n%s", ownerAddContexts)
+		t.Fatalf("docs/maintainers/ci.md must contain exactly one POST, the owner handoff in Branch protection:\n%s", ownerAddContexts)
 	}
 	for _, forbidden := range []string{"ci-windows", "-X PUT", "--method PUT", "-X POST", "-X PATCH", "--method PATCH", "-X DELETE", "--method DELETE", "curl "} {
 		if strings.Contains(doc, forbidden) {
-			t.Fatalf("docs/ci.md contains %q", forbidden)
+			t.Fatalf("docs/maintainers/ci.md contains %q", forbidden)
 		}
 	}
 	wf := string(ciWorkflow(t))

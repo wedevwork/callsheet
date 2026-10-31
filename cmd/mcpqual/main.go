@@ -32,7 +32,7 @@ func main() {
 // and capture (design decoder-enrollment); tests replace it.
 var lookupEnv = os.LookupEnv
 
-// run is the approved host wrapper (docs/ci.md, Platform code): it only
+// run is the approved host wrapper (docs/maintainers/ci.md, Platform code): it only
 // forwards runtime.GOOS and runtime.GOARCH.
 func run(args []string, getenv func(string) string, stdin io.Reader, stdout, stderr io.Writer) int {
 	return runFor(runtime.GOOS, runtime.GOARCH, args, getenv, stdin, stdout, stderr)
