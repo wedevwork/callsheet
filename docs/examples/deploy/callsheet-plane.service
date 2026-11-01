@@ -1,0 +1,29 @@
+# Callsheet plane: system unit template. Not runnable until edited.
+# Replace /REPLACE_WITH_PLANE_HOME with the home of the callsheet-plane account,
+# and /usr/local/bin/callsheet if you installed the executable elsewhere.
+# Installation, permissions and lifecycle: docs/deploy.md, "Run as services".
+# Initialize the state as callsheet-plane before enabling this unit.
+
+[Unit]
+Description=Callsheet plane
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=callsheet-plane
+Environment=HOME=/REPLACE_WITH_PLANE_HOME
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=/REPLACE_WITH_PLANE_HOME
+UMask=0077
+ExecStart=/usr/local/bin/callsheet plane run --state-dir /REPLACE_WITH_PLANE_HOME/callsheet/plane
+Restart=on-failure
+RestartSec=5s
+SuccessExitStatus=130
+KillMode=control-group
+TimeoutStopSec=60s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -62,13 +62,18 @@ const (
 // qsHeadings are the stable link targets, in order.
 var qsHeadings = []string{"Install Callsheet", "Prerequisites", "One machine", "Add a second machine", "If something goes wrong", "Next steps"}
 
-// qsInventory pins every marked fence and the Callsheet leaves it may run, in
-// order; fences with no leaf are setup or install fences.
-var qsInventory = []struct {
+// docFenceSpec pins one marked fence of a document and the Callsheet leaves it
+// may run, in order; a fence with no leaf holds no Callsheet command. The
+// quickstart and the deployment chapter share it.
+type docFenceSpec struct {
 	id     string
 	lang   string
 	leaves []string
-}{
+}
+
+// qsInventory pins every marked fence of the quickstart; fences with no leaf
+// are setup or install fences.
+var qsInventory = []docFenceSpec{
 	{"install-shell", "sh", nil},
 	{"download", "bash", nil},
 	{"checksum-linux", "bash", nil},
@@ -140,13 +145,19 @@ var (
 // follow a unique marker; a non-shell fence may not hold a Callsheet command,
 // so removing a label cannot hide one.
 func parseQuickstartFences(md string) ([]qsFence, error) {
+	return parseMarkedFences(md, qsMarker)
+}
+
+// parseMarkedFences is the parser core: marker selects the document's fence
+// marker. Its diagnostics are the quickstart's, for every document.
+func parseMarkedFences(md string, marker *regexp.Regexp) ([]qsFence, error) {
 	var out []qsFence
 	lines := strings.Split(md, "\n")
 	seen := map[string]bool{}
 	pending, pendingLine := "", 0
 	for i := 0; i < len(lines); i++ {
 		trimmed := strings.TrimSpace(lines[i])
-		if m := qsMarker.FindStringSubmatch(trimmed); m != nil {
+		if m := marker.FindStringSubmatch(trimmed); m != nil {
 			if pending != "" {
 				return nil, fmt.Errorf("fences: marker %s at line %d is not immediately before a fence", pending, pendingLine)
 			}
@@ -607,13 +618,58 @@ func leafHelp(t *testing.T, leaf string) (result, error) {
 // known variables only.
 func checkCommandContract(t *testing.T, md string) error {
 	t.Helper()
-	fences, err := parseQuickstartFences(md)
+	return checkFenceContract(t, md, docFenceContract{marker: qsMarker, inventory: qsInventory, variables: func(string) []string { return qsVariables }, parse: parseFenceCommands})
+}
+
+// docFenceContract selects one document's marker, pinned inventory, allowed
+// Callsheet-command variables per fence and fence parser.
+type docFenceContract struct {
+	marker    *regexp.Regexp
+	inventory []docFenceSpec
+	variables func(id string) []string
+	parse     func(qsFence) (qsParsed, error)
+}
+
+// checkCallsheetCommand validates one parsed Callsheet command against the
+// real tree: it returns its leaf and any flag or variable findings.
+func checkCallsheetCommand(t *testing.T, root *cli.Command, id string, c qsCommand, allowed []string) (string, []error) {
+	t.Helper()
+	leaf, rest, err := leafOf(root, c)
+	if err != nil {
+		return "", []error{fmt.Errorf("fence %s %w", id, err)}
+	}
+	help, err := leafHelp(t, leaf)
+	if err != nil {
+		return leaf, []error{fmt.Errorf("fence %s: %w", id, err)}
+	}
+	var errs []error
+	vocabulary := flagTokens(help.stdout)
+	for _, w := range rest {
+		if v, ok := w.literal(); ok && !w.quoted && strings.HasPrefix(v, "--") {
+			name, _, _ := strings.Cut(v, "=")
+			if !vocabulary[name] {
+				errs = append(errs, fmt.Errorf("fence %s line %d: unknown flag %s of %s", id, c.line, name, leaf))
+			}
+		}
+		for _, p := range w.parts {
+			if p.variable != "" && !slices.Contains(allowed, p.variable) {
+				errs = append(errs, fmt.Errorf("fence %s line %d: unknown variable $%s", id, c.line, p.variable))
+			}
+		}
+	}
+	return leaf, errs
+}
+
+// checkFenceContract is the contract core over one document's inventory.
+func checkFenceContract(t *testing.T, md string, c docFenceContract) error {
+	t.Helper()
+	fences, err := parseMarkedFences(md, c.marker)
 	if err != nil {
 		return err
 	}
 	root := cli.NewTree(runtime.GOOS)
 	known := map[string]bool{}
-	for _, inv := range qsInventory {
+	for _, inv := range c.inventory {
 		known[inv.id] = true
 		if _, ok := fenceByID(fences, inv.id); !ok {
 			return fmt.Errorf("inventory: required fence %s is missing", inv.id)
@@ -628,47 +684,21 @@ func checkCommandContract(t *testing.T, md string) error {
 			errs = append(errs, fmt.Errorf("inventory: fence %s is not in the pinned inventory", f.id))
 			continue
 		}
-		inv := qsInventory[slices.IndexFunc(qsInventory, func(e struct {
-			id     string
-			lang   string
-			leaves []string
-		}) bool {
-			return e.id == f.id
-		})]
+		inv := c.inventory[slices.IndexFunc(c.inventory, func(e docFenceSpec) bool { return e.id == f.id })]
 		if inv.lang != f.lang {
 			errs = append(errs, fmt.Errorf("inventory: fence %s is %s, want %s", f.id, f.lang, inv.lang))
 		}
-		parsed, err := parseFenceCommands(f)
+		parsed, err := c.parse(f)
 		if err != nil {
 			errs = append(errs, err)
 			continue
 		}
 		var leaves []string
-		for _, c := range parsed.callsheet {
-			leaf, rest, err := leafOf(root, c)
-			if err != nil {
-				errs = append(errs, fmt.Errorf("fence %s %w", f.id, err))
-				continue
-			}
-			leaves = append(leaves, leaf)
-			help, err := leafHelp(t, leaf)
-			if err != nil {
-				errs = append(errs, fmt.Errorf("fence %s: %w", f.id, err))
-				continue
-			}
-			vocabulary := flagTokens(help.stdout)
-			for _, w := range rest {
-				if v, ok := w.literal(); ok && !w.quoted && strings.HasPrefix(v, "--") {
-					name, _, _ := strings.Cut(v, "=")
-					if !vocabulary[name] {
-						errs = append(errs, fmt.Errorf("fence %s line %d: unknown flag %s of %s", f.id, c.line, name, leaf))
-					}
-				}
-				for _, p := range w.parts {
-					if p.variable != "" && !slices.Contains(qsVariables, p.variable) {
-						errs = append(errs, fmt.Errorf("fence %s line %d: unknown variable $%s", f.id, c.line, p.variable))
-					}
-				}
+		for _, cmd := range parsed.callsheet {
+			leaf, findings := checkCallsheetCommand(t, root, f.id, cmd, c.variables(f.id))
+			errs = append(errs, findings...)
+			if leaf != "" {
+				leaves = append(leaves, leaf)
 			}
 		}
 		if !slices.Equal(leaves, inv.leaves) {
@@ -746,8 +776,13 @@ func fenceArgs(md, id string) ([]string, error) {
 	if len(parsed.callsheet) != 1 {
 		return nil, fmt.Errorf("fence %s holds %d Callsheet commands, want 1", id, len(parsed.callsheet))
 	}
+	return renderWords(parsed.callsheet[0].words), nil
+}
+
+// renderWords returns words as literal text, variables as $NAME.
+func renderWords(words []qsWord) []string {
 	var out []string
-	for _, w := range parsed.callsheet[0].words {
+	for _, w := range words {
 		var b strings.Builder
 		for _, p := range w.parts {
 			if p.variable != "" {
@@ -758,7 +793,7 @@ func fenceArgs(md, id string) ([]string, error) {
 		}
 		out = append(out, b.String())
 	}
-	return out, nil
+	return out
 }
 
 // flagValue returns the value after flag in args.
@@ -776,6 +811,11 @@ func wantFlags(md, id string, want map[string]string) error {
 	if err != nil {
 		return err
 	}
+	return checkFlagValues(id, args, want)
+}
+
+// checkFlagValues requires exact flag values in a fence's argv.
+func checkFlagValues(id string, args []string, want map[string]string) error {
 	keys := make([]string, 0, len(want))
 	for k := range want {
 		keys = append(keys, k)
@@ -927,7 +967,7 @@ func checkPrerequisitesDoc(md string) error {
 		return err
 	}
 	links := markdownLinks(body)
-	for _, l := range []string{"real-adapters.md#selection-and-versions", "real-adapters.md#current-worker-recipes", "real-adapters.md#enabling-a-worker", "support-catalog.md", "coordinator.md", "../README.md#security"} {
+	for _, l := range []string{"real-adapters.md#selection-and-versions", "real-adapters.md#current-worker-recipes", "real-adapters.md#enabling-a-worker", "support-catalog.md", "coordinator.md", "../README.md#security", "deploy.md#security-posture"} {
 		if !slices.Contains(links, l) {
 			return fmt.Errorf("prerequisites: missing link %s", l)
 		}
@@ -1323,18 +1363,23 @@ func TestQuickstartInstall(t *testing.T) {
 // fenceBlock returns fence id's complete Markdown block, marker included.
 func fenceBlock(t *testing.T, md, id string) (string, int) {
 	t.Helper()
-	marker := "<!-- quickstart: " + id + " -->"
+	return markedFenceBlock(t, md, "<!-- quickstart: "+id+" -->")
+}
+
+// markedFenceBlock returns the complete block that starts at marker.
+func markedFenceBlock(t *testing.T, md, marker string) (string, int) {
+	t.Helper()
 	i := strings.Index(md, marker)
 	if i < 0 {
-		t.Fatalf("no marker %s", id)
+		t.Fatalf("no marker %s", marker)
 	}
 	open := strings.Index(md[i:], "```")
 	if open < 0 {
-		t.Fatalf("no fence after %s", id)
+		t.Fatalf("no fence after %s", marker)
 	}
 	end := strings.Index(md[i+open+3:], "```")
 	if end < 0 {
-		t.Fatalf("unclosed fence %s", id)
+		t.Fatalf("unclosed fence %s", marker)
 	}
 	stop := i + open + 3 + end + 3
 	return md[i:stop], i
@@ -1568,8 +1613,14 @@ func (r *qsRig) await(what string, cond func() bool) {
 // workspace mode, owned and reaped by test cleanup.
 func (r *qsRig) startSidecar(id string) {
 	r.t.Helper()
+	r.startSidecarArgs(r.argv(id))
+}
+
+// startSidecarArgs runs a sidecar from already translated documented argv.
+func (r *qsRig) startSidecarArgs(args []string) {
+	r.t.Helper()
 	s := &sidecarProc{logs: &nodeLogs{sig: make(chan struct{}, 1)}, done: make(chan struct{})}
-	s.cmd = exec.Command(r.p.bin, r.argv(id)...)
+	s.cmd = exec.Command(r.p.bin, args...)
 	s.cmd.Dir = r.p.cwd
 	s.cmd.Env = append(slices.Clone(r.p.env), fakeadapter.EnvTaskMode+"="+fakeadapter.WorkspaceMode)
 	s.cmd.Stdout, s.cmd.Stderr = &s.stdout, s.logs
@@ -1792,15 +1843,13 @@ func checkFirstTaskDoc(md string) error {
 		add(fmt.Errorf("first task: inspect-result does not check the delivery (%v)", err))
 	}
 	links := markdownLinks(md)
-	for _, l := range []string{"coordinator.md", "workspaces.md", "examples/dev-flow/README.md"} {
+	for _, l := range []string{"coordinator.md", "workspaces.md", "examples/dev-flow/README.md", "deploy.md"} {
 		if !slices.Contains(links, l) {
 			add(fmt.Errorf("next steps: missing link %s", l))
 		}
 	}
-	for _, future := range []string{"guide/index.md", "deploy.md"} {
-		if slices.Contains(links, future) {
-			add(fmt.Errorf("next steps: links future document %s", future))
-		}
+	if slices.Contains(links, "guide/index.md") {
+		add(errors.New("next steps: links future document guide/index.md"))
 	}
 	return errors.Join(errs...)
 }
@@ -1878,7 +1927,8 @@ func TestQuickstartOneMachine(t *testing.T) {
 			{"exit-means-success", replaceOnce("Its exit 0 means a terminal answer, not task success", "Its exit 0 means success"), "lacks"},
 			{"redispatch", replaceOnce("Do not infer an ID or dispatch again if the response is lost", "Dispatch again if the response is lost"), "lacks"},
 			{"no-inspection", replaceOnce("cmp \"$QS/seed/README.md\" \"$QS/delivery/README.md\"\n", ""), "inspect-result does not check"},
-			{"future-link", appendToSection("Next steps", "- [Deploy](deploy.md)."), "links future document deploy.md"},
+			{"future-link", appendToSection("Next steps", "- [Guide](guide/index.md)."), "links future document guide/index.md"},
+			{"no-deploy-link", replaceOnce("- [Deployment](deploy.md): sustained operation, services, address changes and recovery.\n", ""), "missing link deploy.md"},
 			{"no-next-step", replaceOnce("- [Development-flow example](examples/dev-flow/README.md): a reusable starting point.\n", ""), "missing link examples/dev-flow/README.md"},
 			{"no-symptom", replaceOnce("| Silent wait |", "| Waiting |"), "lacks \"Silent wait\""},
 			{"insecure-advice", replaceOnce("Never use an insecure flag or copy a key", "Use an insecure flag"), "lacks"},
@@ -2013,6 +2063,9 @@ func checkSecondMachineDoc(md string) error {
 		"no manual transfer of seed, results or vendor authentication"))
 	if !strings.Contains(body, `"bind": "127.0.0.1:8443"`) || !strings.Contains(body, `"bind": "192.168.1.10:8443"`) || !strings.Contains(body, "illustrative") {
 		add(errors.New("second machine: no illustrative before and after configuration"))
+	}
+	if !slices.Contains(markdownLinks(body), "deploy.md#change-the-plane-address") {
+		add(errors.New("second machine: no link to the canonical address-change procedure"))
 	}
 	for _, forbidden := range []string{"cp -r", "rm -rf", "--insecure", "0.0.0.0:8443", "ca.key\"", "cp \"$QS/plane/pki/ca.key"} {
 		if strings.Contains(body, forbidden) {
@@ -2189,6 +2242,7 @@ func TestQuickstartSecondMachine(t *testing.T) {
 			{"same-delivery", replaceOnce("\"$REMOTE_TASK\" \"$QS/delivery-remote\"", "\"$REMOTE_TASK\" \"$QS/delivery\""), "remote-pull ="},
 			{"changed-remote-manual", replaceOnce("   printf 'Work only in the task checkout.", "   printf 'Work anywhere."), "remote-manuals do not repeat"},
 			{"no-config-example", replaceOnce("\"bind\": \"192.168.1.10:8443\"", "\"bind\": \"10.0.0.1:8443\""), "no illustrative before and after"},
+			{"no-canonical-link", replaceOnce("(deploy.md#change-the-plane-address)", "(deploy.md)"), "no link to the canonical address-change procedure"},
 		})
 	})
 	t.Run("leaves-and-flags", func(t *testing.T) {

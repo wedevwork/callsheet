@@ -1,0 +1,31 @@
+# Callsheet sidecar: system unit template. Not runnable until edited.
+# Replace /REPLACE_WITH_WORKER_HOME with the home of the callsheet-worker account,
+# /REPLACE_WITH_ABSOLUTE_WORKER_PATH with the vendor executable (and the adapter
+# flag if the vendor is not Claude), and /usr/local/bin/callsheet if you installed
+# the executable elsewhere. Add the vendor's runtime directories to PATH if it needs them.
+# Installation, authentication and lifecycle: docs/deploy.md, "Run as services".
+# Enroll the state as callsheet-worker before enabling this unit.
+
+[Unit]
+Description=Callsheet sidecar
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=callsheet-worker
+Environment=HOME=/REPLACE_WITH_WORKER_HOME
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=/REPLACE_WITH_WORKER_HOME
+UMask=0077
+ExecStart=/usr/local/bin/callsheet sidecar run --state-dir /REPLACE_WITH_WORKER_HOME/callsheet/sidecar --claude-adapter /REPLACE_WITH_ABSOLUTE_WORKER_PATH
+Restart=on-failure
+RestartSec=5s
+SuccessExitStatus=130
+KillMode=control-group
+TimeoutStopSec=60s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
