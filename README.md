@@ -19,9 +19,9 @@ The plane holds the shared roster and tasks. Each node's sidecar connects out to
 
 ## Quickstart summary
 
-A five-step orientation, not a complete installation recipe; the linked references hold the details.
+A five-step orientation, not a complete installation recipe; the [quickstart](docs/quickstart.md) is the complete recipe and the linked references hold the details.
 
-1. Build the current checkout with `go build -o callsheet ./cmd/callsheet` (Go version in [go.mod](go.mod)) and put the binary on every participating machine. This is the current source-build path; prebuilt release binaries and an install quickstart are coming in v1.
+1. Install Callsheet using the [quickstart](docs/quickstart.md#install-callsheet): select a published release and verify its checksum. If no release is published yet, use its source-build fallback.
 2. Initialize and run the plane (`plane init`, `plane run`) and give its CA certificate to the other machines. Until the deployment guide exists, each subcommand's `--help` lists its current flags.
 3. Enroll and run a sidecar (`sidecar enroll`, `sidecar run`) with an explicitly enabled, already authenticated vendor CLI, then register a role with its manuals, model and effort (`role add`); see [worker setup](docs/real-adapters.md).
 4. Configure your coordinator's `callsheet mcp` connection and load your runbook; see the [coordinator guide](docs/coordinator.md). Direct CLI dispatch remains available.
@@ -46,12 +46,12 @@ Use a trusted network and a dedicated OS user: TLS protects transport but provid
 
 ## Documentation
 
+- [Quickstart](docs/quickstart.md): install, first dispatch on one machine, then two.
 - [Coordinator setup](docs/coordinator.md): coordinator connection, runbooks and MCP setup; its [coordinator runbook example](docs/coordinator.md#coordinator-runbook-example) shows background waits.
 - [Real worker adapters](docs/real-adapters.md): worker enablement, prerequisites and vendor caveats.
 - [Workspaces](docs/workspaces.md): workspace transfer, tasks and results.
 - [Support catalog](docs/support-catalog.md): CLI support and qualification evidence.
 - [Development-flow example](docs/examples/dev-flow/README.md): a reusable development flow, indexing its role manuals and coordinator playbook.
-- `docs/quickstart.md`: first dispatch on one machine, then two; coming in v1.
 - `docs/guide/index.md`: the user guide; coming in v1.
 - `docs/deploy.md`: deployment, trust and service management; coming in v1.
 

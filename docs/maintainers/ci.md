@@ -4218,3 +4218,74 @@ and this page, offline. `go run ./cmd/devcheck native` works on macOS only; on o
 exits 1 with an unsupported-stage error. Optionally, a locally installed
 `actionlint .github/workflows/ci.yml` can lint the workflow; it is not a
 required dependency and nothing invokes it automatically.
+
+## Release operations
+
+Releases are built by [the release workflow](../../.github/workflows/release.yml),
+which `cicheck.ValidateReleaseWorkflow` pins exactly and `TestReleaseWorkflow`
+checks offline. It is separate from the CI workflow above, whose jobs and
+checks it does not change.
+
+**Tag grammar.** A release tag is exactly `vMAJOR.MINOR.PATCH` or
+`vMAJOR.MINOR.PATCH-rc.N`: no leading zeroes, N positive, nothing else. The
+workflow's `v*` trigger is routing only; the release builder rejects any other
+`v`-prefixed tag.
+
+**Local build.** This builds local artifacts only, offline once dependencies
+are provisioned, in a directory that must not exist yet:
+
+```sh
+go run ./cmd/releasebuild --version v0.0.0-rc.1 --out <fresh-temporary-directory>
+```
+
+It verifies every product's header, stored version and retained build settings
+before writing the manifest; a failure leaves partial output and no manifest.
+It runs no git command, looks up no tag and publishes nothing.
+
+**Five assets.** `callsheet-linux-amd64`, `callsheet-linux-arm64`,
+`callsheet-darwin-amd64`, `callsheet-darwin-arm64` and `SHA256SUMS`, with no
+archive or fake adapter.
+
+**Permissions and triggers.** The only trigger is a pushed `v*` tag: no pull
+request, manual dispatch or reusable workflow. The token is `contents: read` at
+the top level and `contents: write` on the single `release` job, with no other
+grant and no personal token. Actions are pinned to the same full commit SHAs as
+the CI workflow, and one concurrency group per ref prevents concurrent
+publications. Publication creates a draft with `--verify-tag`, uploading all
+five assets, and only a later edit makes it public; both keep `--latest=false`.
+The job does not run the test suite, so the owner tags only a commit whose
+required CI checks passed. Tag creation is an owner action, never part of
+implementation or review.
+
+**Failure recovery.** A create or upload failure stops before the edit and can
+leave a draft with partial assets. A rerun that meets an existing release fails
+closed: the workflow never replaces or deletes assets, clobbers, creates or
+moves a tag, and never modifies a published release. Inspect and remove an
+incomplete draft, then rerun. After a lost response from the publishing edit,
+inspect the release instead of retrying blindly.
+
+**First release.** After the slice merges and CI passes, the owner selects a
+version such as `v1.0.0-rc.1` and creates and pushes that tag at the reviewed
+commit, observes the workflow, confirms the five assets exist and match their
+checksums after download, checks the stamped version on the native machines
+available and records unavailable native targets rather than claiming them
+tested. The owner then follows only the published
+[quickstart](../quickstart.md) on a clean machine and records every snag.
+
+**Toolchain qualification.** The release verifier reads the stamped version
+from each product's symbol table, which relies on the toolchain's symbol names
+and string layout. Rerun this command and record the observed Go version
+whenever the Go line of `go.mod` or the version setup-go resolves changes:
+
+```sh
+GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off go test -tags=releaseacceptance -run '^TestReleaseTrimmedProducts$' -count=1 ./internal/devcheck
+```
+
+A failure there is a compatibility blocker to resolve in the design. Never
+bypass a target, guess a new layout or substitute build metadata for the stamp.
+
+**Offline and hosted evidence.** The offline workflow and document tests run on
+every ordinary pull request and main push and call neither GitHub nor a vendor.
+They cannot establish hosted token permission, runner or `gh` availability,
+upload and download behavior, native execution on all four targets or real-user
+usability; those are settled by the owner's first release.

@@ -63,7 +63,7 @@ var readmeHow = []string{
 // readmeSteps pins each quickstart step's command pointers, links and
 // qualifiers, in order.
 var readmeSteps = [][]string{
-	{"`go build -o callsheet ./cmd/callsheet`", "](go.mod)", "current source-build path", "prebuilt release binaries", "coming in v1"},
+	{"Install Callsheet using the [quickstart](docs/quickstart.md#install-callsheet)", "select a published release and verify its checksum", "If no release is published yet, use its source-build fallback"},
 	{"`plane init`", "`plane run`", "CA certificate", "`--help`"},
 	{"`sidecar enroll`", "`sidecar run`", "explicitly enabled, already authenticated vendor CLI", "`role add`", "](docs/real-adapters.md)"},
 	{"`callsheet mcp`", "runbook", "](docs/coordinator.md)", "Direct CLI dispatch remains available"},
@@ -79,12 +79,12 @@ var readmeSupportRows = [][2]string{
 }
 
 var (
-	readmeUserMap     = []string{"docs/coordinator.md", "docs/coordinator.md#coordinator-runbook-example", "docs/real-adapters.md", "docs/workspaces.md", "docs/support-catalog.md", "docs/examples/dev-flow/README.md"}
+	readmeUserMap     = []string{"docs/quickstart.md", "docs/coordinator.md", "docs/coordinator.md#coordinator-runbook-example", "docs/real-adapters.md", "docs/workspaces.md", "docs/support-catalog.md", "docs/examples/dev-flow/README.md"}
 	readmeMaintainers = []string{"docs/maintainers/ci.md", "docs/maintainers/real-e2e.md", "docs/examples/real-e2e/README.md"}
-	readmePlanned     = []string{"docs/quickstart.md", "docs/guide/index.md", "docs/deploy.md"}
-	// readmeExisting are the eight existing documentation entry paths
+	readmePlanned     = []string{"docs/guide/index.md", "docs/deploy.md"}
+	// readmeExisting are the nine existing documentation entry paths
 	// with maintainer documents under docs/maintainers/.
-	readmeExisting = []string{"docs/coordinator.md", "docs/real-adapters.md", "docs/workspaces.md", "docs/support-catalog.md",
+	readmeExisting = []string{"docs/quickstart.md", "docs/coordinator.md", "docs/real-adapters.md", "docs/workspaces.md", "docs/support-catalog.md",
 		"docs/examples/dev-flow/README.md", "docs/maintainers/ci.md", "docs/maintainers/real-e2e.md", "docs/examples/real-e2e/README.md"}
 	readmePrivate = []string{"/home/", "/Users/", "/opt/gitspace/", "file:"}
 )
@@ -751,8 +751,8 @@ func TestReadmeEntryPoint(t *testing.T) {
 	})
 	sub("quickstart", checkQuickstart, []readmeMutation{
 		{"drop-step", inSectionRe("Quickstart summary", `(?m)^5\. .*\n`, ""), "quickstart: 4 steps, want 5"},
-		{"drop-build-command", replaceOnce("`go build -o callsheet ./cmd/callsheet`", "the Go toolchain"), "quickstart: step 1 lacks \"`go build -o callsheet ./cmd/callsheet`\""},
-		{"remove-coming-in-v1", inSection("Quickstart summary", "are coming in v1", "are available"), "quickstart: step 1 lacks \"coming in v1\""},
+		{"drop-install-link", inSection("Quickstart summary", "[quickstart](docs/quickstart.md#install-callsheet)", "quickstart"), "quickstart: step 1 lacks \"Install Callsheet using the [quickstart](docs/quickstart.md#install-callsheet)\""},
+		{"remove-source-fallback", inSection("Quickstart summary", "If no release is published yet, use its source-build fallback.", "Binaries are available."), "quickstart: step 1 lacks \"If no release is published yet, use its source-build fallback\""},
 		{"swap-steps", inSectionRe("Quickstart summary", `(?m)^2\. (.*)\n3\. (.*)\n`, "2. $2\n3. $1\n"), "quickstart: step 2 lacks"},
 		{"drop-role-add", inSection("Quickstart summary", "(`role add`)", ""), "quickstart: step 3 lacks \"`role add`\""},
 		{"ca-key", inSection("Quickstart summary", "give its CA certificate", "give its CA certificate and CA key"), "quickstart: forbidden \"ca key\""},
@@ -837,19 +837,20 @@ func TestReadmeDocumentationMap(t *testing.T) {
 		readmeMutation{"old-ci-path", inSection("For maintainers", "](docs/maintainers/ci.md)", "](docs/ci.md)"), "destination docs/ci.md does not exist"},
 		readmeMutation{"old-real-e2e-path", inSection("For maintainers", "](docs/maintainers/real-e2e.md)", "](docs/real-e2e.md)"), "destination docs/real-e2e.md does not exist"},
 		readmeMutation{"no-harness-note", replaceOnce(readmeHarnessNote, ""), "for maintainers: lacks"},
-		readmeMutation{"planned-quickstart-link", inSection("Documentation", "`docs/quickstart.md`", "[docs/quickstart.md](docs/quickstart.md)"), "documentation: planned docs/quickstart.md is a link"},
+		readmeMutation{"missing-shipped-quickstart", inSection("Documentation", "- [Quickstart](docs/quickstart.md): install, first dispatch on one machine, then two.\n", ""), "documentation: missing link docs/quickstart.md"},
 		readmeMutation{"planned-guide-link", appendToSection("For maintainers", "[guide](docs/guide/index.md)"), "documentation: planned docs/guide/index.md is a link"},
+		readmeMutation{"planned-deploy-link", appendToSection("Documentation", "- [deploy](docs/deploy.md)"), "documentation: planned docs/deploy.md is a link"},
 		readmeMutation{"planned-unlisted", inSection("Documentation", "`docs/deploy.md`", "deployment"), "documentation: planned docs/deploy.md is not listed"},
 		readmeMutation{"remove-coming-label", func(t *testing.T, md string) string {
 			s, e := sectionSpan(t, md, "Documentation")
 			lines := strings.Split(md[s:e], "\n")
 			for i, line := range lines {
-				if strings.Contains(line, "`docs/quickstart.md`") {
+				if strings.Contains(line, "`docs/guide/index.md`") {
 					lines[i] = replaceOnce("coming in v1", "available")(t, line)
 				}
 			}
 			return md[:s] + strings.Join(lines, "\n") + md[e:]
-		}, "documentation: planned docs/quickstart.md is not labeled coming in v1"},
+		}, "documentation: planned docs/guide/index.md is not labeled coming in v1"},
 		readmeMutation{"typo-destination", inSection("Documentation", "](docs/coordinator.md)", "](docs/coordinator-missing.md)"), "destination docs/coordinator-missing.md does not exist"},
 		readmeMutation{"typo-fragment", replaceOnce("#coordinator-runbook-example)", "#coordinator-runbook-exampel)"), "fragment #coordinator-runbook-exampel matches no heading"},
 		readmeMutation{"typo-security-fragment", replaceOnce("#enabling-a-worker)", "#enabling-workers)"), "fragment #enabling-workers matches no heading"},

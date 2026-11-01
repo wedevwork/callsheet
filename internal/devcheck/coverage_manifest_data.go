@@ -389,6 +389,11 @@ var WorkspaceCoverageManifest = []CoverageEntry{
 	// the checker's call judges, whole.
 	{Group: GroupChanged, File: modulePath + "/internal/contract/toolargs.go"},
 	{Group: GroupChanged, File: modulePath + "/internal/devcheck/platform.go"},
+	// Design 12-2-release-quickstart: the release builder and the release
+	// workflow validator, new files, whole; cmd/releasebuild's wrapper is
+	// covered by the cmd-package check, like cmd/devcheck's.
+	{Group: GroupChanged, File: modulePath + "/internal/devcheck/release.go"},
+	{Group: GroupChanged, File: modulePath + "/internal/cicheck/release.go"},
 }
 
 // modulePath is the profile's import-path prefix.
