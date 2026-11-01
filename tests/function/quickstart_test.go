@@ -59,6 +59,14 @@ const (
 		"Check state, final message and workspace publication before declaring completion."
 )
 
+// qsOfflineDiag is the plane's diagnostic for a role added before the node's
+// first heartbeat, verbatim from internal/plane; qsOfflineNote is how the
+// documents quote it. TestDeployCALossRecovery compares it with real output.
+const (
+	qsOfflineDiag = "node %s is offline; start its sidecar and retry"
+	qsOfflineNote = "fails with `node <id> is offline; start its sidecar and retry`: wait for the sidecar and retry."
+)
+
 // qsHeadings are the stable link targets, in order.
 var qsHeadings = []string{"Install Callsheet", "Prerequisites", "One machine", "Add a second machine", "If something goes wrong", "Next steps"}
 
@@ -116,6 +124,7 @@ var qsInventory = []docFenceSpec{
 	{"remote-worker-path", "sh", nil},
 	{"remote-sidecar-run", "sh", []string{"sidecar run"}},
 	{"remote-node-and-model", "sh", nil},
+	{"remote-node-online", "sh", []string{"node ls"}},
 	{"remote-role-add", "sh", []string{"role add"}},
 	{"remote-roster", "sh", []string{"node ls", "role ls"}},
 	{"remote-dispatch", "sh", []string{"dispatch"}},
@@ -1725,6 +1734,8 @@ func checkSetupDoc(md string) error {
 	if !slices.Contains(markdownLinks(body), "coordinator.md#claude-code") {
 		add(errors.New("setup: no link to the Claude Code coordinator recipe"))
 	}
+	add(inOrder("setup", body, "quickstart: sidecar-run", "quickstart: node-list", "quickstart: role-add"))
+	add(needAll("setup", body, "Confirm the node is online:", qsOfflineNote))
 	if !strings.Contains(md, "```text\n"+qsCoordinator+"\n```") {
 		add(errors.New("setup: no literal coordinator runbook"))
 	}
@@ -1800,6 +1811,20 @@ func TestQuickstartSetup(t *testing.T) {
 			{"seed-not-written", replaceOnce("printf 'Callsheet quickstart scratch project.\\n' > \"$QS/seed/README.md\"\n", ""), "seed/README.md is not written"},
 			{"no-can-accept-check", replaceOnce("Expect the node online and the role's `CAN_ACCEPT` true", "Continue"), "lacks"},
 			{"wrong-bind", replaceOnce("--bind 127.0.0.1:8443", "--bind 0.0.0.0:8443"), "--bind"},
+			{"no-online-check", func(t *testing.T, md string) string {
+				t.Helper()
+				b, _ := fenceBlock(t, md, "node-list")
+				return strings.Replace(md, b, "", 1)
+			}, "setup: lacks step \"quickstart: node-list\""},
+			{"role-before-online", func(t *testing.T, md string) string {
+				t.Helper()
+				a, _ := fenceBlock(t, md, "node-list")
+				b, _ := fenceBlock(t, md, "role-add")
+				md = strings.Replace(md, a, "@@A@@", 1)
+				md = strings.Replace(md, b, a, 1)
+				return strings.Replace(md, "@@A@@", b, 1)
+			}, "setup: step \"quickstart: role-add\" is out of order"},
+			{"no-offline-note", inSection("One machine", "If the node is not online yet, this fails with `node <id> is offline; start its sidecar and retry`: wait for the sidecar and retry.", ""), "setup: lacks"},
 		})
 	})
 	t.Run("ready-roster", func(t *testing.T) {
@@ -2064,6 +2089,7 @@ func checkSecondMachineDoc(md string) error {
 	if !strings.Contains(body, `"bind": "127.0.0.1:8443"`) || !strings.Contains(body, `"bind": "192.168.1.10:8443"`) || !strings.Contains(body, "illustrative") {
 		add(errors.New("second machine: no illustrative before and after configuration"))
 	}
+	add(needAll("second machine", body, "Confirm the node is online:", qsOfflineNote))
 	if !slices.Contains(markdownLinks(body), "deploy.md#change-the-plane-address") {
 		add(errors.New("second machine: no link to the canonical address-change procedure"))
 	}
@@ -2074,7 +2100,7 @@ func checkSecondMachineDoc(md string) error {
 	}
 	// The ordered stop, edit, reissue, restart and re-enroll sequence.
 	order := []string{"stop the local sidecar", "edit **only** `bind`", "quickstart: remote-cert", "quickstart: remote-plane-run", "quickstart: local-reenroll", "quickstart: local-restart",
-		"Copy only `$QS/plane/pki/ca.crt`", "quickstart: remote-env", "quickstart: remote-manuals", "quickstart: remote-enroll", "quickstart: remote-sidecar-run", "quickstart: remote-role-add",
+		"Copy only `$QS/plane/pki/ca.crt`", "quickstart: remote-env", "quickstart: remote-manuals", "quickstart: remote-enroll", "quickstart: remote-sidecar-run", "quickstart: remote-node-online", "quickstart: remote-role-add",
 		"quickstart: remote-roster", "quickstart: remote-dispatch", "quickstart: remote-wait", "quickstart: remote-show", "quickstart: remote-status", "quickstart: remote-pull"}
 	at := -1
 	for _, s := range order {
@@ -2243,6 +2269,20 @@ func TestQuickstartSecondMachine(t *testing.T) {
 			{"changed-remote-manual", replaceOnce("   printf 'Work only in the task checkout.", "   printf 'Work anywhere."), "remote-manuals do not repeat"},
 			{"no-config-example", replaceOnce("\"bind\": \"192.168.1.10:8443\"", "\"bind\": \"10.0.0.1:8443\""), "no illustrative before and after"},
 			{"no-canonical-link", replaceOnce("(deploy.md#change-the-plane-address)", "(deploy.md)"), "no link to the canonical address-change procedure"},
+			{"no-remote-online-check", func(t *testing.T, md string) string {
+				t.Helper()
+				b, _ := fenceBlock(t, md, "remote-node-online")
+				return strings.Replace(md, b, "", 1)
+			}, "lacks step \"quickstart: remote-node-online\""},
+			{"remote-role-before-online", func(t *testing.T, md string) string {
+				t.Helper()
+				a, _ := fenceBlock(t, md, "remote-node-online")
+				b, _ := fenceBlock(t, md, "remote-role-add")
+				md = strings.Replace(md, a, "@@A@@", 1)
+				md = strings.Replace(md, b, a, 1)
+				return strings.Replace(md, "@@A@@", b, 1)
+			}, "step \"quickstart: remote-role-add\" is out of order"},
+			{"no-remote-offline-note", inSection("Add a second machine", "If the node is not online yet, this fails with `node <id> is offline; start its sidecar and retry`: wait for the sidecar and retry.", ""), "second machine: lacks"},
 		})
 	})
 	t.Run("leaves-and-flags", func(t *testing.T) {

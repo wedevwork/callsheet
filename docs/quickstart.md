@@ -203,7 +203,7 @@ Confirm the node is online:
 callsheet node ls --plane "$PLANE" --ca "$CA"
 ```
 
-Register the role:
+Register the role. If the node is not online yet, this fails with `node <id> is offline; start its sidecar and retry`: wait for the sidecar and retry.
 
 <!-- quickstart: role-add -->
 ```sh
@@ -426,13 +426,22 @@ Both machines use a private LAN or VPN address of machine A, never 127.0.0.1 or 
    callsheet sidecar run --state-dir "$QS/sidecar" --claude-adapter "$WORKER"
    ```
 
-8. In a machine B operator terminal with the same variables, enter that node ID and a model for machine B's account, then register the remote role:
+8. In a machine B operator terminal with the same variables, enter that node ID and a model for machine B's account:
 
    <!-- quickstart: remote-node-and-model -->
    ```sh
    read -r REMOTE_NODE
    read -r MODEL
    ```
+
+   Confirm the node is online:
+
+   <!-- quickstart: remote-node-online -->
+   ```sh
+   callsheet node ls --plane "$PLANE" --ca "$CA"
+   ```
+
+   Register the remote role. If the node is not online yet, this fails with `node <id> is offline; start its sidecar and retry`: wait for the sidecar and retry.
 
    <!-- quickstart: remote-role-add -->
    ```sh

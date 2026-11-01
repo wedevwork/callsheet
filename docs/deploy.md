@@ -244,6 +244,15 @@ sudo systemctl enable --now callsheet-sidecar.service
 sudo systemctl status callsheet-sidecar.service
 ```
 
+A started service is not yet a connected node. Confirm the node shows `online` before you register roles:
+
+<!-- deploy: verify-node-online -->
+```sh
+callsheet node ls --plane "$PLANE" --ca "$CA"
+```
+
+Until then, `role add` fails with `node <id> is offline; start its sidecar and retry`: wait for the sidecar and retry.
+
 Register roles with the [quickstart recipe](quickstart.md#one-machine), then check the node and each role's `CAN_ACCEPT`:
 
 <!-- deploy: verify-roster -->
@@ -348,6 +357,8 @@ Then, as on Linux, [verify the plane](#linux-with-systemd), copy the CA, enroll 
 sudo launchctl bootstrap system /Library/LaunchDaemons/org.callsheet.sidecar.plist
 sudo launchctl print system/org.callsheet.sidecar
 ```
+
+Then, also as on Linux, confirm the node shows `online` before you register roles, and check the roster.
 
 Unlike systemd's `on-failure`, `KeepAlive` restarts any exit while the job is loaded, so intentional maintenance must use `bootout`, not a signal. `ExitTimeOut` of 60 seconds is a manager cleanup limit, not a supported task-duration bound. Stop the sidecar, then the plane:
 
@@ -603,6 +614,15 @@ Keep the sidecar service's state path unchanged and start it with the same expli
 ```sh
 callsheet sidecar run --state-dir "$SIDECAR_STATE" --claude-adapter "$WORKER"
 ```
+
+Confirm the new node ID shows `online` before you register roles:
+
+<!-- deploy: fresh-node-online -->
+```sh
+callsheet node ls --plane "$PLANE" --ca "$CA"
+```
+
+Until then, `role add` fails with `node <id> is offline; start its sidecar and retry`: wait for the sidecar and retry.
 
 Explicitly re-register roles on the new plane, using the new node IDs and your retained manuals and model and effort settings, with the [quickstart registration recipe](quickstart.md#one-machine). Recreate or reseed needed workspaces from separately retained source and results; `workspace-cache/` is a disposable cache, not a backup or an import path. The new sidecar builds its own cache for new work, and this path leaves the stopped old cache untouched; running the old directory under changed trust could alter it. Do not copy plane private keys or vendor credentials.
 

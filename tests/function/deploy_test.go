@@ -97,6 +97,7 @@ var deployFences = []deployFenceRow{
 	callsheetRow("verify-plane", []string{"node ls"}, "PLANE", "CA"),
 	callsheetRow("worker-enroll", []string{"sidecar enroll"}, "SIDECAR_STATE", "PLANE", "CA"),
 	operationRow("linux-start-sidecar"),
+	callsheetRow("verify-node-online", []string{"node ls"}, "PLANE", "CA"),
 	callsheetRow("verify-roster", []string{"node ls", "role ls"}, "PLANE", "CA"),
 	operationRow("linux-logs"),
 	operationRow("linux-stop"),
@@ -134,6 +135,7 @@ var deployFences = []deployFenceRow{
 	operationRow("fresh-ca-mode", "HOME", "CA", "PLANE_IP", "PLANE"),
 	callsheetRow("fresh-enroll", []string{"sidecar enroll"}, "SIDECAR_STATE", "PLANE", "CA"),
 	callsheetRow("fresh-sidecar-run", []string{"sidecar run"}, "SIDECAR_STATE", "WORKER"),
+	callsheetRow("fresh-node-online", []string{"node ls"}, "PLANE", "CA"),
 	callsheetRow("fresh-task-list", []string{"task ls"}, "PLANE", "CA"),
 }
 
@@ -1286,7 +1288,7 @@ func checkDeployRecoveryDoc(md string) error {
 		errs = append(errs, errors.New("recovery: no link to the quickstart registration recipe"))
 	}
 	errs = append(errs, inOrder("recovery", body, "First stop dispatch", "deploy: recover-plane-paths", "deploy: recover-plane-mount", "deploy: recover-plane-move", "### Complete backup available", "deploy: restore-backup", "deploy: restore-status",
-		"### No complete backup", "deploy: fresh-init", "Distribute only the new", "stop the old sidecar", "deploy: recover-sidecar-paths", "deploy: recover-sidecar-move", "deploy: fresh-ca-mode", "deploy: fresh-enroll", "deploy: fresh-sidecar-run",
+		"### No complete backup", "deploy: fresh-init", "Distribute only the new", "stop the old sidecar", "deploy: recover-sidecar-paths", "deploy: recover-sidecar-move", "deploy: fresh-ca-mode", "deploy: fresh-enroll", "deploy: fresh-sidecar-run", "deploy: fresh-node-online",
 		"Explicitly re-register roles", "deploy: fresh-task-list"))
 	errs = append(errs, checkServiceFences(md, "recover-plane-move", "recover-sidecar-move", "recover-plane-paths", "recover-sidecar-paths", "recover-plane-mount", "recover-sidecar-mount",
 		"backup-env", "backup-plane", "restore-select", "restore-backup", "fresh-env", "fresh-ca-mode"))
@@ -1305,6 +1307,8 @@ func checkDeployRecoveryDoc(md string) error {
 	errs = append(errs, wantDeployArgs(md, "fresh-enroll", "callsheet", "sidecar", "enroll", "--state-dir", "$SIDECAR_STATE", "--plane", "$PLANE", "--ca", "$CA"))
 	errs = append(errs, wantDeployArgs(md, "fresh-sidecar-run", "callsheet", "sidecar", "run", "--state-dir", "$SIDECAR_STATE", "--claude-adapter", "$WORKER"))
 	errs = append(errs, wantDeployArgs(md, "fresh-task-list", "callsheet", "task", "ls", "--plane", "$PLANE", "--ca", "$CA"))
+	errs = append(errs, wantDeployArgs(md, "fresh-node-online", "callsheet", "node", "ls", "--plane", "$PLANE", "--ca", "$CA"))
+	errs = append(errs, needAll("recovery", text, "Confirm the new node ID shows `online` before you register roles:", "Until then, `role add` "+qsOfflineNote))
 	errs = append(errs, wantDeployArgs(md, "restore-status", "callsheet", "plane", "status", "--state-dir", "$STATE"))
 	errs = append(errs, forbidAll("recovery", body, "callsheet ca ", "plane ca ", "rm -rf", "mv -f", "--force", "cache restores", "restore from `workspace-cache", "results transfer automatically",
 		"old tasks transfer", "delete the journal", "`forget`", "plane-new", "sidecar-new", "edit the unit", "edit the plist"))
@@ -1357,8 +1361,8 @@ func (d *deployRig) roleAccepts(id, node string) bool {
 	return err == nil && slices.ContainsFunc(roles, func(v contract.RoleView) bool { return v.ID == id && v.Node == node && v.CanAccept })
 }
 
-// addRole registers fixture role id through the linked quickstart's role-add argv.
-func (d *deployRig) addRole(id, node string) {
+// roleAddArgs is the linked quickstart's role-add argv for fixture role id.
+func (d *deployRig) roleAddArgs(id, node string) []string {
 	d.t.Helper()
 	d.vars["NODE"] = node
 	args := d.argv("role-add")
@@ -1366,7 +1370,23 @@ func (d *deployRig) addRole(id, node string) {
 		d.t.Fatalf("role-add = %q", args)
 	}
 	args[2] = id
-	d.ok("role add", args...)
+	return args
+}
+
+// addRole registers fixture role id on a node the caller has seen online.
+func (d *deployRig) addRole(id, node string) {
+	d.t.Helper()
+	d.ok("role add", d.roleAddArgs(id, node)...)
+}
+
+// awaitNodeOnline is the chapter's own barrier before a role add: a started
+// sidecar is online only after its first heartbeat reaches the plane.
+func (d *deployRig) awaitNodeOnline(fence, node string) {
+	d.t.Helper()
+	d.await("node "+node+" online", func() bool {
+		r := d.p.run(d.t, d.deployArgv(fence)...)
+		return r.code == 0 && strings.Contains(r.stdout, node+"\tonline\t")
+	})
 }
 
 // dispatchArgs is the linked quickstart's dispatch argv for role id, with the
@@ -1477,6 +1497,14 @@ func TestDeployCALossRecovery(t *testing.T) {
 			{"backup-heading-removed", replaceOnce("### Back up the plane\n", ""), "recovery: lacks step \"### Back up the plane\""},
 			{"recovery-takes-new-backup", inSection(sec, "Do not take a new one now", "Take a new one now"), "recovery: lacks \"Do not take a new one now\""},
 			{"no-backup-link", inSection(sec, "(#back-up-the-plane)", "(#complete-backup-available)"), "recovery: no link to the pre-loss backup"},
+			{"no-fresh-online-check", drop("fresh-node-online"), "recovery: lacks step \"deploy: fresh-node-online\""},
+			{"fresh-role-before-online", func(t *testing.T, md string) string {
+				t.Helper()
+				b, _ := markedFenceBlock(t, md, "<!-- deploy: fresh-node-online -->")
+				md = strings.Replace(md, b, "", 1)
+				return strings.Replace(md, "Old in-flight tasks and results do not transfer.", b+"\n\nOld in-flight tasks and results do not transfer.", 1)
+			}, "recovery: step \"Explicitly re-register roles\" is out of order"},
+			{"no-fresh-offline-note", inSection(sec, "Until then, `role add` fails with `node <id> is offline; start its sidecar and retry`: wait for the sidecar and retry.", ""), "recovery: lacks"},
 		})
 		// The move and archive guards themselves, without real state.
 		for _, c := range []struct {
@@ -1730,10 +1758,7 @@ func deployRecoveryLifecycle(t *testing.T) {
 	}
 	d.startSidecarArgs(d.deployArgv("fresh-sidecar-run"))
 	probeProc := d.sidecar
-	d.await("the old node online", func() bool {
-		r := d.p.run(t, d.argv("node-list")...)
-		return r.code == 0 && strings.Contains(r.stdout, oldNode+"\tonline\t")
-	})
+	d.awaitNodeOnline("fresh-node-online", oldNode)
 	d.addRole("old-probe", oldNode)
 	d.await("the plane's unknown_execution", func() bool {
 		return hasRecord(fresh.logs.String(), deployUnknownExec, map[string]any{"reason": contract.ReasonUnknownExecution, "task_id": oldTask})
@@ -1794,7 +1819,14 @@ func deployRecoveryLifecycle(t *testing.T) {
 	if want := d.deployArgvBeforeTranslation("fresh-sidecar-run"); !slices.Equal(svc, want) {
 		t.Fatalf("service argv %q differs from the chapter's %q", svc, want)
 	}
+	// Before its sidecar starts, the node is enrolled but offline: the exact
+	// refusal the chapter quotes, with nothing registered.
+	early := d.p.run(t, d.roleAddArgs("new-worker", newNode)...)
+	if want := fmt.Sprintf(qsOfflineDiag, newNode); early.code == 0 || !strings.Contains(early.stderr, want) {
+		t.Fatalf("role add before the sidecar = %+v, want %q", early, want)
+	}
 	d.startSidecarArgs(d.deployArgv("fresh-sidecar-run"))
+	d.awaitNodeOnline("fresh-node-online", newNode)
 	d.addRole("new-worker", newNode)
 	d.await("the new role's can_accept", func() bool { return d.roleAccepts("new-worker", newNode) })
 	admitted := d.ok("dispatch", d.withJSON("dispatch", d.dispatchArgs("new-worker"))...)
@@ -2220,7 +2252,9 @@ func checkSystemdDoc(md string) error {
 		"is not proof that a VPN address is ready", "A sidecar unit has no dependency on a plane unit", "Editing a unit requires stop, `daemon-reload`, start.",
 		"disable and remove only the unit files; state stays where it is", "It is not a promise that an active task is preserved."))
 	errs = append(errs, checkServiceFences(md, "linux-check", "linux-lint", "linux-install", "linux-start-plane", "linux-start-sidecar", "linux-logs", "linux-stop", "linux-start", "linux-uninstall"))
-	errs = append(errs, inOrder("systemd", body, "deploy: linux-check", "deploy: linux-lint", "deploy: linux-install", "deploy: linux-start-plane", "deploy: verify-plane", "deploy: worker-enroll", "deploy: linux-start-sidecar", "deploy: verify-roster"))
+	errs = append(errs, inOrder("systemd", body, "deploy: linux-check", "deploy: linux-lint", "deploy: linux-install", "deploy: linux-start-plane", "deploy: verify-plane", "deploy: worker-enroll", "deploy: linux-start-sidecar", "deploy: verify-node-online", "Register roles with the", "deploy: verify-roster"))
+	errs = append(errs, wantDeployArgs(md, "verify-node-online", "callsheet", "node", "ls", "--plane", "$PLANE", "--ca", "$CA"))
+	errs = append(errs, needAll("systemd", text, "Confirm the node shows `online` before you register roles:", "Until then, `role add` "+qsOfflineNote))
 	for _, l := range deployServiceSources[:4] {
 		if !slices.Contains(markdownLinks(body), l) {
 			errs = append(errs, fmt.Errorf("systemd: source %s is not cited", l))
@@ -2343,6 +2377,14 @@ func TestDeploySystemdSamples(t *testing.T) {
 			{"uninstall-deletes-state", inSection(sec, "disable and remove only the unit files; state stays where it is", "disable the units and delete the state"), "systemd: lacks"},
 			{"uncited-source", inSection(sec, "(https://www.freedesktop.org/software/systemd/man/latest/systemd.kill.html)", "(https://example.invalid/kill)"), "systemd: source"},
 			{"no-sample-link", inSection(sec, "(examples/deploy/callsheet-sidecar.service)", "(examples/deploy/other.service)"), "services: no link to the sample callsheet-sidecar.service"},
+			{"no-online-check", drop("verify-node-online"), "systemd: lacks step \"deploy: verify-node-online\""},
+			{"role-before-online", func(t *testing.T, md string) string {
+				t.Helper()
+				b, _ := markedFenceBlock(t, md, "<!-- deploy: verify-node-online -->")
+				md = strings.Replace(md, b, "", 1)
+				return strings.Replace(md, "Inspect the logs after every failed start.", b+"\n\nInspect the logs after every failed start.", 1)
+			}, "systemd: step \"Register roles with the\" is out of order"},
+			{"no-offline-note", inSection(sec, "Until then, `role add` fails with `node <id> is offline; start its sidecar and retry`: wait for the sidecar and retry.", ""), "systemd: lacks"},
 			{"enroll-after-start", func(t *testing.T, md string) string {
 				t.Helper()
 				a, _ := markedFenceBlock(t, md, "<!-- deploy: worker-enroll -->")
@@ -2622,6 +2664,7 @@ func checkLaunchdDoc(md string) error {
 		"In particular, macOS service access to user authentication is not promised.", "plutil is part of the macOS base system", "Lint is syntax only and does not settle runtime behavior.",
 		"`KeepAlive` restarts any exit while the job is loaded, so intentional maintenance must use `bootout`, not a signal.", "a manager cleanup limit, not a supported task-duration bound",
 		"Restart means `bootout`, verify exit, then `bootstrap`.", "Do not use `kickstart` as an address-change stop.", "state and logs stay",
+		"Then, also as on Linux, confirm the node shows `online` before you register roles, and check the roster.",
 		"In a plist, escape `&` and `<`", "do not use `$HOME`, a tilde or any shell expansion inside XML arguments"))
 	errs = append(errs, checkServiceFences(md, "macos-logs-plane", "macos-logs-worker", "macos-check", "macos-install", "macos-start-plane", "macos-start-sidecar", "macos-stop", "macos-remove", "macos-read-logs"))
 	errs = append(errs, inOrder("launchd", body, "deploy: macos-logs-plane", "deploy: macos-check", "deploy: macos-install", "deploy: macos-start-plane", "deploy: macos-start-sidecar", "deploy: macos-stop"))
@@ -2736,6 +2779,7 @@ func TestDeployLaunchdSamples(t *testing.T) {
 			{"promise-grok", appendToSection(sec, "A Grok worker runs on macOS: their roles run after enrollment."), "launchd: forbidden \"grok worker runs\""},
 			{"sample-to-grok", inSection(sec, "The sample stays on Claude", "The sample uses Grok"), "launchd: lacks"},
 			{"silent-agents", inSection(sec, "Do not substitute LaunchAgents", "You may use LaunchAgents"), "launchd: lacks"},
+			{"no-macos-online-check", inSection(sec, "Then, also as on Linux, confirm the node shows `online` before you register roles, and check the roster.", ""), "launchd: lacks"},
 			{"no-plutil-lint", inSection(sec, "plutil -lint org.callsheet.plane.plist\n", ""), "fence macos-check ="},
 			{"restart-by-signal", inSection(sec, "so intentional maintenance must use `bootout`, not a signal", "so send a signal"), "launchd: lacks"},
 			{"kickstart-stop", inSection(sec, "Do not use `kickstart` as an address-change stop.", "Use `kickstart` to stop."), "launchd: lacks"},
