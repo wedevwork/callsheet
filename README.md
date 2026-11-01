@@ -22,7 +22,7 @@ The plane holds the shared roster and tasks. Each node's sidecar connects out to
 A five-step orientation, not a complete installation recipe; the [quickstart](docs/quickstart.md) is the complete recipe and the linked references hold the details.
 
 1. Install Callsheet using the [quickstart](docs/quickstart.md#install-callsheet): select a published release and verify its checksum. If no release is published yet, use its source-build fallback.
-2. Initialize and run the plane (`plane init`, `plane run`) and give its CA certificate to the other machines. Until the deployment guide exists, each subcommand's `--help` lists its current flags.
+2. Initialize and run the plane (`plane init`, `plane run`) and give its CA certificate to the other machines. The [deployment guide](docs/deploy.md) covers services and certificates; each subcommand's `--help` lists its current flags.
 3. Enroll and run a sidecar (`sidecar enroll`, `sidecar run`) with an explicitly enabled, already authenticated vendor CLI, then register a role with its manuals, model and effort (`role add`); see [worker setup](docs/real-adapters.md).
 4. Configure your coordinator's `callsheet mcp` connection and load your runbook; see the [coordinator guide](docs/coordinator.md). Direct CLI dispatch remains available.
 5. Dispatch to a role and inspect or wait for the task (`dispatch`, `task show`, `task wait`); optionally push a [workspace](docs/workspaces.md) and pull results. The [development-flow example](docs/examples/dev-flow/README.md) is a reusable starting point.
@@ -42,7 +42,7 @@ These rows describe workers; all four CLIs can also be the coordinator. See [coo
 
 ## Security
 
-Use a trusted network and a dedicated OS user: TLS protects transport but provides no client identity or authorization, any reachable peer holding the [CA](docs/coordinator.md#what-every-configuration-shares) can dispatch work and read or write every workspace, and worker containment depends on the [vendor configuration](docs/real-adapters.md#enabling-a-worker) because Callsheet adds no sandbox of its own.
+Use a trusted network and a dedicated OS user: TLS protects transport but provides no client identity or authorization, any reachable peer holding the [CA](docs/deploy.md#security-posture) can dispatch work and read or write every workspace, and worker containment depends on the [vendor configuration](docs/real-adapters.md#enabling-a-worker) because Callsheet adds no sandbox of its own.
 
 ## Documentation
 
@@ -52,8 +52,8 @@ Use a trusted network and a dedicated OS user: TLS protects transport but provid
 - [Workspaces](docs/workspaces.md): workspace transfer, tasks and results.
 - [Support catalog](docs/support-catalog.md): CLI support and qualification evidence.
 - [Development-flow example](docs/examples/dev-flow/README.md): a reusable development flow, indexing its role manuals and coordinator playbook.
+- [Deployment](docs/deploy.md): deployment, trust and service management.
 - `docs/guide/index.md`: the user guide; coming in v1.
-- `docs/deploy.md`: deployment, trust and service management; coming in v1.
 
 ## For maintainers
 

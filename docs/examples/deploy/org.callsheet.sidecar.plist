@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Callsheet sidecar: system LaunchDaemon template. Not runnable until edited.
+  Replace /REPLACE_WITH_WORKER_HOME with the home of the callsheet-worker account,
+  /REPLACE_WITH_ABSOLUTE_WORKER_PATH with the vendor executable (Codex also needs
+  its adapter flag), and /usr/local/bin/callsheet if you installed the executable
+  elsewhere. Add the vendor's runtime directories to PATH if it needs them.
+  Installation, authentication and lifecycle: docs/deploy.md, "Run as services".
+  Enroll the state as callsheet-worker before loading this daemon.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>org.callsheet.sidecar</string>
+	<key>UserName</key>
+	<string>callsheet-worker</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/local/bin/callsheet</string>
+		<string>sidecar</string>
+		<string>run</string>
+		<string>--state-dir</string>
+		<string>/REPLACE_WITH_WORKER_HOME/callsheet/sidecar</string>
+		<string>--claude-adapter</string>
+		<string>/REPLACE_WITH_ABSOLUTE_WORKER_PATH</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>/REPLACE_WITH_WORKER_HOME</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HOME</key>
+		<string>/REPLACE_WITH_WORKER_HOME</string>
+		<key>PATH</key>
+		<string>/usr/local/bin:/usr/bin:/bin</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>5</integer>
+	<key>ExitTimeOut</key>
+	<integer>60</integer>
+	<key>Umask</key>
+	<integer>63</integer>
+	<key>StandardOutPath</key>
+	<string>/REPLACE_WITH_WORKER_HOME/callsheet/logs/sidecar.out.log</string>
+	<key>StandardErrorPath</key>
+	<string>/REPLACE_WITH_WORKER_HOME/callsheet/logs/sidecar.err.log</string>
+</dict>
+</plist>

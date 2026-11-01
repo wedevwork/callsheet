@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Callsheet plane: system LaunchDaemon template. Not runnable until edited.
+  Replace /REPLACE_WITH_PLANE_HOME with the home of the callsheet-plane account,
+  and /usr/local/bin/callsheet if you installed the executable elsewhere.
+  Installation, permissions and lifecycle: docs/deploy.md, "Run as services".
+  Initialize the state as callsheet-plane before loading this daemon.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>org.callsheet.plane</string>
+	<key>UserName</key>
+	<string>callsheet-plane</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/local/bin/callsheet</string>
+		<string>plane</string>
+		<string>run</string>
+		<string>--state-dir</string>
+		<string>/REPLACE_WITH_PLANE_HOME/callsheet/plane</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>/REPLACE_WITH_PLANE_HOME</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HOME</key>
+		<string>/REPLACE_WITH_PLANE_HOME</string>
+		<key>PATH</key>
+		<string>/usr/local/bin:/usr/bin:/bin</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>5</integer>
+	<key>ExitTimeOut</key>
+	<integer>60</integer>
+	<key>Umask</key>
+	<integer>63</integer>
+	<key>StandardOutPath</key>
+	<string>/REPLACE_WITH_PLANE_HOME/callsheet/logs/plane.out.log</string>
+	<key>StandardErrorPath</key>
+	<string>/REPLACE_WITH_PLANE_HOME/callsheet/logs/plane.err.log</string>
+</dict>
+</plist>

@@ -106,7 +106,7 @@ Current details live in the references rather than here:
 - [Support catalog](support-catalog.md): observed evidence, the minimum-versus-captured-version distinction and unverified facts. Grok useful auto tools and Cursor model-effort encoding need their documented operator probes. Grok and Cursor workers are Linux-only; Claude and Codex macOS workers can be enabled explicitly but vendor sandbox and exit behavior are unverified. Installing a macOS binary does not qualify a vendor worker.
 - [Coordinator setup](coordinator.md): the selected coordinator's own authentication, MCP authorization and runbook-loading recipe. A different coordinator CLI can use the same plane. No live qualification harness is a prerequisite.
 
-Use a trusted network and a dedicated OS user; TLS provides no client authorization (see [Security](../README.md#security)). For first use choose a fresh nonsensitive plain folder and do not seed a real or private repository. No shell example needs a vendor token or credential.
+Use a trusted network and a dedicated OS user; TLS provides no client authorization (see [Security](../README.md#security) and the deployment [security posture](deploy.md#security-posture)). For first use choose a fresh nonsensitive plain folder and do not seed a real or private repository. No shell example needs a vendor token or credential.
 
 ## One machine
 
@@ -203,7 +203,7 @@ Confirm the node is online:
 callsheet node ls --plane "$PLANE" --ca "$CA"
 ```
 
-Register the role:
+Register the role. If the node is not online yet, this fails with `node <id> is offline; start its sidecar and retry`: wait for the sidecar and retry.
 
 <!-- quickstart: role-add -->
 ```sh
@@ -326,7 +326,7 @@ Here **machine A** and **machine B** are distinct computers, unlike the terminal
 
 Both machines use a private LAN or VPN address of machine A, never 127.0.0.1 or 0.0.0.0. Allow only trusted-network peers to reach that port; the sidecar opens no inbound listener.
 
-`plane run --bind NEW` is not a configuration update: the plane refuses a bind that differs from its initialized one. So change it while stopped:
+`plane run --bind NEW` is not a configuration update: the plane refuses a bind that differs from its initialized one. So change it while stopped. This is the tutorial's teaching example; [Change the plane address](deploy.md#change-the-plane-address) is the canonical maintenance procedure.
 
 1. On machine A stop the local sidecar and plane foreground commands and wait for them to exit. Do not delete or reinitialize state.
 2. With the plane stopped, edit **only** `bind` in `$QS/plane/config.json` to `PLANE_IP:8443`, using the actual private address assigned to machine A, leaving `schema_version` 1 and the file's ownership and mode intact. This illustrative example uses `192.168.1.10`; use your real private address. Before:
@@ -426,13 +426,22 @@ Both machines use a private LAN or VPN address of machine A, never 127.0.0.1 or 
    callsheet sidecar run --state-dir "$QS/sidecar" --claude-adapter "$WORKER"
    ```
 
-8. In a machine B operator terminal with the same variables, enter that node ID and a model for machine B's account, then register the remote role:
+8. In a machine B operator terminal with the same variables, enter that node ID and a model for machine B's account:
 
    <!-- quickstart: remote-node-and-model -->
    ```sh
    read -r REMOTE_NODE
    read -r MODEL
    ```
+
+   Confirm the node is online:
+
+   <!-- quickstart: remote-node-online -->
+   ```sh
+   callsheet node ls --plane "$PLANE" --ca "$CA"
+   ```
+
+   Register the remote role. If the node is not online yet, this fails with `node <id> is offline; start its sidecar and retry`: wait for the sidecar and retry.
 
    <!-- quickstart: remote-role-add -->
    ```sh
@@ -518,3 +527,4 @@ The node, role and task commands above are reusable for diagnosis.
 - [Coordinator setup](coordinator.md): other coordinators, runbooks and background waits.
 - [Workspaces](workspaces.md): repositories, pull modes and retention.
 - [Development-flow example](examples/dev-flow/README.md): a reusable starting point.
+- [Deployment](deploy.md): sustained operation, services, address changes and recovery.

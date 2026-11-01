@@ -64,7 +64,7 @@ var readmeHow = []string{
 // qualifiers, in order.
 var readmeSteps = [][]string{
 	{"Install Callsheet using the [quickstart](docs/quickstart.md#install-callsheet)", "select a published release and verify its checksum", "If no release is published yet, use its source-build fallback"},
-	{"`plane init`", "`plane run`", "CA certificate", "`--help`"},
+	{"`plane init`", "`plane run`", "CA certificate", "`--help`", "](docs/deploy.md)"},
 	{"`sidecar enroll`", "`sidecar run`", "explicitly enabled, already authenticated vendor CLI", "`role add`", "](docs/real-adapters.md)"},
 	{"`callsheet mcp`", "runbook", "](docs/coordinator.md)", "Direct CLI dispatch remains available"},
 	{"`dispatch`", "`task show`", "`task wait`", "](docs/workspaces.md)", "](docs/examples/dev-flow/README.md)"},
@@ -79,13 +79,13 @@ var readmeSupportRows = [][2]string{
 }
 
 var (
-	readmeUserMap     = []string{"docs/quickstart.md", "docs/coordinator.md", "docs/coordinator.md#coordinator-runbook-example", "docs/real-adapters.md", "docs/workspaces.md", "docs/support-catalog.md", "docs/examples/dev-flow/README.md"}
+	readmeUserMap     = []string{"docs/quickstart.md", "docs/coordinator.md", "docs/coordinator.md#coordinator-runbook-example", "docs/real-adapters.md", "docs/workspaces.md", "docs/support-catalog.md", "docs/examples/dev-flow/README.md", "docs/deploy.md"}
 	readmeMaintainers = []string{"docs/maintainers/ci.md", "docs/maintainers/real-e2e.md", "docs/examples/real-e2e/README.md"}
-	readmePlanned     = []string{"docs/guide/index.md", "docs/deploy.md"}
-	// readmeExisting are the nine existing documentation entry paths
+	readmePlanned     = []string{"docs/guide/index.md"}
+	// readmeExisting are the ten existing documentation entry paths
 	// with maintainer documents under docs/maintainers/.
 	readmeExisting = []string{"docs/quickstart.md", "docs/coordinator.md", "docs/real-adapters.md", "docs/workspaces.md", "docs/support-catalog.md",
-		"docs/examples/dev-flow/README.md", "docs/maintainers/ci.md", "docs/maintainers/real-e2e.md", "docs/examples/real-e2e/README.md"}
+		"docs/examples/dev-flow/README.md", "docs/deploy.md", "docs/maintainers/ci.md", "docs/maintainers/real-e2e.md", "docs/examples/real-e2e/README.md"}
 	readmePrivate = []string{"/home/", "/Users/", "/opt/gitspace/", "file:"}
 )
 
@@ -418,7 +418,7 @@ func checkSecurity(md string) error {
 	if got := normSpace(stripInlineLinks(body)); got != readmeSecurity {
 		return fmt.Errorf("security: sentence %q, want %q", got, readmeSecurity)
 	}
-	for _, l := range []string{"[CA](docs/coordinator.md#what-every-configuration-shares)", "[vendor configuration](docs/real-adapters.md#enabling-a-worker)"} {
+	for _, l := range []string{"[CA](docs/deploy.md#security-posture)", "[vendor configuration](docs/real-adapters.md#enabling-a-worker)"} {
 		if !strings.Contains(body, l) {
 			return fmt.Errorf("security: missing link %s", l)
 		}
@@ -798,7 +798,8 @@ func TestReadmeSupportAndSecurity(t *testing.T) {
 		{"identity-to-authentication", replaceOnce("provides no client identity or authorization", "authenticates every client"), "security: sentence"},
 		{"remove-no-own-sandbox", replaceOnce(" because Callsheet adds no sandbox of its own", ""), "security: sentence"},
 		{"second-sentence", appendToSection("Security", "Callsheet authenticates every node."), "security: sentence"},
-		{"unlinked-ca", replaceOnce("[CA](docs/coordinator.md#what-every-configuration-shares)", "CA"), "security: missing link [CA]"},
+		{"unlinked-ca", replaceOnce("[CA](docs/deploy.md#security-posture)", "CA"), "security: missing link [CA]"},
+		{"old-security-destination", replaceOnce("[CA](docs/deploy.md#security-posture)", "[CA](docs/coordinator.md#what-every-configuration-shares)"), "security: missing link [CA]"},
 		{"unlinked-vendor-configuration", replaceOnce("[vendor configuration](docs/real-adapters.md#enabling-a-worker)", "vendor configuration"), "security: missing link [vendor configuration]"},
 	})
 }
@@ -839,8 +840,8 @@ func TestReadmeDocumentationMap(t *testing.T) {
 		readmeMutation{"no-harness-note", replaceOnce(readmeHarnessNote, ""), "for maintainers: lacks"},
 		readmeMutation{"missing-shipped-quickstart", inSection("Documentation", "- [Quickstart](docs/quickstart.md): install, first dispatch on one machine, then two.\n", ""), "documentation: missing link docs/quickstart.md"},
 		readmeMutation{"planned-guide-link", appendToSection("For maintainers", "[guide](docs/guide/index.md)"), "documentation: planned docs/guide/index.md is a link"},
-		readmeMutation{"planned-deploy-link", appendToSection("Documentation", "- [deploy](docs/deploy.md)"), "documentation: planned docs/deploy.md is a link"},
-		readmeMutation{"planned-unlisted", inSection("Documentation", "`docs/deploy.md`", "deployment"), "documentation: planned docs/deploy.md is not listed"},
+		readmeMutation{"deploy-restored-as-planned", inSection("Documentation", "- [Deployment](docs/deploy.md): deployment, trust and service management.", "- `docs/deploy.md`: deployment, trust and service management; coming in v1."), "documentation: missing link docs/deploy.md"},
+		readmeMutation{"planned-unlisted", inSection("Documentation", "`docs/guide/index.md`", "the user guide"), "documentation: planned docs/guide/index.md is not listed"},
 		readmeMutation{"remove-coming-label", func(t *testing.T, md string) string {
 			s, e := sectionSpan(t, md, "Documentation")
 			lines := strings.Split(md[s:e], "\n")
@@ -866,13 +867,13 @@ func TestReadmeDocumentationMap(t *testing.T) {
 
 	// A placeholder file for a planned document is rejected; an existing
 	// entry path that disappears is rejected.
-	withDeploy := func(rel string) ([]byte, bool) {
-		if rel == "docs/deploy.md" {
-			return []byte("# Deploy\n"), true
+	withGuide := func(rel string) ([]byte, bool) {
+		if rel == "docs/guide/index.md" {
+			return []byte("# Guide\n"), true
 		}
 		return look(rel)
 	}
-	if err := checkDocMap(md, withDeploy); err == nil || !strings.Contains(err.Error(), "planned docs/deploy.md exists as a placeholder") {
+	if err := checkDocMap(md, withGuide); err == nil || !strings.Contains(err.Error(), "planned docs/guide/index.md exists as a placeholder") {
 		t.Errorf("placeholder: err = %v", err)
 	}
 	withoutCI := func(rel string) ([]byte, bool) {
