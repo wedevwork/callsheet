@@ -1,0 +1,83 @@
+# Publishes the four stamped Callsheet products and SHA256SUMS on a version tag.
+# The tag glob is routing only: the release builder validates the exact grammar.
+# See "Release operations" in docs/maintainers/ci.md; the contract is checked
+# offline by internal/cicheck (ValidateReleaseWorkflow) and tests/function.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    concurrency:
+      group: release-${{ github.ref }}
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: bash
+    env:
+      GOTOOLCHAIN: local
+      GOFLAGS: -mod=readonly
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Set up Go from go.mod
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+          check-latest: false
+      - name: Download modules
+        run: go mod download
+      - name: Build and verify release products
+        env:
+          GOPROXY: "off"
+          GOSUMDB: "off"
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_TYPE" = tag
+          gh --version
+          create_help="$(gh release create --help)"
+          edit_help="$(gh release edit --help)"
+          for capability in --verify-tag --draft --prerelease --latest; do
+            grep -q -e "$capability" <<<"$create_help"
+            grep -q -e "$capability" <<<"$edit_help"
+          done
+          go run ./cmd/releasebuild --version "$RELEASE_TAG" --out "$RUNNER_TEMP/callsheet-release"
+      - name: Check the host version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          output="$("$RUNNER_TEMP/callsheet-release/callsheet-linux-amd64" version)"
+          version_re='^callsheet ([^ ]+) protocol=([0-9]+)$'
+          [[ "$output" =~ $version_re ]] || { printf 'unexpected version output: %s\n' "$output" >&2; exit 1; }
+          test "${BASH_REMATCH[1]}" = "$RELEASE_TAG"
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          tag_re='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.[1-9][0-9]*)?$'
+          [[ "$RELEASE_TAG" =~ $tag_re ]] || { printf 'invalid release tag\n' >&2; exit 1; }
+          prerelease=false
+          if [[ "$RELEASE_TAG" == *-rc.* ]]; then
+            prerelease=true
+          fi
+          gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG" --notes "Callsheet $RELEASE_TAG. Select the binary for your OS and architecture; verify SHA256SUMS before use." --prerelease="$prerelease" --latest=false "$RUNNER_TEMP/callsheet-release/callsheet-linux-amd64" "$RUNNER_TEMP/callsheet-release/callsheet-linux-arm64" "$RUNNER_TEMP/callsheet-release/callsheet-darwin-amd64" "$RUNNER_TEMP/callsheet-release/callsheet-darwin-arm64" "$RUNNER_TEMP/callsheet-release/SHA256SUMS"
+          gh release edit "$RELEASE_TAG" --verify-tag --draft=false --prerelease="$prerelease" --latest=false

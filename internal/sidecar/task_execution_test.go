@@ -573,9 +573,18 @@ func TestTaskExecutionProbeClock(t *testing.T) {
 		t.Fatal(err)
 	}
 	opened := make(chan *os.File, 1)
+	// Recurrence diagnostic, read only at the cycle arm of the first select
+	// (macOS flake, rca.md): when the writer entered and left its open, as
+	// offsets from base; 0 means not reached.
+	base := time.Now()
+	var writerEnter, writerReturn atomic.Int64
+	writerErr := make(chan error, 1)
 	go func() {
+		writerEnter.Store(int64(time.Since(base)))
 		w, err := os.OpenFile(gate, os.O_WRONLY, 0)
+		writerReturn.Store(int64(time.Since(base)))
 		if err != nil {
+			writerErr <- err
 			w = nil
 		}
 		opened <- w
@@ -615,6 +624,30 @@ func TestTaskExecutionProbeClock(t *testing.T) {
 			t.Fatal("opening the gate failed")
 		}
 	case ev := <-tr.ev.cycles:
+		// The child has already been reaped: record what the writer did,
+		// then fail with the usual sentence. Nothing here blocks.
+		writerReady, writerNil, sameFile := false, false, false
+		var openErr, gateErr, fdErr error
+		select {
+		case w := <-opened:
+			writerReady, writerNil = true, w == nil
+			held, received = w, true
+			if w != nil {
+				var gi, fi os.FileInfo
+				gi, gateErr = os.Stat(gate)
+				fi, fdErr = w.Stat()
+				sameFile = gateErr == nil && fdErr == nil && os.SameFile(gi, fi)
+			}
+			select {
+			case openErr = <-writerErr:
+			default:
+			}
+		default:
+		}
+		p := trace.Last()
+		t.Logf("writer_ready=%v writer_nil=%v writer_err=%v writer_fd_is_gate=%v gate_stat_err=%v writer_stat_err=%v; offsets from test start: writer_enter=%v writer_return=%v armed=%v started=%v waited=%v",
+			writerReady, writerNil, openErr, sameFile, gateErr, fdErr, time.Duration(writerEnter.Load()), time.Duration(writerReturn.Load()),
+			p.Armed.Sub(base), p.Started.Sub(base), p.Waited.Sub(base))
 		failed(ev)
 	case <-time.After(testWait):
 		dumpGoroutines(t)
