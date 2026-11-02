@@ -20,9 +20,9 @@ import (
 // sidecar per adapter with only its explicit adapter path, all four roles
 // (concurrency 1, timeout 10m) registered before any task, then every
 // sidecar reconnected (a deliberate superset of the documented minimum,
-// avoiding the cross-node role_changed issue) and all roles awaited ready
-// at the final registry state. Children are started from argv slices and
-// tracked by their captured handles.
+// which needs no reconnect) and all roles awaited ready at the final
+// registry state. Children are started from argv slices and tracked by
+// their captured handles.
 
 // sidecarAdapters are the three sidecars in start order (the default;
 // a Cursor probe's supervisor carries its own four-element list, design

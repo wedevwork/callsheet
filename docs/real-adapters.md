@@ -497,15 +497,5 @@ evidence:
    a task actually runs it; record that separately if you run one.
 6. Confirm no result was pushed and no vendor session was resumed or reused.
 
-Known issue (found while building iteration 08's offline rig, not changed
-by it): the plane stamps each task start with the registry-wide roles
-revision but sends a new roles snapshot only to the node whose role changed.
-After a role change on one worker, a worker whose roles were registered
-earlier refuses every start as `role_changed` until its own roles change or
-its sidecar reconnects (a restart installs the current snapshot). Until that
-is fixed, register the roles of step 2 and then restart the sidecar of every
-worker except the one registered last before dispatching, and record that
-you did so.
-
 Linux worker evidence supports the initial deployment; record macOS workers'
 observations separately, as macOS remains unverified.

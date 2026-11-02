@@ -464,6 +464,9 @@ type observation struct {
 	cands   []contract.TaskCandidate
 	streams []*nodeStream
 	gens    []uint64
+	// snapRevs are the revisions of the available candidates' desired
+	// snapshots (0 for any other candidate).
+	snapRevs []int
 }
 
 // observeLocked samples the target's candidates under the task lock (the
@@ -480,6 +483,11 @@ func (ts *taskService) observeLocked(t contract.TaskTarget) observation {
 		ob.cands = append(ob.cands, c)
 		ob.streams = append(ob.streams, st)
 		ob.gens = append(ob.gens, gen)
+		snapRev := 0
+		if c.CanAccept {
+			snapRev = r.nodes[rec.Node].att.desired.rev
+		}
+		ob.snapRevs = append(ob.snapRevs, snapRev)
 	}
 	r.mu.Unlock()
 	runAll(closers)
@@ -585,7 +593,12 @@ func (ts *taskService) admit(ctx context.Context, deadline time.Time, req contra
 	}
 	release := res.release
 	now := ts.clock.Now().UTC()
-	rec := contract.TaskRecord{Request: req, Role: role, RolesRevision: ob.roles.visible.revision, Effective: eff,
+	// The stamp is the node's own snapshot revision, not the registry's: a
+	// change on another node raises the registry revision but sends this node
+	// nothing. Being available, the candidate has acknowledged that snapshot
+	// and the registry is not blocked, so the stamp never exceeds what the
+	// sidecar installed.
+	rec := contract.TaskRecord{Request: req, Role: role, RolesRevision: ob.snapRevs[pick], Effective: eff,
 		Execution: contract.ExecutionToken{Epoch: ts.epoch, Attachment: int(gen)}, State: contract.TaskPending, CreatedAt: now, Revision: 1,
 		TimeoutPolicy: contract.TimeoutPolicyEnforced, Schema: contract.TaskRecordSchemaVersion, Workspace: binding}
 	ts.at("before-task-publication", goal, ctx)

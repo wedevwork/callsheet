@@ -305,13 +305,8 @@ func startRealRig(bin, stub, fakeAdapterPath string) (*realRig, error) {
 		return nil, err
 	}
 	// Every successful role mutation happens here, before any parent
-	// dispatches, and worker A's roles come last: the plane stamps a start
-	// with the registry-wide roles revision but sends a new snapshot only to
-	// the mutated role's node, so after a later mutation on another node
-	// worker A would refuse every start as role_changed (pre-existing
-	// plane/sidecar behavior, reported with iteration 08). Worker B enables
-	// claude and the fake explicitly (no codex); its fake role is FP-1's
-	// "fake only with its own flag".
+	// dispatches. Worker B enables claude and the fake explicitly (no
+	// codex); its fake role is FP-1's "fake only with its own flag".
 	if r.b, err = r.dep.StartSidecar(ctx, "worker-b", r.sidecarEnv(r.kit), "--claude-adapter", r.kit.claude, "--fake-adapter", fakeAdapterPath); err != nil {
 		return nil, err
 	}
@@ -343,8 +338,8 @@ func startRealRig(bin, stub, fakeAdapterPath string) (*realRig, error) {
 		}
 		ids = append(ids, rc.ID)
 	}
-	// Worker A had the last role mutation; worker H's reattachment installs
-	// the current complete snapshot, so starts reach both.
+	// Worker A had the last role mutation; worker H reattaches, installing
+	// the current complete snapshot.
 	if err := r.dep.Restart(ctx, r.h); err != nil {
 		return nil, err
 	}
