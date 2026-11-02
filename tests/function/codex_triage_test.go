@@ -10,6 +10,7 @@ package function
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -268,13 +269,39 @@ func TestCodexTriageFP4(t *testing.T) {
 	t.Run("shared_docs", func(t *testing.T) {
 		mutateExpect(t, docs, checkCodexCatalog, "readme", [][2]string{
 			{"| triage | codex | gpt-6.1-sol | high | 1 | 10m |", "| triage | grok | grok-4.7 | xhigh | 1 | 10m |"},
-			{"--adapter codex --instruction /srv/manuals/dev-flow/triage-instruction.md", "--adapter grok --instruction /srv/manuals/dev-flow/triage-instruction.md"},
-			{"--model gpt-6.1-sol --effort high --concurrency 1 --timeout 10m --plane <plane-url> --ca <ca-path>\n```", "--model gpt-6.1-sol --effort medium --concurrency 1 --timeout 10m --plane <plane-url> --ca <ca-path>\n```"},
 			{"(the product triage prompt cap `triagePromptCap`)", "(adapter.MaxGrokPromptBytes)"},
 			{"defines the product cap `triagePromptCap` as 32768", "defines `MaxGrokPromptBytes` as 32768"},
 			{codexTriageClause, "The triage role (grok) executes only on a Linux sidecar."},
 			{harnessLinuxClause, "The harness runs anywhere"},
 		})
+		// The two selection mutations target the triage command alone: exactly
+		// one line changes, whatever other role shares its model and trust flags.
+		for _, m := range [][2]string{
+			{`--adapter codex --instruction "$MANUALS/triage-instruction.md"`, `--adapter grok --instruction "$MANUALS/triage-instruction.md"`},
+			{`--effort high --concurrency 1 --timeout 10m --plane "$PLANE" --ca "$CA"`, `--effort medium --concurrency 1 --timeout 10m --plane "$PLANE" --ca "$CA"`},
+		} {
+			lines := strings.Split(docs["readme"], "\n")
+			at := slices.IndexFunc(lines, func(l string) bool { return strings.HasPrefix(l, "callsheet role add triage ") })
+			if at < 0 || !strings.Contains(lines[at], m[0]) {
+				t.Fatalf("the triage command lacks the mutation target %q", m[0])
+			}
+			before := strings.Split(docs["readme"], "\n")
+			lines[at] = strings.Replace(lines[at], m[0], m[1], 1)
+			changed := 0
+			for i := range lines {
+				if lines[i] != before[i] {
+					changed++
+				}
+			}
+			if changed != 1 {
+				t.Fatalf("mutation %q changed %d lines, want one triage line", m[1], changed)
+			}
+			mutated := maps.Clone(docs)
+			mutated["readme"] = strings.Join(lines, "\n")
+			if err := checkCodexCatalog(mutated); err == nil {
+				t.Errorf("the triage mutation %q was accepted", m[1])
+			}
+		}
 		mutateExpect(t, docs, checkCodexCatalog, "playbook", append(deletions(crossFamilyClauses...),
 			[2]string{"| triage | codex | gpt-6.1-sol | high | 1 | 10m |", "| triage | grok | grok-4.7 | xhigh | 1 | 10m |"},
 			[2]string{"(the product triage prompt cap `triagePromptCap`)", "(adapter.MaxGrokPromptBytes)"},

@@ -53,7 +53,7 @@ Use a trusted network and a dedicated OS user: TLS protects transport but provid
 - [Support catalog](docs/support-catalog.md): CLI support and qualification evidence.
 - [Development-flow example](docs/examples/dev-flow/README.md): a reusable development flow, indexing its role manuals and coordinator playbook.
 - [Deployment](docs/deploy.md): deployment, trust and service management.
-- `docs/guide/index.md`: the user guide; coming in v1.
+- [User guide](docs/guide/index.md): concepts, setup, examples and troubleshooting.
 
 ## For maintainers
 

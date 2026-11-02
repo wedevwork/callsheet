@@ -1868,13 +1868,10 @@ func checkFirstTaskDoc(md string) error {
 		add(fmt.Errorf("first task: inspect-result does not check the delivery (%v)", err))
 	}
 	links := markdownLinks(md)
-	for _, l := range []string{"coordinator.md", "workspaces.md", "examples/dev-flow/README.md", "deploy.md"} {
+	for _, l := range []string{"coordinator.md", "workspaces.md", "examples/dev-flow/README.md", "deploy.md", "guide/index.md", "guide/example.md"} {
 		if !slices.Contains(links, l) {
 			add(fmt.Errorf("next steps: missing link %s", l))
 		}
-	}
-	if slices.Contains(links, "guide/index.md") {
-		add(errors.New("next steps: links future document guide/index.md"))
 	}
 	return errors.Join(errs...)
 }
@@ -1952,7 +1949,8 @@ func TestQuickstartOneMachine(t *testing.T) {
 			{"exit-means-success", replaceOnce("Its exit 0 means a terminal answer, not task success", "Its exit 0 means success"), "lacks"},
 			{"redispatch", replaceOnce("Do not infer an ID or dispatch again if the response is lost", "Dispatch again if the response is lost"), "lacks"},
 			{"no-inspection", replaceOnce("cmp \"$QS/seed/README.md\" \"$QS/delivery/README.md\"\n", ""), "inspect-result does not check"},
-			{"future-link", appendToSection("Next steps", "- [Guide](guide/index.md)."), "links future document guide/index.md"},
+			{"no-guide-link", replaceOnce("- [User guide](guide/index.md): concepts, roles, dispatching and waiting, workspaces, setup and troubleshooting.\n", ""), "missing link guide/index.md"},
+			{"no-guide-example-link", replaceOnce("- [Guided example](guide/example.md): the entry to the development-flow example and its walkthrough checklist.\n", ""), "missing link guide/example.md"},
 			{"no-deploy-link", replaceOnce("- [Deployment](deploy.md): sustained operation, services, address changes and recovery.\n", ""), "missing link deploy.md"},
 			{"no-next-step", replaceOnce("- [Development-flow example](examples/dev-flow/README.md): a reusable starting point.\n", ""), "missing link examples/dev-flow/README.md"},
 			{"no-symptom", replaceOnce("| Silent wait |", "| Waiting |"), "lacks \"Silent wait\""},

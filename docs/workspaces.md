@@ -1,5 +1,7 @@
 # Workspaces: local push and pull
 
+New here? The [workspaces chapter](guide/workspaces.md) of the [user guide](guide/index.md) teaches the workflow; this page is the reference it links.
+
 The plane hosts named workspaces: durable git hubs over its verified TLS endpoint (iteration 09a: `ws create`, `ls`, `show`, `rm`, `prune`, `status`, `diff`, `ref set`). Iteration 09b adds the two local transfers, `ws push` and `ws pull`, on the CLI and as the MCP tools `ws_push` and `ws_pull`. Iteration 10c adds workspace dispatch on the CLI and MCP, the task-ID forms of pull, status and diff, and the [coordinator workflow](#coordinator-workflow) for chaining tasks. They run on the machine where the command or `callsheet mcp` runs: push reads local files, pull writes them. Only paths, selectors and the result metadata below cross the CLI or MCP boundary: never file contents, file lists, commit messages, absolute local paths, credentials or pack diagnostics.
 
 go-git v5.16.3 is embedded and is the only git engine. No `git` executable is needed or run, and no hook, filter, LFS process, remote helper, credential helper, SSH agent or persisted remote is ever used. Linux and macOS are supported.

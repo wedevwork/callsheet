@@ -39,6 +39,8 @@ const (
 	readmeComponentOS = "Callsheet's plane, sidecar and coordinator commands support Linux and macOS"
 	readmeNoWindows   = "Windows is not supported"
 	readmeHarnessNote = "The real-e2e harness is for maintainers and is not a prerequisite for ordinary use."
+	readmeGuide       = "docs/guide/index.md"
+	readmeGuideRow    = "- [User guide](docs/guide/index.md): concepts, setup, examples and troubleshooting."
 )
 
 // readmeH2 is the complete, ordered list of second-level headings.
@@ -79,13 +81,15 @@ var readmeSupportRows = [][2]string{
 }
 
 var (
-	readmeUserMap     = []string{"docs/quickstart.md", "docs/coordinator.md", "docs/coordinator.md#coordinator-runbook-example", "docs/real-adapters.md", "docs/workspaces.md", "docs/support-catalog.md", "docs/examples/dev-flow/README.md", "docs/deploy.md"}
+	readmeUserMap     = []string{"docs/quickstart.md", "docs/coordinator.md", "docs/coordinator.md#coordinator-runbook-example", "docs/real-adapters.md", "docs/workspaces.md", "docs/support-catalog.md", "docs/examples/dev-flow/README.md", "docs/deploy.md", readmeGuide}
 	readmeMaintainers = []string{"docs/maintainers/ci.md", "docs/maintainers/real-e2e.md", "docs/examples/real-e2e/README.md"}
-	readmePlanned     = []string{"docs/guide/index.md"}
-	// readmeExisting are the ten existing documentation entry paths
+	// readmePlanned stays for a future genuinely planned page; the user
+	// guide shipped in design 12-4-user-guide.
+	readmePlanned = []string{}
+	// readmeExisting are the eleven existing documentation entry paths
 	// with maintainer documents under docs/maintainers/.
 	readmeExisting = []string{"docs/quickstart.md", "docs/coordinator.md", "docs/real-adapters.md", "docs/workspaces.md", "docs/support-catalog.md",
-		"docs/examples/dev-flow/README.md", "docs/deploy.md", "docs/maintainers/ci.md", "docs/maintainers/real-e2e.md", "docs/examples/real-e2e/README.md"}
+		"docs/examples/dev-flow/README.md", "docs/deploy.md", readmeGuide, "docs/maintainers/ci.md", "docs/maintainers/real-e2e.md", "docs/examples/real-e2e/README.md"}
 	readmePrivate = []string{"/home/", "/Users/", "/opt/gitspace/", "file:"}
 )
 
@@ -579,6 +583,12 @@ func checkDocMap(md string, look repoLookup) error {
 			add("documentation: planned %s is not listed", p)
 		}
 	}
+	// The user guide is a live document, whatever the planned list holds.
+	for _, line := range strings.Split(docs, "\n") {
+		if (strings.Contains(line, readmeGuide) || strings.Contains(line, "User guide")) && strings.Contains(line, "coming in v1") {
+			add("documentation: the user guide row is still coming in v1")
+		}
+	}
 	for _, p := range readmeExisting {
 		if _, ok := look(p); !ok {
 			add("documentation: existing entry %s is missing", p)
@@ -839,19 +849,9 @@ func TestReadmeDocumentationMap(t *testing.T) {
 		readmeMutation{"old-real-e2e-path", inSection("For maintainers", "](docs/maintainers/real-e2e.md)", "](docs/real-e2e.md)"), "destination docs/real-e2e.md does not exist"},
 		readmeMutation{"no-harness-note", replaceOnce(readmeHarnessNote, ""), "for maintainers: lacks"},
 		readmeMutation{"missing-shipped-quickstart", inSection("Documentation", "- [Quickstart](docs/quickstart.md): install, first dispatch on one machine, then two.\n", ""), "documentation: missing link docs/quickstart.md"},
-		readmeMutation{"planned-guide-link", appendToSection("For maintainers", "[guide](docs/guide/index.md)"), "documentation: planned docs/guide/index.md is a link"},
+		readmeMutation{"guide-link-removed", inSection("Documentation", readmeGuideRow+"\n", ""), "documentation: missing link docs/guide/index.md"},
 		readmeMutation{"deploy-restored-as-planned", inSection("Documentation", "- [Deployment](docs/deploy.md): deployment, trust and service management.", "- `docs/deploy.md`: deployment, trust and service management; coming in v1."), "documentation: missing link docs/deploy.md"},
-		readmeMutation{"planned-unlisted", inSection("Documentation", "`docs/guide/index.md`", "the user guide"), "documentation: planned docs/guide/index.md is not listed"},
-		readmeMutation{"remove-coming-label", func(t *testing.T, md string) string {
-			s, e := sectionSpan(t, md, "Documentation")
-			lines := strings.Split(md[s:e], "\n")
-			for i, line := range lines {
-				if strings.Contains(line, "`docs/guide/index.md`") {
-					lines[i] = replaceOnce("coming in v1", "available")(t, line)
-				}
-			}
-			return md[:s] + strings.Join(lines, "\n") + md[e:]
-		}, "documentation: planned docs/guide/index.md is not labeled coming in v1"},
+		readmeMutation{"guide-restored-as-planned", inSection("Documentation", readmeGuideRow, "- [User guide](docs/guide/index.md): the user guide; coming in v1."), "documentation: the user guide row is still coming in v1"},
 		readmeMutation{"typo-destination", inSection("Documentation", "](docs/coordinator.md)", "](docs/coordinator-missing.md)"), "destination docs/coordinator-missing.md does not exist"},
 		readmeMutation{"typo-fragment", replaceOnce("#coordinator-runbook-example)", "#coordinator-runbook-exampel)"), "fragment #coordinator-runbook-exampel matches no heading"},
 		readmeMutation{"typo-security-fragment", replaceOnce("#enabling-a-worker)", "#enabling-workers)"), "fragment #enabling-workers matches no heading"},
@@ -865,16 +865,16 @@ func TestReadmeDocumentationMap(t *testing.T) {
 	)
 	runMutations(t, md, check, ms)
 
-	// A placeholder file for a planned document is rejected; an existing
+	// A guide destination missing from the lookup is rejected; an existing
 	// entry path that disappears is rejected.
-	withGuide := func(rel string) ([]byte, bool) {
-		if rel == "docs/guide/index.md" {
-			return []byte("# Guide\n"), true
+	withoutGuide := func(rel string) ([]byte, bool) {
+		if rel == readmeGuide {
+			return nil, false
 		}
 		return look(rel)
 	}
-	if err := checkDocMap(md, withGuide); err == nil || !strings.Contains(err.Error(), "planned docs/guide/index.md exists as a placeholder") {
-		t.Errorf("placeholder: err = %v", err)
+	if err := checkDocMap(md, withoutGuide); err == nil || !strings.Contains(err.Error(), "existing entry docs/guide/index.md is missing") || !strings.Contains(err.Error(), "destination docs/guide/index.md does not exist") {
+		t.Errorf("guide-destination-missing: err = %v", err)
 	}
 	withoutCI := func(rel string) ([]byte, bool) {
 		if rel == "docs/maintainers/ci.md" {

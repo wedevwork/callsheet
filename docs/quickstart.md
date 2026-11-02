@@ -524,6 +524,8 @@ The node, role and task commands above are reusable for diagnosis.
 
 ## Next steps
 
+- [User guide](guide/index.md): concepts, roles, dispatching and waiting, workspaces, setup and troubleshooting.
+- [Guided example](guide/example.md): the entry to the development-flow example and its walkthrough checklist.
 - [Coordinator setup](coordinator.md): other coordinators, runbooks and background waits.
 - [Workspaces](workspaces.md): repositories, pull modes and retention.
 - [Development-flow example](examples/dev-flow/README.md): a reusable starting point.

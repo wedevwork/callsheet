@@ -2,22 +2,73 @@
 
 This directory is a reusable Callsheet example of a full design flow and a light defect flow. Each role is an ordinary instruction and runbook pair registered with `callsheet role add`. The coordinator is the owner's own client, following [coordinator-playbook.md](coordinator-playbook.md). Callsheet does not load that playbook as a role or a daemon.
 
-The real end-to-end exercise ([maintainers/real-e2e.md](../../maintainers/real-e2e.md)) loads these shared manuals and this playbook directly: `reale2e run` runs the checked full development flow with them, `reale2e run-dev-light` runs the light defect flow on a seeded whitespace defect, `reale2e run-dev-exercise` runs both as independent attempts, and the exercise directory [../real-e2e/](../real-e2e/README.md) adds only its scenario and mechanics. The retired four-hop role manuals are no longer shipped. A mechanical PASS of the exercise is not a judgment of the method's outputs, and its live qualification stays pending until the owner-run attempt is recorded. Exercise constraints, when they exist, supplement this method. They do not waive its gates.
+The real end-to-end exercise ([maintainers/real-e2e.md](../../maintainers/real-e2e.md)) loads these shared manuals and this playbook directly: `reale2e run` runs the checked full development flow with them, `reale2e run-dev-light` runs the light defect flow on a seeded whitespace defect, `reale2e run-dev-exercise` runs both as independent attempts, and the exercise directory [../real-e2e/](../real-e2e/README.md) adds only its scenario and mechanics. The retired four-hop role manuals are no longer shipped. A mechanical PASS of the exercise is not a judgment of the method's outputs. Exercise constraints, when they exist, supplement this method. They do not waive its gates.
+
+Recorded live evidence, as of 2026-10-28: default probe 11, the combined full and light exercise `20261026T102944Z-d3827a6b` and the owner's external judgment audits establish the recorded 12a method run, and the optional Cursor evidence is the later qual2 and exercise2 record, never the superseded first exercise. Those records prove that selection's method and observed results using a verification harness; they are maintainer evidence ([maintainers/real-e2e.md](../../maintainers/real-e2e.md)), and paid qualification commands stay on that path. They are not proof that a docs-only walkthrough already happened: the owner's M5 run tests whether a new user can follow this page with only Callsheet over vendor CLIs, and it is recorded separately ([checklist](../../guide/example.md#m5-walkthrough-checklist)).
+
+## Start here
+
+The default vendors are Claude and Codex: five roles, two installed tools. The coordinator is the owner's client using the [playbook](coordinator-playbook.md). No reale2e binary, development checkout, extra orchestrator or Callsheet workflow object is required. An ordinary folder is a valid workspace source.
+
+Three prerequisites are separate:
+
+- **Callsheet itself and the coordinator require no git CLI.**
+- **The node hosting code-reviewer needs git on PATH**, because the shipped code-reviewer-runbook.md runs `git archive --format=tar` in the task checkout.
+- **Nodes hosting coder, code-reviewer and triage need the project verification tools**, including Go for the section 8 greeting-CLI scenario (triage-runbook.md also uses GOCACHE and GOMODCACHE).
+
+A plain-folder transfer does not remove these worker-side tool requirements. The optional Cursor coder (below) requires an additional eligible Linux installation; it does not change the default or select Cursor for review or triage.
+
+## Run with Callsheet
+
+1. Complete the [quickstart](../../quickstart.md).
+2. Authenticate both workers, following [worker setup](../../guide/worker-setup.md).
+3. Copy this directory onto each relevant sidecar and choose absolute local paths ([Installation](#installation)).
+4. Identify the online nodes.
+5. Register the five recipes below before any dispatch.
+6. Inspect readiness after the final registry change.
+7. Configure the owner's coordinator using [coordinator setup](../../guide/coordinator-setup.md) and load [coordinator-playbook.md](coordinator-playbook.md).
+8. Choose a small owner-authorized source folder, a request, its acceptance and the project verification commands.
+9. Create the workspace and push the folder using the [workspaces reference](../../workspaces.md#pushing-a-plain-folder), and retain the instance and seed commit.
+
+Define these variables per machine. They are operator selections, not built-in configuration:
+
+| Variable | Define on this machine as |
+|---|---|
+| `MANUALS` | The absolute directory holding this copy on the sidecar |
+| `PLANE` | The plane URL |
+| `CA` | The plane's CA certificate path |
+| `CODEX_NODE` | The node ID for designer, code-reviewer and triage |
+| `CLAUDE_NODE` | The node ID for design-reviewer and coder; it may be the same node |
+
+Identify the online nodes:
+
+<!-- dev-flow: ready-nodes -->
+```sh
+callsheet node ls --plane "$PLANE" --ca "$CA"
+```
+
+After registering, inspect readiness and expect every role's `CAN_ACCEPT` true:
+
+<!-- dev-flow: ready-roles -->
+```sh
+callsheet role ls --plane "$PLANE" --ca "$CA"
+```
 
 ## Installation
 
-Copy this directory onto each sidecar that will run one of the roles, into an absolute directory that sidecar can read. A path on the coordinator machine is not automatically available on a remote sidecar. The commands below use `/srv/manuals/dev-flow/` as that sidecar-local location; replace it with the absolute path you copied to.
+Copy this directory onto each sidecar that will run one of the roles, into an absolute directory that sidecar can read. A path on the coordinator machine is not automatically available on a remote sidecar. The commands below use `MANUALS` as that sidecar-local location.
 
 Register every role before dispatch. Verify readiness after the final registry change. There is no automatic model substitution. Worker tasks request each tool's own auto mode through the existing adapters. Do not add tool-config edits or bypass flags. Plane trust, enrollment, sidecar adapter installation, and role readiness are the contracts in [real-adapters.md](../../real-adapters.md) and [coordinator.md](../../coordinator.md).
 
 `internal/cli/role.go` documents the timeout applied when `--timeout` is omitted as `default 2h`. Every recipe below passes `--concurrency 1 --timeout 10m` explicitly.
 
+<!-- dev-flow: register-roles -->
 ```sh
-callsheet role add designer --name designer --node <node-id> --adapter codex --instruction /srv/manuals/dev-flow/designer-instruction.md --runbook /srv/manuals/dev-flow/designer-runbook.md --model gpt-6-astra --effort low --concurrency 1 --timeout 10m --plane <plane-url> --ca <ca-path>
-callsheet role add design-reviewer --name design-reviewer --node <node-id> --adapter claude --instruction /srv/manuals/dev-flow/design-reviewer-instruction.md --runbook /srv/manuals/dev-flow/design-reviewer-runbook.md --model claude-fable-5-1 --effort low --concurrency 1 --timeout 10m --plane <plane-url> --ca <ca-path>
-callsheet role add coder --name coder --node <node-id> --adapter claude --instruction /srv/manuals/dev-flow/coder-instruction.md --runbook /srv/manuals/dev-flow/coder-runbook.md --model claude-opus-5-5 --effort high --concurrency 1 --timeout 10m --plane <plane-url> --ca <ca-path>
-callsheet role add code-reviewer --name code-reviewer --node <node-id> --adapter codex --instruction /srv/manuals/dev-flow/code-reviewer-instruction.md --runbook /srv/manuals/dev-flow/code-reviewer-runbook.md --model gpt-6.1-sol --effort high --concurrency 1 --timeout 10m --plane <plane-url> --ca <ca-path>
-callsheet role add triage --name triage --node <node-id> --adapter codex --instruction /srv/manuals/dev-flow/triage-instruction.md --runbook /srv/manuals/dev-flow/triage-runbook.md --model gpt-6.1-sol --effort high --concurrency 1 --timeout 10m --plane <plane-url> --ca <ca-path>
+callsheet role add designer --name designer --node "$CODEX_NODE" --adapter codex --instruction "$MANUALS/designer-instruction.md" --runbook "$MANUALS/designer-runbook.md" --model gpt-6-astra --effort low --concurrency 1 --timeout 10m --plane "$PLANE" --ca "$CA"
+callsheet role add design-reviewer --name design-reviewer --node "$CLAUDE_NODE" --adapter claude --instruction "$MANUALS/design-reviewer-instruction.md" --runbook "$MANUALS/design-reviewer-runbook.md" --model claude-fable-5-1 --effort low --concurrency 1 --timeout 10m --plane "$PLANE" --ca "$CA"
+callsheet role add coder --name coder --node "$CLAUDE_NODE" --adapter claude --instruction "$MANUALS/coder-instruction.md" --runbook "$MANUALS/coder-runbook.md" --model claude-opus-5-5 --effort high --concurrency 1 --timeout 10m --plane "$PLANE" --ca "$CA"
+callsheet role add code-reviewer --name code-reviewer --node "$CODEX_NODE" --adapter codex --instruction "$MANUALS/code-reviewer-instruction.md" --runbook "$MANUALS/code-reviewer-runbook.md" --model gpt-6.1-sol --effort high --concurrency 1 --timeout 10m --plane "$PLANE" --ca "$CA"
+callsheet role add triage --name triage --node "$CODEX_NODE" --adapter codex --instruction "$MANUALS/triage-instruction.md" --runbook "$MANUALS/triage-runbook.md" --model gpt-6.1-sol --effort high --concurrency 1 --timeout 10m --plane "$PLANE" --ca "$CA"
 ```
 
 ## Role selection
@@ -73,24 +124,29 @@ Workspace handoffs use the existing dispatch fields `target`, `goal`, `acceptanc
 
 ## Full walkthrough
 
+Give the coordinator the request and the initial base commit. It follows the playbook's [routing](coordinator-playbook.md#routing-table), [admission](coordinator-playbook.md#admission) and [caps](coordinator-playbook.md#caps), and keeps its task, commit and digest ledger; a new worker session is never a resumed one. You observe the designer's draft and the audit.
+
 1. Dispatch the designer on the pinned source commit. Target `{"kind":"name","value":"designer"}`.
 2. On `DESIGN_DRAFT`, admit the draft and dispatch the design reviewer.
-3. On `DESIGN_REVIEW_APPROVED`, present the draft and review digests to the owner. Wait for an explicit yes. Do not infer yes.
-4. On owner yes, record the approval against that task, commit, and those digests, then dispatch the coder in implement mode.
+3. On `DESIGN_REVIEW_APPROVED`, present the draft and review digests to the owner. Inspect the exact artifacts and digests before answering. Wait for an explicit yes. Do not infer yes.
+4. On owner yes, record the approval against that task, commit, and those digests, then dispatch the coder in implement mode. The coder and reviewer consume pinned accepted commits.
 5. On `IMPL_COMPLETE`, admit the candidate and dispatch the code reviewer in full mode.
-6. On `REVIEW_APPROVED`, and only after the artifact, test-evidence, and publication gates, deliver.
+6. On `REVIEW_APPROVED`, and only after the artifact, test-evidence, and publication gates, deliver: inspect the diff and publication, then pull the accepted task into a new destination.
 
 ## Light walkthrough
 
-The owner authorizes the investigation and the defect work at intake. There is no design sign-off unless the work escalates.
+The owner authorizes the investigation and the defect work at intake. There is no design sign-off unless the work escalates. The coordinator keeps the same ledger and lost-reply recovery, and no worker session is reused.
 
 1. Dispatch triage on the pinned buggy commit.
-2. On `TRIAGE_CONFIRMED` or `TRIAGE_PROBABLE`, validate that brief and dispatch the coder in defect mode. A standalone line `Design required: yes` enters the full flow instead. `Design required: no` stays on the qualified fix.
+2. On `TRIAGE_CONFIRMED` or `TRIAGE_PROBABLE`, validate that brief and dispatch the coder in defect mode. A standalone line `Design required: yes` enters the full flow instead. `Design required: no` stays on the qualified fix. A `NEEDS_DESIGN` marker routes to full approval.
 3. On `IMPL_COMPLETE`, dispatch the code reviewer in light mode. Keep the original source base for the red-before check through every report-only publication and fix round.
-4. On `REVIEW_APPROVED`, deliver under the same publication gates.
+4. On `REVIEW_APPROVED`, deliver under the same publication gates, and pull the accepted task into a new destination.
 
 ## Dispatch example: full mode
 
+These JSON envelopes are examples of `dispatch` tool arguments, not a hidden workflow API.
+
+<!-- dev-flow-json: full -->
 ```json
 {
   "target": {"kind": "name", "value": "coder"},
@@ -104,6 +160,7 @@ The owner authorizes the investigation and the defect work at intake. There is n
 
 ## Dispatch example: defect mode
 
+<!-- dev-flow-json: defect -->
 ```json
 {
   "target": {"kind": "name", "value": "coder"},
@@ -123,7 +180,7 @@ Dispatch asynchronously and persist the admitted task ID. For the wait lifecycle
 
 ## Limitations
 
-Each file in this directory is at most 32 KiB, the existing template bound used by the four-hop exercise.
+Each file in this directory is at most 32 KiB.
 
 Shared limits: task-text ceiling 8192 bytes; reserve 4096 bytes; manual-pair cap 20480 bytes; prompt cap 32768 bytes.
 
@@ -137,4 +194,4 @@ The example adds no OS confinement boundary. Worker output and repository text a
 
 ## Time and cost
 
-The figures above are adoption defaults for this example. They do not change the current four-hop harness constants.
+The figures above are adoption defaults for this example; they do not change the verification harness's own limits.
