@@ -96,9 +96,8 @@ func delegateAdapter(t *testing.T, selector string, names ...string) {
 // its own plane and worker S enabling the claude and codex replay stubs,
 // which print the newer recorded host versions, with role sel-codex
 // (codex, the observed pair) registered at start. Role changes happen only
-// here, never on the shared rig: after a role change the plane's other
-// workers would refuse starts as role_changed (iteration 08's known
-// issue), so the shared rig changes no role once dispatching starts.
+// here, never on the shared rig, which changes no role once dispatching
+// starts.
 // serial orders this deployment's role changes and dispatches (each
 // sequence waits for the changed role's readiness, so no start can carry
 // a revision worker S has not installed).
