@@ -2854,8 +2854,13 @@ func checkDeployNavigation(readme, coordinator, quickstart, deploy string, look 
 			add(errors.New("README: deployment is still a coming-in-v1 entry"))
 		}
 	}
-	if !strings.Contains(docs, "`docs/guide/index.md`: the user guide; coming in v1.") {
-		add(errors.New("README: the user guide lost its coming-in-v1 entry"))
+	if !strings.Contains(docs, readmeGuideRow) {
+		add(errors.New("README: the documentation map does not link the live user guide"))
+	}
+	for _, line := range strings.Split(docs, "\n") {
+		if strings.Contains(line, readmeGuide) && strings.Contains(line, "coming in v1") {
+			add(errors.New("README: the user guide is still a coming-in-v1 entry"))
+		}
 	}
 	if !slices.Contains(markdownLinks(summary), "docs/deploy.md") {
 		add(errors.New("README: the summary does not link the deployment chapter"))
@@ -2919,9 +2924,13 @@ func checkDeployNavigation(readme, coordinator, quickstart, deploy string, look 
 			add(fmt.Errorf("deploy: source %s is not cited", l))
 		}
 	}
-	for _, l := range links {
-		if strings.Contains(l, "guide/index.md") {
-			add(errors.New("deploy: links the future user guide"))
+	verify, err := sectionOf(deploy, "Verify the deployment")
+	if err != nil {
+		return err
+	}
+	for _, l := range []string{"guide/index.md", "guide/example.md"} {
+		if !slices.Contains(markdownLinks(verify), l) {
+			add(fmt.Errorf("deploy: the next-reading paragraph does not link %s", l))
 		}
 	}
 	add(checkPrivateText("deploy", deploy))
@@ -2933,8 +2942,8 @@ func checkDeployNavigation(readme, coordinator, quickstart, deploy string, look 
 }
 
 // TestDeployNavigation (FP-6): the deployment entry and security destination in
-// README, the links from the quickstart and coordinator guide, and the retained
-// future user-guide entry.
+// README, the links from the quickstart and coordinator guide, and the live
+// user-guide entry and next-reading links (design 12-4-user-guide).
 func TestDeployNavigation(t *testing.T) {
 	root := testkit.MustRepoRoot(t)
 	readme, coordinator, quickstart, deploy := string(repoFile(t, "README.md")), string(repoFile(t, "docs/coordinator.md")), string(repoFile(t, quickstartDoc)), string(repoFile(t, deployDoc))
@@ -2997,15 +3006,26 @@ func TestDeployNavigation(t *testing.T) {
 		{"private-macos-path", func() error {
 			return check(readme, coordinator, quickstart, replaceOnce("## Security posture\n", "## Security posture\n\nSee /Users/someone/state.\n")(t, deploy))
 		}, "deploy: private path sentinel"},
-		{"linked-future-guide", func() error {
-			return check(readme, coordinator, quickstart, replaceOnce("## Security posture\n", "## Security posture\n\n[guide](guide/index.md)\n")(t, deploy))
+		{"guide-destination-missing", func() error {
+			return checkDeployNavigation(readme, coordinator, quickstart, deploy, func(rel string) ([]byte, bool) {
+				if rel == readmeGuide {
+					return nil, false
+				}
+				return look(rel)
+			})
 		}, "docs/guide/index.md does not exist"},
-		{"readme-linked-future-guide", func() error {
-			return check(replaceOnce("`docs/guide/index.md`", "[guide](docs/guide/index.md)")(t, readme), coordinator, quickstart, deploy)
-		}, "lost its coming-in-v1 entry"},
+		{"deploy-guide-link-removed", func() error {
+			return check(readme, coordinator, quickstart, replaceOnce("[user guide](guide/index.md)", "user guide")(t, deploy))
+		}, "deploy: the next-reading paragraph does not link guide/index.md"},
+		{"live-link-restored-as-placeholder", func() error {
+			return check(replaceOnce(readmeGuideRow, "- `docs/guide/index.md`: the user guide; coming in v1.")(t, readme), coordinator, quickstart, deploy)
+		}, "the documentation map does not link the live user guide"},
+		{"linked-row-coming-in-v1", func() error {
+			return check(replaceOnce(readmeGuideRow, readmeGuideRow+" This page is coming in v1.")(t, readme), coordinator, quickstart, deploy)
+		}, "the user guide is still a coming-in-v1 entry"},
 		{"guide-entry-removed", func() error {
-			return check(replaceOnce("- `docs/guide/index.md`: the user guide; coming in v1.\n", "")(t, readme), coordinator, quickstart, deploy)
-		}, "lost its coming-in-v1 entry"},
+			return check(replaceOnce(readmeGuideRow+"\n", "")(t, readme), coordinator, quickstart, deploy)
+		}, "the documentation map does not link the live user guide"},
 		{"quickstart-next-step-removed", func() error {
 			return check(readme, coordinator, replaceOnce("- [Deployment](deploy.md): sustained operation, services, address changes and recovery.\n", "")(t, quickstart), deploy)
 		}, "Next steps does not link"},

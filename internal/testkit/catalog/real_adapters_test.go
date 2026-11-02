@@ -161,8 +161,15 @@ const wave2Captures = "tests/testdata/real-adapters/linux-2026-10-04"
 // leaves are the only difference: restoring their earlier text
 // (preWorkerSelectionProse) reproduces the 1038b09 digest
 // (preWorkerSelectionSHA256) over the full nine-fact projection.
+//
+// Design 12-4-user-guide refreshed it once more, for one approved private-path
+// redaction in Claude's sandbox_linux value. TestWorkerCatalogPathRedaction
+// proves that replacement is the only difference: reversing it reproduces the
+// earlier digest (prePathRedactionSHA256). Current-projection comparisons use
+// frozenWorkerCatalogSHA256; only the reversal proof uses the earlier digest.
 const (
-	frozenWorkerCatalogSHA256  = "195bb0bef881c1f5e914f5eee5a8aee7180952d4607bbbb980784ef14f17ee5e"
+	frozenWorkerCatalogSHA256  = "b4c08bcaeebd3d3b8a4e8994086324888c873a1a523aa57128f6fe70d867bad8"
+	prePathRedactionSHA256     = "195bb0bef881c1f5e914f5eee5a8aee7180952d4607bbbb980784ef14f17ee5e"
 	preWorkerSelectionSHA256   = "6e78394370c59439c384671bfffa46769c5c5ad2d134b004de0f67616efc6c66"
 	wave2Erratum               = "The copied NOTES shorthand `unknown model id` is not the exact message; `runs/grok-stdin-fail/stdout.bin` is authoritative for the exact message."
 	wave2SourceRoot            = "design/iterations/11-real-adapters/design-check"
@@ -629,6 +636,9 @@ func TestWorkerCatalogSelectionProse(t *testing.T) {
 		t.Fatalf("current projection %s", got)
 	}
 	restored := clone(t, entries)
+	if err := reversePathRedaction(restored); err != nil {
+		t.Fatal(err)
+	}
 	for i := range restored {
 		for key, v := range preWorkerSelectionProse[restored[i].ID] {
 			f := restored[i].Facts[key]
@@ -637,7 +647,144 @@ func TestWorkerCatalogSelectionProse(t *testing.T) {
 		}
 	}
 	if got := sumJSON(mustProject(t, restored)); got != preWorkerSelectionSHA256 {
-		t.Fatalf("the refresh changed more than the eight model/effort values: restored projection %s", got)
+		t.Fatalf("the refresh changed more than the eight model/effort values and the path redaction: restored projection %s", got)
+	}
+}
+
+// redactedCheckoutParent is the approved descriptive text of design
+// 12-4-user-guide's one catalog value correction.
+const redactedCheckoutParent = "the recorded checkout parent"
+
+// legacyCheckoutParent rebuilds the replaced substring from its components,
+// so no literal private path returns to the checked-in text.
+func legacyCheckoutParent() string { return "/" + strings.Join([]string{"opt", "gitspace"}, "/") }
+
+// reversePathRedaction restores the one approved replacement in entries, in
+// place. It refuses a value holding anything but exactly one replacement.
+func reversePathRedaction(entries []Entry) error {
+	for i := range entries {
+		if entries[i].ID != "claude" {
+			continue
+		}
+		f := entries[i].Facts["sandbox_linux"]
+		if n := strings.Count(f.Value, redactedCheckoutParent); n != 1 {
+			return fmt.Errorf("claude.sandbox_linux holds %d approved replacements, want exactly 1", n)
+		}
+		f.Value = strings.Replace(f.Value, redactedCheckoutParent, legacyCheckoutParent(), 1)
+		entries[i].Facts["sandbox_linux"] = f
+		return nil
+	}
+	return fmt.Errorf("no claude entry")
+}
+
+// checkPathRedaction is the scope validator of the private-path correction:
+// the literal is gone from every value, Claude's sandbox_linux keeps its
+// status, evidence and owner, and reversing exactly that replacement
+// reproduces the digest recorded before it.
+func checkPathRedaction(t *testing.T, entries []Entry) error {
+	t.Helper()
+	for _, e := range entries {
+		for key, f := range e.Facts {
+			if strings.Contains(f.Value, legacyCheckoutParent()) {
+				return fmt.Errorf("%s.%s holds the private path", e.ID, key)
+			}
+		}
+	}
+	for _, e := range entries {
+		if e.ID != "claude" {
+			continue
+		}
+		f := e.Facts["sandbox_linux"]
+		if f.Status != Verified || f.VerificationIteration != Owner("claude", "sandbox_linux") || len(f.Evidence) == 0 {
+			return fmt.Errorf("claude.sandbox_linux status %q, owner %q, %d evidence paths", f.Status, f.VerificationIteration, len(f.Evidence))
+		}
+	}
+	restored := clone(t, entries)
+	if err := reversePathRedaction(restored); err != nil {
+		return err
+	}
+	if got := sumJSON(mustProject(t, restored)); got != prePathRedactionSHA256 {
+		return fmt.Errorf("the correction changed more than the one approved replacement: reversed projection %s", got)
+	}
+	return nil
+}
+
+// TestWorkerCatalogPathRedaction is UT-3 (FP-7 and FP-10, design
+// 12-4-user-guide): the current catalog differs from its previous projection
+// only by one approved replacement in Claude's sandbox_linux value. Each
+// negative case fails this validator, not a newly generated expected hash.
+func TestWorkerCatalogPathRedaction(t *testing.T) {
+	_, entries := realCatalog(t)
+	if err := checkPathRedaction(t, entries); err != nil {
+		t.Fatal(err)
+	}
+	if got := sumJSON(mustProject(t, entries)); got == prePathRedactionSHA256 || got != frozenWorkerCatalogSHA256 {
+		t.Fatalf("current projection %s", got)
+	}
+	at := func(es []Entry, id string) *Entry {
+		for i := range es {
+			if es[i].ID == id {
+				return &es[i]
+			}
+		}
+		t.Fatalf("no %s", id)
+		return nil
+	}
+	edit := func(e *Entry, key string, fn func(*Fact)) {
+		f := e.Facts[key]
+		fn(&f)
+		e.Facts[key] = f
+	}
+	for name, c := range map[string]struct {
+		apply func([]Entry)
+		want  string
+	}{
+		"another-value-edit": {func(es []Entry) {
+			edit(at(es, "codex"), "headless", func(f *Fact) { f.Value += " Changed." })
+		}, "more than the one approved replacement"},
+		"same-fact-value-edit": {func(es []Entry) {
+			edit(at(es, "claude"), "sandbox_linux", func(f *Fact) { f.Value += " Changed." })
+		}, "more than the one approved replacement"},
+		"status-change": {func(es []Entry) {
+			edit(at(es, "claude"), "sandbox_linux", func(f *Fact) { f.Status = Unverified })
+		}, "claude.sandbox_linux status"},
+		"other-status-change": {func(es []Entry) {
+			edit(at(es, "grok"), "approval", func(f *Fact) { f.Status = Unverified })
+		}, "more than the one approved replacement"},
+		"evidence-change": {func(es []Entry) {
+			edit(at(es, "claude"), "sandbox_linux", func(f *Fact) { f.Evidence = append(f.Evidence, "tests/testdata/extra.txt") })
+		}, "more than the one approved replacement"},
+		"owner-change": {func(es []Entry) {
+			edit(at(es, "claude"), "sandbox_linux", func(f *Fact) { f.VerificationIteration = "07b" })
+		}, "claude.sandbox_linux status"},
+		"version-change": {func(es []Entry) {
+			at(es, "claude").Version += "x"
+		}, "more than the one approved replacement"},
+		"missed-replacement": {func(es []Entry) {
+			edit(at(es, "claude"), "sandbox_linux", func(f *Fact) {
+				f.Value = strings.Replace(f.Value, redactedCheckoutParent, "the parent", 1)
+			})
+		}, "holds 0 approved replacements"},
+		"second-replacement": {func(es []Entry) {
+			edit(at(es, "claude"), "sandbox_linux", func(f *Fact) { f.Value += " " + redactedCheckoutParent })
+		}, "holds 2 approved replacements"},
+		"reintroduced-literal": {func(es []Entry) {
+			edit(at(es, "claude"), "sandbox_linux", func(f *Fact) {
+				f.Value = strings.Replace(f.Value, redactedCheckoutParent, legacyCheckoutParent(), 1)
+			})
+		}, "holds the private path"},
+		"literal-elsewhere": {func(es []Entry) {
+			edit(at(es, "cursor"), "runbook", func(f *Fact) { f.Value += " " + legacyCheckoutParent() })
+		}, "cursor.runbook holds the private path"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			es := clone(t, entries)
+			c.apply(es)
+			err := checkPathRedaction(t, es)
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("err = %v, want one containing %q", err, c.want)
+			}
+		})
 	}
 }
 

@@ -9,7 +9,9 @@ qualification evidence and every per-fact status are in the
 Iteration 11 adds `grok` and `cursor`. Both run on Linux only. Cursor's
 Linux recipe is `--trust --auto-review` with a positional prompt; every
 other OS refuses Cursor task execution. See
-[Wave 2: Grok and Cursor](#wave-2-grok-and-cursor).
+[Wave 2: Grok and Cursor](#wave-2-grok-and-cursor). New here? The
+[worker setup chapter](guide/worker-setup.md) of the
+[user guide](guide/index.md) gives the ordered checklist.
 
 ## Selection and versions
 
@@ -270,8 +272,9 @@ trimming, alias lookup, fast-suffix relocation or fallback: the role pair
 `high`) is `grok-4.7-high`. A name that already contains an effort is not
 rewritten, so `grok-4.7-high-fast` with effort `low` is
 `grok-4.7-high-fast-low`. This is a Callsheet transformation, not a vendor
-fact: the owner probe of `(grok-4.7, high)` is a deployment prerequisite,
+fact: an owner probe of the selected pair is a deployment prerequisite,
 and a pair the vendor does not support fails as that vendor's result.
+Only the optional coder's `(grok-4.7, high)` was observed (below).
 The iteration-11 observation that only the literal `grok-4.7-low` was
 measured, and that Callsheet then applied no general concatenation, is
 historical.
@@ -323,8 +326,7 @@ directory (home and `/tmp`), the baseline without those flags refused
 workspace trust, and adding `--sandbox enabled` failed authentication
 before any containment could be observed. Those captures stay historical.
 Callsheet never passes `--force`, `--yolo`, `--approve-mcps` or
-`--sandbox`. The model-argument encoding above is unverified against a
-live CLI until the owner probe of `(grok-4.7, high)`.
+`--sandbox`.
 
 At start the sidecar logs once:
 
@@ -365,8 +367,12 @@ to Cursor; only the strict protected snapshots gate the owner environment.
 The owner's 2026-10-27 slice 3a diagnostic observed `grok-4.7-high`
 authenticate and complete one fixture repair on Cursor `2026.10.14-0f9edde`;
 that observation is not qualification, and headless approval behaviour
-remains unexercised. A fresh qualification probe and its independent check
-are an operator prerequisite before any Cursor attempt; see
+remains unexercised. The later record of 2026-10-28 is complete for the
+recorded binary identity and selection (Cursor `2026.10.22-27dcf5f`, coder
+`grok-4.7/high`), with no general approval-behavior or confinement
+qualification. A fresh qualification probe and its independent check are an
+operator prerequisite before any Cursor attempt on a changed binary identity,
+version or selection; see
 [Cursor coder qualification](maintainers/real-e2e.md#cursor-coder-qualification).
 
 ## Offline proof in CI
@@ -406,10 +412,12 @@ pair (the captured model and effort, an intentional explicit test input,
 not the only valid selection or a default; other selections are registered
 with `callsheet role add`), dispatches the captured no-tools prompt and
 expects exit 0 and the final bytes `pong` within two minutes (on timeout it
-cancels the task and waits for its cleanup). The recorded host versions
-Claude `2.1.292 (Claude Code)` and Codex `codex-cli 0.160.0` are above their
-minimums, so the smoke can run there when the explicit paths,
-authentication and the opt-in are in place. A pass proves only that the
+cancels the task and waits for its cleanup). A host at the older recorded
+versions Claude `2.1.292 (Claude Code)` and Codex `codex-cli 0.160.0` is below
+the current [runtime minimums](#selection-and-versions) and fails that check:
+a version is not eligible simply because a historical smoke once used it. The
+smoke can run once eligible versions, the explicit paths, authentication
+and the opt-in are in place. A pass proves only that the
 smoke pair completed this small goal through a plane and sidecar on that
 host at that time: not the full coordinator workflow, every model/effort
 pair, future releases, useful Grok tool writes or containment. A skipped

@@ -49,7 +49,7 @@
       },
       "sandbox_linux": {
         "status": "VERIFIED",
-        "value": "On the recorded Linux host with 2.1.285 and the recorded settings (sandbox enabled, strictMode and failIfUnavailable true, allowUnsandboxedCommands false, a filesystem write allowlist including /tmp and /opt/gitspace), `--permission-prompts none` did not widen the observed write outcomes versus the baseline without it: the in-directory `canary-ok.txt` write succeeded (bytes `permitted`) and the home sentinel stayed absent in both. `claude sandbox status` reported available=false and installed=false with a Windows-specific reason; the canary outcomes, not that status, are the observation.",
+        "value": "On the recorded Linux host with 2.1.285 and the recorded settings (sandbox enabled, strictMode and failIfUnavailable true, allowUnsandboxedCommands false, a filesystem write allowlist including /tmp and the recorded checkout parent), `--permission-prompts none` did not widen the observed write outcomes versus the baseline without it: the in-directory `canary-ok.txt` write succeeded (bytes `permitted`) and the home sentinel stayed absent in both. `claude sandbox status` reported available=false and installed=false with a Windows-specific reason; the canary outcomes, not that status, are the observation.",
         "evidence": [
           "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-permitted/sentinel.txt",
           "tests/testdata/real-adapters/linux-2026-09-30/runs/claude-baseline-permitted/sentinel.txt",

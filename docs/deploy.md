@@ -663,6 +663,8 @@ The offline checks in this repository prove the documented commands against the 
 
 Time your first dispatch and record every snag. Record what you observe; a failure stays a documented blocker, never a reason to broaden permissions or to label a vendor verified.
 
+For daily operation, continue with the [user guide](guide/index.md) and its [development-flow example](guide/example.md).
+
 | OS and architecture | Callsheet and vendor versions | Service account | Start and end time | Action | Expected result | Observed result | Snag |
 |---|---|---|---|---|---|---|---|
 |  |  |  |  |  |  |  |  |

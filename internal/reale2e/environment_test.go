@@ -231,9 +231,8 @@ func TestOwnerEnvironment(t *testing.T) {
 	})
 	t.Run("checkout and home inside a protected root", func(t *testing.T) {
 		t.Parallel()
-		// The owner's shape: the checkout (/opt/gitspace/callsheet) lies
-		// under a supplied root (/opt/gitspace); so may the home. Every
-		// record discovered under the root is spelled in the root's own
+		// The owner's shape: the checkout lies under a supplied protected root; so may the home.
+		// Every record discovered under the root is spelled in the root's own
 		// frame, so the checkout's repository is inside its root, not a
 		// $CHECKOUT the checker cannot place.
 		// One attempt covers both bases (each alone also failed before the

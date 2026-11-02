@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -698,31 +699,43 @@ func checkRegistration(readme string, rows []roleRow) error {
 	if strings.Count(readme, "--concurrency 1 --timeout 10m") < len(rows) {
 		return fmt.Errorf("registration recipes lack --concurrency 1 --timeout 10m")
 	}
-	if !strings.Contains(readme, "default 2h") || !strings.Contains(readme, "<node-id>") ||
-		!strings.Contains(readme, "<plane-url>") || !strings.Contains(readme, "<ca-path>") ||
-		!strings.Contains(readme, "/srv/manuals/dev-flow/") {
-		return fmt.Errorf("registration placeholders")
+	if !strings.Contains(readme, "default 2h") {
+		return fmt.Errorf("registration default timeout note")
 	}
-	for _, r := range rows {
-		needle := "--name " + r.Name + " --node"
-		i := strings.Index(readme, needle)
-		if i < 0 {
-			return fmt.Errorf("no recipe for %s", r.Name)
+	vars, err := parseMarkdownTable(readme, "Variable", "Define on this machine as")
+	if err != nil {
+		return fmt.Errorf("registration variables: %w", err)
+	}
+	for _, name := range devFlowVariables {
+		if !slices.ContainsFunc(vars, func(r []string) bool { return r[0] == name && strings.TrimSpace(r[1]) != "" }) {
+			return fmt.Errorf("registration variable %s is not defined", name)
 		}
-		start := strings.LastIndex(readme[:i], "\n")
-		line := readme[start+1:]
-		if nl := strings.Index(line, "\n"); nl >= 0 {
-			line = line[:nl]
+	}
+	fences, err := parseMarkedFences(readme, devFlowMarker)
+	if err != nil {
+		return err
+	}
+	f, ok := fenceByID(fences, "register-roles")
+	if !ok {
+		return fmt.Errorf("no register-roles recipe")
+	}
+	cmds, err := parseCallsheetOnly(f)
+	if err != nil {
+		return err
+	}
+	if len(cmds.callsheet) != len(rows) {
+		return fmt.Errorf("register-roles holds %d commands, want %d", len(cmds.callsheet), len(rows))
+	}
+	for i, r := range rows {
+		node, ok := devFlowNodeVariable[r.Name]
+		if !ok {
+			return fmt.Errorf("no node variable for %s", r.Name)
 		}
-		for _, bit := range []string{
-			"--adapter " + r.Adapter,
-			"--model " + r.Model,
-			"--effort " + r.Effort,
-			"--concurrency 1 --timeout 10m",
-		} {
-			if !strings.Contains(line, bit) {
-				return fmt.Errorf("recipe %s lacks %s", r.Name, bit)
-			}
+		want := []string{"callsheet", "role", "add", r.Name, "--name", r.Name, "--node", "$" + node, "--adapter", r.Adapter,
+			"--instruction", "$MANUALS/" + r.Name + "-instruction.md", "--runbook", "$MANUALS/" + r.Name + "-runbook.md",
+			"--model", r.Model, "--effort", r.Effort, "--concurrency", r.Concurrency, "--timeout", r.Timeout, "--plane", "$PLANE", "--ca", "$CA"}
+		if err := checkArgv("register-roles "+r.Name, cmds.callsheet[i], want); err != nil {
+			return err
 		}
 	}
 	return nil
