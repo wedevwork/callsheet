@@ -10,7 +10,7 @@ Choose the sidecar's dedicated OS user: see [authenticate the worker](../deploy.
 
 Current auto policies are not OS confinement. Grok and Cursor prompts are passed in argv and are visible to process inspection, with the product's 32 KiB prompt bound. Never include credentials in goals.
 
-An authentication or permission refusal stops the operation for owner diagnosis, without fallback, settings edits or broad permission bypasses.
+An authentication or permission refusal that ends a task stops the operation for owner diagnosis, without fallback, settings edits or broad permission bypasses. A denial of one command inside a running task does not end the task: Callsheet does not observe individual commands, and a worker can continue after one, so read its final message and artifacts, not the task state alone.
 
 macOS: Claude and Codex are eligible with an unverified macOS runtime warning; Grok and Cursor execution is refused. A flag being accepted is not execution eligibility, and Linux evidence does not certify macOS.
 
@@ -55,6 +55,8 @@ Adapter flag `--grok-adapter`, executable `grok`. Linux only.
 7. Confirm the node is online and the role is ready.
 
 Evidence limits: Callsheet requests `--permission-mode auto`. The October 4 `dontAsk` canaries all exited 0 with `stopReason` `cancelled` and wrote nothing; that proves the old observation only. Useful tool execution under current auto remains unverified. See the [Grok Build evidence](../support-catalog.md#grok-build).
+
+Observed on 2026-11-02: grok 1.0.67 (2fe064390d07) with `grok-4.7-build-fast` at `low` created one file in one simple task under `auto`; compound shell commands were not tested.
 
 ASSUMPTION (unverified): The owner reported during 12a that Grok headless could not run compound shell commands; applicability to other versions and configurations is unverified.
 

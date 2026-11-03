@@ -26,7 +26,7 @@ Independently verify that the root cause is addressed, that the regression is me
 
 ## Scratch
 
-Tests run in fresh disposable copies under `.callsheet-review-scratch/<task-id>/before/` and `.callsheet-review-scratch/<task-id>/after/`, inside the task's private checkout. Use the Callsheet task ID from the task envelope, not a free-form goal string.
+Tests run in fresh disposable copies under `.callsheet-review-scratch/<task-id>/before/` and `.callsheet-review-scratch/<task-id>/after/`, inside the task's private checkout. Use the Callsheet task ID, the `task_id` Callsheet supplies in the prompt, not one the coordinator provides and not a free-form goal string.
 
 Take the initial digest manifest before creating scratch. Refuse a pre-existing `.callsheet-review-scratch` path rather than reusing or deleting it. Store temporary archives, manifests, and test output under that same fresh task directory. Copy required command results into `review.md`.
 

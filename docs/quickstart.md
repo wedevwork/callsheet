@@ -98,6 +98,8 @@ Source builds print `dev`, not a released version. The release path needs no Go 
 
 One real vendor CLI can be both coordinator and worker; this tutorial uses Claude Code to avoid two installations. Install and authenticate it as the **same OS user running the sidecar**, select a model available to that account, and inspect its effective permission configuration. Readiness checks version and invocability, **not login, entitlement, model availability or useful headless tool execution**. Use the model from your already working local setup as `MODEL`; no model default is promised. The tutorial's `--effort low` is explicit and allowed for Claude.
 
+The vendor CLI runs as the sidecar's OS user, with the sidecar's environment and home directory, so that user's vendor configuration applies to workers, including any sandbox setting; see [accounts and paths](deploy.md#accounts-and-paths).
+
 Current details live in the references rather than here:
 
 - [Selection and versions](real-adapters.md#selection-and-versions): the four runtime minima and allowed effort sets. A minimum is eligibility, not a guarantee of compatibility with later versions.
@@ -219,7 +221,7 @@ Confirm it can accept work:
 callsheet role ls --plane "$PLANE" --ca "$CA"
 ```
 
-Expect the node online and the role's `CAN_ACCEPT` true. If not, resolve that before dispatching. Never retry `role add` blindly on a conflict: existing IDs or state are not a clean initial setup.
+Expect the node online and the role's `CAN_ACCEPT` true. Readiness is reported after the sidecar's probe, so `false` right after `role add` can be transient: run `role ls` again first. If it stays false, follow [troubleshooting](guide/troubleshooting.md#connection-and-readiness) and resolve it before dispatching. Never retry `role add` blindly on a conflict: existing IDs or state are not a clean initial setup.
 
 ### Configure your coordinator
 

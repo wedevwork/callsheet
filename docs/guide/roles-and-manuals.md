@@ -58,7 +58,7 @@ callsheet role ls --plane "$PLANE" --ca "$CA"
 callsheet role show "$ROLE_ID" --plane "$PLANE" --ca "$CA"
 ```
 
-Expect the node online and the role's `can_accept` true (`CAN_ACCEPT` in the text listing). A successful version probe is not authentication: readiness shows that the executable can be invoked at an eligible version, not that it is logged in or can do useful work.
+Expect the node online and the role's `can_accept` true (`CAN_ACCEPT` in the text listing). Readiness is reported after the sidecar's probe, so `false` right after `role add` can be transient: run `role ls` again first, and go to [troubleshooting](troubleshooting.md#connection-and-readiness) if it stays false. A successful version probe is not authentication: readiness shows that the executable can be invoked at an eligible version, not that it is logged in or can do useful work.
 
 `concurrency` sets the role's slots. A dispatch by name takes the first ready role of that name in registration order, and `--role-id` pins an instance. With no free slot the dispatch is refused; it does not wait.
 

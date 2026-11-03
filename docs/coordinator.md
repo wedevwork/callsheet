@@ -76,6 +76,8 @@ To change Codex's status, or to turn any row's static evidence into a runtime qu
 
 Sandboxed Claude Code Bash and a plane on host loopback: a sandboxed Claude Code Bash command runs in its own network namespace and cannot reach a plane listening on the host's loopback address, so in that topology the background CLI wait above needs an unsandboxed CLI execution path or a relay. The MCP server, launched outside that Bash namespace, still reaches the plane. The manual real end-to-end exercise ([maintainers/real-e2e.md](maintainers/real-e2e.md)) launches its headless coordinator with the session-only setting `{"sandbox":{"enabled":false}}`, so its background waits are the plain CLI wait. This note covers only that topology; it changes no support catalog entry.
 
+Hosting Callsheet from that Bash, as observed with sandboxed Claude Code Bash on Linux: each command has its own network namespace, so a plane or sidecar started from one command is unreachable from the next, and a background command stops with its session. Run the plane and sidecars in ordinary terminals, as the [quickstart](quickstart.md#one-machine) does, or as services ([deployment](deploy.md#run-as-services)). This observation covers only sandboxed Claude Code Bash, not every sandbox; keep your sandbox as configured.
+
 Headless one-shot runs (`claude -p`, `codex exec`, `grok -p` and their Cursor equivalent) end with their turn, so nothing is left to wake: an external orchestrator must start them again. Any client or run without a verified wake polls with a short `task_wait` only when it next has a turn; neither Callsheet nor this guide promises an autonomous wake there.
 
 ## Claude Code
@@ -93,6 +95,8 @@ Launch with your runbook appended to the system prompt:
 ```sh
 claude --append-system-prompt "$(cat -- '<runbook>')"
 ```
+
+Observed on 2026-11-02, with Claude Code 2.1.316, the version installed on the observing host when this was written: `claude mcp get` showed the server Connected, but the running session did not see its tools until it was restarted or resumed.
 
 Prerequisites: an interactive session asks before a tool call your permissions do not allow; headless print mode (`claude -p`) cannot answer, so such a call is denied. Allow the Callsheet tools you use by their exact names, such as `mcp__callsheet__dispatch` and `mcp__callsheet__task_show`; `mcp__callsheet__*` allows every tool of the server, a deliberately wider server-wide scope. Allow your background wait as its exact Bash command. Put the rules in your own permission settings, or allow them for one session only with `--allowed-tools`: that runs the listed rules without a prompt, writes no file and removes none of your other rules or denies. The [real end-to-end exercise](maintainers/real-e2e.md) does not pass `--allowed-tools`. Both of its headless phases request `--permission-mode auto --permission-prompts none`, and keep the session-only `--settings '{"sandbox":{"enabled":false}}'` for its plane on host loopback (see the sandbox note above); that setting belongs to that local topology and is not a general requirement. The harness never edits agent configuration and never retries a denial.
 

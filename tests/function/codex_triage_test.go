@@ -25,8 +25,13 @@ import (
 // 12a-codex-triage, Selection).
 const codexNoFallbackSentence = "Codex triage uses only the shipped `exec --approve-for-me` recipe; do not add or substitute `--sandbox`, `-a` or `--yolo`, or change `~/.codex/config.toml` or any `AGENTS.md` to make a smoke or probe pass."
 
-// codexTriageRow is the shipped triage selection, independently pinned.
+// codexTriageRow is the harness's qualified triage selection, independently
+// pinned; flow.json and docs/maintainers/real-e2e.md hold it.
 var codexTriageRow = roleRow{"triage", "codex", "gpt-6.1-sol", "high", "1", "10m"}
+
+// exampleTriageRow is the example's triage selection, independently pinned;
+// the README's and the playbook's tables hold it.
+var exampleTriageRow = roleRow{"triage", "claude", "claude-opus-5-5", "high", "1", "10m"}
 
 // mdSubsection is a markdown section's text from its heading line to the
 // next heading of the same or a higher level ("" when absent).
@@ -174,15 +179,18 @@ var retainedGrokClauses = []string{
 	"every recovery triage of either flow",
 }
 
-// crossFamilyClauses are the playbook's pairing policy.
+// crossFamilyClauses are the playbook's pairing policy for the example's
+// selection: the shared family is stated, and the code reviewer stays the
+// cross-family gate.
 var crossFamilyClauses = []string{
-	"triage (GPT) diagnoses for the coder (Opus), and the code reviewer (GPT) checks the Opus implementation",
-	"Triage and the code reviewer may both be GPT: they judge different work, and the executing code reviewer, not triage, checks the implementation.",
+	"triage (Opus) and the coder (Opus) share a family, so the coder's re-validation of the root cause is not independent",
+	"the code reviewer (GPT) remains the cross-family gate on the implementation",
 }
 
-// checkCodexCatalog validates FP-4: the flow, both role tables, the
-// registration recipe, the runbook's role table, posture, budget text,
-// the retained harness prerequisites and the exact no-fallback sentence.
+// checkCodexCatalog validates FP-4: the harness's flow with its Codex triage,
+// the example's two role tables and registration recipe, the runbook's role
+// table, posture, budget text, the retained harness prerequisites and the
+// exact no-fallback sentence.
 func checkCodexCatalog(docs map[string]string) error {
 	var flow struct {
 		Roles []struct{ ID, Adapter, Model, Effort string } `json:"roles"`
@@ -207,8 +215,8 @@ func checkCodexCatalog(docs map[string]string) error {
 		if err != nil {
 			return fmt.Errorf("%s: %w", name, err)
 		}
-		if !slices.Contains(rows, codexTriageRow) || !sameRoles(rows, canonicalRoles) {
-			return fmt.Errorf("%s: the role table is not the Codex triage catalog", name)
+		if !slices.Contains(rows, exampleTriageRow) || !sameRoles(rows, canonicalRoles) {
+			return fmt.Errorf("%s: the role table is not the example's selection", name)
 		}
 	}
 	if err := checkRegistration(docs["readme"], canonicalRoles); err != nil {
@@ -268,16 +276,18 @@ func TestCodexTriageFP4(t *testing.T) {
 	})
 	t.Run("shared_docs", func(t *testing.T) {
 		mutateExpect(t, docs, checkCodexCatalog, "readme", [][2]string{
-			{"| triage | codex | gpt-6.1-sol | high | 1 | 10m |", "| triage | grok | grok-4.7 | xhigh | 1 | 10m |"},
+			{"| triage | claude | claude-opus-5-5 | high | 1 | 10m |", "| triage | grok | grok-4.7 | xhigh | 1 | 10m |"},
+			{"| triage | claude | claude-opus-5-5 | high | 1 | 10m |", "| triage | codex | gpt-6.1-sol | high | 1 | 10m |"},
 			{"(the product triage prompt cap `triagePromptCap`)", "(adapter.MaxGrokPromptBytes)"},
 			{"defines the product cap `triagePromptCap` as 32768", "defines `MaxGrokPromptBytes` as 32768"},
-			{codexTriageClause, "The triage role (grok) executes only on a Linux sidecar."},
+			{exampleTriageClause, "The triage role (grok) executes only on a Linux sidecar."},
 			{harnessLinuxClause, "The harness runs anywhere"},
 		})
-		// The two selection mutations target the triage command alone: exactly
-		// one line changes, whatever other role shares its model and trust flags.
+		// The selection mutations target the triage command alone: exactly one
+		// line changes, whatever other role shares its model and trust flags.
 		for _, m := range [][2]string{
-			{`--adapter codex --instruction "$MANUALS/triage-instruction.md"`, `--adapter grok --instruction "$MANUALS/triage-instruction.md"`},
+			{`--adapter claude --instruction "$MANUALS/triage-instruction.md"`, `--adapter grok --instruction "$MANUALS/triage-instruction.md"`},
+			{`--adapter claude --instruction "$MANUALS/triage-instruction.md"`, `--adapter codex --instruction "$MANUALS/triage-instruction.md"`},
 			{`--effort high --concurrency 1 --timeout 10m --plane "$PLANE" --ca "$CA"`, `--effort medium --concurrency 1 --timeout 10m --plane "$PLANE" --ca "$CA"`},
 		} {
 			lines := strings.Split(docs["readme"], "\n")
@@ -303,7 +313,8 @@ func TestCodexTriageFP4(t *testing.T) {
 			}
 		}
 		mutateExpect(t, docs, checkCodexCatalog, "playbook", append(deletions(crossFamilyClauses...),
-			[2]string{"| triage | codex | gpt-6.1-sol | high | 1 | 10m |", "| triage | grok | grok-4.7 | xhigh | 1 | 10m |"},
+			[2]string{"| triage | claude | claude-opus-5-5 | high | 1 | 10m |", "| triage | grok | grok-4.7 | xhigh | 1 | 10m |"},
+			[2]string{"| triage | claude | claude-opus-5-5 | high | 1 | 10m |", "| triage | codex | gpt-6.1-sol | high | 1 | 10m |"},
 			[2]string{"(the product triage prompt cap `triagePromptCap`)", "(adapter.MaxGrokPromptBytes)"},
 			[2]string{"Verify readiness after the final registry change. Do not", "Verify readiness after the final registry change. The triage role runs only on a Linux sidecar. Do not"},
 		))
