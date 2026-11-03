@@ -361,9 +361,9 @@ var cursorCatalogClauses = map[string][]string{
 	},
 	"docs/examples/dev-flow/README.md": {
 		"**Optional Cursor coder.** An owner may select the coder alone on the `cursor` adapter with its Grok model at effort `high`, exactly as the real end-to-end exercise ships it in `docs/examples/real-e2e/dev-full/flow-cursor-coder.json`",
-		"the default table above is unchanged and the code reviewer and triage stay on Codex",
+		"the default table above is unchanged and the other four rows stay as shown, with the code reviewer on Codex and triage on Claude",
 		"the unchanged `--trust --auto-review` recipe is no jail and no confinement claim, and the sidecar keeps its user's ordinary access",
-		"It stays cross-family: the GPT code reviewer and triage judge a Grok implementation; Cursor is the tool, not the model family.",
+		"It stays cross-family: the GPT code reviewer judges a Grok implementation and Opus triage diagnoses for a Grok coder; Cursor is the tool, not the model family.",
 		"The four-hop sample in which Cursor reviews code is a separate scenario, not exercised by this selection.",
 		"| coder | claude | claude-opus-5-5 | high | 1 | 10m |",
 	},

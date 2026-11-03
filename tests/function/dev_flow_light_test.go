@@ -106,7 +106,7 @@ func TestDevFlowLightDelivery(t *testing.T) {
 			t.Fatal(err)
 		}
 		want := map[string]string{}
-		for _, r := range canonicalRoles {
+		for _, r := range harnessRoles {
 			want[r.Name] = r.Adapter + "/" + r.Model + "/" + r.Effort
 		}
 		for _, r := range flow.Roles {

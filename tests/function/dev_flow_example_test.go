@@ -34,9 +34,9 @@ const (
 
 const promptBudgetParagraph = "Prompt budget: triage instruction bytes plus triage runbook bytes plus 8192 plus 4096 must be <= 32768, both as raw UTF-8 and as JSON-encoded string content with HTML escaping disabled, excluding surrounding quotes and the encoder LF. The 8192-byte ceiling covers goal plus acceptance; payload is omitted and encoded as an empty array. The two manuals together must be at most 20480 bytes. The 4096-byte reserve is not permission to exceed the adapter final encoded-size check. These are Callsheet product limits (the product triage prompt cap `triagePromptCap`), not a claimed vendor maximum. Bulky evidence goes to an authorized workspace path and a digest instead of inline text."
 
-// codexTriageClause is the README's triage posture (design
-// 12a-codex-triage): Codex is eligible on Linux and macOS.
-const codexTriageClause = "The triage role (codex) is eligible on a Linux or macOS sidecar, like every other role of this selection: `ValidateWorkerPosture` in `internal/adapter/vendor.go` returns nil for codex and claude on both."
+// exampleTriageClause is the README's triage posture for the example's own
+// selection: Claude is eligible on Linux and macOS.
+const exampleTriageClause = "The triage role (claude) is eligible on a Linux or macOS sidecar, like every other role of this selection: `ValidateWorkerPosture` in `internal/adapter/vendor.go` returns nil for codex and claude on both."
 
 // harnessLinuxClause is the README's separately retained harness
 // prerequisite.
@@ -83,7 +83,20 @@ type roleRow struct {
 	Name, Adapter, Model, Effort, Concurrency, Timeout string
 }
 
+// canonicalRoles is the example's own selection: the README's and the
+// playbook's tables and the README's registration recipe.
 var canonicalRoles = []roleRow{
+	{"designer", "codex", "gpt-6-astra", "medium", "1", "10m"},
+	{"design-reviewer", "claude", "claude-fable-5-1", "medium", "1", "10m"},
+	{"coder", "claude", "claude-opus-5-5", "high", "1", "10m"},
+	{"code-reviewer", "codex", "gpt-6.1-sol", "high", "1", "10m"},
+	{"triage", "claude", "claude-opus-5-5", "high", "1", "10m"},
+}
+
+// harnessRoles is the real end-to-end harness's qualified selection:
+// flow.json, DefaultDevFullFlow and docs/maintainers/real-e2e.md. It moves
+// only with a requalification, never with the example's table.
+var harnessRoles = []roleRow{
 	{"designer", "codex", "gpt-6-astra", "low", "1", "10m"},
 	{"design-reviewer", "claude", "claude-fable-5-1", "low", "1", "10m"},
 	{"coder", "claude", "claude-opus-5-5", "high", "1", "10m"},
@@ -855,7 +868,7 @@ func representativePrompt(instruction, runbook, goal, acceptance []byte) ([]byte
 			"goal":             string(goal),
 			"payload":          []string{},
 			"acceptance":       string(acceptance),
-			"effective":        contract.TaskEffective{Model: "gpt-6.1-sol", Effort: "high", Timeout: 10 * time.Minute},
+			"effective":        contract.TaskEffective{Model: exampleTriageRow.Model, Effort: exampleTriageRow.Effort, Timeout: 10 * time.Minute},
 			"timeout_enforced": false,
 			"requested_by":     contract.RequestedBy{Name: "callsheet", Version: "dev", Hostname: "coordinator"},
 		},
@@ -1627,12 +1640,15 @@ func TestDevFlowSetup(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, goos := range []string{"linux", "darwin"} {
-			if err := adapter.ValidateWorkerPosture(adapter.CodexID, goos); err != nil {
-				t.Fatalf("%s codex worker: %v", goos, err)
+			for _, id := range []string{adapter.CodexID, adapter.ClaudeID} {
+				if err := adapter.ValidateWorkerPosture(id, goos); err != nil {
+					t.Fatalf("%s %s worker: %v", goos, id, err)
+				}
 			}
 		}
 		for _, m := range [][2]string{
-			{codexTriageClause, "The triage role (grok) executes only on a Linux sidecar; a non-Linux worker is refused by the posture/readiness checks."},
+			{exampleTriageClause, "The triage role (grok) executes only on a Linux sidecar; a non-Linux worker is refused by the posture/readiness checks."},
+			{exampleTriageClause, "The triage role (codex) is eligible on a Linux or macOS sidecar, like every other role of this selection: `ValidateWorkerPosture` in `internal/adapter/vendor.go` returns nil for codex and claude on both."},
 			{harnessLinuxClause, "The harness has no platform prerequisite"},
 		} {
 			if err := checkTriagePosture(strings.Replace(readme, m[0], m[1], 1), playbook); err == nil {
@@ -1655,12 +1671,12 @@ var staleTriagePosture = []string{
 	"non-Linux triage worker",
 }
 
-// checkTriagePosture validates the shared docs' triage posture: Codex
-// eligibility on Linux and macOS, the separately retained harness Linux
-// prerequisite, and no remaining Linux-only triage claim.
+// checkTriagePosture validates the shared docs' triage posture: the example's
+// Claude triage eligibility on Linux and macOS, the separately retained
+// harness Linux prerequisite, and no remaining Linux-only triage claim.
 func checkTriagePosture(readme, playbook string) error {
-	if !strings.Contains(readme, codexTriageClause) {
-		return fmt.Errorf("the README lacks the Codex triage posture")
+	if !strings.Contains(readme, exampleTriageClause) {
+		return fmt.Errorf("the README lacks the example's triage posture")
 	}
 	if !strings.Contains(readme, harnessLinuxClause) {
 		return fmt.Errorf("the README lacks the retained harness Linux prerequisite")

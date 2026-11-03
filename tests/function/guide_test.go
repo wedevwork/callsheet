@@ -116,9 +116,11 @@ var (
 		{"ready-nodes", "sh", []string{"node ls"}},
 		{"ready-roles", "sh", []string{"role ls"}},
 		{"register-roles", "sh", []string{"role add", "role add", "role add", "role add", "role add"}},
+		{"enable-codex-restart", "sh", []string{"sidecar run"}},
+		{"enable-codex-second-sidecar", "sh", []string{"sidecar enroll", "sidecar run"}},
 	}
-	devFlowVariables    = []string{"MANUALS", "PLANE", "CA", "CODEX_NODE", "CLAUDE_NODE"}
-	devFlowNodeVariable = map[string]string{"designer": "CODEX_NODE", "code-reviewer": "CODEX_NODE", "triage": "CODEX_NODE", "design-reviewer": "CLAUDE_NODE", "coder": "CLAUDE_NODE"}
+	devFlowVariables    = []string{"MANUALS", "PLANE", "CA", "CODEX_NODE", "CLAUDE_NODE", "SIDECAR_STATE", "CODEX_SIDECAR_STATE", "CLAUDE_BIN", "CODEX_BIN"}
+	devFlowNodeVariable = map[string]string{"designer": "CODEX_NODE", "code-reviewer": "CODEX_NODE", "triage": "CLAUDE_NODE", "design-reviewer": "CLAUDE_NODE", "coder": "CLAUDE_NODE"}
 )
 
 // guideTools maps a guide JSON marker to its MCP tool and exact argument keys.
@@ -849,8 +851,8 @@ func TestGuideExample(t *testing.T) {
 		// name is still mentioned elsewhere in the document.
 		for _, c := range []struct{ name, old, repl, want string }{
 			{"deleted-variable", "| `MANUALS` | The absolute directory holding this copy on the sidecar |\n", "", "registration variable MANUALS is not defined"},
-			{"missing-trust", `--model gpt-6-astra --effort low --concurrency 1 --timeout 10m --plane "$PLANE" --ca "$CA"`, `--model gpt-6-astra --effort low --concurrency 1 --timeout 10m --plane "$PLANE"`, "missing required flag --ca"},
-			{"wrong-node-variable", `add triage --name triage --node "$CODEX_NODE"`, `add triage --name triage --node "$CLAUDE_NODE"`, "word 7 is \"$CLAUDE_NODE\", want \"$CODEX_NODE\""},
+			{"missing-trust", `--model gpt-6-astra --effort medium --concurrency 1 --timeout 10m --plane "$PLANE" --ca "$CA"`, `--model gpt-6-astra --effort medium --concurrency 1 --timeout 10m --plane "$PLANE"`, "missing required flag --ca"},
+			{"wrong-node-variable", `add triage --name triage --node "$CLAUDE_NODE"`, `add triage --name triage --node "$CODEX_NODE"`, "word 7 is \"$CODEX_NODE\", want \"$CLAUDE_NODE\""},
 			{"wrong-manual-suffix", `"$MANUALS/triage-runbook.md"`, `"$MANUALS/triage-instruction.md"`, "word 13 is"},
 			{"unquoted-variable", `--plane "$PLANE" --ca "$CA"` + "\ncallsheet role add design-reviewer", `--plane $PLANE --ca "$CA"` + "\ncallsheet role add design-reviewer", "unquoted variable $PLANE"},
 			{"default-note-removed", "`default 2h`", "a default", "registration default timeout note"},
@@ -1211,7 +1213,7 @@ func checkGuideWorkerSetup(md, adapters, catalogMD string) error {
 		needAll("worker", stripInlineLinks(md),
 			"Login is an operator prerequisite, not a Callsheet operation.", "Current auto policies are not OS confinement.",
 			"Grok and Cursor prompts are passed in argv and are visible to process inspection, with the product's 32 KiB prompt bound.", "Never include credentials in goals.",
-			"An authentication or permission refusal stops the operation for owner diagnosis, without fallback, settings edits or broad permission bypasses.",
+			"An authentication or permission refusal that ends a task stops the operation for owner diagnosis, without fallback, settings edits or broad permission bypasses.",
 			"Claude and Codex are eligible with an unverified macOS runtime warning; Grok and Cursor execution is refused.", "A flag being accepted is not execution eligibility, and Linux evidence does not certify macOS.",
 			"owner-recorded, not a fresh upstream verification", "workspace-write is the selected vendor policy", "The older `-a never` argv is historical.",
 			"that proves the old observation only", "Useful tool execution under current auto remains unverified.",
@@ -1548,18 +1550,22 @@ func checkGuideJSONAgainstSchemas(md string, schemas map[string]map[string]any) 
 	return errors.Join(errs...)
 }
 
-// checkDevFlowEnvelopes validates the example's two dispatch envelopes against
+// checkDevFlowEnvelopes validates the example's three dispatch envelopes against
 // the real dispatch schema, plus the cross-field rules a schema cannot express.
 func checkDevFlowEnvelopes(readme string, schemas map[string]map[string]any) error {
 	fences, err := markedJSONFences(readme, devFlowJSONMarker)
 	if err != nil {
 		return err
 	}
-	if got := slices.Sorted(maps.Keys(fences)); !slices.Equal(got, []string{"defect", "full"}) {
+	if got := slices.Sorted(maps.Keys(fences)); !slices.Equal(got, []string{"defect", "full", "triage"}) {
 		return fmt.Errorf("json: envelope inventory %q", got)
 	}
 	var errs []error
-	for id, mode := range map[string]string{"full": "flow and mode: full / implement", "defect": "flow and mode: light / defect"} {
+	for id, want := range map[string]struct{ mode, role string }{
+		"full":   {"flow and mode: full / implement", "coder"},
+		"defect": {"flow and mode: light / defect", "coder"},
+		"triage": {"flow and mode: light / triage", "triage"},
+	} {
 		v, err := decodeStrictJSON(fences[id])
 		if err != nil {
 			errs = append(errs, fmt.Errorf("json: envelope %s: %w", id, err))
@@ -1582,7 +1588,7 @@ func checkDevFlowEnvelopes(readme string, schemas map[string]map[string]any) err
 		target, _ := m["target"].(map[string]any)
 		goal, _ := m["goal"].(string)
 		acceptance, _ := m["acceptance"].(string)
-		if target["kind"] != "name" || target["value"] != "coder" || !strings.Contains(goal, mode) || !strings.HasPrefix(goal, "ENVELOPE\n") {
+		if target["kind"] != "name" || target["value"] != want.role || !strings.Contains(goal, want.mode) || !strings.HasPrefix(goal, "ENVELOPE\n") {
 			errs = append(errs, fmt.Errorf("json: envelope %s target or mode is wrong", id))
 		}
 		if err := taskTextBudget([]byte(goal), []byte(acceptance)); err != nil {
@@ -1684,7 +1690,7 @@ func TestGuideCommandContract(t *testing.T) {
 			{"unknown-fence", appendToSection("Waits", "<!-- dev-flow: extra -->\n```sh\ncallsheet task ls\n```"), "fence extra is not in the pinned inventory"},
 			{"unmarked-fence", appendToSection("Waits", "```sh\ncallsheet task ls\n```"), "unmarked sh fence"},
 			{"hidden-command", appendToSection("Waits", "```\ncallsheet task ls\n```"), "holds a Callsheet command"},
-			{"bad-variable", replaceOnce(`--node "$CODEX_NODE" --adapter codex --instruction "$MANUALS/triage-instruction.md"`, `--node "$NODE" --adapter codex --instruction "$MANUALS/triage-instruction.md"`), "unknown variable $NODE"},
+			{"bad-variable", replaceOnce(`--node "$CLAUDE_NODE" --adapter claude --instruction "$MANUALS/triage-instruction.md"`, `--node "$NODE" --adapter claude --instruction "$MANUALS/triage-instruction.md"`), "unknown variable $NODE"},
 			{"wrong-leaf-sequence", replaceOnce("callsheet role add triage --name triage", "callsheet role set triage --name triage"), "fence register-roles runs"},
 			{"dropped-role", func(t *testing.T, md string) string {
 				return regexp.MustCompile(`(?m)^callsheet role add triage .*\n`).ReplaceAllString(md, "")

@@ -4,7 +4,7 @@ This directory is a reusable Callsheet example of a full design flow and a light
 
 The real end-to-end exercise ([maintainers/real-e2e.md](../../maintainers/real-e2e.md)) loads these shared manuals and this playbook directly: `reale2e run` runs the checked full development flow with them, `reale2e run-dev-light` runs the light defect flow on a seeded whitespace defect, `reale2e run-dev-exercise` runs both as independent attempts, and the exercise directory [../real-e2e/](../real-e2e/README.md) adds only its scenario and mechanics. The retired four-hop role manuals are no longer shipped. A mechanical PASS of the exercise is not a judgment of the method's outputs. Exercise constraints, when they exist, supplement this method. They do not waive its gates.
 
-Recorded live evidence, as of 2026-10-28: default probe 11, the combined full and light exercise `20261026T102944Z-d3827a6b` and the owner's external judgment audits establish the recorded 12a method run, and the optional Cursor evidence is the later qual2 and exercise2 record, never the superseded first exercise. Those records prove that selection's method and observed results using a verification harness; they are maintainer evidence ([maintainers/real-e2e.md](../../maintainers/real-e2e.md)), and paid qualification commands stay on that path. They are not proof that a docs-only walkthrough already happened: the owner's M5 run tests whether a new user can follow this page with only Callsheet over vendor CLIs, and it is recorded separately ([checklist](../../guide/example.md#m5-walkthrough-checklist)).
+Recorded live evidence, as of 2026-10-28: default probe 11, the combined full and light exercise `20261026T102944Z-d3827a6b` and the owner's external judgment audits establish the recorded 12a method run on an earlier selection (Codex triage, low designer and design-reviewer effort), and the optional Cursor evidence is the later qual2 and exercise2 record, never the superseded first exercise. Those records prove that earlier selection's method and observed results using a verification harness; they are maintainer evidence ([maintainers/real-e2e.md](../../maintainers/real-e2e.md)), and paid qualification commands stay on that path. They are not proof that a docs-only walkthrough already happened: the owner's M5 run tests whether a new user can follow this page with only Callsheet over vendor CLIs, and it is recorded separately ([checklist](../../guide/example.md#m5-walkthrough-checklist)). The harness keeps its own qualified selection in [flow.json](../real-e2e/dev-full/flow.json). The role selection below has no recorded live evidence, and an accepted effort value is not evidence that it ran.
 
 ## Start here
 
@@ -21,14 +21,15 @@ A plain-folder transfer does not remove these worker-side tool requirements. The
 ## Run with Callsheet
 
 1. Complete the [quickstart](../../quickstart.md).
-2. Authenticate both workers, following [worker setup](../../guide/worker-setup.md).
-3. Copy this directory onto each relevant sidecar and choose absolute local paths ([Installation](#installation)).
-4. Identify the online nodes.
-5. Register the five recipes below before any dispatch.
-6. Inspect readiness after the final registry change.
-7. Configure the owner's coordinator using [coordinator setup](../../guide/coordinator-setup.md) and load [coordinator-playbook.md](coordinator-playbook.md).
-8. Choose a small owner-authorized source folder, a request, its acceptance and the project verification commands.
-9. Create the workspace and push the folder using the [workspaces reference](../../workspaces.md#pushing-a-plain-folder), and retain the instance and seed commit.
+2. Enable Codex, which the quickstart's Claude-only sidecar leaves disabled; it serves designer and code-reviewer here. Follow [Enable Codex](#enable-codex).
+3. Authenticate both workers, following [worker setup](../../guide/worker-setup.md).
+4. Copy this directory onto each relevant sidecar and choose absolute local paths ([Installation](#installation)).
+5. Identify the online nodes.
+6. Register the five recipes below before any dispatch.
+7. Inspect readiness after the final registry change.
+8. Configure the owner's coordinator using [coordinator setup](../../guide/coordinator-setup.md) and load [coordinator-playbook.md](coordinator-playbook.md).
+9. Choose a small owner-authorized source folder, a request, its acceptance and the project verification commands. The light walkthrough's triage reproduction has a [seed-project restriction](#seed-project-restriction).
+10. Create the workspace and push the folder using the [workspaces reference](../../workspaces.md#pushing-a-plain-folder), and retain the instance and seed commit.
 
 Define these variables per machine. They are operator selections, not built-in configuration:
 
@@ -37,8 +38,33 @@ Define these variables per machine. They are operator selections, not built-in c
 | `MANUALS` | The absolute directory holding this copy on the sidecar |
 | `PLANE` | The plane URL |
 | `CA` | The plane's CA certificate path |
-| `CODEX_NODE` | The node ID for designer, code-reviewer and triage |
-| `CLAUDE_NODE` | The node ID for design-reviewer and coder; it may be the same node |
+| `CODEX_NODE` | The node ID for designer and code-reviewer |
+| `CLAUDE_NODE` | The node ID for design-reviewer, coder and triage; it may be the same node |
+| `SIDECAR_STATE` | The quickstart sidecar's absolute state directory |
+| `CODEX_SIDECAR_STATE` | A new absolute state directory for a second sidecar |
+| `CLAUDE_BIN` | The absolute path of the Claude executable |
+| `CODEX_BIN` | The absolute path of the Codex executable |
+
+### Enable Codex
+
+The quickstart starts its sidecar with `--claude-adapter` alone, and an omitted adapter is disabled on that node, so it refuses a Codex role. Codex serves designer and code-reviewer in this selection, so choose one route ([enabling a worker](../../real-adapters.md#enabling-a-worker)).
+
+**Restart the sidecar** with `--codex-adapter` added, on the same state directory, once it is idle. The node keeps its ID and its registered roles, so `CODEX_NODE` and `CLAUDE_NODE` are the same node.
+
+<!-- dev-flow: enable-codex-restart -->
+```sh
+callsheet sidecar run --state-dir "$SIDECAR_STATE" --claude-adapter "$CLAUDE_BIN" --codex-adapter "$CODEX_BIN"
+```
+
+**Or enroll a second sidecar** for Codex and leave the first running. It is a new node with its own ID: use that ID as `CODEX_NODE`.
+
+<!-- dev-flow: enable-codex-second-sidecar -->
+```sh
+callsheet sidecar enroll --state-dir "$CODEX_SIDECAR_STATE" --plane "$PLANE" --ca "$CA"
+callsheet sidecar run --state-dir "$CODEX_SIDECAR_STATE" --codex-adapter "$CODEX_BIN"
+```
+
+### Check the nodes
 
 Identify the online nodes:
 
@@ -64,32 +90,34 @@ Register every role before dispatch. Verify readiness after the final registry c
 
 <!-- dev-flow: register-roles -->
 ```sh
-callsheet role add designer --name designer --node "$CODEX_NODE" --adapter codex --instruction "$MANUALS/designer-instruction.md" --runbook "$MANUALS/designer-runbook.md" --model gpt-6-astra --effort low --concurrency 1 --timeout 10m --plane "$PLANE" --ca "$CA"
-callsheet role add design-reviewer --name design-reviewer --node "$CLAUDE_NODE" --adapter claude --instruction "$MANUALS/design-reviewer-instruction.md" --runbook "$MANUALS/design-reviewer-runbook.md" --model claude-fable-5-1 --effort low --concurrency 1 --timeout 10m --plane "$PLANE" --ca "$CA"
+callsheet role add designer --name designer --node "$CODEX_NODE" --adapter codex --instruction "$MANUALS/designer-instruction.md" --runbook "$MANUALS/designer-runbook.md" --model gpt-6-astra --effort medium --concurrency 1 --timeout 10m --plane "$PLANE" --ca "$CA"
+callsheet role add design-reviewer --name design-reviewer --node "$CLAUDE_NODE" --adapter claude --instruction "$MANUALS/design-reviewer-instruction.md" --runbook "$MANUALS/design-reviewer-runbook.md" --model claude-fable-5-1 --effort medium --concurrency 1 --timeout 10m --plane "$PLANE" --ca "$CA"
 callsheet role add coder --name coder --node "$CLAUDE_NODE" --adapter claude --instruction "$MANUALS/coder-instruction.md" --runbook "$MANUALS/coder-runbook.md" --model claude-opus-5-5 --effort high --concurrency 1 --timeout 10m --plane "$PLANE" --ca "$CA"
 callsheet role add code-reviewer --name code-reviewer --node "$CODEX_NODE" --adapter codex --instruction "$MANUALS/code-reviewer-instruction.md" --runbook "$MANUALS/code-reviewer-runbook.md" --model gpt-6.1-sol --effort high --concurrency 1 --timeout 10m --plane "$PLANE" --ca "$CA"
-callsheet role add triage --name triage --node "$CODEX_NODE" --adapter codex --instruction "$MANUALS/triage-instruction.md" --runbook "$MANUALS/triage-runbook.md" --model gpt-6.1-sol --effort high --concurrency 1 --timeout 10m --plane "$PLANE" --ca "$CA"
+callsheet role add triage --name triage --node "$CLAUDE_NODE" --adapter claude --instruction "$MANUALS/triage-instruction.md" --runbook "$MANUALS/triage-runbook.md" --model claude-opus-5-5 --effort high --concurrency 1 --timeout 10m --plane "$PLANE" --ca "$CA"
 ```
 
 ## Role selection
 
 | Role name | Adapter | Model | Effort | Concurrency | Task timeout |
 |---|---|---|---|---|---|
-| designer | codex | gpt-6-astra | low | 1 | 10m |
-| design-reviewer | claude | claude-fable-5-1 | low | 1 | 10m |
+| designer | codex | gpt-6-astra | medium | 1 | 10m |
+| design-reviewer | claude | claude-fable-5-1 | medium | 1 | 10m |
 | coder | claude | claude-opus-5-5 | high | 1 | 10m |
 | code-reviewer | codex | gpt-6.1-sol | high | 1 | 10m |
-| triage | codex | gpt-6.1-sol | high | 1 | 10m |
+| triage | claude | claude-opus-5-5 | high | 1 | 10m |
 
 Model and effort are the registered role configuration, not extra dispatch keys. Callsheet's accepted effort unions (`ValidateSelection` in `internal/adapter/vendor.go`) include these efforts. A union is not proof that a particular account can run the pair.
 
-**Optional Cursor coder.** An owner may select the coder alone on the `cursor` adapter with its Grok model at effort `high`, exactly as the real end-to-end exercise ships it in `docs/examples/real-e2e/dev-full/flow-cursor-coder.json`; the default table above is unchanged and the code reviewer and triage stay on Codex. Register it on a Linux sidecar enrolled with `--cursor-adapter`: the unchanged `--trust --auto-review` recipe is no jail and no confinement claim, and the sidecar keeps its user's ordinary access. It stays cross-family: the GPT code reviewer and triage judge a Grok implementation; Cursor is the tool, not the model family. The four-hop sample in which Cursor reviews code is a separate scenario, not exercised by this selection.
+**Optional Cursor coder.** An owner may select the coder alone on the `cursor` adapter with its Grok model at effort `high`, exactly as the real end-to-end exercise ships it in `docs/examples/real-e2e/dev-full/flow-cursor-coder.json`; the default table above is unchanged and the other four rows stay as shown, with the code reviewer on Codex and triage on Claude. Register it on a Linux sidecar enrolled with `--cursor-adapter`: the unchanged `--trust --auto-review` recipe is no jail and no confinement claim, and the sidecar keeps its user's ordinary access. It stays cross-family: the GPT code reviewer judges a Grok implementation and Opus triage diagnoses for a Grok coder; Cursor is the tool, not the model family. The four-hop sample in which Cursor reviews code is a separate scenario, not exercised by this selection.
 
 **ASSUMPTION (unverified):** all five requested pairs execute successfully on the owner's installation. Qualification probe: the later live harness must probe every distinct pair through its adapter with authentication and effective-selection evidence before dispatching workflow tasks. A rejection stops the attempt. There is no model fallback.
 
+The shipped harness is not that probe for this selection: it keeps its earlier selection and does not qualify this one, and `internal/reale2e/devfull_flow.go` refuses Claude as triage. Separate owner qualification of these pairs remains necessary.
+
 ## Prerequisites
 
-The triage role (codex) is eligible on a Linux or macOS sidecar, like every other role of this selection: `ValidateWorkerPosture` in `internal/adapter/vendor.go` returns nil for codex and claude on both. A valid model and effort never override a posture refusal. The real end-to-end harness keeps its own, separate Linux prerequisite: its live execution is Linux only because it requires Linux-qualified vendor installations and sidecars ([maintainers/real-e2e.md](../../maintainers/real-e2e.md)). That harness prerequisite is not a triage posture.
+The triage role (claude) is eligible on a Linux or macOS sidecar, like every other role of this selection: `ValidateWorkerPosture` in `internal/adapter/vendor.go` returns nil for codex and claude on both. A valid model and effort never override a posture refusal. The real end-to-end harness keeps its own, separate Linux prerequisite: its live execution is Linux only because it requires Linux-qualified vendor installations and sidecars ([maintainers/real-e2e.md](../../maintainers/real-e2e.md)). That harness prerequisite is not a triage posture.
 
 Other prerequisites are the owner's to fulfill: logged-in adapter CLIs on the sidecars, plane trust, and the CA. This example does not change agent-tool settings, login state, or profiles.
 
@@ -131,16 +159,18 @@ Give the coordinator the request and the initial base commit. It follows the pla
 3. On `DESIGN_REVIEW_APPROVED`, present the draft and review digests to the owner. Inspect the exact artifacts and digests before answering. Wait for an explicit yes. Do not infer yes.
 4. On owner yes, record the approval against that task, commit, and those digests, then dispatch the coder in implement mode. The coder and reviewer consume pinned accepted commits.
 5. On `IMPL_COMPLETE`, admit the candidate and dispatch the code reviewer in full mode.
-6. On `REVIEW_APPROVED`, and only after the artifact, test-evidence, and publication gates, deliver: inspect the diff and publication, then pull the accepted task into a new destination.
+6. On `REVIEW_APPROVED`, and only after the artifact, test-evidence, and publication gates, deliver: inspect the diff and publication, then pull the accepted task into a new destination. The delivered tree contains the flow's documents under `design/`, so decide what to keep before copying it into a project.
 
 ## Light walkthrough
 
 The owner authorizes the investigation and the defect work at intake. There is no design sign-off unless the work escalates. The coordinator keeps the same ledger and lost-reply recovery, and no worker session is reused.
 
+Step 1 is scoped by the [seed-project restriction](#seed-project-restriction): triage can reproduce only in a project that `FEATURE.md`, `go.mod`, `main.go` and `main_test.go` fully reproduce.
+
 1. Dispatch triage on the pinned buggy commit.
 2. On `TRIAGE_CONFIRMED` or `TRIAGE_PROBABLE`, validate that brief and dispatch the coder in defect mode. A standalone line `Design required: yes` enters the full flow instead. `Design required: no` stays on the qualified fix. A `NEEDS_DESIGN` marker routes to full approval.
 3. On `IMPL_COMPLETE`, dispatch the code reviewer in light mode. Keep the original source base for the red-before check through every report-only publication and fix round.
-4. On `REVIEW_APPROVED`, deliver under the same publication gates, and pull the accepted task into a new destination.
+4. On `REVIEW_APPROVED`, deliver under the same publication gates, and pull the accepted task into a new destination. The delivered tree contains the flow's documents under `design/`, so decide what to keep before copying it into a project.
 
 ## Dispatch example: full mode
 
@@ -171,6 +201,28 @@ These JSON envelopes are examples of `dispatch` tool arguments, not a hidden wor
   "base": "<40-hex-buggy-commit>"
 }
 ```
+
+## Dispatch example: triage
+
+`scratch_policy` names `.callsheet-triage-scratch/` with its literal removal recipe, the only place triage may reproduce. With no scratch path in the envelope, a reproduction that needs scratch is `TRIAGE_BLOCKED` ([triage runbook](triage-runbook.md#reproductions)).
+
+<!-- dev-flow-json: triage -->
+```json
+{
+  "target": {"kind": "name", "value": "triage"},
+  "goal": "ENVELOPE\nattempt ID: <attempt>\nflow and mode: light / triage\nrequest/brief path: design/feature/defect.md\ndesign path: not applicable\nFP subset: not applicable\ninput task/commit/digests: <defect-report-sha256>\ninitial source base: <40-hex-buggy-commit>\ninitial_source_commit: <40-hex-buggy-commit>\nallowed output paths: rca.md; fix.md only at CONFIRMED or PROBABLE\npreserved_inputs: unchanged; add no other path\nscratch_policy: test -d .callsheet-triage-scratch && test ! -L .callsheet-triage-scratch && chmod -R u+w .callsheet-triage-scratch && rm -r .callsheet-triage-scratch && test ! -e .callsheet-triage-scratch\nverification commands: <project CI commands>\ntimeout/repetition policy: do not raise timeouts or lower counts\nevidence location: none; see triage-runbook.md\nowner approval reference: light intake <decision>\nround/finding IDs: initial\nEND",
+  "acceptance": "Investigate only; project source, tests and configuration stay read-only. Publish rca.md, and fix.md only at CONFIRMED or PROBABLE. End with exactly one STATUS line: TRIAGE_CONFIRMED, TRIAGE_PROBABLE, TRIAGE_UNCONFIRMED, or TRIAGE_BLOCKED.",
+  "workspace": "<workspace>",
+  "workspace_instance": "<instance>",
+  "base": "<40-hex-buggy-commit>"
+}
+```
+
+### Seed-project restriction
+
+The triage runbook's reproduction exports exactly four root files of `initial_source_commit` into `copy/`: `FEATURE.md`, `go.mod`, `main.go` and `main_test.go`. It fits only a project those four files fully reproduce, although any ordinary folder is a valid workspace source. On any other layout the export is missing or incomplete, so triage reports `TRIAGE_BLOCKED` when it needs a reproduction; an investigation that needs no reproduction can still finish from direct evidence. The restriction is on triage's reproduction only: the coder and the code reviewer work from the whole commit.
+
+### Task text and payload
 
 Goals carry no credentials. Triage dispatches omit payload. Their combined goal and acceptance stay inside the ceiling in the limitations below. The goal includes the whole envelope; the ceiling is not an extra allowance on top of the envelope.
 

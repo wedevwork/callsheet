@@ -100,7 +100,7 @@ Prompt budget: triage instruction bytes plus triage runbook bytes plus 8192 plus
 
 Before any next task, inspect the durable terminal state and the complete final answer. Verify publication and availability with the task result and `ws_status`. You must enumerate all pages of ws_diff. Require `state=succeeded`, the expected adapter and selection, complete nontruncated final text ending in exactly one role-valid STATUS line, an available publication, a matching workspace name, instance, and base, and the expected immutable commit chain.
 
-Task success alone says nothing about method approval. Refuse partial or truncated evidence rather than treating an absent diff page as empty. Use `ws_pull` by task ID into a new inspection directory for artifact hashes and content. Never pull over the owner's working tree.
+Task success alone says nothing about method approval. Refuse partial or truncated evidence rather than treating an absent diff page as empty. Count a verification that a worker reports as denied or skipped as not done, and do not accept it as evidence. Use `ws_pull` by task ID into a new inspection directory for artifact hashes and content. Never pull over the owner's working tree.
 
 For a report with a terminal verdict (`design-review.md`, `review.md`), compare the report with the final answer. Reports name their input commit and digests, never the publication commit, which is not known yet. The ledger binds the publication afterward. Keep earlier report versions via prior task commits. Do not copy historical reports into every new worktree.
 
@@ -124,15 +124,17 @@ Artifact names are relative to the explicit brief or design directory, except th
 
 | Role name | Adapter | Model | Effort | Concurrency | Task timeout |
 |---|---|---|---|---|---|
-| designer | codex | gpt-6-astra | low | 1 | 10m |
-| design-reviewer | claude | claude-fable-5-1 | low | 1 | 10m |
+| designer | codex | gpt-6-astra | medium | 1 | 10m |
+| design-reviewer | claude | claude-fable-5-1 | medium | 1 | 10m |
 | coder | claude | claude-opus-5-5 | high | 1 | 10m |
 | code-reviewer | codex | gpt-6.1-sol | high | 1 | 10m |
-| triage | codex | gpt-6.1-sol | high | 1 | 10m |
+| triage | claude | claude-opus-5-5 | high | 1 | 10m |
 
 Register every role before dispatch, with `--concurrency 1 --timeout 10m`. Verify readiness after the final registry change. Do not substitute a model when a selection or a posture check refuses the worker.
 
-Pairings are cross-family where one role judges another's work: triage (GPT) diagnoses for the coder (Opus), and the code reviewer (GPT) checks the Opus implementation. Triage and the code reviewer may both be GPT: they judge different work, and the executing code reviewer, not triage, checks the implementation.
+A verification harness that loads this playbook keeps its own frozen selection in its flow file; in that run, the flow file is the expected selection.
+
+Pairings: triage (Opus) and the coder (Opus) share a family, so the coder's re-validation of the root cause is not independent; the code reviewer (GPT) remains the cross-family gate on the implementation.
 
 An owner's optional selection may put the coder alone on the `cursor` adapter with its Grok model at effort `high`; the other four rows stay as shown, and the code reviewer (GPT) then checks a Grok implementation, still cross-family.
 
